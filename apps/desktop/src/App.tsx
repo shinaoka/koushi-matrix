@@ -29,7 +29,7 @@ import {
   Users,
   X
 } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, type RefObject, useEffect, useRef, useState } from "react";
 
 import { createDesktopApi } from "./backend/client";
 import type {
@@ -50,8 +50,11 @@ export function App() {
   const [composerDraft, setComposerDraft] = useState("");
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
+  const [loginDeviceName, setLoginDeviceName] = useState("Matrix Desktop");
+  const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const searchTimer = useRef<number | null>(null);
+  const loginPasswordRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void refresh();
@@ -93,10 +96,22 @@ export function App() {
 
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const password = loginPasswordRef.current?.value ?? "";
     setIsBusy(true);
     try {
-      setSnapshot(await api.submitLogin(loginHomeserver, loginUsername));
+      setSnapshot(
+        await api.submitLogin(
+          loginHomeserver,
+          loginUsername,
+          password,
+          loginDeviceName
+        )
+      );
     } finally {
+      if (loginPasswordRef.current) {
+        loginPasswordRef.current.value = "";
+      }
+      setLoginPasswordFilled(false);
       setIsBusy(false);
     }
   }
@@ -137,11 +152,16 @@ export function App() {
   if (snapshot.state.session.kind !== "ready") {
     return (
       <AuthScreen
+        deviceName={loginDeviceName}
         homeserver={loginHomeserver}
         isBusy={isBusy || snapshot.state.session.kind === "authenticating"}
+        passwordFilled={loginPasswordFilled}
+        passwordInputRef={loginPasswordRef}
         snapshot={snapshot}
         username={loginUsername}
+        onDeviceNameChange={setLoginDeviceName}
         onHomeserverChange={setLoginHomeserver}
+        onPasswordPresenceChange={setLoginPasswordFilled}
         onSubmit={submitLogin}
         onUsernameChange={setLoginUsername}
       />
@@ -215,19 +235,29 @@ export function App() {
 }
 
 function AuthScreen({
+  deviceName,
   homeserver,
   isBusy,
+  passwordFilled,
+  passwordInputRef,
   snapshot,
   username,
+  onDeviceNameChange,
   onHomeserverChange,
+  onPasswordPresenceChange,
   onSubmit,
   onUsernameChange
 }: {
+  deviceName: string;
   homeserver: string;
   isBusy: boolean;
+  passwordFilled: boolean;
+  passwordInputRef: RefObject<HTMLInputElement | null>;
   snapshot: DesktopSnapshot;
   username: string;
+  onDeviceNameChange: (value: string) => void;
   onHomeserverChange: (value: string) => void;
+  onPasswordPresenceChange: (value: boolean) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onUsernameChange: (value: string) => void;
 }) {
@@ -256,13 +286,33 @@ function AuthScreen({
           />
         </label>
         <label className="auth-field">
-          <span>Username</span>
+          <span>Username or Matrix ID</span>
           <input
             autoComplete="username"
             name="username"
             spellCheck={false}
             value={username}
             onChange={(event) => onUsernameChange(event.target.value)}
+          />
+        </label>
+        <label className="auth-field">
+          <span>Password</span>
+          <input
+            autoComplete="current-password"
+            name="password"
+            ref={passwordInputRef}
+            type="password"
+            onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
+          />
+        </label>
+        <label className="auth-field">
+          <span>Device name</span>
+          <input
+            autoComplete="off"
+            name="deviceName"
+            spellCheck={false}
+            value={deviceName}
+            onChange={(event) => onDeviceNameChange(event.target.value)}
           />
         </label>
         {primaryError ? (
@@ -272,7 +322,7 @@ function AuthScreen({
         ) : null}
         <button
           className="auth-submit"
-          disabled={isBusy || !homeserver.trim() || !username.trim()}
+          disabled={isBusy || !homeserver.trim() || !username.trim() || !passwordFilled}
           type="submit"
         >
           {isBusy ? "Connecting" : "Continue"}

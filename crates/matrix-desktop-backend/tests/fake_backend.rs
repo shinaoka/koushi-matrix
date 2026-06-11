@@ -1,6 +1,7 @@
 use matrix_desktop_backend::{DEFAULT_HOMESERVER, FakeDesktopBackend, FakeDesktopBackendConfig};
 use matrix_desktop_state::{
-    AppAction, SearchMatchField, SearchScope, SearchState, SessionState, SyncState, ThreadPaneState,
+    AppAction, AuthSecret, LoginRequest, SearchMatchField, SearchScope, SearchState, SessionState,
+    SyncState, ThreadPaneState,
 };
 
 #[test]
@@ -91,10 +92,12 @@ fn fake_backend_login_boundary_fails_explicitly_before_real_sdk_wiring() {
         ..FakeDesktopBackendConfig::default()
     });
 
-    backend.dispatch(AppAction::LoginSubmitted {
+    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
         homeserver: "https://matrix.example.org".to_owned(),
         username: "demo-user".to_owned(),
-    });
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    }));
 
     let snapshot = backend.snapshot();
 
@@ -107,6 +110,7 @@ fn fake_backend_login_boundary_fails_explicitly_before_real_sdk_wiring() {
             .message
             .contains("real Matrix login is not wired")
     );
+    assert!(!format!("{snapshot:?}").contains("synthetic-password"));
 }
 
 #[test]

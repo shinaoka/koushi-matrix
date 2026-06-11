@@ -16,8 +16,18 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("get_snapshot");
   }
 
-  async submitLogin(homeserver: string, username: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("submit_login", { homeserver, username });
+  async submitLogin(
+    homeserver: string,
+    username: string,
+    password: string,
+    deviceDisplayName: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("submit_login", {
+      homeserver,
+      username,
+      password,
+      deviceDisplayName
+    });
   }
 
   async selectSpace(spaceId: string | null): Promise<DesktopSnapshot> {

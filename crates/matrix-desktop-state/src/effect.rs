@@ -1,14 +1,12 @@
-use serde::{Deserialize, Serialize};
+use crate::{
+    action::LoginRequest,
+    state::{SearchScope, SessionInfo},
+};
 
-use crate::state::{SearchScope, SessionInfo};
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppEffect {
     RestoreSession,
-    Login {
-        homeserver: String,
-        username: String,
-    },
+    Login(LoginRequest),
     PersistSession(SessionInfo),
     ClearSession,
     StartSync,
@@ -33,7 +31,7 @@ pub enum AppEffect {
     EmitUiEvent(UiEvent),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UiEvent {
     SessionChanged,
     RoomListChanged,

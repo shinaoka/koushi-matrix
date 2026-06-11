@@ -1,4 +1,4 @@
-use matrix_desktop_state::AppAction;
+use matrix_desktop_state::{AppAction, AuthSecret, LoginRequest};
 use tauri::State;
 
 use crate::{
@@ -16,13 +16,17 @@ pub fn get_snapshot(state: State<'_, BackendState>) -> Result<FrontendDesktopSna
 pub fn submit_login(
     homeserver: String,
     username: String,
+    password: String,
+    device_display_name: Option<String>,
     state: State<'_, BackendState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let mut backend = state.backend.lock().map_err(lock_error)?;
-    backend.dispatch(AppAction::LoginSubmitted {
+    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
         homeserver,
         username,
-    });
+        password: AuthSecret::new(password),
+        device_display_name,
+    }));
     Ok(FrontendDesktopSnapshot::from(backend.snapshot()))
 }
 

@@ -10,7 +10,12 @@ import type {
 
 export interface DesktopApi {
   getSnapshot(): Promise<DesktopSnapshot>;
-  submitLogin(homeserver: string, username: string): Promise<DesktopSnapshot>;
+  submitLogin(
+    homeserver: string,
+    username: string,
+    password: string,
+    deviceDisplayName: string
+  ): Promise<DesktopSnapshot>;
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
@@ -37,7 +42,12 @@ class BrowserFakeApi implements DesktopApi {
     return clone(this.snapshot);
   }
 
-  async submitLogin(homeserver: string, username: string): Promise<DesktopSnapshot> {
+  async submitLogin(
+    homeserver: string,
+    username: string,
+    password: string,
+    deviceDisplayName: string
+  ): Promise<DesktopSnapshot> {
     this.snapshot.state.session = {
       kind: "authenticating",
       homeserver: normalizeHomeserver(homeserver)
@@ -47,6 +57,8 @@ class BrowserFakeApi implements DesktopApi {
     );
     this.clearSessionViews();
     void username;
+    void password;
+    void deviceDisplayName;
 
     this.snapshot.state.session = { kind: "signedOut" };
     this.snapshot.state.errors.push({

@@ -1,7 +1,7 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, NavigationState, RoomSummary, SearchScope, SearchState,
-    SessionInfo, SessionState, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
-    UiEvent, reduce,
+    AppAction, AppEffect, AppState, AuthSecret, LoginRequest, NavigationState, RoomSummary,
+    SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadPaneState,
+    TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -67,10 +67,12 @@ fn login_submitted_enters_authenticating_and_emits_session_event() {
 
     let effects = reduce(
         &mut state,
-        AppAction::LoginSubmitted {
+        AppAction::LoginSubmitted(LoginRequest {
             homeserver: "https://matrix.example.org".to_owned(),
             username: "user-a".to_owned(),
-        },
+            password: AuthSecret::new("synthetic-password"),
+            device_display_name: Some("Matrix Desktop Test".to_owned()),
+        }),
     );
 
     assert_eq!(
@@ -82,13 +84,30 @@ fn login_submitted_enters_authenticating_and_emits_session_event() {
     assert_eq!(
         effects,
         vec![
-            AppEffect::Login {
+            AppEffect::Login(LoginRequest {
                 homeserver: "https://matrix.example.org".to_owned(),
                 username: "user-a".to_owned(),
-            },
+                password: AuthSecret::new("synthetic-password"),
+                device_display_name: Some("Matrix Desktop Test".to_owned()),
+            }),
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
         ]
     );
+}
+
+#[test]
+fn login_request_debug_redacts_password() {
+    let action = AppAction::LoginSubmitted(LoginRequest {
+        homeserver: "https://matrix.example.org".to_owned(),
+        username: "user-a".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    });
+
+    let debug = format!("{action:?}");
+
+    assert!(debug.contains("AuthSecret(..)"));
+    assert!(!debug.contains("synthetic-password"));
 }
 
 #[test]

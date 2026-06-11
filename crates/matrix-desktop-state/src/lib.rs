@@ -4,7 +4,7 @@ pub mod reducer;
 pub mod sidebar;
 pub mod state;
 
-pub use action::AppAction;
+pub use action::{AppAction, AuthSecret, LoginRequest};
 pub use effect::{AppEffect, UiEvent};
 pub use reducer::reduce;
 pub use sidebar::{RoomListItem, SidebarModel, SpaceRailItem, compose_sidebar};

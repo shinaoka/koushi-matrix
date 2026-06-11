@@ -35,6 +35,9 @@ The fake effect runner handles session restore, sync start, timeline subscriptio
 The next real-login step should attach at these points:
 
 1. `AppEffect::Login` creates a `matrix_sdk::Client` using the configured homeserver.
+   The login request carries homeserver, login identifier, password, and device
+   display name. The password is an in-memory redacted secret and must not enter
+   `AppState`, frontend snapshots, debug output, logs, or persisted stores.
 2. Successful login dispatches `AppAction::LoginSucceeded(SessionInfo)`.
 3. The backend creates a `SessionKeyId` from homeserver, user id, and device id.
 4. `matrix-desktop-key` loads or creates the local unlock secret through the OS credential store.
@@ -52,6 +55,12 @@ The app now has an explicit first-run path before real Matrix login:
 3. The React shell renders a homeserver-configurable sign-in form instead of the Slack-like ready surface.
 4. `submit_login` dispatches `AppAction::LoginSubmitted`, which emits `AppEffect::Login`.
 5. The fake backend intentionally turns that effect into `AppAction::LoginFailed` with a non-secret message because real Matrix login is not wired yet.
+
+Recovery key or security phrase input is not part of Matrix login. It belongs
+after login, when the client needs to restore encrypted room-key backup or
+cross-signing secrets. That recovery input must have the same secret-handling
+rules as passwords and must not be stored in React state longer than the active
+recovery step requires.
 
 Open the browser shell in first-run mode with:
 

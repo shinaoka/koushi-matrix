@@ -54,11 +54,17 @@ describe("desktop model", () => {
     expect(snapshot.state.rooms).toHaveLength(0);
     expect(snapshot.state.errors).toHaveLength(0);
 
-    snapshot = await api.submitLogin("https://matrix.example.org", "demo-user");
+    snapshot = await api.submitLogin(
+      "https://matrix.example.org",
+      "demo-user",
+      "synthetic-password",
+      "Matrix Desktop Test"
+    );
 
     expect(snapshot.state.session.kind).toBe("signedOut");
     expect(snapshot.state.rooms).toHaveLength(0);
     expect(snapshot.state.errors).toHaveLength(1);
     expect(snapshot.state.errors[0]?.code).toBe("login_failed");
+    expect(JSON.stringify(snapshot)).not.toContain("synthetic-password");
   });
 });

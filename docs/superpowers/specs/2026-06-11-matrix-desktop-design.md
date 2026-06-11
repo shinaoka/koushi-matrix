@@ -376,7 +376,8 @@ Integration tests:
 ## Open Questions for Implementation Planning
 
 - Whether `vendor/matrix-rust-sdk` should be a git submodule, subtree, or copied vendor checkout for the first iteration.
-- Whether the first login flow should support password, OIDC, or both.
+- Whether the first real login milestone should ship password login first, or add OIDC/SSO discovery in the same milestone.
+- Recovery key/security phrase input is post-login E2EE recovery, not login. The first recovery milestone still needs a separate design for secret handling and verification UX.
 - Which test homeserver setup to use for local integration testing.
 - How much of thread support is stable enough in `matrix-sdk-ui` for MVP.
 - Whether the first release should build Windows artifacts only in CI or also require early Windows manual testing.

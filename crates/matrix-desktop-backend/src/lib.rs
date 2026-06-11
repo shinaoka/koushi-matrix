@@ -206,7 +206,7 @@ impl FakeDesktopBackend {
             | AppEffect::ClearSession
             | AppEffect::StopSync
             | AppEffect::EmitUiEvent(_) => Vec::new(),
-            AppEffect::Login { .. } => vec![AppAction::LoginFailed {
+            AppEffect::Login(_) => vec![AppAction::LoginFailed {
                 message: "real Matrix login is not wired in this pre-login foundation".to_owned(),
             }],
         }

@@ -38,18 +38,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
         }
-        AppAction::LoginSubmitted {
-            homeserver,
-            username,
-        } => {
+        AppAction::LoginSubmitted(request) => {
             state.session = SessionState::Authenticating {
-                homeserver: homeserver.clone(),
+                homeserver: request.homeserver.clone(),
             };
             vec![
-                AppEffect::Login {
-                    homeserver,
-                    username,
-                },
+                AppEffect::Login(request),
                 AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             ]
         }
