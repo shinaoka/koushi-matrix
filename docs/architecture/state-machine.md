@@ -87,6 +87,19 @@ search result. The reducer stores only the search adapter's result snapshot; it
 does not decide whether an older event body, an edited body, or a redaction tombstone
 is visible.
 
+Matrix edit events may be downloaded before the event they replace. The search
+adapter must store such edits as pending relations keyed by the target event ID,
+not as standalone searchable messages. If a search runs before the target event
+has been downloaded, the adapter may either omit that pending edit from results
+or synchronously repair the gap by fetching the target event first. It must not
+return the edit event as if it were an independent room message.
+
+When the missing target event later arrives, the adapter applies the pending edit
+and indexes the resolved visible body for the target event. This can create a
+temporary false negative for edited text, but avoids showing duplicated,
+misordered, or non-visible edit events. Search results that depend on an
+incomplete local index should be treated as partial until the indexer catches up.
+
 Search timeline display must be treated as a focused result view, not as a normal
 room timeline. It should avoid implying that search results are a complete
 chronological timeline unless the backend explicitly provides enough surrounding
