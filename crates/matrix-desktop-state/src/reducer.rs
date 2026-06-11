@@ -257,17 +257,21 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         } => {
             if !is_session_ready(state)
                 || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+                || state.timeline.composer.pending_transaction_id.is_some()
             {
                 return Vec::new();
             }
 
             state.timeline.composer.pending_transaction_id = Some(transaction_id.clone());
             state.timeline.composer.draft.clear();
-            vec![AppEffect::SendText {
-                room_id,
-                transaction_id,
-                body,
-            }]
+            vec![
+                AppEffect::SendText {
+                    room_id: room_id.clone(),
+                    transaction_id,
+                    body,
+                },
+                AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
+            ]
         }
         AppAction::SendTextFinished {
             room_id,
@@ -298,10 +302,13 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 room_id: room_id.clone(),
                 root_event_id: root_event_id.clone(),
             };
-            vec![AppEffect::OpenThreadTimeline {
-                room_id,
-                root_event_id,
-            }]
+            vec![
+                AppEffect::OpenThreadTimeline {
+                    room_id,
+                    root_event_id,
+                },
+                AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+            ]
         }
         AppAction::ThreadSubscribed {
             room_id,

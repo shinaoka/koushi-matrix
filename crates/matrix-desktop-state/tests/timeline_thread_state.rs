@@ -182,12 +182,47 @@ fn send_text_sets_pending_transaction_and_emits_send_effect() {
     assert_eq!(state.timeline.composer.draft, "");
     assert_eq!(
         effects,
-        vec![AppEffect::SendText {
+        vec![
+            AppEffect::SendText {
+                room_id: "room-a".to_owned(),
+                transaction_id: "txn1".to_owned(),
+                body: "hello".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+        ]
+    );
+}
+
+#[test]
+fn send_text_submission_is_ignored_while_send_is_pending() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmitted {
             room_id: "room-a".to_owned(),
             transaction_id: "txn1".to_owned(),
             body: "hello".to_owned(),
-        }]
+        },
     );
+    state.timeline.composer.draft = "second".to_owned();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SendTextSubmitted {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn2".to_owned(),
+            body: "second".to_owned(),
+        },
+    );
+
+    assert_eq!(effects, Vec::new());
+    assert_eq!(
+        state.timeline.composer.pending_transaction_id.as_deref(),
+        Some("txn1")
+    );
+    assert_eq!(state.timeline.composer.draft, "second");
 }
 
 #[test]
@@ -285,10 +320,13 @@ fn opening_thread_requests_thread_timeline_and_subscription_success_opens_pane()
     );
     assert_eq!(
         effects,
-        vec![AppEffect::OpenThreadTimeline {
-            room_id: "room-a".to_owned(),
-            root_event_id: "$root".to_owned(),
-        }]
+        vec![
+            AppEffect::OpenThreadTimeline {
+                room_id: "room-a".to_owned(),
+                root_event_id: "$root".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+        ]
     );
 
     let effects = reduce(
