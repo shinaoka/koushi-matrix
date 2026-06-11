@@ -1,6 +1,22 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, RoomSummary, SpaceSummary, UiEvent, compose_sidebar, reduce,
+    AppAction, AppEffect, AppState, RoomSummary, SessionInfo, SessionState, SpaceSummary,
+    ThreadPaneState, TimelinePaneState, UiEvent, compose_sidebar, reduce,
 };
+
+fn session_info() -> SessionInfo {
+    SessionInfo {
+        homeserver: "https://matrix.example.org".to_owned(),
+        user_id: "@alice:example.org".to_owned(),
+        device_id: "DEVICE".to_owned(),
+    }
+}
+
+fn ready_state() -> AppState {
+    AppState {
+        session: SessionState::Ready(session_info()),
+        ..AppState::default()
+    }
+}
 
 fn spaces() -> Vec<SpaceSummary> {
     vec![SpaceSummary {
@@ -38,7 +54,7 @@ fn rooms() -> Vec<RoomSummary> {
 
 #[test]
 fn room_list_update_replaces_state_and_emits_room_list_event() {
-    let mut state = AppState::default();
+    let mut state = ready_state();
 
     let effects = reduce(
         &mut state,
@@ -57,8 +73,101 @@ fn room_list_update_replaces_state_and_emits_room_list_event() {
 }
 
 #[test]
+fn room_list_update_clears_missing_active_space_and_room() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: spaces(),
+        rooms: rooms(),
+        navigation: matrix_desktop_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+        },
+        timeline: TimelinePaneState {
+            room_id: Some("room-a".to_owned()),
+            is_subscribed: true,
+            is_paginating_backwards: false,
+            composer: Default::default(),
+        },
+        thread: ThreadPaneState::Open {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            is_subscribed: true,
+            composer: Default::default(),
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![RoomSummary {
+                room_id: "global-room".to_owned(),
+                display_name: "Global Room".to_owned(),
+                is_dm: false,
+                unread_count: 0,
+                parent_space_ids: vec![],
+            }],
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id, None);
+    assert_eq!(state.navigation.active_room_id, None);
+    assert_eq!(state.timeline, TimelinePaneState::default());
+    assert_eq!(state.thread, ThreadPaneState::Closed);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+            AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+        ]
+    );
+}
+
+#[test]
+fn navigation_actions_are_ignored_without_ready_session() {
+    let mut state = AppState::default();
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: spaces(),
+                rooms: rooms(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::SelectSpace {
+                space_id: Some("space-a".to_owned()),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::SelectRoom {
+                room_id: "room-a".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert!(state.spaces.is_empty());
+    assert_eq!(state.navigation.active_space_id, None);
+    assert_eq!(state.timeline, TimelinePaneState::default());
+}
+
+#[test]
 fn selecting_space_filters_rooms_and_keeps_dms_global() {
     let mut state = AppState {
+        session: SessionState::Ready(session_info()),
         spaces: spaces(),
         rooms: rooms(),
         ..AppState::default()
@@ -77,6 +186,8 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
         &state.spaces,
         &state.rooms,
     );
+    assert_eq!(sidebar.space_rooms.len(), 1);
+    assert_eq!(sidebar.global_dms.len(), 1);
     assert_eq!(sidebar.space_rooms[0].room_id, "room-a");
     assert_eq!(sidebar.global_dms[0].room_id, "dm-a");
     assert_eq!(sidebar.space_unread_count, 5);
@@ -89,7 +200,17 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
 
 #[test]
 fn selecting_room_subscribes_timeline_and_clears_thread() {
-    let mut state = AppState::default();
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        rooms: rooms(),
+        thread: ThreadPaneState::Open {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            is_subscribed: true,
+            composer: Default::default(),
+        },
+        ..AppState::default()
+    };
 
     let effects = reduce(
         &mut state,
@@ -101,6 +222,7 @@ fn selecting_room_subscribes_timeline_and_clears_thread() {
     assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-a"));
     assert_eq!(state.timeline.room_id.as_deref(), Some("room-a"));
     assert!(!state.timeline.is_subscribed);
+    assert_eq!(state.thread, ThreadPaneState::Closed);
     assert_eq!(
         effects,
         vec![
@@ -110,6 +232,7 @@ fn selecting_room_subscribes_timeline_and_clears_thread() {
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: "room-a".to_owned(),
             }),
+            AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
         ]
     );
 }

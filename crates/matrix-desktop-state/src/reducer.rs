@@ -131,15 +131,69 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
         AppAction::RoomListUpdated { spaces, rooms } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
             state.spaces = spaces;
             state.rooms = rooms;
-            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+
+            let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
+
+            if state
+                .navigation
+                .active_space_id
+                .as_deref()
+                .is_some_and(|active_space_id| {
+                    !state
+                        .spaces
+                        .iter()
+                        .any(|space| space.space_id == active_space_id)
+                })
+            {
+                state.navigation.active_space_id = None;
+            }
+
+            if let Some(active_room_id) = state.navigation.active_room_id.clone() {
+                let room_still_exists = state
+                    .rooms
+                    .iter()
+                    .any(|room| room.room_id == active_room_id);
+
+                if !room_still_exists {
+                    state.navigation.active_room_id = None;
+                    let previous_room_id = state.timeline.room_id.clone().unwrap_or(active_room_id);
+                    let had_thread = state.thread != ThreadPaneState::Closed;
+
+                    state.timeline = Default::default();
+                    state.thread = ThreadPaneState::Closed;
+
+                    effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                        room_id: previous_room_id,
+                    }));
+                    if had_thread {
+                        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+                    }
+                }
+            }
+
+            effects
         }
         AppAction::SelectSpace { space_id } => {
-            state.navigation.active_space_id = space_id;
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.navigation.active_space_id = space_id
+                .filter(|space_id| state.spaces.iter().any(|space| space.space_id == *space_id));
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
         AppAction::SelectRoom { room_id } => {
+            if !is_session_ready(state) || !state.rooms.iter().any(|room| room.room_id == room_id) {
+                return Vec::new();
+            }
+
+            let had_thread = state.thread != ThreadPaneState::Closed;
             state.navigation.active_room_id = Some(room_id.clone());
             state.timeline = TimelinePaneState {
                 room_id: Some(room_id.clone()),
@@ -148,12 +202,16 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 composer: Default::default(),
             };
             state.thread = ThreadPaneState::Closed;
-            vec![
+            let mut effects = vec![
                 AppEffect::SubscribeTimeline {
                     room_id: room_id.clone(),
                 },
                 AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
-            ]
+            ];
+            if had_thread {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+            }
+            effects
         }
         AppAction::ClearError { code } => {
             state.errors.retain(|error| error.code != code);
@@ -161,6 +219,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         _ => Vec::new(),
     }
+}
+
+fn is_session_ready(state: &AppState) -> bool {
+    matches!(state.session, SessionState::Ready(_))
 }
 
 fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
