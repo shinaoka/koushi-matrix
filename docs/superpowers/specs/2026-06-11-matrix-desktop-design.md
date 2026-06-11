@@ -211,6 +211,48 @@ The app should use encrypted local storage for Matrix state and search index dat
 
 Secrets and session keys should be stored through platform-appropriate secure storage where practical. The MVP can start with SDK-supported persistent stores, but the design must not require plaintext search indexes long term.
 
+## Key Management
+
+Matrix protocol key management is delegated to `matrix-sdk` and its crypto store. The app should not implement Olm/Megolm, room key sharing, cross-signing, secret storage, verification, or key backup logic itself.
+
+SDK-owned responsibilities:
+
+- device keys and one-time keys;
+- Olm/Megolm sessions;
+- inbound and outbound room keys;
+- cross-signing state;
+- device verification;
+- secret storage and recovery;
+- server-side room key backups;
+- encrypted SQLite crypto store persistence.
+
+App-owned responsibilities:
+
+- creating or retrieving the local store unlock secret;
+- storing that unlock secret in platform secure storage;
+- passing the unlock secret to SDK store initialization;
+- exposing recovery, verification, and backup state through UI;
+- deciding when to prompt the user for recovery key/passphrase;
+- deleting local secrets on logout or session reset.
+
+For the desktop MVP, generate a high-entropy per-session local store secret at first login and store it in the OS credential store:
+
+- macOS: Keychain;
+- Windows: Credential Manager or DPAPI-backed credential storage.
+
+The same local secret can be used to open the SDK SQLite store and encrypted search index, but it should be namespaced before use so store and search encryption do not share the exact same input string. For example:
+
+```text
+sdk_store_secret = HKDF(local_secret, "matrix-desktop:sdk-store")
+search_secret = HKDF(local_secret, "matrix-desktop:search-index")
+```
+
+The Tauri backend should pass `sdk_store_secret` to `ClientBuilder::sqlite_store(..., Some(secret))` and configure `SearchIndexStoreKind::EncryptedDirectory(..., search_secret)` for the search index.
+
+If secure storage is unavailable, the app should fail closed or ask for a user passphrase; it must not persist the store unlock secret in plaintext.
+
+User-facing recovery remains separate from local unlock. Matrix recovery key/passphrase recovers cross-signing secrets and room backup keys from Matrix secret storage/backups. The local unlock secret only opens this device's local encrypted stores.
+
 ## Testing
 
 Backend tests:
@@ -220,6 +262,8 @@ Backend tests:
 - room/global search behavior;
 - command-to-SDK DTO mapping;
 - session restore and error transitions where feasible.
+- local store unlock secret creation, retrieval, namespacing, and deletion;
+- search index encrypted-open failure with the wrong secret.
 
 Frontend tests:
 
