@@ -15,11 +15,26 @@ Video calls, voice calls, screen sharing, bots, widgets, and app integrations ar
 - Frontend: React + TypeScript.
 - Backend: Rust, with Matrix state handled by `matrix-sdk` and `matrix-sdk-ui`.
 - UI style: Slack-like multi-pane desktop app.
-- Search: patch `matrix-sdk-search` with ngram tokenizer support inside this repository, then upstream feedback when stable.
-- DM model: DMs are global account-level conversations, not duplicated under Spaces.
+- Search: patch `matrix-sdk-search` with ngram tokenizer support as a prerequisite SDK milestone before full app implementation, then upstream feedback when stable.
+- DM model: DMs are global account-level conversations, not duplicated under Spaces. The MVP uses the SDK DM classification configured to the Element X Android-style two-member definition, then applies one consistent classification for sidebar grouping, search filtering, and Space exclusion.
 - Space model: Spaces drive the left rail and filter the room/channel list.
-- Thread model: threads open in a right-side pane when width permits, otherwise as a drawer or focused view.
+- Thread model: threads open in a right-side pane when width permits, otherwise as a drawer or focused view. Thread subscriptions and read-state behavior are conditional until proven against the SDK and homeserver support.
 - Element X mobile code may be used as an implementation reference. Direct code ports must preserve upstream license and copyright notices.
+
+## Prerequisite Spikes
+
+Do not move directly from this design into a full app implementation plan. First prove the following blockers with small, testable spikes:
+
+1. Search SDK capability patch.
+   Add ngram tokenizer configuration to `matrix-sdk-search`, persist tokenizer/schema version information, define index rebuild behavior, and verify room/global search with Japanese/CJK mixed text.
+2. Search correctness with Matrix event lifecycle.
+   Prove edit, redaction, late decryption, event-cache lag recovery, encrypted index opening, and wrong-secret failure behavior with tests.
+3. Desktop sidebar composition.
+   Build a small Rust-side composition model over `RoomListService`, `SpaceService`, and room metadata that produces the Slack-like Space rail/sidebar DTOs, including global DMs.
+4. Key and credential-store integration.
+   Prove macOS Keychain and Windows credential storage access from Tauri/Rust, including secret creation, retrieval, namespacing, zeroization, logout deletion, and missing-secret recovery.
+
+The full implementation plan should start only after these spikes establish viable APIs and test coverage.
 
 ## Repository Layout
 
@@ -102,6 +117,8 @@ The frontend does not own Matrix state transitions. It renders UI state and send
 
 The Rust backend owns session state, room list subscriptions, timeline subscriptions, E2EE state, search indexing, and conversion from SDK models into stable UI DTOs.
 
+`matrix-sdk-ui` should not be treated as a complete desktop UI state model. The backend needs a desktop composition layer that consumes SDK streams and produces app-specific DTOs for Space rail entries, Space-filtered room lists, global DMs, unread counts, selected room state, and thread pane state.
+
 ## UI Layout
 
 The primary desktop layout has four panes:
@@ -131,7 +148,16 @@ Desktop behaviors are first-class:
 
 Spaces are treated as top-level navigation filters. Selecting a Space filters the sidebar room list to rooms in that Space.
 
-DMs are global across the account. They appear in a global DM section regardless of active Space. Space-specific views may show recent or pinned DMs as convenience entries, but the canonical DM list is global.
+The SDK Space filters may be limited in graph depth, so the MVP treats Space filtering as a best-effort view over the first supported levels exposed by the SDK. The desktop composition layer must define behavior for multi-parent rooms, nested Spaces, and rooms that are not reachable through the current Space filter.
+
+DMs are global across the account. They appear in a global DM section regardless of active Space. Space-specific views may show recent or pinned DMs as convenience entries, but the canonical DM list is global. If a DM room is also linked under a Space, the room may be shown as a contextual shortcut, but it remains counted and searched as a DM.
+
+Initial DM classification uses the SDK DM computation with the same two-member definition used by Element X Android. This choice must be used consistently for:
+
+- global DM sidebar section;
+- all-room vs DM search filters;
+- Space room list exclusion;
+- unread aggregation.
 
 Unread counts are separated:
 
@@ -143,7 +169,9 @@ Unread counts are separated:
 
 Room timelines are backed by `matrix-sdk-ui::Timeline`. The UI receives timeline item DTO updates through Tauri events.
 
-Thread support should use SDK thread timeline support where available. The right pane is a separate focused timeline view bound to the selected thread root. If the window is too narrow, the thread opens as a drawer or replaces the main timeline temporarily.
+Thread support should use SDK thread timeline support where available. The MVP should start with `TimelineFocus::Thread` for the right pane and keep server thread subscriptions disabled unless a spike proves they are stable for the target homeservers. The right pane is a separate focused timeline view bound to the selected thread root. If the window is too narrow, the thread opens as a drawer or replaces the main timeline temporarily.
+
+If thread APIs, server support, or thread subscriptions are unavailable, the fallback UX opens a focused permalink-style context around the root event and replies instead of pretending full thread support exists.
 
 The MVP should support:
 
@@ -156,17 +184,22 @@ The MVP should support:
 
 ## Search
 
-Search is implemented by modifying `matrix-sdk-search`, not by embedding Seshat into the app.
+Search is implemented by modifying `matrix-sdk-search`, not by embedding Seshat into the app. This work uses the SDK's `experimental-search` feature gate and should stay inside `vendor/matrix-rust-sdk/crates/matrix-sdk-search` plus the SDK search integration layer.
 
 The patched search layer must support:
 
 - default upstream-compatible tokenizer behavior;
 - configurable ngram tokenizer, initially `min_gram = 2`, `max_gram = 4`;
+- persisted tokenizer/schema metadata and deterministic rebuild behavior when the config changes;
 - Japanese/CJK mixed text search;
 - room search;
 - global search;
 - edit and redaction handling;
+- redaction removal that is robust even when the original event is not present in the current event cache;
 - indexing decrypted E2EE timeline events;
+- late-decryption indexing for events that become decryptable after initial indexing;
+- event-cache lag detection and reindex/recovery behavior;
+- encrypted index open failure with the wrong secret;
 - tests that are suitable for upstream feedback.
 
 The app should select ngram search by default. Upstream-specific changes must remain UI-independent and isolated inside SDK/search crates.
@@ -174,7 +207,7 @@ The app should select ngram search by default. Upstream-specific changes must re
 Initial search scope:
 
 - `m.room.message` text body;
-- search result event id, room id, sender, timestamp, and highlight/snippet if available.
+- search result event id, room id, sender, timestamp, score, and a snippet/highlight strategy. Current SDK search returns event IDs/scores, so snippet/highlight generation must be explicitly designed rather than assumed.
 
 Later search scope:
 
@@ -276,9 +309,30 @@ search_secret = HKDF(local_secret, "matrix-desktop:search-index")
 
 The Tauri backend should pass `sdk_store_secret` to `ClientBuilder::sqlite_store(..., Some(secret))` and configure `SearchIndexStoreKind::EncryptedDirectory(..., search_secret)` for the search index.
 
+Implementation planning must decide whether each derived secret is treated as a passphrase string or a raw key. If the SDK exposes a raw-key path through lower-level store configuration, prefer that over forcing high-entropy random bytes through a passphrase API. Derived secrets must be zeroized after use where possible.
+
 If secure storage is unavailable, the app should fail closed or ask for a user passphrase; it must not persist the store unlock secret in plaintext.
 
 User-facing recovery remains separate from local unlock. Matrix recovery key/passphrase recovers cross-signing secrets and room backup keys from Matrix secret storage/backups. The local unlock secret only opens this device's local encrypted stores.
+
+Credential-store records must use stable namespaced identifiers that include homeserver, user ID, and device ID. Logout and session reset must delete the corresponding credential-store records and local encrypted stores. If a local encrypted store exists but the credential is missing, the app should offer recovery by deleting local state and logging in again; it should not silently create a new unlock secret for an existing encrypted store.
+
+## Desktop Platform Requirements
+
+The MVP must account for Windows/macOS platform behavior before packaging:
+
+- single-instance handling so two app instances do not open the same SDK stores;
+- cross-process store locking behavior from the SDK;
+- macOS code signing and notarization;
+- Windows code signing;
+- auto-update trust model and signing keys, if auto-update is enabled;
+- OIDC/deep-link login redirect handling;
+- native notification integration;
+- platform-specific data, cache, media, and log directories;
+- crash/rageshake-style diagnostic logs that avoid leaking secrets;
+- proxy and custom certificate behavior;
+- long-running SDK/search work moved off blocking Tauri command paths;
+- clear behavior for Windows and macOS credential-store failures.
 
 ## Testing
 
@@ -286,6 +340,9 @@ Backend tests:
 
 - ngram tokenizer behavior for Japanese and mixed English/Japanese;
 - search result stability for edits and redactions;
+- late-decryption indexing behavior;
+- search index rebuild after tokenizer/schema migration;
+- search index lag recovery;
 - room/global search behavior;
 - command-to-SDK DTO mapping;
 - session restore and error transitions where feasible.
