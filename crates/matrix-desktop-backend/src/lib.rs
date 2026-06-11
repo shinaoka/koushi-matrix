@@ -4,8 +4,8 @@ use matrix_desktop_key::SessionKeyId;
 use matrix_desktop_search::SensitiveString;
 use matrix_desktop_search::{SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent};
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, LoginFlow, LoginFlowKind, RoomSummary, SearchResult,
-    SearchScope, SessionInfo, SidebarModel, SpaceSummary, ThreadPaneState, compose_sidebar, reduce,
+    AppAction, AppEffect, AppState, LoginFlow, RoomSummary, SearchResult, SearchScope, SessionInfo,
+    SidebarModel, SpaceSummary, ThreadPaneState, compose_sidebar, reduce,
 };
 use serde::{Deserialize, Serialize};
 
@@ -563,16 +563,18 @@ fn fixture_search_store(
 }
 
 fn fixture_login_flows() -> Vec<LoginFlow> {
-    vec![
-        LoginFlow {
-            kind: LoginFlowKind::Password,
-            delegated_oidc_compatibility: false,
-        },
-        LoginFlow {
-            kind: LoginFlowKind::Sso,
-            delegated_oidc_compatibility: true,
-        },
-    ]
+    let response = serde_json::json!({
+        "flows": [
+            { "type": "m.login.password" },
+            {
+                "type": "m.login.sso",
+                "org.matrix.msc3824.delegated_oidc_compatibility": true
+            }
+        ]
+    });
+
+    matrix_desktop_auth::parse_login_discovery(&response)
+        .expect("synthetic login discovery fixture should parse")
 }
 
 fn candidate_score(event_id: &str) -> u32 {

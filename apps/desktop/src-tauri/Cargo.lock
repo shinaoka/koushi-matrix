@@ -1765,13 +1765,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "matrix-desktop-auth"
+version = "0.1.0"
+dependencies = [
+ "matrix-desktop-state",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "matrix-desktop-backend"
 version = "0.1.0"
 dependencies = [
+ "matrix-desktop-auth",
  "matrix-desktop-key",
  "matrix-desktop-search",
  "matrix-desktop-state",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

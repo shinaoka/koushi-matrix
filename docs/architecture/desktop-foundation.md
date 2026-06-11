@@ -17,6 +17,7 @@ apps/desktop
 crates/matrix-desktop-backend
   fake effect runner around reducer/search/key contracts
         |
+        +--> crates/matrix-desktop-auth
         +--> crates/matrix-desktop-state
         +--> crates/matrix-desktop-search
         +--> crates/matrix-desktop-key
@@ -29,6 +30,10 @@ AppAction -> reduce(AppState) -> AppEffect -> backend effect runner -> follow-up
 ```
 
 The fake effect runner handles session restore, sync start, timeline subscription, thread subscription, sending synthetic local text, and search. Real Matrix integration should replace this runner with a Matrix SDK runner without moving state transitions into the UI.
+
+`matrix-desktop-auth` owns pure Matrix authentication response parsing. It
+converts `/login` discovery JSON into app DTOs and keeps raw homeserver response
+bodies out of long-lived state.
 
 ## Login Boundary
 

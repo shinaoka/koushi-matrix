@@ -5,7 +5,9 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+matrix-desktop-auth = { path = "../matrix-desktop-auth" }
 matrix-desktop-key = { path = "../matrix-desktop-key" }
 matrix-desktop-search = { path = "../matrix-desktop-search" }
 matrix-desktop-state = { path = "../matrix-desktop-state" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"

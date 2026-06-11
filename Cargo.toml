@@ -3,6 +3,7 @@ members = [
     "crates/matrix-desktop-state",
     "crates/matrix-desktop-search",
     "crates/matrix-desktop-key",
+    "crates/matrix-desktop-auth",
     "crates/matrix-desktop-backend",
     "spikes/sidebar-composition",
     "spikes/key-management",
