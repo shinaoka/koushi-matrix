@@ -48,8 +48,10 @@ pub fn compose_sidebar(
     spaces: &[SpaceInput],
     rooms: &[RoomInput],
 ) -> SidebarModel {
-    let rooms_by_id: HashMap<&str, &RoomInput> =
-        rooms.iter().map(|room| (room.room_id.as_str(), room)).collect();
+    let rooms_by_id: HashMap<&str, &RoomInput> = rooms
+        .iter()
+        .map(|room| (room.room_id.as_str(), room))
+        .collect();
 
     let space_rail = spaces
         .iter()
@@ -72,7 +74,13 @@ pub fn compose_sidebar(
                 .map(room_list_item)
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            rooms
+                .iter()
+                .filter(|room| !room.is_dm && room.parent_space_ids.is_empty())
+                .map(room_list_item)
+                .collect()
+        });
 
     let global_dms: Vec<_> = rooms
         .iter()
@@ -188,5 +196,61 @@ mod tests {
                 dm_unread_count: 3,
             }
         );
+    }
+
+    #[test]
+    fn fallback_shows_unparented_rooms_and_keeps_dms_global() {
+        let spaces = vec![SpaceInput {
+            space_id: "space-a".into(),
+            display_name: "Space A".into(),
+            child_room_ids: vec!["room-in-space".into()],
+        }];
+        let rooms = vec![
+            RoomInput {
+                room_id: "room-global".into(),
+                display_name: "Global Room".into(),
+                is_dm: false,
+                unread_count: 2,
+                parent_space_ids: vec![],
+            },
+            RoomInput {
+                room_id: "room-in-space".into(),
+                display_name: "Room In Space".into(),
+                is_dm: false,
+                unread_count: 5,
+                parent_space_ids: vec!["space-a".into()],
+            },
+            RoomInput {
+                room_id: "dm-global".into(),
+                display_name: "Alice".into(),
+                is_dm: true,
+                unread_count: 3,
+                parent_space_ids: vec![],
+            },
+        ];
+
+        let model = compose_sidebar(None, &spaces, &rooms);
+
+        assert_eq!(
+            model.space_rooms,
+            vec![RoomListItem {
+                room_id: "room-global".into(),
+                display_name: "Global Room".into(),
+                unread_count: 2,
+            }]
+        );
+        assert_eq!(
+            model.global_dms,
+            vec![RoomListItem {
+                room_id: "dm-global".into(),
+                display_name: "Alice".into(),
+                unread_count: 3,
+            }]
+        );
+        assert_eq!(model.space_unread_count, 2);
+        assert_eq!(model.dm_unread_count, 3);
+
+        let missing_space_model = compose_sidebar(Some("missing-space"), &spaces, &rooms);
+        assert_eq!(missing_space_model.space_rooms, model.space_rooms);
     }
 }
