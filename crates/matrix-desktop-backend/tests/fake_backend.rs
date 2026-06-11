@@ -16,11 +16,11 @@ fn fake_backend_boots_into_ready_session_with_rooms_and_thread() {
     assert_eq!(snapshot.state.sync, SyncState::Running);
     assert_eq!(
         snapshot.state.navigation.active_space_id.as_deref(),
-        Some("!space-seminars:example.org")
+        Some("!space-alpha:example.invalid")
     );
     assert_eq!(
         snapshot.state.navigation.active_room_id.as_deref(),
-        Some("!springschool:example.org")
+        Some("!room-alpha:example.invalid")
     );
     assert!(snapshot.state.timeline.is_subscribed);
     assert!(matches!(
@@ -31,21 +31,21 @@ fn fake_backend_boots_into_ready_session_with_rooms_and_thread() {
         snapshot
             .timeline
             .iter()
-            .any(|message| message.event_id == "$zoom-invite")
+            .any(|message| message.event_id == "$alpha-update")
     );
     assert_eq!(
         snapshot
             .thread
             .as_ref()
             .map(|thread| thread.root_event_id.as_str()),
-        Some("$zoom-invite")
+        Some("$alpha-update")
     );
     assert!(
         snapshot
             .sidebar
             .global_dms
             .iter()
-            .any(|room| room.display_name == "Akio")
+            .any(|room| room.display_name == "Member 1")
     );
 }
 
@@ -53,8 +53,8 @@ fn fake_backend_boots_into_ready_session_with_rooms_and_thread() {
 fn fake_backend_keeps_homeserver_configurable() {
     let backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
         homeserver: "https://matrix.example.org".into(),
-        user_id: "@alice:example.org".into(),
-        device_id: "ALICEDEVICE".into(),
+        user_id: "@user-a:example.invalid".into(),
+        device_id: "DEVICE_A".into(),
     });
 
     let SessionState::Ready(session_info) = &backend.snapshot().state.session else {
@@ -72,7 +72,7 @@ fn fake_backend_keeps_dms_global_when_switching_spaces() {
     let mut backend = FakeDesktopBackend::booted();
 
     backend.dispatch(AppAction::SelectSpace {
-        space_id: Some("!space-lab:example.org".into()),
+        space_id: Some("!space-beta:example.invalid".into()),
     });
     let snapshot = backend.snapshot();
 
@@ -83,15 +83,11 @@ fn fake_backend_keeps_dms_global_when_switching_spaces() {
             .iter()
             .map(|room| room.room_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["!search-dev:example.org"]
+        vec!["!room-search:example.invalid"]
     );
-    assert!(
-        snapshot
-            .sidebar
-            .global_dms
-            .iter()
-            .any(|room| { room.room_id == "!dm-akio:example.org" && room.display_name == "Akio" })
-    );
+    assert!(snapshot.sidebar.global_dms.iter().any(|room| {
+        room.room_id == "!dm-member-1:example.invalid" && room.display_name == "Member 1"
+    }));
     assert!(
         snapshot
             .sidebar
@@ -105,17 +101,17 @@ fn fake_backend_keeps_dms_global_when_switching_spaces() {
 fn fake_backend_search_drops_ngram_false_positive() {
     let mut backend = FakeDesktopBackend::booted();
 
-    let results = backend.submit_search("Zoom", SearchScope::AllRooms);
+    let results = backend.submit_search("Alpha", SearchScope::AllRooms);
 
     assert_eq!(
         results
             .iter()
             .map(|result| result.event_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["$zoom-invite"]
+        vec!["$alpha-update"]
     );
     assert_eq!(results[0].match_field, SearchMatchField::MessageBody);
-    assert_eq!(results[0].highlights[0].start_utf16, 33);
+    assert_eq!(results[0].highlights[0].start_utf16, 0);
     assert!(matches!(
         backend.snapshot().state.search,
         SearchState::Results { .. }
@@ -126,21 +122,21 @@ fn fake_backend_search_drops_ngram_false_positive() {
 fn fake_backend_searches_attachment_filenames() {
     let mut backend = FakeDesktopBackend::booted();
 
-    let results = backend.submit_search("seminar_budget.xlsx", SearchScope::AllRooms);
+    let results = backend.submit_search("fixture_budget.xlsx", SearchScope::AllRooms);
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].event_id, "$budget-file");
     assert_eq!(results[0].match_field, SearchMatchField::AttachmentFileName);
-    assert_eq!(results[0].snippet, "seminar_budget.xlsx");
+    assert_eq!(results[0].snippet, "fixture_budget.xlsx");
 }
 
 #[test]
 fn fake_backend_search_uses_visible_edited_message_body() {
     let mut backend = FakeDesktopBackend::booted();
 
-    let results = backend.submit_search("venue", SearchScope::AllRooms);
+    let results = backend.submit_search("checklist", SearchScope::AllRooms);
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].event_id, "$late-original");
-    assert_eq!(results[0].snippet, "Final venue checklist");
+    assert_eq!(results[0].snippet, "Final synthetic checklist");
 }

@@ -556,7 +556,7 @@ use matrix_desktop_state::{
 fn session_info() -> SessionInfo {
     SessionInfo {
         homeserver: "https://matrix.example.org".to_owned(),
-        user_id: "@alice:example.org".to_owned(),
+        user_id: "@user-a:example.invalid".to_owned(),
         device_id: "DEVICE".to_owned(),
     }
 }
@@ -1261,7 +1261,7 @@ fn result(event_id: &str) -> SearchResult {
     SearchResult {
         room_id: "room-a".to_owned(),
         event_id: event_id.to_owned(),
-        sender: "@alice:example.org".to_owned(),
+        sender: "@user-a:example.invalid".to_owned(),
         timestamp_ms: 1_700_000_000_000,
         score_millis: 900,
         snippet: "再アンケートです".to_owned(),

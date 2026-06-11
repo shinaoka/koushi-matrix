@@ -92,15 +92,15 @@ class BrowserFakeApi implements DesktopApi {
 }
 
 function createInitialSnapshot(): DesktopSnapshot {
-  const active_space_id = "!space-seminars:example.org";
-  const active_room_id = "!springschool:example.org";
+  const active_space_id = "!space-alpha:example.invalid";
+  const active_room_id = "!room-alpha:example.invalid";
   const sidebar = composeSidebar(active_space_id, spaces, rooms);
   const snapshot: DesktopSnapshot = {
     state: {
       session: {
         kind: "ready",
         homeserver: "https://matrix.org",
-        user_id: "@hiroshi:matrix.org",
+        user_id: "@demo-user:example.invalid",
         device_id: "FAKEDEVICE"
       },
       sync: "running",
@@ -122,7 +122,7 @@ function createInitialSnapshot(): DesktopSnapshot {
       thread: {
         kind: "open",
         room_id: active_room_id,
-        root_event_id: "$zoom-invite",
+        root_event_id: "$alpha-update",
         is_subscribed: true,
         composer: {
           pending_transaction_id: null,
@@ -136,9 +136,9 @@ function createInitialSnapshot(): DesktopSnapshot {
     timeline: timelineMessages.filter((message) => message.room_id === active_room_id),
     thread: {
       room_id: active_room_id,
-      root_event_id: "$zoom-invite",
+      root_event_id: "$alpha-update",
       replies: threadReplies.filter(
-        (reply) => reply.room_id === active_room_id && reply.root_event_id === "$zoom-invite"
+        (reply) => reply.room_id === active_room_id && reply.root_event_id === "$alpha-update"
       )
     }
   };
@@ -207,7 +207,7 @@ function candidateScore(eventId: string): number {
   switch (eventId) {
     case "$false-positive":
       return 1000;
-    case "$zoom-invite":
+    case "$alpha-update":
       return 950;
     case "$budget-file":
       return 900;
@@ -224,49 +224,49 @@ function clone<T>(value: T): T {
 
 const spaces: SpaceSummary[] = [
   {
-    space_id: "!space-seminars:example.org",
-    display_name: "OnlineCMT seminars",
-    child_room_ids: ["!springschool:example.org", "!organizers:example.org"]
+    space_id: "!space-alpha:example.invalid",
+    display_name: "Synthetic Workspace",
+    child_room_ids: ["!room-alpha:example.invalid", "!room-planning:example.invalid"]
   },
   {
-    space_id: "!space-lab:example.org",
-    display_name: "Soseki Lab",
-    child_room_ids: ["!search-dev:example.org"]
+    space_id: "!space-beta:example.invalid",
+    display_name: "Synthetic Lab",
+    child_room_ids: ["!room-search:example.invalid"]
   }
 ];
 
 const rooms: RoomSummary[] = [
   {
-    room_id: "!springschool:example.org",
-    display_name: "2027_springschool",
+    room_id: "!room-alpha:example.invalid",
+    display_name: "synthetic-room",
     is_dm: false,
     unread_count: 8,
-    parent_space_ids: ["!space-seminars:example.org"]
+    parent_space_ids: ["!space-alpha:example.invalid"]
   },
   {
-    room_id: "!organizers:example.org",
-    display_name: "organizers",
+    room_id: "!room-planning:example.invalid",
+    display_name: "planning-room",
     is_dm: false,
     unread_count: 2,
-    parent_space_ids: ["!space-seminars:example.org"]
+    parent_space_ids: ["!space-alpha:example.invalid"]
   },
   {
-    room_id: "!search-dev:example.org",
+    room_id: "!room-search:example.invalid",
     display_name: "matrix-sdk-search",
     is_dm: false,
     unread_count: 1,
-    parent_space_ids: ["!space-lab:example.org"]
+    parent_space_ids: ["!space-beta:example.invalid"]
   },
   {
-    room_id: "!dm-akio:example.org",
-    display_name: "Akio",
+    room_id: "!dm-member-1:example.invalid",
+    display_name: "Member 1",
     is_dm: true,
     unread_count: 1,
     parent_space_ids: []
   },
   {
-    room_id: "!dm-hiroshi:example.org",
-    display_name: "Hiroshi Ohno",
+    room_id: "!dm-member-2:example.invalid",
+    display_name: "Member 2",
     is_dm: true,
     unread_count: 0,
     parent_space_ids: []
@@ -275,54 +275,54 @@ const rooms: RoomSummary[] = [
 
 const timelineMessages: TimelineMessage[] = [
   {
-    room_id: "!springschool:example.org",
-    event_id: "$zoom-invite",
-    sender: "品岡寛(椅大)",
+    room_id: "!room-alpha:example.invalid",
+    event_id: "$alpha-update",
+    sender: "Demo Coordinator",
     timestamp_ms: 1_806_986_400_000,
-    body: "HIROSHI SHINAOKA scheduled a new Zoom meeting.",
+    body: "Alpha keyword update from demo coordinator.",
     attachment_filename: null,
     reply_count: 2
   },
   {
-    room_id: "!springschool:example.org",
+    room_id: "!room-alpha:example.invalid",
     event_id: "$agenda",
-    sender: "品岡寛(椅大)",
+    sender: "Demo Coordinator",
     timestamp_ms: 1_806_990_000_000,
-    body: "思いついた議題をポストしていただければ、あとでまとめます。\n\n・姫岡・学変Bの参加可否\n・Local世話人\n・教員の役割分担\n・学生世話人の募集・扱い\n・会場のWi-Fi改良",
+    body: "Synthetic planning note.\n\n- Fixture item one\n- Fixture item two",
     attachment_filename: null,
     reply_count: 0
   },
   {
-    room_id: "!springschool:example.org",
+    room_id: "!room-alpha:example.invalid",
     event_id: "$budget-file",
     sender: "Slackbot",
     timestamp_ms: 1_806_993_600_000,
     body: "Budget spreadsheet attached.",
-    attachment_filename: "seminar_budget.xlsx",
+    attachment_filename: "fixture_budget.xlsx",
     reply_count: 0
   },
   {
-    room_id: "!springschool:example.org",
+    room_id: "!room-alpha:example.invalid",
     event_id: "$false-positive",
-    sender: "Tokuro Shimokawa",
+    sender: "Member 3",
     timestamp_ms: 1_806_997_200_000,
-    body: "Local dinner notes only.",
+    body: "Non-matching synthetic note.",
     attachment_filename: null,
     reply_count: 0
   },
   {
-    room_id: "!organizers:example.org",
+    room_id: "!room-planning:example.invalid",
     event_id: "$late-original",
-    sender: "Akio",
+    sender: "Member 1",
     timestamp_ms: 1_807_000_800_000,
-    body: "Final venue checklist",
+    body: "Final synthetic checklist",
     attachment_filename: null,
     reply_count: 0
   },
   {
-    room_id: "!search-dev:example.org",
+    room_id: "!room-search:example.invalid",
     event_id: "$search-dev-note",
-    sender: "Seishiro Ono",
+    sender: "Member 4",
     timestamp_ms: 1_807_004_400_000,
     body: "matrix-sdk-search adapter review notes",
     attachment_filename: null,
@@ -332,19 +332,19 @@ const timelineMessages: TimelineMessage[] = [
 
 const threadReplies = [
   {
-    room_id: "!springschool:example.org",
-    root_event_id: "$zoom-invite",
+    room_id: "!room-alpha:example.invalid",
+    root_event_id: "$alpha-update",
     event_id: "$thread-1",
-    sender: "Hiroshi Ohno",
+    sender: "Member 2",
     timestamp_ms: 1_806_987_000_000,
-    body: "姫岡・学変Bの参加可否を確認します。"
+    body: "Synthetic follow-up item one."
   },
   {
-    room_id: "!springschool:example.org",
-    root_event_id: "$zoom-invite",
+    room_id: "!room-alpha:example.invalid",
+    root_event_id: "$alpha-update",
     event_id: "$thread-2",
-    sender: "Akio",
+    sender: "Member 1",
     timestamp_ms: 1_806_987_600_000,
-    body: "教員の役割分担を次回までに整理します。"
+    body: "Synthetic follow-up item two."
   }
 ];

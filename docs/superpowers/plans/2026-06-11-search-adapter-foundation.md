@@ -200,9 +200,9 @@ use matrix_desktop_search::{SearchableEvent, SensitiveString};
 #[test]
 fn debug_output_redacts_decrypted_search_text() {
     let event = SearchableEvent {
-        room_id: "!room:example.org".into(),
+        room_id: "!room-a:example.invalid".into(),
         event_id: "$event".into(),
-        sender: "@alice:example.org".into(),
+        sender: "@user-a:example.invalid".into(),
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("secret body")),
         attachment_filename: Some(SensitiveString::new("secret.pdf")),
@@ -329,9 +329,9 @@ use matrix_desktop_search::SearchCandidate;
 fn exact_message_body_match_returns_utf16_highlight() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(SearchableEvent {
-        room_id: "!room:example.org".into(),
+        room_id: "!room-a:example.invalid".into(),
         event_id: "$event".into(),
-        sender: "@alice:example.org".into(),
+        sender: "@user-a:example.invalid".into(),
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("再アンケートです")),
         attachment_filename: None,
@@ -339,7 +339,7 @@ fn exact_message_body_match_returns_utf16_highlight() {
 
     let result = store
         .verify_candidate(
-            SearchCandidate { room_id: "!room:example.org".into(), event_id: "$event".into(), score_millis: 900 },
+            SearchCandidate { room_id: "!room-a:example.invalid".into(), event_id: "$event".into(), score_millis: 900 },
             "アンケート",
         )
         .expect("candidate should verify");
@@ -355,9 +355,9 @@ fn exact_message_body_match_returns_utf16_highlight() {
 fn attachment_filename_match_uses_attachment_field() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(SearchableEvent {
-        room_id: "!room:example.org".into(),
+        room_id: "!room-a:example.invalid".into(),
         event_id: "$file".into(),
-        sender: "@alice:example.org".into(),
+        sender: "@user-a:example.invalid".into(),
         timestamp_ms: 1_700_000_000_000,
         body: None,
         attachment_filename: Some(SensitiveString::new("seminar_schedule.pdf")),
@@ -365,7 +365,7 @@ fn attachment_filename_match_uses_attachment_field() {
 
     let result = store
         .verify_candidate(
-            SearchCandidate { room_id: "!room:example.org".into(), event_id: "$file".into(), score_millis: 875 },
+            SearchCandidate { room_id: "!room-a:example.invalid".into(), event_id: "$file".into(), score_millis: 875 },
             "schedule",
         )
         .expect("filename candidate should verify");
@@ -380,16 +380,16 @@ fn attachment_filename_match_uses_attachment_field() {
 fn ngram_false_positive_without_exact_span_is_dropped() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(SearchableEvent {
-        room_id: "!room:example.org".into(),
+        room_id: "!room-a:example.invalid".into(),
         event_id: "$event".into(),
-        sender: "@alice:example.org".into(),
+        sender: "@user-a:example.invalid".into(),
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("再アンケートです")),
         attachment_filename: None,
     });
 
     let result = store.verify_candidate(
-        SearchCandidate { room_id: "!room:example.org".into(), event_id: "$event".into(), score_millis: 900 },
+        SearchCandidate { room_id: "!room-a:example.invalid".into(), event_id: "$event".into(), score_millis: 900 },
         "欠席",
     );
 
@@ -458,7 +458,7 @@ fn edit_before_target_is_pending_until_original_arrives() {
     store.upsert_edit(SearchEdit {
         edit_event_id: "$edit".into(),
         target_event_id: "$original".into(),
-        sender: "@alice:example.org".into(),
+        sender: "@user-a:example.invalid".into(),
         timestamp_ms: 1_700_000_000_100,
         body: Some(SensitiveString::new("edited agenda")),
         attachment_filename: None,
@@ -466,21 +466,21 @@ fn edit_before_target_is_pending_until_original_arrives() {
 
     assert_eq!(store.pending_edit_count(), 1);
     assert!(store.verify_candidate(
-        SearchCandidate { room_id: "!room:example.org".into(), event_id: "$original".into(), score_millis: 900 },
+        SearchCandidate { room_id: "!room-a:example.invalid".into(), event_id: "$original".into(), score_millis: 900 },
         "edited",
     ).is_none());
 
     store.upsert_message(SearchableEvent {
-        room_id: "!room:example.org".into(),
+        room_id: "!room-a:example.invalid".into(),
         event_id: "$original".into(),
-        sender: "@alice:example.org".into(),
+        sender: "@user-a:example.invalid".into(),
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("old agenda")),
         attachment_filename: None,
     });
 
     let result = store.verify_candidate(
-        SearchCandidate { room_id: "!room:example.org".into(), event_id: "$original".into(), score_millis: 900 },
+        SearchCandidate { room_id: "!room-a:example.invalid".into(), event_id: "$original".into(), score_millis: 900 },
         "edited",
     ).expect("pending edit should apply after original arrives");
 
@@ -493,9 +493,9 @@ fn edit_before_target_is_pending_until_original_arrives() {
 fn redacted_event_is_not_returned() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(SearchableEvent {
-        room_id: "!room:example.org".into(),
+        room_id: "!room-a:example.invalid".into(),
         event_id: "$event".into(),
-        sender: "@alice:example.org".into(),
+        sender: "@user-a:example.invalid".into(),
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("visible before redaction")),
         attachment_filename: Some(SensitiveString::new("visible.pdf")),
@@ -505,7 +505,7 @@ fn redacted_event_is_not_returned() {
 
     assert_eq!(store.document_count(), 0);
     assert!(store.verify_candidate(
-        SearchCandidate { room_id: "!room:example.org".into(), event_id: "$event".into(), score_millis: 900 },
+        SearchCandidate { room_id: "!room-a:example.invalid".into(), event_id: "$event".into(), score_millis: 900 },
         "visible",
     ).is_none());
 }

@@ -22,7 +22,7 @@ impl Default for FakeDesktopBackendConfig {
     fn default() -> Self {
         Self {
             homeserver: DEFAULT_HOMESERVER.to_owned(),
-            user_id: "@hiroshi:matrix.org".to_owned(),
+            user_id: "@demo-user:example.invalid".to_owned(),
             device_id: "FAKEDEVICE".to_owned(),
         }
     }
@@ -77,7 +77,7 @@ impl FakeDesktopBackend {
         self.dispatch(AppAction::AppStarted);
         self.dispatch(AppAction::OpenThread {
             room_id: DEFAULT_ROOM_ID.to_owned(),
-            root_event_id: "$zoom-invite".to_owned(),
+            root_event_id: "$alpha-update".to_owned(),
         });
     }
 
@@ -367,23 +367,23 @@ pub struct ThreadMessage {
     pub body: String,
 }
 
-const DEFAULT_SPACE_ID: &str = "!space-seminars:example.org";
-const DEFAULT_ROOM_ID: &str = "!springschool:example.org";
+const DEFAULT_SPACE_ID: &str = "!space-alpha:example.invalid";
+const DEFAULT_ROOM_ID: &str = "!room-alpha:example.invalid";
 
 fn fixture_spaces() -> Vec<SpaceSummary> {
     vec![
         SpaceSummary {
             space_id: DEFAULT_SPACE_ID.to_owned(),
-            display_name: "OnlineCMT seminars".to_owned(),
+            display_name: "Synthetic Workspace".to_owned(),
             child_room_ids: vec![
                 DEFAULT_ROOM_ID.to_owned(),
-                "!organizers:example.org".to_owned(),
+                "!room-planning:example.invalid".to_owned(),
             ],
         },
         SpaceSummary {
-            space_id: "!space-lab:example.org".to_owned(),
-            display_name: "Soseki Lab".to_owned(),
-            child_room_ids: vec!["!search-dev:example.org".to_owned()],
+            space_id: "!space-beta:example.invalid".to_owned(),
+            display_name: "Synthetic Lab".to_owned(),
+            child_room_ids: vec!["!room-search:example.invalid".to_owned()],
         },
     ]
 }
@@ -392,35 +392,35 @@ fn fixture_rooms() -> Vec<RoomSummary> {
     vec![
         RoomSummary {
             room_id: DEFAULT_ROOM_ID.to_owned(),
-            display_name: "2027_springschool".to_owned(),
+            display_name: "synthetic-room".to_owned(),
             is_dm: false,
             unread_count: 8,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
         },
         RoomSummary {
-            room_id: "!organizers:example.org".to_owned(),
-            display_name: "organizers".to_owned(),
+            room_id: "!room-planning:example.invalid".to_owned(),
+            display_name: "planning-room".to_owned(),
             is_dm: false,
             unread_count: 2,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
         },
         RoomSummary {
-            room_id: "!search-dev:example.org".to_owned(),
+            room_id: "!room-search:example.invalid".to_owned(),
             display_name: "matrix-sdk-search".to_owned(),
             is_dm: false,
             unread_count: 1,
-            parent_space_ids: vec!["!space-lab:example.org".to_owned()],
+            parent_space_ids: vec!["!space-beta:example.invalid".to_owned()],
         },
         RoomSummary {
-            room_id: "!dm-akio:example.org".to_owned(),
-            display_name: "Akio".to_owned(),
+            room_id: "!dm-member-1:example.invalid".to_owned(),
+            display_name: "Member 1".to_owned(),
             is_dm: true,
             unread_count: 1,
             parent_space_ids: Vec::new(),
         },
         RoomSummary {
-            room_id: "!dm-hiroshi:example.org".to_owned(),
-            display_name: "Hiroshi Ohno".to_owned(),
+            room_id: "!dm-member-2:example.invalid".to_owned(),
+            display_name: "Member 2".to_owned(),
             is_dm: true,
             unread_count: 0,
             parent_space_ids: Vec::new(),
@@ -432,19 +432,19 @@ fn fixture_timeline_messages() -> Vec<TimelineMessage> {
     vec![
         TimelineMessage {
             room_id: DEFAULT_ROOM_ID.to_owned(),
-            event_id: "$zoom-invite".to_owned(),
-            sender: "品岡寛(椅大)".to_owned(),
+            event_id: "$alpha-update".to_owned(),
+            sender: "Demo Coordinator".to_owned(),
             timestamp_ms: 1_806_986_400_000,
-            body: "HIROSHI SHINAOKA scheduled a new Zoom meeting.".to_owned(),
+            body: "Alpha keyword update from demo coordinator.".to_owned(),
             attachment_filename: None,
             reply_count: 2,
         },
         TimelineMessage {
             room_id: DEFAULT_ROOM_ID.to_owned(),
             event_id: "$agenda".to_owned(),
-            sender: "品岡寛(椅大)".to_owned(),
+            sender: "Demo Coordinator".to_owned(),
             timestamp_ms: 1_806_990_000_000,
-            body: "思いついた議題をポストしていただければ、あとでまとめます。".to_owned(),
+            body: "Synthetic planning note.\n\n- Fixture item one\n- Fixture item two".to_owned(),
             attachment_filename: None,
             reply_count: 0,
         },
@@ -454,31 +454,31 @@ fn fixture_timeline_messages() -> Vec<TimelineMessage> {
             sender: "Slackbot".to_owned(),
             timestamp_ms: 1_806_993_600_000,
             body: "Budget spreadsheet attached.".to_owned(),
-            attachment_filename: Some("seminar_budget.xlsx".to_owned()),
+            attachment_filename: Some("fixture_budget.xlsx".to_owned()),
             reply_count: 0,
         },
         TimelineMessage {
             room_id: DEFAULT_ROOM_ID.to_owned(),
             event_id: "$false-positive".to_owned(),
-            sender: "Tokuro Shimokawa".to_owned(),
+            sender: "Member 3".to_owned(),
             timestamp_ms: 1_806_997_200_000,
-            body: "Local dinner notes only.".to_owned(),
+            body: "Non-matching synthetic note.".to_owned(),
             attachment_filename: None,
             reply_count: 0,
         },
         TimelineMessage {
-            room_id: "!organizers:example.org".to_owned(),
+            room_id: "!room-planning:example.invalid".to_owned(),
             event_id: "$late-original".to_owned(),
-            sender: "Akio".to_owned(),
+            sender: "Member 1".to_owned(),
             timestamp_ms: 1_807_000_800_000,
-            body: "Final venue checklist".to_owned(),
+            body: "Final synthetic checklist".to_owned(),
             attachment_filename: None,
             reply_count: 0,
         },
         TimelineMessage {
-            room_id: "!search-dev:example.org".to_owned(),
+            room_id: "!room-search:example.invalid".to_owned(),
             event_id: "$search-dev-note".to_owned(),
-            sender: "Seishiro Ono".to_owned(),
+            sender: "Member 4".to_owned(),
             timestamp_ms: 1_807_004_400_000,
             body: "matrix-sdk-search adapter review notes".to_owned(),
             attachment_filename: None,
@@ -491,19 +491,19 @@ fn fixture_thread_replies() -> Vec<ThreadMessage> {
     vec![
         ThreadMessage {
             room_id: DEFAULT_ROOM_ID.to_owned(),
-            root_event_id: "$zoom-invite".to_owned(),
+            root_event_id: "$alpha-update".to_owned(),
             event_id: "$thread-1".to_owned(),
-            sender: "Hiroshi Ohno".to_owned(),
+            sender: "Member 2".to_owned(),
             timestamp_ms: 1_806_987_000_000,
-            body: "姫岡・学変Bの参加可否を確認します。".to_owned(),
+            body: "Synthetic follow-up item one.".to_owned(),
         },
         ThreadMessage {
             room_id: DEFAULT_ROOM_ID.to_owned(),
-            root_event_id: "$zoom-invite".to_owned(),
+            root_event_id: "$alpha-update".to_owned(),
             event_id: "$thread-2".to_owned(),
-            sender: "Akio".to_owned(),
+            sender: "Member 1".to_owned(),
             timestamp_ms: 1_806_987_600_000,
-            body: "教員の役割分担を次回までに整理します。".to_owned(),
+            body: "Synthetic follow-up item two.".to_owned(),
         },
     ]
 }
@@ -517,15 +517,15 @@ fn fixture_search_store(
     store.upsert_edit(SearchEdit {
         edit_event_id: "$late-edit".to_owned(),
         target_event_id: "$late-original".to_owned(),
-        sender: "Akio".to_owned(),
+        sender: "Member 1".to_owned(),
         timestamp_ms: 1_807_001_200_000,
-        body: Some(SensitiveString::new("Final venue checklist")),
+        body: Some(SensitiveString::new("Final synthetic checklist")),
         attachment_filename: None,
     });
 
     for message in messages {
         let body = if message.event_id == "$late-original" {
-            "Original venue placeholder".to_owned()
+            "Original checklist placeholder".to_owned()
         } else {
             message.body.clone()
         };
@@ -553,7 +553,7 @@ fn fixture_search_store(
 fn candidate_score(event_id: &str) -> u32 {
     match event_id {
         "$false-positive" => 1_000,
-        "$zoom-invite" => 950,
+        "$alpha-update" => 950,
         "$budget-file" => 900,
         "$late-original" => 850,
         _ => 700,

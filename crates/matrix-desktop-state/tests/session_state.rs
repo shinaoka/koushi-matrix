@@ -7,7 +7,7 @@ use matrix_desktop_state::{
 fn session_info() -> SessionInfo {
     SessionInfo {
         homeserver: "https://matrix.example.org".to_owned(),
-        user_id: "@alice:example.org".to_owned(),
+        user_id: "@user-a:example.invalid".to_owned(),
         device_id: "DEVICE".to_owned(),
     }
 }
@@ -52,7 +52,7 @@ fn login_submitted_enters_authenticating_and_emits_session_event() {
         &mut state,
         AppAction::LoginSubmitted {
             homeserver: "https://matrix.example.org".to_owned(),
-            username: "alice".to_owned(),
+            username: "user-a".to_owned(),
         },
     );
 
@@ -67,7 +67,7 @@ fn login_submitted_enters_authenticating_and_emits_session_event() {
         vec![
             AppEffect::Login {
                 homeserver: "https://matrix.example.org".to_owned(),
-                username: "alice".to_owned(),
+                username: "user-a".to_owned(),
             },
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
         ]

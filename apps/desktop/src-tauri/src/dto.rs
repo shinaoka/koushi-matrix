@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn frontend_snapshot_serializes_to_the_typescript_contract() {
         let mut backend = FakeDesktopBackend::booted();
-        backend.submit_search("Zoom", SearchScope::AllRooms);
+        backend.submit_search("Alpha", SearchScope::AllRooms);
 
         let value = serde_json::to_value(FrontendDesktopSnapshot::from(backend.snapshot()))
             .expect("snapshot should serialize");
@@ -372,7 +372,7 @@ mod tests {
         );
         assert_eq!(
             value["state"]["search"]["results"][0]["highlights"][0],
-            json!({ "start_utf16": 33, "end_utf16": 37 })
+            json!({ "start_utf16": 0, "end_utf16": 5 })
         );
     }
 }

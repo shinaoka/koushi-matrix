@@ -6,15 +6,15 @@ import { visibleRooms } from "./desktopModel";
 describe("desktop model", () => {
   test("space rooms exclude DMs while DMs stay global", async () => {
     const api = createBrowserFakeApi();
-    const snapshot = await api.selectSpace("!space-lab:example.org");
+    const snapshot = await api.selectSpace("!space-beta:example.invalid");
 
     const rooms = visibleRooms(snapshot);
 
     expect(rooms.spaceRooms.map((room) => room.room_id)).toEqual([
-      "!search-dev:example.org"
+      "!room-search:example.invalid"
     ]);
     expect(rooms.globalDms.map((room) => room.room_id)).toContain(
-      "!dm-akio:example.org"
+      "!dm-member-1:example.invalid"
     );
     expect(rooms.spaceRooms.every((room) => !room.room_id.startsWith("!dm-"))).toBe(
       true
@@ -23,19 +23,19 @@ describe("desktop model", () => {
 
   test("fake search keeps exact matches and drops ngram false positives", async () => {
     const api = createBrowserFakeApi();
-    const snapshot = await api.submitSearch("Zoom", "allRooms");
+    const snapshot = await api.submitSearch("Alpha", "allRooms");
 
     const results =
       snapshot.state.search.kind === "results" ? snapshot.state.search.results : [];
 
-    expect(results.map((result) => result.event_id)).toEqual(["$zoom-invite"]);
+    expect(results.map((result) => result.event_id)).toEqual(["$alpha-update"]);
     expect(results[0]?.match_field).toBe("messageBody");
-    expect(results[0]?.highlights).toEqual([{ start_utf16: 33, end_utf16: 37 }]);
+    expect(results[0]?.highlights).toEqual([{ start_utf16: 0, end_utf16: 5 }]);
   });
 
   test("fake search includes attachment filenames as a separate match field", async () => {
     const api = createBrowserFakeApi();
-    const snapshot = await api.submitSearch("seminar_budget.xlsx", "allRooms");
+    const snapshot = await api.submitSearch("fixture_budget.xlsx", "allRooms");
 
     const results =
       snapshot.state.search.kind === "results" ? snapshot.state.search.results : [];

@@ -71,6 +71,18 @@ notices; local changes to vendored code must remain easy to upstream or revert.
   setup.
 - Do not copy real room messages, real access tokens, real recovery keys, real
   attachment filenames, or production search indexes into this repository.
+- Do not use real personal information in tests, fixtures, screenshots, seed
+  data, examples, or docs. This includes real names, handles, email addresses,
+  Matrix IDs, affiliations, institutions, workplaces, lab names, room names,
+  meeting titles, agendas, notes, schedules, attachment names, URLs, and local
+  home-directory paths.
+- Do not transcribe user screenshots or real chats into fixtures. If a UI needs
+  realistic-looking content, use short synthetic labels such as `Member 1`,
+  `Synthetic Workspace`, `fixture_budget.xlsx`, and Matrix IDs under
+  `example.invalid`.
+- Real affiliations or institutions are prohibited in synthetic data even when
+  the user mentions them in conversation. Use neutral organization labels such
+  as `Synthetic Workspace` instead.
 - Security-sensitive behavior needs focused tests when implemented: encrypted
   index opening, missing-key failure, edit-before-target handling, redaction
   removal, attachment filename search, and verified highlight generation.

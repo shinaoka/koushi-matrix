@@ -70,7 +70,7 @@ Expected: no output.
 Run from the existing local SDK checkout:
 
 ```bash
-cd /Users/hiroshi/projects/Element-dev/matrix-rust-sdk
+cd /Users/example/projects/Element-dev/matrix-rust-sdk
 git status --short
 git branch --show-current
 gh repo create shinaoka/matrix-rust-sdk-work --private --source=. --remote=shinaoka --push
@@ -91,7 +91,7 @@ from `git branch --show-current`, no dirty status output, and a new private GitH
 Run:
 
 ```bash
-cd /Users/hiroshi/projects/Element-dev/matrix-desktop
+cd /Users/example/projects/Element-dev/matrix-desktop
 mkdir -p vendor
 git submodule add -b shinaoka/search-ngram https://github.com/shinaoka/matrix-rust-sdk-work.git vendor/matrix-rust-sdk
 git -C vendor/matrix-rust-sdk rev-parse --short HEAD
@@ -473,10 +473,10 @@ mod ngram_tests {
 
     fn text_event(body: &str) -> ruma::events::room::message::OriginalSyncRoomMessageEvent {
         let event = EventFactory::new()
-            .room(room_id!("!room:example.org"))
-            .sender(user_id!("@alice:example.org"))
+            .room(room_id!("!room-a:example.invalid"))
+            .sender(user_id!("@user-a:example.invalid"))
             .text_msg(body)
-            .event_id(event_id!("$ngram_event:example.org"))
+            .event_id(event_id!("$ngram_event-a:example.invalid"))
             .into_any_sync_message_like_event();
 
         if let AnySyncMessageLikeEvent::RoomMessage(event) = event
@@ -490,7 +490,7 @@ mod ngram_tests {
 
     #[test]
     fn ngram_search_finds_japanese_substring() {
-        let room_id = room_id!("!room:example.org");
+        let room_id = room_id!("!room-a:example.invalid");
         let config = SearchIndexConfig {
             tokenizer: SearchTokenizer::Ngram { min_gram: 2, max_gram: 4 },
         };
@@ -523,7 +523,7 @@ Expected: PASS for schema and ngram search tests.
 Run inside the submodule:
 
 ```bash
-cd /Users/hiroshi/projects/Element-dev/matrix-desktop/vendor/matrix-rust-sdk
+cd /Users/example/projects/Element-dev/matrix-desktop/vendor/matrix-rust-sdk
 git status --short
 git add crates/matrix-sdk-search/Cargo.toml crates/matrix-sdk-search/src/config.rs crates/matrix-sdk-search/src/lib.rs crates/matrix-sdk-search/src/schema.rs crates/matrix-sdk-search/src/index
 git commit -m "Add configurable ngram tokenizer for message search"
@@ -533,7 +533,7 @@ git push
 Then commit the submodule pointer in the desktop repo:
 
 ```bash
-cd /Users/hiroshi/projects/Element-dev/matrix-desktop
+cd /Users/example/projects/Element-dev/matrix-desktop
 git add vendor/matrix-rust-sdk
 git commit -m "Point SDK vendor at ngram search patch"
 ```
@@ -659,12 +659,12 @@ Append to `docs/spikes/search-ngram.md`:
 Run:
 
 ```bash
-cd /Users/hiroshi/projects/Element-dev/matrix-desktop/vendor/matrix-rust-sdk
+cd /Users/example/projects/Element-dev/matrix-desktop/vendor/matrix-rust-sdk
 git add crates/matrix-sdk/src/search_index/mod.rs crates/matrix-sdk/src/event_cache/tasks.rs
 git commit -m "Harden search index redaction and lag markers"
 git push
 
-cd /Users/hiroshi/projects/Element-dev/matrix-desktop
+cd /Users/example/projects/Element-dev/matrix-desktop
 git add vendor/matrix-rust-sdk docs/spikes/search-ngram.md
 git commit -m "Record search lifecycle spike result"
 ```
@@ -829,33 +829,33 @@ mod tests {
     #[test]
     fn selected_space_filters_rooms_and_keeps_dms_global() {
         let spaces = vec![SpaceInput {
-            space_id: "!space:example.org".to_owned(),
+            space_id: "!space-a:example.invalid".to_owned(),
             display_name: "Research".to_owned(),
-            child_room_ids: set(&["!room:example.org", "!dm:example.org"]),
+            child_room_ids: set(&["!room-a:example.invalid", "!dm-a:example.invalid"]),
         }];
         let rooms = vec![
             RoomInput {
-                room_id: "!room:example.org".to_owned(),
+                room_id: "!room-a:example.invalid".to_owned(),
                 display_name: "seminars".to_owned(),
                 is_dm: false,
                 unread_count: 3,
-                parent_space_ids: set(&["!space:example.org"]),
+                parent_space_ids: set(&["!space-a:example.invalid"]),
             },
             RoomInput {
-                room_id: "!dm:example.org".to_owned(),
-                display_name: "Akio".to_owned(),
+                room_id: "!dm-a:example.invalid".to_owned(),
+                display_name: "Member 1".to_owned(),
                 is_dm: true,
                 unread_count: 2,
-                parent_space_ids: set(&["!space:example.org"]),
+                parent_space_ids: set(&["!space-a:example.invalid"]),
             },
         ];
 
-        let model = compose_sidebar(Some("!space:example.org"), &spaces, &rooms);
+        let model = compose_sidebar(Some("!space-a:example.invalid"), &spaces, &rooms);
 
         assert_eq!(model.space_rooms.len(), 1);
         assert_eq!(model.space_rooms[0].display_name, "seminars");
         assert_eq!(model.global_dms.len(), 1);
-        assert_eq!(model.global_dms[0].display_name, "Akio");
+        assert_eq!(model.global_dms[0].display_name, "Member 1");
         assert_eq!(model.space_unread_count, 3);
         assert_eq!(model.dm_unread_count, 2);
         assert_eq!(model.space_rail[0].unread_count, 3);
@@ -1062,13 +1062,13 @@ mod tests {
     fn account_name_includes_homeserver_user_and_device() {
         let id = SessionKeyId {
             homeserver: "https://matrix.example.org".to_owned(),
-            user_id: "@alice:example.org".to_owned(),
+            user_id: "@user-a:example.invalid".to_owned(),
             device_id: "DEVICE".to_owned(),
         };
 
         assert_eq!(
             id.account_name(),
-            "https://matrix.example.org|@alice:example.org|DEVICE"
+            "https://matrix.example.org|@user-a:example.invalid|DEVICE"
         );
     }
 
@@ -1077,7 +1077,7 @@ mod tests {
     fn credential_store_round_trip() {
         let id = SessionKeyId {
             homeserver: "https://matrix.example.org".to_owned(),
-            user_id: "@alice:example.org".to_owned(),
+            user_id: "@user-a:example.invalid".to_owned(),
             device_id: "DEVICE".to_owned(),
         };
         let store = CredentialStore::new("matrix-desktop-spike");

@@ -38,12 +38,12 @@ fn derived_and_stored_secrets_have_redacted_debug() {
 fn account_name_is_versioned_and_collision_safe() {
     let id = SessionKeyId {
         homeserver: "https://matrix.example|with-pipe".into(),
-        user_id: "@alice:example.com".into(),
+        user_id: "@user-a:example.invalid".into(),
         device_id: "DEVICE123".into(),
     };
     let alternate_split = SessionKeyId {
         homeserver: "https://matrix.example".into(),
-        user_id: "with-pipe|@alice:example.com".into(),
+        user_id: "with-pipe|@user-a:example.invalid".into(),
         device_id: "DEVICE123".into(),
     };
 
@@ -102,7 +102,7 @@ fn credential_store_round_trip() {
     let store = CredentialStore::new("matrix-desktop-key-test");
     let id = SessionKeyId {
         homeserver: "https://matrix.example".into(),
-        user_id: "@alice:example.com".into(),
+        user_id: "@user-a:example.invalid".into(),
         device_id: format!("TEST-{}", std::process::id()),
     };
     let secret = LocalUnlockSecret::generate();
