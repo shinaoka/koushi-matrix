@@ -342,11 +342,96 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.thread = ThreadPaneState::Closed;
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
+        AppAction::SearchEdited { query, scope } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.search = SearchState::Editing { query, scope };
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+        }
+        AppAction::SearchSubmitted {
+            request_id,
+            query,
+            scope,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.search = SearchState::Searching {
+                request_id,
+                query: query.clone(),
+                scope: scope.clone(),
+            };
+            vec![AppEffect::SearchMessages {
+                request_id,
+                query,
+                scope,
+            }]
+        }
+        AppAction::SearchSucceeded {
+            request_id,
+            results,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let (current_request_id, query, scope) = match &state.search {
+                SearchState::Searching {
+                    request_id,
+                    query,
+                    scope,
+                } => (*request_id, query.clone(), scope.clone()),
+                _ => return Vec::new(),
+            };
+
+            if current_request_id != request_id {
+                return Vec::new();
+            }
+
+            state.search = SearchState::Results {
+                request_id,
+                query,
+                scope,
+                results,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+        }
+        AppAction::SearchFailed {
+            request_id,
+            message,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let (current_request_id, query, scope) = match &state.search {
+                SearchState::Searching {
+                    request_id,
+                    query,
+                    scope,
+                } => (*request_id, query.clone(), scope.clone()),
+                _ => return Vec::new(),
+            };
+
+            if current_request_id != request_id {
+                return Vec::new();
+            }
+
+            state.search = SearchState::Failed {
+                request_id,
+                query,
+                scope,
+                message,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+        }
         AppAction::ClearError { code } => {
             state.errors.retain(|error| error.code != code);
             vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
         }
-        _ => Vec::new(),
     }
 }
 
