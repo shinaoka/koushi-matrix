@@ -1,0 +1,14 @@
+[package]
+name = "key-management"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+base64 = "0.22"
+hkdf = "0.12"
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+rand = "0.9"
+sha2 = "0.10"
+thiserror = "2"
+zeroize = "1"
