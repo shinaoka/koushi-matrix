@@ -1,7 +1,9 @@
 use crate::{
     action::AppAction,
     effect::{AppEffect, UiEvent},
-    state::{AppError, AppState, SearchState, SessionState, SyncState, ThreadPaneState},
+    state::{
+        AppError, AppState, NavigationState, SearchState, SessionState, SyncState, ThreadPaneState,
+    },
 };
 
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
@@ -38,10 +40,13 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.session = SessionState::Authenticating {
                 homeserver: homeserver.clone(),
             };
-            vec![AppEffect::Login {
-                homeserver,
-                username,
-            }]
+            vec![
+                AppEffect::Login {
+                    homeserver,
+                    username,
+                },
+                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            ]
         }
         AppAction::LoginFailed { message } => {
             state.session = SessionState::SignedOut;
@@ -50,41 +55,79 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 message,
                 recoverable: true,
             });
-            vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
         }
         AppAction::SessionLocked => {
             if let SessionState::Ready(info) = &state.session {
                 state.session = SessionState::Locked(info.clone());
+                state.sync = SyncState::Stopped;
+                let mut effects = vec![
+                    AppEffect::StopSync,
+                    AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+                ];
+                effects.extend(clear_session_views(state));
+                return effects;
             }
-            vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+            Vec::new()
         }
         AppAction::LogoutRequested => {
             state.session = SessionState::LoggingOut;
             state.sync = SyncState::Stopped;
-            state.timeline = Default::default();
-            state.thread = ThreadPaneState::Closed;
-            state.search = SearchState::Closed;
-            vec![AppEffect::StopSync, AppEffect::ClearSession]
+            let mut effects = vec![
+                AppEffect::StopSync,
+                AppEffect::ClearSession,
+                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            ];
+            effects.extend(clear_session_views(state));
+            effects
         }
         AppAction::LogoutFinished => {
             *state = AppState::default();
             vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
         }
         AppAction::SyncStarted => {
-            state.sync = SyncState::Running;
-            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+            if !matches!(state.session, SessionState::Ready(_)) {
+                return Vec::new();
+            }
+
+            match state.sync {
+                SyncState::Starting | SyncState::Recovering { .. } => {
+                    state.sync = SyncState::Running;
+                    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+                }
+                SyncState::Running | SyncState::Stopped => Vec::new(),
+            }
         }
         AppAction::SyncFailed { reason } => {
+            if !matches!(state.session, SessionState::Ready(_))
+                || matches!(state.sync, SyncState::Stopped)
+            {
+                return Vec::new();
+            }
+
             state.sync = SyncState::Recovering { reason };
             vec![AppEffect::StartSync]
         }
         AppAction::SyncRecovered => {
+            if !matches!(state.session, SessionState::Ready(_))
+                || !matches!(state.sync, SyncState::Recovering { .. })
+            {
+                return Vec::new();
+            }
+
             state.sync = SyncState::Running;
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
         AppAction::SyncStopped => {
+            if matches!(state.sync, SyncState::Stopped) {
+                return Vec::new();
+            }
+
             state.sync = SyncState::Stopped;
-            vec![AppEffect::StopSync]
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
         AppAction::ClearError { code } => {
             state.errors.retain(|error| error.code != code);
@@ -92,4 +135,29 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         _ => Vec::new(),
     }
+}
+
+fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
+    let previous_room_id = state.timeline.room_id.clone();
+    let had_thread = state.thread != ThreadPaneState::Closed;
+    let had_search = state.search != SearchState::Closed;
+
+    state.navigation = NavigationState::default();
+    state.spaces.clear();
+    state.rooms.clear();
+    state.timeline = Default::default();
+    state.thread = ThreadPaneState::Closed;
+    state.search = SearchState::Closed;
+
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
+    if let Some(room_id) = previous_room_id {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
+    }
+    if had_thread {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+    }
+    if had_search {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::SearchChanged));
+    }
+    effects
 }

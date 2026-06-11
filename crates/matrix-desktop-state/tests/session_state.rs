@@ -1,5 +1,7 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, SessionInfo, SessionState, SyncState, UiEvent, reduce,
+    AppAction, AppEffect, AppState, NavigationState, RoomSummary, SearchScope, SearchState,
+    SessionInfo, SessionState, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
+    UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -43,6 +45,36 @@ fn restore_success_marks_ready_and_starts_sync() {
 }
 
 #[test]
+fn login_submitted_enters_authenticating_and_emits_session_event() {
+    let mut state = AppState::default();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::LoginSubmitted {
+            homeserver: "https://matrix.example.org".to_owned(),
+            username: "alice".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        state.session,
+        SessionState::Authenticating {
+            homeserver: "https://matrix.example.org".to_owned()
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::Login {
+                homeserver: "https://matrix.example.org".to_owned(),
+                username: "alice".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ]
+    );
+}
+
+#[test]
 fn login_failure_returns_to_signed_out_and_records_error() {
     let mut state = AppState {
         session: SessionState::Authenticating {
@@ -61,7 +93,13 @@ fn login_failure_returns_to_signed_out_and_records_error() {
     assert_eq!(state.session, SessionState::SignedOut);
     assert_eq!(state.errors[0].code, "login_failed");
     assert!(state.errors[0].recoverable);
-    assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+        ]
+    );
 }
 
 #[test]
@@ -76,7 +114,107 @@ fn logout_stops_sync_and_clears_session() {
 
     assert_eq!(state.session, SessionState::LoggingOut);
     assert_eq!(state.sync, SyncState::Stopped);
-    assert_eq!(effects, vec![AppEffect::StopSync, AppEffect::ClearSession]);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::StopSync,
+            AppEffect::ClearSession,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+        ]
+    );
+}
+
+#[test]
+fn logout_clears_session_views_and_notifies_ui() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        sync: SyncState::Running,
+        navigation: NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+        },
+        spaces: vec![SpaceSummary {
+            space_id: "space-a".to_owned(),
+            display_name: "Space A".to_owned(),
+            child_room_ids: vec!["room-a".to_owned()],
+        }],
+        rooms: vec![RoomSummary {
+            room_id: "room-a".to_owned(),
+            display_name: "Room A".to_owned(),
+            is_dm: false,
+            unread_count: 3,
+            parent_space_ids: vec!["space-a".to_owned()],
+        }],
+        timeline: TimelinePaneState {
+            room_id: Some("room-a".to_owned()),
+            is_subscribed: true,
+            is_paginating_backwards: true,
+            composer: Default::default(),
+        },
+        thread: ThreadPaneState::Open {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            is_subscribed: true,
+            composer: Default::default(),
+        },
+        search: SearchState::Editing {
+            query: "アンケート".to_owned(),
+            scope: SearchScope::AllRooms,
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(&mut state, AppAction::LogoutRequested);
+
+    assert_eq!(state.navigation, NavigationState::default());
+    assert!(state.spaces.is_empty());
+    assert!(state.rooms.is_empty());
+    assert_eq!(state.timeline, TimelinePaneState::default());
+    assert_eq!(state.thread, ThreadPaneState::Closed);
+    assert_eq!(state.search, SearchState::Closed);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::StopSync,
+            AppEffect::ClearSession,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+            AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+            AppEffect::EmitUiEvent(UiEvent::SearchChanged),
+        ]
+    );
+}
+
+#[test]
+fn session_locked_stops_sync_and_clears_session_views() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        sync: SyncState::Running,
+        spaces: vec![SpaceSummary {
+            space_id: "space-a".to_owned(),
+            display_name: "Space A".to_owned(),
+            child_room_ids: vec![],
+        }],
+        ..AppState::default()
+    };
+
+    let effects = reduce(&mut state, AppAction::SessionLocked);
+
+    assert_eq!(state.session, SessionState::Locked(session_info()));
+    assert_eq!(state.sync, SyncState::Stopped);
+    assert!(state.spaces.is_empty());
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::StopSync,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+        ]
+    );
 }
 
 #[test]
@@ -101,4 +239,43 @@ fn sync_failure_enters_recovering_state() {
         }
     );
     assert_eq!(effects, vec![AppEffect::StartSync]);
+}
+
+#[test]
+fn late_sync_signals_after_logout_are_ignored() {
+    let mut state = AppState {
+        session: SessionState::LoggingOut,
+        sync: SyncState::Stopped,
+        ..AppState::default()
+    };
+
+    assert_eq!(reduce(&mut state, AppAction::SyncStarted), Vec::new());
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::SyncFailed {
+                reason: "late failure".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(reduce(&mut state, AppAction::SyncRecovered), Vec::new());
+    assert_eq!(state.sync, SyncState::Stopped);
+}
+
+#[test]
+fn sync_stopped_is_a_completion_signal() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        sync: SyncState::Running,
+        ..AppState::default()
+    };
+
+    let effects = reduce(&mut state, AppAction::SyncStopped);
+
+    assert_eq!(state.sync, SyncState::Stopped);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
 }
