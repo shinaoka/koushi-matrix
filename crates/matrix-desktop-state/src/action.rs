@@ -6,6 +6,7 @@ use crate::state::{RoomSummary, SearchResult, SearchScope, SessionInfo, SpaceSum
 pub enum AppAction {
     AppStarted,
     RestoreSessionSucceeded(SessionInfo),
+    RestoreSessionNotFound,
     RestoreSessionFailed {
         message: String,
     },

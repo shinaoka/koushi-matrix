@@ -22,6 +22,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             ]
         }
+        AppAction::RestoreSessionNotFound => {
+            state.session = SessionState::SignedOut;
+            vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+        }
         AppAction::RestoreSessionFailed { message } => {
             state.session = SessionState::SignedOut;
             state.errors.push(AppError {

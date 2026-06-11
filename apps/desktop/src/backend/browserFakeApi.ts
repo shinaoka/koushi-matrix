@@ -10,6 +10,7 @@ import type {
 
 export interface DesktopApi {
   getSnapshot(): Promise<DesktopSnapshot>;
+  submitLogin(homeserver: string, username: string): Promise<DesktopSnapshot>;
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
@@ -17,18 +18,51 @@ export interface DesktopApi {
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
 }
 
-export function createBrowserFakeApi(): DesktopApi {
-  return new BrowserFakeApi();
+export interface BrowserFakeApiOptions {
+  restoreSession?: boolean;
+}
+
+export function createBrowserFakeApi(options: BrowserFakeApiOptions = {}): DesktopApi {
+  return new BrowserFakeApi(options);
 }
 
 class BrowserFakeApi implements DesktopApi {
-  private snapshot = createInitialSnapshot();
+  private snapshot: DesktopSnapshot;
+
+  constructor(options: BrowserFakeApiOptions) {
+    this.snapshot = createInitialSnapshot(shouldRestoreSession(options));
+  }
 
   async getSnapshot(): Promise<DesktopSnapshot> {
     return clone(this.snapshot);
   }
 
+  async submitLogin(homeserver: string, username: string): Promise<DesktopSnapshot> {
+    this.snapshot.state.session = {
+      kind: "authenticating",
+      homeserver: normalizeHomeserver(homeserver)
+    };
+    this.snapshot.state.errors = this.snapshot.state.errors.filter(
+      (error) => error.code !== "login_failed"
+    );
+    this.clearSessionViews();
+    void username;
+
+    this.snapshot.state.session = { kind: "signedOut" };
+    this.snapshot.state.errors.push({
+      code: "login_failed",
+      message: "real Matrix login is not wired in this pre-login foundation",
+      recoverable: true
+    });
+
+    return this.getSnapshot();
+  }
+
   async selectSpace(spaceId: string | null): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
     this.snapshot.state.navigation.active_space_id = spaceId;
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
@@ -45,6 +79,10 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async selectRoom(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
     this.snapshot.state.navigation.active_room_id = roomId;
     this.snapshot.state.timeline.room_id = roomId;
     this.snapshot.state.timeline.is_subscribed = true;
@@ -55,6 +93,10 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
     this.snapshot.state.thread = {
       kind: "open",
       room_id: roomId,
@@ -73,12 +115,20 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async closeThread(): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.thread = null;
     return this.getSnapshot();
   }
 
   async submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
     const results = search(query, scope, this.snapshot);
     this.snapshot.state.search = {
       kind: "results",
@@ -89,9 +139,41 @@ class BrowserFakeApi implements DesktopApi {
     };
     return this.getSnapshot();
   }
+
+  private isReady() {
+    return this.snapshot.state.session.kind === "ready";
+  }
+
+  private clearSessionViews() {
+    this.snapshot.state.sync = "stopped";
+    this.snapshot.state.navigation = {
+      active_space_id: null,
+      active_room_id: null
+    };
+    this.snapshot.state.spaces = [];
+    this.snapshot.state.rooms = [];
+    this.snapshot.state.timeline = {
+      room_id: null,
+      is_subscribed: false,
+      is_paginating_backwards: false,
+      composer: {
+        pending_transaction_id: null,
+        draft: ""
+      }
+    };
+    this.snapshot.state.thread = { kind: "closed" };
+    this.snapshot.state.search = { kind: "closed" };
+    this.snapshot.sidebar = emptySidebar();
+    this.snapshot.timeline = [];
+    this.snapshot.thread = null;
+  }
 }
 
-function createInitialSnapshot(): DesktopSnapshot {
+function createInitialSnapshot(restoreSession: boolean): DesktopSnapshot {
+  if (!restoreSession) {
+    return createSignedOutSnapshot();
+  }
+
   const active_space_id = "!space-alpha:example.invalid";
   const active_room_id = "!room-alpha:example.invalid";
   const sidebar = composeSidebar(active_space_id, spaces, rooms);
@@ -144,6 +226,64 @@ function createInitialSnapshot(): DesktopSnapshot {
   };
 
   return snapshot;
+}
+
+function createSignedOutSnapshot(): DesktopSnapshot {
+  return {
+    state: {
+      session: { kind: "signedOut" },
+      sync: "stopped",
+      navigation: {
+        active_space_id: null,
+        active_room_id: null
+      },
+      spaces: [],
+      rooms: [],
+      timeline: {
+        room_id: null,
+        is_subscribed: false,
+        is_paginating_backwards: false,
+        composer: {
+          pending_transaction_id: null,
+          draft: ""
+        }
+      },
+      thread: { kind: "closed" },
+      search: { kind: "closed" },
+      errors: []
+    },
+    sidebar: emptySidebar(),
+    timeline: [],
+    thread: null
+  };
+}
+
+function emptySidebar() {
+  return {
+    active_space_id: null,
+    space_rail: [],
+    space_rooms: [],
+    global_dms: [],
+    space_unread_count: 0,
+    dm_unread_count: 0
+  };
+}
+
+function shouldRestoreSession(options: BrowserFakeApiOptions): boolean {
+  if (options.restoreSession !== undefined) {
+    return options.restoreSession;
+  }
+
+  if (typeof window === "undefined") {
+    return true;
+  }
+
+  return new URLSearchParams(window.location.search).get("session") !== "signed-out";
+}
+
+function normalizeHomeserver(homeserver: string): string {
+  const trimmed = homeserver.trim();
+  return trimmed.length ? trimmed : "https://matrix.org";
 }
 
 function search(

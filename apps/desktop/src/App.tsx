@@ -29,7 +29,7 @@ import {
   Users,
   X
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import { createDesktopApi } from "./backend/client";
 import type {
@@ -41,12 +41,15 @@ import type {
 } from "./domain/types";
 
 const api = createDesktopApi();
+const DEFAULT_HOMESERVER = "https://matrix.org";
 
 export function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerDraft, setComposerDraft] = useState("");
+  const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
+  const [loginUsername, setLoginUsername] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const searchTimer = useRef<number | null>(null);
 
@@ -88,6 +91,16 @@ export function App() {
     }
   }
 
+  async function submitLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.submitLogin(loginHomeserver, loginUsername));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function selectSpace(spaceId: string | null) {
     setSnapshot(await api.selectSpace(spaceId));
   }
@@ -115,6 +128,24 @@ export function App() {
 
   if (!snapshot) {
     return <div className="boot-screen">matrix-desktop</div>;
+  }
+
+  if (snapshot.state.session.kind === "restoring" || snapshot.state.session.kind === "loggingOut") {
+    return <div className="boot-screen">matrix-desktop</div>;
+  }
+
+  if (snapshot.state.session.kind !== "ready") {
+    return (
+      <AuthScreen
+        homeserver={loginHomeserver}
+        isBusy={isBusy || snapshot.state.session.kind === "authenticating"}
+        snapshot={snapshot}
+        username={loginUsername}
+        onHomeserverChange={setLoginHomeserver}
+        onSubmit={submitLogin}
+        onUsernameChange={setLoginUsername}
+      />
+    );
   }
 
   const activeRoom = snapshot.state.rooms.find(
@@ -181,6 +212,86 @@ export function App() {
       </div>
     </div>
   );
+}
+
+function AuthScreen({
+  homeserver,
+  isBusy,
+  snapshot,
+  username,
+  onHomeserverChange,
+  onSubmit,
+  onUsernameChange
+}: {
+  homeserver: string;
+  isBusy: boolean;
+  snapshot: DesktopSnapshot;
+  username: string;
+  onHomeserverChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onUsernameChange: (value: string) => void;
+}) {
+  const primaryError = snapshot.state.errors.at(-1);
+
+  return (
+    <main className="auth-screen" data-testid="auth-screen">
+      <form className="auth-panel" onSubmit={onSubmit}>
+        <div className="auth-brand">
+          <div className="auth-mark">
+            <Hash size={22} />
+          </div>
+          <div>
+            <h1>Matrix Desktop</h1>
+            <p>{sessionLabel(snapshot.state.session.kind)}</p>
+          </div>
+        </div>
+        <label className="auth-field">
+          <span>Homeserver</span>
+          <input
+            autoComplete="url"
+            name="homeserver"
+            spellCheck={false}
+            value={homeserver}
+            onChange={(event) => onHomeserverChange(event.target.value)}
+          />
+        </label>
+        <label className="auth-field">
+          <span>Username</span>
+          <input
+            autoComplete="username"
+            name="username"
+            spellCheck={false}
+            value={username}
+            onChange={(event) => onUsernameChange(event.target.value)}
+          />
+        </label>
+        {primaryError ? (
+          <div className="auth-error" role="alert">
+            {primaryError.message}
+          </div>
+        ) : null}
+        <button
+          className="auth-submit"
+          disabled={isBusy || !homeserver.trim() || !username.trim()}
+          type="submit"
+        >
+          {isBusy ? "Connecting" : "Continue"}
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function sessionLabel(kind: DesktopSnapshot["state"]["session"]["kind"]) {
+  switch (kind) {
+    case "authenticating":
+      return "Connecting";
+    case "locked":
+      return "Session locked";
+    case "signedOut":
+    default:
+      return "Sign in";
+  }
 }
 
 function TopBar({

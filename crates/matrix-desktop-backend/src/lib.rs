@@ -16,6 +16,7 @@ pub struct FakeDesktopBackendConfig {
     pub homeserver: String,
     pub user_id: String,
     pub device_id: String,
+    pub restore_session: bool,
 }
 
 impl Default for FakeDesktopBackendConfig {
@@ -24,6 +25,7 @@ impl Default for FakeDesktopBackendConfig {
             homeserver: DEFAULT_HOMESERVER.to_owned(),
             user_id: "@demo-user:example.invalid".to_owned(),
             device_id: "FAKEDEVICE".to_owned(),
+            restore_session: true,
         }
     }
 }
@@ -164,7 +166,11 @@ impl FakeDesktopBackend {
     fn handle_effect(&mut self, effect: &AppEffect) -> Vec<AppAction> {
         match effect {
             AppEffect::RestoreSession => {
-                vec![AppAction::RestoreSessionSucceeded(self.session_info())]
+                if self.config.restore_session {
+                    vec![AppAction::RestoreSessionSucceeded(self.session_info())]
+                } else {
+                    vec![AppAction::RestoreSessionNotFound]
+                }
             }
             AppEffect::StartSync => self.start_fake_sync(),
             AppEffect::SubscribeTimeline { room_id } => vec![AppAction::TimelineSubscribed {

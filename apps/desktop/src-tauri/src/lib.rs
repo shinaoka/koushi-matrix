@@ -22,6 +22,7 @@ pub fn run() {
         .manage(BackendState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
+            commands::submit_login,
             commands::select_space,
             commands::select_room,
             commands::open_thread,

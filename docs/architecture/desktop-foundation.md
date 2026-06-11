@@ -43,6 +43,24 @@ The next real-login step should attach at these points:
 
 The default homeserver remains `https://matrix.org`, but `FakeDesktopBackendConfig` already keeps homeserver configurable. The real login UI should expose the same setting before submitting credentials.
 
+## Pre-Login Shell
+
+The app now has an explicit first-run path before real Matrix login:
+
+1. `AppEffect::RestoreSession` may resolve to `AppAction::RestoreSessionNotFound`.
+2. The reducer enters `SessionState::SignedOut` without recording an error.
+3. The React shell renders a homeserver-configurable sign-in form instead of the Slack-like ready surface.
+4. `submit_login` dispatches `AppAction::LoginSubmitted`, which emits `AppEffect::Login`.
+5. The fake backend intentionally turns that effect into `AppAction::LoginFailed` with a non-secret message because real Matrix login is not wired yet.
+
+Open the browser shell in first-run mode with:
+
+```bash
+http://127.0.0.1:5173/?session=signed-out
+```
+
+Real SDK login should replace only the `AppEffect::Login` effect handler. The UI should continue to read `SessionState` and `AppError` through the same snapshot DTOs.
+
 ## Search Boundary
 
 `matrix-desktop-backend` passes broad candidate events into `matrix-desktop-search`. This mirrors the intended `matrix-sdk-search` contract:

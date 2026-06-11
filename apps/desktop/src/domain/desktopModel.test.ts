@@ -44,4 +44,21 @@ describe("desktop model", () => {
     expect(results[0]?.event_id).toBe("$budget-file");
     expect(results[0]?.match_field).toBe("attachmentFileName");
   });
+
+  test("browser fake can start signed out and exposes the pre-login boundary", async () => {
+    const api = createBrowserFakeApi({ restoreSession: false });
+
+    let snapshot = await api.getSnapshot();
+
+    expect(snapshot.state.session.kind).toBe("signedOut");
+    expect(snapshot.state.rooms).toHaveLength(0);
+    expect(snapshot.state.errors).toHaveLength(0);
+
+    snapshot = await api.submitLogin("https://matrix.example.org", "demo-user");
+
+    expect(snapshot.state.session.kind).toBe("signedOut");
+    expect(snapshot.state.rooms).toHaveLength(0);
+    expect(snapshot.state.errors).toHaveLength(1);
+    expect(snapshot.state.errors[0]?.code).toBe("login_failed");
+  });
 });

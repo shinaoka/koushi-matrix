@@ -55,6 +55,7 @@ fn fake_backend_keeps_homeserver_configurable() {
         homeserver: "https://matrix.example.org".into(),
         user_id: "@user-a:example.invalid".into(),
         device_id: "DEVICE_A".into(),
+        ..FakeDesktopBackendConfig::default()
     });
 
     let SessionState::Ready(session_info) = &backend.snapshot().state.session else {
@@ -64,6 +65,47 @@ fn fake_backend_keeps_homeserver_configurable() {
     assert_eq!(
         backend.session_key_id().homeserver,
         "https://matrix.example.org"
+    );
+}
+
+#[test]
+fn fake_backend_can_boot_without_saved_session() {
+    let backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+        restore_session: false,
+        ..FakeDesktopBackendConfig::default()
+    });
+
+    let snapshot = backend.snapshot();
+
+    assert_eq!(snapshot.state.session, SessionState::SignedOut);
+    assert_eq!(snapshot.state.sync, SyncState::Stopped);
+    assert!(snapshot.state.rooms.is_empty());
+    assert!(snapshot.state.spaces.is_empty());
+    assert!(snapshot.state.errors.is_empty());
+}
+
+#[test]
+fn fake_backend_login_boundary_fails_explicitly_before_real_sdk_wiring() {
+    let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+        restore_session: false,
+        ..FakeDesktopBackendConfig::default()
+    });
+
+    backend.dispatch(AppAction::LoginSubmitted {
+        homeserver: "https://matrix.example.org".to_owned(),
+        username: "demo-user".to_owned(),
+    });
+
+    let snapshot = backend.snapshot();
+
+    assert_eq!(snapshot.state.session, SessionState::SignedOut);
+    assert!(snapshot.state.rooms.is_empty());
+    assert_eq!(snapshot.state.errors.len(), 1);
+    assert_eq!(snapshot.state.errors[0].code, "login_failed");
+    assert!(
+        snapshot.state.errors[0]
+            .message
+            .contains("real Matrix login is not wired")
     );
 }
 

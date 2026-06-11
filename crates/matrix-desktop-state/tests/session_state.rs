@@ -45,6 +45,23 @@ fn restore_success_marks_ready_and_starts_sync() {
 }
 
 #[test]
+fn restore_not_found_enters_signed_out_without_error() {
+    let mut state = AppState {
+        session: SessionState::Restoring,
+        ..AppState::default()
+    };
+
+    let effects = reduce(&mut state, AppAction::RestoreSessionNotFound);
+
+    assert_eq!(state.session, SessionState::SignedOut);
+    assert!(state.errors.is_empty());
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+    );
+}
+
+#[test]
 fn login_submitted_enters_authenticating_and_emits_session_event() {
     let mut state = AppState::default();
 

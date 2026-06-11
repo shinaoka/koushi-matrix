@@ -13,6 +13,20 @@ pub fn get_snapshot(state: State<'_, BackendState>) -> Result<FrontendDesktopSna
 }
 
 #[tauri::command]
+pub fn submit_login(
+    homeserver: String,
+    username: String,
+    state: State<'_, BackendState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut backend = state.backend.lock().map_err(lock_error)?;
+    backend.dispatch(AppAction::LoginSubmitted {
+        homeserver,
+        username,
+    });
+    Ok(FrontendDesktopSnapshot::from(backend.snapshot()))
+}
+
+#[tauri::command]
 pub fn select_space(
     space_id: Option<String>,
     state: State<'_, BackendState>,
