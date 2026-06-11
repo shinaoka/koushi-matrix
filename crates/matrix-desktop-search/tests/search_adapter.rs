@@ -1,5 +1,5 @@
 use matrix_desktop_search::{
-    SearchCandidate, SearchDocumentStore, SearchableEvent, SensitiveString,
+    SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
 };
 use matrix_desktop_state::{SearchMatchField, SearchMatchKind, TextRange};
 
@@ -121,4 +121,84 @@ fn ngram_false_positive_without_exact_span_is_dropped() {
     );
 
     assert!(result.is_none());
+}
+
+#[test]
+fn edit_before_target_is_pending_until_original_arrives() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_edit(SearchEdit {
+        edit_event_id: "$edit".into(),
+        target_event_id: "$original".into(),
+        sender: "@alice:example.org".into(),
+        timestamp_ms: 1_700_000_000_100,
+        body: Some(SensitiveString::new("edited agenda")),
+        attachment_filename: None,
+    });
+
+    assert_eq!(store.pending_edit_count(), 1);
+    assert!(
+        store
+            .verify_candidate(
+                SearchCandidate {
+                    room_id: "!room:example.org".into(),
+                    event_id: "$original".into(),
+                    score_millis: 900,
+                },
+                "edited",
+            )
+            .is_none()
+    );
+
+    store.upsert_message(SearchableEvent {
+        room_id: "!room:example.org".into(),
+        event_id: "$original".into(),
+        sender: "@alice:example.org".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: Some(SensitiveString::new("old agenda")),
+        attachment_filename: None,
+    });
+
+    let result = store
+        .verify_candidate(
+            SearchCandidate {
+                room_id: "!room:example.org".into(),
+                event_id: "$original".into(),
+                score_millis: 900,
+            },
+            "edited",
+        )
+        .expect("pending edit should apply after original arrives");
+
+    assert_eq!(store.pending_edit_count(), 0);
+    assert_eq!(result.event_id, "$original");
+    assert_eq!(result.snippet, "edited agenda");
+}
+
+#[test]
+fn redacted_event_is_not_returned() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(SearchableEvent {
+        room_id: "!room:example.org".into(),
+        event_id: "$event".into(),
+        sender: "@alice:example.org".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: Some(SensitiveString::new("visible before redaction")),
+        attachment_filename: Some(SensitiveString::new("visible.pdf")),
+    });
+
+    store.redact("$event");
+
+    assert_eq!(store.document_count(), 0);
+    assert!(
+        store
+            .verify_candidate(
+                SearchCandidate {
+                    room_id: "!room:example.org".into(),
+                    event_id: "$event".into(),
+                    score_millis: 900,
+                },
+                "visible",
+            )
+            .is_none()
+    );
 }
