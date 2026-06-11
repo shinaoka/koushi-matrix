@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "spikes/sidebar-composition",
+    "spikes/key-management",
+]
+resolver = "2"

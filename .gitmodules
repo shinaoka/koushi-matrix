@@ -1,0 +1,4 @@
+[submodule "vendor/matrix-rust-sdk"]
+	path = vendor/matrix-rust-sdk
+	url = https://github.com/shinaoka/matrix-rust-sdk-work.git
+	branch = shinaoka/search-ngram
