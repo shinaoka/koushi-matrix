@@ -213,6 +213,128 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
             effects
         }
+        AppAction::TimelineSubscribed { room_id } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+            {
+                return Vec::new();
+            }
+
+            state.timeline.is_subscribed = true;
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+        }
+        AppAction::TimelineSubscriptionFailed { room_id, message } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+            {
+                return Vec::new();
+            }
+
+            state.errors.push(AppError {
+                code: "timeline_subscription_failed".to_owned(),
+                message,
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
+        }
+        AppAction::ComposerDraftChanged { room_id, draft } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+            {
+                return Vec::new();
+            }
+
+            state.timeline.composer.draft = draft;
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+        }
+        AppAction::SendTextSubmitted {
+            room_id,
+            transaction_id,
+            body,
+        } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+            {
+                return Vec::new();
+            }
+
+            state.timeline.composer.pending_transaction_id = Some(transaction_id.clone());
+            state.timeline.composer.draft.clear();
+            vec![AppEffect::SendText {
+                room_id,
+                transaction_id,
+                body,
+            }]
+        }
+        AppAction::SendTextFinished {
+            room_id,
+            transaction_id,
+        } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+                || state.timeline.composer.pending_transaction_id.as_deref()
+                    != Some(transaction_id.as_str())
+            {
+                return Vec::new();
+            }
+
+            state.timeline.composer.pending_transaction_id = None;
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+        }
+        AppAction::OpenThread {
+            room_id,
+            root_event_id,
+        } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+            {
+                return Vec::new();
+            }
+
+            state.thread = ThreadPaneState::Opening {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+            };
+            vec![AppEffect::OpenThreadTimeline {
+                room_id,
+                root_event_id,
+            }]
+        }
+        AppAction::ThreadSubscribed {
+            room_id,
+            root_event_id,
+        } => {
+            if !is_session_ready(state)
+                || !matches!(
+                    &state.thread,
+                    ThreadPaneState::Opening {
+                        room_id: opening_room_id,
+                        root_event_id: opening_root_event_id,
+                    } if opening_room_id == &room_id && opening_root_event_id == &root_event_id
+                )
+            {
+                return Vec::new();
+            }
+
+            state.thread = ThreadPaneState::Open {
+                room_id,
+                root_event_id,
+                is_subscribed: true,
+                composer: Default::default(),
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+        }
+        AppAction::CloseThread => {
+            if !is_session_ready(state) || state.thread == ThreadPaneState::Closed {
+                return Vec::new();
+            }
+
+            state.thread = ThreadPaneState::Closed;
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+        }
         AppAction::ClearError { code } => {
             state.errors.retain(|error| error.code != code);
             vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
