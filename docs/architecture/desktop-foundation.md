@@ -9,6 +9,9 @@ This repository is now structured up to the point immediately before real Matrix
 ```text
 apps/desktop-shell
   static Slack-like shell over fake ready-session data
+
+apps/desktop
+  Tauri v2 + React shell over the same snapshot DTOs
         |
         v
 crates/matrix-desktop-backend
@@ -54,7 +57,9 @@ Search-result snippets and highlights are produced only after verification. The 
 
 ## Desktop Shell
 
-`apps/desktop-shell` is a zero-dependency local shell for UI integration before Tauri packaging. It renders:
+`apps/desktop` is the Tauri v2 + React shell. It renders snapshot DTOs through a browser fallback API outside Tauri and Tauri commands inside the native shell.
+
+`apps/desktop-shell` remains a zero-dependency local reference shell. Both render:
 
 - Space rail;
 - Space-filtered room list;
@@ -73,10 +78,19 @@ python3 -m http.server 4173 --bind 127.0.0.1
 
 Then open `http://127.0.0.1:4173/`.
 
+For the React/Tauri shell:
+
+```bash
+cd apps/desktop
+npm install
+npm run dev
+```
+
+Then open `http://127.0.0.1:5173/`.
+
 ## Not Done Yet
 
-- Tauri packaging.
-- React/TypeScript app structure.
+- Release bundling/signing.
 - Real Matrix login.
 - SDK sync, room-list, and timeline service wiring.
 - Persistent encrypted search indexes.
