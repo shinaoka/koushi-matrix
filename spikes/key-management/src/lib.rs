@@ -118,13 +118,16 @@ impl fmt::Debug for LocalUnlockSecret {
 
 impl LocalUnlockSecret {
     pub fn generate() -> Self {
-        Self::from_bytes(rand::random())
+        Self::from_zeroizing_bytes(Zeroizing::new(rand::random()))
     }
 
-    pub fn from_bytes(bytes: [u8; LOCAL_SECRET_LEN]) -> Self {
-        Self {
-            secret: Zeroizing::new(bytes),
-        }
+    fn from_zeroizing_bytes(secret: Zeroizing<[u8; LOCAL_SECRET_LEN]>) -> Self {
+        Self { secret }
+    }
+
+    #[cfg(test)]
+    fn from_test_bytes(bytes: [u8; LOCAL_SECRET_LEN]) -> Self {
+        Self::from_zeroizing_bytes(Zeroizing::new(bytes))
     }
 
     pub fn to_storage_string(&self) -> StoredLocalUnlockSecret {
@@ -142,17 +145,16 @@ impl LocalUnlockSecret {
             });
         }
 
-        let mut bytes = [0; LOCAL_SECRET_LEN];
+        let mut bytes = Zeroizing::new([0; LOCAL_SECRET_LEN]);
         bytes.copy_from_slice(decoded.as_slice());
-        Ok(Self::from_bytes(bytes))
+        Ok(Self::from_zeroizing_bytes(bytes))
     }
 
     pub fn derive_sdk_store_key(&self) -> SdkStoreKey {
         SdkStoreKey {
-            key: Zeroizing::new(
-                self.derive_key(SDK_STORE_INFO)
-                    .expect("32-byte HKDF output length is valid"),
-            ),
+            key: self
+                .derive_key(SDK_STORE_INFO)
+                .expect("32-byte HKDF output length is valid"),
         }
     }
 
@@ -166,10 +168,13 @@ impl LocalUnlockSecret {
         }
     }
 
-    fn derive_key(&self, info: &[u8]) -> Result<[u8; LOCAL_SECRET_LEN], LocalSecretError> {
+    fn derive_key(
+        &self,
+        info: &[u8],
+    ) -> Result<Zeroizing<[u8; LOCAL_SECRET_LEN]>, LocalSecretError> {
         let hkdf = Hkdf::<Sha256>::new(None, &self.secret[..]);
-        let mut output = [0; LOCAL_SECRET_LEN];
-        hkdf.expand(info, &mut output)
+        let mut output = Zeroizing::new([0; LOCAL_SECRET_LEN]);
+        hkdf.expand(info, &mut output[..])
             .map_err(|_| LocalSecretError::Derivation)?;
         Ok(output)
     }
@@ -231,7 +236,7 @@ mod tests {
 
     #[test]
     fn namespaced_derivations_are_distinct() {
-        let secret = LocalUnlockSecret::from_bytes([7; 32]);
+        let secret = LocalUnlockSecret::from_test_bytes([7; 32]);
 
         let sdk_store_key = secret.derive_sdk_store_key();
         let search_key = secret.derive_search_key();
@@ -245,7 +250,7 @@ mod tests {
 
     #[test]
     fn derived_and_stored_secrets_have_redacted_debug() {
-        let secret = LocalUnlockSecret::from_bytes([7; 32]);
+        let secret = LocalUnlockSecret::from_test_bytes([7; 32]);
         let sdk_store_key = secret.derive_sdk_store_key();
         let search_key = secret.derive_search_key();
         let stored_secret = secret.to_storage_string();
@@ -282,7 +287,7 @@ mod tests {
 
     #[test]
     fn storage_round_trip_preserves_derivations() {
-        let original = LocalUnlockSecret::from_bytes([9; 32]);
+        let original = LocalUnlockSecret::from_test_bytes([9; 32]);
 
         let stored = original.to_storage_string();
         let restored = LocalUnlockSecret::from_storage_string(stored.as_str()).unwrap();
