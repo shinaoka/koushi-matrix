@@ -3,6 +3,7 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppError, AppState, NavigationState, SearchState, SessionState, SyncState, ThreadPaneState,
+        TimelinePaneState,
     },
 };
 
@@ -128,6 +129,31 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             state.sync = SyncState::Stopped;
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::RoomListUpdated { spaces, rooms } => {
+            state.spaces = spaces;
+            state.rooms = rooms;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::SelectSpace { space_id } => {
+            state.navigation.active_space_id = space_id;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::SelectRoom { room_id } => {
+            state.navigation.active_room_id = Some(room_id.clone());
+            state.timeline = TimelinePaneState {
+                room_id: Some(room_id.clone()),
+                is_subscribed: false,
+                is_paginating_backwards: false,
+                composer: Default::default(),
+            };
+            state.thread = ThreadPaneState::Closed;
+            vec![
+                AppEffect::SubscribeTimeline {
+                    room_id: room_id.clone(),
+                },
+                AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
+            ]
         }
         AppAction::ClearError { code } => {
             state.errors.retain(|error| error.code != code);
