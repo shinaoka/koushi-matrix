@@ -81,12 +81,90 @@ fn submitting_search_emits_search_effect() {
     );
     assert_eq!(
         effects,
-        vec![AppEffect::SearchMessages {
-            request_id: 7,
-            query: "アンケート".to_owned(),
-            scope: scope(),
-        }]
+        vec![
+            AppEffect::SearchMessages {
+                request_id: 7,
+                query: "アンケート".to_owned(),
+                scope: scope(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::SearchChanged),
+        ]
     );
+}
+
+#[test]
+fn search_actions_are_ignored_without_ready_session() {
+    let mut state = AppState::default();
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::SearchEdited {
+                query: "アンケート".to_owned(),
+                scope: scope(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::SearchSubmitted {
+                request_id: 7,
+                query: "アンケート".to_owned(),
+                scope: scope(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::SearchSucceeded {
+                request_id: 7,
+                results: vec![result("$event")],
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(state.search, SearchState::Closed);
+}
+
+#[test]
+fn editing_search_after_submit_suppresses_previous_response() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::SearchSubmitted {
+            request_id: 8,
+            query: "old".to_owned(),
+            scope: scope(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::SearchEdited {
+            query: "new".to_owned(),
+            scope: scope(),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchSucceeded {
+            request_id: 8,
+            results: vec![result("$old")],
+        },
+    );
+
+    assert_eq!(
+        state.search,
+        SearchState::Editing {
+            query: "new".to_owned(),
+            scope: scope(),
+        }
+    );
+    assert_eq!(effects, Vec::<AppEffect>::new());
 }
 
 #[test]
@@ -153,6 +231,45 @@ fn matching_search_result_updates_results() {
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
     );
+}
+
+#[test]
+fn duplicate_search_response_after_results_is_ignored() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::SearchSubmitted {
+            request_id: 13,
+            query: "アンケート".to_owned(),
+            scope: scope(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::SearchSucceeded {
+            request_id: 13,
+            results: vec![result("$event")],
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchFailed {
+            request_id: 13,
+            message: "late failure".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        state.search,
+        SearchState::Results {
+            request_id: 13,
+            query: "アンケート".to_owned(),
+            scope: scope(),
+            results: vec![result("$event")],
+        }
+    );
+    assert_eq!(effects, Vec::<AppEffect>::new());
 }
 
 #[test]

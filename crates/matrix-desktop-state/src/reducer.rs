@@ -364,11 +364,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 query: query.clone(),
                 scope: scope.clone(),
             };
-            vec![AppEffect::SearchMessages {
-                request_id,
-                query,
-                scope,
-            }]
+            vec![
+                AppEffect::SearchMessages {
+                    request_id,
+                    query,
+                    scope,
+                },
+                AppEffect::EmitUiEvent(UiEvent::SearchChanged),
+            ]
         }
         AppAction::SearchSucceeded {
             request_id,
