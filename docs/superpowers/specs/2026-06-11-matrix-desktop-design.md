@@ -19,6 +19,7 @@ Video calls, voice calls, screen sharing, bots, widgets, and app integrations ar
 - DM model: DMs are global account-level conversations, not duplicated under Spaces.
 - Space model: Spaces drive the left rail and filter the room/channel list.
 - Thread model: threads open in a right-side pane when width permits, otherwise as a drawer or focused view.
+- Element X mobile code may be used as an implementation reference. Direct code ports must preserve upstream license and copyright notices.
 
 ## Repository Layout
 
@@ -26,6 +27,7 @@ Video calls, voice calls, screen sharing, bots, widgets, and app integrations ar
 matrix-desktop/
   docs/
     superpowers/specs/
+  THIRD_PARTY_NOTICES.md
   frontend/
     React application
   src-tauri/
@@ -38,6 +40,31 @@ matrix-desktop/
 ```
 
 `vendor/matrix-rust-sdk` is kept as a repository-local SDK checkout rather than flattening every SDK crate into the top-level Cargo workspace. This preserves upstream structure and makes feedback or future PRs easier. The Tauri backend should consume the patched SDK through path dependencies or `[patch]` entries.
+
+## Upstream Reference and License Policy
+
+Element X iOS and Element X Android should be used as primary references for how production apps consume the Rust SDK FFI, `RoomListService`, `Timeline`, Spaces, recovery, verification, and room-level services.
+
+Reference use means studying architecture, API usage, state flow, and edge cases, then writing original code for this project. Reference-only use does not copy implementation text.
+
+Direct porting means copying or closely adapting code, file structure, non-trivial functions, or tests from Element X mobile. Direct ports must follow these rules:
+
+- keep the original copyright holders in the file header;
+- keep the upstream SPDX license expression;
+- record the upstream repository, file path, and commit SHA in `THIRD_PARTY_NOTICES.md`;
+- keep local modifications clearly attributable through comments or commit history;
+- do not remove AGPL or commercial-license notices from copied code;
+- prefer porting small SDK-wrapper patterns over large UI modules.
+
+As of the checked upstream files, Element X mobile source files carry:
+
+```text
+SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Element-Commercial.
+```
+
+The Matrix Rust SDK itself is Apache-2.0. SDK changes intended for upstream feedback should remain inside the SDK patch area and follow the SDK's licensing and contribution style.
+
+Because this repository is private but may later produce distributed desktop binaries, implementation planning must include a license review before importing Element X mobile code verbatim. When practical, prefer using mobile code as a behavioral reference and reimplementing the desktop-specific layer independently.
 
 ## Architecture
 
