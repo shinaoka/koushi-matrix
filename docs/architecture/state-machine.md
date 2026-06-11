@@ -93,6 +93,18 @@ snippet so the frontend can apply them without re-tokenizing Japanese text or
 emoji. Future fuzzy or related-message search must use a different
 `SearchMatchKind` and a different visual treatment from exact highlights.
 
+Attachment filenames are searchable, but they are not treated as message-body
+matches. The search adapter indexes the resolved visible filename for file-like
+events and returns `SearchMatchField::AttachmentFileName` when the verified span
+is in that filename. In that case, `snippet` is the filename, highlight ranges
+are relative to the filename, and the UI should render the result as a file
+match with a file affordance. The click target remains the Matrix event that
+contains the attachment.
+
+Redacted attachments are not searchable. If a file event is edited or replaced,
+the adapter indexes only the resolved visible filename. File contents are out of
+scope for this search contract; only filenames participate.
+
 Edited, redacted, or replaced Matrix events must be resolved before producing a
 search result. The reducer stores only the search adapter's result snapshot; it
 does not decide whether an older event body, an edited body, or a redaction tombstone

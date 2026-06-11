@@ -1,6 +1,6 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, SearchMatchKind, SearchResult, SearchScope, SearchState,
-    SessionInfo, SessionState, TextRange, UiEvent, reduce,
+    AppAction, AppEffect, AppState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope,
+    SearchState, SessionInfo, SessionState, TextRange, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -30,9 +30,27 @@ fn result(event_id: &str) -> SearchResult {
         timestamp_ms: 1_700_000_000_000,
         score_millis: 900,
         snippet: "再アンケートです".to_owned(),
+        match_field: SearchMatchField::MessageBody,
         highlights: vec![TextRange {
             start_utf16: 1,
             end_utf16: 6,
+        }],
+        match_kind: SearchMatchKind::Exact,
+    }
+}
+
+fn attachment_filename_result(event_id: &str) -> SearchResult {
+    SearchResult {
+        room_id: "room-a".to_owned(),
+        event_id: event_id.to_owned(),
+        sender: "@alice:example.org".to_owned(),
+        timestamp_ms: 1_700_000_000_000,
+        score_millis: 875,
+        snippet: "seminar_schedule.pdf".to_owned(),
+        match_field: SearchMatchField::AttachmentFileName,
+        highlights: vec![TextRange {
+            start_utf16: 8,
+            end_utf16: 16,
         }],
         match_kind: SearchMatchKind::Exact,
     }
@@ -73,6 +91,21 @@ fn search_result_carries_verified_exact_highlights() {
         vec![TextRange {
             start_utf16: 1,
             end_utf16: 6,
+        }]
+    );
+}
+
+#[test]
+fn search_result_can_identify_attachment_filename_match() {
+    let result = attachment_filename_result("$file");
+
+    assert_eq!(result.match_field, SearchMatchField::AttachmentFileName);
+    assert_eq!(result.snippet, "seminar_schedule.pdf");
+    assert_eq!(
+        result.highlights,
+        vec![TextRange {
+            start_utf16: 8,
+            end_utf16: 16,
         }]
     );
 }

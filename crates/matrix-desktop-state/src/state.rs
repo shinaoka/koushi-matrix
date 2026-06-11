@@ -147,6 +147,7 @@ pub struct SearchResult {
     pub timestamp_ms: u64,
     pub score_millis: u32,
     pub snippet: String,
+    pub match_field: SearchMatchField,
     pub highlights: Vec<TextRange>,
     pub match_kind: SearchMatchKind,
 }
@@ -161,6 +162,12 @@ pub struct TextRange {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SearchMatchKind {
     Exact,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SearchMatchField {
+    MessageBody,
+    AttachmentFileName,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
