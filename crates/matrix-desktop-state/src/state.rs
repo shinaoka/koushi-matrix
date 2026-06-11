@@ -147,6 +147,20 @@ pub struct SearchResult {
     pub timestamp_ms: u64,
     pub score_millis: u32,
     pub snippet: String,
+    pub highlights: Vec<TextRange>,
+    pub match_kind: SearchMatchKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TextRange {
+    /// Half-open range in UTF-16 code units relative to `SearchResult::snippet`.
+    pub start_utf16: u32,
+    pub end_utf16: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SearchMatchKind {
+    Exact,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

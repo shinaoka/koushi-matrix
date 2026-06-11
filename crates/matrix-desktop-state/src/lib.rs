@@ -9,7 +9,7 @@ pub use effect::{AppEffect, UiEvent};
 pub use reducer::reduce;
 pub use sidebar::{RoomListItem, SidebarModel, SpaceRailItem, compose_sidebar};
 pub use state::{
-    AppError, AppState, ComposerState, NavigationState, RoomSummary, SearchResult, SearchScope,
-    SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadPaneState,
-    TimelinePaneState,
+    AppError, AppState, ComposerState, NavigationState, RoomSummary, SearchMatchKind, SearchResult,
+    SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, TextRange,
+    ThreadPaneState, TimelinePaneState,
 };

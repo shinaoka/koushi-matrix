@@ -79,8 +79,19 @@ search state. The reducer emits UI events for any cleared visible panes.
   is ignored because the state is no longer `Searching`.
 - Submitting a search emits both the backend search request and `SearchChanged`
   so the UI can display the loading state immediately.
-- Snippet text is a DTO field produced by a future search adapter, not by the
-  reducer.
+- Snippet text and highlight ranges are DTO fields produced by a future search
+  adapter, not by the reducer.
+
+The ngram index is a candidate generator, not the source of display truth. Before
+returning a result, the search adapter must run a second-pass verification over
+the resolved visible body or snippet. Only verified exact spans are returned as
+highlight ranges. Ngram candidates without a verified span are dropped from the
+default search result set.
+
+Highlight ranges are half-open UTF-16 code unit offsets relative to the returned
+snippet so the frontend can apply them without re-tokenizing Japanese text or
+emoji. Future fuzzy or related-message search must use a different
+`SearchMatchKind` and a different visual treatment from exact highlights.
 
 Edited, redacted, or replaced Matrix events must be resolved before producing a
 search result. The reducer stores only the search adapter's result snapshot; it

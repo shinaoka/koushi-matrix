@@ -1,6 +1,6 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, SearchResult, SearchScope, SearchState, SessionInfo,
-    SessionState, UiEvent, reduce,
+    AppAction, AppEffect, AppState, SearchMatchKind, SearchResult, SearchScope, SearchState,
+    SessionInfo, SessionState, TextRange, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -30,6 +30,11 @@ fn result(event_id: &str) -> SearchResult {
         timestamp_ms: 1_700_000_000_000,
         score_millis: 900,
         snippet: "再アンケートです".to_owned(),
+        highlights: vec![TextRange {
+            start_utf16: 1,
+            end_utf16: 6,
+        }],
+        match_kind: SearchMatchKind::Exact,
     }
 }
 
@@ -55,6 +60,20 @@ fn editing_search_updates_local_state_and_emits_event() {
     assert_eq!(
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+    );
+}
+
+#[test]
+fn search_result_carries_verified_exact_highlights() {
+    let result = result("$event");
+
+    assert_eq!(result.match_kind, SearchMatchKind::Exact);
+    assert_eq!(
+        result.highlights,
+        vec![TextRange {
+            start_utf16: 1,
+            end_utf16: 6,
+        }]
     );
 }
 
