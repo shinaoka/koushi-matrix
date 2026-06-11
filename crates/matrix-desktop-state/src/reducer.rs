@@ -38,6 +38,29 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
         }
+        AppAction::LoginDiscoveryRequested { homeserver } => {
+            state.auth = crate::state::AuthDiscoveryState::Discovering {
+                homeserver: homeserver.clone(),
+            };
+            vec![
+                AppEffect::DiscoverLogin { homeserver },
+                AppEffect::EmitUiEvent(UiEvent::AuthChanged),
+            ]
+        }
+        AppAction::LoginDiscoverySucceeded { homeserver, flows } => {
+            state.auth = crate::state::AuthDiscoveryState::Ready { homeserver, flows };
+            vec![AppEffect::EmitUiEvent(UiEvent::AuthChanged)]
+        }
+        AppAction::LoginDiscoveryFailed {
+            homeserver,
+            message,
+        } => {
+            state.auth = crate::state::AuthDiscoveryState::Failed {
+                homeserver,
+                message,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::AuthChanged)]
+        }
         AppAction::LoginSubmitted(request) => {
             state.session = SessionState::Authenticating {
                 homeserver: request.homeserver.clone(),

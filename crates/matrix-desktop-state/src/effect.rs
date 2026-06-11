@@ -6,6 +6,9 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppEffect {
     RestoreSession,
+    DiscoverLogin {
+        homeserver: String,
+    },
     Login(LoginRequest),
     PersistSession(SessionInfo),
     ClearSession,
@@ -34,6 +37,7 @@ pub enum AppEffect {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UiEvent {
     SessionChanged,
+    AuthChanged,
     RoomListChanged,
     TimelineChanged { room_id: String },
     ThreadChanged,

@@ -9,6 +9,7 @@ export interface DesktopSnapshot {
 
 export interface AppState {
   session: SessionState;
+  auth: AuthDiscoveryState;
   sync: SyncState;
   navigation: NavigationState;
   spaces: SpaceSummary[];
@@ -17,6 +18,17 @@ export interface AppState {
   thread: ThreadPaneState;
   search: SearchState;
   errors: AppError[];
+}
+
+export type AuthDiscoveryState =
+  | { kind: "unknown" }
+  | { kind: "discovering"; homeserver: string }
+  | { kind: "ready"; homeserver: string; flows: LoginFlow[] }
+  | { kind: "failed"; homeserver: string; message: string };
+
+export interface LoginFlow {
+  kind: "password" | "sso" | "token" | { unknown: string };
+  delegated_oidc_compatibility: boolean;
 }
 
 export interface SessionState {

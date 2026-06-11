@@ -1,7 +1,7 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, AuthSecret, LoginRequest, NavigationState, RoomSummary,
-    SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadPaneState,
-    TimelinePaneState, UiEvent, reduce,
+    AppAction, AppEffect, AppState, AuthDiscoveryState, AuthSecret, LoginFlow, LoginFlowKind,
+    LoginRequest, NavigationState, RoomSummary, SearchScope, SearchState, SessionInfo,
+    SessionState, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -59,6 +59,71 @@ fn restore_not_found_enters_signed_out_without_error() {
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
     );
+}
+
+#[test]
+fn login_discovery_requests_homeserver_flows() {
+    let mut state = AppState::default();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::LoginDiscoveryRequested {
+            homeserver: "https://matrix.example.org".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        state.auth,
+        AuthDiscoveryState::Discovering {
+            homeserver: "https://matrix.example.org".to_owned()
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::DiscoverLogin {
+                homeserver: "https://matrix.example.org".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::AuthChanged),
+        ]
+    );
+}
+
+#[test]
+fn login_discovery_success_records_supported_flows() {
+    let mut state = AppState {
+        auth: AuthDiscoveryState::Discovering {
+            homeserver: "https://matrix.example.org".to_owned(),
+        },
+        ..AppState::default()
+    };
+    let flows = vec![
+        LoginFlow {
+            kind: LoginFlowKind::Password,
+            delegated_oidc_compatibility: false,
+        },
+        LoginFlow {
+            kind: LoginFlowKind::Sso,
+            delegated_oidc_compatibility: true,
+        },
+    ];
+
+    let effects = reduce(
+        &mut state,
+        AppAction::LoginDiscoverySucceeded {
+            homeserver: "https://matrix.example.org".to_owned(),
+            flows: flows.clone(),
+        },
+    );
+
+    assert_eq!(
+        state.auth,
+        AuthDiscoveryState::Ready {
+            homeserver: "https://matrix.example.org".to_owned(),
+            flows
+        }
+    );
+    assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::AuthChanged)]);
 }
 
 #[test]

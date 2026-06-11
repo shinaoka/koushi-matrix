@@ -16,6 +16,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("get_snapshot");
   }
 
+  async discoverLoginMethods(homeserver: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("discover_login_methods", { homeserver });
+  }
+
   async submitLogin(
     homeserver: string,
     username: string,

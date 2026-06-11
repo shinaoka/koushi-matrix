@@ -4,8 +4,8 @@ use matrix_desktop_key::SessionKeyId;
 use matrix_desktop_search::SensitiveString;
 use matrix_desktop_search::{SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent};
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, RoomSummary, SearchResult, SearchScope, SessionInfo,
-    SidebarModel, SpaceSummary, ThreadPaneState, compose_sidebar, reduce,
+    AppAction, AppEffect, AppState, LoginFlow, LoginFlowKind, RoomSummary, SearchResult,
+    SearchScope, SessionInfo, SidebarModel, SpaceSummary, ThreadPaneState, compose_sidebar, reduce,
 };
 use serde::{Deserialize, Serialize};
 
@@ -171,6 +171,12 @@ impl FakeDesktopBackend {
                 } else {
                     vec![AppAction::RestoreSessionNotFound]
                 }
+            }
+            AppEffect::DiscoverLogin { homeserver } => {
+                vec![AppAction::LoginDiscoverySucceeded {
+                    homeserver: homeserver.clone(),
+                    flows: fixture_login_flows(),
+                }]
             }
             AppEffect::StartSync => self.start_fake_sync(),
             AppEffect::SubscribeTimeline { room_id } => vec![AppAction::TimelineSubscribed {
@@ -554,6 +560,19 @@ fn fixture_search_store(
     }
 
     (store, candidates)
+}
+
+fn fixture_login_flows() -> Vec<LoginFlow> {
+    vec![
+        LoginFlow {
+            kind: LoginFlowKind::Password,
+            delegated_oidc_compatibility: false,
+        },
+        LoginFlow {
+            kind: LoginFlowKind::Sso,
+            delegated_oidc_compatibility: true,
+        },
+    ]
 }
 
 fn candidate_score(event_id: &str) -> u32 {

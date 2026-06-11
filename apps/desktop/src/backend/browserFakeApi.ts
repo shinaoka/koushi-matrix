@@ -10,6 +10,7 @@ import type {
 
 export interface DesktopApi {
   getSnapshot(): Promise<DesktopSnapshot>;
+  discoverLoginMethods(homeserver: string): Promise<DesktopSnapshot>;
   submitLogin(
     homeserver: string,
     username: string,
@@ -40,6 +41,26 @@ class BrowserFakeApi implements DesktopApi {
 
   async getSnapshot(): Promise<DesktopSnapshot> {
     return clone(this.snapshot);
+  }
+
+  async discoverLoginMethods(homeserver: string): Promise<DesktopSnapshot> {
+    const normalizedHomeserver = normalizeHomeserver(homeserver);
+    this.snapshot.state.auth = {
+      kind: "ready",
+      homeserver: normalizedHomeserver,
+      flows: [
+        {
+          kind: "password",
+          delegated_oidc_compatibility: false
+        },
+        {
+          kind: "sso",
+          delegated_oidc_compatibility: true
+        }
+      ]
+    };
+
+    return this.getSnapshot();
   }
 
   async submitLogin(
@@ -197,6 +218,7 @@ function createInitialSnapshot(restoreSession: boolean): DesktopSnapshot {
         user_id: "@demo-user:example.invalid",
         device_id: "FAKEDEVICE"
       },
+      auth: { kind: "unknown" },
       sync: "running",
       navigation: {
         active_space_id,
@@ -244,6 +266,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
   return {
     state: {
       session: { kind: "signedOut" },
+      auth: { kind: "unknown" },
       sync: "stopped",
       navigation: {
         active_space_id: null,

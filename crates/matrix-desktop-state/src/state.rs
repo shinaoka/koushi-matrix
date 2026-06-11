@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub session: SessionState,
+    pub auth: AuthDiscoveryState,
     pub sync: SyncState,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
@@ -17,6 +18,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             session: SessionState::SignedOut,
+            auth: AuthDiscoveryState::Unknown,
             sync: SyncState::Stopped,
             navigation: NavigationState::default(),
             spaces: Vec::new(),
@@ -27,6 +29,38 @@ impl Default for AppState {
             errors: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AuthDiscoveryState {
+    Unknown,
+    Discovering {
+        homeserver: String,
+    },
+    Ready {
+        homeserver: String,
+        flows: Vec<LoginFlow>,
+    },
+    Failed {
+        homeserver: String,
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LoginFlow {
+    pub kind: LoginFlowKind,
+    pub delegated_oidc_compatibility: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LoginFlowKind {
+    Password,
+    Sso,
+    Token,
+    Unknown(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

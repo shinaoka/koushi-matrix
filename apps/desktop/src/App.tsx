@@ -116,6 +116,15 @@ export function App() {
     }
   }
 
+  async function discoverLoginMethods() {
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.discoverLoginMethods(loginHomeserver));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function selectSpace(spaceId: string | null) {
     setSnapshot(await api.selectSpace(spaceId));
   }
@@ -159,6 +168,7 @@ export function App() {
         passwordInputRef={loginPasswordRef}
         snapshot={snapshot}
         username={loginUsername}
+        onDiscoverLoginMethods={discoverLoginMethods}
         onDeviceNameChange={setLoginDeviceName}
         onHomeserverChange={setLoginHomeserver}
         onPasswordPresenceChange={setLoginPasswordFilled}
@@ -243,6 +253,7 @@ function AuthScreen({
   snapshot,
   username,
   onDeviceNameChange,
+  onDiscoverLoginMethods,
   onHomeserverChange,
   onPasswordPresenceChange,
   onSubmit,
@@ -256,12 +267,16 @@ function AuthScreen({
   snapshot: DesktopSnapshot;
   username: string;
   onDeviceNameChange: (value: string) => void;
+  onDiscoverLoginMethods: () => void;
   onHomeserverChange: (value: string) => void;
   onPasswordPresenceChange: (value: boolean) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onUsernameChange: (value: string) => void;
 }) {
   const primaryError = snapshot.state.errors.at(-1);
+  const auth = snapshot.state.auth;
+  const passwordLoginAvailable =
+    auth.kind !== "ready" || auth.flows.some((flow) => flow.kind === "password");
 
   return (
     <main className="auth-screen" data-testid="auth-screen">
@@ -285,6 +300,17 @@ function AuthScreen({
             onChange={(event) => onHomeserverChange(event.target.value)}
           />
         </label>
+        <div className="auth-discovery">
+          <button
+            className="auth-secondary"
+            disabled={isBusy || !homeserver.trim()}
+            type="button"
+            onClick={onDiscoverLoginMethods}
+          >
+            Check login methods
+          </button>
+          <div className="auth-flows">{authDiscoveryLabel(auth)}</div>
+        </div>
         <label className="auth-field">
           <span>Username or Matrix ID</span>
           <input
@@ -302,6 +328,7 @@ function AuthScreen({
             name="password"
             ref={passwordInputRef}
             type="password"
+            disabled={!passwordLoginAvailable}
             onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
           />
         </label>
@@ -322,7 +349,13 @@ function AuthScreen({
         ) : null}
         <button
           className="auth-submit"
-          disabled={isBusy || !homeserver.trim() || !username.trim() || !passwordFilled}
+          disabled={
+            isBusy ||
+            !homeserver.trim() ||
+            !username.trim() ||
+            !passwordFilled ||
+            !passwordLoginAvailable
+          }
           type="submit"
         >
           {isBusy ? "Connecting" : "Continue"}
@@ -330,6 +363,24 @@ function AuthScreen({
       </form>
     </main>
   );
+}
+
+function authDiscoveryLabel(auth: DesktopSnapshot["state"]["auth"]) {
+  switch (auth.kind) {
+    case "discovering":
+      return "Checking";
+    case "ready": {
+      const labels = auth.flows.map((flow) =>
+        typeof flow.kind === "string" ? flow.kind : "unknown"
+      );
+      return labels.length ? labels.join(" / ") : "No login methods";
+    }
+    case "failed":
+      return auth.message;
+    case "unknown":
+    default:
+      return "Not checked";
+  }
 }
 
 function sessionLabel(kind: DesktopSnapshot["state"]["session"]["kind"]) {

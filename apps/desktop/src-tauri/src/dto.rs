@@ -1,8 +1,8 @@
 use matrix_desktop_backend::{DesktopSnapshot, ThreadMessage, ThreadSnapshot, TimelineMessage};
 use matrix_desktop_state::{
-    AppError, AppState, ComposerState, NavigationState, RoomSummary, SearchMatchField,
-    SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState, SidebarModel,
-    SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
+    AppError, AppState, AuthDiscoveryState, ComposerState, NavigationState, RoomSummary,
+    SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState,
+    SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +28,7 @@ impl From<DesktopSnapshot> for FrontendDesktopSnapshot {
 #[derive(Clone, Debug, Serialize)]
 pub struct FrontendAppState {
     pub session: FrontendSessionState,
+    pub auth: AuthDiscoveryState,
     pub sync: FrontendSyncState,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
@@ -42,6 +43,7 @@ impl From<AppState> for FrontendAppState {
     fn from(state: AppState) -> Self {
         Self {
             session: state.session.into(),
+            auth: state.auth,
             sync: state.sync.into(),
             navigation: state.navigation,
             spaces: state.spaces,

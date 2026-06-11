@@ -67,4 +67,22 @@ describe("desktop model", () => {
     expect(snapshot.state.errors[0]?.code).toBe("login_failed");
     expect(JSON.stringify(snapshot)).not.toContain("synthetic-password");
   });
+
+  test("browser fake discovers password and sso login methods", async () => {
+    const api = createBrowserFakeApi({ restoreSession: false });
+
+    const snapshot = await api.discoverLoginMethods("https://matrix.example.org");
+
+    expect(snapshot.state.auth.kind).toBe("ready");
+    if (snapshot.state.auth.kind !== "ready") {
+      throw new Error("expected discovered login methods");
+    }
+
+    expect(snapshot.state.auth.homeserver).toBe("https://matrix.example.org");
+    expect(snapshot.state.auth.flows.map((flow) => flow.kind)).toEqual([
+      "password",
+      "sso"
+    ]);
+    expect(snapshot.state.auth.flows[1]?.delegated_oidc_compatibility).toBe(true);
+  });
 });

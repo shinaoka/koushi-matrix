@@ -131,6 +131,43 @@ button {
   box-shadow: 0 0 0 3px rgb(91 35 106 / 14%);
 }
 
+.auth-field input:disabled {
+  color: var(--faint);
+  background: #f5f2f6;
+}
+
+.auth-discovery {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.auth-secondary {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: #ffffff;
+  font-weight: 700;
+}
+
+.auth-secondary:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.auth-flows {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .auth-error {
   padding: 10px 12px;
   border: 1px solid #f1c7c7;

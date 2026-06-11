@@ -1,7 +1,7 @@
 use matrix_desktop_backend::{DEFAULT_HOMESERVER, FakeDesktopBackend, FakeDesktopBackendConfig};
 use matrix_desktop_state::{
-    AppAction, AuthSecret, LoginRequest, SearchMatchField, SearchScope, SearchState, SessionState,
-    SyncState, ThreadPaneState,
+    AppAction, AuthDiscoveryState, AuthSecret, LoginFlowKind, LoginRequest, SearchMatchField,
+    SearchScope, SearchState, SessionState, SyncState, ThreadPaneState,
 };
 
 #[test]
@@ -83,6 +83,34 @@ fn fake_backend_can_boot_without_saved_session() {
     assert!(snapshot.state.rooms.is_empty());
     assert!(snapshot.state.spaces.is_empty());
     assert!(snapshot.state.errors.is_empty());
+}
+
+#[test]
+fn fake_backend_discovers_password_and_sso_login_methods() {
+    let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+        restore_session: false,
+        ..FakeDesktopBackendConfig::default()
+    });
+
+    backend.dispatch(AppAction::LoginDiscoveryRequested {
+        homeserver: "https://matrix.example.org".to_owned(),
+    });
+
+    let AuthDiscoveryState::Ready { homeserver, flows } = &backend.snapshot().state.auth else {
+        panic!("expected discovered login flows");
+    };
+
+    assert_eq!(homeserver, "https://matrix.example.org");
+    assert!(
+        flows
+            .iter()
+            .any(|flow| flow.kind == LoginFlowKind::Password)
+    );
+    assert!(
+        flows
+            .iter()
+            .any(|flow| { flow.kind == LoginFlowKind::Sso && flow.delegated_oidc_compatibility })
+    );
 }
 
 #[test]

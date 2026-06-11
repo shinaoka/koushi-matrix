@@ -376,7 +376,7 @@ Integration tests:
 ## Open Questions for Implementation Planning
 
 - Whether `vendor/matrix-rust-sdk` should be a git submodule, subtree, or copied vendor checkout for the first iteration.
-- Whether the first real login milestone should ship password login first, or add OIDC/SSO discovery in the same milestone.
+- Homeserver login discovery is now part of the pre-login contract. The remaining decision is whether the first real login milestone implements password login only after discovery, or also completes the browser OIDC/SSO callback flow.
 - Recovery key/security phrase input is post-login E2EE recovery, not login. The first recovery milestone still needs a separate design for secret handling and verification UX.
 - Which test homeserver setup to use for local integration testing.
 - How much of thread support is stable enough in `matrix-sdk-ui` for MVP.

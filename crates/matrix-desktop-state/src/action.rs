@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::state::{RoomSummary, SearchResult, SearchScope, SessionInfo, SpaceSummary};
+use crate::state::{LoginFlow, RoomSummary, SearchResult, SearchScope, SessionInfo, SpaceSummary};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppAction {
@@ -8,6 +8,17 @@ pub enum AppAction {
     RestoreSessionSucceeded(SessionInfo),
     RestoreSessionNotFound,
     RestoreSessionFailed {
+        message: String,
+    },
+    LoginDiscoveryRequested {
+        homeserver: String,
+    },
+    LoginDiscoverySucceeded {
+        homeserver: String,
+        flows: Vec<LoginFlow>,
+    },
+    LoginDiscoveryFailed {
+        homeserver: String,
         message: String,
     },
     LoginSubmitted(LoginRequest),

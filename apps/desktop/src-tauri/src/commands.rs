@@ -13,6 +13,16 @@ pub fn get_snapshot(state: State<'_, BackendState>) -> Result<FrontendDesktopSna
 }
 
 #[tauri::command]
+pub fn discover_login_methods(
+    homeserver: String,
+    state: State<'_, BackendState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut backend = state.backend.lock().map_err(lock_error)?;
+    backend.dispatch(AppAction::LoginDiscoveryRequested { homeserver });
+    Ok(FrontendDesktopSnapshot::from(backend.snapshot()))
+}
+
+#[tauri::command]
 pub fn submit_login(
     homeserver: String,
     username: String,

@@ -34,15 +34,21 @@ The fake effect runner handles session restore, sync start, timeline subscriptio
 
 The next real-login step should attach at these points:
 
-1. `AppEffect::Login` creates a `matrix_sdk::Client` using the configured homeserver.
+1. `AppEffect::DiscoverLogin` queries `GET /_matrix/client/v3/login` on the
+   configured homeserver and records supported flows such as
+   `m.login.password`, `m.login.sso`, or `m.login.token`.
+2. The UI enables the password path only when discovery reports
+   `m.login.password`; SSO/OIDC-capable homeservers can branch into a browser
+   flow from the same snapshot state.
+3. `AppEffect::Login` creates a `matrix_sdk::Client` using the configured homeserver.
    The login request carries homeserver, login identifier, password, and device
    display name. The password is an in-memory redacted secret and must not enter
    `AppState`, frontend snapshots, debug output, logs, or persisted stores.
-2. Successful login dispatches `AppAction::LoginSucceeded(SessionInfo)`.
-3. The backend creates a `SessionKeyId` from homeserver, user id, and device id.
-4. `matrix-desktop-key` loads or creates the local unlock secret through the OS credential store.
-5. The SDK store key and search index key are derived from that local unlock secret.
-6. `AppEffect::StartSync` starts SDK sync, room-list services, timeline subscriptions, and search indexing.
+4. Successful login dispatches `AppAction::LoginSucceeded(SessionInfo)`.
+5. The backend creates a `SessionKeyId` from homeserver, user id, and device id.
+6. `matrix-desktop-key` loads or creates the local unlock secret through the OS credential store.
+7. The SDK store key and search index key are derived from that local unlock secret.
+8. `AppEffect::StartSync` starts SDK sync, room-list services, timeline subscriptions, and search indexing.
 
 The default homeserver remains `https://matrix.org`, but `FakeDesktopBackendConfig` already keeps homeserver configurable. The real login UI should expose the same setting before submitting credentials.
 
@@ -53,8 +59,12 @@ The app now has an explicit first-run path before real Matrix login:
 1. `AppEffect::RestoreSession` may resolve to `AppAction::RestoreSessionNotFound`.
 2. The reducer enters `SessionState::SignedOut` without recording an error.
 3. The React shell renders a homeserver-configurable sign-in form instead of the Slack-like ready surface.
-4. `submit_login` dispatches `AppAction::LoginSubmitted`, which emits `AppEffect::Login`.
-5. The fake backend intentionally turns that effect into `AppAction::LoginFailed` with a non-secret message because real Matrix login is not wired yet.
+4. `discover_login_methods` dispatches `AppAction::LoginDiscoveryRequested`,
+   which emits `AppEffect::DiscoverLogin`.
+5. The fake backend returns synthetic password and SSO flows so the UI can
+   exercise the same branching contract before real network discovery exists.
+6. `submit_login` dispatches `AppAction::LoginSubmitted`, which emits `AppEffect::Login`.
+7. The fake backend intentionally turns that effect into `AppAction::LoginFailed` with a non-secret message because real Matrix login is not wired yet.
 
 Recovery key or security phrase input is not part of Matrix login. It belongs
 after login, when the client needs to restore encrypted room-key backup or
