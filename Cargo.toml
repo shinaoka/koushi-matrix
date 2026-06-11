@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/matrix-desktop-state",
+    "crates/matrix-desktop-search",
     "spikes/sidebar-composition",
     "spikes/key-management",
 ]
