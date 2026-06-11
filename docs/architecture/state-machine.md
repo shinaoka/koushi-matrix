@@ -81,3 +81,13 @@ search state. The reducer emits UI events for any cleared visible panes.
   so the UI can display the loading state immediately.
 - Snippet text is a DTO field produced by a future search adapter, not by the
   reducer.
+
+Edited, redacted, or replaced Matrix events must be resolved before producing a
+search result. The reducer stores only the search adapter's result snapshot; it
+does not decide whether an older event body, an edited body, or a redaction tombstone
+is visible.
+
+Search timeline display must be treated as a focused result view, not as a normal
+room timeline. It should avoid implying that search results are a complete
+chronological timeline unless the backend explicitly provides enough surrounding
+context and replacement/redaction state to render that context safely.
