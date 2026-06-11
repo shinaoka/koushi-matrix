@@ -17,6 +17,13 @@ pub struct FakeDesktopBackendConfig {
     pub user_id: String,
     pub device_id: String,
     pub restore_session: bool,
+    pub login_discovery: LoginDiscoveryMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum LoginDiscoveryMode {
+    Fixture,
+    Http,
 }
 
 impl Default for FakeDesktopBackendConfig {
@@ -26,6 +33,7 @@ impl Default for FakeDesktopBackendConfig {
             user_id: "@demo-user:example.invalid".to_owned(),
             device_id: "FAKEDEVICE".to_owned(),
             restore_session: true,
+            login_discovery: LoginDiscoveryMode::Fixture,
         }
     }
 }
@@ -172,12 +180,7 @@ impl FakeDesktopBackend {
                     vec![AppAction::RestoreSessionNotFound]
                 }
             }
-            AppEffect::DiscoverLogin { homeserver } => {
-                vec![AppAction::LoginDiscoverySucceeded {
-                    homeserver: homeserver.clone(),
-                    flows: fixture_login_flows(),
-                }]
-            }
+            AppEffect::DiscoverLogin { homeserver } => self.discover_login(homeserver),
             AppEffect::StartSync => self.start_fake_sync(),
             AppEffect::SubscribeTimeline { room_id } => vec![AppAction::TimelineSubscribed {
                 room_id: room_id.clone(),
@@ -223,6 +226,28 @@ impl FakeDesktopBackend {
             homeserver: self.config.homeserver.clone(),
             user_id: self.config.user_id.clone(),
             device_id: self.config.device_id.clone(),
+        }
+    }
+
+    fn discover_login(&self, homeserver: &str) -> Vec<AppAction> {
+        match self.config.login_discovery {
+            LoginDiscoveryMode::Fixture => {
+                vec![AppAction::LoginDiscoverySucceeded {
+                    homeserver: homeserver.to_owned(),
+                    flows: fixture_login_flows(),
+                }]
+            }
+            LoginDiscoveryMode::Http => match matrix_desktop_auth::discover_login_flows(homeserver)
+            {
+                Ok(discovery) => vec![AppAction::LoginDiscoverySucceeded {
+                    homeserver: discovery.homeserver,
+                    flows: discovery.flows,
+                }],
+                Err(error) => vec![AppAction::LoginDiscoveryFailed {
+                    homeserver: homeserver.to_owned(),
+                    message: error.to_string(),
+                }],
+            },
         }
     }
 

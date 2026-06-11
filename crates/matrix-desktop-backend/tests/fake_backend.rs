@@ -3,6 +3,11 @@ use matrix_desktop_state::{
     AppAction, AuthDiscoveryState, AuthSecret, LoginFlowKind, LoginRequest, SearchMatchField,
     SearchScope, SearchState, SessionState, SyncState, ThreadPaneState,
 };
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+    thread,
+};
 
 #[test]
 fn fake_backend_boots_into_ready_session_with_rooms_and_thread() {
@@ -114,6 +119,64 @@ fn fake_backend_discovers_password_and_sso_login_methods() {
 }
 
 #[test]
+fn http_backend_discovers_login_methods_from_homeserver() {
+    let homeserver = spawn_login_discovery_server(
+        200,
+        r#"{"flows":[{"type":"m.login.password"},{"type":"m.login.token"}]}"#,
+    );
+    let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+        restore_session: false,
+        login_discovery: matrix_desktop_backend::LoginDiscoveryMode::Http,
+        ..FakeDesktopBackendConfig::default()
+    });
+
+    backend.dispatch(AppAction::LoginDiscoveryRequested {
+        homeserver: homeserver.clone(),
+    });
+
+    let AuthDiscoveryState::Ready {
+        homeserver: discovered_homeserver,
+        flows,
+    } = &backend.snapshot().state.auth
+    else {
+        panic!("expected discovered login flows");
+    };
+
+    assert_eq!(discovered_homeserver, &homeserver);
+    assert_eq!(flows[0].kind, LoginFlowKind::Password);
+    assert_eq!(flows[1].kind, LoginFlowKind::Token);
+}
+
+#[test]
+fn http_backend_records_login_discovery_failure() {
+    let homeserver = spawn_login_discovery_server(
+        404,
+        r#"{"errcode":"M_UNRECOGNIZED","error":"OAuth 2.0 authentication is in use on this homeserver."}"#,
+    );
+    let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+        restore_session: false,
+        login_discovery: matrix_desktop_backend::LoginDiscoveryMode::Http,
+        ..FakeDesktopBackendConfig::default()
+    });
+
+    backend.dispatch(AppAction::LoginDiscoveryRequested {
+        homeserver: homeserver.clone(),
+    });
+
+    let AuthDiscoveryState::Failed {
+        homeserver: failed_homeserver,
+        message,
+    } = &backend.snapshot().state.auth
+    else {
+        panic!("expected login discovery failure");
+    };
+
+    assert_eq!(failed_homeserver, &homeserver);
+    assert!(message.contains("HTTP 404"));
+    assert!(message.contains("OAuth 2.0 authentication is in use"));
+}
+
+#[test]
 fn fake_backend_login_boundary_fails_explicitly_before_real_sdk_wiring() {
     let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
         restore_session: false,
@@ -213,4 +276,33 @@ fn fake_backend_search_uses_visible_edited_message_body() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].event_id, "$late-original");
     assert_eq!(results[0].snippet, "Final synthetic checklist");
+}
+
+fn spawn_login_discovery_server(status: u16, body: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server should have an address");
+
+    thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("test server should accept a request");
+        let mut request = [0_u8; 2048];
+        let bytes_read = stream
+            .read(&mut request)
+            .expect("test server should read request");
+        let request = String::from_utf8_lossy(&request[..bytes_read]);
+        assert!(request.starts_with("GET /_matrix/client/v3/login HTTP/1.1"));
+
+        let response = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("test server should write response");
+    });
+
+    format!("http://{addr}")
 }

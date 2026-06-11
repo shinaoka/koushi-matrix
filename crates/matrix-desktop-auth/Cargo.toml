@@ -9,3 +9,5 @@ matrix-desktop-state = { path = "../matrix-desktop-state" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+url = "2"

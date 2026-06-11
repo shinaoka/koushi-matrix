@@ -23,24 +23,31 @@ crates/matrix-desktop-backend
         +--> crates/matrix-desktop-key
 ```
 
-`matrix-desktop-backend` intentionally has no network client. It executes the same loop the real backend will use:
+`matrix-desktop-backend` executes the same loop the real backend will use:
 
 ```text
 AppAction -> reduce(AppState) -> AppEffect -> backend effect runner -> follow-up AppAction
 ```
 
-The fake effect runner handles session restore, sync start, timeline subscription, thread subscription, sending synthetic local text, and search. Real Matrix integration should replace this runner with a Matrix SDK runner without moving state transitions into the UI.
+The effect runner still fakes session restore, sync start, timeline subscription,
+thread subscription, sending synthetic local text, and search. Login discovery is
+now switchable: tests and the browser fallback can use deterministic fixture
+flows, while the Tauri runtime can call the homeserver over HTTP. Real Matrix
+integration should replace the remaining fake handlers with a Matrix SDK runner
+without moving state transitions into the UI.
 
-`matrix-desktop-auth` owns pure Matrix authentication response parsing. It
-converts `/login` discovery JSON into app DTOs and keeps raw homeserver response
-bodies out of long-lived state.
+`matrix-desktop-auth` owns Matrix authentication discovery. It normalizes
+homeserver URLs to HTTPS by default, permits plain HTTP only for localhost or
+loopback development servers, builds `GET /_matrix/client/v3/login`, parses the
+response into app DTOs, and keeps raw homeserver response bodies out of
+long-lived state.
 
 ## Login Boundary
 
 The next real-login step should attach at these points:
 
-1. `AppEffect::DiscoverLogin` queries `GET /_matrix/client/v3/login` on the
-   configured homeserver and records supported flows such as
+1. `AppEffect::DiscoverLogin` can now query `GET /_matrix/client/v3/login` on
+   the configured homeserver and record supported flows such as
    `m.login.password`, `m.login.sso`, or `m.login.token`.
 2. The UI enables the password path only when discovery reports
    `m.login.password`; SSO/OIDC-capable homeservers can branch into a browser
@@ -66,8 +73,9 @@ The app now has an explicit first-run path before real Matrix login:
 3. The React shell renders a homeserver-configurable sign-in form instead of the Slack-like ready surface.
 4. `discover_login_methods` dispatches `AppAction::LoginDiscoveryRequested`,
    which emits `AppEffect::DiscoverLogin`.
-5. The fake backend returns synthetic password and SSO flows so the UI can
-   exercise the same branching contract before real network discovery exists.
+5. The browser fallback returns synthetic password and SSO flows so the UI can
+   exercise the same branching contract without external network dependency.
+   The Tauri runtime uses HTTP discovery by default.
 6. `submit_login` dispatches `AppAction::LoginSubmitted`, which emits `AppEffect::Login`.
 7. The fake backend intentionally turns that effect into `AppAction::LoginFailed` with a non-secret message because real Matrix login is not wired yet.
 
@@ -81,6 +89,12 @@ Open the browser shell in first-run mode with:
 
 ```bash
 http://127.0.0.1:5173/?session=signed-out
+```
+
+Open the Tauri shell in first-run mode with:
+
+```bash
+MATRIX_DESKTOP_RESTORE_SESSION=0 npm run tauri dev
 ```
 
 Real SDK login should replace only the `AppEffect::Login` effect handler. The UI should continue to read `SessionState` and `AppError` through the same snapshot DTOs.
@@ -133,7 +147,7 @@ Then open `http://127.0.0.1:5173/`.
 ## Not Done Yet
 
 - Release bundling/signing.
-- Real Matrix login.
+- Real Matrix password login.
 - SDK sync, room-list, and timeline service wiring.
 - Persistent encrypted search indexes.
 - E2EE store initialization and recovery UI.
