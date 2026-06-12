@@ -53,6 +53,7 @@ describe("desktop release scripts", () => {
       "verify main window",
       "optional real login from stdin",
       "optional reusable QA profile for restored sync state",
+      "optional synthetic send smoke message",
       "verify QA title panel token after shortcuts",
       "open Keyboard settings shortcut",
       "open User settings shortcut",
@@ -107,6 +108,43 @@ describe("desktop release scripts", () => {
     expect(output).toContain("package.scripts.qa:real-account");
   });
 
+  test("release preflight validates headless local QA entry", () => {
+    const output = runScript("scripts/desktop-release-preflight.mjs", ["--check-config"]);
+
+    expect(output).toContain("package.scripts.qa:headless-local");
+  });
+
+  test("headless local QA script lists homeserver and SDK checks", () => {
+    const output = runScript("scripts/desktop-headless-local-qa.mjs", ["--list"]);
+
+    for (const check of [
+      "verify installed Conduit binary",
+      "verify installed Tuwunel binary",
+      "start disposable local homeserver",
+      "register two synthetic local users",
+      "run headless Matrix SDK operations",
+      "stop disposable local homeserver"
+    ]) {
+      expect(output).toContain(check);
+    }
+  });
+
+  test("headless local QA configs bind only to loopback disposable stores", () => {
+    const conduit = runScript("scripts/desktop-headless-local-qa.mjs", [
+      "--print-conduit-config"
+    ]);
+    const tuwunel = runScript("scripts/desktop-headless-local-qa.mjs", [
+      "--print-tuwunel-config"
+    ]);
+
+    expect(conduit).toContain('address = "127.0.0.1"');
+    expect(conduit).toContain('database_path = "/tmp/conduit-data"');
+    expect(conduit).toContain("allow_federation = false");
+    expect(tuwunel).toContain('address = ["127.0.0.1"]');
+    expect(tuwunel).toContain('database_path = "/tmp/tuwunel-data"');
+    expect(tuwunel).toContain("allow_federation = false");
+  });
+
   test("mac GUI smoke child environment excludes secret-like variables", () => {
     const output = execFileSync(
       process.execPath,
@@ -127,6 +165,24 @@ describe("desktop release scripts", () => {
     expect(output).toContain("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS");
     expect(output).not.toContain("DEEPSEEK_API_KEY");
     expect(output).not.toContain("MATRIX_DESKTOP_TEST_SECRET");
+  });
+
+  test("mac GUI smoke can opt into SDK error diagnostics without forwarding secret env values", () => {
+    const output = execFileSync(
+      process.execPath,
+      ["scripts/desktop-mac-gui-smoke.mjs", "--child-env"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          MATRIX_DESKTOP_DEBUG_SDK_ERROR: "synthetic-secret-value"
+        }
+      }
+    );
+
+    expect(output).toContain("MATRIX_DESKTOP_DEBUG_SDK_ERROR=1");
+    expect(output).not.toContain("synthetic-secret-value");
   });
 
   test("mac GUI smoke real login mode enables QA title without exposing credentials in args", () => {
@@ -204,6 +260,21 @@ describe("desktop release scripts", () => {
     expect(output).not.toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE");
   });
 
+  test("mac GUI smoke send smoke mode passes only a synthetic body through child env", () => {
+    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--child-env",
+      "--send-smoke-message=Matrix Desktop synthetic QA send"
+    ]);
+    const sendLine = output
+      .split("\n")
+      .find((line) => line.startsWith("VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE="));
+
+    expect(sendLine).toBe(
+      "VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE=Matrix Desktop synthetic QA send"
+    );
+    expect(sendLine).not.toContain("password");
+  });
+
   test("desktop QA file credential store is gated to debug and test builds", () => {
     const source = readFileSync(
       new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
@@ -261,6 +332,22 @@ describe("desktop release scripts", () => {
     ]);
 
     expect(output.trim()).toBe("not-ready");
+  });
+
+  test("mac GUI smoke waits for send smoke success token", () => {
+    const pending = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 send=sending panel=closed"
+    ]);
+    const sent = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=2 errors=0 send=sent panel=closed"
+    ]);
+    const failed = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=1 send=failed panel=closed"
+    ]);
+
+    expect(pending.trim()).toBe("not-ready");
+    expect(sent.trim()).toBe("ready");
+    expect(failed.trim()).toBe("not-ready");
   });
 
   test("mac GUI smoke requires ready session when recovery code is supplied", () => {

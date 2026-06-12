@@ -31,4 +31,14 @@ describe("qaWindowTitle", () => {
 
     expect(title).toContain("panel=keyboardSettings");
   });
+
+  test("includes an optional send smoke status token when provided", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+
+    const title = qaWindowTitle(snapshot, "closed", "sent");
+
+    expect(title).toContain("panel=closed");
+    expect(title).toContain("send=sent");
+  });
 });

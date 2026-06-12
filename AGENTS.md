@@ -96,3 +96,18 @@
   use the OS credential store. If a profile run shows a Keychain prompt, treat
   it as an automation failure and verify that env var is present in
   `--child-env`.
+- If synthetic send smoke reaches `send=failed` while login, sync, and timeline
+  are otherwise ready, check that the product room list excludes non-joined
+  rooms before QA timeline sampling. Matrix SDK `Room::send` requires joined
+  room state, and a left room with visible history can otherwise become the
+  active QA room.
+
+## Local Homeserver QA Failures
+
+- Installing Conduit or Tuwunel from source with `cargo install --git` must set
+  `RUMA_UNSTABLE_EXHAUSTIVE_TYPES=1`. Without it, Ruma marks many public API
+  structs as non-exhaustive and both homeservers fail to compile with
+  `E0639: cannot create non-exhaustive struct using struct expression`.
+- On macOS, install Tuwunel with `--no-default-features` unless a Linux-oriented
+  build profile is intentional. The default feature set includes deployment
+  features such as `systemd`/`io_uring` that are not useful for local desktop QA.

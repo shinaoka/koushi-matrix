@@ -391,10 +391,60 @@ pub enum MatrixRoomOperationError {
     InvalidRoomId,
     #[error("Matrix event id is invalid")]
     InvalidEventId,
+    #[error("Matrix user id is invalid")]
+    InvalidUserId,
+    #[error("Matrix server name is invalid")]
+    InvalidServerName,
     #[error("Matrix room is not available")]
     RoomUnavailable,
-    #[error("Matrix room operation failed")]
+    #[error("Matrix room operation failed: {0}")]
+    Sdk(MatrixRoomOperationFailureKind),
+}
+
+impl MatrixRoomOperationError {
+    pub fn failure_kind(&self) -> Option<MatrixRoomOperationFailureKind> {
+        match self {
+            Self::Sdk(kind) => Some(*kind),
+            Self::InvalidRoomId
+            | Self::InvalidEventId
+            | Self::InvalidUserId
+            | Self::InvalidServerName
+            | Self::RoomUnavailable => None,
+        }
+    }
+
+    fn from_sdk_error(error: matrix_sdk::Error) -> Self {
+        if std::env::var_os("MATRIX_DESKTOP_DEBUG_SDK_ERROR").is_some() {
+            eprintln!("raw matrix room operation error: {error:?}");
+        }
+        Self::Sdk(matrix_room_operation_failure_kind(&error))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRoomOperationFailureKind {
+    AuthenticationRequired,
+    Encryption,
+    Forbidden,
+    Http,
+    Store,
+    WrongRoomState,
     Sdk,
+}
+
+impl fmt::Display for MatrixRoomOperationFailureKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::AuthenticationRequired => "authentication_required",
+            Self::Encryption => "encryption",
+            Self::Forbidden => "forbidden",
+            Self::Http => "http",
+            Self::Store => "store",
+            Self::WrongRoomState => "wrong_room_state",
+            Self::Sdk => "sdk",
+        };
+        formatter.write_str(label)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -859,7 +909,108 @@ pub async fn send_text_message(
         .with_transaction_id(txn_id)
         .await
         .map(|_| ())
-        .map_err(|_| MatrixRoomOperationError::Sdk)
+        .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+pub async fn room_can_send_text_message(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<bool, MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    if room.state() != matrix_sdk::RoomState::Joined {
+        return Ok(false);
+    }
+
+    let power_levels = room.power_levels_or_default().await;
+    Ok(power_levels.user_can_send_message(
+        room.own_user_id(),
+        matrix_sdk::ruma::events::MessageLikeEventType::RoomMessage,
+    ))
+}
+
+pub async fn create_room(
+    session: &MatrixClientSession,
+    name: &str,
+) -> Result<String, MatrixRoomOperationError> {
+    let mut request = matrix_sdk::ruma::api::client::room::create_room::v3::Request::new();
+    request.name = non_empty_name(name);
+    let room = session
+        .client()
+        .create_room(request)
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?;
+    Ok(room.room_id().to_string())
+}
+
+pub async fn create_space(
+    session: &MatrixClientSession,
+    name: &str,
+) -> Result<String, MatrixRoomOperationError> {
+    let mut creation_content =
+        matrix_sdk::ruma::api::client::room::create_room::v3::CreationContent::new();
+    creation_content.room_type = Some(matrix_sdk::ruma::room::RoomType::Space);
+
+    let mut request = matrix_sdk::ruma::api::client::room::create_room::v3::Request::new();
+    request.name = non_empty_name(name);
+    request.creation_content = Some(
+        matrix_sdk::ruma::serde::Raw::new(&creation_content)
+            .map_err(|_| MatrixRoomOperationError::Sdk(MatrixRoomOperationFailureKind::Sdk))?,
+    );
+
+    let room = session
+        .client()
+        .create_room(request)
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?;
+    Ok(room.room_id().to_string())
+}
+
+pub async fn invite_user_to_room(
+    session: &MatrixClientSession,
+    room_id: &str,
+    user_id: &str,
+) -> Result<(), MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let user_id = matrix_sdk::ruma::UserId::parse(user_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidUserId)?;
+    room.invite_user_by_id(&user_id)
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+pub async fn join_room_by_id(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<String, MatrixRoomOperationError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
+    let room = session
+        .client()
+        .join_room_by_id(&room_id)
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?;
+    Ok(room.room_id().to_string())
+}
+
+pub async fn set_space_child(
+    session: &MatrixClientSession,
+    space_id: &str,
+    child_room_id: &str,
+    via_server: &str,
+) -> Result<(), MatrixRoomOperationError> {
+    let space = matrix_room(session, space_id)?;
+    let child_room_id = matrix_sdk::ruma::OwnedRoomId::try_from(child_room_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
+    let via_server = matrix_sdk::ruma::OwnedServerName::try_from(via_server)
+        .map_err(|_| MatrixRoomOperationError::InvalidServerName)?;
+    let content =
+        matrix_sdk::ruma::events::space::child::SpaceChildEventContent::new(vec![via_server]);
+
+    space
+        .send_state_event_for_key(&child_room_id, content)
+        .await
+        .map(|_| ())
+        .map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
 pub async fn edit_text_message(
@@ -879,12 +1030,12 @@ pub async fn edit_text_message(
     let edit_event = room
         .make_edit_event(&event_id, edit_content)
         .await
-        .map_err(|_| MatrixRoomOperationError::Sdk)?;
+        .map_err(|_| MatrixRoomOperationError::Sdk(MatrixRoomOperationFailureKind::Sdk))?;
 
     room.send(edit_event)
         .await
         .map(|_| ())
-        .map_err(|_| MatrixRoomOperationError::Sdk)
+        .map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
 pub async fn redact_message(
@@ -899,7 +1050,7 @@ pub async fn redact_message(
     room.redact(&event_id, None, None)
         .await
         .map(|_| ())
-        .map_err(|_| MatrixRoomOperationError::Sdk)
+        .map_err(|_| MatrixRoomOperationError::Sdk(MatrixRoomOperationFailureKind::Sdk))
 }
 
 pub async fn search_message_candidates(
@@ -944,7 +1095,7 @@ pub async fn room_list_snapshot(
     .await
     {
         Ok(service) => service,
-        Err(_) => return Ok(matrix_room_list_snapshot_from_rooms(client.rooms()).await),
+        Err(_) => return Ok(matrix_room_list_snapshot_from_rooms(client.joined_rooms()).await),
     };
     let all_rooms = service
         .all_rooms()
@@ -952,7 +1103,9 @@ pub async fn room_list_snapshot(
         .map_err(|_| MatrixRoomListError::Sdk)?;
     let (entries, entries_controller) =
         all_rooms.entries_with_dynamic_adapters(MATRIX_ROOM_LIST_SNAPSHOT_LIMIT);
-    entries_controller.set_filter(Box::new(|_| true));
+    entries_controller.set_filter(Box::new(
+        matrix_sdk_ui::room_list_service::filters::new_filter_joined(),
+    ));
 
     let mut entries = Box::pin(entries);
     let Some(diffs) = entries.next().await else {
@@ -961,7 +1114,7 @@ pub async fn room_list_snapshot(
 
     let snapshot = matrix_room_list_snapshot_from_diffs(diffs).await;
     if snapshot.rooms.is_empty() && snapshot.spaces.is_empty() {
-        return Ok(matrix_room_list_snapshot_from_rooms(client.rooms()).await);
+        return Ok(matrix_room_list_snapshot_from_rooms(client.joined_rooms()).await);
     }
 
     Ok(snapshot)
@@ -1166,6 +1319,67 @@ fn matrix_room(
         .ok_or(MatrixRoomOperationError::RoomUnavailable)
 }
 
+fn non_empty_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_owned())
+    }
+}
+
+fn matrix_room_operation_failure_kind(error: &matrix_sdk::Error) -> MatrixRoomOperationFailureKind {
+    match error {
+        matrix_sdk::Error::AuthenticationRequired => {
+            MatrixRoomOperationFailureKind::AuthenticationRequired
+        }
+        matrix_sdk::Error::WrongRoomState(_) => MatrixRoomOperationFailureKind::WrongRoomState,
+        matrix_sdk::Error::Http(error) => {
+            if error
+                .as_client_api_error()
+                .is_some_and(|error| error.status_code.as_u16() == 403)
+                || matches!(
+                    error.client_api_error_kind(),
+                    Some(matrix_sdk::ruma::api::error::ErrorKind::Forbidden)
+                )
+            {
+                MatrixRoomOperationFailureKind::Forbidden
+            } else {
+                MatrixRoomOperationFailureKind::Http
+            }
+        }
+        matrix_sdk::Error::BadCryptoStoreState
+        | matrix_sdk::Error::NoOlmMachine
+        | matrix_sdk::Error::CryptoStoreError(_)
+        | matrix_sdk::Error::OlmError(_)
+        | matrix_sdk::Error::MegolmError(_)
+        | matrix_sdk::Error::DecryptorError(_) => MatrixRoomOperationFailureKind::Encryption,
+        matrix_sdk::Error::StateStore(_)
+        | matrix_sdk::Error::EventCacheStore(_)
+        | matrix_sdk::Error::MediaStore(_) => MatrixRoomOperationFailureKind::Store,
+        matrix_sdk::Error::SerdeJson(_)
+        | matrix_sdk::Error::Io(_)
+        | matrix_sdk::Error::CrossProcessLockError(_)
+        | matrix_sdk::Error::Identifier(_)
+        | matrix_sdk::Error::Url(_)
+        | matrix_sdk::Error::SlidingSync(_)
+        | matrix_sdk::Error::MultipleSessionCallbacks
+        | matrix_sdk::Error::OAuth(_)
+        | matrix_sdk::Error::ConcurrentRequestFailed
+        | matrix_sdk::Error::UnknownError(_)
+        | matrix_sdk::Error::EventCache(_)
+        | matrix_sdk::Error::SendQueueWedgeError(_)
+        | matrix_sdk::Error::BackupNotEnabled
+        | matrix_sdk::Error::CantIgnoreLoggedInUser
+        | matrix_sdk::Error::Media(_)
+        | matrix_sdk::Error::ReplyError(_)
+        | matrix_sdk::Error::PowerLevels(_)
+        | matrix_sdk::Error::Timeout
+        | matrix_sdk::Error::InsufficientData => MatrixRoomOperationFailureKind::Sdk,
+        _ => MatrixRoomOperationFailureKind::Sdk,
+    }
+}
+
 fn timeline_room(
     session: &MatrixClientSession,
     room_id: &str,
@@ -1270,6 +1484,10 @@ async fn matrix_room_list_snapshot_from_rooms(
 ) -> MatrixRoomListSnapshot {
     let mut snapshot = MatrixRoomListSnapshot::default();
     for room in rooms {
+        if room.state() != matrix_sdk::RoomState::Joined {
+            continue;
+        }
+
         let room_id = room.room_id().to_string();
         let display_name = room
             .cached_display_name()

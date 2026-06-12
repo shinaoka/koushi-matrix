@@ -1,7 +1,12 @@
 import type { DesktopSnapshot, SyncState } from "./types";
 import type { RightPanelMode } from "./rightPanel";
+import type { QaSendSmokeStatus } from "./qaSendSmoke";
 
-export function qaWindowTitle(snapshot: DesktopSnapshot, panelMode?: RightPanelMode): string {
+export function qaWindowTitle(
+  snapshot: DesktopSnapshot,
+  panelMode?: RightPanelMode,
+  sendStatus?: QaSendSmokeStatus
+): string {
   const title = [
     "matrix-desktop qa",
     `session=${snapshot.state.session.kind}`,
@@ -15,6 +20,9 @@ export function qaWindowTitle(snapshot: DesktopSnapshot, panelMode?: RightPanelM
   ];
   if (panelMode !== undefined) {
     title.push(`panel=${panelMode}`);
+  }
+  if (sendStatus !== undefined) {
+    title.push(`send=${sendStatus}`);
   }
   return title.join(" ");
 }

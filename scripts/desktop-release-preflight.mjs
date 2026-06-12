@@ -74,6 +74,11 @@ requireCheck(
   "package.scripts.qa:real-account",
   "npm real-account QA smoke entry exists"
 );
+requireCheck(
+  packageJson.scripts?.["qa:headless-local"]?.includes("desktop-headless-local-qa"),
+  "package.scripts.qa:headless-local",
+  "npm headless local QA entry exists"
+);
 
 if (strictSigning) {
   requireCheck(

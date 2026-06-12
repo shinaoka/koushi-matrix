@@ -12,6 +12,11 @@ name = "password-login-smoke"
 path = "src/bin/password-login-smoke.rs"
 required-features = ["smoke"]
 
+[[bin]]
+name = "headless-local-qa"
+path = "src/bin/headless-local-qa.rs"
+required-features = ["smoke"]
+
 [dependencies]
 eyeball-im = "0.8"
 futures-util = "0.3"

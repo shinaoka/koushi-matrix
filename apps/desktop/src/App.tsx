@@ -66,6 +66,12 @@ import {
   rightPanelModeForSearchQuery
 } from "./domain/rightPanel";
 import { qaWindowTitle } from "./domain/qaTitle";
+import {
+  type QaSendSmokeStatus,
+  qaSendSmokeCanStart,
+  qaSendSmokeCompletionStatus,
+  qaSendSmokeMessageFromEnv
+} from "./domain/qaSendSmoke";
 import type {
   DesktopSnapshot,
   RoomListItem,
@@ -120,10 +126,14 @@ export function App() {
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("thread");
+  const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("none");
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const searchTimer = useRef<number | null>(null);
+  const qaSendStarted = useRef(false);
+  const qaSendBaselineErrorCount = useRef(0);
+  const qaSendBaselineTimelineItems = useRef(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const loginPasswordRef = useRef<HTMLInputElement>(null);
   const recoverySecretRef = useRef<HTMLInputElement>(null);
@@ -215,8 +225,50 @@ export function App() {
     }
 
     const effectivePanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
-    setQaWindowTitle(qaWindowTitle(snapshot, effectivePanelMode));
-  }, [snapshot, rightPanelMode]);
+    setQaWindowTitle(qaWindowTitle(snapshot, effectivePanelMode, qaSendStatus));
+  }, [snapshot, rightPanelMode, qaSendStatus]);
+
+  useEffect(() => {
+    const message = qaSendSmokeMessage();
+    if (!message || !snapshot || qaSendStarted.current || !qaSendSmokeCanStart(snapshot)) {
+      return;
+    }
+    const roomId = snapshot.state.timeline.room_id;
+    if (!roomId) {
+      return;
+    }
+
+    qaSendStarted.current = true;
+    qaSendBaselineErrorCount.current = snapshot.state.errors.length;
+    qaSendBaselineTimelineItems.current = snapshot.timeline.length;
+    setQaSendStatus("sending");
+    void api
+      .sendText(roomId, message)
+      .then((nextSnapshot) => {
+        setSnapshot(nextSnapshot);
+        setQaSendStatus(
+          qaSendSmokeCompletionStatus(
+            nextSnapshot,
+            qaSendBaselineErrorCount.current,
+            qaSendBaselineTimelineItems.current
+          )
+        );
+      })
+      .catch(() => setQaSendStatus("failed"));
+  }, [snapshot]);
+
+  useEffect(() => {
+    if (!snapshot || !qaSendStarted.current || qaSendStatus !== "sending") {
+      return;
+    }
+    setQaSendStatus(
+      qaSendSmokeCompletionStatus(
+        snapshot,
+        qaSendBaselineErrorCount.current,
+        qaSendBaselineTimelineItems.current
+      )
+    );
+  }, [snapshot, qaSendStatus]);
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
@@ -1724,6 +1776,10 @@ function isTauriRuntime(): boolean {
 
 function qaTitleEnabled(): boolean {
   return import.meta.env.VITE_MATRIX_DESKTOP_QA_TITLE === "1";
+}
+
+function qaSendSmokeMessage(): string | null {
+  return qaSendSmokeMessageFromEnv(import.meta.env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE);
 }
 
 function setQaWindowTitle(title: string): void {

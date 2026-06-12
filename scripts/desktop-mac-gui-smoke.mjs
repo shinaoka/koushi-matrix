@@ -13,6 +13,7 @@ const checks = [
   "verify main window",
   "optional real login from stdin",
   "optional reusable QA profile for restored sync state",
+  "optional synthetic send smoke message",
   "verify QA title panel token after shortcuts",
   "open Keyboard settings shortcut",
   "open User settings shortcut",
@@ -27,6 +28,11 @@ const realLoginFromStdin = args.has("--real-login-from-stdin");
 const allowEmptyTimeline = args.has("--allow-empty-timeline");
 const allowPrivateScreenshots = args.has("--allow-private-screenshots");
 const qaProfile = optionValue("--qa-profile");
+const sendSmokeMessageOption = optionValue("--send-smoke-message");
+const sendSmokeMessage =
+  args.has("--send-smoke-message") || sendSmokeMessageOption !== undefined
+    ? sendSmokeMessageFromOption(sendSmokeMessageOption)
+    : null;
 
 if (args.has("--list")) {
   for (const check of checks) {
@@ -96,6 +102,12 @@ if (qaTitleReadySample !== undefined) {
       ? "ready"
       : "not-ready"
   );
+  process.exit(0);
+}
+
+const qaTitleSendReadySample = optionValue("--qa-title-send-ready");
+if (qaTitleSendReadySample !== undefined) {
+  console.log(qaStatusHasSendSuccess(parseQaTitle(qaTitleSendReadySample)) ? "ready" : "not-ready");
   process.exit(0);
 }
 
@@ -169,6 +181,10 @@ async function run() {
     } else if (qaProfile !== undefined) {
       const qaTitle = await waitForQaTitle(timeoutMs, false, allowEmptyTimeline);
       console.log(`ok restored session QA: ${qaTitle}`);
+    }
+    if (sendSmokeMessage !== null) {
+      const qaSendTitle = await waitForQaSend(timeoutMs);
+      console.log(`ok send smoke QA: ${qaSendTitle}`);
     }
 
     await keyChord("/");
@@ -253,6 +269,12 @@ function childEnvironment(dataDir, qaLoginPipePath = null) {
   env.MATRIX_DESKTOP_DATA_DIR = dataDir;
   env.MATRIX_DESKTOP_QA_TITLE = "1";
   env.VITE_MATRIX_DESKTOP_QA_TITLE = "1";
+  if (process.env.MATRIX_DESKTOP_DEBUG_SDK_ERROR) {
+    env.MATRIX_DESKTOP_DEBUG_SDK_ERROR = "1";
+  }
+  if (sendSmokeMessage !== null) {
+    env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE = sendSmokeMessage;
+  }
   if (qaProfile !== undefined) {
     env.MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR = join(dataDir, "qa-credential-store");
   }
@@ -278,6 +300,14 @@ function validatedQaProfileName() {
     throw new Error("qa profile must be 1-64 characters of letters, numbers, underscore, or dash");
   }
   return qaProfile;
+}
+
+function sendSmokeMessageFromOption(value) {
+  const message = value?.trim() || `Matrix Desktop synthetic QA send ${timestamp()}`;
+  if (/[\r\n]/.test(message)) {
+    throw new Error("send smoke message must be a single line");
+  }
+  return message;
 }
 
 function readRealLoginCredentials() {
@@ -520,6 +550,31 @@ async function waitForQaPanel(timeout, requiredPanel) {
   throw new Error(`real login QA did not report panel=${requiredPanel}. Last title: ${lastTitle}`);
 }
 
+async function waitForQaSend(timeout) {
+  const startedAt = Date.now();
+  let lastTitle = "";
+  while (Date.now() - startedAt < timeout) {
+    try {
+      const windowInfo = await currentWindowInfo();
+      lastTitle = windowInfo.windowName;
+      const status = parseQaTitle(lastTitle);
+      if (status.send === "failed") {
+        throw new Error(`send smoke failed. Last title: ${lastTitle}`);
+      }
+      if (qaStatusHasSendSuccess(status)) {
+        return summarizeQaStatus(status);
+      }
+    } catch (error) {
+      lastTitle = error.message;
+      if (lastTitle.includes("send smoke failed")) {
+        throw error;
+      }
+    }
+    await sleep(1000);
+  }
+  throw new Error(`send smoke QA did not reach send=sent. Last title: ${lastTitle}`);
+}
+
 function parseQaTitle(title) {
   const status = {};
   for (const token of title.split(/\s+/)) {
@@ -549,6 +604,10 @@ function qaStatusHasRequiredPanel(status, requiredPanel) {
     status.panel === "recovery" &&
     (status.session === "needsRecovery" || status.session === "recovering")
   );
+}
+
+function qaStatusHasSendSuccess(status) {
+  return status.errors === 0 && status.send === "sent";
 }
 
 function qaStatusIsReady(status, requireRecovered, allowEmptyTimeline = false) {
@@ -582,6 +641,9 @@ function summarizeQaStatus(status) {
   ];
   if (status.panel !== undefined) {
     values.push(`panel=${status.panel}`);
+  }
+  if (status.send !== undefined) {
+    values.push(`send=${status.send}`);
   }
   return values.join(" ");
 }
@@ -706,6 +768,6 @@ function tail(value, lines) {
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--allow-private-screenshots] [--artifact-dir=PATH] [--timeout-ms=MS]"
+    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--send-smoke-message[=BODY]] [--allow-empty-timeline] [--allow-private-screenshots] [--artifact-dir=PATH] [--timeout-ms=MS]"
   );
 }

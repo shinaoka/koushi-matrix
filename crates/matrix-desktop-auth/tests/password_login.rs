@@ -478,6 +478,92 @@ fn sdk_room_operation_failures_do_not_include_body_ids_or_token() {
 }
 
 #[test]
+fn sdk_send_forbidden_failure_is_classified_without_private_data() {
+    let homeserver = spawn_password_login_server_with_send_forbidden();
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+        matrix_desktop_auth::sync_once(&session)
+            .await
+            .expect("sync with joined room should succeed");
+        let room_id = "!joined-room:example.invalid";
+        let transaction_id = "desktop-sensitive-transaction";
+        let body = "synthetic-body-secret";
+
+        let error = matrix_desktop_auth::send_text_message(&session, room_id, body, transaction_id)
+            .await
+            .expect_err("forbidden send should fail");
+
+        assert_eq!(
+            error.failure_kind(),
+            Some(matrix_desktop_auth::MatrixRoomOperationFailureKind::Forbidden)
+        );
+        assert_error_redacts(
+            &error,
+            &[
+                room_id,
+                transaction_id,
+                body,
+                "fixture-access-token",
+                "synthetic-password",
+            ],
+        );
+    });
+}
+
+#[test]
+fn sdk_room_can_send_text_message_respects_power_levels() {
+    let homeserver = spawn_password_login_server_with_sendable_room_sync();
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+        matrix_desktop_auth::sync_once(&session)
+            .await
+            .expect("sync with power levels should succeed");
+
+        let read_only = matrix_desktop_auth::room_can_send_text_message(
+            &session,
+            "!readonly-room:example.invalid",
+        )
+        .await
+        .expect("read-only room sendability should be available");
+        let sendable = matrix_desktop_auth::room_can_send_text_message(
+            &session,
+            "!sendable-room:example.invalid",
+        )
+        .await
+        .expect("sendable room sendability should be available");
+
+        assert!(!read_only);
+        assert!(sendable);
+    });
+}
+
+#[test]
 fn sdk_search_candidates_return_empty_without_joined_rooms() {
     let homeserver = spawn_password_login_server(200);
     let request = LoginRequest {
@@ -582,6 +668,44 @@ fn sdk_room_list_snapshot_preserves_synced_parent_spaces() {
         );
         assert!(!format!("{snapshot:?}").contains("fixture-access-token"));
         assert!(!format!("{snapshot:?}").contains("synthetic-password"));
+    });
+}
+
+#[test]
+fn sdk_room_list_snapshot_excludes_left_rooms() {
+    let homeserver = spawn_password_login_server_with_joined_and_left_sync();
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+        matrix_desktop_auth::sync_once(&session)
+            .await
+            .expect("sync with left room should succeed");
+
+        let snapshot = matrix_desktop_auth::room_list_snapshot(&session)
+            .await
+            .expect("synced room snapshot should succeed");
+
+        assert_eq!(
+            snapshot
+                .rooms
+                .iter()
+                .map(|room| room.room_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["!joined-room:example.invalid"],
+            "snapshot = {snapshot:?}"
+        );
     });
 }
 
@@ -815,6 +939,181 @@ fn spawn_password_login_server_with_space_sync() -> String {
     format!("http://{addr}")
 }
 
+fn spawn_password_login_server_with_joined_and_left_sync() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server should have an address");
+
+    thread::spawn(move || {
+        for _ in 0..8 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test server should accept a request");
+            let request = read_http_request(&mut stream);
+
+            if request.starts_with("GET /_matrix/client/versions ") {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
+                );
+                continue;
+            }
+
+            if request.starts_with("GET /_matrix/client/") && request.contains("/sync") {
+                write_json(&mut stream, 200, joined_and_left_sync_response());
+                continue;
+            }
+
+            if request.starts_with("POST /_matrix/client/")
+                && request.contains("fixture-user")
+                && request.contains("synthetic-password")
+                && request.contains("Matrix Desktop Test")
+            {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"access_token":"fixture-access-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#,
+                );
+                continue;
+            }
+
+            write_json(
+                &mut stream,
+                404,
+                r#"{"errcode":"M_NOT_FOUND","error":"Unexpected test request"}"#,
+            );
+        }
+    });
+
+    format!("http://{addr}")
+}
+
+fn spawn_password_login_server_with_send_forbidden() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server should have an address");
+
+    thread::spawn(move || {
+        for _ in 0..16 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test server should accept a request");
+            let request = read_http_request(&mut stream);
+
+            if request.starts_with("GET /_matrix/client/versions ") {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
+                );
+                continue;
+            }
+
+            if request.starts_with("GET /_matrix/client/") && request.contains("/sync") {
+                write_json(&mut stream, 200, joined_room_sync_response());
+                continue;
+            }
+
+            if request.starts_with("GET /_matrix/client/")
+                && request.contains("/state/m.room.encryption/")
+            {
+                write_json(
+                    &mut stream,
+                    404,
+                    r#"{"errcode":"M_NOT_FOUND","error":"No encryption state"}"#,
+                );
+                continue;
+            }
+
+            if request.starts_with("PUT /_matrix/client/")
+                && request.contains("/send/m.room.message/")
+            {
+                write_json(
+                    &mut stream,
+                    403,
+                    r#"{"errcode":"M_FORBIDDEN","error":"Forbidden"}"#,
+                );
+                continue;
+            }
+
+            if request.starts_with("POST /_matrix/client/")
+                && request.contains("fixture-user")
+                && request.contains("synthetic-password")
+                && request.contains("Matrix Desktop Test")
+            {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"access_token":"fixture-access-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#,
+                );
+                continue;
+            }
+
+            write_json(
+                &mut stream,
+                404,
+                r#"{"errcode":"M_NOT_FOUND","error":"Unexpected test request"}"#,
+            );
+        }
+    });
+
+    format!("http://{addr}")
+}
+
+fn spawn_password_login_server_with_sendable_room_sync() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server should have an address");
+
+    thread::spawn(move || {
+        for _ in 0..10 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test server should accept a request");
+            let request = read_http_request(&mut stream);
+
+            if request.starts_with("GET /_matrix/client/versions ") {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
+                );
+                continue;
+            }
+
+            if request.starts_with("GET /_matrix/client/") && request.contains("/sync") {
+                write_json(&mut stream, 200, sendable_room_sync_response());
+                continue;
+            }
+
+            if request.starts_with("POST /_matrix/client/")
+                && request.contains("fixture-user")
+                && request.contains("synthetic-password")
+                && request.contains("Matrix Desktop Test")
+            {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"access_token":"fixture-access-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#,
+                );
+                continue;
+            }
+
+            write_json(
+                &mut stream,
+                404,
+                r#"{"errcode":"M_NOT_FOUND","error":"Unexpected test request"}"#,
+            );
+        }
+    });
+
+    format!("http://{addr}")
+}
+
 fn spawn_password_login_server_with_logout(status: u16, logout_seen: Arc<AtomicBool>) -> String {
     spawn_password_login_server_with_options(status, logout_seen, None)
 }
@@ -1012,6 +1311,193 @@ fn space_relationship_sync_response() -> &'static str {
                         ]
                     },
                     "timeline": {"events": [], "limited": false, "prev_batch": "room-prev"},
+                    "ephemeral": {"events": []},
+                    "account_data": {"events": []},
+                    "unread_notifications": {"highlight_count": 0, "notification_count": 0}
+                }
+            },
+            "leave": {},
+            "knock": {}
+        },
+        "to_device": {"events": []},
+        "presence": {"events": []},
+        "account_data": {"events": []}
+    }"#
+}
+
+fn joined_and_left_sync_response() -> &'static str {
+    r#"{
+        "device_one_time_keys_count": {},
+        "next_batch": "sync-batch-left-1",
+        "device_lists": {"changed": [], "left": []},
+        "rooms": {
+            "invite": {},
+            "join": {
+                "!joined-room:example.invalid": {
+                    "summary": {},
+                    "state": {
+                        "events": [
+                            {
+                                "content": {"room_version": "10"},
+                                "event_id": "$joined-room-create",
+                                "origin_server_ts": 1,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.create"
+                            },
+                            {
+                                "content": {"name": "Joined Fixture Room"},
+                                "event_id": "$joined-room-name",
+                                "origin_server_ts": 2,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.name"
+                            }
+                        ]
+                    },
+                    "timeline": {"events": [], "limited": false, "prev_batch": "joined-prev"},
+                    "ephemeral": {"events": []},
+                    "account_data": {"events": []},
+                    "unread_notifications": {"highlight_count": 0, "notification_count": 0}
+                }
+            },
+            "leave": {
+                "!left-room:example.invalid": {
+                    "state": {
+                        "events": [
+                            {
+                                "content": {"room_version": "10"},
+                                "event_id": "$left-room-create",
+                                "origin_server_ts": 3,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.create"
+                            },
+                            {
+                                "content": {"name": "Left Fixture Room"},
+                                "event_id": "$left-room-name",
+                                "origin_server_ts": 4,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.name"
+                            }
+                        ]
+                    },
+                    "timeline": {"events": [], "limited": false, "prev_batch": "left-prev"},
+                    "account_data": {"events": []}
+                }
+            },
+            "knock": {}
+        },
+        "to_device": {"events": []},
+        "presence": {"events": []},
+        "account_data": {"events": []}
+    }"#
+}
+
+fn joined_room_sync_response() -> &'static str {
+    r#"{
+        "device_one_time_keys_count": {},
+        "next_batch": "sync-batch-joined-1",
+        "device_lists": {"changed": [], "left": []},
+        "rooms": {
+            "invite": {},
+            "join": {
+                "!joined-room:example.invalid": {
+                    "summary": {},
+                    "state": {
+                        "events": [
+                            {
+                                "content": {"room_version": "10"},
+                                "event_id": "$joined-room-create",
+                                "origin_server_ts": 1,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.create"
+                            },
+                            {
+                                "content": {"name": "Joined Fixture Room"},
+                                "event_id": "$joined-room-name",
+                                "origin_server_ts": 2,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.name"
+                            }
+                        ]
+                    },
+                    "timeline": {"events": [], "limited": false, "prev_batch": "joined-prev"},
+                    "ephemeral": {"events": []},
+                    "account_data": {"events": []},
+                    "unread_notifications": {"highlight_count": 0, "notification_count": 0}
+                }
+            },
+            "leave": {},
+            "knock": {}
+        },
+        "to_device": {"events": []},
+        "presence": {"events": []},
+        "account_data": {"events": []}
+    }"#
+}
+
+fn sendable_room_sync_response() -> &'static str {
+    r#"{
+        "device_one_time_keys_count": {},
+        "next_batch": "sync-batch-sendable-1",
+        "device_lists": {"changed": [], "left": []},
+        "rooms": {
+            "invite": {},
+            "join": {
+                "!readonly-room:example.invalid": {
+                    "summary": {},
+                    "state": {
+                        "events": [
+                            {
+                                "content": {"creator": "@fixture-user:example.invalid", "room_version": "10"},
+                                "event_id": "$readonly-create",
+                                "origin_server_ts": 1,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.create"
+                            },
+                            {
+                                "content": {"users": {"@fixture-user:example.invalid": -10}, "users_default": 0, "events_default": 0, "state_default": 50},
+                                "event_id": "$readonly-power",
+                                "origin_server_ts": 2,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.power_levels"
+                            }
+                        ]
+                    },
+                    "timeline": {"events": [], "limited": false, "prev_batch": "readonly-prev"},
+                    "ephemeral": {"events": []},
+                    "account_data": {"events": []},
+                    "unread_notifications": {"highlight_count": 0, "notification_count": 0}
+                },
+                "!sendable-room:example.invalid": {
+                    "summary": {},
+                    "state": {
+                        "events": [
+                            {
+                                "content": {"creator": "@fixture-user:example.invalid", "room_version": "10"},
+                                "event_id": "$sendable-create",
+                                "origin_server_ts": 3,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.create"
+                            },
+                            {
+                                "content": {"name": "Sendable Fixture Room"},
+                                "event_id": "$sendable-name",
+                                "origin_server_ts": 4,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.name"
+                            }
+                        ]
+                    },
+                    "timeline": {"events": [], "limited": false, "prev_batch": "sendable-prev"},
                     "ephemeral": {"events": []},
                     "account_data": {"events": []},
                     "unread_notifications": {"highlight_count": 0, "notification_count": 0}
