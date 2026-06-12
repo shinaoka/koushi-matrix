@@ -37,6 +37,7 @@ import {
   useState
 } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { createDesktopApi } from "./backend/client";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
@@ -208,8 +209,14 @@ export function App() {
     if (!qaTitleEnabled()) {
       return;
     }
-    document.title = snapshot ? qaWindowTitle(snapshot) : "matrix-desktop qa session=booting";
-  }, [snapshot]);
+    if (!snapshot) {
+      setQaWindowTitle("matrix-desktop qa session=booting");
+      return;
+    }
+
+    const effectivePanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
+    setQaWindowTitle(qaWindowTitle(snapshot, effectivePanelMode));
+  }, [snapshot, rightPanelMode]);
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
@@ -1717,4 +1724,13 @@ function isTauriRuntime(): boolean {
 
 function qaTitleEnabled(): boolean {
   return import.meta.env.VITE_MATRIX_DESKTOP_QA_TITLE === "1";
+}
+
+function setQaWindowTitle(title: string): void {
+  document.title = title;
+  if (isTauriRuntime()) {
+    void getCurrentWindow()
+      .setTitle(title)
+      .catch(() => undefined);
+  }
 }

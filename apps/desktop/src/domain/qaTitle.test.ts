@@ -22,4 +22,13 @@ describe("qaWindowTitle", () => {
     expect(title).not.toContain("!");
     expect(title).not.toContain("$");
   });
+
+  test("includes an optional panel token when provided", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+
+    const title = qaWindowTitle(snapshot, "keyboardSettings");
+
+    expect(title).toContain("panel=keyboardSettings");
+  });
 });

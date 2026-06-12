@@ -116,4 +116,14 @@ describe("Tauri state refresh wiring", () => {
     expect(source).toContain("recoveryRequired");
     expect(source).toContain('"recovery"');
   });
+
+  test("feeds the effective right panel mode into the QA window title", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("setQaWindowTitle(qaWindowTitle(snapshot, effectivePanelMode));");
+    expect(source).toContain("effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot)");
+    expect(source).toContain("rightPanelMode");
+    expect(source).toContain("getCurrentWindow()");
+    expect(source).toContain(".setTitle(title)");
+  });
 });

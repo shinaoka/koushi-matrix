@@ -1,7 +1,8 @@
 import type { DesktopSnapshot, SyncState } from "./types";
+import type { RightPanelMode } from "./rightPanel";
 
-export function qaWindowTitle(snapshot: DesktopSnapshot): string {
-  return [
+export function qaWindowTitle(snapshot: DesktopSnapshot, panelMode?: RightPanelMode): string {
+  const title = [
     "matrix-desktop qa",
     `session=${snapshot.state.session.kind}`,
     `sync=${syncStateLabel(snapshot.state.sync)}`,
@@ -11,7 +12,11 @@ export function qaWindowTitle(snapshot: DesktopSnapshot): string {
     `timeline_subscribed=${snapshot.state.timeline.is_subscribed}`,
     `timeline_items=${snapshot.timeline.length}`,
     `errors=${snapshot.state.errors.length}`
-  ].join(" ");
+  ];
+  if (panelMode !== undefined) {
+    title.push(`panel=${panelMode}`);
+  }
+  return title.join(" ");
 }
 
 function syncStateLabel(sync: SyncState): string {

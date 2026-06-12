@@ -52,6 +52,7 @@ describe("desktop release scripts", () => {
       "launch Tauri dev shell",
       "verify main window",
       "optional real login from stdin",
+      "verify QA title panel token after shortcuts",
       "open Keyboard settings shortcut",
       "open User settings shortcut",
       "capture private-data-free screenshots",
@@ -59,6 +60,33 @@ describe("desktop release scripts", () => {
     ]) {
       expect(output).toContain(check);
     }
+  });
+
+  test("mac GUI smoke script parses the QA panel token without launching the GUI", () => {
+    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-panel=matrix-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings"
+    ]);
+
+    expect(output.trim()).toBe("keyboardSettings");
+  });
+
+  test("mac GUI smoke only skips panel checks while recovery owns the panel", () => {
+    const readyRecoveryPanel = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-panel-ready=matrix-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=recovery",
+      "--required-panel=keyboardSettings"
+    ]);
+    const recoveryPanel = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-panel-ready=matrix-desktop qa session=needsRecovery sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=recovery",
+      "--required-panel=keyboardSettings"
+    ]);
+    const keyboardPanel = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-panel-ready=matrix-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings",
+      "--required-panel=keyboardSettings"
+    ]);
+
+    expect(readyRecoveryPanel.trim()).toBe("not-ready");
+    expect(recoveryPanel.trim()).toBe("ready");
+    expect(keyboardPanel.trim()).toBe("ready");
   });
 
   test("release preflight validates mac GUI smoke entry", () => {
@@ -125,6 +153,26 @@ describe("desktop release scripts", () => {
     expect(source).not.toContain("clickAndReplace");
   });
 
+  test("mac GUI smoke real login avoids post-login screenshot artifacts", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("skip real login screenshot");
+    expect(source).toContain("if (!realLogin)");
+    expect(source).not.toContain("02-real-login.png");
+  });
+
+  test("mac GUI smoke can update the native QA title from the frontend", () => {
+    const capability = readFileSync(
+      new URL("../../../../apps/desktop/src-tauri/capabilities/default.json", import.meta.url),
+      "utf8"
+    );
+
+    expect(capability).toContain("core:window:allow-set-title");
+  });
+
   test("mac GUI smoke real login disables keychain persistence for unattended QA", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
       "--child-env-keys",
@@ -136,18 +184,31 @@ describe("desktop release scripts", () => {
 
   test("mac GUI smoke accepts recovery-required sessions after room timeline QA is ready", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-ready=matrix-desktop qa session=needsRecovery sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0"
+      "--qa-title-ready=matrix-desktop qa session=needsRecovery sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0 panel=recovery"
     ]);
 
     expect(output.trim()).toBe("ready");
   });
 
+  test("mac GUI smoke can relax timeline item count for sparse QA accounts", () => {
+    const strict = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=0 errors=0 panel=closed"
+    ]);
+    const relaxed = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--allow-empty-timeline",
+      "--qa-title-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=0 errors=0 panel=closed"
+    ]);
+
+    expect(strict.trim()).toBe("not-ready");
+    expect(relaxed.trim()).toBe("ready");
+  });
+
   test("mac GUI smoke requires ready session when recovery code is supplied", () => {
     const waiting = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-ready-require-recovered=matrix-desktop qa session=needsRecovery sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0"
+      "--qa-title-ready-require-recovered=matrix-desktop qa session=needsRecovery sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0 panel=recovery"
     ]);
     const recovered = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-ready-require-recovered=matrix-desktop qa session=ready sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0"
+      "--qa-title-ready-require-recovered=matrix-desktop qa session=ready sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0 panel=keyboardSettings"
     ]);
 
     expect(waiting.trim()).toBe("not-ready");

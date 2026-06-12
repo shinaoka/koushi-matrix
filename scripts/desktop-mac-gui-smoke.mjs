@@ -12,6 +12,7 @@ const checks = [
   "launch Tauri dev shell",
   "verify main window",
   "optional real login from stdin",
+  "verify QA title panel token after shortcuts",
   "open Keyboard settings shortcut",
   "open User settings shortcut",
   "capture private-data-free screenshots",
@@ -22,6 +23,7 @@ const args = new Set(process.argv.slice(2));
 const artifactDir = optionValue("--artifact-dir") ?? join(repoRoot, "artifacts", "mac-gui-smoke");
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "120000");
 const realLoginFromStdin = args.has("--real-login-from-stdin");
+const allowEmptyTimeline = args.has("--allow-empty-timeline");
 
 if (args.has("--list")) {
   for (const check of checks) {
@@ -60,16 +62,37 @@ if (args.has("--print-real-login-transport")) {
   process.exit(0);
 }
 
+const qaTitlePanelSample = optionValue("--qa-title-panel");
+if (qaTitlePanelSample !== undefined) {
+  const status = parseQaTitle(qaTitlePanelSample);
+  console.log(status.panel ?? "missing");
+  process.exit(0);
+}
+
+const qaTitlePanelReadySample = optionValue("--qa-title-panel-ready");
+if (qaTitlePanelReadySample !== undefined) {
+  const requiredPanel = optionValue("--required-panel") ?? "keyboardSettings";
+  const status = parseQaTitle(qaTitlePanelReadySample);
+  console.log(qaStatusHasRequiredPanel(status, requiredPanel) ? "ready" : "not-ready");
+  process.exit(0);
+}
+
 const qaTitleReadySample = optionValue("--qa-title-ready");
 if (qaTitleReadySample !== undefined) {
-  console.log(qaStatusIsReady(parseQaTitle(qaTitleReadySample), false) ? "ready" : "not-ready");
+  console.log(
+    qaStatusIsReady(parseQaTitle(qaTitleReadySample), false, allowEmptyTimeline)
+      ? "ready"
+      : "not-ready"
+  );
   process.exit(0);
 }
 
 const qaRecoveredTitleReadySample = optionValue("--qa-title-ready-require-recovered");
 if (qaRecoveredTitleReadySample !== undefined) {
   console.log(
-    qaStatusIsReady(parseQaTitle(qaRecoveredTitleReadySample), true) ? "ready" : "not-ready"
+    qaStatusIsReady(parseQaTitle(qaRecoveredTitleReadySample), true, allowEmptyTimeline)
+      ? "ready"
+      : "not-ready"
   );
   process.exit(0);
 }
@@ -117,30 +140,34 @@ async function run() {
 
     if (realLogin) {
       await writeRealLoginPipe(qaLoginPipePath, realLogin);
-      const qaTitle = await waitForQaTitle(timeoutMs, Boolean(realLogin.recoverySecret));
+      const qaTitle = await waitForQaTitle(
+        timeoutMs,
+        Boolean(realLogin.recoverySecret),
+        allowEmptyTimeline
+      );
       console.log(`ok real login QA: ${qaTitle}`);
-      const realLoginScreenshot = join(screenshotDir, "02-real-login.png");
-      await captureAppWindowScreenshot(realLoginScreenshot);
-      requireNonEmptyFile(realLoginScreenshot, "real login screenshot");
+      console.log("skip real login screenshot: post-login windows can contain private room data");
     }
 
     await keyChord("/");
     await sleep(1000);
-    const keyboardScreenshot = join(
-      screenshotDir,
-      realLogin ? "03-keyboard-settings.png" : "02-keyboard-settings.png"
-    );
-    await captureAppWindowScreenshot(keyboardScreenshot);
-    requireNonEmptyFile(keyboardScreenshot, "keyboard settings screenshot");
+    const keyboardTitle = await waitForQaPanel(timeoutMs, "keyboardSettings");
+    console.log(`ok keyboard settings QA: ${keyboardTitle}`);
+    if (!realLogin) {
+      const keyboardScreenshot = join(screenshotDir, "02-keyboard-settings.png");
+      await captureAppWindowScreenshot(keyboardScreenshot);
+      requireNonEmptyFile(keyboardScreenshot, "keyboard settings screenshot");
+    }
 
     await keyChord(",");
     await sleep(1000);
-    const userSettingsScreenshot = join(
-      screenshotDir,
-      realLogin ? "04-user-settings.png" : "03-user-settings.png"
-    );
-    await captureAppWindowScreenshot(userSettingsScreenshot);
-    requireNonEmptyFile(userSettingsScreenshot, "user settings screenshot");
+    const userSettingsTitle = await waitForQaPanel(timeoutMs, "userSettings");
+    console.log(`ok user settings QA: ${userSettingsTitle}`);
+    if (!realLogin) {
+      const userSettingsScreenshot = join(screenshotDir, "03-user-settings.png");
+      await captureAppWindowScreenshot(userSettingsScreenshot);
+      requireNonEmptyFile(userSettingsScreenshot, "user settings screenshot");
+    }
 
     console.log(`mac GUI smoke passed: ${runDir}`);
   } catch (error) {
@@ -202,10 +229,10 @@ function childEnvironment(dataDir, qaLoginPipePath = null) {
   env.MATRIX_DESKTOP_RESTORE_SESSION = "0";
   env.MATRIX_DESKTOP_SKIP_SAVED_SESSIONS = "1";
   env.MATRIX_DESKTOP_DATA_DIR = dataDir;
+  env.MATRIX_DESKTOP_QA_TITLE = "1";
+  env.VITE_MATRIX_DESKTOP_QA_TITLE = "1";
   if (realLoginFromStdin) {
-    env.MATRIX_DESKTOP_QA_TITLE = "1";
     env.MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE = "1";
-    env.VITE_MATRIX_DESKTOP_QA_TITLE = "1";
   }
   if (qaLoginPipePath) {
     env.MATRIX_DESKTOP_QA_LOGIN_PIPE = qaLoginPipePath;
@@ -217,32 +244,58 @@ function childEnvironment(dataDir, qaLoginPipePath = null) {
 function readRealLoginCredentials() {
   return new Promise((resolve, reject) => {
     let input = "";
+    let settled = false;
+    const settle = (callback) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback();
+    };
+    const parseInput = () => {
+      try {
+        const credentials = realLoginCredentialsFromInput(input);
+        settle(() => resolve(credentials));
+      } catch (error) {
+        settle(() => reject(error));
+      }
+    };
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => {
       input += chunk;
+      if (completeRealLoginInputWasReceived(input)) {
+        parseInput();
+      }
     });
     process.stdin.on("error", reject);
     process.stdin.on("end", () => {
-      const [homeserverInput, username, password, deviceNameInput, recoverySecretInput] = input
-        .replace(/\r/g, "")
-        .split("\n");
-      const homeserver = homeserverInput.trim() || "https://matrix.org";
-      const deviceName = deviceNameInput?.trim() || "Matrix Desktop Smoke Test";
-      const recoverySecret = recoverySecretInput?.trim() || null;
-      if (!username?.trim() || !password?.trim()) {
-        reject(new Error("real login stdin must contain homeserver, username, and password lines"));
-        return;
-      }
-      resolve({
-        homeserver,
-        username: username.trim(),
-        password: password.trim(),
-        deviceName,
-        recoverySecret
-      });
+      parseInput();
     });
     process.stdin.resume();
   });
+}
+
+function completeRealLoginInputWasReceived(input) {
+  return (input.replace(/\r/g, "").match(/\n/g) ?? []).length >= 5;
+}
+
+function realLoginCredentialsFromInput(input) {
+  const [homeserverInput, username, password, deviceNameInput, recoverySecretInput] = input
+    .replace(/\r/g, "")
+    .split("\n");
+  const homeserver = homeserverInput.trim() || "https://matrix.org";
+  const deviceName = deviceNameInput?.trim() || "Matrix Desktop Smoke Test";
+  const recoverySecret = recoverySecretInput?.trim() || null;
+  if (!username?.trim() || !password?.trim()) {
+    throw new Error("real login stdin must contain homeserver, username, and password lines");
+  }
+  return {
+    homeserver,
+    username: username.trim(),
+    password: password.trim(),
+    deviceName,
+    recoverySecret
+  };
 }
 
 async function waitForWindow(timeout) {
@@ -390,7 +443,7 @@ function writeSensitivePayloadToPath(path, payload, timeout) {
   });
 }
 
-async function waitForQaTitle(timeout, requireRecovered) {
+async function waitForQaTitle(timeout, requireRecovered, allowEmptyTimeline) {
   const startedAt = Date.now();
   let lastTitle = "";
   while (Date.now() - startedAt < timeout) {
@@ -398,7 +451,7 @@ async function waitForQaTitle(timeout, requireRecovered) {
       const windowInfo = await currentWindowInfo();
       lastTitle = windowInfo.windowName;
       const status = parseQaTitle(lastTitle);
-      if (qaStatusIsReady(status, requireRecovered)) {
+      if (qaStatusIsReady(status, requireRecovered, allowEmptyTimeline)) {
         return summarizeQaStatus(status);
       }
     } catch (error) {
@@ -407,6 +460,25 @@ async function waitForQaTitle(timeout, requireRecovered) {
     await sleep(1000);
   }
   throw new Error(`real login QA did not reach ready room/timeline state. Last title: ${lastTitle}`);
+}
+
+async function waitForQaPanel(timeout, requiredPanel) {
+  const startedAt = Date.now();
+  let lastTitle = "";
+  while (Date.now() - startedAt < timeout) {
+    try {
+      const windowInfo = await currentWindowInfo();
+      lastTitle = windowInfo.windowName;
+      const status = parseQaTitle(lastTitle);
+      if (qaStatusHasRequiredPanel(status, requiredPanel)) {
+        return summarizeQaStatus(status);
+      }
+    } catch (error) {
+      lastTitle = error.message;
+    }
+    await sleep(1000);
+  }
+  throw new Error(`real login QA did not report panel=${requiredPanel}. Last title: ${lastTitle}`);
 }
 
 function parseQaTitle(title) {
@@ -427,22 +499,35 @@ function parseQaTitle(title) {
   return status;
 }
 
-function qaStatusIsReady(status, requireRecovered) {
+function qaStatusHasRequiredPanel(status, requiredPanel) {
+  if (status.panel === requiredPanel) {
+    return true;
+  }
+  return (
+    status.panel === "recovery" &&
+    (status.session === "needsRecovery" || status.session === "recovering")
+  );
+}
+
+function qaStatusIsReady(status, requireRecovered, allowEmptyTimeline = false) {
   const sessionReady = requireRecovered
     ? status.session === "ready"
     : status.session === "ready" || status.session === "needsRecovery";
+  const timelineReady = allowEmptyTimeline
+    ? Number.isFinite(status.timeline_items) && status.timeline_items >= 0
+    : status.timeline_items > 0;
   return (
     sessionReady &&
     status.sync === "running" &&
     status.rooms > 0 &&
     status.active_room === true &&
     status.timeline_subscribed === true &&
-    status.timeline_items > 0
+    timelineReady
   );
 }
 
 function summarizeQaStatus(status) {
-  return [
+  const values = [
     `session=${status.session}`,
     `sync=${status.sync}`,
     `rooms=${status.rooms}`,
@@ -451,7 +536,11 @@ function summarizeQaStatus(status) {
     `timeline_subscribed=${status.timeline_subscribed}`,
     `timeline_items=${status.timeline_items}`,
     `errors=${status.errors}`
-  ].join(" ");
+  ];
+  if (status.panel !== undefined) {
+    values.push(`panel=${status.panel}`);
+  }
+  return values.join(" ");
 }
 
 async function captureAppWindowScreenshot(path) {
@@ -574,6 +663,6 @@ function tail(value, lines) {
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--artifact-dir=PATH] [--timeout-ms=MS]"
+    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
   );
 }

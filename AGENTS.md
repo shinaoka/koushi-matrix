@@ -66,3 +66,18 @@
   homeserver, username, password, device name, then optional recovery code.
   Leave the fifth line empty to accept `needsRecovery` as a post-login sync QA
   state; provide it only when verifying recovery completion to `ready`.
+- When driving `qa:mac-gui -- --real-login-from-stdin` through a PTY, send all
+  five newline-terminated lines. Without the fifth blank or recovery line, the
+  reader waits for more input and the Tauri window is never launched.
+- Do not store post-login real-account screenshots. They can contain room names,
+  Matrix IDs, message bodies, or attachment names. Real-account GUI automation
+  should rely on private-data-free QA window-title tokens instead.
+- Some sparse QA accounts have valid room-list sync but no visible timeline
+  items in the automatically selected room. Keep the strict
+  `timeline_items > 0` release signal for normal real-account smoke, but use
+  `qa:mac-gui -- --allow-empty-timeline` for sparse test accounts when the goal
+  is validating login, room-list sync, and GUI panel automation.
+- Avoid repeated destructive real-account login cycles while debugging GUI
+  automation. Prefer preserving the same running Tauri session while iterating
+  on panel/menu checks, and only restart when the script or Tauri capability
+  changes require it.
