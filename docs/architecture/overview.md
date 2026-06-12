@@ -73,8 +73,8 @@ An in-process actor system in `matrix-desktop-core`:
   create/invite/join/space operations, unread counts, DM classification.
 - `TimelineActor` (per room/thread timeline) — subscription, diffs,
   pagination, send/edit/redaction relay.
-- `SearchActor` — ngram candidates, canonical-text verification, reindexing
-  of edits/redactions/late decryptions.
+- `SearchActor` — ngram candidates, canonical-text verification,
+  document-level index mutations for edits/redactions/late decryptions.
 - `StoreActor` — credential store access, store/search keys, per-account
   paths, cleanup, debug/test secret injection policy.
 
@@ -116,7 +116,14 @@ stream), and the runtime must relay that model, not fight it.
    timeline. `AppState` snapshots must not embed full timeline item lists;
    re-serializing a timeline on every change does not scale to scroll-back.
    The UI applies diffs and may therefore implement stable scroll anchoring
-   on prepend.
+   on prepend. Matrix replacement events (`m.replace`) are separate events from
+   the original message. The runtime preserves both identities, keeps pending
+   edit relationships when an edit is visible before its original event, and
+   reprojects the original item and mutates only its affected search document
+   when the missing original, a late edit, redaction, or decryption result
+   arrives. Replacement events whose
+   original is missing are exposed as unresolved edit relations, not as ordinary
+   standalone messages.
 5. **Pagination is stateful and observable.** Every timeline exposes
    pagination state events: `Idle`, `Paginating`, `EndReached` (timeline
    start hit). The UI uses these to drive spinners and to suppress duplicate
@@ -171,6 +178,11 @@ architectural invariants:
 - **Key ownership.** `StoreActor` owns store and search keys, derived per
   account (HKDF from the local unlock secret kept in the OS credential
   store). Keys never cross the command/event boundary.
+- **Local encryption is fail-closed.** If the OS credential store, SDK store
+  encryption, or search index encryption cannot be initialized, the core refuses
+  login/restore/startup for that account and emits a redacted
+  `LocalEncryptionUnavailable` failure. There is no production fallback to
+  plaintext stores or plaintext search indexes.
 - **Webview threat model.** The React webview is the least-trusted layer.
   Secrets entered there (password, recovery key) flow one way: webview →
   Tauri IPC → core. The core never returns secret material to the webview.
@@ -189,6 +201,12 @@ architectural invariants:
 - **Search.** The ngram index is encrypted with its own key and is a
   candidate generator only; results are emitted after verification against
   canonical visible text, so index false positives never surface content.
+  Timeline edits, redactions, and late decryptions are document-level index
+  mutations, not append-only events and not full reindex operations: an edit
+  updates only the affected document by removing terms for the previous
+  canonical visible text and indexing the replacement text, a redaction removes
+  only the redacted document from the searchable corpus, and an unresolved
+  replacement event is not indexed as a standalone message.
 - **Device verification and cross-signing** are not yet designed. They are
   account-level security features and will live under `AccountActor` with
   their own commands/events; until then, no design doc may claim E2EE trust

@@ -230,9 +230,13 @@ struct AccountRuntimeState {
 
 `TimelineActor` owns a room or thread timeline subscription. It handles initial items, incremental updates, backward pagination, send, edit, redaction, late events, late decryption, and stable ordering.
 
-`SearchActor` owns encrypted search. It treats ngram search as a candidate generator, verifies canonical visible text or attachment filename before emitting results, and reindexes edits, redactions, and late decryptions.
+Timeline event consistency is actor-owned. Matrix edits (`m.replace`) are separate events from the original message they replace. The runtime must preserve both event identities, maintain a pending edit relation when an edit arrives before the original event is visible, and reproject the visible timeline item when the original event, a later edit, a redaction, or late decryption arrives. Search indexing follows the same rule: index only canonical visible text for the original timeline item, and apply document-level index mutations only for affected visible documents when the replacement relation becomes resolvable. A replacement event whose original is missing must be exposed as an unresolved edit relation, not as an ordinary standalone message.
+
+`SearchActor` owns encrypted search. It treats ngram search as a candidate generator, verifies canonical visible text or attachment filename before emitting results, and applies document-level index mutations for edits, redactions, and late decryptions. Search updates are keyed by the visible timeline event, not append-only event ingestion and not full reindex operations: an edit updates only the affected document by removing terms for the previous canonical text and indexing the replacement text, a redaction removes only the searchable document for that event, and an unresolved replacement event is not indexed as a standalone message.
 
 `StoreActor` owns OS credential store access, SDK store keys, search index keys, per-account store paths, local cleanup, and debug/test secret injection policy.
+
+Local encryption is fail-closed. If the OS credential store, SDK store encryption, or search index encryption cannot be initialized, the runtime must stop login, restore, or account startup for that account and emit a redacted `LocalEncryptionUnavailable` failure. Production builds must not continue with plaintext SDK stores or plaintext search indexes.
 
 ## Lifecycle
 
@@ -285,6 +289,8 @@ This keeps SDK work outside the reducer and keeps UI state deterministic. If som
 QA is layered.
 
 Unit tests are fast and network-free. They cover command routing, redaction, unauthenticated command rejection, login/sync/logout state transitions with fake ports, room/timeline/search event normalization, and reducer compatibility.
+
+Timeline/search unit tests must include replacement-event ordering cases: original-before-edit, edit-before-original, redaction of original, redaction of edit, and late decryption of either side. They must assert that search no longer returns the old text after edit, no longer returns redacted messages after deletion, and does not return unresolved replacement events as standalone messages.
 
 Local homeserver integration uses disposable Conduit and Tuwunel servers. The script starts a server, registers synthetic users, runs a core QA binary, and stops the server. The QA binary must use `CoreCommand` and `CoreEvent`, not direct SDK wrapper calls.
 
@@ -360,6 +366,7 @@ pub enum CoreFailure {
     RoomOperationFailed { kind: RoomFailureKind },
     TimelineOperationFailed,
     SearchFailed,
+    LocalEncryptionUnavailable,
     StoreUnavailable,
     ShutdownFailed,
 }
