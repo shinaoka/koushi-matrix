@@ -162,7 +162,7 @@ Gap watchlist: SDK pagination-status mapping to the four documented states;
 thread timeline support level in the vendored SDK; send-queue event mapping;
 batch sizing vs. the 128-capacity diff queue under fast backfill.
 
-## Phase 6 — Search Actor
+## Phase 6 — Search Actor — LANDED (commit f37fa76)
 
 Goal: encrypted search through the command/event boundary.
 
@@ -174,6 +174,14 @@ Goal: encrypted search through the command/event boundary.
 
 Gap watchlist: index encryption key lifecycle on logout; reindex cost on
 generation resets.
+
+Finding (landed): The SDK's `RoomIndexOperation::Edit` indexes edited messages
+under the **edit event_id**, not the original. `SearchDocumentStore` added an
+`edit_aliases` map (edit_event_id → original_event_id) so `verify_candidate`
+can resolve candidates returned by the ngram index back to the original
+document. Timeline diff forwarding detects `is_edited()` and emits both
+`Upsert` (canonical text update) and `Edit` (alias registration), using
+`latest_edit_json().get_field("event_id")` to extract the edit event_id.
 
 ## Phase 7 — Tauri Integration (spec Milestone F)
 
@@ -214,6 +222,14 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 - Mark this plan completed; open items become new dated specs.
 
 ## Changelog
+
+- 2026-06-13: Phase 6 landed (f37fa76) — SearchActor with encrypted ngram index
+  and canonical-text verification via SearchDocumentStore. Key finding: SDK
+  `RoomIndexOperation::Edit` indexes under edit_event_id; `edit_aliases` map
+  added to document store to resolve back to original. CJK query, edit-then-
+  search (old text absent, new text present), and redacted-message absence all
+  verified across all four QA legs (Conduit/Tuwunel × SyncService/LegacySync).
+  Tokens: search=ok search_edit=ok search_redact=ok.
 
 - 2026-06-13: Phase 5 exit review (strong model) — three Conduit/SyncService
   defects found after the agent-reported pass, all canon-relevant:
