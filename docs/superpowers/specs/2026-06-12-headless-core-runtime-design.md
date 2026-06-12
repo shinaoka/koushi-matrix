@@ -4,8 +4,9 @@ Status: approved design direction on 2026-06-12. This is a dated migration
 guide toward the normative architecture in
 [docs/architecture/overview.md](../../architecture/overview.md). That overview
 amends this spec's public API (TimelineKey addressing, unsubscribe lifecycle,
-request_id correlation, pagination state events, diff-based timeline updates,
-SDK send queue / sync service usage); where they differ, the overview wins.
+success/failure request_id correlation, pagination state events, diff-based
+timeline updates, SDK send queue usage, sync capability probing and fallback);
+where they differ, the overview wins.
 
 ## Scope
 

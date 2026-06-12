@@ -94,8 +94,8 @@ subscriptions, and keys live in actor-owned runtime state.
 These rules are normative for all core runtime code. They exist because
 matrix-rust-sdk is designed around cloneable handles and observable streams
 (`Timeline::subscribe()` returning `Vector` + batched `VectorDiff` stream,
-`SyncService` state observable, send-queue update stream), and the runtime
-must relay that model, not fight it.
+`SyncService` state observable when MSC4186 is available, send-queue update
+stream), and the runtime must relay that model, not fight it.
 
 1. **Actors relay the SDK; they do not reimplement it.** An actor owns SDK
    handles and subscriptions, converts observable updates into `CoreEvent`s,
@@ -104,10 +104,13 @@ must relay that model, not fight it.
    must not be duplicated in actor logic.
 2. **Commands never return data.** Results are observed as events and
    snapshots so that GUI, CLI, and QA observe identical behavior.
-3. **Every command carries a client-generated `request_id`.** Failures are
-   emitted as `OperationFailed { request_id, failure }` so callers can
-   correlate. Message sends additionally carry a `transaction_id` used for
-   local-echo matching end to end.
+3. **Every command carries a client-generated `request_id`.** Every command
+   result event carries that same `request_id`, whether the result is success
+   or failure. Failures are emitted as
+   `OperationFailed { request_id, failure }`; successes such as room creation,
+   join, send completion, pagination state changes, and search completion carry
+   `request_id` in their domain event. Message sends additionally carry a
+   `transaction_id` used for local-echo matching end to end.
 4. **Timeline data flows as diffs, not snapshots.** Timeline items are
    delivered as an initial item set plus `VectorDiff`-shaped update events per
    timeline. `AppState` snapshots must not embed full timeline item lists;
@@ -134,9 +137,14 @@ must relay that model, not fight it.
    retry, and remote-echo matching come from the SDK send queue and are
    relayed as events. The runtime does not serialize sends behind a command
    loop.
-9. **Sync uses the SDK sync service consistently.** The room list comes from
-   `RoomListService`; the sync lifecycle from `SyncService` (sliding sync).
-   `sync_once`-style polling is a QA/debug tool, not a product path.
+9. **Sync uses capability-probed SDK services, not ad hoc polling.** Prefer
+   `SyncService`/`RoomListService` when the homeserver supports MSC4186. If
+   `SyncService` is unavailable for a target homeserver, the `SyncActor`
+   switches to an explicit `LegacySync` backend using SDK `/sync` primitives
+   while preserving the same `CoreCommand`/`CoreEvent` contract. The selected
+   backend is emitted as a redacted diagnostic/event field so QA can assert it.
+   `sync_once`-style one-shot polling remains a QA/debug tool, not the product
+   continuous-sync path.
 10. **Backpressure is defined, not accidental.** The event channel policy is
     explicit: state snapshots are latest-wins (watch semantics, coalesced to
     at most one `StateChanged` per batch), discrete events use bounded
@@ -197,7 +205,8 @@ primary correctness gate.
    users, a core QA binary speaking `CoreCommand`/`CoreEvent` (never direct
    SDK wrapper calls). Covers login, sync, room/space create, invite/join,
    bidirectional messaging, room list, logout cleanup, and stdout/stderr
-   redaction.
+   redaction. It records and asserts the selected sync backend
+   (`SyncService` or `LegacySync`) so server capability gaps are visible.
 3. **Real homeserver QA** — required before GUI-level confidence claims:
    HTTPS login, recovery, encrypted store restore, sync lifecycle, room list,
    timeline, send, search smoke, logout, account switch.
@@ -219,11 +228,13 @@ overview amends its public API in the following ways, found in the
 - Timeline commands take a `TimelineKey` (room/thread), not `room_id`
   strings, so threads can paginate (rule 6).
 - `UnsubscribeTimeline` exists; timeline lifecycles are explicit (rule 7).
-- All commands carry a `request_id`; `OperationFailed` correlates (rule 3).
+- All command result events carry a `request_id`; success and failure both
+  correlate to the initiating command (rule 3).
 - `TimelineEvent` includes pagination state (`Idle`/`Paginating`/
   `EndReached`) and diff-based item updates; snapshots exclude timeline
   bodies (rules 4–5).
-- Sends use the SDK send queue; sync uses `SyncService`/`RoomListService`
+- Sends use the SDK send queue; sync uses capability-probed SDK services with
+  an explicit `LegacySync` fallback for homeservers without MSC4186
   (rules 8–9).
 - `CoreFailure` variants carry non-secret `kind` values.
 - The webview secret threat model above is part of the security policy.
