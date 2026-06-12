@@ -109,7 +109,10 @@ stream), and the runtime must relay that model, not fight it.
    or failure. Failures are emitted as
    `OperationFailed { request_id, failure }`; successes such as room creation,
    join, send completion, pagination state changes, and search completion carry
-   `request_id` in their domain event. Message sends additionally carry a
+   `request_id` in their domain event. Events that can also occur without a
+   client command — e.g. pagination state transitions triggered by SDK
+   coalescing or sync gap-fill — carry the originating `request_id` when one
+   exists (`Option<RequestId>`). Message sends additionally carry a
    `transaction_id` used for local-echo matching end to end.
 4. **Timeline data flows as diffs, not snapshots.** Timeline items are
    delivered as an initial item set plus `VectorDiff`-shaped update events per
@@ -151,7 +154,11 @@ stream), and the runtime must relay that model, not fight it.
    while preserving the same `CoreCommand`/`CoreEvent` contract. The selected
    backend is emitted as a redacted diagnostic/event field so QA can assert it.
    `sync_once`-style one-shot polling remains a QA/debug tool, not the product
-   continuous-sync path.
+   continuous-sync path. Note that `RoomListService` is built on sliding sync:
+   on the `LegacySync` backend, `RoomActor` must normalize the room list from
+   legacy sync state (`Client::rooms()` plus sync updates) instead. Because the
+   local QA matrix includes homeservers without MSC4186, this legacy room-list
+   path is a fully implemented, QA-gated product path, not a stub.
 10. **Backpressure is defined, not accidental.** The event channel policy is
     explicit: state snapshots are latest-wins (watch semantics, coalesced to
     at most one `StateChanged` per batch), discrete events use bounded
