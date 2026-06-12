@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
@@ -52,6 +52,7 @@ describe("desktop release scripts", () => {
       "launch Tauri dev shell",
       "verify main window",
       "optional real login from stdin",
+      "optional reusable QA profile for restored sync state",
       "verify QA title panel token after shortcuts",
       "open Keyboard settings shortcut",
       "open User settings shortcut",
@@ -180,6 +181,36 @@ describe("desktop release scripts", () => {
     ]);
 
     expect(output).toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE");
+  });
+
+  test("mac GUI smoke reusable profile keeps restore and saved sessions enabled", () => {
+    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--child-env",
+      "--qa-profile=agent-sync"
+    ]);
+
+    expect(output).toContain("MATRIX_DESKTOP_RESTORE_SESSION=1");
+    expect(output).toContain("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=0");
+    expect(output).toContain(".local-secrets/qa-profiles/agent-sync/data");
+    expect(output).not.toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE");
+  });
+
+  test("mac GUI smoke rejects unsafe reusable profile names", () => {
+    for (const profileName of ["", "../secret"]) {
+      const result = spawnSync(
+        process.execPath,
+        ["scripts/desktop-mac-gui-smoke.mjs", "--child-env", `--qa-profile=${profileName}`],
+        {
+          cwd: repoRoot,
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        "qa profile must be 1-64 characters of letters, numbers, underscore, or dash"
+      );
+    }
   });
 
   test("mac GUI smoke accepts recovery-required sessions after room timeline QA is ready", () => {

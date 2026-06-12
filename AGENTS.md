@@ -81,3 +81,12 @@
   automation. Prefer preserving the same running Tauri session while iterating
   on panel/menu checks, and only restart when the script or Tauri capability
   changes require it.
+- Use `qa:mac-gui -- --qa-profile=<name>` when a real-account GUI run should
+  preserve SDK SQLite store, cache, search index, saved session, and incremental
+  sync state across runs. Profile names must be synthetic and non-secret; data is
+  stored under ignored `.local-secrets/qa-profiles/<name>/data`.
+- The default `qa:mac-gui -- --real-login-from-stdin` path is intentionally
+  disposable and sets `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`. Combining
+  `--real-login-from-stdin` with `--qa-profile=<name>` is the opt-in path for
+  persistent restore/sync QA, and can trigger OS credential-store prompts on the
+  first run.

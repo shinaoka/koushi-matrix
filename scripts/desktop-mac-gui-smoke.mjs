@@ -12,6 +12,7 @@ const checks = [
   "launch Tauri dev shell",
   "verify main window",
   "optional real login from stdin",
+  "optional reusable QA profile for restored sync state",
   "verify QA title panel token after shortcuts",
   "open Keyboard settings shortcut",
   "open User settings shortcut",
@@ -24,6 +25,7 @@ const artifactDir = optionValue("--artifact-dir") ?? join(repoRoot, "artifacts",
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "120000");
 const realLoginFromStdin = args.has("--real-login-from-stdin");
 const allowEmptyTimeline = args.has("--allow-empty-timeline");
+const qaProfile = optionValue("--qa-profile");
 
 if (args.has("--list")) {
   for (const check of checks) {
@@ -41,6 +43,15 @@ if (args.has("--check-tools")) {
 if (args.has("--child-env-keys")) {
   for (const key of Object.keys(childEnvironment("/tmp/matrix-desktop-mac-gui-smoke")).sort()) {
     console.log(key);
+  }
+  process.exit(0);
+}
+
+if (args.has("--child-env")) {
+  for (const [key, value] of Object.entries(
+    childEnvironment(qaDataDirForRun("/tmp/matrix-desktop-mac-gui-smoke"))
+  ).sort(([left], [right]) => left.localeCompare(right))) {
+    console.log(`${key}=${value}`);
   }
   process.exit(0);
 }
@@ -110,7 +121,7 @@ async function run() {
 
   const runDir = join(artifactDir, timestamp());
   const screenshotDir = join(runDir, "screenshots");
-  const dataDir = join(runDir, "data");
+  const dataDir = qaDataDirForRun(runDir);
   const logPath = join(runDir, "tauri-dev.log");
   const qaLoginPipePath = realLogin ? join(runDir, "qa-login.pipe") : null;
   mkdirSync(screenshotDir, { recursive: true });
@@ -147,6 +158,9 @@ async function run() {
       );
       console.log(`ok real login QA: ${qaTitle}`);
       console.log("skip real login screenshot: post-login windows can contain private room data");
+    } else if (qaProfile !== undefined) {
+      const qaTitle = await waitForQaTitle(timeoutMs, false, allowEmptyTimeline);
+      console.log(`ok restored session QA: ${qaTitle}`);
     }
 
     await keyChord("/");
@@ -226,12 +240,12 @@ function childEnvironment(dataDir, qaLoginPipePath = null) {
       env[key] = process.env[key];
     }
   }
-  env.MATRIX_DESKTOP_RESTORE_SESSION = "0";
-  env.MATRIX_DESKTOP_SKIP_SAVED_SESSIONS = "1";
+  env.MATRIX_DESKTOP_RESTORE_SESSION = qaProfile !== undefined ? "1" : "0";
+  env.MATRIX_DESKTOP_SKIP_SAVED_SESSIONS = qaProfile !== undefined ? "0" : "1";
   env.MATRIX_DESKTOP_DATA_DIR = dataDir;
   env.MATRIX_DESKTOP_QA_TITLE = "1";
   env.VITE_MATRIX_DESKTOP_QA_TITLE = "1";
-  if (realLoginFromStdin) {
+  if (realLoginFromStdin && qaProfile === undefined) {
     env.MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE = "1";
   }
   if (qaLoginPipePath) {
@@ -239,6 +253,20 @@ function childEnvironment(dataDir, qaLoginPipePath = null) {
   }
   env.NO_COLOR = "1";
   return env;
+}
+
+function qaDataDirForRun(runDir) {
+  if (qaProfile === undefined) {
+    return join(runDir, "data");
+  }
+  return join(repoRoot, ".local-secrets", "qa-profiles", validatedQaProfileName(), "data");
+}
+
+function validatedQaProfileName() {
+  if (!qaProfile || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(qaProfile)) {
+    throw new Error("qa profile must be 1-64 characters of letters, numbers, underscore, or dash");
+  }
+  return qaProfile;
 }
 
 function readRealLoginCredentials() {
@@ -663,6 +691,6 @@ function tail(value, lines) {
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
+    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
   );
 }
