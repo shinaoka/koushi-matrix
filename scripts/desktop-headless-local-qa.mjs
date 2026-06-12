@@ -117,6 +117,8 @@ async function runForServer(serverKind) {
     console.log(qaResult.trim());
 
     if (runCoreQa) {
+      // Leg 1: probed backend. Both local servers advertise MSC4186, so the
+      // probe must select SyncService; the expectation makes drift fail QA.
       const coreQaResult = runCoreHeadlessQa({
         serverKind,
         homeserver,
@@ -125,9 +127,35 @@ async function runForServer(serverKind) {
         passwordA,
         userB,
         passwordB,
-        logPath
+        logPath,
+        legLabel: "probed",
+        expectSyncBackend: "SyncService"
       });
-      console.log(coreQaResult.trim());
+      console.log(`core QA (probed SyncService): ${coreQaResult.trim()}`);
+
+      // Leg 2: forced LegacySync (debug/test-only env override). Fresh data
+      // dir + cred store dir so no store state leaks across legs. Legacy
+      // /sync works against MSC4186-capable servers too, so this leg
+      // exercises the LegacySync product path end-to-end.
+      const coreLegacyResult = runCoreHeadlessQa({
+        serverKind,
+        homeserver,
+        serverName,
+        userA,
+        passwordA,
+        userB,
+        passwordB,
+        logPath,
+        legLabel: "legacy",
+        forceLegacyBackend: true,
+        expectSyncBackend: "LegacySync"
+      });
+      console.log(`core QA (forced LegacySync): ${coreLegacyResult.trim()}`);
+      if (!coreLegacyResult.includes("sync_backend_a=LegacySync")) {
+        throw new Error(
+          "forced-legacy core QA leg did not report sync_backend_a=LegacySync"
+        );
+      }
     }
   } finally {
     await stopProcess(serverProcess);
@@ -260,15 +288,38 @@ function runCoreHeadlessQa({
   passwordA,
   userB,
   passwordB,
-  logPath
+  logPath,
+  legLabel = "default",
+  forceLegacyBackend = false,
+  expectSyncBackend
 }) {
-  // Use a temp dir for per-run data so QA runs stay isolated.
-  const runDataDir = join(logPath, "..", "core-qa-data");
+  // Per-leg dirs so backend legs never share SDK store or credential state.
+  const runDataDir = join(logPath, "..", `core-qa-data-${legLabel}`);
   mkdirSync(runDataDir, { recursive: true });
 
   // The file credential store dir keeps QA unattended (no OS keychain prompts).
-  const credStoreDir = join(logPath, "..", "core-qa-cred");
+  const credStoreDir = join(logPath, "..", `core-qa-cred-${legLabel}`);
   mkdirSync(credStoreDir, { recursive: true });
+
+  const env = {
+    ...minimalEnvironment(),
+    MATRIX_DESKTOP_LOCAL_QA_SERVER_KIND: serverKind,
+    MATRIX_DESKTOP_LOCAL_QA_HOMESERVER: homeserver,
+    MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME: serverName,
+    MATRIX_DESKTOP_LOCAL_QA_USER_A: userA,
+    MATRIX_DESKTOP_LOCAL_QA_PASSWORD_A: passwordA,
+    MATRIX_DESKTOP_LOCAL_QA_USER_B: userB,
+    MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B: passwordB,
+    MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR: credStoreDir,
+    MATRIX_DESKTOP_QA_DATA_DIR: runDataDir
+  };
+  if (forceLegacyBackend) {
+    // Debug/test-only override; release builds ignore it entirely.
+    env.MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND = "legacy";
+  }
+  if (expectSyncBackend) {
+    env.MATRIX_DESKTOP_LOCAL_QA_EXPECT_SYNC_BACKEND = expectSyncBackend;
+  }
 
   const result = spawnSync(
     "cargo",
@@ -276,18 +327,7 @@ function runCoreHeadlessQa({
     {
       cwd: repoRoot,
       encoding: "utf8",
-      env: {
-        ...minimalEnvironment(),
-        MATRIX_DESKTOP_LOCAL_QA_SERVER_KIND: serverKind,
-        MATRIX_DESKTOP_LOCAL_QA_HOMESERVER: homeserver,
-        MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME: serverName,
-        MATRIX_DESKTOP_LOCAL_QA_USER_A: userA,
-        MATRIX_DESKTOP_LOCAL_QA_PASSWORD_A: passwordA,
-        MATRIX_DESKTOP_LOCAL_QA_USER_B: userB,
-        MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B: passwordB,
-        MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR: credStoreDir,
-        MATRIX_DESKTOP_QA_DATA_DIR: runDataDir
-      },
+      env,
       maxBuffer: 10 * 1024 * 1024
     }
   );
@@ -307,7 +347,7 @@ function runCoreHeadlessQa({
     const stderr = result.stderr.trim();
     const stdout = result.stdout.trim();
     throw new Error(
-      `headless core QA failed for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
+      `headless core QA (leg=${legLabel}) failed for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
     );
   }
   return result.stdout;

@@ -248,6 +248,22 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   before SDK handle drop per overview.md Async rule 12 step 4.
   All 25 unit tests green, 0 warnings, secret scan ok, release-gate
   structural ok, both-server QA green.
+- 2026-06-12: Phase 3 review resolution — the LegacySync validation gap is
+  closed with a debug/test-only forced-backend override
+  (`MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND=legacy`, compiled out of release
+  builds; the value must be exactly `legacy`, anything else probes
+  normally), because legacy `/sync` works against MSC4186-capable servers
+  too. The local QA script now runs two core QA legs per server with fresh
+  data/cred dirs: probed (expects `SyncService`) and forced-legacy (expects
+  `LegacySync`); `MATRIX_DESKTOP_LOCAL_QA_EXPECT_SYNC_BACKEND` makes
+  backend drift in either direction a QA failure. Result: all four legs
+  green on Conduit and Tuwunel; the first end-to-end run of
+  `run_legacy_sync_loop` needed **no fixes** — login, sync Started/Running,
+  stop, restore, and logout all passed unchanged on the legacy backend.
+  The SyncService `Error → SyncFailureKind::Http` catch-all mapping was
+  reviewed and accepted as the conservative choice. Unit tests now 26
+  (adds the override value-parsing test); `cargo check --release` confirms
+  the override symbols compile out of release builds.
 - 2026-06-12: Phase 0 landed. Notes: (1) the repo has no hosted CI, so all
   gates run locally (pre-commit hook + npm scripts + release preflight) until
   CI infrastructure exists; (2) the release-gate check found and fixed a real

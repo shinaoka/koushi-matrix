@@ -51,6 +51,18 @@ use crate::executor;
 use crate::failure::{CoreFailure, SyncFailureKind};
 use crate::ids::RequestId;
 
+/// QA/debug-only override: when set to `legacy`, the capability probe is
+/// skipped and the `LegacySync` backend is selected. This exists because both
+/// local QA homeservers (Conduit, Tuwunel) advertise MSC4186, so the legacy
+/// path would otherwise be unreachable in the local QA matrix; legacy `/sync`
+/// works against MSC4186-capable servers too (canon decision, Phase 3 review).
+///
+/// COMPILE-TIME GATE: release builds must never honor this override
+/// (release-gate structural rule pattern). Any value other than `legacy` is
+/// ignored and the probe runs normally.
+#[cfg(any(debug_assertions, test))]
+const ENV_FORCE_SYNC_BACKEND: &str = "MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND";
+
 /// Messages sent to the SyncActor from AccountActor.
 pub enum SyncMessage {
     /// Route a `SyncCommand` to the actor.
@@ -490,13 +502,30 @@ async fn run_legacy_sync_loop(
 /// Probe the server for MSC4186 (sliding sync / SyncService) availability.
 /// Returns `SyncService` if available, `LegacySync` otherwise.
 /// Never panics — network failures cause an empty result → LegacySync.
+///
+/// Debug/test builds honor `MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND=legacy`
+/// (skip the probe, select `LegacySync`); release builds compile the check
+/// out entirely and always probe.
 pub(crate) async fn probe_backend(client: &matrix_sdk::Client) -> SyncBackendKind {
+    #[cfg(any(debug_assertions, test))]
+    if forced_legacy_backend() {
+        return SyncBackendKind::LegacySync;
+    }
+
     let versions = client.available_sliding_sync_versions().await;
     if versions.is_empty() {
         SyncBackendKind::LegacySync
     } else {
         SyncBackendKind::SyncService
     }
+}
+
+/// True only when the QA env override requests the legacy backend.
+/// Value must be exactly `legacy`; anything else is ignored (probe normally).
+/// Debug/test builds only — this symbol does not exist in release builds.
+#[cfg(any(debug_assertions, test))]
+fn forced_legacy_backend() -> bool {
+    std::env::var(ENV_FORCE_SYNC_BACKEND).is_ok_and(|value| value == "legacy")
 }
 
 /// Map an SDK sync error to a coarse `SyncFailureKind`. Never exposes raw
@@ -598,6 +627,34 @@ pub mod tests {
                 "kind label '{label}' must be snake_case (no raw SDK text)"
             );
         }
+    }
+
+    // --- forced-backend override (debug/test builds only) ---
+    //
+    // Single test owns the env var; no other unit test reads it (probe_backend
+    // is never called with a real client in unit tests), so set/unset here is
+    // race-free.
+
+    #[test]
+    fn forced_backend_override_honors_legacy_only() {
+        // Unset → no force.
+        unsafe { std::env::remove_var(ENV_FORCE_SYNC_BACKEND) };
+        assert!(!forced_legacy_backend());
+
+        // Exactly "legacy" → force.
+        unsafe { std::env::set_var(ENV_FORCE_SYNC_BACKEND, "legacy") };
+        assert!(forced_legacy_backend());
+
+        // Any other value → ignored (probe normally).
+        for bogus in ["Legacy", "LEGACY", "sync_service", "1", ""] {
+            unsafe { std::env::set_var(ENV_FORCE_SYNC_BACKEND, bogus) };
+            assert!(
+                !forced_legacy_backend(),
+                "value {bogus:?} must not force the legacy backend"
+            );
+        }
+
+        unsafe { std::env::remove_var(ENV_FORCE_SYNC_BACKEND) };
     }
 
     // --- backend probe logic ---

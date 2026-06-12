@@ -40,6 +40,10 @@ const ENV_USER_A: &str = "MATRIX_DESKTOP_LOCAL_QA_USER_A";
 const ENV_PASSWORD_A: &str = "MATRIX_DESKTOP_LOCAL_QA_PASSWORD_A";
 const ENV_USER_B: &str = "MATRIX_DESKTOP_LOCAL_QA_USER_B";
 const ENV_PASSWORD_B: &str = "MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B";
+/// Optional assertion input (a plain string, not a credential — no gating
+/// needed): when set, QA fails if the backend reported in SyncEvent::Started
+/// differs. Valid values: "SyncService" | "LegacySync".
+const ENV_EXPECT_SYNC_BACKEND: &str = "MATRIX_DESKTOP_LOCAL_QA_EXPECT_SYNC_BACKEND";
 #[cfg(any(debug_assertions, test))]
 const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR";
 
@@ -150,6 +154,11 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     // "The selected backend is emitted as a redacted diagnostic/event field so
     // QA can assert it").
     println!("sync_backend_a={sync_backend_a:?}");
+    assert_expected_backend(
+        config.expect_sync_backend.as_deref(),
+        sync_backend_a,
+        "sync start A",
+    )?;
 
     // Wait for sync to reach Running (first successful sync response).
     wait_for_sync_running(&mut conn_a, "sync A running").await?;
@@ -264,6 +273,11 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     let sync_backend_b =
         wait_for_sync_started(&mut conn_b, sync_start_b_id, "sync start B").await?;
     println!("sync_backend_b={sync_backend_b:?}");
+    assert_expected_backend(
+        config.expect_sync_backend.as_deref(),
+        sync_backend_b,
+        "sync start B",
+    )?;
 
     wait_for_sync_running(&mut conn_b, "sync B running").await?;
     println!("sync_b=running");
@@ -548,6 +562,9 @@ struct QaConfig {
     password_a: String,
     user_b: String,
     password_b: String,
+    /// Expected sync backend ("SyncService" | "LegacySync"); QA fails on
+    /// mismatch when set. Plain assertion input, not a credential.
+    expect_sync_backend: Option<String>,
 }
 
 impl QaConfig {
@@ -560,8 +577,30 @@ impl QaConfig {
             password_a: env_required(ENV_PASSWORD_A)?,
             user_b: env_required(ENV_USER_B)?,
             password_b: env_required(ENV_PASSWORD_B)?,
+            expect_sync_backend: std::env::var(ENV_EXPECT_SYNC_BACKEND).ok(),
         })
     }
+}
+
+/// Fail when an expected backend is configured and the observed one differs.
+fn assert_expected_backend(
+    expected: Option<&str>,
+    observed: SyncBackendKind,
+    label: &str,
+) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let observed_name = match observed {
+        SyncBackendKind::SyncService => "SyncService",
+        SyncBackendKind::LegacySync => "LegacySync",
+    };
+    if observed_name != expected {
+        return Err(format!(
+            "{label}: sync backend mismatch: expected {expected}, observed {observed_name}"
+        ));
+    }
+    Ok(())
 }
 
 fn env_required(name: &str) -> Result<String, String> {
