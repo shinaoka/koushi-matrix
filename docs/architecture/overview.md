@@ -201,13 +201,15 @@ pub enum TimelineFailureKind {
 }
 ```
 
-The runtime assigns each attached consumer a `RuntimeConnectionId`; the caller
-allocates a monotonically increasing `sequence` within that connection. The
-full `RequestId` is therefore unique on the shared event stream, and consumers
-correlate by the full value. Attaching to the `CoreRuntime` returns the
-assigned `RuntimeConnectionId` before any command is accepted; a command must
-carry the ID of the connection it arrives on, and the runtime rejects a
-mismatched `connection_id` with `OperationFailed` instead of routing it. `TimelineKey` always includes the account so late
+The runtime assigns each attached consumer a `RuntimeConnectionId`; the
+attached connection allocates a monotonically increasing `sequence` within that
+connection. The full `RequestId` is therefore unique on the shared event
+stream, and consumers correlate by the full value. The command transport wraps
+each inbound command with the connection it arrived on. A command whose
+`request_id.connection_id` does not match that transport connection is rejected
+before routing and before any `CoreEvent` is published; it is a local
+`CommandSubmitError::InvalidRequestId`, not an `OperationFailed` with the
+forged `RequestId`. `TimelineKey` always includes the account so late
 events from a previous account switch can be rejected. Timeline item events
 also carry a monotonic `generation`; after any reset/resync the UI discards
 diffs from older generations.
@@ -225,18 +227,23 @@ stream), and the runtime must relay that model, not fight it.
    and manages lifecycle. Concurrency the SDK already provides — pagination
    coalescing, send-queue persistence and retry, sync service reconnection —
    must not be duplicated in actor logic.
-2. **Commands never return data.** Results are observed as events and
+2. **Commands never return Matrix data.** A connection send call may report
+   only local submission errors before acceptance, such as a closed runtime or
+   invalid request ID. Accepted command results are observed as events and
    snapshots so that GUI, CLI, and QA observe identical behavior.
-3. **Every command carries a runtime-scoped `request_id`.** Every command
-   result event carries that same full `request_id`, whether the result is
-   success or failure. Failures are emitted as
+3. **Every accepted command carries a runtime-scoped `request_id`.** Every
+   accepted command result event carries that same full `request_id`, whether
+   the result is success or failure. Failures are emitted as
    `OperationFailed { request_id, failure }`; successes such as room creation,
    join, send completion, pagination state changes, and search completion carry
    `request_id` in their domain event. Events that can also occur without a
    client command — e.g. pagination state transitions triggered by SDK
    coalescing or sync gap-fill — carry the originating `request_id` when one
-   exists (`Option<RequestId>`). Message sends additionally carry a
-   `transaction_id` used for local-echo matching end to end.
+   exists (`Option<RequestId>`). A command with a forged or mismatched
+   `connection_id` is not accepted and is rejected as a local submission error
+   before it can publish another consumer's `RequestId` on the shared stream.
+   Message sends additionally carry a `transaction_id` used for local-echo
+   matching end to end.
 4. **Timeline data flows as diffs, not snapshots.** Timeline items are
    delivered as an initial item set plus `VectorDiff`-shaped update events per
    timeline. `AppState` snapshots must not embed full timeline item lists;

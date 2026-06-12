@@ -86,14 +86,20 @@ semantics beyond typed client calls and view logic.
 
 ## Public Runtime API
 
-Core exposes commands, events, and state snapshots. Every command carries a
-runtime-scoped `RequestId`; every command result event carries the same full
-ID. The event stream is shared by all consumers (Tauri, CLI, QA), so the ID
-includes both a runtime-assigned connection ID and a caller-assigned sequence.
-Attaching a consumer to the `CoreRuntime` returns its `RuntimeConnectionId`
-before any command is accepted. Commands must carry the ID of the connection
-they arrive on; the runtime rejects a mismatched `connection_id` with
-`OperationFailed` instead of routing the command.
+Core exposes commands, events, and state snapshots through attached
+connections. Every accepted command carries a runtime-scoped `RequestId`; every
+accepted command result event carries the same full ID. The event stream is
+shared by all consumers (Tauri, CLI, QA), so the ID includes both a
+runtime-assigned connection ID and a connection-assigned sequence.
+
+Attaching a consumer to the `CoreRuntime` returns a `CoreConnection` with its
+`RuntimeConnectionId`. Request IDs are allocated by that attached connection,
+not hand-built by untrusted caller code. The command transport wraps each
+inbound command with the connection it arrived on. If a malformed command
+contains a `request_id.connection_id` that does not match that transport
+connection, the send call fails locally with
+`CommandSubmitError::InvalidRequestId`. The command is not routed and no
+`CoreEvent` is published with the forged `RequestId`.
 
 ```rust
 pub struct RuntimeConnectionId(pub u64);
@@ -140,8 +146,19 @@ pub enum TimelineFailureKind {
 }
 
 pub struct CoreRuntime {
+    // Owns the AppActor tree and creates CoreConnection handles.
+}
+
+pub struct CoreConnection {
+    connection_id: RuntimeConnectionId,
     command_tx: CoreCommandSender,
     event_rx: CoreEventReceiver,
+    next_sequence: u64,
+}
+
+pub enum CommandSubmitError {
+    RuntimeClosed,
+    InvalidRequestId,
 }
 
 pub enum CoreCommand {
@@ -167,7 +184,11 @@ pub enum CoreEvent {
 }
 ```
 
-Commands do not normally return large results directly. The runtime emits `CoreEvent` values and updated `AppStateSnapshot` values. This makes GUI, CLI QA, and integration tests observe the same behavior.
+Commands do not return Matrix/domain results directly. The connection send call
+may return only local submission errors such as a closed runtime or invalid
+request ID. Once a command is accepted, the runtime emits `CoreEvent` values
+and updated `AppStateSnapshot` values. This makes GUI, CLI QA, and integration
+tests observe the same behavior.
 
 Representative account and sync commands:
 
@@ -511,16 +532,16 @@ keyboard/focus behavior, and basic render sanity.
 QA should wait for events rather than rely on fixed sleeps:
 
 ```rust
-let request_id = request_ids.next();
-runtime.command(CoreCommand::Room(RoomCommand::CreateRoom {
+let request_id = connection.next_request_id();
+connection.command(CoreCommand::Room(RoomCommand::CreateRoom {
     request_id,
     name,
 })).await?;
 let room_id = events.wait_for_room_created(request_id).await?;
 
 let key = TimelineKey::room(account_key, room_id);
-let send_id = request_ids.next();
-runtime.command(CoreCommand::Timeline(TimelineCommand::SendText {
+let send_id = connection.next_request_id();
+connection.command(CoreCommand::Timeline(TimelineCommand::SendText {
     request_id: send_id,
     key,
     transaction_id,
@@ -580,6 +601,12 @@ pub enum CoreFailure {
 ```
 
 Raw SDK errors may be printed only behind an explicit debug/test diagnostic switch. They must not be stored in AppState, committed logs, normal test fixtures, or release diagnostics.
+
+`CommandSubmitError` is separate from `CoreFailure`. It covers local submission
+problems before a command is accepted by the runtime, including closed channels
+and forged or mismatched request IDs. These errors are returned only to the
+submitting connection and are never published as `CoreEvent`s with untrusted
+correlation IDs.
 
 ## Build And QA Gates
 
