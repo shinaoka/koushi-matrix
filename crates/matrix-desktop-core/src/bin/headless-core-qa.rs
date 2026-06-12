@@ -1,4 +1,4 @@
-//! Headless Core QA binary v0 (Phase 2).
+//! Headless Core QA binary v1 (Phase 3: adds sync lifecycle QA).
 //!
 //! Exercises login (with store bootstrap), store-backed session restore,
 //! logout cleanup, and stdout/stderr secret-redaction using ONLY
@@ -26,8 +26,8 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use matrix_desktop_core::command::{AccountCommand, CoreCommand};
-use matrix_desktop_core::event::{AccountEvent, CoreEvent};
+use matrix_desktop_core::command::{AccountCommand, CoreCommand, SyncCommand};
+use matrix_desktop_core::event::{AccountEvent, CoreEvent, SyncBackendKind, SyncEvent};
 use matrix_desktop_core::failure::CoreFailure;
 use matrix_desktop_core::ids::AccountKey;
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
@@ -135,6 +135,40 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     let account_key_a = wait_for_logged_in(&mut conn_a, login_a_id, "login A").await?;
     wait_for_ready_snapshot(&mut conn_a, "session A Ready").await?;
 
+    // --- Phase 3: Start sync for A, assert Started + Running, record backend ---
+    // (QA waits on events, never on fixed sleeps — spec §QA Model)
+    let sync_start_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Sync(SyncCommand::Start {
+            request_id: sync_start_id,
+        }))
+        .await
+        .map_err(|e| format!("submit sync start A: {e}"))?;
+
+    let sync_backend_a = wait_for_sync_started(&mut conn_a, sync_start_id, "sync start A").await?;
+    // The backend string is printed so QA output records it (canon requirement:
+    // "The selected backend is emitted as a redacted diagnostic/event field so
+    // QA can assert it").
+    println!("sync_backend_a={sync_backend_a:?}");
+
+    // Wait for sync to reach Running (first successful sync response).
+    wait_for_sync_running(&mut conn_a, "sync A running").await?;
+    println!("sync_a=running");
+
+    // --- Stop sync on logout A (ordered shutdown: sync stops before session drop) ---
+    // Logout sends SyncCommand::Stop to SyncActor via AccountActor; QA asserts
+    // that Stopped arrives so the shutdown contract is verified.
+    let sync_stop_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Sync(SyncCommand::Stop {
+            request_id: sync_stop_id,
+        }))
+        .await
+        .map_err(|e| format!("submit sync stop A: {e}"))?;
+
+    wait_for_sync_stopped(&mut conn_a, sync_stop_id, "sync stop A").await?;
+    println!("sync_a=stopped");
+
     // --- Store-backed restore of A on a fresh runtime over the same data dir.
     // Tear down runtime A first so the restored client is the only holder of
     // the per-account SQLite store. There is no CoreEvent for runtime
@@ -161,6 +195,7 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     wait_for_ready_snapshot(&mut conn_a2, "restored session A Ready").await?;
 
     // --- Logout A (via the restored, store-backed session) ---
+    // Note: logout now internally stops sync (ordered shutdown in AccountActor).
     let logout_a_id = conn_a2.next_request_id();
     conn_a2
         .command(CoreCommand::Account(AccountCommand::Logout {
@@ -196,7 +231,7 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         return Err("post-logout restore A must leave the session SignedOut".to_owned());
     }
 
-    // --- Login B + logout B ---
+    // --- Login B + sync B + logout B ---
     let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
     let mut conn_b = runtime_b.attach();
 
@@ -217,6 +252,22 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "login B").await?;
     wait_for_ready_snapshot(&mut conn_b, "session B Ready").await?;
 
+    // Start sync for B and record backend (canon requirement: both servers reported).
+    let sync_start_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Sync(SyncCommand::Start {
+            request_id: sync_start_b_id,
+        }))
+        .await
+        .map_err(|e| format!("submit sync start B: {e}"))?;
+
+    let sync_backend_b =
+        wait_for_sync_started(&mut conn_b, sync_start_b_id, "sync start B").await?;
+    println!("sync_backend_b={sync_backend_b:?}");
+
+    wait_for_sync_running(&mut conn_b, "sync B running").await?;
+    println!("sync_b=running");
+
     let logout_b_id = conn_b.next_request_id();
     conn_b
         .command(CoreCommand::Account(AccountCommand::Logout {
@@ -228,9 +279,101 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     wait_for_logged_out(&mut conn_b, logout_b_id, &account_key_b, "logout B").await?;
 
     Ok(format!(
-        "Headless core QA OK. server={} login_a={} restore_a=ok logout_a=ok post_logout_restore_a=not_found login_b={} logout_b=ok",
-        config.server_kind, account_key_a.0, account_key_b.0,
+        "Headless core QA OK. server={server} \
+         login_a={user_a} sync_a=ok backend_a={backend_a:?} \
+         restore_a=ok logout_a=ok post_logout_restore_a=not_found \
+         login_b={user_b} sync_b=ok backend_b={backend_b:?} logout_b=ok",
+        server = config.server_kind,
+        user_a = account_key_a.0,
+        backend_a = sync_backend_a,
+        user_b = account_key_b.0,
+        backend_b = sync_backend_b,
     ))
+}
+
+/// Wait for `SyncEvent::Started` with the given request_id. Returns the backend kind.
+async fn wait_for_sync_started(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<SyncBackendKind, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Started"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Sync(SyncEvent::Started {
+                request_id: ev_id,
+                backend,
+            }) if ev_id == Some(request_id) => {
+                return Ok(backend);
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait for `SyncEvent::Running` (first successful sync response).
+/// No request_id filter — Running is emitted without one.
+async fn wait_for_sync_running(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Running"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        if matches!(event, CoreEvent::Sync(SyncEvent::Running)) {
+            return Ok(());
+        }
+        // SyncEvent::Failed is terminal — surface it.
+        if matches!(event, CoreEvent::Sync(SyncEvent::Failed)) {
+            return Err(format!("{label}: SyncEvent::Failed received before Running"));
+        }
+    }
+}
+
+/// Wait for `SyncEvent::Stopped` with the given request_id.
+async fn wait_for_sync_stopped(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Stopped"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        if matches!(
+            event,
+            CoreEvent::Sync(SyncEvent::Stopped {
+                request_id: Some(ev_id)
+            }) if ev_id == request_id
+        ) {
+            return Ok(());
+        }
+        // Also accept Stopped without request_id (e.g. task-ended path).
+        if matches!(event, CoreEvent::Sync(SyncEvent::Stopped { request_id: None })) {
+            return Ok(());
+        }
+        if let CoreEvent::OperationFailed {
+            request_id: ev_id,
+            failure,
+        } = event
+        {
+            if ev_id == request_id {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+        }
+    }
 }
 
 /// Wait for a `StateChanged` snapshot where `SessionState::Ready`.

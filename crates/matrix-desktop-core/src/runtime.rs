@@ -268,13 +268,12 @@ impl AppActor {
                 // App commands (Shutdown) handled here in later phases.
                 false
             }
-            CoreCommand::Sync(_) => {
-                self.emit(CoreEvent::OperationFailed {
-                    request_id: command.request_id(),
-                    failure: CoreFailure::SyncFailed {
-                        kind: crate::failure::SyncFailureKind::Internal,
-                    },
-                });
+            CoreCommand::Sync(sync_command) => {
+                // Route to AccountActor (which forwards to SyncActor).
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::SyncCommand(sync_command))
+                    .await;
                 false
             }
             CoreCommand::Room(_) => {

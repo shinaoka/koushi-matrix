@@ -1,4 +1,5 @@
-//! AccountActor: handles login, restore, logout, and account switch.
+//! AccountActor: handles login, restore, logout, account switch, and owns the
+//! SyncActor child.
 //!
 //! Owns the `MatrixClientSession` handle and the `StoreActor` (which owns
 //! the single `CredentialStoreBackend` used for both unlock secrets and
@@ -18,11 +19,12 @@
 //!
 //! SwitchAccount (overview.md): ordered shutdown of the current account
 //! runtime WITHOUT clearing credentials or stores, followed by a store-backed
-//! restore of the target account. Phase 2 has no sync/timeline/search children
-//! yet, so those shutdown steps are no-ops.
+//! restore of the target account. Shutdown order: timelines → search → sync
+//! (phases 4, 5, 6 add their children; Phase 3 adds sync).
 //!
-//! Shutdown order (overview.md Async rules 11/12): SDK handles dropped inside
-//! the Tokio runtime context.
+//! Shutdown order (overview.md Async rules 11/12, rule 12 step 4):
+//!   stop timeline subscriptions → stop search → stop sync → drop SDK handles.
+//! SDK handles dropped inside the Tokio runtime context.
 
 use std::sync::Arc;
 
@@ -31,11 +33,12 @@ use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_state::{AppAction, LoginRequest, SessionInfo};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::command::AccountCommand;
+use crate::command::{AccountCommand, SyncCommand};
 use crate::event::{AccountEvent, CoreEvent};
 use crate::failure::{CoreFailure, LoginFailureKind};
 use crate::ids::{AccountKey, RequestId};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
+use crate::sync::{SyncActorHandle, SyncMessage};
 
 /// "Credential store healthy, but no stored session for that account"
 /// during restore/switch (canon: `CoreFailure::SessionNotFound`).
@@ -47,6 +50,7 @@ const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
 /// Messages routed to the AccountActor task.
 pub enum AccountMessage {
     Command(AccountCommand),
+    SyncCommand(SyncCommand),
     Shutdown,
 }
 
@@ -83,6 +87,10 @@ pub struct AccountActor {
     event_tx: broadcast::Sender<CoreEvent>,
     /// Message inbox.
     command_rx: mpsc::Receiver<AccountMessage>,
+    /// SyncActor child handle (Phase 3). Present only when a store-backed
+    /// session exists. Created on first login/restore; destroyed on logout /
+    /// account switch.
+    sync_actor: Option<SyncActorHandle>,
 }
 
 impl AccountActor {
@@ -99,6 +107,7 @@ impl AccountActor {
             action_tx,
             event_tx,
             command_rx,
+            sync_actor: None,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -111,11 +120,57 @@ impl AccountActor {
                 AccountMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
+                AccountMessage::SyncCommand(sync_command) => {
+                    self.route_sync_command(sync_command).await;
+                }
             }
         }
-        // Shutdown: drop the session handle inside the runtime context
+        // Ordered shutdown (overview.md Async rule 12):
+        // timelines (phase 5 no-op) → search (phase 6 no-op) → sync → SDK handles.
+        self.stop_sync_actor().await;
+        // Drop the session handle inside the runtime context
         // (overview.md Async rule 11 — deadpool-runtime panic prevention).
         drop(self.session.take());
+    }
+
+    /// Route a SyncCommand to the SyncActor, or emit SessionRequired if no
+    /// store-backed session is active yet.
+    async fn route_sync_command(&self, command: SyncCommand) {
+        let request_id = match &command {
+            SyncCommand::Start { request_id }
+            | SyncCommand::Stop { request_id }
+            | SyncCommand::Restart { request_id }
+            | SyncCommand::SyncOnce { request_id } => *request_id,
+        };
+
+        match &self.sync_actor {
+            Some(handle) => {
+                let _ = handle.send(SyncMessage::Command(command)).await;
+            }
+            None => {
+                // Session not yet ready — gate is enforced in AppActor but be
+                // defensive here too.
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+            }
+        }
+    }
+
+    /// Spawn the SyncActor for the just-established store-backed session.
+    fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
+        let handle = crate::sync::SyncActor::spawn(
+            session,
+            self.action_tx.clone(),
+            self.event_tx.clone(),
+        );
+        self.sync_actor = Some(handle);
+    }
+
+    /// Ordered shutdown of the SyncActor (step 4 of the shutdown sequence).
+    async fn stop_sync_actor(&mut self) {
+        if let Some(handle) = self.sync_actor.take() {
+            let _ = handle.send(SyncMessage::Shutdown).await;
+            handle.join().await;
+        }
     }
 
     async fn handle_command(&mut self, command: AccountCommand) {
@@ -218,8 +273,13 @@ impl AccountActor {
         // context (Async rule 11).
         drop(login_session);
 
-        self.session = Some(Arc::new(store_backed));
+        let session_arc = Arc::new(store_backed);
+        self.session = Some(session_arc.clone());
         self.session_key_id = Some(key_id);
+
+        // Spawn the SyncActor now that we have a store-backed session
+        // (store bootstrap invariant: sync only on the store-backed session).
+        self.spawn_sync_actor(session_arc);
 
         // Project login success through the reducer.
         self.reduce(vec![AppAction::LoginSucceeded(info)]);
@@ -266,9 +326,10 @@ impl AccountActor {
         account_key: AccountKey,
     ) {
         // Ordered shutdown of the current account runtime WITHOUT clearing
-        // credentials or stores. Phase 2 has no sync/timeline/search children;
-        // those shutdown steps are no-ops. The SDK handle is dropped inside
-        // the runtime context (Async rule 11).
+        // credentials or stores.
+        // Phase 3: stop sync. Phases 4-6 add their children here.
+        self.stop_sync_actor().await;
+        // Drop the SDK handle inside the runtime context (Async rule 11).
         drop(self.session.take());
         self.session_key_id = None;
 
@@ -346,8 +407,12 @@ impl AccountActor {
                 let info = session.info.clone();
                 let account_key = account_key_from_info(&info);
 
-                self.session = Some(Arc::new(session));
+                let session_arc = Arc::new(session);
+                self.session = Some(session_arc.clone());
                 self.session_key_id = Some(key_id);
+
+                // Spawn the SyncActor for the newly restored store-backed session.
+                self.spawn_sync_actor(session_arc);
 
                 self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
                 self.emit(CoreEvent::Account(match outcome {
@@ -373,6 +438,9 @@ impl AccountActor {
             }
         };
         let key_id = self.session_key_id.take();
+
+        // Ordered shutdown step 4: stop sync before dropping the session.
+        self.stop_sync_actor().await;
 
         // Attempt server-side logout (best-effort; local cleanup always happens).
         let _ = matrix_desktop_auth::logout(&session).await;

@@ -15,6 +15,7 @@ pub mod failure;
 pub mod ids;
 pub mod runtime;
 pub mod store;
+pub mod sync;
 
 pub use command::{
     AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, SearchScope, SyncCommand,
