@@ -37,17 +37,9 @@ use crate::failure::{CoreFailure, LoginFailureKind};
 use crate::ids::{AccountKey, RequestId};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
 
-/// Interim failure kind for "no stored session for that account" during
-/// restore/switch. None of the existing `CoreFailure`/`LoginFailureKind`
-/// variants names this condition precisely (the credential store itself is
-/// reachable and healthy); a dedicated kind needs a canon amendment — see the
-/// Phase 2 review report. `LoginFailed { kind: Store }` is the least-wrong
-/// existing kind because restore is a login-class flow whose stored material
-/// is missing. AppState semantics are carried correctly by the
-/// `RestoreSessionNotFound` reducer action regardless of this kind.
-const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::LoginFailed {
-    kind: LoginFailureKind::Store,
-};
+/// "Credential store healthy, but no stored session for that account"
+/// during restore/switch (canon: `CoreFailure::SessionNotFound`).
+const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::SessionNotFound;
 
 /// Redacted message used in reducer error projections (never raw SDK text).
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";

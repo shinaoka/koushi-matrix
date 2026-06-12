@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CoreFailure {
     SessionRequired,
+    /// The credential store is healthy but holds no stored session for the
+    /// requested account (restore / switch target). UI: go to login quietly.
+    SessionNotFound,
     LoginFailed { kind: LoginFailureKind },
     RecoveryFailed { kind: RecoveryFailureKind },
     SyncFailed { kind: SyncFailureKind },

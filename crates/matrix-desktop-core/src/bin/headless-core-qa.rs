@@ -187,11 +187,7 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         "post-logout restore A (must fail)",
     )
     .await?;
-    if failure
-        != (CoreFailure::LoginFailed {
-            kind: LoginFailureKind::Store,
-        })
-    {
+    if failure != CoreFailure::SessionNotFound {
         return Err(format!(
             "post-logout restore A failed with unexpected kind: {failure:?}"
         ));
