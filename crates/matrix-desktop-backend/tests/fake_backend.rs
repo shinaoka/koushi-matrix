@@ -640,6 +640,61 @@ fn deferred_sync_mode_defers_timeline_pagination_to_sdk_boundary() {
 }
 
 #[test]
+fn deferred_sync_mode_defers_send_text_to_sdk_boundary() {
+    let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+        sync: SyncMode::Deferred,
+        ..FakeDesktopBackendConfig::default()
+    });
+    let room_id = "!sdk-room:example.invalid".to_owned();
+
+    backend.dispatch(compose_room_list_update(DesktopRoomListUpdate {
+        spaces: vec![DesktopRoomListSpace {
+            space_id: "!sdk-space:example.invalid".to_owned(),
+            display_name: "SDK Space".to_owned(),
+        }],
+        rooms: vec![DesktopRoomListRoom {
+            room_id: room_id.clone(),
+            display_name: "SDK Room".to_owned(),
+            is_dm: false,
+            unread_count: 0,
+            parent_space_ids: vec!["!sdk-space:example.invalid".to_owned()],
+        }],
+    }));
+    backend.dispatch(AppAction::SelectRoom {
+        room_id: room_id.clone(),
+    });
+
+    let effects = backend.dispatch(AppAction::SendTextSubmitted {
+        room_id: room_id.clone(),
+        transaction_id: "txn-sdk".to_owned(),
+        body: "hello from sdk boundary".to_owned(),
+    });
+    let snapshot = backend.snapshot();
+
+    assert!(effects.iter().any(|effect| {
+        matches!(
+            effect,
+            AppEffect::SendText { transaction_id, .. } if transaction_id == "txn-sdk"
+        )
+    }));
+    assert_eq!(
+        snapshot
+            .state
+            .timeline
+            .composer
+            .pending_transaction_id
+            .as_deref(),
+        Some("txn-sdk")
+    );
+    assert!(
+        snapshot
+            .timeline
+            .iter()
+            .all(|message| message.event_id != "$local-txn-sdk")
+    );
+}
+
+#[test]
 fn logout_clears_backend_matrix_session_handle() {
     let homeserver = spawn_password_login_server(200);
     let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {

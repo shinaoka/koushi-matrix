@@ -96,6 +96,11 @@ pub enum AppAction {
         room_id: String,
         transaction_id: String,
     },
+    SendTextFailed {
+        room_id: String,
+        transaction_id: String,
+        message: String,
+    },
     OpenThread {
         room_id: String,
         root_event_id: String,

@@ -375,13 +375,16 @@ impl FakeDesktopBackend {
                 room_id,
                 transaction_id,
                 body,
-            } => {
-                self.append_sent_message(room_id, transaction_id, body);
-                vec![AppAction::SendTextFinished {
-                    room_id: room_id.clone(),
-                    transaction_id: transaction_id.clone(),
-                }]
-            }
+            } => match self.config.sync {
+                SyncMode::Fixture => {
+                    self.append_sent_message(room_id, transaction_id, body);
+                    vec![AppAction::SendTextFinished {
+                        room_id: room_id.clone(),
+                        transaction_id: transaction_id.clone(),
+                    }]
+                }
+                SyncMode::Deferred => Vec::new(),
+            },
             AppEffect::ClearSession => {
                 self.matrix_session = None;
                 Vec::new()

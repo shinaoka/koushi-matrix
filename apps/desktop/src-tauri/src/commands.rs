@@ -25,6 +25,7 @@ const QA_TIMELINE_ROOM_SAMPLE_TIMEOUT: Duration = Duration::from_secs(8);
 const QA_RECOVERY_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 const QA_TITLE_ENV: &str = "MATRIX_DESKTOP_QA_TITLE";
 const STATE_EVENT_NAME: &str = "matrix-desktop://state";
+const MATRIX_SEND_TEXT_FAILED_MESSAGE: &str = "Matrix send failed";
 static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tauri::command]
@@ -862,6 +863,7 @@ pub fn paginate_timeline_backwards(
 pub async fn send_text(
     room_id: String,
     body: String,
+    app: AppHandle,
     state: State<'_, BackendState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     if body.trim().is_empty() {
@@ -873,24 +875,53 @@ pub async fn send_text(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
-    let matrix_session = {
-        let backend = state.backend.lock().map_err(lock_error)?;
-        backend.matrix_session()
+    let (effects, matrix_session, snapshot) = {
+        let mut backend = state.backend.lock().map_err(lock_error)?;
+        let matrix_session = backend.matrix_session();
+        let effects = backend.dispatch(AppAction::SendTextSubmitted {
+            room_id,
+            transaction_id,
+            body,
+        });
+        let snapshot = backend.snapshot();
+        (effects, matrix_session, snapshot)
     };
+    emit_ui_events(&app, &effects);
+    update_qa_window_title(&app, &snapshot);
 
-    if let Some(matrix_session) = matrix_session.as_ref() {
-        matrix_desktop_auth::send_text_message(matrix_session, &room_id, &body, &transaction_id)
-            .await
-            .map_err(|error| error.to_string())?;
+    if let Some((room_id, transaction_id, body)) = effects_send_text_request(&effects)
+        && let Some(matrix_session) = matrix_session
+    {
+        spawn_matrix_send_text_task(app, matrix_session, room_id, transaction_id, body);
     }
 
-    let mut backend = state.backend.lock().map_err(lock_error)?;
-    backend.dispatch(AppAction::SendTextSubmitted {
-        room_id,
-        transaction_id,
-        body,
+    Ok(FrontendDesktopSnapshot::from(snapshot))
+}
+
+fn spawn_matrix_send_text_task(
+    app: AppHandle,
+    matrix_session: matrix_desktop_auth::MatrixClientSession,
+    room_id: String,
+    transaction_id: String,
+    body: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        let action =
+            match matrix_desktop_auth::send_text_message(&matrix_session, &room_id, &body, &transaction_id)
+                .await
+            {
+                Ok(()) => AppAction::SendTextFinished {
+                    room_id,
+                    transaction_id,
+                },
+                Err(_) => AppAction::SendTextFailed {
+                    room_id,
+                    transaction_id,
+                    message: MATRIX_SEND_TEXT_FAILED_MESSAGE.to_owned(),
+                },
+            };
+        dispatch_timeline_action(&app, action);
     });
-    Ok(FrontendDesktopSnapshot::from(backend.snapshot()))
 }
 
 #[tauri::command]
@@ -1247,6 +1278,17 @@ pub(crate) fn effects_paginate_timeline_room_id(effects: &[AppEffect]) -> Option
     })
 }
 
+pub(crate) fn effects_send_text_request(effects: &[AppEffect]) -> Option<(String, String, String)> {
+    effects.iter().find_map(|effect| match effect {
+        AppEffect::SendText {
+            room_id,
+            transaction_id,
+            body,
+        } => Some((room_id.clone(), transaction_id.clone(), body.clone())),
+        _ => None,
+    })
+}
+
 pub(crate) fn effects_restore_session_info(effects: &[AppEffect]) -> Option<SessionInfo> {
     effects.iter().find_map(|effect| match effect {
         AppEffect::RestoreSessionFor(info) => Some(info.clone()),
@@ -1278,7 +1320,7 @@ mod tests {
 
     use super::{
         deferred_login_request, deferred_recovery_request, effects_include_start_sync,
-        effects_paginate_timeline_room_id, effects_restore_session_info,
+        effects_paginate_timeline_room_id, effects_restore_session_info, effects_send_text_request,
         effects_subscribe_timeline_room_id, matrix_room_list_snapshot_to_backend_update,
         matrix_timeline_items_to_backend_messages, matrix_timeline_updates_to_backend_updates,
         promote_room_to_front, qa_recovery_prompt_is_available, qa_window_title,
@@ -1534,6 +1576,29 @@ mod tests {
         assert_eq!(
             effects_paginate_timeline_room_id(&effects).as_deref(),
             Some("!room-alpha:example.invalid")
+        );
+    }
+
+    #[test]
+    fn effects_send_text_request_returns_first_send_request() {
+        let effects = vec![
+            AppEffect::EmitUiEvent(matrix_desktop_state::UiEvent::TimelineChanged {
+                room_id: "!ignored:example.invalid".to_owned(),
+            }),
+            AppEffect::SendText {
+                room_id: "!room-alpha:example.invalid".to_owned(),
+                transaction_id: "txn1".to_owned(),
+                body: "hello".to_owned(),
+            },
+        ];
+
+        assert_eq!(
+            effects_send_text_request(&effects),
+            Some((
+                "!room-alpha:example.invalid".to_owned(),
+                "txn1".to_owned(),
+                "hello".to_owned(),
+            ))
         );
     }
 

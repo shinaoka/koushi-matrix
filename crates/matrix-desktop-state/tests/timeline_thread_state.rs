@@ -429,6 +429,70 @@ fn opening_thread_requests_thread_timeline_and_subscription_success_opens_pane()
 }
 
 #[test]
+fn send_text_failed_clears_matching_active_transaction_and_records_error() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmitted {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn1".to_owned(),
+            body: "hello".to_owned(),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SendTextFailed {
+            room_id: "room-b".to_owned(),
+            transaction_id: "txn1".to_owned(),
+            message: "Matrix send failed".to_owned(),
+        },
+    );
+    assert_eq!(effects, Vec::new());
+    assert_eq!(
+        state.timeline.composer.pending_transaction_id.as_deref(),
+        Some("txn1")
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SendTextFailed {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn2".to_owned(),
+            message: "Matrix send failed".to_owned(),
+        },
+    );
+    assert_eq!(effects, Vec::new());
+    assert_eq!(
+        state.timeline.composer.pending_transaction_id.as_deref(),
+        Some("txn1")
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SendTextFailed {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn1".to_owned(),
+            message: "Matrix send failed".to_owned(),
+        },
+    );
+
+    assert_eq!(state.timeline.composer.pending_transaction_id, None);
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].code, "send_text_failed");
+    assert_eq!(state.errors[0].message, "Matrix send failed");
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+            AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+        ]
+    );
+}
+
+#[test]
 fn open_thread_only_affects_active_timeline_room() {
     let mut state = selected_room_state("room-a");
     let previous_state = state.clone();
@@ -549,6 +613,11 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
         AppAction::SendTextFinished {
             room_id: "room-a".to_owned(),
             transaction_id: "txn1".to_owned(),
+        },
+        AppAction::SendTextFailed {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn1".to_owned(),
+            message: "Matrix send failed".to_owned(),
         },
         AppAction::OpenThread {
             room_id: "room-a".to_owned(),

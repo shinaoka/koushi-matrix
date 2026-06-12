@@ -490,6 +490,30 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.timeline.composer.pending_transaction_id = None;
             vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
         }
+        AppAction::SendTextFailed {
+            room_id,
+            transaction_id,
+            message,
+        } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+                || state.timeline.composer.pending_transaction_id.as_deref()
+                    != Some(transaction_id.as_str())
+            {
+                return Vec::new();
+            }
+
+            state.timeline.composer.pending_transaction_id = None;
+            state.errors.push(AppError {
+                code: "send_text_failed".to_owned(),
+                message,
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
+        }
         AppAction::OpenThread {
             room_id,
             root_event_id,
