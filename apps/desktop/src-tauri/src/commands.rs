@@ -287,9 +287,25 @@ pub(crate) fn spawn_e2ee_recovery_state_observer(
             let Ok(mut backend) = backend_state.backend.lock() else {
                 break;
             };
-            backend.observe_e2ee_recovery_state(recovery_state);
+            let (effects, snapshot) =
+                observe_e2ee_recovery_state_for_backend(&mut backend, recovery_state);
+            drop(backend);
+            emit_ui_events(&app, &effects);
+            update_qa_window_title(&app, &snapshot);
         }
     });
+}
+
+fn observe_e2ee_recovery_state_for_backend(
+    backend: &mut matrix_desktop_backend::FakeDesktopBackend,
+    recovery_state: matrix_desktop_state::E2eeRecoveryState,
+) -> (
+    Vec<AppEffect>,
+    matrix_desktop_backend::DesktopSnapshot,
+) {
+    let effects = backend.observe_e2ee_recovery_state(recovery_state);
+    let snapshot = backend.snapshot();
+    (effects, snapshot)
 }
 
 pub(crate) fn start_matrix_sync_task(
@@ -1333,6 +1349,7 @@ mod tests {
         deferred_login_request, deferred_recovery_request, effects_include_start_sync,
         effects_paginate_timeline_room_id, effects_restore_session_info, effects_send_text_request,
         effects_subscribe_timeline_room_id, matrix_room_list_snapshot_to_backend_update,
+        observe_e2ee_recovery_state_for_backend,
         matrix_timeline_items_to_backend_messages, matrix_timeline_updates_to_backend_updates,
         promote_room_to_front, qa_recovery_prompt_is_available, qa_window_title,
         room_list_sync_follow_up, sdk_search_candidates_to_backend, session_info_from_state,
@@ -1571,6 +1588,24 @@ mod tests {
 
         assert!(!qa_recovery_prompt_is_available(&ready));
         assert!(qa_recovery_prompt_is_available(&needs_recovery));
+    }
+
+    #[test]
+    fn recovery_observer_backend_update_returns_ui_effects_and_snapshot() {
+        let mut backend = matrix_desktop_backend::FakeDesktopBackend::booted_with_config(
+            matrix_desktop_backend::FakeDesktopBackendConfig {
+                e2ee_recovery: matrix_desktop_backend::E2eeRecoveryMode::SdkState,
+                ..matrix_desktop_backend::FakeDesktopBackendConfig::default()
+            },
+        );
+
+        let (effects, snapshot) = observe_e2ee_recovery_state_for_backend(
+            &mut backend,
+            matrix_desktop_state::E2eeRecoveryState::Incomplete,
+        );
+
+        assert!(qa_recovery_prompt_is_available(&snapshot.state));
+        assert_eq!(ui_event_payloads(&effects), vec!["sessionChanged"]);
     }
 
     #[test]
