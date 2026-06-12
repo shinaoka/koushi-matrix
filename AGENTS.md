@@ -9,6 +9,27 @@ the long-term architecture in
 here hardens into a durable rule, promote it to the policies document and keep
 the operational detail here.
 
+## Implementation Working Rules
+
+All agents implementing the headless core runtime follow
+[docs/superpowers/plans/2026-06-12-headless-core-runtime-implementation.md](docs/superpowers/plans/2026-06-12-headless-core-runtime-implementation.md).
+
+- **Headless-first, local-server-first.** New Matrix behavior lands in
+  `matrix-desktop-core`, verified via `CoreCommand`/`CoreEvent` against local
+  Conduit/Tuwunel QA, before any Tauri/React wiring. GUI-first implementation
+  is prohibited.
+- **Canon-first redesign protocol.** Implementation will hit gaps the design
+  did not foresee. When code contradicts the canon or the canon is silent:
+  stop coding on that point — do not improvise an undocumented behavior.
+  Record what was assumed vs. what was observed. Amend
+  `docs/architecture/overview.md` first (and
+  `docs/policies/engineering-rules.md` if a rule changes; bump
+  `Last amended`), sync the dated spec if the public API changes, add a
+  Changelog entry to the implementation plan, and only then implement to the
+  amended design. Code that diverges from the canon must not land.
+- **Phase exits include a docs-sync check**: no known contradiction between
+  landed code and the canon documents.
+
 ## macOS GUI Smoke Failures
 
 - `npm --prefix apps/desktop run qa:mac-gui` controls the Tauri window through
