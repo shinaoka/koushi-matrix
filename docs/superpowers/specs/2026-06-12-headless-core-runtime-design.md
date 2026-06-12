@@ -90,6 +90,10 @@ Core exposes commands, events, and state snapshots. Every command carries a
 runtime-scoped `RequestId`; every command result event carries the same full
 ID. The event stream is shared by all consumers (Tauri, CLI, QA), so the ID
 includes both a runtime-assigned connection ID and a caller-assigned sequence.
+Attaching a consumer to the `CoreRuntime` returns its `RuntimeConnectionId`
+before any command is accepted. Commands must carry the ID of the connection
+they arrive on; the runtime rejects a mismatched `connection_id` with
+`OperationFailed` instead of routing the command.
 
 ```rust
 pub struct RuntimeConnectionId(pub u64);

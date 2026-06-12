@@ -204,7 +204,10 @@ pub enum TimelineFailureKind {
 The runtime assigns each attached consumer a `RuntimeConnectionId`; the caller
 allocates a monotonically increasing `sequence` within that connection. The
 full `RequestId` is therefore unique on the shared event stream, and consumers
-correlate by the full value. `TimelineKey` always includes the account so late
+correlate by the full value. Attaching to the `CoreRuntime` returns the
+assigned `RuntimeConnectionId` before any command is accepted; a command must
+carry the ID of the connection it arrives on, and the runtime rejects a
+mismatched `connection_id` with `OperationFailed` instead of routing it. `TimelineKey` always includes the account so late
 events from a previous account switch can be rejected. Timeline item events
 also carry a monotonic `generation`; after any reset/resync the UI discards
 diffs from older generations.
