@@ -8,3 +8,12 @@ license = "MIT"
 matrix-desktop-state = { path = "../matrix-desktop-state" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+# Confined to executor.rs and channel plumbing per Platform Portability rule 2.
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+
+[features]
+# Exposes CoreRuntime::inject_actions for QA binaries and integration tests.
+test-hooks = []
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "rt", "sync", "time", "macros"] }

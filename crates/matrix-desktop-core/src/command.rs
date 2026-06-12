@@ -1,0 +1,270 @@
+//! Public command boundary. Every command carries a runtime-scoped
+//! `RequestId`. Secret-bearing payloads redact `Debug`.
+
+use std::fmt;
+
+use matrix_desktop_state::{LoginRequest, RecoveryRequest};
+
+use crate::ids::{AccountKey, RequestId, TimelineKey};
+
+#[derive(Debug)]
+pub enum CoreCommand {
+    App(AppCommand),
+    Account(AccountCommand),
+    Sync(SyncCommand),
+    Room(RoomCommand),
+    Timeline(TimelineCommand),
+    Search(SearchCommand),
+}
+
+impl CoreCommand {
+    /// The correlation id carried by every command.
+    pub fn request_id(&self) -> RequestId {
+        match self {
+            Self::App(AppCommand::Shutdown { request_id }) => *request_id,
+            Self::Account(command) => match command {
+                AccountCommand::LoginPassword { request_id, .. }
+                | AccountCommand::RestoreSession { request_id, .. }
+                | AccountCommand::SubmitRecovery { request_id, .. }
+                | AccountCommand::Logout { request_id }
+                | AccountCommand::SwitchAccount { request_id, .. } => *request_id,
+            },
+            Self::Sync(command) => match command {
+                SyncCommand::Start { request_id }
+                | SyncCommand::Stop { request_id }
+                | SyncCommand::Restart { request_id }
+                | SyncCommand::SyncOnce { request_id } => *request_id,
+            },
+            Self::Room(command) => match command {
+                RoomCommand::CreateRoom { request_id, .. }
+                | RoomCommand::CreateSpace { request_id, .. }
+                | RoomCommand::SetSpaceChild { request_id, .. }
+                | RoomCommand::InviteUser { request_id, .. }
+                | RoomCommand::JoinRoom { request_id, .. }
+                | RoomCommand::SelectSpace { request_id, .. }
+                | RoomCommand::SelectRoom { request_id, .. } => *request_id,
+            },
+            Self::Timeline(command) => match command {
+                TimelineCommand::Subscribe { request_id, .. }
+                | TimelineCommand::Unsubscribe { request_id, .. }
+                | TimelineCommand::Paginate { request_id, .. }
+                | TimelineCommand::SendText { request_id, .. }
+                | TimelineCommand::EditText { request_id, .. }
+                | TimelineCommand::Redact { request_id, .. } => *request_id,
+            },
+            Self::Search(command) => match command {
+                SearchCommand::Query { request_id, .. } => *request_id,
+            },
+        }
+    }
+
+    /// Commands that require a `Ready` session before they are routed.
+    pub fn requires_ready_session(&self) -> bool {
+        matches!(
+            self,
+            Self::Sync(_) | Self::Room(_) | Self::Timeline(_) | Self::Search(_)
+        )
+    }
+}
+
+#[derive(Debug)]
+pub enum AppCommand {
+    Shutdown { request_id: RequestId },
+}
+
+// LoginRequest and RecoveryRequest redact their own Debug in
+// matrix-desktop-state (username, password, device name, recovery secret).
+#[derive(Debug)]
+pub enum AccountCommand {
+    LoginPassword {
+        request_id: RequestId,
+        request: LoginRequest,
+    },
+    RestoreSession {
+        request_id: RequestId,
+        account_key: AccountKey,
+    },
+    SubmitRecovery {
+        request_id: RequestId,
+        request: RecoveryRequest,
+    },
+    Logout {
+        request_id: RequestId,
+    },
+    SwitchAccount {
+        request_id: RequestId,
+        account_key: AccountKey,
+    },
+}
+
+#[derive(Debug)]
+pub enum SyncCommand {
+    Start { request_id: RequestId },
+    Stop { request_id: RequestId },
+    Restart { request_id: RequestId },
+    SyncOnce { request_id: RequestId },
+}
+
+#[derive(Debug)]
+pub enum RoomCommand {
+    CreateRoom {
+        request_id: RequestId,
+        name: String,
+    },
+    CreateSpace {
+        request_id: RequestId,
+        name: String,
+    },
+    SetSpaceChild {
+        request_id: RequestId,
+        space_id: String,
+        child_room_id: String,
+        via_server: String,
+    },
+    InviteUser {
+        request_id: RequestId,
+        room_id: String,
+        user_id: String,
+    },
+    JoinRoom {
+        request_id: RequestId,
+        room_id: String,
+    },
+    SelectSpace {
+        request_id: RequestId,
+        space_id: Option<String>,
+    },
+    SelectRoom {
+        request_id: RequestId,
+        room_id: String,
+    },
+}
+
+pub enum TimelineCommand {
+    Subscribe {
+        request_id: RequestId,
+        key: TimelineKey,
+    },
+    Unsubscribe {
+        request_id: RequestId,
+        key: TimelineKey,
+    },
+    Paginate {
+        request_id: RequestId,
+        key: TimelineKey,
+        direction: crate::event::PaginationDirection,
+        event_count: u16,
+    },
+    SendText {
+        request_id: RequestId,
+        key: TimelineKey,
+        transaction_id: String,
+        body: String,
+    },
+    EditText {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+        body: String,
+    },
+    Redact {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
+}
+
+// Message bodies are visible UI state but must not reach logs through Debug
+// (spec: "SendText and EditText redact body in Debug and errors").
+impl fmt::Debug for TimelineCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Subscribe { request_id, key } => formatter
+                .debug_struct("Subscribe")
+                .field("request_id", request_id)
+                .field("key", key)
+                .finish(),
+            Self::Unsubscribe { request_id, key } => formatter
+                .debug_struct("Unsubscribe")
+                .field("request_id", request_id)
+                .field("key", key)
+                .finish(),
+            Self::Paginate {
+                request_id,
+                key,
+                direction,
+                event_count,
+            } => formatter
+                .debug_struct("Paginate")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("direction", direction)
+                .field("event_count", event_count)
+                .finish(),
+            Self::SendText {
+                request_id,
+                key,
+                transaction_id,
+                ..
+            } => formatter
+                .debug_struct("SendText")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("transaction_id", transaction_id)
+                .field("body", &"MessageBody(..)")
+                .finish(),
+            Self::EditText {
+                request_id,
+                key,
+                event_id,
+                ..
+            } => formatter
+                .debug_struct("EditText")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("event_id", event_id)
+                .field("body", &"MessageBody(..)")
+                .finish(),
+            Self::Redact {
+                request_id,
+                key,
+                event_id,
+            } => formatter
+                .debug_struct("Redact")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("event_id", event_id)
+                .finish(),
+        }
+    }
+}
+
+pub enum SearchCommand {
+    Query {
+        request_id: RequestId,
+        query: String,
+        scope: SearchScope,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SearchScope {
+    Global,
+    Room { room_id: String },
+}
+
+// Search queries can quote message content; redact like bodies.
+impl fmt::Debug for SearchCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Query {
+                request_id, scope, ..
+            } => formatter
+                .debug_struct("Query")
+                .field("request_id", request_id)
+                .field("query", &"SearchQuery(..)")
+                .field("scope", scope)
+                .finish(),
+        }
+    }
+}
