@@ -225,6 +225,14 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   `CoreRuntime` per synthetic QA user legitimized in the spec QA section as
   the two-device topology; multi-account-in-one-runtime is account-switch
   QA's job.
+- 2026-06-12: Phase 2 landed (StoreActor, AccountActor, headless-core-qa on
+  both servers). Post-review additions: `CoreFailure::SessionNotFound` for
+  restore/switch of accounts with no stored session (escalated kind gap);
+  the core QA binary hard-refuses to run against the OS keychain after a
+  Keychain prompt fired during the first implementation iteration
+  (engineering-rules Secrets rule 8 incident); login follows the store
+  bootstrap invariant with fail-closed abort (best-effort device logout +
+  credential rollback) when the encrypted store cannot be created.
 - 2026-06-12: Phase 0 landed. Notes: (1) the repo has no hosted CI, so all
   gates run locally (pre-commit hook + npm scripts + release preflight) until
   CI infrastructure exists; (2) the release-gate check found and fixed a real
