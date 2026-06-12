@@ -202,6 +202,17 @@ pub enum AccountCommand {
         request_id: RequestId,
         account_key: AccountKey,
     },
+    /// Restore whatever the last-session pointer designates (app startup).
+    /// Not-found is a normal outcome (`SessionNotFound`), not an error path.
+    RestoreLastSession {
+        request_id: RequestId,
+    },
+    /// List locally saved sessions (login screen / account switcher). The
+    /// result event carries only allowed UI identifiers (homeserver, user
+    /// id, device id) — never tokens or key material.
+    QuerySavedSessions {
+        request_id: RequestId,
+    },
     SubmitRecovery {
         request_id: RequestId,
         request: RecoveryRequest,
@@ -360,6 +371,13 @@ struct AccountRuntimeState {
 `AppActor` is the command entry point. It routes commands, owns global app state, tracks the active account, broadcasts events, and produces ordered state snapshots.
 
 `AccountActor` owns one account/device runtime. It owns the SDK session, login/restore/recovery/logout flow, account switch behavior, and shutdown coordination for child actors.
+
+Startup restore and session listing go through the command boundary like
+everything else: `RestoreLastSession` resolves the credential store's
+last-session pointer inside `StoreActor`/`AccountActor` (the transport
+adapter never reads the credential store), and `QuerySavedSessions` answers
+with `AccountEvent::SavedSessionsListed { request_id, sessions }` carrying
+only allowed UI identifiers.
 
 Login bootstraps the store in two steps (store bootstrap invariant in the
 overview): the password exchange runs on a storeless client that never syncs
