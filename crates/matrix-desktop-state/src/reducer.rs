@@ -321,6 +321,20 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 }
             }
 
+            if had_active_room_before_update
+                && state.navigation.active_room_id.is_none()
+                && state.navigation.active_space_id.is_some()
+                && let Some(room_id) = first_room_id_in_active_space(state)
+            {
+                select_active_room_after_room_list_update(state, &mut effects, room_id);
+            }
+
+            if let Some(active_room_id) = state.navigation.active_room_id.clone()
+                && active_room_left_selected_space(state, &active_room_id)
+            {
+                retarget_active_room_for_selected_space(state, &mut effects, active_room_id);
+            }
+
             if !had_active_room_before_update
                 && state.navigation.active_room_id.is_none()
                 && let Some(room_id) = first_default_room_id(state)
@@ -642,6 +656,104 @@ fn first_default_room_id(state: &AppState) -> Option<String> {
         .find(|room| !room.is_dm)
         .or_else(|| state.rooms.first())
         .map(|room| room.room_id.clone())
+}
+
+fn first_room_id_in_active_space(state: &AppState) -> Option<String> {
+    let active_space_id = state.navigation.active_space_id.as_deref()?;
+    let active_space = state
+        .spaces
+        .iter()
+        .find(|space| space.space_id == active_space_id)?;
+
+    active_space
+        .child_room_ids
+        .iter()
+        .find_map(|child_room_id| {
+            state
+                .rooms
+                .iter()
+                .find(|room| room.room_id == *child_room_id && !room.is_dm)
+                .map(|room| room.room_id.clone())
+        })
+}
+
+fn active_room_left_selected_space(state: &AppState, active_room_id: &str) -> bool {
+    let Some(active_space_id) = state.navigation.active_space_id.as_deref() else {
+        return false;
+    };
+    let Some(active_room) = state
+        .rooms
+        .iter()
+        .find(|room| room.room_id == active_room_id)
+    else {
+        return false;
+    };
+    if active_room.is_dm {
+        return false;
+    }
+
+    state
+        .spaces
+        .iter()
+        .find(|space| space.space_id == active_space_id)
+        .is_some_and(|space| {
+            !space
+                .child_room_ids
+                .iter()
+                .any(|room_id| room_id == active_room_id)
+        })
+}
+
+fn retarget_active_room_for_selected_space(
+    state: &mut AppState,
+    effects: &mut Vec<AppEffect>,
+    previous_room_id: String,
+) {
+    let next_room_id = first_room_id_in_active_space(state);
+    let had_thread = state.thread != ThreadPaneState::Closed;
+
+    match next_room_id {
+        Some(room_id) => {
+            select_active_room_after_room_list_update(state, effects, room_id);
+        }
+        None => {
+            state.navigation.active_room_id = None;
+            state.thread = ThreadPaneState::Closed;
+            state.timeline = Default::default();
+            effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: previous_room_id,
+            }));
+
+            if had_thread {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+            }
+        }
+    }
+}
+
+fn select_active_room_after_room_list_update(
+    state: &mut AppState,
+    effects: &mut Vec<AppEffect>,
+    room_id: String,
+) {
+    let had_thread = state.thread != ThreadPaneState::Closed;
+
+    state.navigation.active_room_id = Some(room_id.clone());
+    state.timeline = TimelinePaneState {
+        room_id: Some(room_id.clone()),
+        is_subscribed: false,
+        is_paginating_backwards: false,
+        composer: Default::default(),
+    };
+    state.thread = ThreadPaneState::Closed;
+    effects.push(AppEffect::SubscribeTimeline {
+        room_id: room_id.clone(),
+    });
+    effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
+
+    if had_thread {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+    }
 }
 
 fn current_session_info(state: &AppState) -> Option<crate::state::SessionInfo> {

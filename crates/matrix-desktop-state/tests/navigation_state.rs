@@ -165,6 +165,206 @@ fn room_list_update_clears_missing_active_space_and_room() {
 }
 
 #[test]
+fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: vec![SpaceSummary {
+            space_id: "space-a".to_owned(),
+            display_name: "Space A".to_owned(),
+            child_room_ids: vec!["room-a".to_owned()],
+        }],
+        rooms: vec![
+            RoomSummary {
+                room_id: "room-a".to_owned(),
+                display_name: "Room A".to_owned(),
+                is_dm: false,
+                unread_count: 5,
+                parent_space_ids: vec!["space-a".to_owned()],
+            },
+            RoomSummary {
+                room_id: "room-b".to_owned(),
+                display_name: "Room B".to_owned(),
+                is_dm: false,
+                unread_count: 2,
+                parent_space_ids: Vec::new(),
+            },
+        ],
+        navigation: matrix_desktop_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+        },
+        timeline: TimelinePaneState {
+            room_id: Some("room-a".to_owned()),
+            is_subscribed: true,
+            is_paginating_backwards: false,
+            composer: Default::default(),
+        },
+        thread: ThreadPaneState::Open {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            is_subscribed: true,
+            composer: Default::default(),
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: vec![SpaceSummary {
+                space_id: "space-a".to_owned(),
+                display_name: "Space A".to_owned(),
+                child_room_ids: vec!["room-b".to_owned()],
+            }],
+            rooms: vec![
+                RoomSummary {
+                    room_id: "room-a".to_owned(),
+                    display_name: "Room A".to_owned(),
+                    is_dm: false,
+                    unread_count: 5,
+                    parent_space_ids: Vec::new(),
+                },
+                RoomSummary {
+                    room_id: "room-b".to_owned(),
+                    display_name: "Room B".to_owned(),
+                    is_dm: false,
+                    unread_count: 2,
+                    parent_space_ids: vec!["space-a".to_owned()],
+                },
+            ],
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id.as_deref(), Some("space-a"));
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-b"));
+    assert_eq!(state.timeline.room_id.as_deref(), Some("room-b"));
+    assert!(!state.timeline.is_subscribed);
+    assert_eq!(state.thread, ThreadPaneState::Closed);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SubscribeTimeline {
+                room_id: "room-b".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-b".to_owned(),
+            }),
+            AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+        ]
+    );
+}
+
+#[test]
+fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: vec![SpaceSummary {
+            space_id: "space-a".to_owned(),
+            display_name: "Space A".to_owned(),
+            child_room_ids: vec!["room-a".to_owned()],
+        }],
+        rooms: vec![RoomSummary {
+            room_id: "room-a".to_owned(),
+            display_name: "Room A".to_owned(),
+            is_dm: false,
+            unread_count: 5,
+            parent_space_ids: vec!["space-a".to_owned()],
+        }],
+        navigation: matrix_desktop_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+        },
+        timeline: TimelinePaneState {
+            room_id: Some("room-a".to_owned()),
+            is_subscribed: true,
+            is_paginating_backwards: false,
+            composer: Default::default(),
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: vec![SpaceSummary {
+                space_id: "space-a".to_owned(),
+                display_name: "Space A".to_owned(),
+                child_room_ids: vec!["room-b".to_owned()],
+            }],
+            rooms: vec![RoomSummary {
+                room_id: "room-b".to_owned(),
+                display_name: "Room B".to_owned(),
+                is_dm: false,
+                unread_count: 2,
+                parent_space_ids: vec!["space-a".to_owned()],
+            }],
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id.as_deref(), Some("space-a"));
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-b"));
+    assert_eq!(state.timeline.room_id.as_deref(), Some("room-b"));
+    assert!(!state.timeline.is_subscribed);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+            AppEffect::SubscribeTimeline {
+                room_id: "room-b".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-b".to_owned(),
+            }),
+        ]
+    );
+}
+
+#[test]
+fn room_list_update_keeps_active_dm_global_with_selected_space() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: spaces(),
+        rooms: rooms(),
+        navigation: matrix_desktop_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("dm-a".to_owned()),
+        },
+        timeline: TimelinePaneState {
+            room_id: Some("dm-a".to_owned()),
+            is_subscribed: true,
+            is_paginating_backwards: false,
+            composer: Default::default(),
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: vec![SpaceSummary {
+                space_id: "space-a".to_owned(),
+                display_name: "Space A".to_owned(),
+                child_room_ids: vec!["room-a".to_owned()],
+            }],
+            rooms: rooms(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id.as_deref(), Some("space-a"));
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("dm-a"));
+    assert_eq!(state.timeline.room_id.as_deref(), Some("dm-a"));
+    assert!(state.timeline.is_subscribed);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+}
+
+#[test]
 fn navigation_actions_are_ignored_without_ready_session() {
     let mut state = AppState::default();
 
