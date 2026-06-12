@@ -431,8 +431,12 @@ mod tests {
             value["state"]["session"]["recovery_methods"],
             json!(["recoveryKey", "securityPhrase"])
         );
-        assert_eq!(value["state"]["sync"], json!("stopped"));
-        assert_eq!(value["state"]["rooms"], json!([]));
+        assert_eq!(value["state"]["sync"], json!("running"));
+        assert!(
+            value["state"]["rooms"]
+                .as_array()
+                .is_some_and(|rooms| !rooms.is_empty())
+        );
     }
 
     #[test]
