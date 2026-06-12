@@ -292,6 +292,9 @@ pub(crate) fn spawn_e2ee_recovery_state_observer(
             drop(backend);
             emit_ui_events(&app, &effects);
             update_qa_window_title(&app, &snapshot);
+            if recovery_observer_should_start_sync(&effects) {
+                let _ = start_matrix_sync_task(app.clone(), session.clone());
+            }
         }
     });
 }
@@ -306,6 +309,10 @@ fn observe_e2ee_recovery_state_for_backend(
     let effects = backend.observe_e2ee_recovery_state(recovery_state);
     let snapshot = backend.snapshot();
     (effects, snapshot)
+}
+
+pub(crate) fn recovery_observer_should_start_sync(effects: &[AppEffect]) -> bool {
+    effects_include_start_sync(effects)
 }
 
 pub(crate) fn start_matrix_sync_task(
@@ -1352,8 +1359,9 @@ mod tests {
         observe_e2ee_recovery_state_for_backend,
         matrix_timeline_items_to_backend_messages, matrix_timeline_updates_to_backend_updates,
         promote_room_to_front, qa_recovery_prompt_is_available, qa_window_title,
-        room_list_sync_follow_up, sdk_search_candidates_to_backend, session_info_from_state,
-        timeline_messages_target_active_room, timeline_updates_target_active_room,
+        recovery_observer_should_start_sync, room_list_sync_follow_up,
+        sdk_search_candidates_to_backend, session_info_from_state, timeline_messages_target_active_room,
+        timeline_updates_target_active_room,
         timeline_task_can_paginate_room, ui_event_payloads,
     };
     use matrix_desktop_state::{
@@ -1606,6 +1614,21 @@ mod tests {
 
         assert!(qa_recovery_prompt_is_available(&snapshot.state));
         assert_eq!(ui_event_payloads(&effects), vec!["sessionChanged"]);
+    }
+
+    #[test]
+    fn recovery_observer_starts_sync_when_recovery_becomes_enabled() {
+        let effects = vec![
+            AppEffect::PersistSession(SessionInfo {
+                homeserver: "https://matrix.example.org".to_owned(),
+                user_id: "@user-a:example.invalid".to_owned(),
+                device_id: "DEVICE123".to_owned(),
+            }),
+            AppEffect::StartSync,
+            AppEffect::EmitUiEvent(matrix_desktop_state::UiEvent::SessionChanged),
+        ];
+
+        assert!(recovery_observer_should_start_sync(&effects));
     }
 
     #[test]
