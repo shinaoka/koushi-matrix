@@ -88,6 +88,9 @@ semantics beyond typed client calls and view logic.
 
 Core exposes commands, events, and state snapshots. Every command carries a
 caller-generated `RequestId`; every command result event carries the same ID.
+The event stream is shared by all consumers (Tauri, CLI, QA): `RequestId`
+values are unique only within the connection that issued them, so each consumer
+correlates only IDs it generated and ignores matches from other connections.
 
 ```rust
 pub struct RequestId(pub u64);
@@ -215,9 +218,10 @@ pub enum TimelineCommand {
         request_id: RequestId,
         key: TimelineKey,
     },
-    PaginateBackwards {
+    Paginate {
         request_id: RequestId,
         key: TimelineKey,
+        direction: PaginationDirection,
         event_count: u16,
     },
     SendText {
@@ -264,6 +268,13 @@ pub enum TimelineEvent {
     },
 }
 ```
+
+Pagination is directional and matches `PaginationStateChanged`. Backward
+pagination is valid for every timeline kind. Forward pagination is valid only
+for non-live timelines (`Focused`), where the subscription starts in the middle
+of history; on `Room` and `Thread` timelines the forward edge is produced by
+sync, and a forward `Paginate` fails with
+`TimelineOperationFailed { kind: InvalidDirection }`.
 
 The public API must redact `Debug` for secret-bearing commands:
 
