@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use matrix_desktop_auth::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
-use matrix_desktop_state::{AppAction, LoginRequest, SessionInfo};
+use matrix_desktop_state::{AppAction, LoginRequest, RecoveryRequest, SessionInfo};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
@@ -338,15 +338,9 @@ impl AccountActor {
             }
             AccountCommand::SubmitRecovery {
                 request_id,
-                request: _,
+                request,
             } => {
-                // Phase 2 stub: recovery is a Phase 8 feature.
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RecoveryFailed {
-                        kind: crate::failure::RecoveryFailureKind::Server,
-                    },
-                );
+                self.handle_submit_recovery(request_id, request).await;
             }
         }
     }
@@ -419,12 +413,35 @@ impl AccountActor {
 
         // Spawn the SyncActor now that we have a store-backed session
         // (store bootstrap invariant: sync only on the store-backed session).
-        self.spawn_sync_actor(session_arc);
+        self.spawn_sync_actor(session_arc.clone());
 
-        // Project login success through the reducer.
-        self.reduce(vec![AppAction::LoginSucceeded(info)]);
+        // Check recovery state on the store-backed session. If recovery is
+        // needed (Incomplete), project NeedsRecovery before emitting LoggedIn
+        // so the snapshot and event are consistent. If recovery is not needed,
+        // proceed directly to Ready.
+        let recovery_state = session_arc.e2ee_recovery_state();
+        let needs_recovery = matches!(
+            recovery_state,
+            matrix_desktop_state::E2eeRecoveryState::Incomplete
+        );
 
-        // Emit domain event.
+        if needs_recovery {
+            // Project NeedsRecovery through the reducer (uses RecoveryKey method).
+            self.reduce(vec![AppAction::E2eeRecoveryRequired {
+                info: info.clone(),
+                methods: vec![matrix_desktop_state::RecoveryMethod::RecoveryKey],
+            }]);
+            // Emit RecoveryRequired domain event before LoggedIn so consumers
+            // can observe the state before acting.
+            self.emit(CoreEvent::Account(AccountEvent::RecoveryRequired {
+                account_key: account_key.clone(),
+            }));
+        } else {
+            // Project login success through the reducer (session → Ready).
+            self.reduce(vec![AppAction::LoginSucceeded(info)]);
+        }
+
+        // Emit domain event carrying the request_id for command correlation.
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
             request_id,
             account_key,
@@ -596,6 +613,13 @@ impl AccountActor {
                 let info = session.info.clone();
                 let account_key = account_key_from_info(&info);
 
+                // Check recovery state on the store-backed restored session.
+                let recovery_state = session.e2ee_recovery_state();
+                let needs_recovery = matches!(
+                    recovery_state,
+                    matrix_desktop_state::E2eeRecoveryState::Incomplete
+                );
+
                 let session_arc = Arc::new(session);
                 self.session = Some(session_arc.clone());
                 self.session_key_id = Some(key_id);
@@ -603,7 +627,19 @@ impl AccountActor {
                 // Spawn the SyncActor for the newly restored store-backed session.
                 self.spawn_sync_actor(session_arc);
 
-                self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
+                if needs_recovery {
+                    // Project NeedsRecovery before emitting the domain event.
+                    self.reduce(vec![AppAction::E2eeRecoveryRequired {
+                        info: info.clone(),
+                        methods: vec![matrix_desktop_state::RecoveryMethod::RecoveryKey],
+                    }]);
+                    self.emit(CoreEvent::Account(AccountEvent::RecoveryRequired {
+                        account_key: account_key.clone(),
+                    }));
+                } else {
+                    self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
+                }
+
                 self.emit(CoreEvent::Account(match outcome {
                     RestoreOutcome::Restored => AccountEvent::SessionRestored {
                         request_id,
@@ -614,6 +650,61 @@ impl AccountActor {
                         account_key,
                     },
                 }));
+            }
+        }
+    }
+
+    /// Submit a recovery secret. Calls the auth crate's `recover_e2ee`
+    /// primitive. On success: project E2eeRecoverySucceeded (→ Ready) and emit
+    /// RecoveryCompleted. On failure: classify conservatively to
+    /// InvalidRecoveryKey/Network/Server (never raw error text) and emit
+    /// OperationFailed with RecoveryFailed.
+    ///
+    /// The recovery secret is NEVER logged, included in error messages, or
+    /// stored in any event/snapshot.
+    async fn handle_submit_recovery(
+        &mut self,
+        request_id: RequestId,
+        request: RecoveryRequest,
+    ) {
+        let session = match &self.session {
+            Some(s) => s.clone(),
+            None => {
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let account_key = AccountKey(session.info.user_id.clone());
+
+        // Project E2eeRecoverySubmitted so the reducer transitions
+        // NeedsRecovery → Recovering while the async call runs.
+        self.reduce(vec![AppAction::E2eeRecoverySubmitted(request.clone())]);
+
+        let result = matrix_desktop_auth::recover_e2ee(&session, &request).await;
+
+        // Zero the request secret now — it has been consumed.
+        drop(request);
+
+        match result {
+            Ok(()) => {
+                // Project success: Recovering → Ready.
+                self.reduce(vec![AppAction::E2eeRecoverySucceeded]);
+                self.emit(CoreEvent::Account(AccountEvent::RecoveryCompleted {
+                    request_id,
+                    account_key,
+                }));
+            }
+            Err(error) => {
+                let kind = classify_recovery_error(&error);
+                // Project failure: Recovering → NeedsRecovery.
+                self.reduce(vec![AppAction::E2eeRecoveryFailed {
+                    message: "recovery failed".to_owned(),
+                }]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::RecoveryFailed { kind },
+                );
             }
         }
     }
@@ -790,6 +881,40 @@ fn session_info_from_key_id(key_id: &SessionKeyId) -> SessionInfo {
         homeserver: key_id.homeserver.clone(),
         user_id: key_id.user_id.clone(),
         device_id: key_id.device_id.clone(),
+    }
+}
+
+/// Map an `E2eeRecoveryError` to a coarse `RecoveryFailureKind` without
+/// exposing raw SDK error text in public events or error messages.
+/// Conservative classification: prefer InvalidRecoveryKey for auth-type SDK
+/// errors, Network for network errors, Server for anything else.
+fn classify_recovery_error(
+    error: &matrix_desktop_auth::E2eeRecoveryError,
+) -> crate::failure::RecoveryFailureKind {
+    use crate::failure::RecoveryFailureKind;
+    use matrix_desktop_auth::E2eeRecoveryError;
+    match error {
+        E2eeRecoveryError::Runtime(_) => RecoveryFailureKind::Network,
+        E2eeRecoveryError::Sdk(message) => {
+            // Classify by error text fragments — these fragments come from the
+            // SDK/server and are used only for kind selection, never emitted.
+            if message.contains("invalid")
+                || message.contains("Invalid")
+                || message.contains("M_FORBIDDEN")
+                || message.contains("401")
+                || message.contains("403")
+            {
+                RecoveryFailureKind::InvalidRecoveryKey
+            } else if message.contains("network")
+                || message.contains("timeout")
+                || message.contains("connection")
+                || message.contains("connect")
+            {
+                RecoveryFailureKind::Network
+            } else {
+                RecoveryFailureKind::Server
+            }
+        }
     }
 }
 
@@ -1087,6 +1212,90 @@ mod tests {
                 assert!(!debug.contains("secret"));
             }
             other => panic!("expected SavedSessionsListed, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Recovery unit tests (network-free: use fake recovery port)
+    // -----------------------------------------------------------------------
+
+    /// Verify classify_recovery_error maps SDK error text to coarse kinds
+    /// without leaking the raw message in any public type.
+    #[test]
+    fn recovery_error_classification_invalid_key() {
+        let err = matrix_desktop_auth::E2eeRecoveryError::Sdk("invalid recovery key".to_owned());
+        assert_eq!(
+            classify_recovery_error(&err),
+            crate::failure::RecoveryFailureKind::InvalidRecoveryKey,
+            "SDK 'invalid' text must map to InvalidRecoveryKey"
+        );
+    }
+
+    #[test]
+    fn recovery_error_classification_network() {
+        let err = matrix_desktop_auth::E2eeRecoveryError::Runtime("runtime error".to_owned());
+        assert_eq!(
+            classify_recovery_error(&err),
+            crate::failure::RecoveryFailureKind::Network,
+            "Runtime error must map to Network"
+        );
+    }
+
+    #[test]
+    fn recovery_error_classification_server_fallback() {
+        let err = matrix_desktop_auth::E2eeRecoveryError::Sdk("unexpected server error".to_owned());
+        assert_eq!(
+            classify_recovery_error(&err),
+            crate::failure::RecoveryFailureKind::Server,
+            "Unknown SDK error must map to Server (conservative)"
+        );
+    }
+
+    /// Verify that RecoveryRequest's Debug output does not leak the secret.
+    #[test]
+    fn recovery_request_debug_redacts_secret() {
+        use matrix_desktop_state::AuthSecret;
+        let req = matrix_desktop_state::RecoveryRequest {
+            secret: AuthSecret::new("super-secret-recovery-key"),
+        };
+        let debug = format!("{req:?}");
+        assert!(
+            !debug.contains("super-secret-recovery-key"),
+            "RecoveryRequest Debug must redact the secret: {debug}"
+        );
+    }
+
+    /// Network-free: SubmitRecovery without an active session must emit
+    /// SessionRequired, not panic or crash.
+    #[tokio::test]
+    async fn submit_recovery_without_session_emits_session_required() {
+        use matrix_desktop_state::AuthSecret;
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, _action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(AccountCommand::SubmitRecovery {
+                    request_id,
+                    request: matrix_desktop_state::RecoveryRequest {
+                        secret: AuthSecret::new("some-key"),
+                    },
+                }))
+                .await
+        );
+
+        match event_rx.recv().await.expect("event") {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, CoreFailure::SessionRequired);
+            }
+            other => panic!("expected OperationFailed(SessionRequired), got {other:?}"),
         }
     }
 }

@@ -79,6 +79,11 @@ requireCheck(
   "package.scripts.qa:headless-local",
   "npm headless local QA entry exists"
 );
+requireCheck(
+  packageJson.scripts?.["qa:real-homeserver"]?.includes("desktop-real-homeserver-qa"),
+  "package.scripts.qa:real-homeserver",
+  "npm real homeserver QA entry exists (run manually: npm --prefix apps/desktop run qa:real-homeserver)"
+);
 
 if (strictSigning) {
   requireCheck(
