@@ -13,6 +13,7 @@ pub mod event;
 pub mod executor;
 pub mod failure;
 pub mod ids;
+pub mod room;
 pub mod runtime;
 pub mod store;
 pub mod sync;

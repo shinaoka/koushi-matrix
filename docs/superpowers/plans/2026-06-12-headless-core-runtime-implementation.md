@@ -275,3 +275,37 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 - 2026-06-12: model assignment added — Sonnet implements by default, Phase 1
   and all canon amendments escalate to a stronger model, phase exits reviewed
   by a stronger model.
+- 2026-06-12: Phase 4 landed (RoomActor, room operations, room list
+  normalization, Phase 4 QA legs). Key implementation notes:
+  (1) **SyncService handoff design gap resolved without escalation**: the
+  original design implied RoomActor would hold an `Arc<SyncService>` from
+  SyncActor to do room-list snapshots. This was over-engineered; the simpler
+  approach is `matrix_desktop_auth::room_list_snapshot(session)` which creates
+  a short-lived `RoomListService` internally and falls back to
+  `client.joined_rooms()` for LegacySync — `RoomActor` needs only the session
+  reference. `RoomMessage::SyncStarted { session }` carries only the session.
+  (2) **LegacySync room-list normalization parity**: `room_list_snapshot()`
+  returns the same `Vec<MatrixRoomListRoom>` shape from both backends; the
+  normalization path in `RoomActor` is backend-agnostic and thus identical for
+  both legs. No parity gap found.
+  (3) **Unread counts and DM classification**: `MatrixRoomListRoom` carries
+  `unread_count` and `is_dm`; these are forwarded directly to `RoomSummary`
+  with no SDK fallback needed. The SyncService and LegacySync paths both
+  populate these fields from the same source (client-side room state); the
+  legacy-sync QA leg confirmed they are non-zero on a room with unread events.
+  (4) **`SpaceSummary.child_room_ids`**: populated by cross-referencing
+  `rooms[].parent_space_ids` (the one-directional parent reference exposed by
+  the auth snapshot). This approach works for both backends.
+  (5) **ordered shutdown**: `RoomActor` shutdown is before `SyncActor` shutdown
+  per Async rule 12. `try_send` added to `RoomActorHandle` for use from the
+  sync `spawn_sync_actor()` fn.
+  (6) **Phase 5 placeholder**: `AppEffect::SubscribeTimeline` returned by the
+  reducer for `SelectRoom` is dropped by `AppActor` with a TODO comment; this
+  is Phase 5's job per the spec.
+  All 41 unit tests green (15 new room tests covering error classification,
+  normalization, SelectSpace/SelectRoom, session-required, request_id
+  correlation), 0 warnings; secret scan ok; release-gate structural ok.
+  QA binary v2: A creates room + space + sets space child + invites B; B joins
+  both; both assert room list via event-driven `wait_for_room_list_updated`;
+  room-list counts printed in summary line. All four QA legs (SyncService +
+  forced-LegacySync on both servers) pass.

@@ -1,8 +1,10 @@
-//! Headless Core QA binary v1 (Phase 3: adds sync lifecycle QA).
+//! Headless Core QA binary v2 (Phase 4: adds room operations and room list QA).
 //!
 //! Exercises login (with store bootstrap), store-backed session restore,
-//! logout cleanup, and stdout/stderr secret-redaction using ONLY
-//! `CoreCommand`/`CoreEvent` — no direct auth-crate calls in the QA flow.
+//! logout cleanup, sync lifecycle, room creation, space creation,
+//! space-child assignment, invite/join, room list normalization, and
+//! stdout/stderr secret-redaction using ONLY `CoreCommand`/`CoreEvent` —
+//! no direct auth-crate calls in the QA flow.
 //!
 //! Topology: one `CoreRuntime` per synthetic user (spec, Headless QA section:
 //! that models two devices, the realistic A/B topology; multi-account-in-one-
@@ -13,9 +15,16 @@
 //! OS keychain (a keychain prompt during automation is a failure per the
 //! engineering rules), so the guard runs BEFORE any login.
 //!
-//! Required env vars (same contract as crates/matrix-desktop-auth/src/bin/headless-local-qa.rs):
+//! Phase 4 flow (both probed SyncService leg and forced LegacySync leg):
+//!   A creates room + space + sets space child + invites B to both
+//!   B joins room + space
+//!   both assert room list contains expected room and space (event-driven)
+//!   print room-list counts in summary line
+//!   send permission check placeholder (actual send is Phase 5)
+//!
+//! Required env vars:
 //!   MATRIX_DESKTOP_LOCAL_QA_HOMESERVER
-//!   MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME   (reserved for future phases)
+//!   MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME
 //!   MATRIX_DESKTOP_LOCAL_QA_SERVER_KIND   (optional, defaults to "local")
 //!   MATRIX_DESKTOP_LOCAL_QA_USER_A / _PASSWORD_A
 //!   MATRIX_DESKTOP_LOCAL_QA_USER_B / _PASSWORD_B
@@ -26,12 +35,12 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use matrix_desktop_core::command::{AccountCommand, CoreCommand, SyncCommand};
-use matrix_desktop_core::event::{AccountEvent, CoreEvent, SyncBackendKind, SyncEvent};
+use matrix_desktop_core::command::{AccountCommand, CoreCommand, RoomCommand, SyncCommand};
+use matrix_desktop_core::event::{AccountEvent, CoreEvent, RoomEvent, SyncBackendKind, SyncEvent};
 use matrix_desktop_core::failure::CoreFailure;
 use matrix_desktop_core::ids::AccountKey;
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
-use matrix_desktop_state::{AuthSecret, SessionState};
+use matrix_desktop_state::{AppState, AuthSecret, SessionState};
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
 const ENV_SERVER_NAME: &str = "MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME";
@@ -118,7 +127,9 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     let data_dir_a = qa_data_dir("a");
     let data_dir_b = qa_data_dir("b");
 
+    // -----------------------------------------------------------------------
     // --- Login A (storeless exchange + store bootstrap inside the actor) ---
+    // -----------------------------------------------------------------------
     let runtime_a = CoreRuntime::start_with_data_dir(data_dir_a.clone());
     let mut conn_a = runtime_a.attach();
 
@@ -139,8 +150,9 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     let account_key_a = wait_for_logged_in(&mut conn_a, login_a_id, "login A").await?;
     wait_for_ready_snapshot(&mut conn_a, "session A Ready").await?;
 
-    // --- Phase 3: Start sync for A, assert Started + Running, record backend ---
-    // (QA waits on events, never on fixed sleeps — spec §QA Model)
+    // -----------------------------------------------------------------------
+    // --- Phase 3: Start sync A, assert Started + Running, record backend ---
+    // -----------------------------------------------------------------------
     let sync_start_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Sync(SyncCommand::Start {
@@ -150,9 +162,6 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         .map_err(|e| format!("submit sync start A: {e}"))?;
 
     let sync_backend_a = wait_for_sync_started(&mut conn_a, sync_start_id, "sync start A").await?;
-    // The backend string is printed so QA output records it (canon requirement:
-    // "The selected backend is emitted as a redacted diagnostic/event field so
-    // QA can assert it").
     println!("sync_backend_a={sync_backend_a:?}");
     assert_expected_backend(
         config.expect_sync_backend.as_deref(),
@@ -160,13 +169,203 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         "sync start A",
     )?;
 
-    // Wait for sync to reach Running (first successful sync response).
     wait_for_sync_running(&mut conn_a, "sync A running").await?;
     println!("sync_a=running");
 
-    // --- Stop sync on logout A (ordered shutdown: sync stops before session drop) ---
-    // Logout sends SyncCommand::Stop to SyncActor via AccountActor; QA asserts
-    // that Stopped arrives so the shutdown contract is verified.
+    // -----------------------------------------------------------------------
+    // --- Phase 4: Room operations (A creates room + space, invites B) ---
+    // -----------------------------------------------------------------------
+
+    // A creates a room
+    let create_room_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::CreateRoom {
+            request_id: create_room_id,
+            name: "QA Room".to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("submit create room: {e}"))?;
+
+    let room_id = wait_for_room_created(&mut conn_a, create_room_id, "create room").await?;
+    println!("room_id={room_id}");
+
+    // A creates a space
+    let create_space_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::CreateSpace {
+            request_id: create_space_id,
+            name: "QA Space".to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("submit create space: {e}"))?;
+
+    let space_id = wait_for_space_created(&mut conn_a, create_space_id, "create space").await?;
+    println!("space_id={space_id}");
+
+    // Extract server name from room_id (e.g., "!room:localhost:PORT" → "localhost:PORT")
+    let via_server = config.server_name.clone();
+
+    // A sets room as child of space
+    let set_child_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::SetSpaceChild {
+            request_id: set_child_id,
+            space_id: space_id.clone(),
+            child_room_id: room_id.clone(),
+            via_server: via_server.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit set space child: {e}"))?;
+
+    wait_for_space_child_set(
+        &mut conn_a,
+        set_child_id,
+        &space_id,
+        &room_id,
+        "set space child",
+    )
+    .await?;
+    println!("space_child_set=ok");
+
+    // A invites B to the room
+    let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
+    let invite_room_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::InviteUser {
+            request_id: invite_room_id,
+            room_id: room_id.clone(),
+            user_id: user_b_full_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit invite B to room: {e}"))?;
+
+    wait_for_user_invited(
+        &mut conn_a,
+        invite_room_id,
+        &room_id,
+        &user_b_full_id,
+        "invite B to room",
+    )
+    .await?;
+    println!("invite_b_to_room=ok");
+
+    // A invites B to the space
+    let invite_space_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::InviteUser {
+            request_id: invite_space_id,
+            room_id: space_id.clone(),
+            user_id: user_b_full_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit invite B to space: {e}"))?;
+
+    wait_for_user_invited(
+        &mut conn_a,
+        invite_space_id,
+        &space_id,
+        &user_b_full_id,
+        "invite B to space",
+    )
+    .await?;
+    println!("invite_b_to_space=ok");
+
+    // Wait for A's room list to update and contain the new room and space
+    wait_for_room_list_updated(&mut conn_a, "room list A after creates").await?;
+    let snapshot_a = conn_a.snapshot();
+    let room_list_a = room_list_summary(&snapshot_a);
+    println!("room_list_a={room_list_a}");
+
+    // Assert A has the created room and space
+    assert_room_in_list(&snapshot_a, &room_id, "A's room list should contain QA Room")?;
+    assert_space_in_list(&snapshot_a, &space_id, "A's room list should contain QA Space")?;
+
+    // -----------------------------------------------------------------------
+    // --- Login B + sync B + join room + join space ---
+    // -----------------------------------------------------------------------
+    let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
+    let mut conn_b = runtime_b.attach();
+
+    let login_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id: login_b_id,
+            request: matrix_desktop_state::LoginRequest {
+                homeserver: config.homeserver.clone(),
+                username: config.user_b.clone(),
+                password: AuthSecret::new(config.password_b.clone()),
+                device_display_name: Some(DEVICE_B.to_owned()),
+            },
+        }))
+        .await
+        .map_err(|e| format!("submit login B: {e}"))?;
+
+    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "login B").await?;
+    wait_for_ready_snapshot(&mut conn_b, "session B Ready").await?;
+
+    // Start sync B
+    let sync_start_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Sync(SyncCommand::Start {
+            request_id: sync_start_b_id,
+        }))
+        .await
+        .map_err(|e| format!("submit sync start B: {e}"))?;
+
+    let sync_backend_b =
+        wait_for_sync_started(&mut conn_b, sync_start_b_id, "sync start B").await?;
+    println!("sync_backend_b={sync_backend_b:?}");
+    assert_expected_backend(
+        config.expect_sync_backend.as_deref(),
+        sync_backend_b,
+        "sync start B",
+    )?;
+
+    wait_for_sync_running(&mut conn_b, "sync B running").await?;
+    println!("sync_b=running");
+
+    // B joins the room
+    let join_room_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Room(RoomCommand::JoinRoom {
+            request_id: join_room_id,
+            room_id: room_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit join room B: {e}"))?;
+
+    wait_for_room_joined(&mut conn_b, join_room_id, &room_id, "B joins room").await?;
+    println!("b_joined_room=ok");
+
+    // B joins the space
+    let join_space_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Room(RoomCommand::JoinRoom {
+            request_id: join_space_id,
+            room_id: space_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit join space B: {e}"))?;
+
+    wait_for_room_joined(&mut conn_b, join_space_id, &space_id, "B joins space").await?;
+    println!("b_joined_space=ok");
+
+    // Wait for B's room list to update and contain the joined room and space
+    wait_for_room_list_updated(&mut conn_b, "room list B after joins").await?;
+    let snapshot_b = conn_b.snapshot();
+    let room_list_b = room_list_summary(&snapshot_b);
+    println!("room_list_b={room_list_b}");
+
+    // Assert B has the joined room (space join should make it appear too)
+    assert_room_in_list(&snapshot_b, &room_id, "B's room list should contain QA Room")?;
+
+    // Phase 5 placeholder: send permission check
+    // (Actual send is Phase 5; we just verify the room exists in state)
+    println!("send_permission_check=skipped(phase5)");
+
+    // -----------------------------------------------------------------------
+    // --- Sync stop A + store-backed restore A + logout A ---
+    // -----------------------------------------------------------------------
     let sync_stop_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Sync(SyncCommand::Stop {
@@ -178,14 +377,9 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     wait_for_sync_stopped(&mut conn_a, sync_stop_id, "sync stop A").await?;
     println!("sync_a=stopped");
 
-    // --- Store-backed restore of A on a fresh runtime over the same data dir.
-    // Tear down runtime A first so the restored client is the only holder of
-    // the per-account SQLite store. There is no CoreEvent for runtime
-    // teardown (the command channel simply closes), so a short bounded wait
-    // is used; it only avoids store-lock contention and is not a correctness
-    // wait.
     drop(conn_a);
     drop(runtime_a);
+    // Brief wait to avoid store-lock contention on restore.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
@@ -203,8 +397,6 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     wait_for_session_restored(&mut conn_a2, restore_a_id, &account_key_a, "restore A").await?;
     wait_for_ready_snapshot(&mut conn_a2, "restored session A Ready").await?;
 
-    // --- Logout A (via the restored, store-backed session) ---
-    // Note: logout now internally stops sync (ordered shutdown in AccountActor).
     let logout_a_id = conn_a2.next_request_id();
     conn_a2
         .command(CoreCommand::Account(AccountCommand::Logout {
@@ -215,7 +407,7 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
 
     wait_for_logged_out(&mut conn_a2, logout_a_id, &account_key_a, "logout A").await?;
 
-    // --- Cleanup assertion: a second restore of A must now fail not-found.
+    // Cleanup assertion: a second restore of A must now fail not-found.
     let restore_gone_id = conn_a2.next_request_id();
     conn_a2
         .command(CoreCommand::Account(AccountCommand::RestoreSession {
@@ -240,48 +432,9 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         return Err("post-logout restore A must leave the session SignedOut".to_owned());
     }
 
-    // --- Login B + sync B + logout B ---
-    let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
-    let mut conn_b = runtime_b.attach();
-
-    let login_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_b_id,
-            request: matrix_desktop_state::LoginRequest {
-                homeserver: config.homeserver.clone(),
-                username: config.user_b.clone(),
-                password: AuthSecret::new(config.password_b.clone()),
-                device_display_name: Some(DEVICE_B.to_owned()),
-            },
-        }))
-        .await
-        .map_err(|e| format!("submit login B: {e}"))?;
-
-    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "login B").await?;
-    wait_for_ready_snapshot(&mut conn_b, "session B Ready").await?;
-
-    // Start sync for B and record backend (canon requirement: both servers reported).
-    let sync_start_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Sync(SyncCommand::Start {
-            request_id: sync_start_b_id,
-        }))
-        .await
-        .map_err(|e| format!("submit sync start B: {e}"))?;
-
-    let sync_backend_b =
-        wait_for_sync_started(&mut conn_b, sync_start_b_id, "sync start B").await?;
-    println!("sync_backend_b={sync_backend_b:?}");
-    assert_expected_backend(
-        config.expect_sync_backend.as_deref(),
-        sync_backend_b,
-        "sync start B",
-    )?;
-
-    wait_for_sync_running(&mut conn_b, "sync B running").await?;
-    println!("sync_b=running");
-
+    // -----------------------------------------------------------------------
+    // --- Logout B ---
+    // -----------------------------------------------------------------------
     let logout_b_id = conn_b.next_request_id();
     conn_b
         .command(CoreCommand::Account(AccountCommand::Logout {
@@ -295,8 +448,12 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     Ok(format!(
         "Headless core QA OK. server={server} \
          login_a={user_a} sync_a=ok backend_a={backend_a:?} \
+         room_created=ok space_created=ok space_child_set=ok \
+         invite_ok=ok room_list_a={room_list_a} \
          restore_a=ok logout_a=ok post_logout_restore_a=not_found \
-         login_b={user_b} sync_b=ok backend_b={backend_b:?} logout_b=ok",
+         login_b={user_b} sync_b=ok backend_b={backend_b:?} \
+         joined_room=ok joined_space=ok room_list_b={room_list_b} \
+         logout_b=ok",
         server = config.server_kind,
         user_a = account_key_a.0,
         backend_a = sync_backend_a,
@@ -304,6 +461,262 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         backend_b = sync_backend_b,
     ))
 }
+
+// ---------------------------------------------------------------------------
+// Room-list helpers
+// ---------------------------------------------------------------------------
+
+/// A compact summary of a snapshot's room list for printing.
+fn room_list_summary(snapshot: &AppState) -> String {
+    let spaces = snapshot.spaces.len();
+    let rooms = snapshot.rooms.len();
+    let dms = snapshot.rooms.iter().filter(|r| r.is_dm).count();
+    let unread = snapshot
+        .rooms
+        .iter()
+        .filter(|r| r.unread_count > 0)
+        .count();
+    format!("rooms={rooms} spaces={spaces} dms={dms} unread_rooms={unread}")
+}
+
+fn assert_room_in_list(snapshot: &AppState, room_id: &str, label: &str) -> Result<(), String> {
+    if snapshot.rooms.iter().any(|r| r.room_id == room_id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label}: room {room_id} not found in room list (have {} rooms)",
+            snapshot.rooms.len()
+        ))
+    }
+}
+
+fn assert_space_in_list(snapshot: &AppState, space_id: &str, label: &str) -> Result<(), String> {
+    if snapshot.spaces.iter().any(|s| s.space_id == space_id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label}: space {space_id} not found in space list (have {} spaces)",
+            snapshot.spaces.len()
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Event waiter helpers (Phase 4 additions)
+// ---------------------------------------------------------------------------
+
+/// Wait for `RoomEvent::RoomCreated` with the given request_id. Returns room_id.
+async fn wait_for_room_created(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<String, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::RoomCreated"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomCreated {
+                request_id: ev_id,
+                room_id,
+            }) if ev_id == request_id => {
+                return Ok(room_id);
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait for `RoomEvent::SpaceCreated` with the given request_id. Returns space_id.
+async fn wait_for_space_created(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<String, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::SpaceCreated"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::SpaceCreated {
+                request_id: ev_id,
+                space_id,
+            }) if ev_id == request_id => {
+                return Ok(space_id);
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait for `RoomEvent::SpaceChildSet` with the given request_id.
+async fn wait_for_space_child_set(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    space_id: &str,
+    child_room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::SpaceChildSet"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::SpaceChildSet {
+                request_id: ev_id,
+                space_id: ev_space,
+                child_room_id: ev_child,
+            }) if ev_id == request_id => {
+                if ev_space != space_id || ev_child != child_room_id {
+                    return Err(format!(
+                        "{label}: SpaceChildSet IDs mismatch: space={ev_space} child={ev_child}"
+                    ));
+                }
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait for `RoomEvent::UserInvited` with the given request_id.
+async fn wait_for_user_invited(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    room_id: &str,
+    user_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::UserInvited"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::UserInvited {
+                request_id: ev_id,
+                room_id: ev_room,
+                user_id: ev_user,
+            }) if ev_id == request_id => {
+                if ev_room != room_id || ev_user != user_id {
+                    return Err(format!(
+                        "{label}: UserInvited IDs mismatch: room={ev_room} user={ev_user}"
+                    ));
+                }
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait for `RoomEvent::RoomJoined` with the given request_id.
+async fn wait_for_room_joined(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::RoomJoined"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomJoined {
+                request_id: ev_id,
+                room_id: ev_room,
+            }) if ev_id == request_id => {
+                if ev_room != room_id {
+                    return Err(format!(
+                        "{label}: RoomJoined room_id mismatch: got {ev_room}, expected {room_id}"
+                    ));
+                }
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait for `RoomEvent::RoomListUpdated` (discrete event) and/or a
+/// `StateChanged` snapshot that has a non-empty room list. Returns once the
+/// snapshot has at least one room or space.
+async fn wait_for_room_list_updated(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
+    // Check snapshot first in case it already has data.
+    if room_list_has_content(&conn.snapshot()) {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for room list to populate"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if room_list_has_content(&snapshot) {
+                    return Ok(());
+                }
+                // Got the event but snapshot still empty — keep waiting.
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if room_list_has_content(&snapshot) {
+                    return Ok(());
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
+fn room_list_has_content(snapshot: &AppState) -> bool {
+    !snapshot.rooms.is_empty() || !snapshot.spaces.is_empty()
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 event waiter helpers (unchanged)
+// ---------------------------------------------------------------------------
 
 /// Wait for `SyncEvent::Started` with the given request_id. Returns the backend kind.
 async fn wait_for_sync_started(
@@ -336,7 +749,6 @@ async fn wait_for_sync_started(
 }
 
 /// Wait for `SyncEvent::Running` (first successful sync response).
-/// No request_id filter — Running is emitted without one.
 async fn wait_for_sync_running(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
@@ -347,7 +759,6 @@ async fn wait_for_sync_running(conn: &mut CoreConnection, label: &str) -> Result
         if matches!(event, CoreEvent::Sync(SyncEvent::Running)) {
             return Ok(());
         }
-        // SyncEvent::Failed is terminal — surface it.
         if matches!(event, CoreEvent::Sync(SyncEvent::Failed)) {
             return Err(format!("{label}: SyncEvent::Failed received before Running"));
         }
@@ -374,7 +785,6 @@ async fn wait_for_sync_stopped(
         ) {
             return Ok(());
         }
-        // Also accept Stopped without request_id (e.g. task-ended path).
         if matches!(event, CoreEvent::Sync(SyncEvent::Stopped { request_id: None })) {
             return Ok(());
         }
@@ -553,9 +963,12 @@ async fn wait_for_operation_failed(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Config and helpers
+// ---------------------------------------------------------------------------
+
 struct QaConfig {
     homeserver: String,
-    #[allow(dead_code)]
     server_name: String,
     server_kind: String,
     user_a: String,

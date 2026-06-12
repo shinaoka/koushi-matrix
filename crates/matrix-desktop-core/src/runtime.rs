@@ -276,13 +276,12 @@ impl AppActor {
                     .await;
                 false
             }
-            CoreCommand::Room(_) => {
-                self.emit(CoreEvent::OperationFailed {
-                    request_id: command.request_id(),
-                    failure: CoreFailure::RoomOperationFailed {
-                        kind: crate::failure::RoomFailureKind::Sdk,
-                    },
-                });
+            CoreCommand::Room(room_command) => {
+                // Route to AccountActor (which forwards to RoomActor).
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::RoomCommand(room_command))
+                    .await;
                 false
             }
             CoreCommand::Timeline(_) => {

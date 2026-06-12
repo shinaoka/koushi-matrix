@@ -33,10 +33,11 @@ use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_state::{AppAction, LoginRequest, SessionInfo};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::command::{AccountCommand, SyncCommand};
+use crate::command::{AccountCommand, RoomCommand, SyncCommand};
 use crate::event::{AccountEvent, CoreEvent};
 use crate::failure::{CoreFailure, LoginFailureKind};
 use crate::ids::{AccountKey, RequestId};
+use crate::room::{RoomActorHandle, RoomMessage};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
 use crate::sync::{SyncActorHandle, SyncMessage};
 
@@ -51,6 +52,7 @@ const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
 pub enum AccountMessage {
     Command(AccountCommand),
     SyncCommand(SyncCommand),
+    RoomCommand(RoomCommand),
     Shutdown,
 }
 
@@ -91,6 +93,10 @@ pub struct AccountActor {
     /// session exists. Created on first login/restore; destroyed on logout /
     /// account switch.
     sync_actor: Option<SyncActorHandle>,
+    /// RoomActor child handle (Phase 4). Spawned once at actor creation and
+    /// kept alive for the lifetime of the AccountActor. Session is provided
+    /// via `RoomMessage::SyncStarted` when sync begins.
+    room_actor: RoomActorHandle,
 }
 
 impl AccountActor {
@@ -100,6 +106,9 @@ impl AccountActor {
         event_tx: broadcast::Sender<CoreEvent>,
     ) -> AccountActorHandle {
         let (tx, command_rx) = mpsc::channel(64);
+        // Spawn RoomActor once at AccountActor creation. It starts with no
+        // session and waits for RoomMessage::SyncStarted.
+        let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
         let actor = AccountActor {
             session: None,
             session_key_id: None,
@@ -108,6 +117,7 @@ impl AccountActor {
             event_tx,
             command_rx,
             sync_actor: None,
+            room_actor,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -123,14 +133,28 @@ impl AccountActor {
                 AccountMessage::SyncCommand(sync_command) => {
                     self.route_sync_command(sync_command).await;
                 }
+                AccountMessage::RoomCommand(room_command) => {
+                    self.route_room_command(room_command).await;
+                }
             }
         }
         // Ordered shutdown (overview.md Async rule 12):
-        // timelines (phase 5 no-op) → search (phase 6 no-op) → sync → SDK handles.
+        // timelines (phase 5 no-op) → search (phase 6 no-op) → room → sync → SDK handles.
+        self.stop_room_actor().await;
         self.stop_sync_actor().await;
         // Drop the session handle inside the runtime context
         // (overview.md Async rule 11 — deadpool-runtime panic prevention).
         drop(self.session.take());
+    }
+
+    /// Route a RoomCommand to the RoomActor. The RoomActor handles the
+    /// SessionRequired check internally (it holds the session ref after
+    /// SyncStarted).
+    async fn route_room_command(&self, command: RoomCommand) {
+        let _ = self
+            .room_actor
+            .send(RoomMessage::Command(command))
+            .await;
     }
 
     /// Route a SyncCommand to the SyncActor, or emit SessionRequired if no
@@ -155,8 +179,18 @@ impl AccountActor {
         }
     }
 
-    /// Spawn the SyncActor for the just-established store-backed session.
+    /// Spawn the SyncActor for the just-established store-backed session and
+    /// notify the RoomActor so it can set up the room list.
     fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
+        // Notify the RoomActor that we have a session. It will do a one-shot
+        // room list snapshot (auth::room_list_snapshot covers both backends).
+        // We use try_send since spawn_sync_actor is a sync fn; the channel
+        // capacity of 64 is more than enough for this one message.
+        let session_for_room = session.clone();
+        self.room_actor.try_send(RoomMessage::SyncStarted {
+            session: session_for_room,
+        });
+
         let handle = crate::sync::SyncActor::spawn(
             session,
             self.action_tx.clone(),
@@ -171,6 +205,13 @@ impl AccountActor {
             let _ = handle.send(SyncMessage::Shutdown).await;
             handle.join().await;
         }
+    }
+
+    /// Ordered shutdown of the RoomActor (before sync stop in the shutdown
+    /// sequence). The RoomActor is not Option<> since it is always present;
+    /// we send Shutdown and the task finishes on its own after processing it.
+    async fn stop_room_actor(&mut self) {
+        let _ = self.room_actor.send(RoomMessage::Shutdown).await;
     }
 
     async fn handle_command(&mut self, command: AccountCommand) {
