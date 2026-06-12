@@ -216,6 +216,15 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 ## Changelog
 
 - 2026-06-12: plan created.
+- 2026-06-12: Phase 2 review — three gaps escalated by the implementing
+  model and resolved in the canon: (1) account store bootstrap invariant
+  added to the overview (storeless login client must never sync; the
+  store-backed restored session replaces it before any sync/E2EE traffic);
+  (2) `SwitchAccount` defined as ordered shutdown without credential
+  clearing plus store-backed restore of the target account; (3) one
+  `CoreRuntime` per synthetic QA user legitimized in the spec QA section as
+  the two-device topology; multi-account-in-one-runtime is account-switch
+  QA's job.
 - 2026-06-12: Phase 0 landed. Notes: (1) the repo has no hosted CI, so all
   gates run locally (pre-commit hook + npm scripts + release preflight) until
   CI infrastructure exists; (2) the release-gate check found and fixed a real

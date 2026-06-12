@@ -122,6 +122,19 @@ An in-process actor system in `matrix-desktop-core`:
 - `StoreActor` — credential store access, store/search keys, per-account
   paths, cleanup, debug/test secret injection policy.
 
+**Account store bootstrap invariant.** Per-account store paths derive from
+`homeserver|user|device`, so the device id — and therefore the store path —
+is unknown until the password exchange completes. First login therefore runs
+on a storeless client, and that client must never sync or initialize
+encryption: immediately after login the session is persisted and restored
+into the per-account encrypted store, and only the store-backed session may
+start sync or any E2EE traffic. This preserves the device's crypto identity
+across restarts; the fail-closed local-encryption rule applies to the store
+creation step. `SwitchAccount` is the ordered shutdown of the current
+account runtime (without clearing credentials or stores) followed by a
+store-backed restore of the target account; phases that do not yet have the
+affected children treat those shutdown steps as no-ops.
+
 Actor deployment is flexible. The boundaries above define state ownership,
 command routing, event production, and shutdown responsibility; they do not
 require one Tokio task per actor in the first implementation. The runtime may

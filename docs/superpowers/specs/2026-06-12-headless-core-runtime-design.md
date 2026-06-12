@@ -361,6 +361,15 @@ struct AccountRuntimeState {
 
 `AccountActor` owns one account/device runtime. It owns the SDK session, login/restore/recovery/logout flow, account switch behavior, and shutdown coordination for child actors.
 
+Login bootstraps the store in two steps (store bootstrap invariant in the
+overview): the password exchange runs on a storeless client that never syncs
+or initializes encryption; the session is then persisted and immediately
+restored into the per-account encrypted store, and the store-backed session
+replaces the login client before any sync or E2EE traffic. `SwitchAccount`
+is the ordered shutdown of the current account runtime without clearing
+credentials or stores, followed by a store-backed `RestoreSession` of the
+target account, emitting `AccountSwitched` and a fresh `StateChanged`.
+
 `SyncActor` owns continuous SDK sync. It starts after login/restore, transitions through starting/running/reconnecting/failed/stopped, and stops on logout, account switch, or app shutdown. SDK sync errors are converted to redacted sync failures.
 
 `RoomActor` owns room list and room operations. It normalizes SDK room list data into `SpaceSummary` and `RoomSummary`, handles create room, create space, set space child, invite, join, unread counts, DM classification, and space-filtered lists.
@@ -504,7 +513,7 @@ Unit tests are fast and network-free. They cover command routing, redaction, una
 
 Timeline/search unit tests must include replacement-event ordering cases: original-before-edit, edit-before-original, redaction of original, redaction of edit, and late decryption of either side. They must assert that search no longer returns the old text after edit, no longer returns redacted messages after deletion, and does not return unresolved replacement events as standalone messages.
 
-Local homeserver integration uses disposable Conduit and Tuwunel servers. The script starts a server, registers synthetic users, runs a core QA binary, and stops the server. The QA binary must use `CoreCommand` and `CoreEvent`, not direct SDK wrapper calls.
+Local homeserver integration uses disposable Conduit and Tuwunel servers. The script starts a server, registers synthetic users, runs a core QA binary, and stops the server. The QA binary must use `CoreCommand` and `CoreEvent`, not direct SDK wrapper calls. The QA binary may run one `CoreRuntime` per synthetic user — that models two devices, which is the realistic A/B messaging topology; multi-account-in-one-runtime behavior is covered by account switch QA, not by A/B messaging QA.
 
 Local QA must cover:
 
