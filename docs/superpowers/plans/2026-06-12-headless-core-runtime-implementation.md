@@ -233,6 +233,21 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   (engineering-rules Secrets rule 8 incident); login follows the store
   bootstrap invariant with fail-closed abort (best-effort device logout +
   credential rollback) when the encrypted store cannot be created.
+- 2026-06-12: Phase 3 landed (SyncActor, capability probe, sync QA on both
+  servers). Canon-relevant evidence: **both Conduit and Tuwunel select
+  `SyncService` (MSC4186)**; both advertise `org.matrix.simplified_msc3575`
+  in `/versions` `unstable_features`. The `LegacySync` path exists and is
+  tested at the unit level (classify_sdk_sync_error, empty-versions probe)
+  but is unreachable in the local QA matrix because both local servers
+  support MSC4186. Design gap for escalation: the LegacySync path (including
+  legacy room-list normalization in Phase 4) cannot be validated against a
+  local server; it requires a real homeserver known to lack MSC4186, or a
+  capability-probe mock.  The `SyncActor` is colocated as a child task under
+  `AccountActor` (spec: "Actor Deployment And Supervision — boundaries define
+  ownership, not one task per actor"). Ordered shutdown wires sync stop
+  before SDK handle drop per overview.md Async rule 12 step 4.
+  All 25 unit tests green, 0 warnings, secret scan ok, release-gate
+  structural ok, both-server QA green.
 - 2026-06-12: Phase 0 landed. Notes: (1) the repo has no hosted CI, so all
   gates run locally (pre-commit hook + npm scripts + release preflight) until
   CI infrastructure exists; (2) the release-gate check found and fixed a real
