@@ -10,7 +10,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use matrix_desktop_key::CredentialStore;
 use matrix_desktop_state::{AppAction, AppState, reduce};
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -24,8 +23,6 @@ use crate::store::StoreActor;
 
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
 pub const EVENT_QUEUE_CAPACITY: usize = 1024;
-
-const CREDENTIAL_STORE_SERVICE_NAME: &str = "matrix-desktop";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommandSubmitError {
@@ -79,14 +76,12 @@ impl CoreRuntime {
         let (snapshot_tx, snapshot_rx) = watch::channel(AppState::default());
         let (action_tx, action_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
 
-        // Build the store and credential store.
+        // Build the store actor (owns the credential store backend).
         let store_actor = StoreActor::new(data_dir);
-        let credential_store = CredentialStore::new(CREDENTIAL_STORE_SERVICE_NAME);
 
         // Spawn AccountActor with shared channels.
         let account_actor = crate::account::AccountActor::spawn(
             store_actor,
-            credential_store,
             action_tx.clone(),
             event_tx.clone(),
         );

@@ -5,7 +5,7 @@
 //!
 //! Required env vars (same contract as crates/matrix-desktop-auth/src/bin/headless-local-qa.rs):
 //!   MATRIX_DESKTOP_LOCAL_QA_HOMESERVER
-//!   MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME   (unused in v0, reserved for future phases)
+//!   MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME   (reserved for future phases)
 //!   MATRIX_DESKTOP_LOCAL_QA_SERVER_KIND   (optional, defaults to "local")
 //!   MATRIX_DESKTOP_LOCAL_QA_USER_A
 //!   MATRIX_DESKTOP_LOCAL_QA_PASSWORD_A
@@ -62,10 +62,17 @@ fn run() -> Result<String, String> {
 }
 
 async fn run_async(config: QaConfig) -> Result<String, String> {
-    let data_dir = qa_data_dir();
-    let runtime = CoreRuntime::start_with_data_dir(data_dir);
-    let mut conn_a = runtime.attach();
-    let mut conn_b = runtime.attach();
+    // Use two separate CoreRuntime instances so each user has independent state.
+    // Phase 2 doesn't implement multi-account switching; separate runtimes
+    // are the correct model for testing two independent accounts.
+    let data_dir_a = qa_data_dir("a");
+    let data_dir_b = qa_data_dir("b");
+
+    let runtime_a = CoreRuntime::start_with_data_dir(data_dir_a);
+    let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
+
+    let mut conn_a = runtime_a.attach();
+    let mut conn_b = runtime_b.attach();
 
     // --- Login A ---
     let login_a_id = conn_a.next_request_id();
@@ -84,16 +91,9 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
 
     let account_key_a = wait_for_logged_in(&mut conn_a, login_a_id, "login A").await?;
 
-    // Verify the snapshot shows Ready session.
-    {
-        let snapshot = conn_a.snapshot();
-        if !matches!(snapshot.session, matrix_desktop_state::SessionState::Ready(_)) {
-            return Err(format!(
-                "snapshot after login A should be Ready, got {:?}",
-                snapshot.session
-            ));
-        }
-    }
+    // Wait for the AppState snapshot to show Ready (AppAction pipeline is async
+    // relative to the AccountEvent).
+    wait_for_ready_snapshot(&mut conn_a, "session A Ready").await?;
 
     // --- Login B ---
     let login_b_id = conn_b.next_request_id();
@@ -111,6 +111,9 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         .map_err(|e| format!("submit login B: {e}"))?;
 
     let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "login B").await?;
+
+    // Wait for Ready snapshot for B.
+    wait_for_ready_snapshot(&mut conn_b, "session B Ready").await?;
 
     // --- Logout A ---
     let logout_a_id = conn_a.next_request_id();
@@ -134,17 +137,6 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
 
     wait_for_logged_out(&mut conn_b, logout_b_id, &account_key_b, "logout B").await?;
 
-    // --- Self-check: stdout/stderr must not contain the passwords ---
-    // This check is advisory (passwords are in env, not in our output stream).
-    // The binary never writes passwords; the test passes by construction.
-    // We still verify the sanitization contract:
-    for password in [&config.password_a, &config.password_b] {
-        // We don't have access to our own captured stdout here — the
-        // contract is that we never write passwords. Verified by the outer
-        // script comparing output to the password strings.
-        let _ = password; // passwords are never written by this binary
-    }
-
     Ok(format!(
         "Headless core QA OK. server={} login_a={} login_b={} logout_a={} logout_b={}",
         config.server_kind,
@@ -153,6 +145,39 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         account_key_a.0,
         account_key_b.0,
     ))
+}
+
+/// Wait for a `StateChanged` snapshot where `SessionState::Ready`.
+async fn wait_for_ready_snapshot(
+    conn: &mut matrix_desktop_core::runtime::CoreConnection,
+    label: &str,
+) -> Result<(), String> {
+    // Check if the snapshot is already Ready.
+    if matches!(
+        conn.snapshot().session,
+        matrix_desktop_state::SessionState::Ready(_)
+    ) {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for Ready snapshot"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) => {
+                if matches!(
+                    snapshot.session,
+                    matrix_desktop_state::SessionState::Ready(_)
+                ) {
+                    return Ok(());
+                }
+            }
+            _ => continue,
+        }
+    }
 }
 
 /// Wait for `AccountEvent::LoggedIn` with the given request_id.
@@ -180,7 +205,6 @@ async fn wait_for_logged_in(
             } if ev_id == request_id => {
                 return Err(format!("{label} failed: {failure:?}"));
             }
-            // StateChanged and other events are fine to skip.
             _ => continue,
         }
     }
@@ -204,7 +228,6 @@ async fn wait_for_logged_out(
                 request_id: ev_id,
                 account_key,
             }) if ev_id == request_id => {
-                // Verify the account key matches what we logged in with.
                 if account_key != *expected_account_key {
                     return Err(format!(
                         "{label}: LoggedOut account_key mismatch: got {:?}, expected {:?}",
@@ -253,17 +276,12 @@ fn env_required(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("{name} is required"))
 }
 
-/// Data directory for QA runs. Uses a temp dir when the file credential store
-/// env var is set (debug/test builds only).
-fn qa_data_dir() -> std::path::PathBuf {
-    // If running with the file credential store, use a temp data dir to keep
-    // each QA run isolated.
+/// Data directory for QA runs.
+fn qa_data_dir(suffix: &str) -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("MATRIX_DESKTOP_QA_DATA_DIR") {
-        return std::path::PathBuf::from(dir);
+        return std::path::PathBuf::from(dir).join(suffix);
     }
-    // Default: a per-run temp dir so QA doesn't pollute the user's data.
-    let tmp = std::env::temp_dir()
+    std::env::temp_dir()
         .join("matrix-desktop-core-qa")
-        .join(format!("{}", std::process::id()));
-    tmp
+        .join(format!("{}_{}", std::process::id(), suffix))
 }

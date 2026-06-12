@@ -1,9 +1,11 @@
 //! AccountActor: handles login, restore, logout, and account switch.
 //!
-//! Owns the `MatrixClientSession` handle. Internal outcomes are projected via
-//! the runtime's action channel (AppAction::LoginSucceeded etc.) so AppState /
-//! StateChanged remain reducer-driven. Domain events (AccountEvent::LoggedIn
-//! etc.) plus OperationFailed are emitted on the CoreEvent stream.
+//! Owns the `MatrixClientSession` handle and the `StoreActor` (which owns
+//! the single `CredentialStoreBackend` used for both unlock secrets and
+//! session persistence). Internal outcomes are projected via the runtime's
+//! action channel (AppAction::LoginSucceeded etc.) so AppState / StateChanged
+//! remain reducer-driven. Domain events (AccountEvent::LoggedIn etc.) plus
+//! OperationFailed are emitted on the CoreEvent stream.
 //!
 //! Shutdown order (overview.md Async rule 12): SDK handles dropped inside the
 //! Tokio runtime context. The actor never drops the session outside async context.
@@ -16,7 +18,7 @@
 use std::sync::Arc;
 
 use matrix_desktop_auth::{MatrixClientSession, PersistableMatrixSession};
-use matrix_desktop_key::{CredentialStore, SessionKeyId, StoredMatrixSession};
+use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_state::{AppAction, LoginRequest};
 use tokio::sync::{broadcast, mpsc};
 
@@ -41,10 +43,6 @@ impl AccountActorHandle {
     pub async fn send(&self, msg: AccountMessage) -> bool {
         self.tx.send(msg).await.is_ok()
     }
-
-    pub fn send_blocking(&self, msg: AccountMessage) -> bool {
-        self.tx.blocking_send(msg).is_ok()
-    }
 }
 
 /// The account actor's internal state.
@@ -53,10 +51,8 @@ pub struct AccountActor {
     session: Option<Arc<MatrixClientSession>>,
     /// Session key for credential store operations.
     session_key_id: Option<SessionKeyId>,
-    /// Credential store backend — needed to persist/load/delete sessions.
-    credential_store: CredentialStore,
-    /// Store actor — needed to resolve per-account encryption config.
-    store_actor: StoreActor,
+    /// Store actor — owns the credential store backend and per-account paths.
+    store: StoreActor,
     /// App-level action channel to drive the reducer.
     action_tx: mpsc::Sender<Vec<AppAction>>,
     /// Shared event broadcast channel.
@@ -68,7 +64,6 @@ pub struct AccountActor {
 impl AccountActor {
     pub fn spawn(
         store_actor: StoreActor,
-        credential_store: CredentialStore,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
     ) -> AccountActorHandle {
@@ -76,8 +71,7 @@ impl AccountActor {
         let actor = AccountActor {
             session: None,
             session_key_id: None,
-            credential_store,
-            store_actor,
+            store: store_actor,
             action_tx,
             event_tx,
             command_rx,
@@ -146,16 +140,15 @@ impl AccountActor {
         request_id: RequestId,
         request: LoginRequest,
     ) {
-        // 1. Build session key id (we need homeserver + user + device, but we
-        //    only know homeserver before login; key is finalized after login).
-        //    We obtain the store config after a successful login using the
-        //    returned session info.
+        // Login without a store config first — we don't have the device_id
+        // until after login, which is required to build the per-account store path.
+        // After a successful login we persist the session so RestoreSession can
+        // use the store-backed path.
         let login_result =
             matrix_desktop_auth::login_with_password_with_store(&request, None).await;
 
         match login_result {
             Err(error) => {
-                // Map SDK error to a coarse failure kind (no raw SDK error in public).
                 let kind = classify_login_error(&error);
                 self.emit_failure(request_id, CoreFailure::LoginFailed { kind });
                 self.reduce(vec![AppAction::LoginFailed {
@@ -167,7 +160,8 @@ impl AccountActor {
                 let key_id = session_key_id_from_info(&info);
                 let account_key = account_key_from_info(&info);
 
-                // Persist session in the credential store.
+                // Persist session in the credential store (using the unified
+                // backend that supports both OS keychain and file override).
                 let persist_result = self.persist_session(&session, &key_id);
                 if let Err(failure) = persist_result {
                     self.emit_failure(request_id, failure);
@@ -194,10 +188,8 @@ impl AccountActor {
         request_id: RequestId,
         account_key: AccountKey,
     ) {
-        // The account_key is the user_id string. We need a full SessionKeyId
-        // to restore — the credential store needs homeserver + device_id too.
-        // In Phase 2 we load the last-session pointer from the credential store.
-        let last_session = match self.credential_store.load_last_session() {
+        // Look up the last-session pointer from the credential store.
+        let last_session = match self.store.credential_backend().load_last_session() {
             Ok(Some(key_id)) if key_id.user_id == account_key.0 => key_id,
             Ok(_) => {
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
@@ -209,13 +201,14 @@ impl AccountActor {
             }
         };
 
-        let session_json = match self.credential_store.load_matrix_session(&last_session) {
-            Ok(stored) => stored,
-            Err(_) => {
-                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
-                return;
-            }
-        };
+        let session_json =
+            match self.store.credential_backend().load_matrix_session(&last_session) {
+                Ok(stored) => stored,
+                Err(_) => {
+                    self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+                    return;
+                }
+            };
 
         let persistable = match PersistableMatrixSession::from_json(session_json.as_str()) {
             Ok(s) => s,
@@ -226,7 +219,7 @@ impl AccountActor {
         };
 
         // Build store config using the credential-backed encryption key.
-        let store_config_result = self.store_actor.account_store_config(&last_session);
+        let store_config_result = self.store.account_store_config(&last_session);
         let store_config = match store_config_result {
             Ok(cfg) => cfg,
             Err(failure) => {
@@ -283,20 +276,18 @@ impl AccountActor {
         // Attempt server-side logout (best-effort; local cleanup always happens).
         let _ = matrix_desktop_auth::logout(&session).await;
 
-        // Drop the SDK handle inside the Tokio runtime context.
+        // Drop the SDK handle inside the Tokio runtime context (Async rule 11).
         drop(session);
 
         // Clean up credentials and stored session.
-        if let Some(key_id) = &key_id {
-            let _ = self.credential_store.delete_matrix_session(key_id);
-            let _ = self.credential_store.delete_last_session();
-            self.store_actor.delete_account_credentials(key_id);
-        }
-
-        let account_key = key_id
-            .as_ref()
-            .map(|k| AccountKey(k.user_id.clone()))
-            .unwrap_or_else(|| AccountKey(String::new()));
+        let account_key = if let Some(key_id) = &key_id {
+            let _ = self.store.credential_backend().delete_matrix_session(key_id);
+            let _ = self.store.credential_backend().delete_last_session();
+            self.store.delete_account_credentials(key_id);
+            AccountKey(key_id.user_id.clone())
+        } else {
+            AccountKey(String::new())
+        };
 
         self.reduce(vec![AppAction::LogoutFinished]);
         self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
@@ -312,13 +303,8 @@ impl AccountActor {
     ) {
         // Design gap (Phase 2): SwitchAccount before sync exists.
         // Full implementation requires Phase 3 sync actor coordination.
-        // For now: emit a failure that signals the operation is not yet
-        // implemented rather than silently dropping the command.
-        //
-        // The gap is documented in the final report. This placeholder satisfies
-        // the contract that every accepted command produces an event.
         self.emit_failure(request_id, CoreFailure::StoreUnavailable);
-        let _ = account_key; // suppress unused warning
+        let _ = account_key;
     }
 
     // --- helpers ---
@@ -335,10 +321,12 @@ impl AccountActor {
             .to_json()
             .map_err(|_| CoreFailure::StoreUnavailable)?;
         let stored = StoredMatrixSession::new(json);
-        self.credential_store
+        self.store
+            .credential_backend()
             .save_matrix_session(key_id, &stored)
             .map_err(|_| CoreFailure::StoreUnavailable)?;
-        self.credential_store
+        self.store
+            .credential_backend()
             .save_last_session(key_id)
             .map_err(|_| CoreFailure::StoreUnavailable)?;
         Ok(())
@@ -371,8 +359,11 @@ fn classify_login_error(error: &matrix_desktop_auth::PasswordLoginError) -> Logi
             _ => LoginFailureKind::Server,
         },
         PasswordLoginError::Sdk(message) => {
-            // Coarse classification: 401/403 → InvalidCredentials, otherwise Server.
-            if message.contains("401") || message.contains("403") || message.contains("M_FORBIDDEN") || message.contains("M_UNAUTHORIZED") {
+            if message.contains("401")
+                || message.contains("403")
+                || message.contains("M_FORBIDDEN")
+                || message.contains("M_UNAUTHORIZED")
+            {
                 LoginFailureKind::InvalidCredentials
             } else if message.contains("429") || message.contains("M_LIMIT_EXCEEDED") {
                 LoginFailureKind::RateLimited

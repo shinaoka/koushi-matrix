@@ -41,10 +41,14 @@ pub struct AccountStoreConfig {
 
 /// StoreActor: resolves and manages per-account credential-backed store configs.
 ///
+/// Owns the single `CredentialStoreBackend` — used for both unlock secrets
+/// and session persistence. AccountActor delegates all credential operations
+/// through `StoreActor`.
+///
 /// In Phase 2 this is a pure value type (no background task). Phase 6 may
 /// promote it to an owned task when search index mutations require it.
 pub struct StoreActor {
-    credential_store: CredentialStoreBackend,
+    pub(crate) credential_store: CredentialStoreBackend,
     data_dir: PathBuf,
 }
 
@@ -56,6 +60,11 @@ impl StoreActor {
             credential_store: CredentialStoreBackend::resolve(),
             data_dir: data_dir.into(),
         }
+    }
+
+    /// Access the credential store backend (for session persistence in AccountActor).
+    pub fn credential_backend(&self) -> &CredentialStoreBackend {
+        &self.credential_store
     }
 
     /// Resolve (and if necessary create) a store configuration for the given
@@ -203,8 +212,102 @@ impl CredentialStoreBackend {
         }
     }
 
-    /// Expose the underlying `CredentialStore` (for session persistence) when
-    /// using the OS keychain backend.
+    // --- Session persistence operations ---
+    // These mirror the CredentialStore API so AccountActor can operate against
+    // both backends without knowing which is active.
+
+    pub fn save_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+        session: &matrix_desktop_key::StoredMatrixSession,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.save_matrix_session(key_id, session),
+            #[cfg(any(debug_assertions, test))]
+            Self::FileDir(store) => store.save_named(
+                &key_id.matrix_session_account_name(),
+                session.as_str(),
+            ),
+        }
+    }
+
+    pub fn load_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<matrix_desktop_key::StoredMatrixSession, matrix_desktop_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.load_matrix_session(key_id),
+            #[cfg(any(debug_assertions, test))]
+            Self::FileDir(store) => {
+                let value = store.load_named(&key_id.matrix_session_account_name())?;
+                Ok(matrix_desktop_key::StoredMatrixSession::new(value))
+            }
+        }
+    }
+
+    pub fn delete_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.delete_matrix_session(key_id),
+            #[cfg(any(debug_assertions, test))]
+            Self::FileDir(store) => {
+                store.delete_named(&key_id.matrix_session_account_name())
+            }
+        }
+    }
+
+    pub fn save_last_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.save_last_session(key_id),
+            #[cfg(any(debug_assertions, test))]
+            Self::FileDir(store) => {
+                let pointer = matrix_desktop_key::LastSessionPointer::new(key_id.clone());
+                let json = pointer.to_json()?;
+                store.save_named(matrix_desktop_key::CredentialStore::last_session_account_name(), &json)
+            }
+        }
+    }
+
+    pub fn load_last_session(
+        &self,
+    ) -> Result<Option<SessionKeyId>, matrix_desktop_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.load_last_session(),
+            #[cfg(any(debug_assertions, test))]
+            Self::FileDir(store) => {
+                match store.load_named(matrix_desktop_key::CredentialStore::last_session_account_name()) {
+                    Ok(json) => {
+                        Ok(Some(
+                            matrix_desktop_key::LastSessionPointer::from_json(&json)?
+                                .session_key_id()
+                                .clone(),
+                        ))
+                    }
+                    Err(err) if matrix_desktop_key::is_missing_credential_error(&err) => Ok(None),
+                    Err(err) => Err(err),
+                }
+            }
+        }
+    }
+
+    pub fn delete_last_session(
+        &self,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.delete_last_session(),
+            #[cfg(any(debug_assertions, test))]
+            Self::FileDir(store) => {
+                store.delete_named(matrix_desktop_key::CredentialStore::last_session_account_name())
+            }
+        }
+    }
+
+    /// Expose the underlying `CredentialStore` (for OS keychain backend).
     pub fn as_os_credential_store(&self) -> Option<&CredentialStore> {
         match self {
             Self::OsKeychain(store) => Some(store),
@@ -234,7 +337,12 @@ impl FileCredentialStore {
     }
 
     fn account_file(&self, key_id: &SessionKeyId) -> PathBuf {
-        self.dir.join(key_id.account_name())
+        // Use base64url-encoded account name as filename to stay FS-safe.
+        self.dir.join(safe_filename(key_id.account_name()))
+    }
+
+    fn named_file(&self, name: &str) -> PathBuf {
+        self.dir.join(safe_filename(name.to_owned()))
     }
 
     fn load(
@@ -254,16 +362,10 @@ impl FileCredentialStore {
         key_id: &SessionKeyId,
         secret: &LocalUnlockSecret,
     ) -> Result<(), matrix_desktop_key::LocalSecretError> {
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| matrix_desktop_key::LocalSecretError::CredentialStore(
-                keyring::Error::PlatformFailure(Box::new(e)),
-            ))?;
+        self.ensure_dir()?;
         let path = self.account_file(key_id);
         let storage_string = secret.to_storage_string();
-        std::fs::write(&path, storage_string.as_str())
-            .map_err(|e| matrix_desktop_key::LocalSecretError::CredentialStore(
-                keyring::Error::PlatformFailure(Box::new(e)),
-            ))
+        self.write_file(&path, storage_string.as_str())
     }
 
     fn delete(
@@ -271,10 +373,67 @@ impl FileCredentialStore {
         key_id: &SessionKeyId,
     ) -> Result<(), matrix_desktop_key::LocalSecretError> {
         let path = self.account_file(key_id);
-        match std::fs::remove_file(&path) {
-            Ok(()) | Err(_) => Ok(()),
-        }
+        let _ = std::fs::remove_file(&path);
+        Ok(())
     }
+
+    /// Save an arbitrary named credential (used for session JSON, last-session
+    /// pointer, etc.).
+    pub(super) fn save_named(
+        &self,
+        name: &str,
+        value: &str,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        self.ensure_dir()?;
+        self.write_file(&self.named_file(name), value)
+    }
+
+    /// Load an arbitrary named credential.
+    pub(super) fn load_named(
+        &self,
+        name: &str,
+    ) -> Result<String, matrix_desktop_key::LocalSecretError> {
+        let path = self.named_file(name);
+        std::fs::read_to_string(&path)
+            .map_err(|_| matrix_desktop_key::LocalSecretError::CredentialStore(
+                keyring::Error::NoEntry,
+            ))
+    }
+
+    /// Delete an arbitrary named credential (no error if absent).
+    pub(super) fn delete_named(
+        &self,
+        name: &str,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        let _ = std::fs::remove_file(self.named_file(name));
+        Ok(())
+    }
+
+    fn ensure_dir(&self) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| matrix_desktop_key::LocalSecretError::CredentialStore(
+                keyring::Error::PlatformFailure(Box::new(e)),
+            ))
+    }
+
+    fn write_file(
+        &self,
+        path: &std::path::Path,
+        value: &str,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        std::fs::write(path, value)
+            .map_err(|e| matrix_desktop_key::LocalSecretError::CredentialStore(
+                keyring::Error::PlatformFailure(Box::new(e)),
+            ))
+    }
+}
+
+/// Make a name filesystem-safe by replacing all non-alphanumeric chars with `_`.
+#[cfg(any(debug_assertions, test))]
+fn safe_filename(name: String) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect()
 }
 
 fn tracing_or_eprintln(message: &str) {
