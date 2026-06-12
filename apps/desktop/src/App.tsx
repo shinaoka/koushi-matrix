@@ -1206,6 +1206,7 @@ function TimelinePane({
         </div>
       </section>
       <Composer
+        isSending={Boolean(snapshot.state.timeline.composer.pending_transaction_id)}
         roomName={activeRoomName}
         value={composerDraft}
         onSend={onSendText}
@@ -1350,12 +1351,14 @@ function MessageArticle({
   );
 }
 
-function Composer({
+export function Composer({
+  isSending,
   roomName,
   value,
   onSend,
   onValueChange
 }: {
+  isSending: boolean;
   roomName: string;
   value: string;
   onSend: () => void;
@@ -1364,7 +1367,9 @@ function Composer({
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      onSend();
+      if (!isSending) {
+        onSend();
+      }
     }
   }
 
@@ -1406,10 +1411,10 @@ function Composer({
           </button>
         </div>
         <button
-          className={`send-button ${value.trim() ? "ready" : ""}`}
+          className={`send-button ${value.trim() && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
           type="button"
-          aria-label="Send"
-          disabled={!value.trim()}
+          aria-label={isSending ? "Sending" : "Send"}
+          disabled={isSending || !value.trim()}
           onClick={onSend}
         >
           <Send size={17} />

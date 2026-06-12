@@ -6,6 +6,24 @@ import { createBrowserFakeApi } from "./backend/browserFakeApi";
 import type { RightPanelMode } from "./domain/rightPanel";
 
 describe("ContextualRightPanel", () => {
+  test("composer disables sending while a transaction is pending", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { Composer } = await import("./App");
+
+    const markup = renderToStaticMarkup(
+      <Composer
+        isSending={true}
+        roomName="Room Alpha"
+        value="hello"
+        onSend={() => undefined}
+        onValueChange={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('aria-label="Sending"');
+    expect(markup).toContain("disabled");
+  });
+
   test("renders search results as a contextual right panel mode", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { ContextualRightPanel } = await import("./App");
