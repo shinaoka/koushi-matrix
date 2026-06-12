@@ -144,7 +144,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async selectSpace(spaceId: string | null): Promise<DesktopSnapshot> {
-    if (!this.isReady()) {
+    if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
 
@@ -164,7 +164,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async selectRoom(roomId: string): Promise<DesktopSnapshot> {
-    if (!this.isReady()) {
+    if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
 
@@ -179,7 +179,7 @@ class BrowserFakeApi implements DesktopApi {
 
   async paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot> {
     if (
-      !this.isReady() ||
+      !this.canUseSyncedViews() ||
       this.snapshot.state.timeline.room_id !== roomId ||
       this.snapshot.state.timeline.is_paginating_backwards
     ) {
@@ -254,7 +254,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot> {
-    if (!this.isReady()) {
+    if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
 
@@ -276,7 +276,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async closeThread(): Promise<DesktopSnapshot> {
-    if (!this.isReady()) {
+    if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
 
@@ -286,7 +286,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot> {
-    if (!this.isReady()) {
+    if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
 
@@ -303,6 +303,15 @@ class BrowserFakeApi implements DesktopApi {
 
   private isReady() {
     return this.snapshot.state.session.kind === "ready";
+  }
+
+  private canUseSyncedViews() {
+    const sessionKind = this.snapshot.state.session.kind;
+    return (
+      sessionKind === "ready" ||
+      sessionKind === "needsRecovery" ||
+      sessionKind === "recovering"
+    );
   }
 
   private clearSessionViews() {

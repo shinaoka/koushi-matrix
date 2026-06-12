@@ -214,6 +214,28 @@ describe("desktop model", () => {
     expect(JSON.stringify(snapshot)).not.toContain("synthetic-recovery-secret");
   });
 
+  test("browser fake keeps synced room navigation and search available during recovery", async () => {
+    const api = createBrowserFakeApi({ session: "needsRecovery" });
+
+    let snapshot = await api.selectRoom("!room-planning:example.invalid");
+
+    expect(snapshot.state.session.kind).toBe("needsRecovery");
+    expect(snapshot.state.navigation.active_room_id).toBe("!room-planning:example.invalid");
+    expect(snapshot.timeline.map((message) => message.event_id)).toEqual([
+      "$late-original"
+    ]);
+
+    snapshot = await api.submitSearch("Final", "allRooms");
+
+    expect(snapshot.state.search.kind).toBe("results");
+    if (snapshot.state.search.kind !== "results") {
+      throw new Error("expected recovery search results");
+    }
+    expect(snapshot.state.search.results.map((result) => result.event_id)).toEqual([
+      "$late-original"
+    ]);
+  });
+
   test("browser fake lists saved sessions and switches account identity", async () => {
     const api = createBrowserFakeApi();
 
