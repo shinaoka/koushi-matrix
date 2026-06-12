@@ -50,6 +50,7 @@ use crate::event::{CoreEvent, SyncBackendKind, SyncEvent};
 use crate::executor;
 use crate::failure::{CoreFailure, SyncFailureKind};
 use crate::ids::RequestId;
+use crate::room::RoomMessage;
 
 /// QA/debug-only override: when set to `legacy`, the capability probe is
 /// skipped and the `LegacySync` backend is selected. This exists because both
@@ -117,6 +118,13 @@ pub struct SyncActor {
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     command_rx: mpsc::Receiver<SyncMessage>,
+    /// RoomActor inbox: the SyncActor notifies it on sync start/stop because
+    /// only the SyncActor knows the selected backend and owns the live
+    /// `RoomListService` (canon: RoomActor consumes the ONE live service).
+    room_tx: mpsc::Sender<RoomMessage>,
+    /// TimelineManager inbox: receives the live `RoomListService` on sync
+    /// start so timeline subscriptions can subscribe rooms with it (canon).
+    timeline_tx: mpsc::Sender<crate::timeline::TimelineMessage>,
     lifecycle: SyncLifecycle,
     active_backend: ActiveBackend,
     /// Task handle for the currently running sync loop.
@@ -132,6 +140,8 @@ impl SyncActor {
         session: Arc<MatrixClientSession>,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
+        room_tx: mpsc::Sender<RoomMessage>,
+        timeline_tx: mpsc::Sender<crate::timeline::TimelineMessage>,
     ) -> SyncActorHandle {
         let (tx, command_rx) = mpsc::channel(16);
         let actor = SyncActor {
@@ -139,6 +149,8 @@ impl SyncActor {
             action_tx,
             event_tx,
             command_rx,
+            room_tx,
+            timeline_tx,
             lifecycle: SyncLifecycle::Stopped,
             active_backend: ActiveBackend::None,
             sync_task: None,
@@ -197,6 +209,10 @@ impl SyncActor {
     }
 
     fn handle_sync_task_ended(&mut self, outcome: SyncTaskOutcome) {
+        // The room-list observation must not outlive the sync backend it
+        // relays (live RoomListService on SyncService, base-client updates on
+        // legacy). try_send: this is a sync fn; capacity 64 suffices.
+        let _ = self.room_tx.try_send(RoomMessage::SyncStopped);
         match outcome {
             SyncTaskOutcome::Stopped => {
                 self.lifecycle = SyncLifecycle::Stopped;
@@ -281,6 +297,29 @@ impl SyncActor {
             }
         }
         self.lifecycle = SyncLifecycle::Running;
+
+        // Notify the RoomActor that sync is running, handing over the ONE
+        // live RoomListService on the SyncService backend (None on legacy).
+        // Only the SyncActor can do this: it knows the selected backend and
+        // owns the SyncService (canon, overview.md RoomActor bullet — ad-hoc
+        // RoomListService instances are prohibited).
+        let room_list_service = self
+            .sync_service
+            .as_ref()
+            .map(|service| service.room_list_service());
+        let _ = self
+            .room_tx
+            .send(RoomMessage::SyncStarted {
+                session: self.session.clone(),
+                room_list_service: room_list_service.clone(),
+            })
+            .await;
+        // Same handoff to the timeline manager: timeline subscriptions must
+        // be able to subscribe rooms with the live service (canon).
+        let _ = self
+            .timeline_tx
+            .send(crate::timeline::TimelineMessage::SyncStarted { room_list_service })
+            .await;
     }
 
     /// Returns Ok(()) on success, Err(()) when SyncService build fails (caller falls back).
@@ -327,6 +366,10 @@ impl SyncActor {
 
     /// Graceful stop: signal the running sync backend and wait (bounded timeout).
     async fn do_stop(&mut self, request_id: Option<RequestId>) {
+        // Tear down the RoomActor's room-list observation first: on the
+        // SyncService backend it consumes the live RoomListService that is
+        // about to stop. Harmless no-op when nothing is running.
+        let _ = self.room_tx.send(RoomMessage::SyncStopped).await;
         // Signal stop to whichever backend is running.
         if let Some(svc) = self.sync_service.take() {
             svc.stop().await;

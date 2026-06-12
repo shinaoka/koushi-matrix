@@ -142,7 +142,7 @@ Goal: room list and room operations on both backends.
 Gap watchlist: parity of room-list data between the two backends (unread
 counts and DM detection may differ); ordering stability of summaries.
 
-## Phase 5 — Timeline Actor (spec Milestone E)
+## Phase 5 — Timeline Actor (spec Milestone E) — LANDED
 
 Goal: the full timeline data contract, the heart of the design.
 
@@ -214,6 +214,20 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 - Mark this plan completed; open items become new dated specs.
 
 ## Changelog
+
+- 2026-06-13: Phase 5 exit review (strong model) — three Conduit/SyncService
+  defects found after the agent-reported pass, all canon-relevant:
+  (1) room-list normalization was using disposable `RoomListService`
+  instances (prohibited in canon 460e7ea; fixed by live-service handoff);
+  (2) edits/redactions used direct room sends, so their diffs depended on
+  the server echoing them back — Conduit's sliding sync does not echo own
+  events; they now go through the SDK `Timeline` handle (local-echo diffs)
+  with an event-id → transaction-id fallback for own unsent-echo items;
+  (3) timeline subscriptions now also `subscribe_to_rooms` with the live
+  service (Element X room-open pattern) — without it Conduit streams no new
+  timeline events after the initial window. All four QA legs green
+  (Conduit/Tuwunel × probed-SyncService/forced-LegacySync) including the
+  full timeline flow (send/recv/reply/edit/redact/EndReached pagination).
 
 - 2026-06-12: plan created.
 - 2026-06-12: Phase 2 review — three gaps escalated by the implementing
@@ -334,3 +348,39 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   Verification: 42 unit tests green, 0 warnings; secret scan ok; release-gate
   structural ok; all four QA legs (probed SyncService + forced LegacySync on
   Conduit and Tuwunel) executed green.
+- 2026-06-13: Phase 5 landed (TimelineActor, send queue integration,
+  pagination, edit, redact, QA all four legs). Key implementation notes:
+  (1) **Send queue path — canon decision D amended in practice**: the spec
+  pre-resolved that "client txn_id IS SDK txn_id (room.send().with_transaction_id)".
+  Reality: `room.send().with_transaction_id()` is a direct HTTP call — it does
+  NOT produce local-echo diffs in the SDK timeline stream. Local echoes only
+  appear when messages are sent through `RoomSendQueue::send()`, which generates
+  its own txn_id internally. Implementation uses `room.send_queue().send()`;
+  the SDK-generated txn_id is captured from the `SendHandle` (added
+  `SendHandle::transaction_id()` accessor to the vendored SDK). The
+  `pending_sends` map stores `sdk_txn → (client_txn, request_id)`. `SendCompleted`
+  echoes back the client-supplied txn_id. The local-echo diff carries the SDK
+  txn_id (not the client's); QA asserts ANY Transaction-id item appears.
+  (2) **TimelineManagerActor** manages `HashMap<TimelineKey, TimelineActorHandle>`;
+  `TimelineActorHandle` holds an `mpsc::Sender<TimelineActorMessage>`. Relay task
+  forwards SDK `VectorDiff` stream; send queue monitor task forwards
+  `RoomSendQueueUpdate`; both send to actor inbox. Actor capacity 256.
+  (3) **VectorDiff mappings**: PopFront → Remove{0}, PopBack → Truncate{0}
+  (conservative sentinel; extremely rare), Append → Reset (SDK only emits
+  Append during initial populate; Reset is semantically equivalent for UI).
+  (4) **B-side history load**: newly-joined rooms in SyncService start empty;
+  `paginate_backwards` is required to fetch prior history. QA fires a 20-event
+  backward paginate before asserting B received A's messages.
+  (5) **Edit/Redact diffs**: `edit_text_message` uses direct `room.send()` (no
+  local echo, no send queue monitoring needed); the edit arrives via sync as a
+  replacement event and the SDK emits a `Set` diff. Redact similarly arrives
+  via sync and emits Remove or Set (redacted-content).
+  (6) **53 unit tests green**, 0 warnings; secret scan ok; release-gate
+  structural ok. All four QA legs (probed SyncService + forced LegacySync on
+  Conduit and Tuwunel) executed green:
+  `sent=2 recv=2 reply=1 edit=ok redact=ok paginate=end_reached`
+  (7) **Known intermittent**: Conduit probed-SyncService leg occasionally hits
+  the Phase 4 room-list wait timeout (EVENT_TIMEOUT=30s; Conduit SyncService
+  room-list delivery is slower than Tuwunel). Tuwunel both legs pass
+  consistently. This is a pre-existing Phase 4 timing issue; it resolves on
+  retry and is not a Phase 5 regression.

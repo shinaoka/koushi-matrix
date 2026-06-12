@@ -122,7 +122,15 @@ An in-process actor system in `matrix-desktop-core`:
   (e.g. `m.room.create` for space classification) the live service
   requests.
 - `TimelineActor` (per room/thread timeline) — subscription, diffs,
-  pagination, send/edit/redaction relay.
+  pagination, send/edit/redaction relay. On the sliding-sync backend,
+  subscribing a timeline also subscribes its room with the live
+  `RoomListService` (`subscribe_to_rooms`, the Element X room-open pattern):
+  the all-rooms list alone only guarantees the initial window on some
+  servers. Edits and redactions go through the SDK `Timeline` handle (not
+  direct room sends) so their diffs are produced as local echoes instead of
+  depending on the server echoing them back; for own sent events whose
+  remote echo has not arrived, the actor resolves the event id back to the
+  local-echo transaction identity.
 - `SearchActor` — ngram candidates, canonical-text verification,
   document-level index mutations for edits/redactions/late decryptions.
 - `StoreActor` — credential store access, store/search keys, per-account

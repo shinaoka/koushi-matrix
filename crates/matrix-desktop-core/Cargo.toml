@@ -15,6 +15,7 @@ matrix-desktop-key = { path = "../matrix-desktop-key" }
 matrix-desktop-state = { path = "../matrix-desktop-state" }
 base64 = "0.22"
 eyeball = "0.8"
+eyeball-im = "0.8"
 futures-util = "0.3"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 matrix-sdk = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk", default-features = false, features = ["e2e-encryption", "experimental-search", "sqlite"] }

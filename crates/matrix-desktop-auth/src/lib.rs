@@ -1082,6 +1082,32 @@ pub async fn search_message_candidates(
         .collect())
 }
 
+/// Normalize a room list snapshot from caller-provided SDK rooms.
+///
+/// This is the normalization entry point for callers that already hold the
+/// room list source of truth: entries from the ONE live `RoomListService`
+/// owned by the running `SyncService` (converted with
+/// `RoomListItem::into_inner()`), or `client.joined_rooms()` on the
+/// `LegacySync` backend. Unlike [`room_list_snapshot`], it never constructs
+/// a `RoomListService` of its own.
+pub async fn room_list_snapshot_from_sdk_rooms(
+    rooms: impl IntoIterator<Item = matrix_sdk::Room>,
+) -> MatrixRoomListSnapshot {
+    matrix_room_list_snapshot_from_rooms(rooms).await
+}
+
+/// One-shot room list snapshot that constructs a DISPOSABLE
+/// `RoomListService` internally.
+///
+/// DEPRECATED FOR CORE USE (canon, overview.md RoomActor): a disposable
+/// `RoomListService` is not driven by the sync loop, races the running
+/// `SyncService`, and returns entries without the live service's
+/// `required_state` (e.g. `m.room.create`), so space classification is
+/// unreliable (deterministically broken on Conduit). The core runtime must
+/// use [`room_list_snapshot_from_sdk_rooms`] with rooms taken from the live
+/// service's entries or from `client.joined_rooms()`. This function remains
+/// only for the legacy auth-crate QA flow, which runs without a
+/// `SyncService`.
 pub async fn room_list_snapshot(
     session: &MatrixClientSession,
 ) -> Result<MatrixRoomListSnapshot, MatrixRoomListError> {

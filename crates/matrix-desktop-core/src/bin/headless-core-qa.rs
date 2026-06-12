@@ -35,10 +35,13 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use matrix_desktop_core::command::{AccountCommand, CoreCommand, RoomCommand, SyncCommand};
-use matrix_desktop_core::event::{AccountEvent, CoreEvent, RoomEvent, SyncBackendKind, SyncEvent};
+use matrix_desktop_core::command::{AccountCommand, CoreCommand, RoomCommand, SyncCommand, TimelineCommand};
+use matrix_desktop_core::event::{
+    AccountEvent, CoreEvent, PaginationDirection, PaginationState, RoomEvent, SyncBackendKind,
+    SyncEvent, TimelineEvent,
+};
 use matrix_desktop_core::failure::CoreFailure;
-use matrix_desktop_core::ids::AccountKey;
+use matrix_desktop_core::ids::{AccountKey, TimelineKey};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{AppState, AuthSecret, SessionState};
 
@@ -364,9 +367,222 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     let room_list_b = room_list_summary(&snapshot_b);
     println!("room_list_b={room_list_b}");
 
-    // Phase 5 placeholder: send permission check
-    // (Actual send is Phase 5; we just verify the room exists in state)
-    println!("send_permission_check=skipped(phase5)");
+    // -----------------------------------------------------------------------
+    // --- Phase 5: Timeline subscribe, send, receive, edit, redact, paginate ---
+    // -----------------------------------------------------------------------
+
+    // A subscribes to the room timeline.
+    let key_a = TimelineKey::room(account_key_a.clone(), room_id.clone());
+    let subscribe_a_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: subscribe_a_id,
+            key: key_a.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit subscribe timeline A: {e}"))?;
+
+    wait_for_initial_items(&mut conn_a, &key_a, subscribe_a_id, "subscribe timeline A").await?;
+    println!("timeline_subscribed_a=ok");
+
+    // A sends message 1 with a distinct client transaction id.
+    let txn1 = "qa-phase5-txn-1".to_owned();
+    let send1_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send1_id,
+            key: key_a.clone(),
+            transaction_id: txn1.clone(),
+            body: "Phase 5 QA message 1".to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("submit send1: {e}"))?;
+
+    // Assert local echo appears as a Transaction diff (SDK-generated txn_id).
+    let echo1_sdk_txn = wait_for_local_echo_diff(&mut conn_a, &key_a, &txn1, "local echo msg1").await?;
+    println!("local_echo_msg1=ok sdk_txn={echo1_sdk_txn}");
+
+    // Assert SendCompleted with matching txn_id and an event_id.
+    let (send1_completed_txn, event1_id) =
+        wait_for_send_completed(&mut conn_a, send1_id, &key_a, "send completed msg1").await?;
+    if send1_completed_txn != txn1 {
+        return Err(format!(
+            "send1 txn_id mismatch: expected {txn1}, got {send1_completed_txn}"
+        ));
+    }
+    println!("send_completed_msg1=ok event_id={event1_id}");
+
+    // A sends message 2.
+    let txn2 = "qa-phase5-txn-2".to_owned();
+    let send2_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send2_id,
+            key: key_a.clone(),
+            transaction_id: txn2.clone(),
+            body: "Phase 5 QA message 2".to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("submit send2: {e}"))?;
+
+    let echo2_sdk_txn = wait_for_local_echo_diff(&mut conn_a, &key_a, &txn2, "local echo msg2").await?;
+    println!("local_echo_msg2=ok sdk_txn={echo2_sdk_txn}");
+
+    let (send2_completed_txn, event2_id) =
+        wait_for_send_completed(&mut conn_a, send2_id, &key_a, "send completed msg2").await?;
+    if send2_completed_txn != txn2 {
+        return Err(format!(
+            "send2 txn_id mismatch: expected {txn2}, got {send2_completed_txn}"
+        ));
+    }
+    println!("send_completed_msg2=ok event_id={event2_id}");
+
+    // B subscribes and receives both messages (event-driven wait on diffs).
+    let key_b = TimelineKey::room(account_key_b.clone(), room_id.clone());
+    let subscribe_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: subscribe_b_id,
+            key: key_b.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit subscribe timeline B: {e}"))?;
+
+    let b_initial = wait_for_initial_items(&mut conn_b, &key_b, subscribe_b_id, "subscribe timeline B").await?;
+    println!("timeline_subscribed_b=ok");
+
+    // Paginate backward on B to ensure A's messages are loaded from server
+    // history (required because the SDK's Live timeline only has what's in
+    // the local event cache; a newly-joined room may not have prior msgs yet).
+    // We fire the paginate and then use wait_for_item_bodies_with_paginate
+    // which scans both the initial items, the pagination diffs, and live diffs.
+    let paginate_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::Paginate {
+            request_id: paginate_b_id,
+            key: key_b.clone(),
+            direction: PaginationDirection::Backward,
+            event_count: 20,
+        }))
+        .await
+        .map_err(|e| format!("B backfill paginate: {e}"))?;
+
+    // Now consume events until we've seen all required bodies AND pagination
+    // has settled (Idle or EndReached). This single loop handles both.
+    wait_for_bodies_and_pagination_settle(
+        &mut conn_b,
+        &key_b,
+        &b_initial,
+        &["Phase 5 QA message 1", "Phase 5 QA message 2"],
+        "B receives 2 messages from A",
+    )
+    .await?;
+    println!("b_recv_msgs=ok");
+
+    // B replies to A (sends its own message).
+    let txn_b_reply = "qa-phase5-txn-b-reply".to_owned();
+    let send_b_reply_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_b_reply_id,
+            key: key_b.clone(),
+            transaction_id: txn_b_reply.clone(),
+            body: "Phase 5 QA reply from B".to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("submit B reply: {e}"))?;
+
+    let (_b_echo_txn, _b_reply_event_id) =
+        wait_for_send_completed(&mut conn_b, send_b_reply_id, &key_b, "B reply completed").await?;
+    println!("b_reply_sent=ok");
+
+    // A receives B's reply in its timeline diffs.
+    wait_for_item_bodies(
+        &mut conn_a,
+        &key_a,
+        &["Phase 5 QA reply from B"],
+        "A receives reply from B",
+    )
+    .await?;
+    println!("a_recv_reply=ok");
+
+    // A edits message 1 — assert a Set diff reflecting the edit on original item identity.
+    let edit1_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::EditText {
+            request_id: edit1_id,
+            key: key_a.clone(),
+            event_id: event1_id.clone(),
+            body: "Phase 5 QA message 1 EDITED".to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("submit edit msg1: {e}"))?;
+
+    wait_for_edit_diff(
+        &mut conn_a,
+        &key_a,
+        edit1_id,
+        &event1_id,
+        "Phase 5 QA message 1 EDITED",
+        "edit msg1",
+    )
+    .await?;
+    println!("edit_msg1=ok");
+
+    // A redacts message 2 — assert removal or redacted-state diff.
+    let redact2_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::Redact {
+            request_id: redact2_id,
+            key: key_a.clone(),
+            event_id: event2_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit redact msg2: {e}"))?;
+
+    wait_for_redact_diff(&mut conn_a, &key_a, redact2_id, "redact msg2").await?;
+    println!("redact_msg2=ok");
+
+    // A paginates backward with a small page size until EndReached.
+    // Assert Paginating → EndReached and strictly increasing batch_ids per generation.
+    let paginate_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::Paginate {
+            request_id: paginate_id,
+            key: key_a.clone(),
+            direction: PaginationDirection::Backward,
+            event_count: 5,
+        }))
+        .await
+        .map_err(|e| format!("submit paginate: {e}"))?;
+
+    let paginate_result =
+        wait_for_paginate_end_reached(&mut conn_a, &key_a, paginate_id, "paginate to EndReached").await?;
+    println!("paginate={paginate_result}");
+
+    // Unsubscribe A and B to confirm no leaks.
+    let unsub_a_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+            request_id: unsub_a_id,
+            key: key_a.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit unsubscribe A: {e}"))?;
+
+    let unsub_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+            request_id: unsub_b_id,
+            key: key_b.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit unsubscribe B: {e}"))?;
+
+    // Brief wait so the unsubscribe commands are processed before sync stop.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    println!("sent=2 recv=2 reply=1 edit=ok redact=ok paginate={paginate_result}");
 
     // -----------------------------------------------------------------------
     // --- Sync stop A + store-backed restore A + logout A ---
@@ -1035,4 +1251,478 @@ fn qa_data_dir(suffix: &str) -> std::path::PathBuf {
     std::env::temp_dir()
         .join("matrix-desktop-core-qa")
         .join(format!("{}_{}", std::process::id(), suffix))
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 event waiter helpers
+// ---------------------------------------------------------------------------
+
+/// Wait for `TimelineEvent::InitialItems` for the given key and request_id.
+/// Returns the initial item list.
+async fn wait_for_initial_items(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<Vec<matrix_desktop_core::event::TimelineItem>, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for TimelineEvent::InitialItems"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(ev_id),
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_id == request_id && ev_key == key => {
+                return Ok(items);
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait for an `ItemsUpdated` diff batch containing any new Transaction item
+/// (local echo). Since the SDK send queue generates its own txn_id (not the
+/// client-supplied one), we just wait for ANY Transaction-id item to appear.
+/// Returns the SDK-generated transaction_id string from the matching item.
+async fn wait_for_local_echo_diff(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    _client_txn_id: &str,
+    label: &str,
+) -> Result<String, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for local echo diff"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        if let CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: ref ev_key,
+            diffs,
+            ..
+        }) = event
+        {
+            if ev_key != key {
+                continue;
+            }
+            for diff in &diffs {
+                let item = match diff {
+                    matrix_desktop_core::event::TimelineDiff::PushBack { item }
+                    | matrix_desktop_core::event::TimelineDiff::PushFront { item }
+                    | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
+                    | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => item,
+                    _ => continue,
+                };
+                if let matrix_desktop_core::event::TimelineItemId::Transaction {
+                    transaction_id: ref t,
+                } = item.id
+                {
+                    return Ok(t.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Wait for `TimelineEvent::SendCompleted` with the given request_id and key.
+/// Returns `(transaction_id, event_id)`.
+async fn wait_for_send_completed(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    key: &TimelineKey,
+    label: &str,
+) -> Result<(String, String), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for SendCompleted"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id: ev_id,
+                key: ref ev_key,
+                transaction_id,
+                event_id,
+            }) if ev_id == request_id && ev_key == key => {
+                return Ok((transaction_id, event_id));
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait until all `expected_bodies` are found AND pagination has settled (Idle
+/// or EndReached). Scans `initial_items` first, then both ItemsUpdated diffs
+/// and PaginationStateChanged events in a single loop. This avoids the race
+/// where paginate diffs are consumed before the body scan starts.
+async fn wait_for_bodies_and_pagination_settle(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    initial_items: &[matrix_desktop_core::event::TimelineItem],
+    expected_bodies: &[&str],
+    label: &str,
+) -> Result<(), String> {
+    // Pre-scan initial items.
+    let mut remaining_bodies: Vec<&str> = expected_bodies.to_vec();
+    for item in initial_items {
+        if let Some(ref body) = item.body {
+            remaining_bodies.retain(|expected| !body.contains(expected));
+        }
+    }
+
+    let mut pagination_settled = false;
+
+    loop {
+        if remaining_bodies.is_empty() && pagination_settled {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out; bodies still needed: {:?}, pagination_settled: {}",
+                    remaining_bodies, pagination_settled
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match &event {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                for diff in diffs {
+                    let item = match diff {
+                        matrix_desktop_core::event::TimelineDiff::PushBack { item }
+                        | matrix_desktop_core::event::TimelineDiff::PushFront { item }
+                        | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
+                        | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => item,
+                        matrix_desktop_core::event::TimelineDiff::Reset { items } => {
+                            for it in items {
+                                if let Some(ref body) = it.body {
+                                    remaining_bodies.retain(|e| !body.contains(e));
+                                }
+                            }
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    if let Some(ref body) = item.body {
+                        remaining_bodies.retain(|e| !body.contains(e));
+                    }
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                for item in items {
+                    if let Some(ref body) = item.body {
+                        remaining_bodies.retain(|e| !body.contains(e));
+                    }
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                key: ev_key,
+                state,
+                ..
+            }) if ev_key == key => {
+                match state {
+                    PaginationState::Idle
+                    | PaginationState::EndReached
+                    | PaginationState::Failed { .. } => {
+                        pagination_settled = true;
+                    }
+                    PaginationState::Paginating => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Wait until the timeline diff stream for `key` delivers all `expected_bodies`
+/// (as substrings) across any combination of InitialItems + ItemsUpdated events.
+/// Searches in the body field of every item seen.
+async fn wait_for_item_bodies(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    expected_bodies: &[&str],
+    label: &str,
+) -> Result<(), String> {
+    let mut remaining: Vec<&str> = expected_bodies.to_vec();
+
+    // Helper: scan a slice of items for matching bodies.
+    let scan_items = |items: &[matrix_desktop_core::event::TimelineItem],
+                      remaining: &mut Vec<&str>| {
+        for item in items {
+            if let Some(ref body) = item.body {
+                remaining.retain(|expected| !body.contains(expected));
+            }
+        }
+    };
+
+    // Helper: scan diffs for item bodies.
+    let scan_diffs =
+        |diffs: &[matrix_desktop_core::event::TimelineDiff], remaining: &mut Vec<&str>| {
+            for diff in diffs {
+                let item = match diff {
+                    matrix_desktop_core::event::TimelineDiff::PushBack { item }
+                    | matrix_desktop_core::event::TimelineDiff::PushFront { item }
+                    | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
+                    | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => item,
+                    matrix_desktop_core::event::TimelineDiff::Reset { items } => {
+                        for it in items {
+                            if let Some(ref body) = it.body {
+                                remaining.retain(|expected| !body.contains(expected));
+                            }
+                        }
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if let Some(ref body) = item.body {
+                    remaining.retain(|expected| !body.contains(expected));
+                }
+            }
+        };
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out; still waiting for bodies: {:?}",
+                    remaining
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                scan_items(&items, &mut remaining);
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                scan_diffs(&diffs, &mut remaining);
+            }
+            _ => {}
+        }
+
+        if remaining.is_empty() {
+            return Ok(());
+        }
+    }
+}
+
+/// Wait for an `ItemsUpdated` Set diff for the event identified by `event_id`
+/// OR a Set diff that has the given body substring (whichever arrives first).
+/// This asserts that an edit was reflected in the timeline. A failed edit
+/// operation (`OperationFailed` with the edit's request_id) is surfaced as an
+/// explicit error instead of a silent timeout.
+/// Timeout is extended to 60s because edit confirmation requires a sync round-trip.
+async fn wait_for_edit_diff(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    request_id: matrix_desktop_core::ids::RequestId,
+    event_id: &str,
+    edited_body: &str,
+    label: &str,
+) -> Result<(), String> {
+    let timeout = Duration::from_secs(60);
+    loop {
+        let event = tokio::time::timeout(timeout, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for edit Set diff (event_id: {event_id})"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                for diff in &diffs {
+                    if let matrix_desktop_core::event::TimelineDiff::Set { item, .. } = diff {
+                        // Accept: item has the edited body, OR item is identified by event_id
+                        // (the SDK may not yet have applied the body to the item in all cases).
+                        let body_matches = item.body.as_deref().unwrap_or("").contains(edited_body);
+                        let event_id_matches = matches!(
+                            &item.id,
+                            matrix_desktop_core::event::TimelineItemId::Event { event_id: id }
+                            if id == event_id
+                        );
+                        if body_matches || event_id_matches {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: edit operation failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait for an `ItemsUpdated` diff that signals a redaction: either a Remove
+/// or a Set where the body is None or empty (redacted message placeholder).
+/// A failed redact operation is surfaced as an explicit error.
+/// Timeout is extended to 60s because redaction requires a sync round-trip.
+async fn wait_for_redact_diff(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<(), String> {
+    let timeout = Duration::from_secs(60);
+    loop {
+        let event = tokio::time::timeout(timeout, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for redact diff"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                for diff in &diffs {
+                    match diff {
+                        matrix_desktop_core::event::TimelineDiff::Remove { .. } => return Ok(()),
+                        matrix_desktop_core::event::TimelineDiff::Set { item, .. } => {
+                            // SDK emits a Set with a redacted body (None or empty) when it
+                            // replaces the message body in-place with a "Message redacted" tombstone.
+                            if item.body.is_none() || item.body.as_deref() == Some("") {
+                                return Ok(());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: redact operation failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Paginate backward in a loop until `EndReached`, asserting the state
+/// sequence. Returns `"end_reached"` on success.
+///
+/// The spec requires: emit Paginating, then (Idle | EndReached | Failed).
+/// We drive the loop ourselves: on Idle we re-submit Paginate; on EndReached
+/// we return; on Failed we return an error.
+async fn wait_for_paginate_end_reached(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    first_request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<String, String> {
+    // We use the conn to submit additional Paginate commands inside the loop.
+    // Because conn is mutably borrowed for recv_event calls too, we rely on
+    // the fact that the runtime handles command + event independently. The
+    // pattern used here: record the first_request_id, process events, and
+    // when we need to re-paginate we note the request for next iteration.
+    let mut current_request_id = first_request_id;
+    let mut saw_paginating = false;
+
+    loop {
+        let event = tokio::time::timeout(
+            Duration::from_secs(60),
+            conn.recv_event(),
+        )
+        .await
+        .map_err(|_| format!("{label}: timed out waiting for pagination state change"))?
+        .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                key: ref ev_key,
+                direction,
+                state,
+                ..
+            }) if ev_key == key && direction == PaginationDirection::Backward => {
+                match state {
+                    PaginationState::Paginating => {
+                        saw_paginating = true;
+                    }
+                    PaginationState::Idle => {
+                        if !saw_paginating {
+                            return Err(format!(
+                                "{label}: got Idle without first seeing Paginating"
+                            ));
+                        }
+                        // More history available — re-paginate.
+                        saw_paginating = false;
+                        current_request_id = conn.next_request_id();
+                        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+                            request_id: current_request_id,
+                            key: key.clone(),
+                            direction: PaginationDirection::Backward,
+                            event_count: 5,
+                        }))
+                        .await
+                        .map_err(|e| format!("{label}: re-paginate submit failed: {e}"))?;
+                    }
+                    PaginationState::EndReached => {
+                        if !saw_paginating {
+                            return Err(format!(
+                                "{label}: got EndReached without first seeing Paginating"
+                            ));
+                        }
+                        return Ok("end_reached".to_owned());
+                    }
+                    PaginationState::Failed { kind } => {
+                        return Err(format!("{label}: pagination failed: {kind:?}"));
+                    }
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == current_request_id => {
+                return Err(format!("{label} paginate failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
 }

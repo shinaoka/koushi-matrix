@@ -33,13 +33,14 @@ use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_state::{AppAction, LoginRequest, SessionInfo};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::command::{AccountCommand, RoomCommand, SyncCommand};
+use crate::command::{AccountCommand, RoomCommand, SyncCommand, TimelineCommand};
 use crate::event::{AccountEvent, CoreEvent};
 use crate::failure::{CoreFailure, LoginFailureKind};
 use crate::ids::{AccountKey, RequestId};
 use crate::room::{RoomActorHandle, RoomMessage};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
 use crate::sync::{SyncActorHandle, SyncMessage};
+use crate::timeline::{TimelineManagerHandle, TimelineMessage};
 
 /// "Credential store healthy, but no stored session for that account"
 /// during restore/switch (canon: `CoreFailure::SessionNotFound`).
@@ -53,6 +54,7 @@ pub enum AccountMessage {
     Command(AccountCommand),
     SyncCommand(SyncCommand),
     RoomCommand(RoomCommand),
+    TimelineCommand(TimelineCommand),
     Shutdown,
 }
 
@@ -97,6 +99,9 @@ pub struct AccountActor {
     /// kept alive for the lifetime of the AccountActor. Session is provided
     /// via `RoomMessage::SyncStarted` when sync begins.
     room_actor: RoomActorHandle,
+    /// TimelineManagerActor handle (Phase 5). Spawned once at actor creation;
+    /// session reference is updated when a store-backed session is established.
+    timeline_manager: TimelineManagerHandle,
 }
 
 impl AccountActor {
@@ -109,6 +114,9 @@ impl AccountActor {
         // Spawn RoomActor once at AccountActor creation. It starts with no
         // session and waits for RoomMessage::SyncStarted.
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
+        // Spawn TimelineManagerActor. It starts with no session; the session
+        // is injected when a store-backed session is established.
+        let timeline_manager = crate::timeline::TimelineManagerActor::spawn(event_tx.clone());
         let actor = AccountActor {
             session: None,
             session_key_id: None,
@@ -118,6 +126,7 @@ impl AccountActor {
             command_rx,
             sync_actor: None,
             room_actor,
+            timeline_manager,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -136,10 +145,14 @@ impl AccountActor {
                 AccountMessage::RoomCommand(room_command) => {
                     self.route_room_command(room_command).await;
                 }
+                AccountMessage::TimelineCommand(timeline_command) => {
+                    self.route_timeline_command(timeline_command).await;
+                }
             }
         }
         // Ordered shutdown (overview.md Async rule 12):
-        // timelines (phase 5 no-op) → search (phase 6 no-op) → room → sync → SDK handles.
+        // timelines → search (phase 6 no-op) → room → sync → SDK handles.
+        self.stop_timeline_actor().await;
         self.stop_room_actor().await;
         self.stop_sync_actor().await;
         // Drop the session handle inside the runtime context
@@ -157,6 +170,22 @@ impl AccountActor {
             .await;
     }
 
+    /// Route a TimelineCommand to the TimelineManagerActor.
+    /// Session guard is enforced by AppActor before routing; AccountActor
+    /// passes through directly to avoid double-gating.
+    async fn route_timeline_command(&self, command: TimelineCommand) {
+        let _ = self
+            .timeline_manager
+            .send(TimelineMessage::Command(command))
+            .await;
+    }
+
+    /// Ordered shutdown of the TimelineManagerActor (step 2 of the shutdown
+    /// sequence per Async rule 12 — timelines before search/room/sync).
+    async fn stop_timeline_actor(&mut self) {
+        let _ = self.timeline_manager.send(TimelineMessage::Shutdown).await;
+    }
+
     /// Route a SyncCommand to the SyncActor, or emit SessionRequired if no
     /// store-backed session is active yet.
     async fn route_sync_command(&self, command: SyncCommand) {
@@ -169,20 +198,10 @@ impl AccountActor {
 
         match &self.sync_actor {
             Some(handle) => {
-                // Keep the RoomActor's observation loop lifecycle in step
-                // with sync: stop it when sync stops, re-establish it (next
-                // SyncStarted replaces any running loop) when sync restarts.
-                let room_notification = match &command {
-                    SyncCommand::Stop { .. } => Some(RoomMessage::SyncStopped),
-                    SyncCommand::Restart { .. } => {
-                        self.session.clone().map(|session| RoomMessage::SyncStarted { session })
-                    }
-                    SyncCommand::Start { .. } | SyncCommand::SyncOnce { .. } => None,
-                };
+                // The SyncActor notifies the RoomActor itself on start/stop/
+                // restart: only it knows the selected backend and owns the
+                // live RoomListService (canon, overview.md RoomActor bullet).
                 let _ = handle.send(SyncMessage::Command(command)).await;
-                if let Some(notification) = room_notification {
-                    let _ = self.room_actor.send(notification).await;
-                }
             }
             None => {
                 // Session not yet ready — gate is enforced in AppActor but be
@@ -193,22 +212,34 @@ impl AccountActor {
     }
 
     /// Spawn the SyncActor for the just-established store-backed session and
-    /// notify the RoomActor so it can set up the room list.
+    /// notify the RoomActor so room operations become available.
+    /// Also replace the TimelineManagerActor with one that holds the session.
     fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
-        // Notify the RoomActor that we have a session. It does an initial
-        // room list snapshot (auth::room_list_snapshot covers both backends)
-        // and then runs a room-list observation loop relaying the SDK's room
-        // update stream. We use try_send since spawn_sync_actor is a sync fn;
-        // the channel capacity of 64 is more than enough for this one message.
-        let session_for_room = session.clone();
-        self.room_actor.try_send(RoomMessage::SyncStarted {
-            session: session_for_room,
+        // Give the RoomActor the session so room ops work even before sync
+        // starts. The room-list observation starts later, on the SyncActor's
+        // RoomMessage::SyncStarted (which carries the live RoomListService on
+        // the SyncService backend). try_send: this is a sync fn; capacity 64
+        // is more than enough for this one message.
+        self.room_actor.try_send(RoomMessage::SessionEstablished {
+            session: session.clone(),
         });
+
+        // Replace the TimelineManagerActor with one holding the current session.
+        // The old manager (with no session) is stopped by dropping its handle.
+        // We use try_send to shut down the old manager.
+        self.timeline_manager
+            .try_send(TimelineMessage::Shutdown);
+        self.timeline_manager = crate::timeline::TimelineManagerActor::spawn_with_session(
+            session.clone(),
+            self.event_tx.clone(),
+        );
 
         let handle = crate::sync::SyncActor::spawn(
             session,
             self.action_tx.clone(),
             self.event_tx.clone(),
+            self.room_actor.tx.clone(),
+            self.timeline_manager.sender(),
         );
         self.sync_actor = Some(handle);
     }

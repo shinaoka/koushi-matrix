@@ -17,6 +17,7 @@ pub mod room;
 pub mod runtime;
 pub mod store;
 pub mod sync;
+pub mod timeline;
 
 pub use command::{
     AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, SearchScope, SyncCommand,

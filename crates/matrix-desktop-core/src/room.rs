@@ -6,22 +6,32 @@
 //! ("Actor Deployment And Supervision — boundaries define ownership, not one
 //! task per actor").
 //!
-//! ## Room list normalization (Async rule 9 note)
-//! On `RoomMessage::SyncStarted`, `RoomActor` does an initial
-//! `matrix_desktop_auth::room_list_snapshot(session)` call — which internally
-//! tries `RoomListService` (SyncService backend) and falls back to
-//! `client.joined_rooms()` (LegacySync backend) — and then spawns a room-list
-//! observation loop subscribed to
-//! `client.subscribe_to_all_room_updates()`. That broadcast fires on both
-//! backends because both feed the base client, so the actor RELAYS the SDK's
-//! observable stream (Async rule 1) instead of taking a one-shot snapshot.
-//! Each received update batch coalesces any additionally pending batches
-//! (`try_recv` drain) into a single re-normalization; a `Lagged` receiver
-//! triggers one refresh because the snapshot is self-healing. Snapshots are
-//! projected as `AppAction::RoomListUpdated` + `RoomEvent::RoomListUpdated`.
+//! ## Room list normalization (canon: overview.md RoomActor bullet)
+//! Constructing ad-hoc `RoomListService` instances is PROHIBITED: they are
+//! not driven by the sync loop, race the running `SyncService`, and return
+//! entries without the live service's `required_state` (e.g. `m.room.create`
+//! for space classification — deterministically broken on Conduit).
 //!
-//! The auth snapshot function handles both backend paths so `RoomActor` does
-//! not need a direct reference to the `SyncService` that `SyncActor` holds.
+//! `RoomMessage::SyncStarted` carries the backend handle:
+//! - `Some(Arc<RoomListService>)` on the SyncService backend — the ONE live
+//!   service owned by the running `SyncService` (`sync_service
+//!   .room_list_service()`). The actor subscribes to its `all_rooms()`
+//!   entries stream (`entries_with_dynamic_adapters` with the joined filter)
+//!   and KEEPS CONSUMING it, re-normalizing on each diff batch (Async rule 1:
+//!   actors relay the SDK's observable streams).
+//! - `None` on the LegacySync backend — the actor normalizes from
+//!   `client.joined_rooms()` and relays `client
+//!   .subscribe_to_all_room_updates()` (which fires on the legacy backend
+//!   because it feeds the base client), coalescing pending batches into one
+//!   re-normalization per wakeup.
+//!
+//! Snapshots are projected as `AppAction::RoomListUpdated` +
+//! `RoomEvent::RoomListUpdated`.
+//!
+//! Operation-triggered refreshes after the actor's own mutations remain: on
+//! the SyncService path "refresh" means "re-normalize from the live service's
+//! current entries" (a refresh request to the observation loop), never "new
+//! service"; on the LegacySync path it is a joined_rooms re-normalization.
 //!
 //! Per Async rule 9: "Because the local QA matrix includes homeservers without
 //! MSC4186, this legacy room-list path is a fully implemented, QA-gated
@@ -54,15 +64,25 @@ use crate::executor;
 use crate::failure::{CoreFailure, RoomFailureKind};
 use crate::ids::RequestId;
 
-/// Messages sent to the RoomActor from AccountActor.
+/// Messages sent to the RoomActor from AccountActor / SyncActor.
 pub enum RoomMessage {
     /// Route a `RoomCommand` to the actor.
     Command(RoomCommand),
-    /// Sync started: the room actor should refresh its room list now.
-    /// `AccountActor` sends this after `SyncEvent::Started` is observed,
-    /// supplying the store-backed session so room ops are available.
+    /// A store-backed session was established (login/restore/switch).
+    /// Enables room operations; does NOT start the room-list observation —
+    /// that starts on `SyncStarted` when the backend (and its live
+    /// `RoomListService`, if any) is known.
+    SessionEstablished {
+        session: Arc<MatrixClientSession>,
+    },
+    /// Sync started. Sent by `SyncActor` after the backend is launched.
+    /// `room_list_service` is the ONE live service owned by the running
+    /// `SyncService` (`Some` on the SyncService backend, `None` on
+    /// LegacySync). Ad-hoc `RoomListService` instances are prohibited
+    /// (canon, overview.md RoomActor bullet).
     SyncStarted {
         session: Arc<MatrixClientSession>,
+        room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     },
     /// Sync stopped: tear down any active room list subscription.
     SyncStopped,
@@ -96,10 +116,13 @@ impl RoomActorHandle {
 
 /// Handle on the spawned room-list observation loop: oneshot stop signal plus
 /// the task handle so teardown can await completion (same pattern as
-/// `sync.rs` `legacy_stop_tx`).
+/// `sync.rs` `legacy_stop_tx`). `refresh_tx` is `Some` on the SyncService
+/// (live-service) loop: an operation-triggered refresh re-normalizes from the
+/// live service's current entries inside the loop.
 struct RoomListObservation {
     stop_tx: oneshot::Sender<()>,
     task: executor::JoinHandle<()>,
+    refresh_tx: Option<mpsc::Sender<()>>,
 }
 
 pub struct RoomActor {
@@ -137,18 +160,37 @@ impl RoomActor {
                 RoomMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
-                RoomMessage::SyncStarted { session } => {
+                RoomMessage::SessionEstablished { session } => {
+                    // Room operations become available; observation starts
+                    // later on SyncStarted (backend then known).
+                    self.session = Some(session);
+                }
+                RoomMessage::SyncStarted {
+                    session,
+                    room_list_service,
+                } => {
                     // Guard against two observation loops running: a previous
                     // loop (from an earlier SyncStarted) is stopped before the
                     // replacement is spawned.
                     self.stop_observation().await;
                     self.session = Some(session);
-                    // Initial snapshot to populate state, then a continuous
-                    // observation loop so later room updates keep relaying
-                    // (Async rule 1: actors relay the SDK's observable
-                    // streams; a one-shot snapshot is not relaying).
-                    self.refresh_room_list().await;
-                    self.start_observation();
+                    match room_list_service {
+                        Some(service) => {
+                            // SyncService backend: relay the live service's
+                            // entries stream. Its first diff batch (Reset with
+                            // the current entries) provides the initial
+                            // snapshot, so no separate initial refresh is
+                            // needed.
+                            self.start_live_observation(service);
+                        }
+                        None => {
+                            // LegacySync backend: initial snapshot from
+                            // joined_rooms, then relay the base client's room
+                            // update broadcast (Async rule 1).
+                            self.refresh_room_list().await;
+                            self.start_legacy_observation();
+                        }
+                    }
                 }
                 RoomMessage::SyncStopped => {
                     self.stop_observation().await;
@@ -157,19 +199,47 @@ impl RoomActor {
         }
     }
 
-    /// Spawn the room-list observation loop for the current session.
-    fn start_observation(&mut self) {
+    /// Spawn the live-service observation loop (SyncService backend): relay
+    /// the ONE live `RoomListService`'s entries stream and re-normalize on
+    /// each diff batch.
+    fn start_live_observation(
+        &mut self,
+        service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
+    ) {
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let (refresh_tx, refresh_rx) = mpsc::channel::<()>(8);
+        let task = executor::spawn(run_live_room_list_observation(
+            service,
+            self.action_tx.clone(),
+            self.event_tx.clone(),
+            refresh_rx,
+            stop_rx,
+        ));
+        self.observation = Some(RoomListObservation {
+            stop_tx,
+            task,
+            refresh_tx: Some(refresh_tx),
+        });
+    }
+
+    /// Spawn the legacy room-list observation loop (LegacySync backend) for
+    /// the current session.
+    fn start_legacy_observation(&mut self) {
         let Some(session) = &self.session else {
             return;
         };
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
-        let task = executor::spawn(run_room_list_observation(
+        let task = executor::spawn(run_legacy_room_list_observation(
             session.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             stop_rx,
         ));
-        self.observation = Some(RoomListObservation { stop_tx, task });
+        self.observation = Some(RoomListObservation {
+            stop_tx,
+            task,
+            refresh_tx: None,
+        });
     }
 
     /// Stop the observation loop (if running) and wait for it to exit.
@@ -365,11 +435,22 @@ impl RoomActor {
         }
     }
 
-    /// Fetch the current room list and project it into AppState via the action
+    /// Refresh the room list and project it into AppState via the action
     /// channel. Also emits `RoomEvent::RoomListUpdated` as a discrete event.
+    ///
+    /// On the SyncService path this requests a re-normalization from the live
+    /// service's current entries (inside the observation loop) — NEVER a new
+    /// `RoomListService`. On the LegacySync path (or before sync starts) it
+    /// re-normalizes from `client.joined_rooms()`.
     async fn refresh_room_list(&self) {
+        if let Some(observation) = &self.observation
+            && let Some(refresh_tx) = &observation.refresh_tx
+        {
+            let _ = refresh_tx.try_send(());
+            return;
+        }
         if let Some(session) = &self.session {
-            refresh_room_list_with(session, &self.action_tx, &self.event_tx).await;
+            refresh_room_list_from_joined_rooms(session, &self.action_tx, &self.event_tx).await;
         }
     }
 
@@ -393,39 +474,117 @@ impl RoomActor {
 // Room list refresh + observation loop
 // ---------------------------------------------------------------------------
 
-/// Fetch the current room list, normalize it, and project it as
-/// `AppAction::RoomListUpdated` + `RoomEvent::RoomListUpdated`.
-///
-/// `matrix_desktop_auth::room_list_snapshot` handles both the SyncService
-/// backend (tries RoomListService first) and the LegacySync backend (falls
-/// back to client.joined_rooms()), so this single call covers both QA-gated
-/// paths per Async rule 9.
-async fn refresh_room_list_with(
-    session: &MatrixClientSession,
+/// Maximum number of room-list entries requested from the live service's
+/// dynamic entries adapter (mirrors the auth snapshot limit).
+const ROOM_LIST_ENTRIES_LIMIT: usize = 4096;
+
+/// Normalize a snapshot and project it as `AppAction::RoomListUpdated` +
+/// `RoomEvent::RoomListUpdated`.
+fn project_room_list_snapshot(
+    snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
-    let snapshot = match matrix_desktop_auth::room_list_snapshot(session).await {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let spaces = normalize_spaces(&snapshot);
-    let rooms = normalize_rooms(&snapshot);
-
+    let spaces = normalize_spaces(snapshot);
+    let rooms = normalize_rooms(snapshot);
     let _ = action_tx.try_send(vec![AppAction::RoomListUpdated { spaces, rooms }]);
     let _ = event_tx.send(CoreEvent::Room(RoomEvent::RoomListUpdated));
 }
 
-/// Room-list observation loop (Async rule 1: relay the SDK's observable
+/// LegacySync-path refresh: normalize from `client.joined_rooms()` and
+/// project. Never constructs a `RoomListService` (canon prohibition).
+async fn refresh_room_list_from_joined_rooms(
+    session: &MatrixClientSession,
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    event_tx: &broadcast::Sender<CoreEvent>,
+) {
+    let snapshot = matrix_desktop_auth::room_list_snapshot_from_sdk_rooms(
+        session.client().joined_rooms(),
+    )
+    .await;
+    project_room_list_snapshot(&snapshot, action_tx, event_tx);
+}
+
+/// SyncService-path observation loop (Async rule 1: relay the SDK's
+/// observable streams). Subscribes to the live `RoomListService`'s
+/// `all_rooms()` entries stream (`entries_with_dynamic_adapters` with the
+/// joined filter — the same shape the live service drives with its
+/// `required_state`, including `m.room.create` for space classification) and
+/// KEEPS CONSUMING it: the current entry vector is maintained by applying
+/// each `VectorDiff` batch, and every batch triggers a re-normalization.
+/// The first batch (a Reset with the current entries) doubles as the initial
+/// snapshot. A refresh request (operation-triggered) re-normalizes from the
+/// current entries without touching the service. Exits on the oneshot stop
+/// signal or when the stream ends.
+async fn run_live_room_list_observation(
+    service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
+    action_tx: mpsc::Sender<Vec<AppAction>>,
+    event_tx: broadcast::Sender<CoreEvent>,
+    mut refresh_rx: mpsc::Receiver<()>,
+    mut stop_rx: oneshot::Receiver<()>,
+) {
+    use futures_util::StreamExt as _;
+
+    let Ok(all_rooms) = service.all_rooms().await else {
+        return;
+    };
+    let (entries, entries_controller) =
+        all_rooms.entries_with_dynamic_adapters(ROOM_LIST_ENTRIES_LIMIT);
+    entries_controller.set_filter(Box::new(
+        matrix_sdk_ui::room_list_service::filters::new_filter_joined(),
+    ));
+    let mut entries = Box::pin(entries);
+
+    // Current filtered entry vector, maintained by applying each diff batch.
+    let mut current: eyeball_im::Vector<matrix_sdk_ui::room_list_service::RoomListItem> =
+        eyeball_im::Vector::new();
+
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            _ = refresh_rx.recv() => {
+                // Operation-triggered refresh: drain coalesced requests, then
+                // re-normalize from the live service's CURRENT entries.
+                while refresh_rx.try_recv().is_ok() {}
+                normalize_and_project_entries(&current, &action_tx, &event_tx).await;
+            }
+            maybe_diffs = entries.next() => match maybe_diffs {
+                None => break,
+                Some(diffs) => {
+                    for diff in diffs {
+                        diff.apply(&mut current);
+                    }
+                    normalize_and_project_entries(&current, &action_tx, &event_tx).await;
+                }
+            },
+        }
+    }
+}
+
+/// Normalize the live service's current entries and project the result.
+async fn normalize_and_project_entries(
+    current: &eyeball_im::Vector<matrix_sdk_ui::room_list_service::RoomListItem>,
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    event_tx: &broadcast::Sender<CoreEvent>,
+) {
+    // Collect before the await: mapping lazily across the await trips a
+    // higher-ranked lifetime check on the iterator closure.
+    let mut rooms = Vec::with_capacity(current.len());
+    for item in current.iter() {
+        rooms.push(item.clone().into_inner());
+    }
+    let snapshot = matrix_desktop_auth::room_list_snapshot_from_sdk_rooms(rooms).await;
+    project_room_list_snapshot(&snapshot, action_tx, event_tx);
+}
+
+/// LegacySync-path observation loop (Async rule 1: relay the SDK's observable
 /// streams). Subscribes to `client.subscribe_to_all_room_updates()`, which
-/// fires on both SyncService and LegacySync backends because both feed the
-/// base client. Each received batch coalesces any additionally pending
-/// batches into one `refresh_room_list_with` call; `Lagged` triggers a single
-/// refresh because the snapshot is self-healing. Exits on the oneshot stop
-/// signal (same pattern as `sync.rs` `legacy_stop_tx`) or when the SDK closes
-/// the broadcast.
-async fn run_room_list_observation(
+/// fires on the legacy backend because it feeds the base client. Each
+/// received batch coalesces any additionally pending batches into one
+/// re-normalization; `Lagged` triggers a single refresh because the snapshot
+/// is self-healing. Exits on the oneshot stop signal (same pattern as
+/// `sync.rs` `legacy_stop_tx`) or when the SDK closes the broadcast.
+async fn run_legacy_room_list_observation(
     session: Arc<MatrixClientSession>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
@@ -442,11 +601,11 @@ async fn run_room_list_observation(
                     // Coalesce: drain any additionally pending update batches;
                     // one refresh covers them all.
                     while updates_rx.try_recv().is_ok() {}
-                    refresh_room_list_with(&session, &action_tx, &event_tx).await;
+                    refresh_room_list_from_joined_rooms(&session, &action_tx, &event_tx).await;
                 }
                 Err(RecvError::Lagged(_)) => {
                     // The snapshot is self-healing: refresh once.
-                    refresh_room_list_with(&session, &action_tx, &event_tx).await;
+                    refresh_room_list_from_joined_rooms(&session, &action_tx, &event_tx).await;
                 }
                 Err(RecvError::Closed) => break,
             },

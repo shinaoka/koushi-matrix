@@ -13,10 +13,23 @@ This note separates SDK-upstreamable material from desktop-product decisions. El
 - `SearchIndexStoreKind::encrypted_directory_ngram(path, password, min_gram, max_gram)` is a convenience constructor for encrypted ngram search.
 - SDK tests cover default tokenizer behavior, invalid ngram config, schema tokenizer selection, Japanese substring search, encrypted directory open/reopen and wrong-passphrase failure, edit ordering, redaction handling, and `matrix-sdk` search index wiring for an in-memory ngram index.
 
+- `SendHandle::transaction_id()` accessor (2026-06-13, headless core Phase 5):
+  `matrix-sdk/src/send_queue/mod.rs` gains a public getter for the private
+  `SendHandle.transaction_id` field. Why: `RoomSendQueue::send()` generates
+  its own transaction id internally; a caller that must correlate a queued
+  send with the later `RoomSendQueueUpdate::SentEvent { transaction_id, .. }`
+  (e.g. to map a client-supplied request/txn id to the SDK's txn id) has no
+  way to learn the id at enqueue time — `LocalEcho.transaction_id` is only
+  observable on the update stream, racing the caller. Upstreaming intent:
+  small, additive, no behavior change — good candidate for an upstream PR
+  alongside (or independent of) the search-index patch.
+
 Current SDK-only patch area:
 
 - `vendor/matrix-rust-sdk/crates/matrix-sdk-search`
 - `vendor/matrix-rust-sdk/crates/matrix-sdk/src/search_index`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk/src/send_queue/mod.rs`
+  (`SendHandle::transaction_id()` accessor only)
 
 ## API Questions
 

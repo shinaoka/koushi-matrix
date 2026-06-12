@@ -284,13 +284,14 @@ impl AppActor {
                     .await;
                 false
             }
-            CoreCommand::Timeline(_) => {
-                self.emit(CoreEvent::OperationFailed {
-                    request_id: command.request_id(),
-                    failure: CoreFailure::TimelineOperationFailed {
-                        kind: crate::failure::TimelineFailureKind::Sdk,
-                    },
-                });
+            CoreCommand::Timeline(timeline_command) => {
+                // Route to AccountActor (which forwards to TimelineManagerActor).
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::TimelineCommand(
+                        timeline_command,
+                    ))
+                    .await;
                 false
             }
             CoreCommand::Search(_) => {
