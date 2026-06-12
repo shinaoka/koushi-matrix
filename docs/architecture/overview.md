@@ -115,6 +115,12 @@ An in-process actor system in `matrix-desktop-core`:
   (starting/running/reconnecting/failed/stopped).
 - `RoomActor` — room list normalization (`SpaceSummary`/`RoomSummary`),
   create/invite/join/space operations, unread counts, DM classification.
+  On the sliding-sync backend it consumes the one `RoomListService` owned by
+  the running `SyncService`; constructing additional ad-hoc
+  `RoomListService` instances is prohibited — they are not driven by the
+  sync loop, race it, and return entries without the `required_state`
+  (e.g. `m.room.create` for space classification) the live service
+  requests.
 - `TimelineActor` (per room/thread timeline) — subscription, diffs,
   pagination, send/edit/redaction relay.
 - `SearchActor` — ngram candidates, canonical-text verification,

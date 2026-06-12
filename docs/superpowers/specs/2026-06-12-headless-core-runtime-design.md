@@ -372,7 +372,7 @@ target account, emitting `AccountSwitched` and a fresh `StateChanged`.
 
 `SyncActor` owns continuous SDK sync. It starts after login/restore, transitions through starting/running/reconnecting/failed/stopped, and stops on logout, account switch, or app shutdown. SDK sync errors are converted to redacted sync failures.
 
-`RoomActor` owns room list and room operations. It normalizes SDK room list data into `SpaceSummary` and `RoomSummary`, handles create room, create space, set space child, invite, join, unread counts, DM classification, and space-filtered lists.
+`RoomActor` owns room list and room operations. It normalizes SDK room list data into `SpaceSummary` and `RoomSummary`, handles create room, create space, set space child, invite, join, unread counts, DM classification, and space-filtered lists. On the sliding-sync backend the room list comes from the single `RoomListService` owned by the running `SyncService` (handed to `RoomActor` at sync start); ad-hoc `RoomListService` instances are prohibited because they are not driven by the sync loop and miss the live service's `required_state`. On `LegacySync` the room list is normalized from base-client state per Async rule 9.
 
 `TimelineActor` owns a room or thread timeline subscription. It handles initial items, incremental updates, backward pagination, send, edit, redaction, late events, late decryption, and stable ordering.
 
