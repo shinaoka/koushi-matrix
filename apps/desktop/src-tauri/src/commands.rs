@@ -564,6 +564,9 @@ fn dispatch_timeline_messages(
     let Ok(mut backend) = backend_state.backend.lock() else {
         return;
     };
+    if !timeline_messages_target_active_room(backend.state(), &messages) {
+        return;
+    }
     backend.upsert_timeline_messages(messages);
     let snapshot = backend.snapshot();
     drop(backend);
@@ -583,6 +586,9 @@ fn dispatch_timeline_updates(
     let Ok(mut backend) = backend_state.backend.lock() else {
         return;
     };
+    if !timeline_updates_target_active_room(backend.state(), &updates) {
+        return;
+    }
     backend.apply_timeline_updates(updates);
     let snapshot = backend.snapshot();
     drop(backend);
@@ -1039,6 +1045,39 @@ fn matrix_timeline_updates_to_backend_updates(
         .collect()
 }
 
+fn timeline_messages_target_active_room(
+    state: &AppState,
+    messages: &[matrix_desktop_backend::TimelineMessage],
+) -> bool {
+    let Some(active_room_id) = state.timeline.room_id.as_deref() else {
+        return false;
+    };
+    !messages.is_empty()
+        && messages
+            .iter()
+            .all(|message| message.room_id == active_room_id)
+}
+
+fn timeline_updates_target_active_room(
+    state: &AppState,
+    updates: &[matrix_desktop_backend::TimelineUpdate],
+) -> bool {
+    let Some(active_room_id) = state.timeline.room_id.as_deref() else {
+        return false;
+    };
+    !updates.is_empty()
+        && updates
+            .iter()
+            .all(|update| timeline_update_room_id(update) == active_room_id)
+}
+
+fn timeline_update_room_id(update: &matrix_desktop_backend::TimelineUpdate) -> &str {
+    match update {
+        matrix_desktop_backend::TimelineUpdate::Upsert(message) => &message.room_id,
+        matrix_desktop_backend::TimelineUpdate::Remove { room_id, .. } => room_id,
+    }
+}
+
 fn first_room_id_for_space(
     snapshot: &matrix_desktop_backend::DesktopSnapshot,
     space_id: Option<&str>,
@@ -1242,8 +1281,10 @@ mod tests {
         effects_paginate_timeline_room_id, effects_restore_session_info,
         effects_subscribe_timeline_room_id, matrix_room_list_snapshot_to_backend_update,
         matrix_timeline_items_to_backend_messages, matrix_timeline_updates_to_backend_updates,
-        promote_room_to_front, qa_recovery_prompt_is_available, qa_window_title, room_list_sync_follow_up,
-        sdk_search_candidates_to_backend, session_info_from_state, ui_event_payloads,
+        promote_room_to_front, qa_recovery_prompt_is_available, qa_window_title,
+        room_list_sync_follow_up, sdk_search_candidates_to_backend, session_info_from_state,
+        timeline_messages_target_active_room, timeline_updates_target_active_room,
+        ui_event_payloads,
     };
     use matrix_desktop_state::{
         AppEffect, AuthSecret, LoginRequest, RecoveryRequest, RoomSummary, SyncState,
@@ -1615,6 +1656,99 @@ mod tests {
                 event_id: "$sdk-visible".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn timeline_messages_must_target_active_timeline_room() {
+        let state = AppState {
+            timeline: TimelinePaneState {
+                room_id: Some("!room-alpha:example.invalid".to_owned()),
+                is_subscribed: true,
+                is_paginating_backwards: false,
+                composer: Default::default(),
+            },
+            ..AppState::default()
+        };
+
+        assert!(timeline_messages_target_active_room(
+            &state,
+            &[matrix_desktop_backend::TimelineMessage {
+                room_id: "!room-alpha:example.invalid".to_owned(),
+                event_id: "$alpha".to_owned(),
+                sender: "@sender:example.invalid".to_owned(),
+                timestamp_ms: 1_830_000_000_000,
+                body: "alpha body".to_owned(),
+                attachment_filename: None,
+                reply_count: 0,
+            }]
+        ));
+        assert!(!timeline_messages_target_active_room(
+            &state,
+            &[matrix_desktop_backend::TimelineMessage {
+                room_id: "!room-beta:example.invalid".to_owned(),
+                event_id: "$beta".to_owned(),
+                sender: "@sender:example.invalid".to_owned(),
+                timestamp_ms: 1_830_000_000_001,
+                body: "beta body".to_owned(),
+                attachment_filename: None,
+                reply_count: 0,
+            }]
+        ));
+        assert!(!timeline_messages_target_active_room(&state, &[]));
+        assert!(!timeline_messages_target_active_room(
+            &AppState::default(),
+            &[matrix_desktop_backend::TimelineMessage {
+                room_id: "!room-alpha:example.invalid".to_owned(),
+                event_id: "$alpha".to_owned(),
+                sender: "@sender:example.invalid".to_owned(),
+                timestamp_ms: 1_830_000_000_000,
+                body: "alpha body".to_owned(),
+                attachment_filename: None,
+                reply_count: 0,
+            }]
+        ));
+    }
+
+    #[test]
+    fn timeline_updates_must_target_active_timeline_room() {
+        let state = AppState {
+            timeline: TimelinePaneState {
+                room_id: Some("!room-alpha:example.invalid".to_owned()),
+                is_subscribed: true,
+                is_paginating_backwards: false,
+                composer: Default::default(),
+            },
+            ..AppState::default()
+        };
+
+        assert!(timeline_updates_target_active_room(
+            &state,
+            &[
+                matrix_desktop_backend::TimelineUpdate::Upsert(
+                    matrix_desktop_backend::TimelineMessage {
+                        room_id: "!room-alpha:example.invalid".to_owned(),
+                        event_id: "$alpha".to_owned(),
+                        sender: "@sender:example.invalid".to_owned(),
+                        timestamp_ms: 1_830_000_000_000,
+                        body: "alpha body".to_owned(),
+                        attachment_filename: None,
+                        reply_count: 0,
+                    },
+                ),
+                matrix_desktop_backend::TimelineUpdate::Remove {
+                    room_id: "!room-alpha:example.invalid".to_owned(),
+                    event_id: "$alpha".to_owned(),
+                },
+            ]
+        ));
+        assert!(!timeline_updates_target_active_room(
+            &state,
+            &[matrix_desktop_backend::TimelineUpdate::Remove {
+                room_id: "!room-beta:example.invalid".to_owned(),
+                event_id: "$beta".to_owned(),
+            }]
+        ));
+        assert!(!timeline_updates_target_active_room(&state, &[]));
     }
 
     #[test]
