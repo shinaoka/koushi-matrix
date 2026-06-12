@@ -1,5 +1,14 @@
 # Agent Notes
 
+This file is operational troubleshooting for agents and QA automation in this
+environment. The binding rules distilled from these notes (prohibitions,
+secret handling, automation rules, gates) live in
+[docs/policies/engineering-rules.md](docs/policies/engineering-rules.md), and
+the long-term architecture in
+[docs/architecture/overview.md](docs/architecture/overview.md). When a note
+here hardens into a durable rule, promote it to the policies document and keep
+the operational detail here.
+
 ## macOS GUI Smoke Failures
 
 - `npm --prefix apps/desktop run qa:mac-gui` controls the Tauri window through

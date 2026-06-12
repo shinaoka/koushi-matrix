@@ -1,0 +1,132 @@
+# Engineering Rules
+
+Status: normative. These rules apply to all code, tests, QA automation,
+documentation, and agent-driven work in this repository. They consolidate the
+security policy of the runtime design and the durable lessons recorded in
+`AGENTS.md`. AGENTS.md remains the operational how-to (permissions, install
+caveats, recovery steps); the rules themselves live here.
+
+Last amended: 2026-06-12.
+
+## Secrets and Private Data
+
+Never log, print, commit, or store in fixtures:
+
+- access tokens, passwords, recovery keys or recovery codes
+- SDK store keys, search index keys, local unlock secrets
+- raw request/response bodies
+- real account private data; real room names or real discussion content in
+  docs, tests, or mocks
+
+Allowed only in debug/test contexts: synthetic local QA credentials, local
+homeserver URLs, synthetic room/event IDs. Allowed in UI state: user ID,
+device ID, room ID, event ID, visible message body, attachment filename.
+
+Rules:
+
+1. Secret-bearing types must use zeroizing wrappers with redacted `Debug`
+   (`finish_non_exhaustive()` style). This includes command payloads:
+   login requests redact username/password/device name; recovery requests
+   redact recovery material; send/edit redact bodies in `Debug` and errors.
+2. Release builds must reject environment-variable credential injection and
+   the file-based credential store. The gate is compile-time (debug/test
+   only) and CI must verify release builds ignore these paths.
+3. QA credentials enter processes via FIFO (`MATRIX_DESKTOP_QA_LOGIN_PIPE`)
+   or the gated file credential store — never via argv, never typed by
+   coordinates, never echoed to a terminal, never in screenshots or logs.
+4. Do not pass the parent shell environment wholesale into QA child
+   processes. Filter out secret-like variables (API keys, tokens,
+   passwords) before spawning.
+5. Do not store post-login real-account screenshots; they can contain room
+   names, Matrix IDs, message bodies, attachment names. Use
+   private-data-free QA window-title tokens. `--allow-private-screenshots`
+   is restricted to explicitly approved test accounts and ignored artifact
+   paths.
+6. QA profile names must be synthetic and non-secret. Profile data lives
+   under ignored `.local-secrets/qa-profiles/<name>/data`.
+7. A secret scan gate runs before commits **and** in CI (pre-commit hooks
+   can be bypassed). It excludes `vendor/`, `.local-secrets/`, and
+   generated artifacts.
+8. An unexpected macOS Keychain prompt during unattended QA is an
+   automation failure, not something to click through. Fix the run's
+   environment (`MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`,
+   `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR`) instead.
+
+## Logging and Diagnostics
+
+1. Diagnostics are structured and redacted
+   (`core.sync.failed kind=http` style). Structured fields are enums/kinds;
+   free-form string fields are prohibited because they eventually carry
+   content.
+2. Raw SDK errors may be printed only behind an explicit debug/test
+   diagnostic switch. They must never reach `AppState`, committed logs,
+   normal test fixtures, or release diagnostics.
+3. QA asserts on `CoreEvent` and `AppStateSnapshot`, never on log output.
+
+## Async and Runtime
+
+1. No fixed sleeps in QA or product code waiting for Matrix effects — wait
+   on events with timeouts.
+2. Store-backed Matrix SDK clients must be dropped while a Tokio runtime
+   context is entered; otherwise `deadpool-runtime` panics with
+   "there is no reactor running".
+3. Every spawned background task and subscription has an owner responsible
+   for cancelling it (unsubscribe, account shutdown, app shutdown). No
+   unbounded maps of live subscriptions.
+4. QA runners must clean up their full process group on failure or
+   interruption. Verify `lsof -nP -iTCP:5173 -sTCP:LISTEN` is empty before
+   retrying a GUI run; a stale Vite/`tauri dev` process breaks the next run.
+5. QA binaries must attempt logout cleanup after any post-login failure
+   unless `--keep-session` was explicitly requested; otherwise failed runs
+   leave live devices on the homeserver.
+6. Avoid repeated destructive real-account login cycles while debugging
+   automation; reuse the running session and restart only when the script
+   or Tauri capability changes require it.
+
+## GUI Automation
+
+GUI automation is a thin smoke layer, never the primary correctness gate.
+
+1. Never drive login or any credential entry by fixed window-relative
+   coordinates (a 2026-06-12 run typed a password into the username field).
+   Use the FIFO credential path.
+2. Never use `Cmd+Q` to stop the app from automation; focus slips can send
+   it to the controlling agent. Use the script's process-group cleanup.
+3. Resolve processes as `first process whose name is <variable>` in
+   AppleScript; check both the dev process name (`matrix-desktop-app`) and
+   the product title (`matrix-desktop`).
+4. First-run GUI smoke sets `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1`;
+   real-login smoke additionally sets
+   `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`.
+5. Keep the strict `timeline_items > 0` release signal; use
+   `--allow-empty-timeline` only for sparse test accounts validating
+   login/room-list/panel automation.
+
+Operational setup (Accessibility/Automation/Screen Recording permissions,
+PTY handling, prompt line order) is documented in `AGENTS.md`.
+
+## Build, Dependencies, QA Gates
+
+1. The vendored `matrix-rust-sdk` is consumed via path/`[patch]`
+   dependencies, preserving upstream structure for upstreaming patches.
+   Direct ports from Element X code preserve upstream license and copyright
+   notices.
+2. Local homeserver toolchain caveats (Conduit/Tuwunel install flags such as
+   `RUMA_UNSTABLE_EXHAUSTIVE_TYPES=1`, macOS `--no-default-features`) are
+   tracked in `AGENTS.md` and the QA scripts, not hand-run.
+3. Required local gates before merge: crate tests (`matrix-desktop-state`,
+   `-auth`, `-core`), frontend tests + typecheck, and
+   `qa:headless-local -- --server=both`.
+4. Real homeserver QA is a release/preflight gate (network + approved
+   credentials), not an every-CI gate.
+5. Production Tauri paths must not execute fixture-backend behavior;
+   `matrix-desktop-backend` is dev/demo only.
+
+## Documentation
+
+1. `docs/architecture/overview.md` is the long-term blueprint. Dated specs
+   and plans implement it; when implementation reveals a design problem,
+   amend the overview first.
+2. Durable rules discovered during operations are promoted from `AGENTS.md`
+   into this document; AGENTS.md keeps the troubleshooting detail.
+3. Docs, examples, and fixtures use synthetic data only (see Secrets rules).
