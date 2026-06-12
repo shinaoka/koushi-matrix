@@ -116,6 +116,7 @@ pub struct BackendState {
 }
 
 pub(crate) struct TimelineTaskHandle {
+    room_id: String,
     task: tauri::async_runtime::JoinHandle<()>,
     pagination_sender: tokio::sync::mpsc::Sender<TimelinePaginationRequest>,
 }

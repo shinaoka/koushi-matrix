@@ -534,6 +534,7 @@ pub(crate) fn start_matrix_timeline_task(
         previous_task.task.abort();
     }
     *timeline_task = Some(TimelineTaskHandle {
+        room_id,
         task,
         pagination_sender,
     });
@@ -848,7 +849,10 @@ pub fn paginate_timeline_backwards(
             .lock()
             .map_err(lock_error)?
             .as_ref()
-            .is_some_and(|handle| handle.pagination_sender.try_send(request).is_ok());
+            .is_some_and(|handle| {
+                timeline_task_can_paginate_room(&handle.room_id, &request.room_id)
+                    && handle.pagination_sender.try_send(request).is_ok()
+            });
         if !sent {
             let mut backend = state.backend.lock().map_err(lock_error)?;
             backend.dispatch(AppAction::TimelineBackPaginationFinished { room_id });
@@ -1278,6 +1282,13 @@ pub(crate) fn effects_paginate_timeline_room_id(effects: &[AppEffect]) -> Option
     })
 }
 
+pub(crate) fn timeline_task_can_paginate_room(
+    task_room_id: &str,
+    request_room_id: &str,
+) -> bool {
+    task_room_id == request_room_id
+}
+
 pub(crate) fn effects_send_text_request(effects: &[AppEffect]) -> Option<(String, String, String)> {
     effects.iter().find_map(|effect| match effect {
         AppEffect::SendText {
@@ -1326,7 +1337,7 @@ mod tests {
         promote_room_to_front, qa_recovery_prompt_is_available, qa_window_title,
         room_list_sync_follow_up, sdk_search_candidates_to_backend, session_info_from_state,
         timeline_messages_target_active_room, timeline_updates_target_active_room,
-        ui_event_payloads,
+        timeline_task_can_paginate_room, ui_event_payloads,
     };
     use matrix_desktop_state::{
         AppEffect, AuthSecret, LoginRequest, RecoveryRequest, RoomSummary, SyncState,
@@ -1577,6 +1588,18 @@ mod tests {
             effects_paginate_timeline_room_id(&effects).as_deref(),
             Some("!room-alpha:example.invalid")
         );
+    }
+
+    #[test]
+    fn timeline_task_room_must_match_pagination_request() {
+        assert!(timeline_task_can_paginate_room(
+            "!room-alpha:example.invalid",
+            "!room-alpha:example.invalid"
+        ));
+        assert!(!timeline_task_can_paginate_room(
+            "!room-alpha:example.invalid",
+            "!room-beta:example.invalid"
+        ));
     }
 
     #[test]
