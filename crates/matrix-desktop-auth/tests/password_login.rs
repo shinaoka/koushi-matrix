@@ -536,6 +536,56 @@ fn sdk_room_list_snapshot_returns_empty_without_synced_rooms() {
 }
 
 #[test]
+fn sdk_room_list_snapshot_preserves_synced_parent_spaces() {
+    let homeserver = spawn_password_login_server_with_space_sync();
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+        matrix_desktop_auth::sync_once(&session)
+            .await
+            .expect("sync with space relationship should succeed");
+
+        let snapshot = matrix_desktop_auth::room_list_snapshot(&session)
+            .await
+            .expect("synced rooms should snapshot successfully");
+
+        assert_eq!(
+            snapshot
+                .spaces
+                .iter()
+                .map(|space| space.space_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["!fixture-space:example.invalid"],
+            "snapshot = {snapshot:?}"
+        );
+        let room = snapshot
+            .rooms
+            .iter()
+            .find(|room| room.room_id == "!fixture-room:example.invalid")
+            .expect("regular room should be in room list");
+        assert_eq!(room.display_name, "Fixture Room");
+        assert_eq!(
+            room.parent_space_ids,
+            vec!["!fixture-space:example.invalid".to_owned()]
+        );
+        assert!(!format!("{snapshot:?}").contains("fixture-access-token"));
+        assert!(!format!("{snapshot:?}").contains("synthetic-password"));
+    });
+}
+
+#[test]
 fn sdk_search_candidates_blocking_returns_empty_for_empty_query() {
     let homeserver = spawn_password_login_server(200);
     let request = LoginRequest {
@@ -714,6 +764,57 @@ fn spawn_password_login_server_with_sync(sync_seen: Arc<AtomicUsize>) -> String 
     spawn_password_login_server_with_options(200, Arc::new(AtomicBool::new(false)), Some(sync_seen))
 }
 
+fn spawn_password_login_server_with_space_sync() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server should have an address");
+
+    thread::spawn(move || {
+        for _ in 0..8 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test server should accept a request");
+            let request = read_http_request(&mut stream);
+
+            if request.starts_with("GET /_matrix/client/versions ") {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
+                );
+                continue;
+            }
+
+            if request.starts_with("GET /_matrix/client/") && request.contains("/sync") {
+                write_json(&mut stream, 200, space_relationship_sync_response());
+                continue;
+            }
+
+            if request.starts_with("POST /_matrix/client/")
+                && request.contains("fixture-user")
+                && request.contains("synthetic-password")
+                && request.contains("Matrix Desktop Test")
+            {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"access_token":"fixture-access-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#,
+                );
+                continue;
+            }
+
+            write_json(
+                &mut stream,
+                404,
+                r#"{"errcode":"M_NOT_FOUND","error":"Unexpected test request"}"#,
+            );
+        }
+    });
+
+    format!("http://{addr}")
+}
+
 fn spawn_password_login_server_with_logout(status: u16, logout_seen: Arc<AtomicBool>) -> String {
     spawn_password_login_server_with_options(status, logout_seen, None)
 }
@@ -835,6 +936,94 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> String {
     }
 
     String::from_utf8(request).expect("test request should be UTF-8")
+}
+
+fn space_relationship_sync_response() -> &'static str {
+    r#"{
+        "device_one_time_keys_count": {},
+        "next_batch": "sync-batch-space-1",
+        "device_lists": {"changed": [], "left": []},
+        "rooms": {
+            "invite": {},
+            "join": {
+                "!fixture-space:example.invalid": {
+                    "summary": {},
+                    "state": {
+                        "events": [
+                            {
+                                "content": {"room_version": "10", "type": "m.space"},
+                                "event_id": "$fixture-space-create",
+                                "origin_server_ts": 1,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.create"
+                            },
+                            {
+                                "content": {"name": "Fixture Space"},
+                                "event_id": "$fixture-space-name",
+                                "origin_server_ts": 2,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.name"
+                            },
+                            {
+                                "content": {"via": ["example.invalid"]},
+                                "event_id": "$fixture-space-child",
+                                "origin_server_ts": 3,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "!fixture-room:example.invalid",
+                                "type": "m.space.child"
+                            }
+                        ]
+                    },
+                    "timeline": {"events": [], "limited": false, "prev_batch": "space-prev"},
+                    "ephemeral": {"events": []},
+                    "account_data": {"events": []},
+                    "unread_notifications": {"highlight_count": 0, "notification_count": 0}
+                },
+                "!fixture-room:example.invalid": {
+                    "summary": {},
+                    "state": {
+                        "events": [
+                            {
+                                "content": {"room_version": "10"},
+                                "event_id": "$fixture-room-create",
+                                "origin_server_ts": 4,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.create"
+                            },
+                            {
+                                "content": {"name": "Fixture Room"},
+                                "event_id": "$fixture-room-name",
+                                "origin_server_ts": 5,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "",
+                                "type": "m.room.name"
+                            },
+                            {
+                                "content": {"canonical": true, "via": ["example.invalid"]},
+                                "event_id": "$fixture-room-parent",
+                                "origin_server_ts": 6,
+                                "sender": "@fixture-user:example.invalid",
+                                "state_key": "!fixture-space:example.invalid",
+                                "type": "m.space.parent"
+                            }
+                        ]
+                    },
+                    "timeline": {"events": [], "limited": false, "prev_batch": "room-prev"},
+                    "ephemeral": {"events": []},
+                    "account_data": {"events": []},
+                    "unread_notifications": {"highlight_count": 0, "notification_count": 0}
+                }
+            },
+            "leave": {},
+            "knock": {}
+        },
+        "to_device": {"events": []},
+        "presence": {"events": []},
+        "account_data": {"events": []}
+    }"#
 }
 
 fn write_json(stream: &mut std::net::TcpStream, status: u16, body: &str) {

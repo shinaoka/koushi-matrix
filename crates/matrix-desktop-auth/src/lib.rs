@@ -2,6 +2,7 @@ use futures_util::{Stream, StreamExt};
 pub use matrix_desktop_state::E2eeRecoveryState;
 use matrix_desktop_state::{LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, SessionInfo};
 use matrix_sdk::authentication::matrix::MatrixSession;
+use matrix_sdk::room::ParentSpace;
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
@@ -943,7 +944,7 @@ pub async fn room_list_snapshot(
     .await
     {
         Ok(service) => service,
-        Err(_) => return Ok(matrix_room_list_snapshot_from_rooms(client.rooms())),
+        Err(_) => return Ok(matrix_room_list_snapshot_from_rooms(client.rooms()).await),
     };
     let all_rooms = service
         .all_rooms()
@@ -958,7 +959,12 @@ pub async fn room_list_snapshot(
         return Ok(MatrixRoomListSnapshot::default());
     };
 
-    Ok(matrix_room_list_snapshot_from_diffs(diffs))
+    let snapshot = matrix_room_list_snapshot_from_diffs(diffs).await;
+    if snapshot.rooms.is_empty() && snapshot.spaces.is_empty() {
+        return Ok(matrix_room_list_snapshot_from_rooms(client.rooms()).await);
+    }
+
+    Ok(snapshot)
 }
 
 pub fn room_list_smoke_report(snapshot: &MatrixRoomListSnapshot) -> RoomListSmokeReport {
@@ -1226,7 +1232,7 @@ fn matrix_timeline_update_from_ui(
     }
 }
 
-fn matrix_room_list_snapshot_from_diffs(
+async fn matrix_room_list_snapshot_from_diffs(
     diffs: Vec<eyeball_im::VectorDiff<matrix_sdk_ui::room_list_service::RoomListItem>>,
 ) -> MatrixRoomListSnapshot {
     let mut items = Vec::new();
@@ -1250,16 +1256,16 @@ fn matrix_room_list_snapshot_from_diffs(
         }
     }
 
-    matrix_room_list_snapshot_from_items(items)
+    matrix_room_list_snapshot_from_items(items).await
 }
 
-fn matrix_room_list_snapshot_from_items(
+async fn matrix_room_list_snapshot_from_items(
     items: Vec<matrix_sdk_ui::room_list_service::RoomListItem>,
 ) -> MatrixRoomListSnapshot {
-    matrix_room_list_snapshot_from_rooms(items.into_iter().map(|item| item.into_inner()))
+    matrix_room_list_snapshot_from_rooms(items.into_iter().map(|item| item.into_inner())).await
 }
 
-fn matrix_room_list_snapshot_from_rooms(
+async fn matrix_room_list_snapshot_from_rooms(
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
 ) -> MatrixRoomListSnapshot {
     let mut snapshot = MatrixRoomListSnapshot::default();
@@ -1287,15 +1293,35 @@ fn matrix_room_list_snapshot_from_rooms(
             unread_count
         };
 
+        let parent_space_ids = matrix_parent_space_ids(&room).await;
+
         snapshot.rooms.push(MatrixRoomListRoom {
             room_id,
             display_name,
             is_dm: room.is_dm(),
             unread_count,
-            parent_space_ids: Vec::new(),
+            parent_space_ids,
         });
     }
     snapshot
+}
+
+async fn matrix_parent_space_ids(room: &matrix_sdk::Room) -> Vec<String> {
+    let Ok(parent_spaces) = room.parent_spaces().await else {
+        return Vec::new();
+    };
+
+    parent_spaces
+        .filter_map(|parent_space| async move {
+            match parent_space.ok()? {
+                ParentSpace::Reciprocal(space) | ParentSpace::WithPowerlevel(space) => {
+                    Some(space.room_id().to_string())
+                }
+                ParentSpace::Illegitimate(_) | ParentSpace::Unverifiable(_) => None,
+            }
+        })
+        .collect()
+        .await
 }
 
 fn matrix_timeline_item_from_ui(
