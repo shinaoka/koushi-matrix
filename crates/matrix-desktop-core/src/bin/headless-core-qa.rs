@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use matrix_desktop_core::command::{AccountCommand, CoreCommand};
 use matrix_desktop_core::event::{AccountEvent, CoreEvent};
-use matrix_desktop_core::failure::{CoreFailure, LoginFailureKind};
+use matrix_desktop_core::failure::CoreFailure;
 use matrix_desktop_core::ids::AccountKey;
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{AuthSecret, SessionState};
