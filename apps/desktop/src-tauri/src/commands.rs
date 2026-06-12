@@ -302,13 +302,46 @@ pub(crate) fn spawn_e2ee_recovery_state_observer(
 fn observe_e2ee_recovery_state_for_backend(
     backend: &mut matrix_desktop_backend::FakeDesktopBackend,
     recovery_state: matrix_desktop_state::E2eeRecoveryState,
-) -> (
-    Vec<AppEffect>,
-    matrix_desktop_backend::DesktopSnapshot,
-) {
+) -> (Vec<AppEffect>, matrix_desktop_backend::DesktopSnapshot) {
     let effects = backend.observe_e2ee_recovery_state(recovery_state);
     let snapshot = backend.snapshot();
     (effects, snapshot)
+}
+
+fn switch_account_request_for_backend(
+    backend: &mut matrix_desktop_backend::FakeDesktopBackend,
+    target: SessionInfo,
+) -> (Vec<AppEffect>, matrix_desktop_backend::DesktopSnapshot) {
+    let effects = backend.dispatch(AppAction::SwitchAccountRequested { info: target });
+    let snapshot = backend.snapshot();
+    (effects, snapshot)
+}
+
+fn restore_session_failed_for_backend(
+    backend: &mut matrix_desktop_backend::FakeDesktopBackend,
+    message: String,
+) -> (Vec<AppEffect>, matrix_desktop_backend::DesktopSnapshot) {
+    let effects = backend.dispatch(AppAction::RestoreSessionFailed { message });
+    let snapshot = backend.snapshot();
+    (effects, snapshot)
+}
+
+fn restore_session_completion_for_backend(
+    backend: &mut matrix_desktop_backend::FakeDesktopBackend,
+    mut effects: Vec<AppEffect>,
+    persistence_error: Option<String>,
+) -> (
+    Vec<AppEffect>,
+    matrix_desktop_backend::DesktopSnapshot,
+    bool,
+) {
+    if let Some(message) = persistence_error {
+        let persistence_effects = backend.record_session_persistence_failure(message);
+        effects.extend(persistence_effects);
+    }
+    let should_start_sync = effects_include_start_sync(&effects);
+    let snapshot = backend.snapshot();
+    (effects, snapshot, should_start_sync)
 }
 
 pub(crate) fn recovery_observer_should_start_sync(effects: &[AppEffect]) -> bool {
@@ -324,11 +357,8 @@ pub(crate) fn start_matrix_sync_task(
         loop {
             let failure_reason = match matrix_desktop_auth::sync_once(&session).await {
                 Ok(()) => {
-                    if let Err(error) = dispatch_matrix_room_list_snapshot(
-                        &app_for_task,
-                        &session,
-                    )
-                    .await
+                    if let Err(error) =
+                        dispatch_matrix_room_list_snapshot(&app_for_task, &session).await
                     {
                         error
                     } else {
@@ -647,15 +677,17 @@ pub async fn switch_account(
         user_id,
         device_id,
     };
-    let restore_target = {
+    let (effects, snapshot, restore_target) = {
         let mut backend = state.backend.lock().map_err(lock_error)?;
-        let effects = backend.dispatch(AppAction::SwitchAccountRequested { info: target });
-        effects_restore_session_info(&effects)
+        let (effects, snapshot) = switch_account_request_for_backend(&mut backend, target);
+        let restore_target = effects_restore_session_info(&effects);
+        (effects, snapshot, restore_target)
     };
+    emit_ui_events(&app, &effects);
+    update_qa_window_title(&app, &snapshot);
 
     let Some(restore_target) = restore_target else {
-        let backend = state.backend.lock().map_err(lock_error)?;
-        return Ok(FrontendDesktopSnapshot::from(backend.snapshot()));
+        return Ok(FrontendDesktopSnapshot::from(snapshot));
     };
 
     abort_matrix_sync_task(state.inner())?;
@@ -666,22 +698,25 @@ pub async fn switch_account(
             let recovery_observer_session = restored_session.clone();
             let matrix_sync_session = restored_session.clone();
             let persistence_error = crate::mark_last_matrix_session(&restore_target).err();
-            let should_start_sync = {
+            let (effects, snapshot, should_start_sync) = {
                 let mut backend = state.backend.lock().map_err(lock_error)?;
                 let effects = backend.complete_matrix_restore(restored_session);
-                if let Some(message) = persistence_error {
-                    backend.record_session_persistence_failure(message);
-                }
-                effects_include_start_sync(&effects)
+                restore_session_completion_for_backend(&mut backend, effects, persistence_error)
             };
+            emit_ui_events(&app, &effects);
+            update_qa_window_title(&app, &snapshot);
             if should_start_sync {
                 start_matrix_sync_task(app.clone(), matrix_sync_session)?;
             }
             spawn_e2ee_recovery_state_observer(app, recovery_observer_session);
         }
         Err(error) => {
-            let mut backend = state.backend.lock().map_err(lock_error)?;
-            backend.dispatch(AppAction::RestoreSessionFailed { message: error });
+            let (effects, snapshot) = {
+                let mut backend = state.backend.lock().map_err(lock_error)?;
+                restore_session_failed_for_backend(&mut backend, error)
+            };
+            emit_ui_events(&app, &effects);
+            update_qa_window_title(&app, &snapshot);
         }
     }
 
@@ -751,9 +786,7 @@ pub(crate) async fn submit_recovery_request(
         };
         emit_ui_events(&app, &effects);
         update_qa_window_title(&app, &snapshot);
-        if should_start_sync
-            && let Some(sync_session) = sync_session
-        {
+        if should_start_sync && let Some(sync_session) = sync_session {
             start_matrix_sync_task(app, sync_session)?;
         }
     }
@@ -933,20 +966,24 @@ fn spawn_matrix_send_text_task(
     body: String,
 ) {
     tauri::async_runtime::spawn(async move {
-        let action =
-            match matrix_desktop_auth::send_text_message(&matrix_session, &room_id, &body, &transaction_id)
-                .await
-            {
-                Ok(()) => AppAction::SendTextFinished {
-                    room_id,
-                    transaction_id,
-                },
-                Err(_) => AppAction::SendTextFailed {
-                    room_id,
-                    transaction_id,
-                    message: MATRIX_SEND_TEXT_FAILED_MESSAGE.to_owned(),
-                },
-            };
+        let action = match matrix_desktop_auth::send_text_message(
+            &matrix_session,
+            &room_id,
+            &body,
+            &transaction_id,
+        )
+        .await
+        {
+            Ok(()) => AppAction::SendTextFinished {
+                room_id,
+                transaction_id,
+            },
+            Err(_) => AppAction::SendTextFailed {
+                room_id,
+                transaction_id,
+                message: MATRIX_SEND_TEXT_FAILED_MESSAGE.to_owned(),
+            },
+        };
         dispatch_timeline_action(&app, action);
     });
 }
@@ -1305,10 +1342,7 @@ pub(crate) fn effects_paginate_timeline_room_id(effects: &[AppEffect]) -> Option
     })
 }
 
-pub(crate) fn timeline_task_can_paginate_room(
-    task_room_id: &str,
-    request_room_id: &str,
-) -> bool {
+pub(crate) fn timeline_task_can_paginate_room(task_room_id: &str, request_room_id: &str) -> bool {
     task_room_id == request_room_id
 }
 
@@ -1356,17 +1390,18 @@ mod tests {
         deferred_login_request, deferred_recovery_request, effects_include_start_sync,
         effects_paginate_timeline_room_id, effects_restore_session_info, effects_send_text_request,
         effects_subscribe_timeline_room_id, matrix_room_list_snapshot_to_backend_update,
-        observe_e2ee_recovery_state_for_backend,
         matrix_timeline_items_to_backend_messages, matrix_timeline_updates_to_backend_updates,
-        promote_room_to_front, qa_recovery_prompt_is_available, qa_window_title,
-        recovery_observer_should_start_sync, room_list_sync_follow_up,
-        sdk_search_candidates_to_backend, session_info_from_state, timeline_messages_target_active_room,
-        timeline_updates_target_active_room,
-        timeline_task_can_paginate_room, ui_event_payloads,
+        observe_e2ee_recovery_state_for_backend, promote_room_to_front,
+        qa_recovery_prompt_is_available, qa_window_title, recovery_observer_should_start_sync,
+        restore_session_completion_for_backend, restore_session_failed_for_backend,
+        room_list_sync_follow_up, sdk_search_candidates_to_backend, session_info_from_state,
+        switch_account_request_for_backend, timeline_messages_target_active_room,
+        timeline_task_can_paginate_room, timeline_updates_target_active_room, ui_event_payloads,
     };
+    use matrix_desktop_backend::{FakeDesktopBackend, FakeDesktopBackendConfig};
     use matrix_desktop_state::{
         AppEffect, AuthSecret, LoginRequest, RecoveryRequest, RoomSummary, SyncState,
-        TimelinePaneState,
+        TimelinePaneState, UiEvent,
     };
 
     #[test]
@@ -1697,6 +1732,80 @@ mod tests {
         ];
 
         assert_eq!(effects_restore_session_info(&effects), Some(target));
+    }
+
+    #[test]
+    fn switch_account_request_returns_ui_effects_and_snapshot() {
+        let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+            restore_session: false,
+            ..FakeDesktopBackendConfig::default()
+        });
+        let target = SessionInfo {
+            homeserver: "https://matrix.example.org".to_owned(),
+            user_id: "@user-b:example.invalid".to_owned(),
+            device_id: "DEVICE-B".to_owned(),
+        };
+
+        let (effects, snapshot) = switch_account_request_for_backend(&mut backend, target.clone());
+
+        assert_eq!(
+            snapshot.state.session,
+            SessionState::SwitchingAccount {
+                info: target.clone()
+            }
+        );
+        assert_eq!(snapshot.state.sync, SyncState::Stopped);
+        assert_eq!(
+            &ui_event_payloads(&effects)[..2],
+            ["sessionChanged", "roomListChanged"]
+        );
+        assert_eq!(effects_restore_session_info(&effects), Some(target));
+        assert!(matches!(effects[0], AppEffect::StopSync));
+        assert!(matches!(effects[1], AppEffect::ClearSession));
+    }
+
+    #[test]
+    fn restore_session_failed_returns_error_effects_and_signed_out_snapshot() {
+        let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+            restore_session: false,
+            ..FakeDesktopBackendConfig::default()
+        });
+
+        let (effects, snapshot) =
+            restore_session_failed_for_backend(&mut backend, "restore failed".to_owned());
+
+        assert_eq!(snapshot.state.session, SessionState::SignedOut);
+        assert_eq!(snapshot.state.errors.len(), 1);
+        assert_eq!(
+            ui_event_payloads(&effects),
+            vec!["sessionChanged", "errorChanged"]
+        );
+        assert_eq!(snapshot.state.errors[0].code, "restore_failed");
+    }
+
+    #[test]
+    fn restore_session_completion_merges_persistence_failure_effects() {
+        let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+            restore_session: false,
+            ..FakeDesktopBackendConfig::default()
+        });
+
+        let (effects, snapshot, should_start_sync) = restore_session_completion_for_backend(
+            &mut backend,
+            vec![
+                AppEffect::StartSync,
+                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            ],
+            Some("synthetic persistence failure".to_owned()),
+        );
+
+        assert!(should_start_sync);
+        assert_eq!(snapshot.state.errors.len(), 1);
+        assert_eq!(
+            ui_event_payloads(&effects),
+            vec!["sessionChanged", "errorChanged"]
+        );
+        assert_eq!(snapshot.state.errors[0].code, "session_persistence_failed");
     }
 
     #[test]

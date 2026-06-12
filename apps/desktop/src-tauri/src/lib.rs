@@ -197,9 +197,7 @@ fn qa_skips_keychain_persistence_from_env_value(value: Option<&str>) -> bool {
 
 pub(crate) fn qa_skips_keychain_persistence_from_env() -> bool {
     qa_skips_keychain_persistence_from_env_value(
-        std::env::var(SKIP_KEYCHAIN_PERSISTENCE_ENV)
-            .ok()
-            .as_deref(),
+        std::env::var(SKIP_KEYCHAIN_PERSISTENCE_ENV).ok().as_deref(),
     )
 }
 
@@ -924,8 +922,8 @@ mod tests {
         quarantine_local_store_paths_with_suffix, remove_local_store_paths,
         restore_session_enabled_from_env_value, saved_session_infos_from_index,
         saved_sessions_disabled_from_env_value, search_index_metadata_path,
-        session_key_id_from_info, window_event_should_persist, window_event_should_stop_background_tasks,
-        window_state_path,
+        session_key_id_from_info, window_event_should_persist,
+        window_event_should_stop_background_tasks, window_state_path,
     };
     use crate::commands::parse_qa_login_pipe_payload;
 
@@ -982,7 +980,10 @@ mod tests {
             Some("Matrix Desktop GUI Smoke")
         );
         assert_eq!(
-            request.recovery_secret.as_ref().map(|secret| secret.expose_secret()),
+            request
+                .recovery_secret
+                .as_ref()
+                .map(|secret| secret.expose_secret()),
             Some("synthetic-recovery-secret")
         );
         assert!(!format!("{request:?}").contains("synthetic-password"));
