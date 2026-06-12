@@ -1,12 +1,8 @@
 # Headless Core Runtime Design
 
-Status: approved design direction on 2026-06-12. This is a dated migration
-guide toward the normative architecture in
-[docs/architecture/overview.md](../../architecture/overview.md). That overview
-amends this spec's public API (TimelineKey addressing, unsubscribe lifecycle,
-success/failure request_id correlation, pagination state events, diff-based
-timeline updates, SDK send queue usage, sync capability probing and fallback);
-where they differ, the overview wins.
+Status: approved migration design on 2026-06-12. This spec describes how to
+move the current implementation toward the normative architecture in
+[docs/architecture/overview.md](../../architecture/overview.md).
 
 ## Scope
 
@@ -84,13 +80,32 @@ flowchart LR
 
 `apps/desktop/src-tauri` becomes a transport adapter. It should not call Matrix SDK wrappers directly after the migration. It should hold or access a `CoreRuntime`, send commands, and expose snapshots/events to the frontend.
 
-`apps/desktop` remains presentation and interaction code. It should not contain Matrix SDK semantics beyond typed client calls and view logic.
+`apps/desktop` remains presentation and interaction code. It owns viewport
+state, DOM measurement, and scroll anchoring, but it does not contain Matrix SDK
+semantics beyond typed client calls and view logic.
 
 ## Public Runtime API
 
-Core exposes commands, events, and state snapshots.
+Core exposes commands, events, and state snapshots. Every command carries a
+caller-generated `RequestId`; every command result event carries the same ID.
 
 ```rust
+pub struct RequestId(pub u64);
+
+pub struct TimelineKey {
+    pub account_key: AccountKey,
+    pub kind: TimelineKind,
+}
+
+pub enum TimelineKind {
+    Room { room_id: String },
+    Thread { room_id: String, root_event_id: String },
+    Focused { room_id: String, event_id: String },
+}
+
+pub struct TimelineGeneration(pub u64);
+pub struct TimelineBatchId(pub u64);
+
 pub struct CoreRuntime {
     command_tx: CoreCommandSender,
     event_rx: CoreEventReceiver,
@@ -112,7 +127,10 @@ pub enum CoreEvent {
     Room(RoomEvent),
     Timeline(TimelineEvent),
     Search(SearchEvent),
-    OperationFailed(CoreFailure),
+    OperationFailed {
+        request_id: RequestId,
+        failure: CoreFailure,
+    },
 }
 ```
 
@@ -122,18 +140,32 @@ Representative account and sync commands:
 
 ```rust
 pub enum AccountCommand {
-    LoginPassword(LoginRequest),
-    RestoreSession { account_key: AccountKey },
-    SubmitRecovery(RecoveryRequest),
-    Logout,
-    SwitchAccount { account_key: AccountKey },
+    LoginPassword {
+        request_id: RequestId,
+        request: LoginRequest,
+    },
+    RestoreSession {
+        request_id: RequestId,
+        account_key: AccountKey,
+    },
+    SubmitRecovery {
+        request_id: RequestId,
+        request: RecoveryRequest,
+    },
+    Logout {
+        request_id: RequestId,
+    },
+    SwitchAccount {
+        request_id: RequestId,
+        account_key: AccountKey,
+    },
 }
 
 pub enum SyncCommand {
-    Start,
-    Stop,
-    Restart,
-    SyncOnce,
+    Start { request_id: RequestId },
+    Stop { request_id: RequestId },
+    Restart { request_id: RequestId },
+    SyncOnce { request_id: RequestId },
 }
 ```
 
@@ -141,51 +173,94 @@ Representative room and timeline commands:
 
 ```rust
 pub enum RoomCommand {
-    CreateRoom { name: String },
-    CreateSpace { name: String },
+    CreateRoom {
+        request_id: RequestId,
+        name: String,
+    },
+    CreateSpace {
+        request_id: RequestId,
+        name: String,
+    },
     SetSpaceChild {
+        request_id: RequestId,
         space_id: String,
         child_room_id: String,
         via_server: String,
     },
     InviteUser {
+        request_id: RequestId,
         room_id: String,
         user_id: String,
     },
     JoinRoom {
+        request_id: RequestId,
         room_id: String,
     },
     SelectSpace {
+        request_id: RequestId,
         space_id: Option<String>,
     },
     SelectRoom {
+        request_id: RequestId,
         room_id: String,
     },
 }
 
 pub enum TimelineCommand {
-    SubscribeRoom { room_id: String },
-    SubscribeThread {
-        room_id: String,
-        root_event_id: String,
+    Subscribe {
+        request_id: RequestId,
+        key: TimelineKey,
+    },
+    Unsubscribe {
+        request_id: RequestId,
+        key: TimelineKey,
     },
     PaginateBackwards {
-        room_id: String,
+        request_id: RequestId,
+        key: TimelineKey,
         event_count: u16,
     },
     SendText {
-        room_id: String,
+        request_id: RequestId,
+        key: TimelineKey,
         transaction_id: String,
         body: String,
     },
     EditText {
-        room_id: String,
+        request_id: RequestId,
+        key: TimelineKey,
         event_id: String,
         body: String,
     },
     Redact {
-        room_id: String,
+        request_id: RequestId,
+        key: TimelineKey,
         event_id: String,
+    },
+}
+
+pub enum TimelineEvent {
+    InitialItems {
+        request_id: Option<RequestId>,
+        key: TimelineKey,
+        generation: TimelineGeneration,
+        items: Vec<TimelineItem>,
+    },
+    ItemsUpdated {
+        key: TimelineKey,
+        generation: TimelineGeneration,
+        batch_id: TimelineBatchId,
+        diffs: Vec<TimelineDiff>,
+    },
+    PaginationStateChanged {
+        request_id: Option<RequestId>,
+        key: TimelineKey,
+        direction: PaginationDirection,
+        state: PaginationState,
+    },
+    ResyncRequired {
+        key: TimelineKey,
+        reason: TimelineResyncReason,
     },
 }
 ```
@@ -237,6 +312,81 @@ Timeline event consistency is actor-owned. Matrix edits (`m.replace`) are separa
 `StoreActor` owns OS credential store access, SDK store keys, search index keys, per-account store paths, local cleanup, and debug/test secret injection policy.
 
 Local encryption is fail-closed. If the OS credential store, SDK store encryption, or search index encryption cannot be initialized, the runtime must stop login, restore, or account startup for that account and emit a redacted `LocalEncryptionUnavailable` failure. Production builds must not continue with plaintext SDK stores or plaintext search indexes.
+
+## Actor Deployment And Supervision
+
+Actor boundaries define ownership, not necessarily one task per actor. The
+initial implementation may colocate simple child loops under `AccountActor`, but
+the command/event contracts, tests, and resource ownership remain split by
+actor responsibility.
+
+Supervision follows the ownership tree:
+
+- `AppActor` owns account runtimes.
+- `AccountActor` owns SDK session handles plus child sync, room, timeline,
+  search, and store resources.
+- `SyncActor` relies on the SDK's reconnect behavior for network churn.
+  Unexpected task failure moves sync to `SyncFailed` and requires explicit
+  restart or account restore.
+- `TimelineActor` and `SearchActor` failures are isolated. The runtime drops the
+  failed handle, emits a redacted failure, increments the affected generation,
+  and waits for resubscribe or retry.
+- `AccountActor` failure is fatal to that account runtime: children stop, SDK
+  handles drop inside a runtime context, and the user must restore or log in
+  again.
+
+Commands have deadlines. Missing required progress before the deadline emits
+`OperationFailed { request_id, failure }`. Idle streams are valid states and do
+not count as hangs.
+
+Bounded queues use named constants:
+
+- command inbox per runtime: 256
+- discrete core events per consumer: 1024
+- timeline diff batches per subscribed timeline: 128
+- search index mutation queue: 512
+
+If a consumer falls behind, the runtime does not keep appending unbounded
+events. State snapshots are latest-wins; timeline diffs switch to a
+`ResyncRequired` / `InitialItems` generation reset; search queues fail the
+affected operation with a redacted retryable failure.
+
+## Timeline Viewport And Scrollback
+
+Timeline scrollback is split between core and UI.
+
+Core responsibilities:
+
+- Keep SDK timeline handles and subscriptions behind `TimelineKey`.
+- Emit an initial item set and FIFO `VectorDiff`-shaped batches. The batch shape
+  must preserve positional operations well enough for prepend, append, update,
+  remove, truncate, clear, and reset to stay distinct.
+- Emit `PaginationStateChanged` with `Idle`, `Paginating`, `EndReached`, or
+  `Failed(kind)`. The event carries `Option<RequestId>` because state can change
+  both from a command and from SDK coalescing.
+- Treat pagination as data-complete when the SDK has emitted the relevant diff,
+  end state, or failure. Core never waits for React render or DOM measurement.
+- Preserve stable item identity: event ID for remote events, transaction ID for
+  local echo, explicit replacement when remote echo arrives, and stable
+  synthetic IDs for separators.
+
+UI responsibilities:
+
+- Keep render lists and viewport state outside `AppState`.
+- Before backward pagination affects the viewport, capture an anchor item
+  (first visible stable item ID plus pixel offset, or an equivalent
+  bottom-aligned strategy).
+- Apply the diff, wait for React to commit, restore the anchor in a layout
+  effect or `requestAnimationFrame`, and only then allow another automatic fill
+  request for that timeline generation.
+- Keep scroll offsets, measured heights, virtual-list cache, and overscan
+  windows entirely in React. These values never affect Matrix ordering.
+
+Headless QA validates request correlation, pagination states, diff order,
+generation reset, and edit/redaction/late-decryption consistency. GUI smoke
+validates the DOM contract: old messages prepend without a viewport jump, live
+events do not steal the viewport while scrolled up, and `EndReached` stops
+automatic pagination.
 
 ## Lifecycle
 
@@ -307,19 +457,35 @@ Local QA must cover:
 - send permission check
 - A to B message send and receive
 - B to A message send and receive
+- timeline subscribe, backward pagination, diff ordering, and `EndReached`
 - logout cleanup
 - stdout/stderr secret redaction
 
 Real homeserver QA is required before GUI-level confidence claims. It covers HTTPS login, recovery required/submitted, encrypted store restore, sync lifecycle, room list, selected room timeline, self/test-room send, search smoke, logout, and account switch smoke.
 
+GUI smoke is limited to presentation contracts that cannot be proven headless:
+scrollback anchor stability, live-event viewport behavior while scrolled up,
+keyboard/focus behavior, and basic render sanity.
+
 QA should wait for events rather than rely on fixed sleeps:
 
 ```rust
-runtime.command(CoreCommand::Room(RoomCommand::CreateRoom { name })).await?;
-let room_id = events.wait_for_room_created().await?;
+let request_id = request_ids.next();
+runtime.command(CoreCommand::Room(RoomCommand::CreateRoom {
+    request_id,
+    name,
+})).await?;
+let room_id = events.wait_for_room_created(request_id).await?;
 
-runtime.command(CoreCommand::Timeline(TimelineCommand::SendText { ... })).await?;
-events.wait_for_timeline_body(room_id, expected_body).await?;
+let key = TimelineKey::room(account_key, room_id);
+let send_id = request_ids.next();
+runtime.command(CoreCommand::Timeline(TimelineCommand::SendText {
+    request_id: send_id,
+    key,
+    transaction_id,
+    body,
+})).await?;
+events.wait_for_send_completed(send_id).await?;
 ```
 
 ## Security Policy
@@ -360,12 +526,12 @@ Public core failures are coarse and redacted.
 ```rust
 pub enum CoreFailure {
     SessionRequired,
-    LoginFailed,
-    RecoveryFailed,
-    SyncFailed,
+    LoginFailed { kind: LoginFailureKind },
+    RecoveryFailed { kind: RecoveryFailureKind },
+    SyncFailed { kind: SyncFailureKind },
     RoomOperationFailed { kind: RoomFailureKind },
-    TimelineOperationFailed,
-    SearchFailed,
+    TimelineOperationFailed { kind: TimelineFailureKind },
+    SearchFailed { kind: SearchFailureKind },
     LocalEncryptionUnavailable,
     StoreUnavailable,
     ShutdownFailed,
@@ -447,6 +613,9 @@ Implementation should keep `AGENTS.md` current with:
 - The final runtime is in-process, not a daemon.
 - `matrix-desktop-core` owns production Matrix runtime behavior.
 - GUI, Tauri, CLI, and QA all use the same command/event boundary.
+- Timeline commands are addressed by `TimelineKey`; room, thread, and focused
+  timelines share the same lifecycle and pagination model.
+- Timeline scrollback is data-driven in core and anchor-driven in React.
 - Fake backend is kept for fixture/demo use only.
 - Local Conduit/Tuwunel QA and real homeserver QA are both required gates.
 - UI design and Element Desktop/Web visual alignment are a later design layered on top of this runtime.

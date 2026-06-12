@@ -73,13 +73,17 @@ Rules:
 3. Every spawned background task and subscription has an owner responsible
    for cancelling it (unsubscribe, account shutdown, app shutdown). No
    unbounded maps of live subscriptions.
-4. QA runners must clean up their full process group on failure or
+4. Timeline scrollback is a split contract: core emits diffs and pagination
+   state; React owns DOM anchoring. Product code must not issue automatic
+   pagination loops before the previous diff has rendered and anchor
+   restoration has completed.
+5. QA runners must clean up their full process group on failure or
    interruption. Verify `lsof -nP -iTCP:5173 -sTCP:LISTEN` is empty before
    retrying a GUI run; a stale Vite/`tauri dev` process breaks the next run.
-5. QA binaries must attempt logout cleanup after any post-login failure
+6. QA binaries must attempt logout cleanup after any post-login failure
    unless `--keep-session` was explicitly requested; otherwise failed runs
    leave live devices on the homeserver.
-6. Avoid repeated destructive real-account login cycles while debugging
+7. Avoid repeated destructive real-account login cycles while debugging
    automation; reuse the running session and restart only when the script
    or Tauri capability changes require it.
 
@@ -107,6 +111,10 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
 
 ## Build, Dependencies, QA Gates
 
+0. New Matrix behavior is implemented and verified headless-first: it lands
+   in `matrix-desktop-core`, is exercised via `CoreCommand`/`CoreEvent`
+   against local Conduit/Tuwunel homeserver QA, and only then is wired into
+   Tauri/React. GUI-first Matrix behavior is prohibited.
 1. The vendored `matrix-rust-sdk` is consumed via path/`[patch]`
    dependencies, preserving upstream structure for upstreaming patches.
    Direct ports from Element X code preserve upstream license and copyright
@@ -121,6 +129,14 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    credentials), not an every-CI gate.
 5. Production Tauri paths must not execute fixture-backend behavior;
    `matrix-desktop-backend` is dev/demo only.
+6. Core crates stay platform-portable (a future browser/wasm target must not
+   be precluded): no Tauri/OS/filesystem types in `CoreCommand`/`CoreEvent`/
+   `AppStateSnapshot`; task spawn and timers via executor abstractions, not
+   direct `tokio::spawn`/`tokio::time` in actor logic; `keyring`, paths, and
+   store config only behind `StoreActor`/adapter ports;
+   `matrix-desktop-state` and `matrix-desktop-search` must compile for
+   `wasm32-unknown-unknown`. See Platform Portability in
+   `docs/architecture/overview.md`.
 
 ## Documentation
 

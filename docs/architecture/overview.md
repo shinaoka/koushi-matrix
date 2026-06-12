@@ -20,6 +20,9 @@ with an Element Desktop/Web-like three-pane desktop UX:
   app integrations.
 - DMs are global account-level conversations (Element X Android-style
   two-member classification), never duplicated under Spaces.
+- A browser-hosted build (Element Web-like deployment of the same core) is a
+  potential future target. It is not scheduled, but the architecture must not
+  preclude it; see Platform Portability.
 
 ## Layers
 
@@ -54,10 +57,51 @@ Crate responsibilities:
   maintenance queue.
 - `apps/desktop/src-tauri` — transport adapter. Holds a `CoreRuntime`, sends
   commands, forwards events/snapshots. No direct SDK wrapper calls.
-- `apps/desktop` — view and interaction code only.
+- `apps/desktop` — view and interaction code only, including viewport state,
+  DOM measurement, and scroll anchoring.
 
 GUI, Tauri, CLI, and QA all use the same command/event boundary. There is no
 standalone daemon; the runtime is in-process.
+
+## Platform Portability
+
+The desktop app is the only shipping target today, but a browser-hosted build
+of the same core (Element Web-like) is a plausible future. matrix-rust-sdk
+already supports `wasm32` (executor abstraction over tokio /
+`wasm_bindgen_futures`, IndexedDB store besides SQLite), so portability is
+decided by our own code discipline, not by the SDK. These rules keep the
+option open at near-zero ongoing cost; retrofitting them later would mean
+rewriting the runtime.
+
+1. **The command/event boundary is transport-neutral.** `CoreCommand`,
+   `CoreEvent`, and `AppStateSnapshot` are serde-serializable and contain no
+   Tauri, OS, or filesystem types. Tauri IPC is one transport; a WebWorker
+   `postMessage` / wasm-bindgen bridge must be addable as another without
+   touching core types.
+2. **Core logic uses executor abstractions, not tokio directly.** Task spawn,
+   timers, and timeouts in `matrix-desktop-core` go through the SDK's
+   executor layer (`matrix_sdk_common::executor`) or a thin core-owned
+   wrapper. No `tokio::spawn`/`tokio::time` calls scattered through actor
+   logic; no thread-blocking (`block_on`, blocking locks held across await)
+   inside actors. The actor runtime must be able to run on a single-threaded
+   executor (wasm) as well as multi-threaded tokio.
+3. **Platform capabilities live behind ports, owned by `StoreActor` and the
+   adapters.** OS credential store (`keyring`), filesystem paths, SQLite
+   store config, and process/OS APIs appear only behind traits with platform
+   backends (today: OS keychain + SQLite; browser later: WebCrypto-derived
+   keys + IndexedDB). `StoreActor` is the only actor allowed
+   platform-conditional code. The fail-closed local-encryption rule still
+   applies on every platform: a weaker browser at-rest story must be an
+   explicit, surfaced property, never a silent fallback.
+4. **Pure crates stay wasm-clean.** `matrix-desktop-state` and
+   `matrix-desktop-search` must compile for `wasm32-unknown-unknown`; a CI
+   check target should enforce this once wired. `matrix-desktop-core`'s
+   portability is enforced structurally by rules 1–3 until a web spike makes
+   a wasm CI check for it practical.
+5. **Known open items for a web target** (recorded, not designed): ngram
+   search index backend on wasm, credential storage UX without an OS
+   keychain, and multi-tab/single-runtime coordination. None of these may be
+   solved by weakening the desktop security model.
 
 ## Runtime Model
 
@@ -78,6 +122,30 @@ An in-process actor system in `matrix-desktop-core`:
 - `StoreActor` — credential store access, store/search keys, per-account
   paths, cleanup, debug/test secret injection policy.
 
+Actor deployment is flexible. The boundaries above define state ownership,
+command routing, event production, and shutdown responsibility; they do not
+require one Tokio task per actor in the first implementation. The runtime may
+colocate child loops under `AccountActor` while preserving the same public
+contracts and resource ownership.
+
+Supervision follows the same ownership tree:
+
+- `AppActor` owns account runtimes; each `AccountActor` owns its child task
+  handles and subscription handles.
+- Expected SDK failures are reported through domain state (`SyncFailed`,
+  pagination failure, search failure) and redacted `OperationFailed` events.
+- A child task panic or unexpected join error tears down only that child when
+  the SDK handle can be safely recreated (`TimelineActor`, `SearchActor`) and
+  emits a failure with a new generation marker. `SyncActor` crashes move the
+  account to `SyncFailed`; the SDK's normal reconnect loop handles network
+  churn, while an internal crash requires an explicit `RestartSync` or account
+  restore path.
+- `AccountActor` failure is fatal to that account runtime: stop children,
+  drop SDK handles in runtime context, emit a redacted account failure, and
+  require restore/login rather than silently continuing with unknown state.
+- Hangs are detected per command by request deadlines and missing required
+  progress. Idle timeline or sync streams are valid states, not hangs.
+
 State projection keeps the reducer as the single UI state transition
 mechanism:
 
@@ -88,6 +156,29 @@ CoreCommand -> actor side effect -> CoreEvent -> AppAction
 
 `AppState` contains only serializable UI data. SDK handles, task handles,
 subscriptions, and keys live in actor-owned runtime state.
+
+Core identity types are concrete and stable:
+
+```rust
+pub struct RequestId(pub u64);
+
+pub struct TimelineKey {
+    pub account_key: AccountKey,
+    pub kind: TimelineKind,
+}
+
+pub enum TimelineKind {
+    Room { room_id: String },
+    Thread { room_id: String, root_event_id: String },
+    Focused { room_id: String, event_id: String },
+}
+```
+
+`RequestId` is generated by the caller at the command boundary and is unique
+per runtime connection. `TimelineKey` always includes the account so late
+events from a previous account switch can be rejected. Timeline item events also
+carry a monotonic `generation`; after any reset/resync the UI discards diffs
+from older generations.
 
 ## Async Design Rules
 
@@ -126,7 +217,11 @@ stream), and the runtime must relay that model, not fight it.
    when the missing original, a late edit, redaction, or decryption result
    arrives. Replacement events whose
    original is missing are exposed as unresolved edit relations, not as ordinary
-   standalone messages.
+   standalone messages. Timeline-side edit aggregation itself comes from the
+   SDK — edits arrive as diffs on the original item (rule 1); the obligations
+   above bind the runtime's projection and the search pipeline, which keeps its
+   own pending-edit relations, and are not a reimplementation of SDK
+   aggregation.
 5. **Pagination is stateful and observable.** Every timeline exposes
    pagination state events: `Idle`, `Paginating`, `EndReached` (timeline
    start hit). The UI uses these to drive spinners and to suppress duplicate
@@ -171,6 +266,62 @@ stream), and the runtime must relay that model, not fight it.
     subscriptions → stop search queues → stop sync → persist session state →
     drop SDK handles → (on logout/removal) clear credentials and stores →
     emit final `StateChanged`.
+
+Initial channel capacities are named constants, not scattered literals:
+
+- command inbox per runtime: 256
+- discrete core events per consumer: 1024
+- timeline diff batches per subscribed timeline: 128
+- search index mutation queue: 512
+
+If a bounded event or diff queue overflows, the runtime marks that consumer or
+timeline generation dirty, drops further incremental diffs for that generation,
+and emits a reset/resync event once the queue can accept it. The UI then
+requests or receives the latest snapshot/initial item set and resumes on the
+new generation. Queue overflow must never silently lose a Matrix event while
+continuing to apply later diffs as if the stream were complete.
+
+## Timeline Viewport And Scrollback
+
+Timeline scrollback uses a two-layer contract: core owns Matrix ordering,
+subscriptions, diffs, and pagination state; React owns render lists, viewport
+measurement, and DOM anchoring.
+
+Runtime responsibilities:
+
+- Emit an initial item set followed by FIFO, `VectorDiff`-shaped diff batches.
+  Diff batches preserve positional operations (`PushFront`, `PushBack`,
+  `Insert`, `Set`, `Remove`, `Truncate`, `Clear`, `Reset`) closely enough that
+  the UI can distinguish prepend pagination from live append/update/remove.
+- Emit pagination state changes with `TimelineKey`, direction, state, and
+  `Option<RequestId>`: `Idle`, `Paginating`, `EndReached`, `Failed(kind)`.
+- Treat a pagination command as data-complete when the SDK has produced the
+  diff batch or end/failure state. The core does not wait for React rendering or
+  DOM measurement, because it has no DOM.
+- Provide stable item identity for every renderable item: remote event ID when
+  known, transaction ID for local echo, and stable synthetic IDs for separators
+  or virtual items. A remote echo replaces the local transaction identity through
+  an explicit diff/update, not by changing a React key in place.
+
+UI responsibilities:
+
+- Maintain the render list and viewport model per `TimelineKey`; full timeline
+  lists are not copied into `AppState`.
+- Before a backward pagination request can affect the viewport, capture an
+  anchor item (first visible stable item ID plus pixel offset, or an equivalent
+  bottom-aligned strategy). After applying the diff and after React commits the
+  DOM update, restore that anchor in `requestAnimationFrame`/layout effect.
+- Do not issue the next automatic fill request until the previous diff has been
+  applied and anchor restoration for that generation has completed.
+- Treat scroll position, measured heights, overscan windows, and virtual-list
+  cache as UI state. These values never cross into core and never affect Matrix
+  ordering.
+
+Headless QA proves the data contract: request correlation, pagination states,
+diff order, generation reset, replacement/redaction/late-decryption handling.
+GUI smoke proves the DOM contract: scrolling back prepends older items without
+jumping, live appends do not steal the viewport while scrolled up, and end-of
+history stops further automatic pagination.
 
 ## Security Model
 
@@ -238,28 +389,13 @@ primary correctness gate.
 4. **GUI smoke** — thin sanity layer on top, subject to the automation rules
    in the policies document.
 
+**Implementation workflow: headless-first, local-server-first.** New Matrix
+behavior lands in `matrix-desktop-core`, is exercised through
+`CoreCommand`/`CoreEvent` against disposable local Conduit/Tuwunel homeservers
+(and real homeserver QA where that gate applies), and only then is wired through
+Tauri into React. Matrix behavior must not be introduced first in GUI or Tauri
+code and back-filled into core later.
+
 QA waits on events, never on fixed sleeps. QA asserts on `CoreEvent` and
-`AppStateSnapshot`, never on logs. Diagnostics are structured, redacted,
-and not a source of truth.
-
-## Relationship to Dated Specs
-
-The 2026-06-12 headless core runtime spec
-(`docs/superpowers/specs/2026-06-12-headless-core-runtime-design.md`)
-defines the migration milestones (A–G) toward this architecture. This
-overview amends its public API in the following ways, found in the
-2026-06-12 design review; implementations follow this document:
-
-- Timeline commands take a `TimelineKey` (room/thread), not `room_id`
-  strings, so threads can paginate (rule 6).
-- `UnsubscribeTimeline` exists; timeline lifecycles are explicit (rule 7).
-- All command result events carry a `request_id`; success and failure both
-  correlate to the initiating command (rule 3).
-- `TimelineEvent` includes pagination state (`Idle`/`Paginating`/
-  `EndReached`) and diff-based item updates; snapshots exclude timeline
-  bodies (rules 4–5).
-- Sends use the SDK send queue; sync uses capability-probed SDK services with
-  an explicit `LegacySync` fallback for homeservers without MSC4186
-  (rules 8–9).
-- `CoreFailure` variants carry non-secret `kind` values.
-- The webview secret threat model above is part of the security policy.
+`AppStateSnapshot`, never on logs. Diagnostics are structured, redacted, and
+not a source of truth.
