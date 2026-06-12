@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
@@ -8,5 +9,9 @@ export default defineConfig({
     port: 5173,
     strictPort: true
   },
-  clearScreen: false
+  clearScreen: false,
+  test: {
+    // e2e/ belongs to Playwright (headless-Chromium DOM tier), not Vitest.
+    exclude: ["e2e/**", "node_modules/**", "dist/**"]
+  }
 });

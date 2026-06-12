@@ -227,6 +227,69 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 
 ## Changelog
 
+- 2026-06-13: Phase 7 exit review item 1 — startup-restore boundary
+  implemented per the resolved canon. `AccountCommand::RestoreLastSession`
+  (last-session pointer resolved inside AccountActor via StoreActor; missing
+  pointer or dangling pointer → `CoreFailure::SessionNotFound` as a NORMAL
+  outcome + `RestoreSessionNotFound` projection) and
+  `AccountCommand::QuerySavedSessions` answered by
+  `AccountEvent::SavedSessionsListed { request_id, sessions }`
+  (homeserver/user_id/device_id only). 4 new core unit tests (no-pointer,
+  dangling-pointer, empty list, seeded identities; 69 total). src-tauri:
+  STARTUP_RESTORE_DESIGN_GAP and SAVED_SESSIONS_DESIGN_GAP deleted — startup
+  restore submits RestoreLastSession; `list_saved_sessions` attaches a
+  dedicated CoreConnection, submits QuerySavedSessions, and awaits the
+  correlated SavedSessionsListed event (5s deadline); the
+  MATRIX_DESKTOP_SKIP_SAVED_SESSIONS GUI-smoke toggle stays in the adapter
+  (returns [] without routing, avoiding the keychain read). The entire
+  orphaned DesktopCredentialStore/QaFileCredentialStore/session-persistence
+  cluster in src-tauri lib.rs was deleted (≈700 lines + 10 tests whose
+  coverage lives in core store.rs/account.rs); src-tauri now builds with 0
+  warnings and never imports matrix-desktop-auth/key types. The
+  file-credential-store release-gate regression test was rewritten to point
+  at core store.rs and to assert the adapter contains no credential-store
+  references at all. headless-core-qa: post-logout RestoreLastSession →
+  SessionNotFound asserted (token `post_logout_restore_last=not_found`).
+  Finding: the QA users share one credential store and B logs in after A, so
+  after logout A the pointer legitimately points at B and RestoreLastSession
+  restores B — the assertion therefore runs after BOTH logouts. This is
+  correct multi-account behavior, not a bug. All four QA legs executed green
+  (including Conduit probed-SyncService on this run).
+
+- 2026-06-13: Phase 7 exit review item 2 — headless UI DOM tier added with
+  Playwright headless Chromium (`@playwright/test` devDependency; chromium
+  headless-shell installed cleanly, no install errors).
+  Wire-format correction found while building it: the original
+  coreEvents.ts/timelineStore.ts typed kind-discriminated event shapes that
+  did NOT match serde's externally-tagged output ({"Variant":{..}} /
+  unit variants as bare strings, newtype ids collapsing to numbers/strings).
+  A permanent Rust contract test
+  (`core_event_wire_format_matches_typescript_contract`, src-tauri lib.rs)
+  now pins the serialized shapes; coreEvents.ts, timelineStore.ts, and the
+  Vitest logic tier were rewritten against it (32 tests).
+  New real product component `src/components/TimelineView.tsx`: renders ONLY
+  from the timeline store fed by `matrix-desktop://event` (Async rule 4),
+  transport-abstracted (Tauri IPC / harness mock), with canon scroll
+  anchoring (capture first-visible stable item id + pixel offset before a
+  prepend batch applies, restore in a layout effect after commit, block
+  auto-backfill until restored), auto-backfill on scroll-near-top, spinner
+  from PaginationStateChanged, EndReached suppression. App.tsx mounts it on
+  the Tauri runtime path (browser fixture preview keeps the snapshot
+  rendering). Playwright spec `e2e/timeline-scrollback.spec.ts` (ONE focused
+  spec) drives harness.html (Vite server owned by Playwright on port 5183 —
+  never the canonical 5173 — and torn down by it): InitialItems fills the
+  viewport → scroll near top fires exactly one paginate command → Paginating
+  spinner → 10-item PushFront batch → anchor item viewport position restored
+  within ±2px (scrollTop moved down by the prepended 480px) → no second
+  backfill request until restoration completed → EndReached + scroll-to-top
+  fires nothing. `test:ui-headless` = Vitest logic tier + Playwright DOM
+  tier; e2e/ excluded from Vitest. Headless only; ports 5173/5183 verified
+  free after the run.
+  Remaining integration polish (attended smoke scope): event-driven items
+  render without per-message context menus/edit/redact affordances yet, and
+  the nested scroll container geometry inside .timeline-scroll needs visual
+  verification in the real window.
+
 - 2026-06-13: Phase 7 landed — Tauri adapter confirmed as CoreRuntime host
   (src-tauri already holds CoreRuntime + CoreConnection from the Phase 5/6
   integration; no SIGABRT cause identified — the panics were removed by the
@@ -262,8 +325,10 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   Gates executed: cargo test -p matrix-desktop-core (65 ok), cargo test in
   src-tauri (29 ok), npm test (109 ok, 31 new), typecheck ok, secret scan ok,
   release gate structural ok, qa:headless-core Tuwunel both legs green (Conduit
-  probed-SyncService leg hit the documented intermittent Phase 4 room-list
-  timeout — pre-existing issue, not a Phase 7 regression; Conduit
+  probed-SyncService leg hit the Phase 4 room-list wait timeout on this run —
+  recorded as a TRANSIENT WATCH ITEM (it did not reproduce in the exit
+  review's independent run and passed on the 2026-06-13 review-item re-run);
+  root cause not yet identified, do not normalize as "known flaky"; Conduit
   forced-LegacySync and Tuwunel both legs green), test:ui-headless (31 ok),
   port 5173 clear.
 

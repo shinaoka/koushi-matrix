@@ -36,6 +36,12 @@ pub enum AccountEvent {
         request_id: RequestId,
         account_key: AccountKey,
     },
+    /// Answer to `AccountCommand::QuerySavedSessions`. Carries identity data
+    /// only (homeserver / user_id / device_id) — never tokens or secrets.
+    SavedSessionsListed {
+        request_id: RequestId,
+        sessions: Vec<matrix_desktop_state::SessionInfo>,
+    },
     RecoveryRequired {
         account_key: AccountKey,
     },

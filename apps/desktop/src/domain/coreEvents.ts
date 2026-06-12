@@ -1,16 +1,21 @@
 /**
  * TypeScript types for CoreEvent and AppStateSnapshot IPC payloads.
  *
- * These are the serialised forms of the Rust CoreEvent / AppStateSnapshot
- * types as emitted on `matrix-desktop://event` and `matrix-desktop://state`.
- * Codegen from the Rust types is recorded as future work (Phase 9 cleanup).
+ * These are the EXACT serialised forms of the Rust CoreEvent payloads as
+ * emitted on `matrix-desktop://event` (see `serialize_core_event` in
+ * apps/desktop/src-tauri/src/lib.rs). Serde enums are externally tagged:
+ * struct variants serialise as `{"Variant":{..}}`, unit variants as
+ * `"Variant"`, and newtype wrappers (AccountKey, TimelineGeneration,
+ * TimelineBatchId) collapse to their inner value.
  *
- * Design: all types are plain data (no class instances).  The transport
- * delivers JSON; React components and stores consume these shapes directly.
+ * The wire format is pinned by the Rust contract test
+ * `core_event_wire_format_matches_typescript_contract` in src-tauri lib.rs.
+ * If that test changes, this module must change with it. Codegen from the
+ * Rust types is recorded as future work (Phase 9 cleanup).
  *
- * Security: message bodies flow in Timeline events.  These are visible
- * content (not secrets).  Passwords, access tokens, and store keys NEVER
- * appear in any CoreEvent.  Do not add debug logging of these payloads in
+ * Security: message bodies flow in Timeline events. These are visible
+ * content (not secrets). Passwords, access tokens, and store keys NEVER
+ * appear in any CoreEvent. Do not add debug logging of these payloads in
  * release builds.
  *
  * References:
@@ -25,11 +30,13 @@
 // ---------------------------------------------------------------------------
 
 export interface RequestId {
+  /** RuntimeConnectionId is a newtype over u64 → plain number on the wire. */
   connection_id: number;
   sequence: number;
 }
 
 export interface TimelineKey {
+  /** AccountKey is a newtype over String → plain string on the wire. */
   account_key: string;
   kind: TimelineKind;
 }
@@ -38,10 +45,6 @@ export type TimelineKind =
   | { Room: { room_id: string } }
   | { Thread: { room_id: string; root_event_id: string } }
   | { Focused: { room_id: string; event_id: string } };
-
-export interface TimelineGeneration {
-  value: number;
-}
 
 export type PaginationDirection = "Backward" | "Forward";
 
@@ -60,47 +63,37 @@ export type TimelineFailureKind =
   | "Sdk"
   | "QueueOverflow";
 
-export type TimelineResyncReason =
-  | "QueueOverflow"
-  | "GenerationReset"
-  | "SubscriptionChanged";
+export type TimelineResyncReason = "QueueOverflow" | "SubscriptionRestarted";
 
 // ---------------------------------------------------------------------------
-// Timeline items (forwarded from core; never stored in AppState snapshots)
+// Timeline items (stable identity contract; Viewport/Scrollback)
 // ---------------------------------------------------------------------------
+
+export type TimelineItemId =
+  | { Event: { event_id: string } }
+  | { Transaction: { transaction_id: string } }
+  | { Synthetic: { synthetic_id: string } };
 
 export interface TimelineItem {
-  /** Stable identity: remote event_id, local txn_id, or synthetic id. */
-  id: string;
-  kind: TimelineItemKind;
+  id: TimelineItemId;
+  sender: string | null;
+  body: string | null;
+  timestamp_ms: number | null;
 }
 
-export type TimelineItemKind =
-  | { message: TimelineMessageContent }
-  | { virtual: VirtualItemContent }
-  | { redacted: { event_id: string } };
-
-export interface TimelineMessageContent {
-  event_id: string;
-  /** Null for local-echo items whose remote echo has not arrived. */
-  remote_event_id: string | null;
-  transaction_id: string | null;
-  sender: string;
-  timestamp_ms: number;
-  body: string;
-  attachment_filename: string | null;
-  reply_count: number;
-  room_id: string;
-  is_edited: boolean;
-}
-
-export interface VirtualItemContent {
-  kind: "DayDivider" | "ReadMarker" | "TimelineStart";
-  timestamp_ms?: number;
+/** Stable string id usable as a React key and a `data-item-id` DOM hook. */
+export function timelineItemDomId(id: TimelineItemId): string {
+  if ("Event" in id) {
+    return id.Event.event_id;
+  }
+  if ("Transaction" in id) {
+    return `txn:${id.Transaction.transaction_id}`;
+  }
+  return `syn:${id.Synthetic.synthetic_id}`;
 }
 
 // ---------------------------------------------------------------------------
-// VectorDiff (positional operations on a Vec<TimelineItem>)
+// VectorDiff (externally tagged; unit variants are bare strings)
 // ---------------------------------------------------------------------------
 
 export type TimelineDiff =
@@ -110,14 +103,130 @@ export type TimelineDiff =
   | { Set: { index: number; item: TimelineItem } }
   | { Remove: { index: number } }
   | { Truncate: { length: number } }
-  | { Clear: Record<string, never> }
+  | "Clear"
   | { Reset: { items: TimelineItem[] } };
 
 // ---------------------------------------------------------------------------
-// CoreEvent discriminated union (from matrix-desktop://event)
+// Timeline events (externally tagged on the wire)
 // ---------------------------------------------------------------------------
 
-export type CoreEvent =
+export type TimelineEvent =
+  | {
+      InitialItems: {
+        request_id: RequestId | null;
+        key: TimelineKey;
+        /** TimelineGeneration newtype → number. */
+        generation: number;
+        items: TimelineItem[];
+      };
+    }
+  | {
+      ItemsUpdated: {
+        key: TimelineKey;
+        generation: number;
+        /** TimelineBatchId newtype → number. */
+        batch_id: number;
+        diffs: TimelineDiff[];
+      };
+    }
+  | {
+      PaginationStateChanged: {
+        request_id: RequestId | null;
+        key: TimelineKey;
+        direction: PaginationDirection;
+        state: PaginationState;
+      };
+    }
+  | {
+      SendCompleted: {
+        request_id: RequestId;
+        key: TimelineKey;
+        transaction_id: string;
+        event_id: string;
+      };
+    }
+  | {
+      ResyncRequired: {
+        key: TimelineKey;
+        reason: TimelineResyncReason;
+      };
+    };
+
+// ---------------------------------------------------------------------------
+// Account / Sync / Room / Search events (externally tagged)
+// ---------------------------------------------------------------------------
+
+export interface SessionInfo {
+  homeserver: string;
+  user_id: string;
+  device_id: string;
+}
+
+export type AccountEvent =
+  | { LoggedIn: { request_id: RequestId; account_key: string } }
+  | { SessionRestored: { request_id: RequestId; account_key: string } }
+  | { SavedSessionsListed: { request_id: RequestId; sessions: SessionInfo[] } }
+  | { RecoveryRequired: { account_key: string } }
+  | { RecoveryCompleted: { request_id: RequestId; account_key: string } }
+  | { LoggedOut: { request_id: RequestId; account_key: string } }
+  | { AccountSwitched: { request_id: RequestId; account_key: string } };
+
+export type SyncBackendKind = "SyncService" | "LegacySync";
+
+export type SyncEvent =
+  | { Started: { request_id: RequestId | null; backend: SyncBackendKind } }
+  | "Running"
+  | "Reconnecting"
+  | "Failed"
+  | { Stopped: { request_id: RequestId | null } };
+
+export type RoomEvent =
+  | { RoomCreated: { request_id: RequestId; room_id: string } }
+  | { SpaceCreated: { request_id: RequestId; space_id: string } }
+  | {
+      SpaceChildSet: {
+        request_id: RequestId;
+        space_id: string;
+        child_room_id: string;
+      };
+    }
+  | { UserInvited: { request_id: RequestId; room_id: string; user_id: string } }
+  | { RoomJoined: { request_id: RequestId; room_id: string } }
+  | "RoomListUpdated";
+
+export interface SearchResultItem {
+  room_id: string;
+  event_id: string;
+  snippet: string;
+}
+
+export type SearchEvent = {
+  Results: { request_id: RequestId; results: SearchResultItem[] };
+};
+
+// ---------------------------------------------------------------------------
+// Failures (externally tagged; unit variants are bare strings)
+// ---------------------------------------------------------------------------
+
+export type CoreFailure =
+  | "SessionRequired"
+  | "SessionNotFound"
+  | { LoginFailed: { kind: string } }
+  | { RecoveryFailed: { kind: string } }
+  | { SyncFailed: { kind: string } }
+  | { RoomOperationFailed: { kind: string } }
+  | { TimelineOperationFailed: { kind: TimelineFailureKind } }
+  | { SearchFailed: { kind: string } }
+  | "LocalEncryptionUnavailable"
+  | "StoreUnavailable"
+  | "ShutdownFailed";
+
+// ---------------------------------------------------------------------------
+// CoreEvent envelope (the `matrix-desktop://event` payload shape produced by
+// serialize_core_event in src-tauri lib.rs)
+// ---------------------------------------------------------------------------
+
+export type CoreEventPayload =
   | { kind: "Account"; event: AccountEvent }
   | { kind: "Sync"; event: SyncEvent }
   | { kind: "Room"; event: RoomEvent }
@@ -132,130 +241,23 @@ export type CoreEvent =
   | { kind: "ResyncMarker" };
 
 // ---------------------------------------------------------------------------
-// Account events
+// Helpers
 // ---------------------------------------------------------------------------
 
-export type AccountEvent =
-  | { kind: "LoggedIn"; account_key: string }
-  | { kind: "SessionRestored"; account_key: string }
-  | { kind: "SessionNotFound"; account_key: string }
-  | { kind: "NeedsRecovery"; account_key: string }
-  | { kind: "RecoveryCompleted"; account_key: string }
-  | { kind: "LoggedOut"; account_key: string }
-  | { kind: "AccountSwitched"; account_key: string };
-
-// ---------------------------------------------------------------------------
-// Sync events
-// ---------------------------------------------------------------------------
-
-export type SyncEvent =
-  | { kind: "Started"; backend: string }
-  | { kind: "Running" }
-  | { kind: "Reconnecting" }
-  | { kind: "Failed"; kind_str: string }
-  | { kind: "Stopped" };
-
-// ---------------------------------------------------------------------------
-// Room events
-// ---------------------------------------------------------------------------
-
-export type RoomEvent =
-  | { kind: "RoomListUpdated" }
-  | { kind: "RoomCreated"; request_id: RequestId; room_id: string }
-  | { kind: "SpaceCreated"; request_id: RequestId; space_id: string }
-  | { kind: "RoomSelected"; room_id: string }
-  | { kind: "SpaceSelected"; space_id: string | null };
-
-// ---------------------------------------------------------------------------
-// Timeline events
-// ---------------------------------------------------------------------------
-
-export type TimelineEvent =
-  | {
-      kind: "InitialItems";
-      request_id: RequestId | null;
-      key: TimelineKey;
-      generation: number;
-      items: TimelineItem[];
-    }
-  | {
-      kind: "ItemsUpdated";
-      key: TimelineKey;
-      generation: number;
-      batch_id: number;
-      diffs: TimelineDiff[];
-    }
-  | {
-      kind: "PaginationStateChanged";
-      request_id: RequestId | null;
-      key: TimelineKey;
-      direction: PaginationDirection;
-      state: PaginationState;
-    }
-  | {
-      kind: "ResyncRequired";
-      key: TimelineKey;
-      reason: TimelineResyncReason;
-    };
-
-// ---------------------------------------------------------------------------
-// Search events
-// ---------------------------------------------------------------------------
-
-export type SearchEvent =
-  | {
-      kind: "ResultsReady";
-      request_id: RequestId;
-      results: SearchEventResult[];
-    }
-  | { kind: "Failed"; request_id: RequestId; message: string };
-
-export interface SearchEventResult {
-  room_id: string;
-  event_id: string;
-  sender: string;
-  timestamp_ms: number;
-  score_millis: number;
-  snippet: string;
-  match_field: "messageBody" | "attachmentFileName";
-  highlights: Array<{ start_utf16: number; end_utf16: number }>;
-  match_kind: "exact";
-}
-
-// ---------------------------------------------------------------------------
-// Failure types
-// ---------------------------------------------------------------------------
-
-export type CoreFailure =
-  | { kind: "SessionRequired" }
-  | { kind: "SessionNotFound" }
-  | { kind: "LoginFailed"; message?: string }
-  | { kind: "RecoveryFailed"; message?: string }
-  | { kind: "SyncFailed"; message?: string }
-  | { kind: "RoomOperationFailed"; message?: string }
-  | { kind: "TimelineOperationFailed"; message?: string }
-  | { kind: "SearchFailed"; message?: string }
-  | { kind: "LocalEncryptionUnavailable" }
-  | { kind: "StoreUnavailable" }
-  | { kind: "ShutdownFailed" };
-
-// ---------------------------------------------------------------------------
-// Helper: extract TimelineKey room_id for the common Room kind
-// ---------------------------------------------------------------------------
-
-export function timelineKeyRoomId(key: TimelineKey): string | null {
+export function timelineKeyRoomId(key: TimelineKey): string {
   if ("Room" in key.kind) {
     return key.kind.Room.room_id;
   }
   if ("Thread" in key.kind) {
     return key.kind.Thread.room_id;
   }
-  if ("Focused" in key.kind) {
-    return key.kind.Focused.room_id;
-  }
-  return null;
+  return key.kind.Focused.room_id;
 }
 
 export function timelineKeyEquals(a: TimelineKey, b: TimelineKey): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+export function roomTimelineKey(accountKey: string, roomId: string): TimelineKey {
+  return { account_key: accountKey, kind: { Room: { room_id: roomId } } };
 }

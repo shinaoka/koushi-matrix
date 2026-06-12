@@ -15,7 +15,7 @@
     "release:preflight": "node ../../scripts/desktop-release-preflight.mjs --check-config",
     "release:preflight:strict": "node ../../scripts/desktop-release-preflight.mjs --strict-signing",
     "test": "vitest run",
-    "test:ui-headless": "vitest run --reporter=verbose src/domain/timelineStore.test.ts src/test/tauriIpcMock.ts",
+    "test:ui-headless": "vitest run --reporter=verbose src/domain/timelineStore.test.ts && playwright test",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "qa:secret-scan": "node ../../scripts/desktop-secret-scan.mjs",
@@ -30,6 +30,7 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tauri-apps/cli": "^2.11.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

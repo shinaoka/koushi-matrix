@@ -36,11 +36,20 @@ import {
   useRef,
   useState
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { createDesktopApi } from "./backend/client";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
+import {
+  TimelineView,
+  type TimelineTransport
+} from "./components/TimelineView";
+import {
+  type CoreEventPayload,
+  roomTimelineKey
+} from "./domain/coreEvents";
 import { KeyboardSettingsPanel } from "./components/KeyboardSettingsPanel";
 import { RoomInfoPanel } from "./components/RoomInfoPanel";
 import { SpaceInfoPanel } from "./components/SpaceInfoPanel";
@@ -85,6 +94,38 @@ const api = createDesktopApi();
 const DEFAULT_HOMESERVER = "https://matrix.org";
 const MENU_EVENT_NAME = "matrix-desktop://menu";
 const STATE_EVENT_NAME = "matrix-desktop://state";
+const CORE_EVENT_NAME = "matrix-desktop://event";
+
+/**
+ * Tauri transport for the event-driven timeline (Async rule 4: timeline data
+ * flows ONLY as CoreEvent diffs over `matrix-desktop://event`; AppState
+ * snapshots never embed item lists). Null in browser preview mode, where the
+ * fixture snapshot rendering below is used instead.
+ */
+const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
+  ? {
+      listenCoreEvents(listener: (payload: CoreEventPayload) => void) {
+        let disposed = false;
+        let unlisten: (() => void) | null = null;
+        void listen<CoreEventPayload>(CORE_EVENT_NAME, (event) => {
+          listener(event.payload);
+        }).then((dispose) => {
+          if (disposed) {
+            dispose();
+          } else {
+            unlisten = dispose;
+          }
+        });
+        return () => {
+          disposed = true;
+          unlisten?.();
+        };
+      },
+      async paginateBackwards(roomId: string) {
+        await invoke("paginate_timeline_backwards", { roomId });
+      }
+    }
+  : null;
 type ContextMenuTarget =
   | { kind: "message"; message: TimelineMessage }
   | { kind: "room"; roomId: string }
@@ -1250,18 +1291,30 @@ function TimelinePane({
               </span>
             </button>
           </div>
-          {snapshot.timeline.map((message) => (
-            <MessageArticle
-              key={message.event_id}
-              message={message}
-              query={searchQuery}
-              currentUserId={currentUserId}
-              onOpenContextMenu={onOpenContextMenu}
-              onEditMessage={onEditMessage}
-              onOpenThread={onOpenThread}
-              onRedactMessage={onRedactMessage}
+          {tauriTimelineTransport && timelineRoomId && currentUserId ? (
+            // Production path: render from the event-driven timeline store
+            // (CoreEvent diffs), never from AppState timeline fields.
+            <TimelineView
+              key={timelineRoomId}
+              roomId={timelineRoomId}
+              timelineKey={roomTimelineKey(currentUserId, timelineRoomId)}
+              transport={tauriTimelineTransport}
             />
-          ))}
+          ) : (
+            // Browser fixture preview only (no Tauri runtime).
+            snapshot.timeline.map((message) => (
+              <MessageArticle
+                key={message.event_id}
+                message={message}
+                query={searchQuery}
+                currentUserId={currentUserId}
+                onOpenContextMenu={onOpenContextMenu}
+                onEditMessage={onEditMessage}
+                onOpenThread={onOpenThread}
+                onRedactMessage={onRedactMessage}
+              />
+            ))
+          )}
         </div>
       </section>
       <Composer

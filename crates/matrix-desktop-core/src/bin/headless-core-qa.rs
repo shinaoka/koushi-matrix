@@ -785,12 +785,41 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
 
     wait_for_logged_out(&mut conn_b, logout_b_id, &account_key_b, "logout B").await?;
 
+    // Cleanup assertion: the QA users share one credential store, and B
+    // logged in after A, so the last-session pointer pointed at B until B's
+    // logout cleared it. After BOTH logouts, RestoreLastSession must yield
+    // SessionNotFound (a NORMAL outcome — this is the startup path when no
+    // account is stored).
+    let restore_last_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Account(AccountCommand::RestoreLastSession {
+            request_id: restore_last_id,
+        }))
+        .await
+        .map_err(|e| format!("submit post-logout restore-last: {e}"))?;
+
+    let failure = wait_for_operation_failed(
+        &mut conn_b,
+        restore_last_id,
+        "post-logout restore-last (must be not-found)",
+    )
+    .await?;
+    if failure != CoreFailure::SessionNotFound {
+        return Err(format!(
+            "post-logout restore-last failed with unexpected kind: {failure:?}"
+        ));
+    }
+    if !matches!(conn_b.snapshot().session, SessionState::SignedOut) {
+        return Err("post-logout restore-last must leave the session SignedOut".to_owned());
+    }
+
     Ok(format!(
         "Headless core QA OK. server={server} \
          login_a={user_a} sync_a=ok backend_a={backend_a:?} \
          room_created=ok space_created=ok space_child_set=ok \
          invite_ok=ok room_list_a={room_list_a} \
          restore_a=ok logout_a=ok post_logout_restore_a=not_found \
+         post_logout_restore_last=not_found \
          login_b={user_b} sync_b=ok backend_b={backend_b:?} \
          joined_room=ok joined_space=ok room_list_b={room_list_b} \
          logout_b=ok \
@@ -1290,6 +1319,7 @@ async fn wait_for_operation_failed(
                 let matches_request = match &account_event {
                     AccountEvent::LoggedIn { request_id: id, .. }
                     | AccountEvent::SessionRestored { request_id: id, .. }
+                    | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }
                     | AccountEvent::LoggedOut { request_id: id, .. }
                     | AccountEvent::AccountSwitched { request_id: id, .. } => *id == request_id,

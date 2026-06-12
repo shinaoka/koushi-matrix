@@ -275,16 +275,34 @@ describe("desktop release scripts", () => {
     expect(sendLine).not.toContain("password");
   });
 
-  test("desktop QA file credential store is gated to debug and test builds", () => {
-    const source = readFileSync(
-      new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
+  test("QA file credential store is gated to debug and test builds in core", () => {
+    // The credential store moved into matrix-desktop-core (StoreActor) when
+    // src-tauri became a pure transport adapter; the compile-time gate lives
+    // there now.
+    const coreStore = readFileSync(
+      new URL(
+        "../../../../crates/matrix-desktop-core/src/store.rs",
+        import.meta.url
+      ),
       "utf8"
     );
 
-    expect(source).toContain("#[cfg(any(debug_assertions, test))]");
-    expect(source).toContain("const QA_FILE_CREDENTIAL_STORE_DIR_ENV");
-    expect(source).toContain("#[cfg(not(any(debug_assertions, test)))]");
-    expect(source).toContain("fn qa_file_credential_store_dir_from_env() -> Option<PathBuf> {\n    None\n}");
+    expect(coreStore).toContain("const ENV_FILE_CREDENTIAL_STORE_DIR");
+    expect(coreStore).toMatch(
+      /#\[cfg\(any\(debug_assertions, test\)\)\]\nconst ENV_FILE_CREDENTIAL_STORE_DIR/
+    );
+    expect(coreStore).toMatch(
+      /#\[cfg\(any\(debug_assertions, test\)\)\]\npub struct FileCredentialStore/
+    );
+
+    // The transport adapter must not read the credential store at all — not
+    // even the QA file-dir override env.
+    const adapter = readFileSync(
+      new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
+      "utf8"
+    );
+    expect(adapter).not.toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR");
+    expect(adapter).not.toContain("CredentialStore");
   });
 
   test("mac GUI smoke rejects unsafe reusable profile names", () => {

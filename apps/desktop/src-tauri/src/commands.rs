@@ -200,11 +200,53 @@ pub(crate) async fn submit_login_request(
     Ok(())
 }
 
+/// How long the adapter waits for the `SavedSessionsListed` answer before
+/// reporting a transport error. The query is a local credential-store read in
+/// core, so 5 seconds is generous.
+const SAVED_SESSIONS_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[tauri::command]
-pub fn list_saved_sessions() -> Result<Vec<SessionInfo>, String> {
-    // SAVED_SESSIONS_DESIGN_GAP: reads credential store directly until
-    // AccountCommand::QuerySavedSessions lands in the canon.
-    crate::saved_matrix_session_infos()
+pub async fn list_saved_sessions(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<Vec<SessionInfo>, String> {
+    // GUI-smoke toggle: skip the keychain-backed query entirely.
+    if crate::saved_sessions_disabled_from_env() {
+        return Ok(Vec::new());
+    }
+
+    // Attach a dedicated connection so (a) the request id belongs to this
+    // connection and (b) the broadcast cursor starts BEFORE the command is
+    // submitted — the correlated answer cannot be missed.
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::Account(AccountCommand::QuerySavedSessions {
+            request_id,
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+
+    let deadline = tokio::time::Instant::now() + SAVED_SESSIONS_EVENT_TIMEOUT;
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "saved sessions could not be loaded".to_owned())?;
+        match event {
+            Ok(matrix_desktop_core::CoreEvent::Account(
+                matrix_desktop_core::AccountEvent::SavedSessionsListed {
+                    request_id: ev_id,
+                    sessions,
+                },
+            )) if ev_id == request_id => return Ok(sessions),
+            Ok(matrix_desktop_core::CoreEvent::OperationFailed {
+                request_id: ev_id, ..
+            }) if ev_id == request_id => {
+                return Err("saved sessions could not be loaded".to_owned());
+            }
+            // Unrelated events / lag: keep waiting until the deadline.
+            _ => {}
+        }
+    }
 }
 
 #[tauri::command]

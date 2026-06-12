@@ -396,10 +396,8 @@ impl From<SearchMatchKind> for FrontendSearchMatchKind {
 mod tests {
     use serde_json::json;
 
-    use super::{FrontendDesktopSnapshot, FrontendSearchState, FrontendSyncState};
-    use matrix_desktop_state::{
-        AppState, RecoveryMethod, SearchScope, SearchState, SessionInfo, SessionState, SyncState,
-    };
+    use super::{FrontendDesktopSnapshot, FrontendSyncState};
+    use matrix_desktop_state::{AppState, RecoveryMethod, SessionInfo, SessionState, SyncState};
 
     fn booted_app_state() -> AppState {
         AppState {

@@ -8,20 +8,14 @@
  *     registered listeners (simulating what the real Tauri backend emits on
  *     `matrix-desktop://event` and `matrix-desktop://state`).
  *
- * Design note (plan changelog 2026-06-13): @wdio/tauri-service browser mode
- * was the first-choice tooling, but is not available in this repo's package
- * lock.  Playwright with headless chromium also requires installing browser
- * binaries not present in this dev environment.  The existing test suite uses
- * Vitest in node mode with renderToStaticMarkup, and all six required test
- * scenarios (timeline diffs, generation handling, scroll anchoring,
- * EndReached suppression, send command shape, login credential safety) are
- * testable as pure logic + shallow render without a real browser process.
- * This mock therefore targets the Vitest node environment; the requirement of
- * "no visible window and dev server torn down afterwards" is satisfied because
- * no browser or Vite dev server is started at all.
+ * Used by two test tiers (plan changelog 2026-06-13):
+ *   - Vitest node-mode logic tests (timelineStore.test.ts);
+ *   - the Playwright headless-Chromium harness (src/test/harnessMain.tsx),
+ *     which mounts the real TimelineView against this mock and exercises
+ *     real-DOM scroll anchoring.
  */
 
-import type { CoreEvent } from "../domain/coreEvents";
+import type { CoreEventPayload } from "../domain/coreEvents";
 
 // ---------------------------------------------------------------------------
 // Invocation record
@@ -85,7 +79,7 @@ export class TauriIpcMock {
   // ---- Event emission (simulates core backend) ----
 
   /** Push a CoreEvent as if the Tauri backend emitted matrix-desktop://event */
-  emitCoreEvent(event: CoreEvent): void {
+  emitCoreEvent(event: CoreEventPayload): void {
     const listeners = this.listeners.get("matrix-desktop://event") ?? [];
     for (const listener of listeners) {
       listener({ payload: event });

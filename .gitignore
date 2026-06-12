@@ -9,3 +9,6 @@ apps/desktop/src-tauri/gen/
 artifacts/
 .DS_Store
 *.log
+# Playwright artifacts
+apps/desktop/test-results/
+apps/desktop/playwright-report/

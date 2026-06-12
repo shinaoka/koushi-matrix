@@ -25,6 +25,8 @@ impl CoreCommand {
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
                 | AccountCommand::RestoreSession { request_id, .. }
+                | AccountCommand::RestoreLastSession { request_id }
+                | AccountCommand::QuerySavedSessions { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
                 | AccountCommand::Logout { request_id }
                 | AccountCommand::SwitchAccount { request_id, .. } => *request_id,
@@ -83,6 +85,19 @@ pub enum AccountCommand {
     RestoreSession {
         request_id: RequestId,
         account_key: AccountKey,
+    },
+    /// Restore whichever account the last-session pointer designates. The
+    /// pointer is resolved inside the StoreActor/AccountActor — the transport
+    /// adapter never reads the credential store. A missing pointer (or
+    /// missing session data) is a NORMAL outcome reported as
+    /// `CoreFailure::SessionNotFound`; the UI goes to login quietly.
+    RestoreLastSession {
+        request_id: RequestId,
+    },
+    /// List saved sessions (homeserver / user_id / device_id only — never
+    /// secrets). Answered by `AccountEvent::SavedSessionsListed`.
+    QuerySavedSessions {
+        request_id: RequestId,
     },
     SubmitRecovery {
         request_id: RequestId,

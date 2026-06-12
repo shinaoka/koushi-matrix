@@ -1,6 +1,7 @@
 /**
  * Timeline store: applies CoreEvent::Timeline diffs to maintain a per-key
- * render list of TimelineItems.
+ * render list of TimelineItems. Operates on the WIRE shapes defined in
+ * coreEvents.ts (externally tagged serde enums).
  *
  * Contract (docs/architecture/overview.md — "Timeline Viewport And Scrollback"):
  *
@@ -14,14 +15,15 @@
  *   all keys are cleared and await InitialItems.
  *
  * Scroll anchoring responsibilities (UI layer; not core):
- *   Before issuing a backward Paginate command, callers capture an anchor
- *   (timelinePaginationAnchorEventId).  After the diff is applied and React
- *   commits to the DOM, callers restore the anchor in a layout effect or RAF.
- *   This store does not do DOM work; it only tracks the item list.
+ *   Before a prepend batch affects the viewport, the component captures an
+ *   anchor (stable item id + pixel offset). After the diff is applied and
+ *   React commits, it restores the anchor in a layout effect and only then
+ *   allows the next automatic fill request. This store does no DOM work; it
+ *   only tracks the item list.
  *
  * Pagination suppression:
- *   The store exposes paginationState per (key, direction).  Callers must
- *   not issue a new Paginate command if the state is "Paginating" or
+ *   The store exposes paginationState per (key, direction). Callers must not
+ *   issue a new Paginate command if the state is "Paginating" or
  *   "EndReached".
  *
  * This is a pure in-memory reducer: no side effects, no Tauri calls.
@@ -87,16 +89,21 @@ export function applyTimelineEvent(
   store: TimelineStoreState,
   event: TimelineEvent
 ): TimelineStoreState {
-  switch (event.kind) {
-    case "InitialItems":
-      return applyInitialItems(store, event);
-    case "ItemsUpdated":
-      return applyItemsUpdated(store, event);
-    case "PaginationStateChanged":
-      return applyPaginationStateChanged(store, event);
-    case "ResyncRequired":
-      return applyResyncRequired(store, event.key);
+  if ("InitialItems" in event) {
+    return applyInitialItems(store, event.InitialItems);
   }
+  if ("ItemsUpdated" in event) {
+    return applyItemsUpdated(store, event.ItemsUpdated);
+  }
+  if ("PaginationStateChanged" in event) {
+    return applyPaginationStateChanged(store, event.PaginationStateChanged);
+  }
+  if ("ResyncRequired" in event) {
+    return applyResyncRequired(store, event.ResyncRequired.key);
+  }
+  // SendCompleted does not change the render list (the local echo / remote
+  // echo transitions arrive as diffs).
+  return store;
 }
 
 /** Called on EventStreamLag (ResyncMarker): clear all keys. */
@@ -114,15 +121,15 @@ export function applyGlobalResync(store: TimelineStoreState): TimelineStoreState
 
 function applyInitialItems(
   store: TimelineStoreState,
-  event: Extract<TimelineEvent, { kind: "InitialItems" }>
+  payload: Extract<TimelineEvent, { InitialItems: unknown }>["InitialItems"]
 ): TimelineStoreState {
-  const k = keyStr(event.key);
+  const k = keyStr(payload.key);
   const existing = store.keys.get(k) ?? emptyKeyState();
   const next = new Map(store.keys);
   next.set(k, {
     ...existing,
-    generation: event.generation,
-    items: [...event.items],
+    generation: payload.generation,
+    items: [...payload.items],
     awaitingResync: false
   });
   return { keys: next };
@@ -130,13 +137,13 @@ function applyInitialItems(
 
 function applyItemsUpdated(
   store: TimelineStoreState,
-  event: Extract<TimelineEvent, { kind: "ItemsUpdated" }>
+  payload: Extract<TimelineEvent, { ItemsUpdated: unknown }>["ItemsUpdated"]
 ): TimelineStoreState {
-  const k = keyStr(event.key);
+  const k = keyStr(payload.key);
   const existing = store.keys.get(k);
 
   // Stale generation: discard silently.
-  if (!existing || existing.generation !== event.generation) {
+  if (!existing || existing.generation !== payload.generation) {
     return store;
   }
 
@@ -145,7 +152,7 @@ function applyItemsUpdated(
     return store;
   }
 
-  const updatedItems = applyDiffs(existing.items, event.diffs);
+  const updatedItems = applyDiffs(existing.items, payload.diffs);
   const next = new Map(store.keys);
   next.set(k, { ...existing, items: updatedItems });
   return { keys: next };
@@ -153,15 +160,18 @@ function applyItemsUpdated(
 
 function applyPaginationStateChanged(
   store: TimelineStoreState,
-  event: Extract<TimelineEvent, { kind: "PaginationStateChanged" }>
+  payload: Extract<
+    TimelineEvent,
+    { PaginationStateChanged: unknown }
+  >["PaginationStateChanged"]
 ): TimelineStoreState {
-  const k = keyStr(event.key);
+  const k = keyStr(payload.key);
   const existing = store.keys.get(k) ?? emptyKeyState();
   const next = new Map(store.keys);
   const updated: TimelineKeyState =
-    event.direction === "Backward"
-      ? { ...existing, paginationBackward: event.state }
-      : { ...existing, paginationForward: event.state };
+    payload.direction === "Backward"
+      ? { ...existing, paginationBackward: payload.state }
+      : { ...existing, paginationForward: payload.state };
   next.set(k, updated);
   return { keys: next };
 }
@@ -196,6 +206,9 @@ export function applyDiffs(
 }
 
 function applyOneDiff(items: TimelineItem[], diff: TimelineDiff): TimelineItem[] {
+  if (diff === "Clear") {
+    return [];
+  }
   if ("PushFront" in diff) {
     return [diff.PushFront.item, ...items];
   }
@@ -222,13 +235,19 @@ function applyOneDiff(items: TimelineItem[], diff: TimelineDiff): TimelineItem[]
   if ("Truncate" in diff) {
     return items.slice(0, diff.Truncate.length);
   }
-  if ("Clear" in diff) {
-    return [];
-  }
   if ("Reset" in diff) {
     return [...diff.Reset.items];
   }
   return items;
+}
+
+/** True if any diff in the batch prepends items (scroll-anchor relevant). */
+export function batchContainsPrepend(diffs: TimelineDiff[]): boolean {
+  return diffs.some(
+    (diff) =>
+      diff !== "Clear" &&
+      ("PushFront" in diff || ("Insert" in diff && diff.Insert.index === 0))
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -321,6 +321,12 @@ impl AccountActor {
             } => {
                 self.handle_restore_session(request_id, account_key).await;
             }
+            AccountCommand::RestoreLastSession { request_id } => {
+                self.handle_restore_last_session(request_id).await;
+            }
+            AccountCommand::QuerySavedSessions { request_id } => {
+                self.handle_query_saved_sessions(request_id);
+            }
             AccountCommand::Logout { request_id } => {
                 self.handle_logout(request_id).await;
             }
@@ -452,6 +458,55 @@ impl AccountActor {
 
         self.restore_account(request_id, key_id, RestoreOutcome::Restored)
             .await;
+    }
+
+    /// Resolve the last-session pointer inside the actor and run a
+    /// store-backed restore. A missing pointer is a NORMAL outcome
+    /// (`CoreFailure::SessionNotFound`): the UI goes to login quietly.
+    /// A pointer whose session data is missing follows the same not-found
+    /// contract (handled inside `restore_account`).
+    async fn handle_restore_last_session(&mut self, request_id: RequestId) {
+        let key_id = match self.store.credential_backend().load_last_session() {
+            Ok(Some(key_id)) => key_id,
+            Ok(None) => {
+                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
+                return;
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::RestoreSessionFailed {
+                    message: RESTORE_FAILED_MESSAGE.to_owned(),
+                }]);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+                return;
+            }
+        };
+
+        self.restore_account(request_id, key_id, RestoreOutcome::Restored)
+            .await;
+    }
+
+    /// List saved sessions from the credential store. Emits
+    /// `AccountEvent::SavedSessionsListed` with identity data only
+    /// (homeserver / user_id / device_id) — never tokens or secrets.
+    /// An empty list is a normal answer, not a failure.
+    fn handle_query_saved_sessions(&self, request_id: RequestId) {
+        match self.store.credential_backend().load_saved_sessions() {
+            Ok(index) => {
+                let sessions = index
+                    .sessions()
+                    .iter()
+                    .map(session_info_from_key_id)
+                    .collect();
+                self.emit(CoreEvent::Account(AccountEvent::SavedSessionsListed {
+                    request_id,
+                    sessions,
+                }));
+            }
+            Err(_) => {
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+            }
+        }
     }
 
     async fn handle_switch_account(
@@ -827,6 +882,211 @@ mod tests {
                 }
                 other => panic!("expected OperationFailed, got {other:?}"),
             }
+        }
+    }
+
+    fn test_request_id() -> RequestId {
+        RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        }
+    }
+
+    fn spawn_actor_with_dirs(
+        cred_dir: &std::path::Path,
+        data_dir: &std::path::Path,
+    ) -> (
+        AccountActorHandle,
+        mpsc::Receiver<Vec<AppAction>>,
+        broadcast::Receiver<CoreEvent>,
+    ) {
+        let store = StoreActor::with_backend(
+            CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(cred_dir)),
+            data_dir,
+        );
+        let (action_tx, action_rx) = mpsc::channel(16);
+        let (event_tx, event_rx) = broadcast::channel(16);
+        let handle = AccountActor::spawn(store, action_tx, event_tx);
+        (handle, action_rx, event_rx)
+    }
+
+    /// Network-free: `RestoreLastSession` with no last-session pointer is the
+    /// NORMAL first-launch outcome — `SessionNotFound` failure event plus the
+    /// `RestoreSessionNotFound` projection so AppState shows SignedOut/login.
+    #[tokio::test]
+    async fn restore_last_session_without_pointer_emits_not_found() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::RestoreLastSession { request_id }
+                ))
+                .await
+        );
+
+        let actions = action_rx.recv().await.expect("reducer actions");
+        assert!(
+            matches!(actions.as_slice(), [AppAction::RestoreSessionNotFound]),
+            "not-found must project RestoreSessionNotFound, got {actions:?}"
+        );
+
+        match event_rx.recv().await.expect("event") {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, SESSION_NOT_FOUND_FAILURE);
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    /// Network-free: a last-session pointer whose session data is gone (e.g.
+    /// cleared by logout) must follow the same not-found contract.
+    #[tokio::test]
+    async fn restore_last_session_with_dangling_pointer_emits_not_found() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+
+        // Seed only the pointer — no session JSON behind it.
+        let seeding_backend = CredentialStoreBackend::FileDir(
+            crate::store::FileCredentialStore::new(cred_dir.path()),
+        );
+        let key_id = SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@dangling:example.test".to_owned(),
+            device_id: "DEVICE1".to_owned(),
+        };
+        seeding_backend
+            .save_last_session(&key_id)
+            .expect("seed last-session pointer");
+
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::RestoreLastSession { request_id }
+                ))
+                .await
+        );
+
+        let actions = action_rx.recv().await.expect("reducer actions");
+        assert!(
+            matches!(actions.as_slice(), [AppAction::RestoreSessionNotFound]),
+            "dangling pointer must project RestoreSessionNotFound, got {actions:?}"
+        );
+
+        match event_rx.recv().await.expect("event") {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, SESSION_NOT_FOUND_FAILURE);
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    /// Network-free: `QuerySavedSessions` on an empty store answers with an
+    /// empty list — a normal outcome, not a failure.
+    #[tokio::test]
+    async fn query_saved_sessions_empty_store_lists_nothing() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, _action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::QuerySavedSessions { request_id }
+                ))
+                .await
+        );
+
+        match event_rx.recv().await.expect("event") {
+            CoreEvent::Account(AccountEvent::SavedSessionsListed {
+                request_id: ev_id,
+                sessions,
+            }) => {
+                assert_eq!(ev_id, request_id);
+                assert!(sessions.is_empty(), "expected empty list, got {sessions:?}");
+            }
+            other => panic!("expected SavedSessionsListed, got {other:?}"),
+        }
+    }
+
+    /// Network-free: `QuerySavedSessions` lists seeded sessions with identity
+    /// data only (homeserver / user_id / device_id).
+    #[tokio::test]
+    async fn query_saved_sessions_lists_seeded_identities() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+
+        let seeding_backend = CredentialStoreBackend::FileDir(
+            crate::store::FileCredentialStore::new(cred_dir.path()),
+        );
+        let alpha = SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@alpha:example.test".to_owned(),
+            device_id: "DEVICE-A".to_owned(),
+        };
+        let beta = SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@beta:example.test".to_owned(),
+            device_id: "DEVICE-B".to_owned(),
+        };
+        seeding_backend
+            .remember_saved_session(&alpha)
+            .expect("seed alpha");
+        seeding_backend
+            .remember_saved_session(&beta)
+            .expect("seed beta");
+
+        let (handle, _action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::QuerySavedSessions { request_id }
+                ))
+                .await
+        );
+
+        match event_rx.recv().await.expect("event") {
+            CoreEvent::Account(AccountEvent::SavedSessionsListed {
+                request_id: ev_id,
+                sessions,
+            }) => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(sessions.len(), 2);
+                assert!(sessions.iter().any(|s| {
+                    s.user_id == "@alpha:example.test" && s.device_id == "DEVICE-A"
+                }));
+                assert!(sessions.iter().any(|s| {
+                    s.user_id == "@beta:example.test" && s.device_id == "DEVICE-B"
+                }));
+                // Identity data only: SessionInfo has exactly homeserver /
+                // user_id / device_id (enforced by type); the Debug output of
+                // the event must not contain anything token-shaped.
+                let debug = format!("{sessions:?}");
+                assert!(!debug.contains("access_token"));
+                assert!(!debug.contains("secret"));
+            }
+            other => panic!("expected SavedSessionsListed, got {other:?}"),
         }
     }
 }

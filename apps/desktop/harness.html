@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>matrix-desktop timeline test harness</title>
+    <style>
+      /* Deterministic geometry for scroll-anchor assertions. */
+      body {
+        margin: 0;
+        font-family: monospace;
+      }
+      #harness-root {
+        width: 480px;
+        height: 400px;
+        border: 1px solid #888;
+      }
+      .timeline-view .message {
+        box-sizing: border-box;
+        height: 48px;
+        overflow: hidden;
+        border-bottom: 1px solid #eee;
+        padding: 4px;
+      }
+      .timeline-spinner,
+      .timeline-start {
+        box-sizing: border-box;
+        height: 32px;
+        padding: 4px;
+        color: #777;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="harness-root"></div>
+    <script type="module" src="/src/test/harnessMain.tsx"></script>
+  </body>
+</html>
