@@ -84,13 +84,19 @@ fn timeline_subscription_failure_records_error_for_active_room() {
         &mut state,
         AppAction::TimelineSubscriptionFailed {
             room_id: "room-a".to_owned(),
-            message: "timeline unavailable".to_owned(),
+            message: "fixture-access-token rejected synthetic-password".to_owned(),
         },
     );
 
     assert_eq!(state.errors.len(), 1);
     assert_eq!(state.errors[0].code, "timeline_subscription_failed");
-    assert_eq!(state.errors[0].message, "timeline unavailable");
+    assert_eq!(
+        state.errors[0].message,
+        "Matrix timeline subscription failed"
+    );
+    let formatted_errors = format!("{:?}", state.errors);
+    assert!(!formatted_errors.contains("fixture-access-token"));
+    assert!(!formatted_errors.contains("synthetic-password"));
     assert!(state.errors[0].recoverable);
     assert_eq!(
         effects,

@@ -7,6 +7,8 @@ use crate::{
     },
 };
 
+const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
+
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     match action {
         AppAction::AppStarted => {
@@ -398,7 +400,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.timeline.is_subscribed = true;
             vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
         }
-        AppAction::TimelineSubscriptionFailed { room_id, message } => {
+        AppAction::TimelineSubscriptionFailed {
+            room_id,
+            message: _,
+        } => {
             if !is_session_ready(state)
                 || state.timeline.room_id.as_deref() != Some(room_id.as_str())
             {
@@ -407,7 +412,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             state.errors.push(AppError {
                 code: "timeline_subscription_failed".to_owned(),
-                message,
+                message: TIMELINE_SUBSCRIPTION_FAILED_MESSAGE.to_owned(),
                 recoverable: true,
             });
             vec![
