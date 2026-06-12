@@ -66,6 +66,7 @@ use crate::event::{
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind};
+use crate::search::SearchIndexMessage;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
@@ -113,6 +114,10 @@ pub struct TimelineManagerActor {
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<TimelineMessage>,
+    /// Search index mutation sender. Forwarded to individual `TimelineActor`s
+    /// so they can push `SearchIndexMessage`s on each diff. `None` when there
+    /// is no active search index (pre-session or pre-Phase-6 builds).
+    search_index_tx: Option<mpsc::Sender<SearchIndexMessage>>,
 }
 
 impl TimelineManagerActor {
@@ -126,14 +131,18 @@ impl TimelineManagerActor {
             timelines: HashMap::new(),
             event_tx,
             msg_rx,
+            search_index_tx: None,
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
     }
 
+    /// Spawn with a session and a search index mutation sender.
+    /// Called by `AccountActor::spawn_sync_actor` (Phase 6 wiring).
     pub fn spawn_with_session(
         session: Arc<MatrixClientSession>,
         event_tx: broadcast::Sender<CoreEvent>,
+        search_index_tx: mpsc::Sender<SearchIndexMessage>,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let actor = TimelineManagerActor {
@@ -142,6 +151,7 @@ impl TimelineManagerActor {
             timelines: HashMap::new(),
             event_tx,
             msg_rx,
+            search_index_tx: Some(search_index_tx),
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -364,6 +374,7 @@ impl TimelineManagerActor {
             session.clone(),
             request_id,
             self.event_tx.clone(),
+            self.search_index_tx.clone(),
         )
         .await;
 
@@ -459,6 +470,10 @@ struct TimelineActor {
     /// Conduit's sliding sync does not echo own events into the timeline),
     /// so edit/redact by event id can fall back to the transaction identity.
     sent_event_txns: HashMap<String, matrix_sdk::ruma::OwnedTransactionId>,
+    /// Search index mutation sender (Phase 6). `None` when no search index is
+    /// configured (pre-session or pre-Phase-6 builds). Fire-and-forget: if the
+    /// channel is full, we drop the mutation rather than block the diff relay.
+    search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
 }
 
 impl TimelineActor {
@@ -469,6 +484,7 @@ impl TimelineActor {
         session: Arc<MatrixClientSession>,
         subscribe_request_id: RequestId,
         event_tx: broadcast::Sender<CoreEvent>,
+        search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
     ) -> TimelineActorHandle {
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
@@ -517,6 +533,7 @@ impl TimelineActor {
             next_batch_id: TimelineBatchId(0),
             pending_sends: HashMap::new(), // sdk_txn → (client_txn, request_id)
             sent_event_txns: HashMap::new(),
+            search_index_tx,
         };
 
         executor::spawn(actor.run());
@@ -779,6 +796,13 @@ impl TimelineActor {
             return;
         }
 
+        // Phase 6: forward search index mutations before converting diffs.
+        if self.search_index_tx.is_some() {
+            for diff in &diffs {
+                self.forward_diff_to_search(diff);
+            }
+        }
+
         let core_diffs: Vec<TimelineDiff> = diffs
             .into_iter()
             .map(sdk_vector_diff_to_timeline_diff)
@@ -793,6 +817,136 @@ impl TimelineActor {
             batch_id,
             diffs: core_diffs,
         }));
+    }
+
+    /// Forward a single SDK diff item to the search index channel.
+    /// Fire-and-forget: if the channel is full, the mutation is dropped rather
+    /// than blocking the diff relay (search index is best-effort for freshness).
+    fn forward_diff_to_search(&self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
+        use eyeball_im::VectorDiff;
+        use crate::search::SearchIndexMessage;
+
+        let Some(tx) = &self.search_index_tx else { return };
+
+        let room_id = match &self.key.kind {
+            TimelineKind::Room { room_id }
+            | TimelineKind::Thread { room_id, .. }
+            | TimelineKind::Focused { room_id, .. } => room_id.clone(),
+        };
+
+        // Extract the SDK item (if any) from the diff.
+        let item_ref: Option<&Arc<SdkTimelineItem>> = match diff {
+            VectorDiff::PushFront { value } => Some(value),
+            VectorDiff::PushBack { value } => Some(value),
+            VectorDiff::Insert { value, .. } => Some(value),
+            VectorDiff::Set { value, .. } => Some(value),
+            VectorDiff::Append { values } => {
+                // Bulk append: process each item in order.
+                for item in values.iter() {
+                    let sub_diff = VectorDiff::PushBack { value: item.clone() };
+                    self.forward_diff_to_search(&sub_diff);
+                }
+                return;
+            }
+            VectorDiff::Reset { values } => {
+                // Full reset: process each item.
+                for item in values.iter() {
+                    let sub_diff = VectorDiff::PushBack { value: item.clone() };
+                    self.forward_diff_to_search(&sub_diff);
+                }
+                return;
+            }
+            VectorDiff::Remove { .. }
+            | VectorDiff::Truncate { .. }
+            | VectorDiff::Clear
+            | VectorDiff::PopFront
+            | VectorDiff::PopBack => {
+                // Remove/truncate/clear: we don't know which event_ids are affected
+                // without tracking the full timeline list; skip search forwarding.
+                // Redactions arrive as Set-with-is_redacted=true before any Remove.
+                return;
+            }
+        };
+
+        let Some(item) = item_ref else { return };
+
+        use matrix_sdk_ui::timeline::TimelineItemKind;
+        let event_item = match item.kind() {
+            TimelineItemKind::Event(e) => e,
+            TimelineItemKind::Virtual(_) => return,
+        };
+
+        // Only remote events have a stable event_id we can index.
+        let event_id = match event_item.event_id() {
+            Some(id) => id.to_string(),
+            None => return, // local-echo without confirmed event_id: skip
+        };
+
+        let sender = event_item.sender().to_string();
+        let timestamp_ms: u64 = event_item.timestamp().0.into();
+
+        // Redacted items: forward Redact so the document is removed.
+        if event_item.content().is_redacted() {
+            let _ = tx.try_send(SearchIndexMessage::Redact { event_id });
+            return;
+        }
+
+        // Extract text body from message content.
+        let body: Option<String> = event_item
+            .content()
+            .as_message()
+            .map(|msg| msg.body().to_owned());
+
+        // Only index events that have visible text content.
+        // Virtual items, redacted items, and non-message events are skipped.
+        if body.is_none() {
+            return;
+        }
+
+        // Detect edits: when is_edited() is true, the SDK ngram index will
+        // index the edit event under the edit event_id (not the original).
+        // We must register an alias so verify_candidate can resolve it back.
+        // Extract the edit event_id from latest_edit_json if available.
+        let edit_event_id: Option<String> = if event_item.content().as_message().map(|m| m.is_edited()).unwrap_or(false) {
+            event_item
+                .latest_edit_json()
+                .and_then(|raw| raw.get_field::<matrix_sdk::ruma::OwnedEventId>("event_id").ok().flatten())
+                .map(|id| id.to_string())
+        } else {
+            None
+        };
+
+        if let Some(edit_event_id) = edit_event_id {
+            // Edited message: Upsert original with new canonical body, AND
+            // forward Edit so the document store registers the alias
+            // (edit_event_id → original_event_id) used by verify_candidate.
+            let _ = tx.try_send(SearchIndexMessage::Upsert {
+                room_id: room_id.clone(),
+                event_id: event_id.clone(),
+                sender: sender.clone(),
+                timestamp_ms,
+                body: body.clone(),
+                attachment_filename: None,
+            });
+            let _ = tx.try_send(SearchIndexMessage::Edit {
+                edit_event_id,
+                target_event_id: event_id,
+                sender,
+                timestamp_ms,
+                body,
+                attachment_filename: None,
+            });
+        } else {
+            // New (unedited) message: Upsert into document store.
+            let _ = tx.try_send(SearchIndexMessage::Upsert {
+                room_id,
+                event_id,
+                sender,
+                timestamp_ms,
+                body,
+                attachment_filename: None,
+            });
+        }
     }
 
 

@@ -294,13 +294,14 @@ impl AppActor {
                     .await;
                 false
             }
-            CoreCommand::Search(_) => {
-                self.emit(CoreEvent::OperationFailed {
-                    request_id: command.request_id(),
-                    failure: CoreFailure::SearchFailed {
-                        kind: crate::failure::SearchFailureKind::Internal,
-                    },
-                });
+            CoreCommand::Search(search_command) => {
+                // Route to AccountActor (which forwards to SearchActor).
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::SearchCommand(
+                        search_command,
+                    ))
+                    .await;
                 false
             }
         }

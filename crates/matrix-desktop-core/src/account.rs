@@ -33,11 +33,12 @@ use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_state::{AppAction, LoginRequest, SessionInfo};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::command::{AccountCommand, RoomCommand, SyncCommand, TimelineCommand};
+use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
 use crate::event::{AccountEvent, CoreEvent};
 use crate::failure::{CoreFailure, LoginFailureKind};
 use crate::ids::{AccountKey, RequestId};
 use crate::room::{RoomActorHandle, RoomMessage};
+use crate::search::SearchActorHandle;
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
 use crate::sync::{SyncActorHandle, SyncMessage};
 use crate::timeline::{TimelineManagerHandle, TimelineMessage};
@@ -55,6 +56,7 @@ pub enum AccountMessage {
     SyncCommand(SyncCommand),
     RoomCommand(RoomCommand),
     TimelineCommand(TimelineCommand),
+    SearchCommand(SearchCommand),
     Shutdown,
 }
 
@@ -102,6 +104,10 @@ pub struct AccountActor {
     /// TimelineManagerActor handle (Phase 5). Spawned once at actor creation;
     /// session reference is updated when a store-backed session is established.
     timeline_manager: TimelineManagerHandle,
+    /// SearchActor handle (Phase 6). Present only when a store-backed session
+    /// exists. Created at the same time as SyncActor; stopped in the ordered
+    /// shutdown between timelines and sync (canon Async rule 12 step 3).
+    search_actor: Option<SearchActorHandle>,
 }
 
 impl AccountActor {
@@ -127,6 +133,7 @@ impl AccountActor {
             sync_actor: None,
             room_actor,
             timeline_manager,
+            search_actor: None,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -148,11 +155,15 @@ impl AccountActor {
                 AccountMessage::TimelineCommand(timeline_command) => {
                     self.route_timeline_command(timeline_command).await;
                 }
+                AccountMessage::SearchCommand(search_command) => {
+                    self.route_search_command(search_command).await;
+                }
             }
         }
         // Ordered shutdown (overview.md Async rule 12):
-        // timelines → search (phase 6 no-op) → room → sync → SDK handles.
+        // timelines → search → room → sync → SDK handles.
         self.stop_timeline_actor().await;
+        self.stop_search_actor().await;
         self.stop_room_actor().await;
         self.stop_sync_actor().await;
         // Drop the session handle inside the runtime context
@@ -178,6 +189,30 @@ impl AccountActor {
             .timeline_manager
             .send(TimelineMessage::Command(command))
             .await;
+    }
+
+    /// Route a SearchCommand to the SearchActor. Emit SessionRequired if no
+    /// search actor is active.
+    async fn route_search_command(&self, command: SearchCommand) {
+        let request_id = match &command {
+            SearchCommand::Query { request_id, .. } => *request_id,
+        };
+        match &self.search_actor {
+            Some(handle) => {
+                handle.send_command(command).await;
+            }
+            None => {
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+            }
+        }
+    }
+
+    /// Ordered shutdown of the SearchActor (step 3 of the shutdown sequence,
+    /// after timelines and before sync — canon Async rule 12 step 3).
+    async fn stop_search_actor(&mut self) {
+        if let Some(handle) = self.search_actor.take() {
+            handle.shutdown().await;
+        }
     }
 
     /// Ordered shutdown of the TimelineManagerActor (step 2 of the shutdown
@@ -214,6 +249,7 @@ impl AccountActor {
     /// Spawn the SyncActor for the just-established store-backed session and
     /// notify the RoomActor so room operations become available.
     /// Also replace the TimelineManagerActor with one that holds the session.
+    /// Also spawn the SearchActor (Phase 6).
     fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
         // Give the RoomActor the session so room ops work even before sync
         // starts. The room-list observation starts later, on the SyncActor's
@@ -224,14 +260,26 @@ impl AccountActor {
             session: session.clone(),
         });
 
-        // Replace the TimelineManagerActor with one holding the current session.
-        // The old manager (with no session) is stopped by dropping its handle.
-        // We use try_send to shut down the old manager.
+        // Spawn SearchActor (Phase 6). The session already holds the search
+        // index (configured in restore_into_store / the client builder). The
+        // search actor gets an mpsc::Sender<SearchIndexMessage> which will be
+        // forwarded to the TimelineManagerActor below.
+        let search_handle = crate::search::SearchActor::spawn(
+            session.clone(),
+            self.event_tx.clone(),
+        );
+        let search_index_tx = search_handle.index_sender();
+        self.search_actor = Some(search_handle);
+
+        // Replace the TimelineManagerActor with one holding the current session
+        // AND the search index sender. The old manager (with no session) is
+        // stopped by dropping its handle. We use try_send to shut down the old.
         self.timeline_manager
             .try_send(TimelineMessage::Shutdown);
         self.timeline_manager = crate::timeline::TimelineManagerActor::spawn_with_session(
             session.clone(),
             self.event_tx.clone(),
+            search_index_tx,
         );
 
         let handle = crate::sync::SyncActor::spawn(
@@ -584,15 +632,23 @@ impl AccountActor {
 
     /// Restore a persisted session into the per-account encrypted store
     /// (fail-closed: any store init failure is `LocalEncryptionUnavailable`).
+    /// The store config includes the search index so the SDK initializes it
+    /// alongside the SQLite store.
     async fn restore_into_store(
         &self,
         persistable: &PersistableMatrixSession,
         key_id: &SessionKeyId,
     ) -> Result<MatrixClientSession, CoreFailure> {
         let store_config = self.store.account_store_config(key_id)?;
+        // Derive the search index configuration. Fail-closed: if the
+        // credential store is unreachable, deny the restore (LocalEncryptionUnavailable).
+        let search_config = self.store.account_search_index_config(key_id)?;
+        let store_config_with_search = store_config
+            .store_config
+            .with_search_index_store(search_config.search_index_config);
         matrix_desktop_auth::restore_session_with_store(
             persistable,
-            Some(&store_config.store_config),
+            Some(&store_config_with_search),
         )
         .await
         .map_err(|_| CoreFailure::LocalEncryptionUnavailable)

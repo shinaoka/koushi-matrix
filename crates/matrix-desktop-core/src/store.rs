@@ -14,7 +14,7 @@
 
 use std::path::PathBuf;
 
-use matrix_desktop_auth::{MatrixClientStoreConfig, MatrixClientStoreKey};
+use matrix_desktop_auth::{MatrixClientStoreConfig, MatrixClientStoreKey, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig};
 use matrix_desktop_key::{CredentialStore, LocalUnlockSecret, SessionKeyId};
 
 use crate::failure::CoreFailure;
@@ -37,6 +37,14 @@ pub struct AccountStoreConfig {
     /// The session key id that identifies this account in the credential store.
     /// Retained so the account actor can persist / delete credentials.
     pub session_key_id: SessionKeyId,
+}
+
+/// Resolved search index configuration for one account.
+///
+/// Key never crosses the command/event boundary. Consumed by the client
+/// builder and then dropped.
+pub struct AccountSearchIndexConfig {
+    pub search_index_config: MatrixSearchIndexStoreConfig,
 }
 
 /// StoreActor: resolves and manages per-account credential-backed store configs.
@@ -106,6 +114,28 @@ impl StoreActor {
         })
     }
 
+    /// Derive the encrypted ngram search index configuration for the given
+    /// account. Called by `AccountActor` when building the store-backed client
+    /// so the SDK search index is initialized with the correct key.
+    ///
+    /// Returns `LocalEncryptionUnavailable` if the credential store is
+    /// unreachable — the same fail-closed behavior as `account_store_config`.
+    pub fn account_search_index_config(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<AccountSearchIndexConfig, CoreFailure> {
+        let secret = self.load_or_create_unlock_secret(key_id)?;
+        let search_key = secret.derive_search_index_key();
+        let search_dir = self.account_search_index_dir(key_id);
+        let config = MatrixSearchIndexStoreConfig::new(
+            &search_dir,
+            MatrixSearchIndexKey::new(search_key.as_str()),
+        );
+        Ok(AccountSearchIndexConfig {
+            search_index_config: config,
+        })
+    }
+
     /// Delete the stored unlock secret and the per-account store/cache
     /// directories for an account (shutdown step 7: "clear credentials and
     /// stores"). Called during logout / account removal.
@@ -156,6 +186,10 @@ impl StoreActor {
 
     fn account_cache_dir(&self, key_id: &SessionKeyId) -> PathBuf {
         self.account_root_dir(key_id).join("cache")
+    }
+
+    fn account_search_index_dir(&self, key_id: &SessionKeyId) -> PathBuf {
+        self.account_root_dir(key_id).join("search-index")
     }
 }
 

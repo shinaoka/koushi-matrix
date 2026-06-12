@@ -10,6 +10,13 @@ pub struct SearchDocumentStore {
     documents: BTreeMap<String, SearchableEvent>,
     applied_edits: BTreeMap<String, SearchEdit>,
     pending_edits: BTreeMap<String, Vec<SearchEdit>>,
+    /// Maps edit_event_id → original_event_id.
+    ///
+    /// The SDK's ngram index indexes edit events under the edit event_id (via
+    /// `RoomIndexOperation::Edit` which removes the original and adds the edit
+    /// event). This alias map lets `verify_candidate` resolve an edit_event_id
+    /// back to the original document so verification succeeds.
+    edit_aliases: BTreeMap<String, String>,
 }
 
 impl SearchDocumentStore {
@@ -33,6 +40,12 @@ impl SearchDocumentStore {
     }
 
     pub fn upsert_edit(&mut self, edit: SearchEdit) {
+        // Register the alias so that when the SDK ngram index returns the
+        // edit event_id as a candidate, verify_candidate can resolve it to
+        // the original document.
+        self.edit_aliases
+            .insert(edit.edit_event_id.clone(), edit.target_event_id.clone());
+
         if self.documents.contains_key(&edit.target_event_id) {
             self.apply_edit(edit);
         } else {
@@ -47,6 +60,8 @@ impl SearchDocumentStore {
         self.documents.remove(event_id);
         self.applied_edits.remove(event_id);
         self.pending_edits.remove(event_id);
+        // Also remove any aliases pointing to this event.
+        self.edit_aliases.retain(|_, target| target != event_id);
     }
 
     pub fn verify_candidate(
@@ -54,8 +69,23 @@ impl SearchDocumentStore {
         candidate: SearchCandidate,
         query: &str,
     ) -> Option<SearchResult> {
-        let event = self.resolved_event(&candidate.event_id)?;
-        crate::verify::verify_candidate(&candidate, &event, query)
+        // If the candidate event_id is an edit event alias, resolve to the
+        // original document (the SDK's ngram index uses edit event_ids after
+        // RoomIndexOperation::Edit removes the original and adds the edit).
+        let resolved_event_id = self
+            .edit_aliases
+            .get(&candidate.event_id)
+            .cloned()
+            .unwrap_or_else(|| candidate.event_id.clone());
+
+        let resolved_candidate = SearchCandidate {
+            room_id: candidate.room_id.clone(),
+            event_id: resolved_event_id.clone(),
+            score_millis: candidate.score_millis,
+        };
+
+        let event = self.resolved_event(&resolved_event_id)?;
+        crate::verify::verify_candidate(&resolved_candidate, &event, query)
     }
 
     fn apply_edit(&mut self, edit: SearchEdit) {

@@ -35,10 +35,10 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use matrix_desktop_core::command::{AccountCommand, CoreCommand, RoomCommand, SyncCommand, TimelineCommand};
+use matrix_desktop_core::command::{AccountCommand, CoreCommand, RoomCommand, SearchCommand, SearchScope, SyncCommand, TimelineCommand};
 use matrix_desktop_core::event::{
-    AccountEvent, CoreEvent, PaginationDirection, PaginationState, RoomEvent, SyncBackendKind,
-    SyncEvent, TimelineEvent,
+    AccountEvent, CoreEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
+    SyncBackendKind, SyncEvent, TimelineEvent,
 };
 use matrix_desktop_core::failure::CoreFailure;
 use matrix_desktop_core::ids::{AccountKey, TimelineKey};
@@ -579,10 +579,129 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         .await
         .map_err(|e| format!("submit unsubscribe B: {e}"))?;
 
-    // Brief wait so the unsubscribe commands are processed before sync stop.
+    // Brief wait so the unsubscribe commands are processed before search QA.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     println!("sent=2 recv=2 reply=1 edit=ok redact=ok paginate={paginate_result}");
+
+    // -----------------------------------------------------------------------
+    // --- Phase 6: Search QA (CJK query, edit, redact) ---
+    // -----------------------------------------------------------------------
+
+    // Re-subscribe A's timeline for the search round-trip.
+    let key_a_search = TimelineKey::room(account_key_a.clone(), room_id.clone());
+    let subscribe_search_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: subscribe_search_id,
+            key: key_a_search.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit subscribe timeline A (search): {e}"))?;
+
+    wait_for_initial_items(&mut conn_a, &key_a_search, subscribe_search_id, "subscribe timeline A search").await?;
+
+    // Send a message with a CJK body that will be indexed.
+    const SEARCH_BODY: &str = "検索対象メッセージ Phase6 QA";
+    const SEARCH_QUERY: &str = "検索対象";
+    const EDITED_BODY: &str = "Phase6 QA 編集済みメッセージ";
+    const EDITED_QUERY: &str = "編集済み";
+
+    let txn_search = "qa-phase6-search-txn".to_owned();
+    let send_search_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_search_id,
+            key: key_a_search.clone(),
+            transaction_id: txn_search.clone(),
+            body: SEARCH_BODY.to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("submit search send: {e}"))?;
+
+    let (_, search_event_id) =
+        wait_for_send_completed(&mut conn_a, send_search_id, &key_a_search, "send search msg").await?;
+    println!("search_msg_sent=ok event_id={search_event_id}");
+
+    // Poll SearchCommand::Query until Results contains search_event_id.
+    // The ngram index is fed by the SDK sync loop; wait up to 30s for indexing.
+    poll_search_until_found(
+        &mut conn_a,
+        &account_key_a,
+        SEARCH_QUERY,
+        &search_event_id,
+        &room_id,
+        "search=ok (CJK query)",
+    ).await?;
+    println!("search=ok");
+
+    // Edit the search message.
+    let edit_search_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::EditText {
+            request_id: edit_search_id,
+            key: key_a_search.clone(),
+            event_id: search_event_id.clone(),
+            body: EDITED_BODY.to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("submit edit search msg: {e}"))?;
+
+    wait_for_edit_diff(
+        &mut conn_a,
+        &key_a_search,
+        edit_search_id,
+        &search_event_id,
+        EDITED_BODY,
+        "edit search msg diff",
+    ).await?;
+
+    // Poll until new text is found.
+    poll_search_until_found(
+        &mut conn_a,
+        &account_key_a,
+        EDITED_QUERY,
+        &search_event_id,
+        &room_id,
+        "search_edit=ok (new text found)",
+    ).await?;
+
+    // Assert old text is no longer verifiable (document store canonical text
+    // has changed; even if the ngram index still has the old token, the document
+    // store will reject the candidate).
+    poll_search_until_absent(
+        &mut conn_a,
+        &account_key_a,
+        SEARCH_QUERY,
+        &search_event_id,
+        &room_id,
+        "search_edit=ok (old text absent)",
+    ).await?;
+
+    println!("search_edit=ok");
+
+    // Assert redacted msg2 text is absent (msg2 was redacted in Phase 5 above).
+    poll_search_until_absent(
+        &mut conn_a,
+        &account_key_a,
+        "Phase 5 QA message 2",
+        &event2_id,
+        &room_id,
+        "search_redact=ok (redacted msg absent)",
+    ).await?;
+    println!("search_redact=ok");
+
+    // Unsubscribe search timeline.
+    let unsub_search_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+            request_id: unsub_search_id,
+            key: key_a_search.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit unsubscribe search timeline: {e}"))?;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // -----------------------------------------------------------------------
     // --- Sync stop A + store-backed restore A + logout A ---
@@ -674,7 +793,8 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
          restore_a=ok logout_a=ok post_logout_restore_a=not_found \
          login_b={user_b} sync_b=ok backend_b={backend_b:?} \
          joined_room=ok joined_space=ok room_list_b={room_list_b} \
-         logout_b=ok",
+         logout_b=ok \
+         search=ok search_edit=ok search_redact=ok",
         server = config.server_kind,
         user_a = account_key_a.0,
         backend_a = sync_backend_a,
@@ -1723,6 +1843,128 @@ async fn wait_for_paginate_end_reached(
                 return Err(format!("{label} paginate failed: {failure:?}"));
             }
             _ => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 search QA helpers
+// ---------------------------------------------------------------------------
+
+/// Poll `SearchCommand::Query` every 500ms until the Results event contains
+/// `expected_event_id` in the given room, or timeout (60s). Fails on any
+/// search failure response.
+async fn poll_search_until_found(
+    conn: &mut CoreConnection,
+    _account_key: &AccountKey,
+    query: &str,
+    expected_event_id: &str,
+    room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "{label}: timed out; event {expected_event_id} not found in search results for query"
+            ));
+        }
+
+        let rid = conn.next_request_id();
+        conn.command(CoreCommand::Search(SearchCommand::Query {
+            request_id: rid,
+            query: query.to_owned(),
+            scope: SearchScope::Room { room_id: room_id.to_owned() },
+        }))
+        .await
+        .map_err(|e| format!("{label}: submit search query: {e}"))?;
+
+        // Wait up to 5s for the search result for this request_id.
+        let found = wait_for_search_result(conn, rid, expected_event_id, label).await?;
+        if found {
+            return Ok(());
+        }
+        // Not found yet — the index may still be updating. Wait and retry.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Poll `SearchCommand::Query` every 500ms until the Results event does NOT
+/// contain `excluded_event_id`, or timeout (30s). If the event is still present
+/// after the timeout, returns Ok (the old ngram token may still generate a
+/// candidate, but the document store should reject it — if it IS returned as a
+/// verified result, that's a bug surfaced by the stricter variant below).
+///
+/// For the "old text absent" assertion after an edit: the ngram index may still
+/// have the old token, but `SearchDocumentStore::verify_candidate` must reject
+/// it. We poll until the event is absent from the verified result set.
+async fn poll_search_until_absent(
+    conn: &mut CoreConnection,
+    _account_key: &AccountKey,
+    query: &str,
+    excluded_event_id: &str,
+    room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let rid = conn.next_request_id();
+        conn.command(CoreCommand::Search(SearchCommand::Query {
+            request_id: rid,
+            query: query.to_owned(),
+            scope: SearchScope::Room { room_id: room_id.to_owned() },
+        }))
+        .await
+        .map_err(|e| format!("{label}: submit search query: {e}"))?;
+
+        let still_present = wait_for_search_result(conn, rid, excluded_event_id, label).await?;
+        if !still_present {
+            return Ok(());
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            // The event is still present after 30s. For redactions this is a hard
+            // failure; for edit old-text absence it may be transient (the document
+            // store should already reject it). Surface as error.
+            return Err(format!(
+                "{label}: event {excluded_event_id} still appears in search results after 30s"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Submit one search query and wait for `SearchEvent::Results` with matching
+/// `request_id`. Returns `true` if `expected_event_id` appears in results,
+/// `false` if the Results arrived but the event is absent.
+/// Propagates search failure (IndexUnavailable, etc.) as errors.
+async fn wait_for_search_result(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    expected_event_id: &str,
+    label: &str,
+) -> Result<bool, String> {
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for SearchEvent::Results"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Search(SearchEvent::Results {
+                request_id: ev_id,
+                results,
+            }) if ev_id == request_id => {
+                let found = results.iter().any(|r| r.event_id == expected_event_id);
+                return Ok(found);
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: search query failed: {failure:?}"));
+            }
+            _ => continue,
         }
     }
 }

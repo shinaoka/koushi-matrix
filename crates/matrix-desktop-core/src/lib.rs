@@ -15,6 +15,7 @@ pub mod failure;
 pub mod ids;
 pub mod room;
 pub mod runtime;
+pub mod search;
 pub mod store;
 pub mod sync;
 pub mod timeline;
