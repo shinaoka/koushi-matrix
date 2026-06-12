@@ -462,8 +462,17 @@ primary correctness gate.
 3. **Real homeserver QA** — required before GUI-level confidence claims:
    HTTPS login, recovery, encrypted store restore, sync lifecycle, room list,
    timeline, send, search smoke, logout, account switch.
-4. **GUI smoke** — thin sanity layer on top, subject to the automation rules
-   in the policies document.
+4. **Headless UI tests** — the frontend runs in a plain headless browser
+   (Vite dev server + mocked Tauri IPC, e.g. WebdriverIO/Playwright browser
+   mode) against fake `CoreEvent`/snapshot streams. This layer owns React
+   UI behavior: timeline diff application, generation handling, scroll
+   anchoring and DOM scrollback behavior, command invocation shapes. It
+   runs without any native window or OS keychain access.
+5. **GUI smoke** — a deliberately minimal, last layer for what only the
+   real Tauri app can prove: native window behavior, real IPC, WKWebView
+   integration. Subject to the automation rules in the policies document;
+   on macOS it launches a real window and is run attended (coordinated
+   with the user), never as part of unattended agent verification.
 
 **Implementation workflow: headless-first, local-server-first.** New Matrix
 behavior lands in `matrix-desktop-core`, is exercised through

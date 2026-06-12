@@ -6,7 +6,7 @@ security policy of the runtime design and the durable lessons recorded in
 `AGENTS.md`. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); the rules themselves live here.
 
-Last amended: 2026-06-12.
+Last amended: 2026-06-13.
 
 ## Secrets and Private Data
 
@@ -91,6 +91,12 @@ Rules:
 
 GUI automation is a thin smoke layer, never the primary correctness gate.
 
+0. UI behavior is verified headless by default: frontend tests run in a
+   headless browser with mocked Tauri IPC and fake `CoreEvent` streams
+   (QA Model layer 4). The real Tauri app is launched only for the minimal
+   native-integration smoke, and on macOS only attended — unattended agent
+   sessions must not launch the GUI app (it opens real windows, reads the
+   OS keychain, and surfaces crash dialogs on the user's desktop).
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.
@@ -119,6 +125,13 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    dependencies, preserving upstream structure for upstreaming patches.
    Direct ports from Element X code preserve upstream license and copyright
    notices.
+   Patches to the vendored SDK are limited to what is indispensable: a
+   change is allowed only when the need cannot be met through the SDK's
+   public API or a wrapper on our side. Each patch must be minimal
+   (prefer additive accessors over behavioral changes), recorded in
+   `docs/upstream/matrix-rust-sdk-feedback.md` with rationale and
+   upstreaming intent, and reviewed at phase exit. Convenience patches are
+   rejected; every patch increases the cost of tracking upstream.
 2. Local homeserver toolchain caveats (Conduit/Tuwunel install flags such as
    `RUMA_UNSTABLE_EXHAUSTIVE_TYPES=1`, macOS `--no-default-features`) are
    tracked in `AGENTS.md` and the QA scripts, not hand-run.

@@ -193,8 +193,12 @@ Goal: the GUI becomes a pure transport client of the core.
   payload tracing, secrets one-way.
 - React timeline applies diffs with anchor-based scroll restoration per the
   Viewport/Scrollback contract.
-- GUI smoke (existing scripts): scrollback anchor stability, live-append
-  viewport behavior, `EndReached` stops auto-pagination.
+- Headless UI tests (QA Model layer 4): frontend in headless Chrome with
+  mocked Tauri IPC and fake `CoreEvent` streams — scrollback anchor
+  stability, diff application/generation handling, live-append viewport
+  behavior, `EndReached` stops auto-pagination, command invocation shapes.
+- GUI smoke is deferred to an attended session with the user (macOS opens
+  real windows): native window/IPC/WKWebView integration only.
 
 Gap watchlist: Tauri event-channel throughput for diff batches; serialization
 cost of snapshots; where typed TS bindings for `CoreCommand`/`CoreEvent`
@@ -222,6 +226,15 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 - Mark this plan completed; open items become new dated specs.
 
 ## Changelog
+
+- 2026-06-13: canon amendments — (1) vendored-SDK patches restricted to the
+  indispensable, minimal, recorded-and-reviewed (engineering rules, Build
+  rule 1); (2) new headless UI test layer (browser mode + mocked IPC + fake
+  CoreEvent streams) inserted between local homeserver QA and GUI smoke;
+  GUI smoke shrinks to attended native-integration only, after unattended
+  GUI launches during agent verification caused crash dialogs and an OS
+  keychain prompt on the user's desktop (4 matrix-desktop-app SIGABRT
+  reports, stray Vite process on :5173 — cleaned up).
 
 - 2026-06-13: Phase 6 landed (f37fa76) — SearchActor with encrypted ngram index
   and canonical-text verification via SearchDocumentStore. Key finding: SDK
