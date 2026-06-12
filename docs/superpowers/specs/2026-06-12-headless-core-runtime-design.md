@@ -87,13 +87,17 @@ semantics beyond typed client calls and view logic.
 ## Public Runtime API
 
 Core exposes commands, events, and state snapshots. Every command carries a
-caller-generated `RequestId`; every command result event carries the same ID.
-The event stream is shared by all consumers (Tauri, CLI, QA): `RequestId`
-values are unique only within the connection that issued them, so each consumer
-correlates only IDs it generated and ignores matches from other connections.
+runtime-scoped `RequestId`; every command result event carries the same full
+ID. The event stream is shared by all consumers (Tauri, CLI, QA), so the ID
+includes both a runtime-assigned connection ID and a caller-assigned sequence.
 
 ```rust
-pub struct RequestId(pub u64);
+pub struct RuntimeConnectionId(pub u64);
+
+pub struct RequestId {
+    pub connection_id: RuntimeConnectionId,
+    pub sequence: u64,
+}
 
 pub struct TimelineKey {
     pub account_key: AccountKey,
@@ -108,6 +112,28 @@ pub enum TimelineKind {
 
 pub struct TimelineGeneration(pub u64);
 pub struct TimelineBatchId(pub u64);
+
+pub enum PaginationDirection {
+    Backward,
+    Forward,
+}
+
+pub enum PaginationState {
+    Idle,
+    Paginating,
+    EndReached,
+    Failed { kind: TimelineFailureKind },
+}
+
+pub enum TimelineFailureKind {
+    InvalidDirection,
+    NotSubscribed,
+    Forbidden,
+    Network,
+    Timeout,
+    Sdk,
+    QueueOverflow,
+}
 
 pub struct CoreRuntime {
     command_tx: CoreCommandSender,
@@ -274,7 +300,7 @@ pagination is valid for every timeline kind. Forward pagination is valid only
 for non-live timelines (`Focused`), where the subscription starts in the middle
 of history; on `Room` and `Thread` timelines the forward edge is produced by
 sync, and a forward `Paginate` fails with
-`TimelineOperationFailed { kind: InvalidDirection }`.
+`TimelineOperationFailed { kind: TimelineFailureKind::InvalidDirection }`.
 
 The public API must redact `Debug` for secret-bearing commands:
 
