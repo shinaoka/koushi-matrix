@@ -27,6 +27,14 @@ All agents implementing the headless core runtime follow
   `Last amended`), sync the dated spec if the public API changes, add a
   Changelog entry to the implementation plan, and only then implement to the
   amended design. Code that diverges from the canon must not land.
+- **Canon amendments always escalate.** The implementing model never amends
+  the canon itself. When a design gap requires changing
+  `docs/architecture/overview.md` or `docs/policies/engineering-rules.md`,
+  stop and hand the redesign decision to the strongest available model of
+  the agent's family — for Claude agents Fable 5 or Opus, for Codex agents
+  the highest GPT version (never a mini/lightweight tier) — or to the user.
+  The implementing model resumes only after the canon is amended. See Model
+  Assignment in the implementation plan.
 - **Phase exits include a docs-sync check**: no known contradiction between
   landed code and the canon documents.
 

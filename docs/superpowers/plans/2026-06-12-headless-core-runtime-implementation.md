@@ -31,6 +31,30 @@ contradicts the canon or hits an unspecified case:
 Every phase exit includes a docs-sync check: no known contradiction between
 landed code and the canon documents.
 
+## Model Assignment
+
+Implementation is delegated by phase, with escalation tied to the Redesign
+Protocol:
+
+- **Default implementer: Sonnet** (claude-sonnet-4-6). The canon, the spec,
+  and the per-phase QA gates are deliberately concrete enough that most phase
+  work is "write the specified contract in Rust and make the gates pass".
+- **Phase 1 is implemented by a stronger model** (Fable 5 / Opus). The API
+  boundary types, channel topology, and executor abstraction are the
+  foundation every later phase builds on; defects here propagate everywhere.
+- **Canon amendments always escalate.** When the implementing model hits a
+  design gap (Redesign Protocol step 1), it stops and reports; the redesign
+  decision and the canon amendment are made by the strongest available model
+  of the agent's family (Claude: Fable 5 / Opus; Codex: the highest GPT
+  version, never a mini/lightweight tier) or by the user, never improvised
+  by the implementing model. After the canon is amended,
+  the implementing model resumes against the updated design. Phases 3 and 5
+  are expected to trigger this most (see their gap watchlists).
+- **Phase exits are reviewed by a stronger model**: code review plus the
+  docs-sync check, before the phase is declared done.
+- Quality is enforced by the gates (headless QA, secret scan, redaction
+  tests, wasm checks), not by trust in any model's self-report.
+
 ## Phase 0 — Guardrails
 
 Goal: enforcement exists before the code it must constrain.
@@ -192,3 +216,6 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 ## Changelog
 
 - 2026-06-12: plan created.
+- 2026-06-12: model assignment added — Sonnet implements by default, Phase 1
+  and all canon amendments escalate to a stronger model, phase exits reviewed
+  by a stronger model.
