@@ -169,7 +169,20 @@ impl AccountActor {
 
         match &self.sync_actor {
             Some(handle) => {
+                // Keep the RoomActor's observation loop lifecycle in step
+                // with sync: stop it when sync stops, re-establish it (next
+                // SyncStarted replaces any running loop) when sync restarts.
+                let room_notification = match &command {
+                    SyncCommand::Stop { .. } => Some(RoomMessage::SyncStopped),
+                    SyncCommand::Restart { .. } => {
+                        self.session.clone().map(|session| RoomMessage::SyncStarted { session })
+                    }
+                    SyncCommand::Start { .. } | SyncCommand::SyncOnce { .. } => None,
+                };
                 let _ = handle.send(SyncMessage::Command(command)).await;
+                if let Some(notification) = room_notification {
+                    let _ = self.room_actor.send(notification).await;
+                }
             }
             None => {
                 // Session not yet ready — gate is enforced in AppActor but be
@@ -182,10 +195,11 @@ impl AccountActor {
     /// Spawn the SyncActor for the just-established store-backed session and
     /// notify the RoomActor so it can set up the room list.
     fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
-        // Notify the RoomActor that we have a session. It will do a one-shot
-        // room list snapshot (auth::room_list_snapshot covers both backends).
-        // We use try_send since spawn_sync_actor is a sync fn; the channel
-        // capacity of 64 is more than enough for this one message.
+        // Notify the RoomActor that we have a session. It does an initial
+        // room list snapshot (auth::room_list_snapshot covers both backends)
+        // and then runs a room-list observation loop relaying the SDK's room
+        // update stream. We use try_send since spawn_sync_actor is a sync fn;
+        // the channel capacity of 64 is more than enough for this one message.
         let session_for_room = session.clone();
         self.room_actor.try_send(RoomMessage::SyncStarted {
             session: session_for_room,

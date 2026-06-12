@@ -7,16 +7,21 @@
 //! task per actor").
 //!
 //! ## Room list normalization (Async rule 9 note)
-//! On `RoomMessage::SyncStarted`, `RoomActor` calls
-//! `matrix_desktop_auth::room_list_snapshot(session)` which internally tries
-//! `RoomListService` (SyncService backend) and falls back to
-//! `client.joined_rooms()` (LegacySync backend). Both paths are therefore
-//! exercised depending on server capability. The snapshot is projected as
-//! `AppAction::RoomListUpdated` + `RoomEvent::RoomListUpdated`.
+//! On `RoomMessage::SyncStarted`, `RoomActor` does an initial
+//! `matrix_desktop_auth::room_list_snapshot(session)` call — which internally
+//! tries `RoomListService` (SyncService backend) and falls back to
+//! `client.joined_rooms()` (LegacySync backend) — and then spawns a room-list
+//! observation loop subscribed to
+//! `client.subscribe_to_all_room_updates()`. That broadcast fires on both
+//! backends because both feed the base client, so the actor RELAYS the SDK's
+//! observable stream (Async rule 1) instead of taking a one-shot snapshot.
+//! Each received update batch coalesces any additionally pending batches
+//! (`try_recv` drain) into a single re-normalization; a `Lagged` receiver
+//! triggers one refresh because the snapshot is self-healing. Snapshots are
+//! projected as `AppAction::RoomListUpdated` + `RoomEvent::RoomListUpdated`.
 //!
-//! The backend kind is recorded for logging/diagnostics; the auth snapshot
-//! function handles both paths so `RoomActor` does not need a direct reference
-//! to the `SyncService` that `SyncActor` holds.
+//! The auth snapshot function handles both backend paths so `RoomActor` does
+//! not need a direct reference to the `SyncService` that `SyncActor` holds.
 //!
 //! Per Async rule 9: "Because the local QA matrix includes homeservers without
 //! MSC4186, this legacy room-list path is a fully implemented, QA-gated
@@ -41,7 +46,7 @@ use std::sync::Arc;
 
 use matrix_desktop_auth::{MatrixClientSession, MatrixRoomOperationError};
 use matrix_desktop_state::{AppAction, RoomSummary, SpaceSummary};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::RoomCommand;
 use crate::event::{CoreEvent, RoomEvent};
@@ -89,8 +94,17 @@ impl RoomActorHandle {
     }
 }
 
+/// Handle on the spawned room-list observation loop: oneshot stop signal plus
+/// the task handle so teardown can await completion (same pattern as
+/// `sync.rs` `legacy_stop_tx`).
+struct RoomListObservation {
+    stop_tx: oneshot::Sender<()>,
+    task: executor::JoinHandle<()>,
+}
+
 pub struct RoomActor {
     session: Option<Arc<MatrixClientSession>>,
+    observation: Option<RoomListObservation>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     command_rx: mpsc::Receiver<RoomMessage>,
@@ -104,6 +118,7 @@ impl RoomActor {
         let (tx, command_rx) = mpsc::channel(64);
         let actor = RoomActor {
             session: None,
+            observation: None,
             action_tx,
             event_tx,
             command_rx,
@@ -115,22 +130,53 @@ impl RoomActor {
     async fn run(mut self) {
         while let Some(msg) = self.command_rx.recv().await {
             match msg {
-                RoomMessage::Shutdown => break,
+                RoomMessage::Shutdown => {
+                    self.stop_observation().await;
+                    break;
+                }
                 RoomMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
                 RoomMessage::SyncStarted { session } => {
+                    // Guard against two observation loops running: a previous
+                    // loop (from an earlier SyncStarted) is stopped before the
+                    // replacement is spawned.
+                    self.stop_observation().await;
                     self.session = Some(session);
-                    // Kick off a one-shot room list snapshot to populate the
-                    // initial state. `room_list_snapshot` handles both the
-                    // SyncService and LegacySync backends internally.
+                    // Initial snapshot to populate state, then a continuous
+                    // observation loop so later room updates keep relaying
+                    // (Async rule 1: actors relay the SDK's observable
+                    // streams; a one-shot snapshot is not relaying).
                     self.refresh_room_list().await;
+                    self.start_observation();
                 }
                 RoomMessage::SyncStopped => {
-                    // Nothing to tear down for now; the next SyncStarted will
-                    // re-establish the list.
+                    self.stop_observation().await;
                 }
             }
+        }
+    }
+
+    /// Spawn the room-list observation loop for the current session.
+    fn start_observation(&mut self) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let task = executor::spawn(run_room_list_observation(
+            session.clone(),
+            self.action_tx.clone(),
+            self.event_tx.clone(),
+            stop_rx,
+        ));
+        self.observation = Some(RoomListObservation { stop_tx, task });
+    }
+
+    /// Stop the observation loop (if running) and wait for it to exit.
+    async fn stop_observation(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            let _ = observation.stop_tx.send(());
+            let _ = observation.task.await;
         }
     }
 
@@ -196,6 +242,9 @@ impl RoomActor {
                     request_id,
                     room_id,
                 }));
+                // Reflect the actor's own mutation immediately instead of
+                // waiting for the next sync round-trip.
+                self.refresh_room_list().await;
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -218,6 +267,8 @@ impl RoomActor {
                     request_id,
                     space_id,
                 }));
+                // Reflect the actor's own mutation immediately.
+                self.refresh_room_list().await;
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -249,6 +300,8 @@ impl RoomActor {
                     space_id,
                     child_room_id,
                 }));
+                // Reflect the actor's own mutation immediately.
+                self.refresh_room_list().await;
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -299,6 +352,8 @@ impl RoomActor {
                     request_id,
                     room_id: joined_room_id,
                 }));
+                // Reflect the actor's own mutation immediately.
+                self.refresh_room_list().await;
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -312,27 +367,10 @@ impl RoomActor {
 
     /// Fetch the current room list and project it into AppState via the action
     /// channel. Also emits `RoomEvent::RoomListUpdated` as a discrete event.
-    ///
-    /// `matrix_desktop_auth::room_list_snapshot` handles both the SyncService
-    /// backend (tries RoomListService first) and the LegacySync backend
-    /// (falls back to client.joined_rooms()), so this single call covers both
-    /// QA-gated paths per Async rule 9.
     async fn refresh_room_list(&self) {
-        let session = match &self.session {
-            Some(s) => s,
-            None => return,
-        };
-
-        let snapshot = match matrix_desktop_auth::room_list_snapshot(session).await {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-
-        let spaces = normalize_spaces(&snapshot);
-        let rooms = normalize_rooms(&snapshot);
-
-        self.reduce(vec![AppAction::RoomListUpdated { spaces, rooms }]);
-        self.emit(CoreEvent::Room(RoomEvent::RoomListUpdated));
+        if let Some(session) = &self.session {
+            refresh_room_list_with(session, &self.action_tx, &self.event_tx).await;
+        }
     }
 
     fn emit(&self, event: CoreEvent) {
@@ -348,6 +386,71 @@ impl RoomActor {
 
     fn reduce(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.try_send(actions);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Room list refresh + observation loop
+// ---------------------------------------------------------------------------
+
+/// Fetch the current room list, normalize it, and project it as
+/// `AppAction::RoomListUpdated` + `RoomEvent::RoomListUpdated`.
+///
+/// `matrix_desktop_auth::room_list_snapshot` handles both the SyncService
+/// backend (tries RoomListService first) and the LegacySync backend (falls
+/// back to client.joined_rooms()), so this single call covers both QA-gated
+/// paths per Async rule 9.
+async fn refresh_room_list_with(
+    session: &MatrixClientSession,
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    event_tx: &broadcast::Sender<CoreEvent>,
+) {
+    let snapshot = match matrix_desktop_auth::room_list_snapshot(session).await {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let spaces = normalize_spaces(&snapshot);
+    let rooms = normalize_rooms(&snapshot);
+
+    let _ = action_tx.try_send(vec![AppAction::RoomListUpdated { spaces, rooms }]);
+    let _ = event_tx.send(CoreEvent::Room(RoomEvent::RoomListUpdated));
+}
+
+/// Room-list observation loop (Async rule 1: relay the SDK's observable
+/// streams). Subscribes to `client.subscribe_to_all_room_updates()`, which
+/// fires on both SyncService and LegacySync backends because both feed the
+/// base client. Each received batch coalesces any additionally pending
+/// batches into one `refresh_room_list_with` call; `Lagged` triggers a single
+/// refresh because the snapshot is self-healing. Exits on the oneshot stop
+/// signal (same pattern as `sync.rs` `legacy_stop_tx`) or when the SDK closes
+/// the broadcast.
+async fn run_room_list_observation(
+    session: Arc<MatrixClientSession>,
+    action_tx: mpsc::Sender<Vec<AppAction>>,
+    event_tx: broadcast::Sender<CoreEvent>,
+    mut stop_rx: oneshot::Receiver<()>,
+) {
+    use tokio::sync::broadcast::error::RecvError;
+
+    let mut updates_rx = session.client().subscribe_to_all_room_updates();
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            result = updates_rx.recv() => match result {
+                Ok(_batch) => {
+                    // Coalesce: drain any additionally pending update batches;
+                    // one refresh covers them all.
+                    while updates_rx.try_recv().is_ok() {}
+                    refresh_room_list_with(&session, &action_tx, &event_tx).await;
+                }
+                Err(RecvError::Lagged(_)) => {
+                    // The snapshot is self-healing: refresh once.
+                    refresh_room_list_with(&session, &action_tx, &event_tx).await;
+                }
+                Err(RecvError::Closed) => break,
+            },
+        }
     }
 }
 
@@ -678,6 +781,23 @@ pub mod tests {
             } => assert_eq!(ev_id, request_id),
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    // --- Observation lifecycle messages without a session are safe ---
+
+    #[tokio::test]
+    async fn sync_stopped_and_shutdown_without_session_complete_cleanly() {
+        let (action_tx, _action_rx) = mpsc::channel(16);
+        let (event_tx, _event_rx) = broadcast::channel(16);
+        let handle = RoomActor::spawn(action_tx, event_tx);
+
+        // No session, no observation loop: both must be no-ops, and the
+        // actor task must still exit on Shutdown.
+        assert!(handle.send(RoomMessage::SyncStopped).await);
+        assert!(handle.send(RoomMessage::Shutdown).await);
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle.join())
+            .await
+            .expect("actor task must exit after Shutdown");
     }
 
     // --- Normalization empty snapshot ---

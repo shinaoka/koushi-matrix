@@ -270,15 +270,17 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     .await?;
     println!("invite_b_to_space=ok");
 
-    // Wait for A's room list to update and contain the new room and space
-    wait_for_room_list_updated(&mut conn_a, "room list A after creates").await?;
-    let snapshot_a = conn_a.snapshot();
+    // Wait (event-driven, bounded) until A's room list contains the created
+    // room AND the created space; the wait itself is the assertion.
+    let snapshot_a = wait_for_room_list_containing(
+        &mut conn_a,
+        &room_id,
+        &space_id,
+        "room list A after creates",
+    )
+    .await?;
     let room_list_a = room_list_summary(&snapshot_a);
     println!("room_list_a={room_list_a}");
-
-    // Assert A has the created room and space
-    assert_room_in_list(&snapshot_a, &room_id, "A's room list should contain QA Room")?;
-    assert_space_in_list(&snapshot_a, &space_id, "A's room list should contain QA Space")?;
 
     // -----------------------------------------------------------------------
     // --- Login B + sync B + join room + join space ---
@@ -350,14 +352,17 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     wait_for_room_joined(&mut conn_b, join_space_id, &space_id, "B joins space").await?;
     println!("b_joined_space=ok");
 
-    // Wait for B's room list to update and contain the joined room and space
-    wait_for_room_list_updated(&mut conn_b, "room list B after joins").await?;
-    let snapshot_b = conn_b.snapshot();
+    // Wait (event-driven, bounded) until B's room list contains the joined
+    // room AND the joined space; the wait itself is the assertion.
+    let snapshot_b = wait_for_room_list_containing(
+        &mut conn_b,
+        &room_id,
+        &space_id,
+        "room list B after joins",
+    )
+    .await?;
     let room_list_b = room_list_summary(&snapshot_b);
     println!("room_list_b={room_list_b}");
-
-    // Assert B has the joined room (space join should make it appear too)
-    assert_room_in_list(&snapshot_b, &room_id, "B's room list should contain QA Room")?;
 
     // Phase 5 placeholder: send permission check
     // (Actual send is Phase 5; we just verify the room exists in state)
@@ -477,28 +482,6 @@ fn room_list_summary(snapshot: &AppState) -> String {
         .filter(|r| r.unread_count > 0)
         .count();
     format!("rooms={rooms} spaces={spaces} dms={dms} unread_rooms={unread}")
-}
-
-fn assert_room_in_list(snapshot: &AppState, room_id: &str, label: &str) -> Result<(), String> {
-    if snapshot.rooms.iter().any(|r| r.room_id == room_id) {
-        Ok(())
-    } else {
-        Err(format!(
-            "{label}: room {room_id} not found in room list (have {} rooms)",
-            snapshot.rooms.len()
-        ))
-    }
-}
-
-fn assert_space_in_list(snapshot: &AppState, space_id: &str, label: &str) -> Result<(), String> {
-    if snapshot.spaces.iter().any(|s| s.space_id == space_id) {
-        Ok(())
-    } else {
-        Err(format!(
-            "{label}: space {space_id} not found in space list (have {} spaces)",
-            snapshot.spaces.len()
-        ))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -677,41 +660,65 @@ async fn wait_for_room_joined(
     }
 }
 
-/// Wait for `RoomEvent::RoomListUpdated` (discrete event) and/or a
-/// `StateChanged` snapshot that has a non-empty room list. Returns once the
-/// snapshot has at least one room or space.
-async fn wait_for_room_list_updated(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
-    // Check snapshot first in case it already has data.
-    if room_list_has_content(&conn.snapshot()) {
-        return Ok(());
+/// Wait (event-driven on `RoomListUpdated`/`StateChanged`, bounded by
+/// `EVENT_TIMEOUT`) until the snapshot's room list contains the expected room
+/// in `rooms` AND the expected space in `spaces`. Returns the matching
+/// snapshot. Waiting for "any non-empty list" is not enough: spaces only
+/// classify as spaces after the create reaches the client via sync, so the
+/// list can be momentarily rooms-only.
+async fn wait_for_room_list_containing(
+    conn: &mut CoreConnection,
+    expected_room_id: &str,
+    expected_space_id: &str,
+    label: &str,
+) -> Result<AppState, String> {
+    let contains_expected = |snapshot: &AppState| {
+        snapshot.rooms.iter().any(|r| r.room_id == expected_room_id)
+            && snapshot
+                .spaces
+                .iter()
+                .any(|s| s.space_id == expected_space_id)
+    };
+
+    // Check the latest snapshot first in case it already has the data.
+    let snapshot = conn.snapshot();
+    if contains_expected(&snapshot) {
+        return Ok(snapshot);
     }
 
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for room list to populate"))?
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: timed out waiting for room list to contain room \
+                     {expected_room_id} and space {expected_space_id} \
+                     (have {} rooms, {} spaces)",
+                    snapshot.rooms.len(),
+                    snapshot.spaces.len()
+                )
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
             CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                // The discrete event may arrive before the reducer projected
+                // the matching snapshot; check the latest snapshot and keep
+                // waiting otherwise — a StateChanged will follow.
                 let snapshot = conn.snapshot();
-                if room_list_has_content(&snapshot) {
-                    return Ok(());
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
                 }
-                // Got the event but snapshot still empty — keep waiting.
             }
             CoreEvent::StateChanged(snapshot) => {
-                if room_list_has_content(&snapshot) {
-                    return Ok(());
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
                 }
             }
             _ => continue,
         }
     }
-}
-
-fn room_list_has_content(snapshot: &AppState) -> bool {
-    !snapshot.rooms.is_empty() || !snapshot.spaces.is_empty()
 }
 
 // ---------------------------------------------------------------------------

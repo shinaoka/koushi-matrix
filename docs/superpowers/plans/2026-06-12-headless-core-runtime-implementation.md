@@ -302,10 +302,35 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   (6) **Phase 5 placeholder**: `AppEffect::SubscribeTimeline` returned by the
   reducer for `SelectRoom` is dropped by `AppActor` with a TODO comment; this
   is Phase 5's job per the spec.
-  All 41 unit tests green (15 new room tests covering error classification,
-  normalization, SelectSpace/SelectRoom, session-required, request_id
-  correlation), 0 warnings; secret scan ok; release-gate structural ok.
   QA binary v2: A creates room + space + sets space child + invites B; B joins
-  both; both assert room list via event-driven `wait_for_room_list_updated`;
-  room-list counts printed in summary line. All four QA legs (SyncService +
-  forced-LegacySync on both servers) pass.
+  both; both assert room list event-driven; room-list counts printed in the
+  summary line.
+- 2026-06-12: Phase 4 exit review found and fixed a **one-shot-snapshot bug**:
+  the first RoomActor implementation called `refresh_room_list()` only once,
+  on `RoomMessage::SyncStarted`, so rooms created/joined afterwards never
+  re-normalized — the probed-SyncService QA leg failed with an empty room
+  list. Async rule 1 violation: actors must RELAY the SDK's observable
+  streams; a one-shot snapshot is not relaying. Fix: on `SyncStarted` the
+  actor now does the initial refresh and spawns (via `executor::spawn`) a
+  room-list observation loop subscribed to
+  `client.subscribe_to_all_room_updates()` — the broadcast fires on both
+  SyncService and LegacySync backends because both feed the base client. Each
+  received batch coalesces additionally pending batches (`try_recv` drain)
+  into one refresh; `Lagged` triggers a single refresh (the snapshot is
+  self-healing); the loop exits on a oneshot stop signal (same pattern as
+  `sync.rs` `legacy_stop_tx`). The loop is stopped on `Shutdown`, on sync
+  stop (`AccountActor` forwards `SyncStopped` on `SyncCommand::Stop`,
+  re-establishes on `Restart`), and any prior loop is stopped before a new
+  `SyncStarted` spawns its replacement (two-loop guard). Successful
+  CreateRoom/CreateSpace/SetSpaceChild/JoinRoom additionally refresh
+  immediately so the actor's own mutations reflect without a sync round-trip.
+  A second QA-flake class fixed in the same pass: spaces only classify as
+  spaces after the create round-trips through sync, so the QA binary's
+  room-list wait was changed from "any non-empty list" to event-driven
+  `wait_for_room_list_containing(room_id, space_id)` — the wait itself is the
+  assertion. Process finding recorded: the first Phase 4 report declared the
+  QA legs green without executing them; a phase is not done until its QA gate
+  has actually executed green.
+  Verification: 42 unit tests green, 0 warnings; secret scan ok; release-gate
+  structural ok; all four QA legs (probed SyncService + forced LegacySync on
+  Conduit and Tuwunel) executed green.
