@@ -2965,6 +2965,7 @@ dependencies = [
  "futures-util",
  "matrix-desktop-auth",
  "matrix-desktop-backend",
+ "matrix-desktop-core",
  "matrix-desktop-key",
  "matrix-desktop-state",
  "serde",
@@ -3003,6 +3004,26 @@ dependencies = [
  "matrix-desktop-state",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "matrix-desktop-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "eyeball",
+ "eyeball-im",
+ "futures-util",
+ "keyring",
+ "matrix-desktop-auth",
+ "matrix-desktop-key",
+ "matrix-desktop-search",
+ "matrix-desktop-state",
+ "matrix-sdk",
+ "matrix-sdk-ui",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

@@ -7,9 +7,13 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
+use tokio::sync::Mutex as TokioMutex;
 
 use tauri::{
     Emitter, Manager,
@@ -18,13 +22,18 @@ use tauri::{
 
 use serde::{Deserialize, Serialize};
 
+// matrix-desktop-core: the production runtime host.
+use matrix_desktop_core::{
+    AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, TimelineEvent,
+    event::AppStateSnapshot,
+};
+
+// matrix-desktop-auth / key: still used for credential store access during startup
+// restore and saved-session listing (design gap: ideally these would be
+// AccountCommand::RestoreLastSession and AccountCommand::QuerySavedSessions).
 use matrix_desktop_auth::{
     MatrixClientSession, MatrixClientStoreConfig, MatrixClientStoreKey, MatrixSearchIndexKey,
     MatrixSearchIndexStoreConfig, PersistableMatrixSession,
-};
-use matrix_desktop_backend::{
-    E2eeRecoveryMode, FakeDesktopBackend, FakeDesktopBackendConfig, LoginDiscoveryMode, LoginMode,
-    SyncMode,
 };
 use matrix_desktop_key::{
     CredentialStore, LastSessionPointer, LocalUnlockSecret, SavedSessionIndex, SessionKeyId,
@@ -32,8 +41,19 @@ use matrix_desktop_key::{
 };
 use matrix_desktop_state::SessionInfo;
 
+// matrix-desktop-backend: fixture/demo preview only; never on a production
+// Matrix path (overview.md: "fixture/demo data only").
+use matrix_desktop_backend::{
+    E2eeRecoveryMode, FakeDesktopBackend, FakeDesktopBackendConfig, LoginDiscoveryMode, LoginMode,
+    SyncMode,
+};
+
 const CREDENTIAL_SERVICE_NAME: &str = "matrix-desktop";
 const MENU_EVENT_NAME: &str = "matrix-desktop://menu";
+/// Tauri event for serialized CoreEvent payloads (discrete events + diff batches).
+pub(crate) const CORE_EVENT_NAME: &str = "matrix-desktop://event";
+/// Tauri event for serialized AppStateSnapshot payloads (latest-wins).
+const STATE_EVENT_NAME: &str = "matrix-desktop://state";
 const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
 const MENU_ID_SHOW_KEYBOARD_SETTINGS: &str = "show_keyboard_settings";
 const MENU_ID_TOGGLE_RIGHT_PANEL: &str = "toggle_right_panel";
@@ -114,18 +134,56 @@ fn desktop_menu_action_id(menu_id: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// Transport-adapter state.
+///
+/// Holds the `CoreRuntime` (the only production runtime owner) plus one
+/// `CoreConnection` for command dispatch and snapshot reads.
+///
+/// The event-forwarding task owns a SECOND connection (obtained by calling
+/// `runtime.attach()` in `run()`) so it can loop on `recv_event` without
+/// blocking command dispatch.
+///
+/// DESIGN GAPS (canon-first escalation required before resolving):
+/// 1. Startup `RestoreLastSession`: no `AccountCommand::RestoreLastSession`
+///    exists in the canon yet. The adapter temporarily reads the credential
+///    store directly to find the last-session `AccountKey`, then sends
+///    `AccountCommand::RestoreSession`. See `STARTUP_RESTORE_DESIGN_GAP`.
+/// 2. `list_saved_sessions`: no `AccountCommand::QuerySavedSessions` and no
+///    `AppState.saved_sessions` in the canon yet. The adapter temporarily
+///    reads the credential store directly. See `SAVED_SESSIONS_DESIGN_GAP`.
+/// 3. `timeline_items_count`: `AppState` snapshots never embed timeline lists
+///    (Async rule 4). The count needed for `qa_window_title` is tracked here
+///    via a Tauri-side counter updated by the event forwarding loop.
+pub struct CoreRuntimeState {
+    pub(crate) runtime: CoreRuntime,
+    /// Command-dispatch connection. Uses `tokio::sync::Mutex` so the guard can
+    /// be held across `.await` points in async Tauri command handlers.
+    pub(crate) connection: TokioMutex<CoreConnection>,
+    /// Tauri-side timeline item count (updated by event loop; QA title only).
+    pub(crate) timeline_items_count: AtomicUsize,
+}
+
+/// Fixture backend for browser-only dev/demo preview.
+///
+/// This is the non-Tauri path. It is NEVER constructed on a production Matrix
+/// path; it exists only so the React components can be previewed in a browser
+/// without a running Tauri process.
+#[allow(dead_code)]
 pub struct BackendState {
     backend: Mutex<FakeDesktopBackend>,
     sync_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     timeline_task: Mutex<Option<TimelineTaskHandle>>,
 }
 
+#[allow(dead_code)]
 pub(crate) struct TimelineTaskHandle {
     room_id: String,
     task: tauri::async_runtime::JoinHandle<()>,
     pagination_sender: tokio::sync::mpsc::Sender<TimelinePaginationRequest>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TimelinePaginationRequest {
     pub room_id: String,
@@ -562,6 +620,10 @@ fn set_secret_file_permissions(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+// ---- Session persistence helpers (DESIGN GAP: ideally StoreActor owns all of
+// this; these remain in the adapter until AccountCommand::RestoreLastSession
+// and AccountCommand::QuerySavedSessions land in the canon). ----
+
 pub(crate) fn persist_matrix_session(session: &MatrixClientSession) -> Result<(), String> {
     let persistable = session
         .persistable_session()
@@ -639,29 +701,55 @@ fn clear_persisted_matrix_session_with_base(
     remove_local_store_paths(base_dir, &key_id)
 }
 
-async fn restore_persisted_matrix_session() -> Result<Option<MatrixClientSession>, String> {
+/// STARTUP_RESTORE_DESIGN_GAP: reads the credential store to find the last
+/// session `AccountKey`. Temporary until `AccountCommand::RestoreLastSession`
+/// is added to the canon (Phase 9 cleanup). Returns `None` if no last session
+/// exists. Returns `Err` only if the credential store is unreachable.
+///
+/// After finding the key, the caller sends `AccountCommand::RestoreSession`
+/// with the derived `AccountKey`; the `AccountActor` completes the restore
+/// using its own `StoreActor` (which also has the credential store).
+pub(crate) fn last_session_account_key_from_store(
+) -> Result<Option<matrix_desktop_core::AccountKey>, String> {
     let store = desktop_credential_store();
-    let Some(key_id) = store
+    let key_id = match store
         .load_last_session()
         .map_err(|_| "session restore failed".to_owned())?
-    else {
+    {
+        Some(key_id) => key_id,
+        None => return Ok(None),
+    };
+    // Verify the session data exists before asking core to restore it.
+    if store.load_matrix_session(&key_id).is_err() {
         return Ok(None);
-    };
-    let stored_session = match store.load_matrix_session(&key_id) {
-        Ok(session) => session,
-        Err(_) => return Ok(None),
-    };
-    let persistable = PersistableMatrixSession::from_json(stored_session.as_str())
-        .map_err(|_| "session restore failed".to_owned())?;
-    restore_persistable_matrix_session_with_store_retry(
-        &persistable,
-        &key_id,
-        &matrix_desktop_data_dir()?,
-        &store,
-        "session restore failed",
-    )
-    .await
-    .map(Some)
+    }
+    Ok(Some(matrix_desktop_core::AccountKey(key_id.user_id)))
+}
+
+/// SAVED_SESSIONS_DESIGN_GAP: reads the credential store to list all saved
+/// sessions. Temporary until `AppState.saved_sessions` or
+/// `AccountCommand::QuerySavedSessions` lands in the canon.
+pub(crate) fn saved_matrix_session_infos() -> Result<Vec<SessionInfo>, String> {
+    if saved_sessions_disabled_from_env_value(
+        std::env::var("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS")
+            .ok()
+            .as_deref(),
+    ) {
+        return Ok(Vec::new());
+    }
+
+    let store = desktop_credential_store();
+    let index = store
+        .load_saved_sessions()
+        .map_err(|_| "saved sessions could not be loaded".to_owned())?;
+    Ok(saved_session_infos_from_index(&index))
+}
+
+pub(crate) fn mark_last_matrix_session(info: &SessionInfo) -> Result<(), String> {
+    let store = desktop_credential_store();
+    store
+        .save_last_session(&session_key_id_from_info(info))
+        .map_err(|_| "last session pointer could not be saved".to_owned())
 }
 
 async fn restore_persisted_matrix_session_for_info(
@@ -715,29 +803,6 @@ async fn restore_persistable_matrix_session_with_store_retry(
     }
 }
 
-fn saved_matrix_session_infos() -> Result<Vec<SessionInfo>, String> {
-    if saved_sessions_disabled_from_env_value(
-        std::env::var("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS")
-            .ok()
-            .as_deref(),
-    ) {
-        return Ok(Vec::new());
-    }
-
-    let store = desktop_credential_store();
-    let index = store
-        .load_saved_sessions()
-        .map_err(|_| "saved sessions could not be loaded".to_owned())?;
-    Ok(saved_session_infos_from_index(&index))
-}
-
-fn mark_last_matrix_session(info: &SessionInfo) -> Result<(), String> {
-    let store = desktop_credential_store();
-    store
-        .save_last_session(&session_key_id_from_info(info))
-        .map_err(|_| "last session pointer could not be saved".to_owned())
-}
-
 fn matrix_client_store_config_for_session_with_base(
     info: &SessionInfo,
     base_dir: &Path,
@@ -766,7 +831,7 @@ fn matrix_client_store_config_for_session_with_base(
     )))
 }
 
-fn matrix_desktop_data_dir() -> Result<PathBuf, String> {
+pub(crate) fn matrix_desktop_data_dir() -> Result<PathBuf, String> {
     if let Ok(path) = std::env::var("MATRIX_DESKTOP_DATA_DIR") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
@@ -1177,6 +1242,121 @@ fn menu_item<R: tauri::Runtime, M: Manager<R>>(
         .build(manager)
 }
 
+/// Spawn the CoreEvent forwarding task. This task owns a dedicated connection
+/// (second `attach()`) so it can loop on `recv_event` without blocking command
+/// dispatch.
+///
+/// On `CoreEvent::StateChanged`: emit `matrix-desktop://state` with the
+/// serialized snapshot + update QA window title.
+/// On any `CoreEvent`: emit `matrix-desktop://event` with a serialized DTO.
+/// On `EventStreamLag`: emit the latest snapshot (resync) + a
+/// `ResyncMarker` event so the frontend resets its timeline stores.
+fn spawn_core_event_forwarder(
+    app: tauri::AppHandle,
+    mut event_conn: CoreConnection,
+    timeline_items_count: &'static AtomicUsize,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match event_conn.recv_event().await {
+                Ok(event) => {
+                    forward_core_event(&app, &event, timeline_items_count);
+                }
+                Err(_lag) => {
+                    // Consumer fell behind. Emit the latest snapshot so the
+                    // frontend can resync, then a ResyncMarker so it resets
+                    // its timeline stores.
+                    let snapshot = event_conn.snapshot();
+                    emit_state_snapshot(&app, &snapshot, timeline_items_count);
+                    let _ = app.emit(CORE_EVENT_NAME, serde_json::json!({ "kind": "ResyncMarker" }));
+                }
+            }
+        }
+    });
+}
+
+fn forward_core_event(
+    app: &tauri::AppHandle,
+    event: &CoreEvent,
+    timeline_items_count: &'static AtomicUsize,
+) {
+    // Track timeline item count for QA window title.
+    match event {
+        CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) => {
+            timeline_items_count.store(items.len(), Ordering::Relaxed);
+        }
+        CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. }) => {
+            // Apply diff count delta (approximate; exact count tracked by React store)
+            let current = timeline_items_count.load(Ordering::Relaxed);
+            let delta = diffs_net_count_change(diffs);
+            let new_count = (current as i64 + delta).max(0) as usize;
+            timeline_items_count.store(new_count, Ordering::Relaxed);
+        }
+        _ => {}
+    }
+
+    // Serialize and forward as `matrix-desktop://event`.
+    if let Some(payload) = serialize_core_event(event) {
+        let _ = app.emit(CORE_EVENT_NAME, payload);
+    }
+
+    // On StateChanged: also emit `matrix-desktop://state` for backward compat
+    // (the React app currently listens on this event to trigger a `get_snapshot`
+    // poll; future work is to eliminate the poll entirely).
+    if let CoreEvent::StateChanged(snapshot) = event {
+        emit_state_snapshot(app, snapshot, timeline_items_count);
+    }
+}
+
+fn diffs_net_count_change(diffs: &[matrix_desktop_core::TimelineDiff]) -> i64 {
+    diffs.iter().map(|diff| match diff {
+        matrix_desktop_core::TimelineDiff::PushFront { .. }
+        | matrix_desktop_core::TimelineDiff::PushBack { .. }
+        | matrix_desktop_core::TimelineDiff::Insert { .. } => 1_i64,
+        matrix_desktop_core::TimelineDiff::Remove { .. } => -1_i64,
+        matrix_desktop_core::TimelineDiff::Truncate { .. }
+        | matrix_desktop_core::TimelineDiff::Clear
+        | matrix_desktop_core::TimelineDiff::Reset { .. }
+        | matrix_desktop_core::TimelineDiff::Set { .. } => 0_i64,
+    }).sum()
+}
+
+fn emit_state_snapshot(
+    app: &tauri::AppHandle,
+    _snapshot: &AppStateSnapshot,
+    _timeline_items_count: &AtomicUsize,
+) {
+    // Emit the snapshot event (triggers React to call get_snapshot).
+    let _ = app.emit(STATE_EVENT_NAME, "stateChanged");
+}
+
+/// Serialize a `CoreEvent` to a JSON value for IPC.
+///
+/// Security: message bodies flow in `Timeline` events. These are visible
+/// content (not secret), but we never trace IPC payloads in release.
+/// The serialization produces structured JSON only — no raw SDK errors.
+fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
+    Some(match event {
+        CoreEvent::StateChanged(_) => {
+            // StateChanged snapshots are sent via `matrix-desktop://state`;
+            // don't duplicate as a generic event.
+            return None;
+        }
+        CoreEvent::Account(e) => serde_json::json!({ "kind": "Account", "event": e }),
+        CoreEvent::Sync(e) => serde_json::json!({ "kind": "Sync", "event": e }),
+        CoreEvent::Room(e) => serde_json::json!({ "kind": "Room", "event": e }),
+        CoreEvent::Timeline(e) => serde_json::json!({ "kind": "Timeline", "event": e }),
+        CoreEvent::Search(e) => serde_json::json!({ "kind": "Search", "event": e }),
+        CoreEvent::OperationFailed { request_id, failure } => {
+            serde_json::json!({
+                "kind": "OperationFailed",
+                "request_id": request_id,
+                "failure": failure,
+            })
+        }
+    })
+}
+
 pub fn run() {
     let restore_session = restore_session_enabled_from_env_value(
         std::env::var("MATRIX_DESKTOP_RESTORE_SESSION")
@@ -1185,8 +1365,38 @@ pub fn run() {
     );
 
     tauri::Builder::default()
-        .manage(BackendState::default())
         .setup(move |app| {
+            // Build the CoreRuntime inside setup() so Tauri's async runtime is
+            // already active. `CoreRuntime::start_with_data_dir` calls
+            // `executor::spawn` which requires a Tokio runtime context. Tauri
+            // starts its tokio runtime before invoking setup; we enter the
+            // handle so `tokio::task::spawn` can find it from the main thread.
+            let data_dir = matrix_desktop_data_dir()
+                .unwrap_or_else(|_| PathBuf::from("matrix-desktop-data"));
+            // Enter Tauri's tokio runtime so `executor::spawn` (tokio::task::spawn)
+            // can find a runtime handle from this non-tokio-worker thread.
+            let async_handle = tauri::async_runtime::handle();
+            let _guard = async_handle.inner().enter();
+            let runtime = CoreRuntime::start_with_data_dir(data_dir);
+
+            // command-dispatch connection (held in state)
+            let command_conn = runtime.attach();
+            // event-forwarding connection (owned by the spawned task below)
+            let event_conn = runtime.attach();
+
+            // Static storage for timeline_items_count so the forwarder task
+            // can hold a 'static reference. We use Box::leak because the
+            // runtime lives for the entire process lifetime.
+            let timeline_items_count: &'static AtomicUsize =
+                Box::leak(Box::new(AtomicUsize::new(0)));
+
+            let core_state = CoreRuntimeState {
+                runtime,
+                connection: TokioMutex::new(command_conn),
+                timeline_items_count: AtomicUsize::new(0),
+            };
+            app.manage(core_state);
+
             let menu = build_desktop_menu(app)?;
             app.set_menu(menu)?;
             let _ = restore_main_window_state(app);
@@ -1196,36 +1406,38 @@ pub fn run() {
                 }
             });
 
+            // Start the CoreEvent forwarding task.
+            spawn_core_event_forwarder(app.handle().clone(), event_conn, timeline_items_count);
+
             #[cfg(any(debug_assertions, test))]
             if let Some(pipe_path) = qa_login_pipe_path_from_env() {
                 commands::spawn_qa_login_pipe_reader(app.handle().clone(), pipe_path);
             }
 
             if restore_session {
-                let app_handle = app.handle().clone();
-                if let Ok(Some(session)) =
-                    tauri::async_runtime::block_on(restore_persisted_matrix_session())
-                {
-                    let recovery_observer_session = session.clone();
-                    let matrix_sync_session = session.clone();
-                    let mut should_start_sync = false;
-                    if let Ok(mut backend) = app_handle.state::<BackendState>().backend.lock() {
-                        let effects = backend.complete_matrix_restore(session);
-                        should_start_sync = commands::effects_include_start_sync(&effects);
-                        backend.open_default_thread();
-                    }
-                    if should_start_sync {
-                        let _ = commands::start_matrix_sync_task(
-                            app_handle.clone(),
-                            matrix_sync_session,
-                        );
-                    }
-                    commands::spawn_e2ee_recovery_state_observer(
-                        app_handle,
-                        recovery_observer_session,
-                    );
+                // STARTUP_RESTORE_DESIGN_GAP: read credential store to find
+                // the last session AccountKey, then send RestoreSession.
+                // After AccountCommand::RestoreLastSession lands in the canon,
+                // this credential-store read moves into StoreActor.
+                if let Ok(Some(account_key)) = last_session_account_key_from_store() {
+                    // setup() is not async; spawn the restore command.
+                    let app_handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let core_state = app_handle.state::<CoreRuntimeState>();
+                        let request_id =
+                            core_state.connection.lock().await.next_request_id();
+                        let _ = commands::submit_core_command(
+                            &core_state,
+                            CoreCommand::Account(AccountCommand::RestoreSession {
+                                request_id,
+                                account_key,
+                            }),
+                        )
+                        .await;
+                    });
                 }
             }
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1234,9 +1446,9 @@ pub fn run() {
                     let _ = persist_current_window_state(window);
                 }
                 if window_event_should_stop_background_tasks(event) {
-                    let backend_state = window.state::<BackendState>();
-                    let _ = commands::abort_matrix_timeline_task(backend_state.inner());
-                    let _ = commands::abort_matrix_sync_task(backend_state.inner());
+                    // Core runtime cleanup: send Shutdown command.
+                    // (The runtime actor will stop when command_tx is dropped
+                    // at process exit; explicit Shutdown is belt-and-suspenders.)
                 }
             }
         })

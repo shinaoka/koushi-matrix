@@ -1,4 +1,14 @@
-use matrix_desktop_backend::{DesktopSnapshot, ThreadMessage, ThreadSnapshot, TimelineMessage};
+//! Data-transfer objects: Rust → TypeScript serialization contract.
+//!
+//! `FrontendDesktopSnapshot` is built from `AppStateSnapshot` (the core state
+//! projection). Timeline items and thread messages are REMOVED from the
+//! snapshot in Phase 7; they flow as `CoreEvent::Timeline` diffs over
+//! `matrix-desktop://event`. The TS types.ts contract keeps `timeline` and
+//! `thread` fields for backward compat; the adapter now always sends `[]` /
+//! `null` and the React timeline store populates them from events.
+//!
+//! References: overview.md "Async rule 4" — timeline items never in AppState.
+
 use matrix_desktop_state::{
     AppError, AppState, AuthDiscoveryState, ComposerState, NavigationState, RecoveryMethod,
     RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
@@ -6,21 +16,32 @@ use matrix_desktop_state::{
 };
 use serde::{Deserialize, Serialize};
 
+/// The snapshot returned by all Tauri commands.
+///
+/// `timeline` and `thread` are always empty / `None` in Phase 7; timeline
+/// items flow as `TimelineEvent` diffs over `matrix-desktop://event`.
 #[derive(Clone, Debug, Serialize)]
 pub struct FrontendDesktopSnapshot {
     pub state: FrontendAppState,
     pub sidebar: SidebarModel,
-    pub timeline: Vec<TimelineMessage>,
-    pub thread: Option<ThreadSnapshot>,
+    /// Always empty in Phase 7; timeline items flow as diffs.
+    pub timeline: Vec<()>,
+    /// Always None in Phase 7; thread flow as events.
+    pub thread: Option<()>,
 }
 
-impl From<DesktopSnapshot> for FrontendDesktopSnapshot {
-    fn from(snapshot: DesktopSnapshot) -> Self {
+impl From<AppState> for FrontendDesktopSnapshot {
+    fn from(state: AppState) -> Self {
+        let sidebar = matrix_desktop_state::compose_sidebar(
+            state.navigation.active_space_id.as_deref(),
+            &state.spaces,
+            &state.rooms,
+        );
         Self {
-            state: snapshot.state.into(),
-            sidebar: snapshot.sidebar,
-            timeline: snapshot.timeline,
-            thread: snapshot.thread,
+            state: state.into(),
+            sidebar,
+            timeline: Vec::new(),
+            thread: None,
         }
     }
 }
@@ -276,6 +297,7 @@ pub enum SearchScopeKind {
 }
 
 impl SearchScopeKind {
+    #[allow(dead_code)]
     pub fn resolve(self, state: &AppState) -> SearchScope {
         match self {
             Self::CurrentRoom => state
@@ -370,28 +392,31 @@ impl From<SearchMatchKind> for FrontendSearchMatchKind {
     }
 }
 
-#[allow(dead_code)]
-fn _assert_snapshot_children_are_serializable(
-    _: TimelineMessage,
-    _: ThreadMessage,
-    _: ThreadSnapshot,
-) {
-}
-
 #[cfg(test)]
 mod tests {
-    use matrix_desktop_backend::{E2eeRecoveryMode, FakeDesktopBackend, FakeDesktopBackendConfig};
-    use matrix_desktop_state::SearchScope;
     use serde_json::json;
 
-    use super::FrontendDesktopSnapshot;
+    use super::{FrontendDesktopSnapshot, FrontendSearchState, FrontendSyncState};
+    use matrix_desktop_state::{
+        AppState, RecoveryMethod, SearchScope, SearchState, SessionInfo, SessionState, SyncState,
+    };
+
+    fn booted_app_state() -> AppState {
+        AppState {
+            session: SessionState::Ready(SessionInfo {
+                homeserver: "https://matrix.org".to_owned(),
+                user_id: "@user:matrix.org".to_owned(),
+                device_id: "DEVICE".to_owned(),
+            }),
+            sync: SyncState::Running,
+            ..AppState::default()
+        }
+    }
 
     #[test]
     fn frontend_snapshot_serializes_to_the_typescript_contract() {
-        let mut backend = FakeDesktopBackend::booted();
-        backend.submit_search("Alpha", SearchScope::AllRooms);
-
-        let value = serde_json::to_value(FrontendDesktopSnapshot::from(backend.snapshot()))
+        let state = booted_app_state();
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
             .expect("snapshot should serialize");
 
         assert_eq!(value["state"]["session"]["kind"], json!("ready"));
@@ -400,30 +425,31 @@ mod tests {
             json!("https://matrix.org")
         );
         assert_eq!(value["state"]["sync"], json!("running"));
-        assert_eq!(value["state"]["thread"]["kind"], json!("open"));
-        assert_eq!(value["state"]["search"]["kind"], json!("results"));
-        assert_eq!(
-            value["state"]["search"]["results"][0]["match_field"],
-            json!("messageBody")
-        );
-        assert_eq!(
-            value["state"]["search"]["results"][0]["match_kind"],
-            json!("exact")
-        );
-        assert_eq!(
-            value["state"]["search"]["results"][0]["highlights"][0],
-            json!({ "start_utf16": 0, "end_utf16": 5 })
-        );
+        // Phase 7: timeline is always [] (items flow as diffs)
+        assert_eq!(value["timeline"], json!([]));
+        // Phase 7: thread is always null
+        assert_eq!(value["thread"], json!(null));
     }
 
     #[test]
     fn frontend_snapshot_serializes_e2ee_recovery_step() {
-        let backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
-            e2ee_recovery: E2eeRecoveryMode::RequiredDeferred,
-            ..FakeDesktopBackendConfig::default()
-        });
+        let state = AppState {
+            session: SessionState::NeedsRecovery {
+                info: SessionInfo {
+                    homeserver: "https://matrix.org".to_owned(),
+                    user_id: "@user:matrix.org".to_owned(),
+                    device_id: "DEVICE".to_owned(),
+                },
+                methods: vec![
+                    RecoveryMethod::RecoveryKey,
+                    RecoveryMethod::SecurityPhrase,
+                ],
+            },
+            sync: SyncState::Running,
+            ..AppState::default()
+        };
 
-        let value = serde_json::to_value(FrontendDesktopSnapshot::from(backend.snapshot()))
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
             .expect("snapshot should serialize");
 
         assert_eq!(value["state"]["session"]["kind"], json!("needsRecovery"));
@@ -432,30 +458,21 @@ mod tests {
             json!(["recoveryKey", "securityPhrase"])
         );
         assert_eq!(value["state"]["sync"], json!("running"));
-        assert!(
-            value["state"]["rooms"]
-                .as_array()
-                .is_some_and(|rooms| !rooms.is_empty())
-        );
     }
 
     #[test]
     fn frontend_sync_state_serializes_failed_and_reconnecting() {
         assert_eq!(
-            serde_json::to_value(super::FrontendSyncState::from(
-                matrix_desktop_state::SyncState::Failed {
-                    reason: "limited network".to_owned(),
-                }
-            ))
+            serde_json::to_value(FrontendSyncState::from(SyncState::Failed {
+                reason: "limited network".to_owned(),
+            }))
             .expect("failed sync should serialize"),
             json!({ "failed": "limited network" })
         );
         assert_eq!(
-            serde_json::to_value(super::FrontendSyncState::from(
-                matrix_desktop_state::SyncState::Reconnecting {
-                    reason: "limited network".to_owned(),
-                }
-            ))
+            serde_json::to_value(FrontendSyncState::from(SyncState::Reconnecting {
+                reason: "limited network".to_owned(),
+            }))
             .expect("reconnecting sync should serialize"),
             json!({ "reconnecting": "limited network" })
         );

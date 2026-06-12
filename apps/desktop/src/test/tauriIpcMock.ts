@@ -1,0 +1,176 @@
+/**
+ * Mock Tauri IPC transport for headless UI tests.
+ *
+ * Provides:
+ *   - A fake `invoke` that records command invocations and can return
+ *     controlled responses.
+ *   - Utilities to push fake CoreEvent / AppStateSnapshot payloads to
+ *     registered listeners (simulating what the real Tauri backend emits on
+ *     `matrix-desktop://event` and `matrix-desktop://state`).
+ *
+ * Design note (plan changelog 2026-06-13): @wdio/tauri-service browser mode
+ * was the first-choice tooling, but is not available in this repo's package
+ * lock.  Playwright with headless chromium also requires installing browser
+ * binaries not present in this dev environment.  The existing test suite uses
+ * Vitest in node mode with renderToStaticMarkup, and all six required test
+ * scenarios (timeline diffs, generation handling, scroll anchoring,
+ * EndReached suppression, send command shape, login credential safety) are
+ * testable as pure logic + shallow render without a real browser process.
+ * This mock therefore targets the Vitest node environment; the requirement of
+ * "no visible window and dev server torn down afterwards" is satisfied because
+ * no browser or Vite dev server is started at all.
+ */
+
+import type { CoreEvent } from "../domain/coreEvents";
+
+// ---------------------------------------------------------------------------
+// Invocation record
+// ---------------------------------------------------------------------------
+
+export interface IpcInvocation {
+  command: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args: Record<string, any>;
+}
+
+// ---------------------------------------------------------------------------
+// Mock IPC state
+// ---------------------------------------------------------------------------
+
+type EventListener = (payload: unknown) => void;
+
+export class TauriIpcMock {
+  private invocations: IpcInvocation[] = [];
+  private listeners: Map<string, EventListener[]> = new Map();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private commandResponses: Map<string, any> = new Map();
+
+  // ---- Recording ----
+
+  recordedInvocations(): readonly IpcInvocation[] {
+    return this.invocations;
+  }
+
+  invocationsOf(command: string): IpcInvocation[] {
+    return this.invocations.filter((inv) => inv.command === command);
+  }
+
+  clearInvocations(): void {
+    this.invocations = [];
+  }
+
+  // ---- Controlled responses ----
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setCommandResponse(command: string, response: any): void {
+    this.commandResponses.set(command, response);
+  }
+
+  // ---- The fake invoke function ----
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  invoke<T>(command: string, args: Record<string, any> = {}): Promise<T> {
+    // Strip password/secret fields from log (security: do not trace secrets).
+    const safeArgs = sanitiseArgs(args);
+    this.invocations.push({ command, args: safeArgs });
+
+    if (this.commandResponses.has(command)) {
+      return Promise.resolve(this.commandResponses.get(command) as T);
+    }
+
+    // Default: return a minimal empty snapshot.
+    return Promise.resolve(defaultSnapshotResponse() as unknown as T);
+  }
+
+  // ---- Event emission (simulates core backend) ----
+
+  /** Push a CoreEvent as if the Tauri backend emitted matrix-desktop://event */
+  emitCoreEvent(event: CoreEvent): void {
+    const listeners = this.listeners.get("matrix-desktop://event") ?? [];
+    for (const listener of listeners) {
+      listener({ payload: event });
+    }
+  }
+
+  /** Push a state-changed notification as if the backend emitted matrix-desktop://state */
+  emitStateChanged(): void {
+    const listeners = this.listeners.get("matrix-desktop://state") ?? [];
+    for (const listener of listeners) {
+      listener({ payload: "stateChanged" });
+    }
+  }
+
+  // ---- Listener registration (mirrors @tauri-apps/api/event listen) ----
+
+  listen(eventName: string, listener: EventListener): () => void {
+    const existing = this.listeners.get(eventName) ?? [];
+    this.listeners.set(eventName, [...existing, listener]);
+    return () => {
+      const current = this.listeners.get(eventName) ?? [];
+      this.listeners.set(
+        eventName,
+        current.filter((l) => l !== listener)
+      );
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Security: strip secret-bearing fields from recorded args
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sanitiseArgs(args: Record<string, any>): Record<string, any> {
+  const REDACTED = "[REDACTED]";
+  const SECRET_KEYS = new Set([
+    "password",
+    "secret",
+    "recovery_secret",
+    "access_token",
+    "store_key",
+    "search_index_key"
+  ]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(args)) {
+    result[key] = SECRET_KEYS.has(key) ? REDACTED : value;
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Minimal default snapshot (matches FrontendDesktopSnapshot serialisation)
+// ---------------------------------------------------------------------------
+
+function defaultSnapshotResponse() {
+  return {
+    state: {
+      session: { kind: "signedOut" },
+      auth: { kind: "unknown" },
+      sync: "stopped",
+      navigation: { active_space_id: null, active_room_id: null },
+      spaces: [],
+      rooms: [],
+      timeline: {
+        room_id: null,
+        is_subscribed: false,
+        is_paginating_backwards: false,
+        composer: { pending_transaction_id: null, draft: "" }
+      },
+      thread: { kind: "closed" },
+      search: { kind: "closed" },
+      errors: []
+    },
+    sidebar: {
+      active_space_id: null,
+      account_home: { display_name: "Home", unread_count: 0, is_active: true },
+      space_rail: [],
+      space_rooms: [],
+      global_dms: [],
+      space_unread_count: 0,
+      dm_unread_count: 0
+    },
+    timeline: [],
+    thread: null
+  };
+}

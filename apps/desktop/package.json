@@ -15,6 +15,7 @@
     "release:preflight": "node ../../scripts/desktop-release-preflight.mjs --check-config",
     "release:preflight:strict": "node ../../scripts/desktop-release-preflight.mjs --strict-signing",
     "test": "vitest run",
+    "test:ui-headless": "vitest run --reporter=verbose src/domain/timelineStore.test.ts src/test/tauriIpcMock.ts",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "qa:secret-scan": "node ../../scripts/desktop-secret-scan.mjs",

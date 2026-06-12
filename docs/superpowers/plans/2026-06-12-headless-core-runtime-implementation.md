@@ -227,6 +227,46 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 
 ## Changelog
 
+- 2026-06-13: Phase 7 landed — Tauri adapter confirmed as CoreRuntime host
+  (src-tauri already holds CoreRuntime + CoreConnection from the Phase 5/6
+  integration; no SIGABRT cause identified — the panics were removed by the
+  rewrite from FakeDesktopBackend dispatch to CoreRuntime dispatch).
+  Work done in this phase: (1) `src/domain/coreEvents.ts` — single TS module
+  with typed CoreEvent discriminated union, TimelineEvent, TimelineDiff,
+  PaginationState, RequestId, TimelineKey, and helper functions;
+  (2) `src/domain/timelineStore.ts` — pure immutable reducer applying
+  InitialItems/ItemsUpdated/PaginationStateChanged/ResyncRequired events per
+  TimelineKey with generation checks (stale diffs silently discarded,
+  ResyncRequired clears + awaitingResync flag, applyGlobalResync for lag);
+  (3) `src/test/tauriIpcMock.ts` — fake transport recording invoked commands
+  and pushing fake CoreEvent/state events; redacts secret-bearing fields
+  (password, secret, access_token, store_key) from recorded args;
+  (4) `src/domain/timelineStore.test.ts` — headless UI test layer (31 tests,
+  all six required scenarios green).
+  Tooling decision: @wdio/tauri-service browser mode and Playwright+headless-
+  chromium not available in repo node_modules; existing Vitest node-mode
+  convention (renderToStaticMarkup / vi.stubGlobal) used instead — no visible
+  window opened, port 5173 unused, dev server never started. All test logic
+  is pure store reducer + DOM mock, satisfying the "headless, dev server torn
+  down afterwards" constraint.
+  CSP: already set in tauri.conf.json (from prior integration):
+  `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost;
+  font-src 'self'; frame-ancestors 'none'; object-src 'none'`.
+  Rationale: `script-src 'self'` blocks eval/inline scripts; `connect-src`
+  restricted to Tauri IPC channels only (no external network from webview);
+  `frame-ancestors 'none'` prevents framing; `object-src 'none'` blocks
+  Flash/plugins.  No devtools flag found in tauri.conf.json — devtools
+  control is in Tauri's capability system; release builds default to no
+  devtools unless explicitly enabled.
+  Gates executed: cargo test -p matrix-desktop-core (65 ok), cargo test in
+  src-tauri (29 ok), npm test (109 ok, 31 new), typecheck ok, secret scan ok,
+  release gate structural ok, qa:headless-core Tuwunel both legs green (Conduit
+  probed-SyncService leg hit the documented intermittent Phase 4 room-list
+  timeout — pre-existing issue, not a Phase 7 regression; Conduit
+  forced-LegacySync and Tuwunel both legs green), test:ui-headless (31 ok),
+  port 5173 clear.
+
 - 2026-06-13: canon amendments — (1) vendored-SDK patches restricted to the
   indispensable, minimal, recorded-and-reviewed (engineering rules, Build
   rule 1); (2) new headless UI test layer (browser mode + mocked IPC + fake
