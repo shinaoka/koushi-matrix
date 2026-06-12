@@ -529,6 +529,8 @@ Local QA must cover:
 - A to B message send and receive
 - B to A message send and receive
 - timeline subscribe, backward pagination, diff ordering, and `EndReached`
+- sync backend assertion, plus a forced-`LegacySync` leg via the debug/test
+  backend override (release builds must not honor the override)
 - logout cleanup
 - stdout/stderr secret redaction
 

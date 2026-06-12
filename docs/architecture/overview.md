@@ -304,7 +304,12 @@ stream), and the runtime must relay that model, not fight it.
    while preserving the same `CoreCommand`/`CoreEvent` contract. The selected
    backend is emitted as a redacted diagnostic/event field so QA can assert it.
    `sync_once`-style one-shot polling remains a QA/debug tool, not the product
-   continuous-sync path. Note that `RoomListService` is built on sliding sync:
+   continuous-sync path. Because legacy `/sync` works against any homeserver,
+   a debug/test-only override (compile-time gated out of release builds)
+   forces the `LegacySync` backend so local QA exercises the legacy path even
+   against MSC4186-capable servers — both local QA servers advertise MSC4186,
+   so without the override the fallback would never run before the real
+   homeserver gate. Note that `RoomListService` is built on sliding sync:
    on the `LegacySync` backend, `RoomActor` must normalize the room list from
    legacy sync state (`Client::rooms()` plus sync updates) instead. Because the
    local QA matrix includes homeservers without MSC4186, this legacy room-list
@@ -437,7 +442,9 @@ primary correctness gate.
    SDK wrapper calls). Covers login, sync, room/space create, invite/join,
    bidirectional messaging, room list, logout cleanup, and stdout/stderr
    redaction. It records and asserts the selected sync backend
-   (`SyncService` or `LegacySync`) so server capability gaps are visible.
+   (`SyncService` or `LegacySync`) so server capability gaps are visible,
+   and runs an additional forced-`LegacySync` leg (debug/test-only backend
+   override) so both sync backends stay covered locally.
 3. **Real homeserver QA** — required before GUI-level confidence claims:
    HTTPS login, recovery, encrypted store restore, sync lifecycle, room list,
    timeline, send, search smoke, logout, account switch.
