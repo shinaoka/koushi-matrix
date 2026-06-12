@@ -38,6 +38,21 @@ All agents implementing the headless core runtime follow
 - **Phase exits include a docs-sync check**: no known contradiction between
   landed code and the canon documents.
 
+## Local Gates Setup
+
+- Enable the repo pre-commit hook once per clone:
+  `git config core.hooksPath .githooks`. It runs the secret scan on staged
+  files (`scripts/desktop-secret-scan.mjs --staged`).
+- Gate commands (from `apps/desktop`): `npm run qa:secret-scan`,
+  `npm run qa:wasm-check` (requires
+  `rustup target add wasm32-unknown-unknown`), `npm run qa:release-gates`
+  (structural credential-gate check plus `cargo check --release`; the compile
+  step is slow on a cold target dir — use
+  `node ../../scripts/desktop-release-gate-check.mjs --no-compile` for the
+  quick structural pass).
+- There is no hosted CI in this repo yet; these gates run locally and in
+  `release:preflight`. Wire them into CI when CI infrastructure appears.
+
 ## macOS GUI Smoke Failures
 
 - `npm --prefix apps/desktop run qa:mac-gui` controls the Tauri window through

@@ -216,6 +216,14 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 ## Changelog
 
 - 2026-06-12: plan created.
+- 2026-06-12: Phase 0 landed. Notes: (1) the repo has no hosted CI, so all
+  gates run locally (pre-commit hook + npm scripts + release preflight) until
+  CI infrastructure exists; (2) the release-gate check found and fixed a real
+  violation — `MATRIX_DESKTOP_QA_LOGIN_PIPE` was honored in release builds;
+  the QA login pipe cluster is now compiled out of release
+  (`#[cfg(any(debug_assertions, test))]`); (3) QA behavior toggles that carry
+  no credentials (`MATRIX_DESKTOP_QA_TITLE`, `MATRIX_DESKTOP_SKIP_*`) remain
+  ungated by design — Secrets rule 2 covers credential injection only.
 - 2026-06-12: model assignment added — Sonnet implements by default, Phase 1
   and all canon amendments escalate to a stronger model, phase exits reviewed
   by a stronger model.

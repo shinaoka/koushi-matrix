@@ -1,14 +1,17 @@
 use std::{
-    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
+
+#[cfg(any(debug_assertions, test))]
+use std::path::PathBuf;
 
 use futures_util::StreamExt;
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AuthSecret, LoginRequest, RecoveryRequest, SessionInfo,
     SessionState,
 };
+#[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -22,6 +25,7 @@ const MATRIX_TIMELINE_BACK_PAGINATION_EVENT_COUNT: u16 = 30;
 const QA_TIMELINE_BACKFILL_EVENT_COUNT: u16 = 30;
 const QA_TIMELINE_ROOM_SAMPLE_LIMIT: usize = 20;
 const QA_TIMELINE_ROOM_SAMPLE_TIMEOUT: Duration = Duration::from_secs(8);
+#[cfg(any(debug_assertions, test))]
 const QA_RECOVERY_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 const QA_TITLE_ENV: &str = "MATRIX_DESKTOP_QA_TITLE";
 const STATE_EVENT_NAME: &str = "matrix-desktop://state";
@@ -154,6 +158,7 @@ fn complete_login_with_session(
     Ok(())
 }
 
+#[cfg(any(debug_assertions, test))]
 #[derive(Deserialize)]
 struct QaLoginPipePayload {
     homeserver: String,
@@ -163,12 +168,14 @@ struct QaLoginPipePayload {
     recovery_secret: Option<String>,
 }
 
+#[cfg(any(debug_assertions, test))]
 #[derive(Debug)]
 pub(crate) struct QaLoginPipeRequest {
     pub login: LoginRequest,
     pub recovery_secret: Option<AuthSecret>,
 }
 
+#[cfg(any(debug_assertions, test))]
 pub(crate) fn parse_qa_login_pipe_payload(payload: &str) -> Result<QaLoginPipeRequest, String> {
     let payload: QaLoginPipePayload =
         serde_json::from_str(payload).map_err(|_| "QA login payload was invalid".to_owned())?;
@@ -193,6 +200,7 @@ pub(crate) fn parse_qa_login_pipe_payload(payload: &str) -> Result<QaLoginPipeRe
     })
 }
 
+#[cfg(any(debug_assertions, test))]
 pub(crate) fn spawn_qa_login_pipe_reader(app: AppHandle, pipe_path: PathBuf) {
     tauri::async_runtime::spawn(async move {
         let payload = match read_qa_login_pipe(pipe_path).await {
@@ -231,6 +239,7 @@ pub(crate) fn spawn_qa_login_pipe_reader(app: AppHandle, pipe_path: PathBuf) {
     });
 }
 
+#[cfg(any(debug_assertions, test))]
 async fn read_qa_login_pipe(pipe_path: PathBuf) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::read_to_string(pipe_path).map_err(|_| "QA login pipe could not be read".to_owned())
@@ -239,6 +248,7 @@ async fn read_qa_login_pipe(pipe_path: PathBuf) -> Result<String, String> {
     .map_err(|_| "QA login pipe reader failed".to_owned())?
 }
 
+#[cfg(any(debug_assertions, test))]
 fn record_qa_login_failure(app: &AppHandle, message: String) {
     let state = app.state::<BackendState>();
     if let Ok(mut backend) = state.backend.lock() {
@@ -250,6 +260,7 @@ fn record_qa_login_failure(app: &AppHandle, message: String) {
     }
 }
 
+#[cfg(any(debug_assertions, test))]
 async fn wait_for_qa_recovery_prompt(
     app: &AppHandle,
     state: &BackendState,
@@ -272,6 +283,7 @@ async fn wait_for_qa_recovery_prompt(
     Err("QA recovery prompt did not become available".to_owned())
 }
 
+#[cfg(any(debug_assertions, test))]
 pub(crate) fn qa_recovery_prompt_is_available(state: &AppState) -> bool {
     matches!(state.session, SessionState::NeedsRecovery { .. })
 }

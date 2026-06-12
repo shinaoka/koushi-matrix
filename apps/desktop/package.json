@@ -15,7 +15,10 @@
     "release:preflight:strict": "node ../../scripts/desktop-release-preflight.mjs --strict-signing",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "qa:secret-scan": "node ../../scripts/desktop-secret-scan.mjs",
+    "qa:wasm-check": "cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search",
+    "qa:release-gates": "node ../../scripts/desktop-release-gate-check.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

@@ -5,6 +5,7 @@ members = [
     "crates/matrix-desktop-key",
     "crates/matrix-desktop-auth",
     "crates/matrix-desktop-backend",
+    "crates/matrix-desktop-core",
     "spikes/sidebar-composition",
     "spikes/key-management",
 ]

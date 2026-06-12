@@ -39,6 +39,7 @@ const MENU_ID_SHOW_KEYBOARD_SETTINGS: &str = "show_keyboard_settings";
 const MENU_ID_TOGGLE_RIGHT_PANEL: &str = "toggle_right_panel";
 const MIN_RESTORABLE_WINDOW_WIDTH: u32 = 760;
 const MIN_RESTORABLE_WINDOW_HEIGHT: u32 = 620;
+#[cfg(any(debug_assertions, test))]
 const QA_LOGIN_PIPE_ENV: &str = "MATRIX_DESKTOP_QA_LOGIN_PIPE";
 #[cfg(any(debug_assertions, test))]
 const QA_FILE_CREDENTIAL_STORE_DIR_ENV: &str = "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR";
@@ -181,6 +182,7 @@ fn saved_sessions_disabled_from_env_value(value: Option<&str>) -> bool {
     )
 }
 
+#[cfg(any(debug_assertions, test))]
 fn qa_login_pipe_path_from_env_value(value: Option<&str>) -> Option<PathBuf> {
     value
         .map(str::trim)
@@ -188,6 +190,9 @@ fn qa_login_pipe_path_from_env_value(value: Option<&str>) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+// Release builds must not honor credential injection through the QA login
+// pipe (engineering-rules: Secrets rule 2).
+#[cfg(any(debug_assertions, test))]
 fn qa_login_pipe_path_from_env() -> Option<PathBuf> {
     qa_login_pipe_path_from_env_value(std::env::var(QA_LOGIN_PIPE_ENV).ok().as_deref())
 }
@@ -1191,6 +1196,7 @@ pub fn run() {
                 }
             });
 
+            #[cfg(any(debug_assertions, test))]
             if let Some(pipe_path) = qa_login_pipe_path_from_env() {
                 commands::spawn_qa_login_pipe_reader(app.handle().clone(), pipe_path);
             }
