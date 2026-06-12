@@ -25,6 +25,7 @@ const artifactDir = optionValue("--artifact-dir") ?? join(repoRoot, "artifacts",
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "120000");
 const realLoginFromStdin = args.has("--real-login-from-stdin");
 const allowEmptyTimeline = args.has("--allow-empty-timeline");
+const allowPrivateScreenshots = args.has("--allow-private-screenshots");
 const qaProfile = optionValue("--qa-profile");
 
 if (args.has("--list")) {
@@ -145,9 +146,16 @@ async function run() {
     const windowInfo = await waitForWindow(timeoutMs);
     console.log(`ok verify main window: ${formatWindowInfo(windowInfo)}`);
 
-    const firstRunScreenshot = join(screenshotDir, "01-first-run.png");
-    await captureAppWindowScreenshot(firstRunScreenshot);
-    requireNonEmptyFile(firstRunScreenshot, "first-run screenshot");
+    const initialWindowScreenshotIsAllowed = qaProfile === undefined || allowPrivateScreenshots;
+    const postLoginScreenshotsAreAllowed =
+      (!realLogin && qaProfile === undefined) || allowPrivateScreenshots;
+    if (initialWindowScreenshotIsAllowed) {
+      const firstRunScreenshot = join(screenshotDir, "01-first-run.png");
+      await captureAppWindowScreenshot(firstRunScreenshot);
+      requireNonEmptyFile(firstRunScreenshot, "first-run screenshot");
+    } else {
+      console.log("skip profile screenshot: restored windows can contain private room data");
+    }
 
     if (realLogin) {
       await writeRealLoginPipe(qaLoginPipePath, realLogin);
@@ -167,7 +175,7 @@ async function run() {
     await sleep(1000);
     const keyboardTitle = await waitForQaPanel(timeoutMs, "keyboardSettings");
     console.log(`ok keyboard settings QA: ${keyboardTitle}`);
-    if (!realLogin) {
+    if (postLoginScreenshotsAreAllowed) {
       const keyboardScreenshot = join(screenshotDir, "02-keyboard-settings.png");
       await captureAppWindowScreenshot(keyboardScreenshot);
       requireNonEmptyFile(keyboardScreenshot, "keyboard settings screenshot");
@@ -177,7 +185,7 @@ async function run() {
     await sleep(1000);
     const userSettingsTitle = await waitForQaPanel(timeoutMs, "userSettings");
     console.log(`ok user settings QA: ${userSettingsTitle}`);
-    if (!realLogin) {
+    if (postLoginScreenshotsAreAllowed) {
       const userSettingsScreenshot = join(screenshotDir, "03-user-settings.png");
       await captureAppWindowScreenshot(userSettingsScreenshot);
       requireNonEmptyFile(userSettingsScreenshot, "user settings screenshot");
@@ -245,6 +253,9 @@ function childEnvironment(dataDir, qaLoginPipePath = null) {
   env.MATRIX_DESKTOP_DATA_DIR = dataDir;
   env.MATRIX_DESKTOP_QA_TITLE = "1";
   env.VITE_MATRIX_DESKTOP_QA_TITLE = "1";
+  if (qaProfile !== undefined) {
+    env.MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR = join(dataDir, "qa-credential-store");
+  }
   if (realLoginFromStdin && qaProfile === undefined) {
     env.MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE = "1";
   }
@@ -528,6 +539,9 @@ function parseQaTitle(title) {
 }
 
 function qaStatusHasRequiredPanel(status, requiredPanel) {
+  if (status.errors !== 0) {
+    return false;
+  }
   if (status.panel === requiredPanel) {
     return true;
   }
@@ -550,6 +564,7 @@ function qaStatusIsReady(status, requireRecovered, allowEmptyTimeline = false) {
     status.rooms > 0 &&
     status.active_room === true &&
     status.timeline_subscribed === true &&
+    status.errors === 0 &&
     timelineReady
   );
 }
@@ -691,6 +706,6 @@ function tail(value, lines) {
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
+    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--allow-private-screenshots] [--artifact-dir=PATH] [--timeout-ms=MS]"
   );
 }

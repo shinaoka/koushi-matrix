@@ -4,6 +4,8 @@ mod commands;
 mod dto;
 
 use std::{
+    fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -25,8 +27,8 @@ use matrix_desktop_backend::{
     SyncMode,
 };
 use matrix_desktop_key::{
-    CredentialStore, LocalUnlockSecret, SavedSessionIndex, SessionKeyId, StoredMatrixSession,
-    is_missing_credential_error,
+    CredentialStore, LastSessionPointer, LocalUnlockSecret, SavedSessionIndex, SessionKeyId,
+    StoredMatrixSession, is_missing_credential_error,
 };
 use matrix_desktop_state::SessionInfo;
 
@@ -38,6 +40,8 @@ const MENU_ID_TOGGLE_RIGHT_PANEL: &str = "toggle_right_panel";
 const MIN_RESTORABLE_WINDOW_WIDTH: u32 = 760;
 const MIN_RESTORABLE_WINDOW_HEIGHT: u32 = 620;
 const QA_LOGIN_PIPE_ENV: &str = "MATRIX_DESKTOP_QA_LOGIN_PIPE";
+#[cfg(any(debug_assertions, test))]
+const QA_FILE_CREDENTIAL_STORE_DIR_ENV: &str = "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR";
 const SKIP_KEYCHAIN_PERSISTENCE_ENV: &str = "MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE";
 const SEARCH_INDEX_METADATA_FILE: &str = ".matrix-desktop-search-index.json";
 const SEARCH_INDEX_SCHEMA_VERSION: u32 = 1;
@@ -188,6 +192,28 @@ fn qa_login_pipe_path_from_env() -> Option<PathBuf> {
     qa_login_pipe_path_from_env_value(std::env::var(QA_LOGIN_PIPE_ENV).ok().as_deref())
 }
 
+#[cfg(any(debug_assertions, test))]
+fn qa_file_credential_store_dir_from_env_value(value: Option<&str>) -> Option<PathBuf> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(any(debug_assertions, test))]
+fn qa_file_credential_store_dir_from_env() -> Option<PathBuf> {
+    qa_file_credential_store_dir_from_env_value(
+        std::env::var(QA_FILE_CREDENTIAL_STORE_DIR_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+#[cfg(not(any(debug_assertions, test)))]
+fn qa_file_credential_store_dir_from_env() -> Option<PathBuf> {
+    None
+}
+
 fn qa_skips_keychain_persistence_from_env_value(value: Option<&str>) -> bool {
     matches!(
         value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
@@ -201,6 +227,336 @@ pub(crate) fn qa_skips_keychain_persistence_from_env() -> bool {
     )
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum DesktopCredentialError {
+    Missing,
+    Store,
+}
+
+#[derive(Clone, Debug)]
+enum DesktopCredentialStore {
+    Os(CredentialStore),
+    QaFile(QaFileCredentialStore),
+}
+
+impl DesktopCredentialStore {
+    fn save(
+        &self,
+        key_id: &SessionKeyId,
+        secret: &LocalUnlockSecret,
+    ) -> Result<(), DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .save(key_id, secret)
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => store.save(key_id, secret),
+        }
+    }
+
+    fn load(&self, key_id: &SessionKeyId) -> Result<LocalUnlockSecret, DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .load(key_id)
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => store.load(key_id),
+        }
+    }
+
+    fn delete(&self, key_id: &SessionKeyId) -> Result<(), DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .delete(key_id)
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => store.delete(key_id),
+        }
+    }
+
+    fn save_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+        session: &StoredMatrixSession,
+    ) -> Result<(), DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .save_matrix_session(key_id, session)
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => store.save_matrix_session(key_id, session),
+        }
+    }
+
+    fn load_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<StoredMatrixSession, DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .load_matrix_session(key_id)
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => store.load_matrix_session(key_id),
+        }
+    }
+
+    fn delete_matrix_session(&self, key_id: &SessionKeyId) -> Result<(), DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .delete_matrix_session(key_id)
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => store.delete_matrix_session(key_id),
+        }
+    }
+
+    fn save_last_session(&self, key_id: &SessionKeyId) -> Result<(), DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .save_last_session(key_id)
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => {
+                let pointer = LastSessionPointer::new(key_id.clone());
+                let pointer_json = pointer
+                    .to_json()
+                    .map_err(|_| DesktopCredentialError::Store)?;
+                store
+                    .save_account_value(CredentialStore::last_session_account_name(), &pointer_json)
+            }
+        }
+    }
+
+    fn load_last_session(&self) -> Result<Option<SessionKeyId>, DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .load_last_session()
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => {
+                let pointer_json =
+                    match store.load_account_value(CredentialStore::last_session_account_name()) {
+                        Ok(pointer_json) => pointer_json,
+                        Err(DesktopCredentialError::Missing) => return Ok(None),
+                        Err(error) => return Err(error),
+                    };
+                LastSessionPointer::from_json(&pointer_json)
+                    .map(|pointer| Some(pointer.session_key_id().clone()))
+                    .map_err(|_| DesktopCredentialError::Store)
+            }
+        }
+    }
+
+    fn delete_last_session(&self) -> Result<(), DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .delete_last_session()
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => {
+                store.delete_account_value(CredentialStore::last_session_account_name())
+            }
+        }
+    }
+
+    fn load_saved_sessions(&self) -> Result<SavedSessionIndex, DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .load_saved_sessions()
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => {
+                let index_json = match store
+                    .load_account_value(CredentialStore::saved_sessions_account_name())
+                {
+                    Ok(index_json) => index_json,
+                    Err(DesktopCredentialError::Missing) => return Ok(SavedSessionIndex::new()),
+                    Err(error) => return Err(error),
+                };
+                SavedSessionIndex::from_json(&index_json).map_err(|_| DesktopCredentialError::Store)
+            }
+        }
+    }
+
+    fn save_saved_sessions(&self, index: &SavedSessionIndex) -> Result<(), DesktopCredentialError> {
+        match self {
+            Self::Os(store) => store
+                .save_saved_sessions(index)
+                .map_err(desktop_credential_error_from_keyring),
+            Self::QaFile(store) => {
+                let index_json = index.to_json().map_err(|_| DesktopCredentialError::Store)?;
+                store
+                    .save_account_value(CredentialStore::saved_sessions_account_name(), &index_json)
+            }
+        }
+    }
+
+    fn remember_saved_session(&self, key_id: &SessionKeyId) -> Result<(), DesktopCredentialError> {
+        let mut index = self.load_saved_sessions()?;
+        index.upsert(key_id.clone());
+        self.save_saved_sessions(&index)
+    }
+
+    fn forget_saved_session(&self, key_id: &SessionKeyId) -> Result<(), DesktopCredentialError> {
+        let mut index = self.load_saved_sessions()?;
+        index.remove(key_id);
+        self.save_saved_sessions(&index)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct QaFileCredentialStore {
+    base_dir: PathBuf,
+}
+
+impl QaFileCredentialStore {
+    fn new(base_dir: PathBuf) -> Self {
+        Self { base_dir }
+    }
+
+    fn save(
+        &self,
+        key_id: &SessionKeyId,
+        secret: &LocalUnlockSecret,
+    ) -> Result<(), DesktopCredentialError> {
+        let storage_string = secret.to_storage_string();
+        self.save_account_value(
+            key_id.local_unlock_account_name().as_str(),
+            storage_string.as_str(),
+        )
+    }
+
+    fn load(&self, key_id: &SessionKeyId) -> Result<LocalUnlockSecret, DesktopCredentialError> {
+        let stored_secret = self.load_account_value(key_id.local_unlock_account_name().as_str())?;
+        LocalUnlockSecret::from_storage_string(&stored_secret)
+            .map_err(|_| DesktopCredentialError::Store)
+    }
+
+    fn delete(&self, key_id: &SessionKeyId) -> Result<(), DesktopCredentialError> {
+        self.delete_account_value(key_id.local_unlock_account_name().as_str())
+    }
+
+    fn save_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+        session: &StoredMatrixSession,
+    ) -> Result<(), DesktopCredentialError> {
+        self.save_account_value(
+            key_id.matrix_session_account_name().as_str(),
+            session.as_str(),
+        )
+    }
+
+    fn load_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<StoredMatrixSession, DesktopCredentialError> {
+        self.load_account_value(key_id.matrix_session_account_name().as_str())
+            .map(StoredMatrixSession::new)
+    }
+
+    fn delete_matrix_session(&self, key_id: &SessionKeyId) -> Result<(), DesktopCredentialError> {
+        self.delete_account_value(key_id.matrix_session_account_name().as_str())
+    }
+
+    fn save_account_value(
+        &self,
+        account_name: &str,
+        value: &str,
+    ) -> Result<(), DesktopCredentialError> {
+        let path = self.account_path(account_name);
+        let parent = path.parent().ok_or(DesktopCredentialError::Store)?;
+        fs::create_dir_all(parent).map_err(|_| DesktopCredentialError::Store)?;
+        let tmp_path = secret_tmp_path(&path);
+        write_secret_file(&tmp_path, value.as_bytes())
+            .map_err(|_| DesktopCredentialError::Store)?;
+        fs::rename(&tmp_path, &path).map_err(|_| DesktopCredentialError::Store)?;
+        set_secret_file_permissions(&path).map_err(|_| DesktopCredentialError::Store)
+    }
+
+    fn load_account_value(&self, account_name: &str) -> Result<String, DesktopCredentialError> {
+        match fs::read_to_string(self.account_path(account_name)) {
+            Ok(value) => Ok(value),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(DesktopCredentialError::Missing)
+            }
+            Err(_) => Err(DesktopCredentialError::Store),
+        }
+    }
+
+    fn delete_account_value(&self, account_name: &str) -> Result<(), DesktopCredentialError> {
+        match fs::remove_file(self.account_path(account_name)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(DesktopCredentialError::Store),
+        }
+    }
+
+    fn account_path(&self, account_name: &str) -> PathBuf {
+        self.base_dir
+            .join("v1")
+            .join(format!("{}.secret", hex_file_name(account_name)))
+    }
+}
+
+fn desktop_credential_store() -> DesktopCredentialStore {
+    if let Some(base_dir) = qa_file_credential_store_dir_from_env() {
+        DesktopCredentialStore::QaFile(QaFileCredentialStore::new(base_dir))
+    } else {
+        DesktopCredentialStore::Os(CredentialStore::new(CREDENTIAL_SERVICE_NAME))
+    }
+}
+
+fn desktop_credential_error_from_keyring(
+    error: matrix_desktop_key::LocalSecretError,
+) -> DesktopCredentialError {
+    if is_missing_credential_error(&error) {
+        DesktopCredentialError::Missing
+    } else {
+        DesktopCredentialError::Store
+    }
+}
+
+fn hex_file_name(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn secret_tmp_path(path: &Path) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    path.with_extension(format!("tmp-{}-{nanos}", std::process::id()))
+}
+
+#[cfg(unix)]
+fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fs::write(path, bytes)
+}
+
+#[cfg(unix)]
+fn set_secret_file_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn set_secret_file_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 pub(crate) fn persist_matrix_session(session: &MatrixClientSession) -> Result<(), String> {
     let persistable = session
         .persistable_session()
@@ -210,7 +566,7 @@ pub(crate) fn persist_matrix_session(session: &MatrixClientSession) -> Result<()
         .to_json()
         .map_err(|_| "session persistence failed".to_owned())?;
     let stored_session = StoredMatrixSession::new(session_json);
-    let store = CredentialStore::new(CREDENTIAL_SERVICE_NAME);
+    let store = desktop_credential_store();
 
     store
         .save_matrix_session(&key_id, &stored_session)
@@ -235,31 +591,28 @@ pub(crate) async fn restore_matrix_session_with_local_store(
         .persistable_session()
         .map_err(|_| "session persistence failed".to_owned())?;
     let key_id = session_key_id_from_info(&persistable.info);
+    let store = desktop_credential_store();
     restore_persistable_matrix_session_with_store_retry(
         &persistable,
         &key_id,
         &matrix_desktop_data_dir()?,
-        CREDENTIAL_SERVICE_NAME,
+        &store,
         "encrypted session store initialization failed",
     )
     .await
 }
 
 pub(crate) fn clear_persisted_matrix_session(info: &SessionInfo) -> Result<(), String> {
-    clear_persisted_matrix_session_with_base(
-        info,
-        &matrix_desktop_data_dir()?,
-        CREDENTIAL_SERVICE_NAME,
-    )
+    let store = desktop_credential_store();
+    clear_persisted_matrix_session_with_base(info, &matrix_desktop_data_dir()?, &store)
 }
 
 fn clear_persisted_matrix_session_with_base(
     info: &SessionInfo,
     base_dir: &Path,
-    credential_service_name: &str,
+    store: &DesktopCredentialStore,
 ) -> Result<(), String> {
     let key_id = session_key_id_from_info(info);
-    let store = CredentialStore::new(credential_service_name);
     store
         .delete(&key_id)
         .map_err(|_| "local store credential could not be deleted".to_owned())?;
@@ -282,7 +635,7 @@ fn clear_persisted_matrix_session_with_base(
 }
 
 async fn restore_persisted_matrix_session() -> Result<Option<MatrixClientSession>, String> {
-    let store = CredentialStore::new(CREDENTIAL_SERVICE_NAME);
+    let store = desktop_credential_store();
     let Some(key_id) = store
         .load_last_session()
         .map_err(|_| "session restore failed".to_owned())?
@@ -299,7 +652,7 @@ async fn restore_persisted_matrix_session() -> Result<Option<MatrixClientSession
         &persistable,
         &key_id,
         &matrix_desktop_data_dir()?,
-        CREDENTIAL_SERVICE_NAME,
+        &store,
         "session restore failed",
     )
     .await
@@ -316,7 +669,7 @@ async fn restore_persisted_matrix_session_for_info(
 async fn restore_persisted_matrix_session_for_key_id(
     key_id: &SessionKeyId,
 ) -> Result<MatrixClientSession, String> {
-    let store = CredentialStore::new(CREDENTIAL_SERVICE_NAME);
+    let store = desktop_credential_store();
     let stored_session = store
         .load_matrix_session(key_id)
         .map_err(|_| "session restore failed".to_owned())?;
@@ -326,7 +679,7 @@ async fn restore_persisted_matrix_session_for_key_id(
         &persistable,
         key_id,
         &matrix_desktop_data_dir()?,
-        CREDENTIAL_SERVICE_NAME,
+        &store,
         "session restore failed",
     )
     .await
@@ -336,14 +689,11 @@ async fn restore_persistable_matrix_session_with_store_retry(
     persistable: &PersistableMatrixSession,
     key_id: &SessionKeyId,
     base_dir: &Path,
-    credential_service_name: &str,
+    store: &DesktopCredentialStore,
     error_message: &'static str,
 ) -> Result<MatrixClientSession, String> {
-    let store_config = matrix_client_store_config_for_session_with_base(
-        &persistable.info,
-        base_dir,
-        credential_service_name,
-    )?;
+    let store_config =
+        matrix_client_store_config_for_session_with_base(&persistable.info, base_dir, store)?;
     match matrix_desktop_auth::restore_session_with_store(persistable, Some(&store_config)).await {
         Ok(session) => Ok(session),
         Err(_) => {
@@ -351,7 +701,7 @@ async fn restore_persistable_matrix_session_with_store_retry(
             let retry_store_config = matrix_client_store_config_for_session_with_base(
                 &persistable.info,
                 base_dir,
-                credential_service_name,
+                store,
             )?;
             matrix_desktop_auth::restore_session_with_store(persistable, Some(&retry_store_config))
                 .await
@@ -369,7 +719,7 @@ fn saved_matrix_session_infos() -> Result<Vec<SessionInfo>, String> {
         return Ok(Vec::new());
     }
 
-    let store = CredentialStore::new(CREDENTIAL_SERVICE_NAME);
+    let store = desktop_credential_store();
     let index = store
         .load_saved_sessions()
         .map_err(|_| "saved sessions could not be loaded".to_owned())?;
@@ -377,7 +727,7 @@ fn saved_matrix_session_infos() -> Result<Vec<SessionInfo>, String> {
 }
 
 fn mark_last_matrix_session(info: &SessionInfo) -> Result<(), String> {
-    let store = CredentialStore::new(CREDENTIAL_SERVICE_NAME);
+    let store = desktop_credential_store();
     store
         .save_last_session(&session_key_id_from_info(info))
         .map_err(|_| "last session pointer could not be saved".to_owned())
@@ -386,12 +736,11 @@ fn mark_last_matrix_session(info: &SessionInfo) -> Result<(), String> {
 fn matrix_client_store_config_for_session_with_base(
     info: &SessionInfo,
     base_dir: &Path,
-    credential_service_name: &str,
+    store: &DesktopCredentialStore,
 ) -> Result<MatrixClientStoreConfig, String> {
     let key_id = session_key_id_from_info(info);
     let paths = local_store_paths(base_dir, &key_id);
-    let store = CredentialStore::new(credential_service_name);
-    let local_secret = load_or_create_local_unlock_secret(&store, &key_id, &paths.store_path)?;
+    let local_secret = load_or_create_local_unlock_secret(store, &key_id, &paths.store_path)?;
 
     std::fs::create_dir_all(&paths.store_path)
         .map_err(|_| "encrypted session store directory could not be created".to_owned())?;
@@ -575,13 +924,13 @@ fn persist_current_window_state<R: tauri::Runtime>(
 }
 
 fn load_or_create_local_unlock_secret(
-    store: &CredentialStore,
+    store: &DesktopCredentialStore,
     key_id: &SessionKeyId,
     store_path: &Path,
 ) -> Result<LocalUnlockSecret, String> {
     match store.load(key_id) {
         Ok(secret) => Ok(secret),
-        Err(error) if is_missing_credential_error(&error) => {
+        Err(DesktopCredentialError::Missing) => {
             if directory_has_entries(store_path)? {
                 return Err("local store credential is missing".to_owned());
             }
@@ -911,13 +1260,15 @@ pub fn run() {
 mod tests {
     use std::path::Path;
 
+    use matrix_desktop_key::{LocalUnlockSecret, StoredMatrixSession};
     use matrix_desktop_state::SessionInfo;
 
     use super::{
-        PersistedWindowState, desktop_menu_items, desktop_standard_menu_items,
-        load_window_state_with_base, local_store_paths, path_namespace_for_key_id,
-        persist_window_state_with_base, persisted_window_state_from_geometry,
-        persisted_window_state_is_restorable, prepare_search_index_path_with_rebuild_suffix,
+        DesktopCredentialStore, PersistedWindowState, QaFileCredentialStore, desktop_menu_items,
+        desktop_standard_menu_items, hex_file_name, load_window_state_with_base, local_store_paths,
+        path_namespace_for_key_id, persist_window_state_with_base,
+        persisted_window_state_from_geometry, persisted_window_state_is_restorable,
+        prepare_search_index_path_with_rebuild_suffix, qa_file_credential_store_dir_from_env_value,
         qa_login_pipe_path_from_env_value, qa_skips_keychain_persistence_from_env_value,
         quarantine_local_store_paths_with_suffix, remove_local_store_paths,
         restore_session_enabled_from_env_value, saved_session_infos_from_index,
@@ -956,6 +1307,19 @@ mod tests {
     }
 
     #[test]
+    fn qa_file_credential_store_env_uses_path_only() {
+        assert_eq!(
+            qa_file_credential_store_dir_from_env_value(Some(" /tmp/matrix-desktop-qa-creds ")),
+            Some(Path::new("/tmp/matrix-desktop-qa-creds").to_path_buf())
+        );
+        assert_eq!(
+            qa_file_credential_store_dir_from_env_value(Some("   ")),
+            None
+        );
+        assert_eq!(qa_file_credential_store_dir_from_env_value(None), None);
+    }
+
+    #[test]
     fn qa_keychain_skip_env_is_explicitly_opted_in() {
         assert!(qa_skips_keychain_persistence_from_env_value(Some("1")));
         assert!(qa_skips_keychain_persistence_from_env_value(Some("true")));
@@ -988,6 +1352,80 @@ mod tests {
         );
         assert!(!format!("{request:?}").contains("synthetic-password"));
         assert!(!format!("{request:?}").contains("synthetic-recovery-secret"));
+    }
+
+    #[test]
+    fn qa_file_credential_store_round_trips_session_state_without_keychain() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let store = DesktopCredentialStore::QaFile(QaFileCredentialStore::new(
+            tempdir.path().join("qa-credential-store"),
+        ));
+        let info = SessionInfo {
+            homeserver: "https://matrix.example.org".to_owned(),
+            user_id: "@user-a:example.invalid".to_owned(),
+            device_id: "DEVICE123".to_owned(),
+        };
+        let key_id = session_key_id_from_info(&info);
+        let secret = LocalUnlockSecret::generate();
+
+        store
+            .save(&key_id, &secret)
+            .expect("local unlock secret should be saved");
+        let loaded_secret = store
+            .load(&key_id)
+            .expect("local unlock secret should be loaded");
+        assert_eq!(
+            loaded_secret.to_storage_string().as_str(),
+            secret.to_storage_string().as_str()
+        );
+
+        store
+            .save_matrix_session(
+                &key_id,
+                &StoredMatrixSession::new(r#"{"access_token":"synthetic-token"}"#),
+            )
+            .expect("session should be saved");
+        assert_eq!(
+            store
+                .load_matrix_session(&key_id)
+                .expect("session should be loaded")
+                .as_str(),
+            r#"{"access_token":"synthetic-token"}"#
+        );
+
+        store
+            .remember_saved_session(&key_id)
+            .expect("saved session index should be updated");
+        assert_eq!(
+            store.load_saved_sessions().unwrap().sessions(),
+            &[key_id.clone()]
+        );
+
+        store
+            .save_last_session(&key_id)
+            .expect("last session should be saved");
+        assert_eq!(store.load_last_session().unwrap(), Some(key_id.clone()));
+
+        let secret_path = tempdir
+            .path()
+            .join("qa-credential-store")
+            .join("v1")
+            .join(format!(
+                "{}.secret",
+                hex_file_name(key_id.local_unlock_account_name().as_str())
+            ));
+        assert!(secret_path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = std::fs::metadata(secret_path)
+                .expect("secret metadata should be readable")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 
     #[test]

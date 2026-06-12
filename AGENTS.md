@@ -71,7 +71,9 @@
   reader waits for more input and the Tauri window is never launched.
 - Do not store post-login real-account screenshots. They can contain room names,
   Matrix IDs, message bodies, or attachment names. Real-account GUI automation
-  should rely on private-data-free QA window-title tokens instead.
+  should rely on private-data-free QA window-title tokens instead. Use
+  `--allow-private-screenshots` only for explicitly approved test accounts whose
+  post-login room and message data may be written to ignored artifacts.
 - Some sparse QA accounts have valid room-list sync but no visible timeline
   items in the automatically selected room. Keep the strict
   `timeline_items > 0` release signal for normal real-account smoke, but use
@@ -86,7 +88,11 @@
   sync state across runs. Profile names must be synthetic and non-secret; data is
   stored under ignored `.local-secrets/qa-profiles/<name>/data`.
 - The default `qa:mac-gui -- --real-login-from-stdin` path is intentionally
-  disposable and sets `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`. Combining
-  `--real-login-from-stdin` with `--qa-profile=<name>` is the opt-in path for
-  persistent restore/sync QA, and can trigger OS credential-store prompts on the
-  first run.
+  disposable and sets `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`.
+  `--qa-profile=<name>` is the opt-in path for persistent restore/sync QA and
+  must set `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` so unattended runs do
+  not prompt macOS Keychain. This env-controlled file credential store must stay
+  behind a debug/test-only compile-time gate; release builds must ignore it and
+  use the OS credential store. If a profile run shows a Keychain prompt, treat
+  it as an automation failure and verify that env var is present in
+  `--child-env`.

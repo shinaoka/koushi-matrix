@@ -84,10 +84,15 @@ describe("desktop release scripts", () => {
       "--qa-title-panel-ready=matrix-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings",
       "--required-panel=keyboardSettings"
     ]);
+    const erroredPanel = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-panel-ready=matrix-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=1 panel=keyboardSettings",
+      "--required-panel=keyboardSettings"
+    ]);
 
     expect(readyRecoveryPanel.trim()).toBe("not-ready");
     expect(recoveryPanel.trim()).toBe("ready");
     expect(keyboardPanel.trim()).toBe("ready");
+    expect(erroredPanel.trim()).toBe("not-ready");
   });
 
   test("release preflight validates mac GUI smoke entry", () => {
@@ -161,7 +166,9 @@ describe("desktop release scripts", () => {
     );
 
     expect(source).toContain("skip real login screenshot");
-    expect(source).toContain("if (!realLogin)");
+    expect(source).toContain("skip profile screenshot");
+    expect(source).toContain("allowPrivateScreenshots");
+    expect(source).toContain("postLoginScreenshotsAreAllowed");
     expect(source).not.toContain("02-real-login.png");
   });
 
@@ -192,7 +199,21 @@ describe("desktop release scripts", () => {
     expect(output).toContain("MATRIX_DESKTOP_RESTORE_SESSION=1");
     expect(output).toContain("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=0");
     expect(output).toContain(".local-secrets/qa-profiles/agent-sync/data");
+    expect(output).toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR=");
+    expect(output).toContain(".local-secrets/qa-profiles/agent-sync/data/qa-credential-store");
     expect(output).not.toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE");
+  });
+
+  test("desktop QA file credential store is gated to debug and test builds", () => {
+    const source = readFileSync(
+      new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("#[cfg(any(debug_assertions, test))]");
+    expect(source).toContain("const QA_FILE_CREDENTIAL_STORE_DIR_ENV");
+    expect(source).toContain("#[cfg(not(any(debug_assertions, test)))]");
+    expect(source).toContain("fn qa_file_credential_store_dir_from_env() -> Option<PathBuf> {\n    None\n}");
   });
 
   test("mac GUI smoke rejects unsafe reusable profile names", () => {
@@ -232,6 +253,14 @@ describe("desktop release scripts", () => {
 
     expect(strict.trim()).toBe("not-ready");
     expect(relaxed.trim()).toBe("ready");
+  });
+
+  test("mac GUI smoke rejects ready titles with backend errors", () => {
+    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=1 panel=closed"
+    ]);
+
+    expect(output.trim()).toBe("not-ready");
   });
 
   test("mac GUI smoke requires ready session when recovery code is supplied", () => {
