@@ -9,8 +9,13 @@ notices; local changes to vendored code must remain easy to upstream or revert.
 - Decrypted E2EE event bodies, attachment filenames, snippets, search queries,
   access tokens, refresh tokens, recovery keys, room keys, local store keys, and
   search index keys are secrets.
+- Persistable Matrix session JSON contains access tokens and refresh tokens. It
+  is a secret even when wrapped in a redacted Rust type.
 - Secrets MUST NOT be logged, sent to telemetry, written to crash reports,
   printed in test output, checked into fixtures, or copied into screenshots.
+- `.local-secrets/` is reserved for local, ignored manual-testing notes or
+  scratch files only. It is not an application secret store, must not be required
+  for tests or builds, and must not replace OS secret storage.
 - Decrypted event bodies and plaintext-derived data MUST NOT be persisted in
   first-party stores outside an encrypted Matrix SDK store or encrypted search
   index.
@@ -69,6 +74,10 @@ notices; local changes to vendored code must remain easy to upstream or revert.
 - Tests must use synthetic credentials, synthetic Matrix IDs, and synthetic event
   content unless a test is explicitly marked as manual and documents the local
   setup.
+- Manual live-login smoke checks must collect real credentials interactively.
+  Do not pass real usernames, passwords, recovery keys, or access tokens through
+  command-line arguments, environment variables, fixtures, committed scripts, or
+  captured test output.
 - Do not copy real room messages, real access tokens, real recovery keys, real
   attachment filenames, or production search indexes into this repository.
 - Do not use real personal information in tests, fixtures, screenshots, seed

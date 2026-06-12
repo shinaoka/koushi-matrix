@@ -1,8 +1,11 @@
 .superpowers/
+.local-secrets/
 node_modules/
 dist/
 build/
 target/
+/Cargo.lock
 apps/desktop/src-tauri/gen/
+artifacts/
 .DS_Store
 *.log

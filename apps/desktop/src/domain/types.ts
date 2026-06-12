@@ -7,6 +7,12 @@ export interface DesktopSnapshot {
   thread: ThreadSnapshot | null;
 }
 
+export interface SavedSessionInfo {
+  homeserver: string;
+  user_id: string;
+  device_id: string;
+}
+
 export interface AppState {
   session: SessionState;
   auth: AuthDiscoveryState;
@@ -31,14 +37,31 @@ export interface LoginFlow {
   delegated_oidc_compatibility: boolean;
 }
 
+export type RecoveryMethod = "recoveryKey" | "securityPhrase";
+
 export interface SessionState {
-  kind: "signedOut" | "restoring" | "authenticating" | "ready" | "locked" | "loggingOut";
+  kind:
+    | "signedOut"
+    | "restoring"
+    | "switchingAccount"
+    | "authenticating"
+    | "needsRecovery"
+    | "recovering"
+    | "ready"
+    | "locked"
+    | "loggingOut";
   homeserver?: string;
   user_id?: string;
   device_id?: string;
+  recovery_methods?: RecoveryMethod[];
 }
 
-export type SyncState = "stopped" | "starting" | "running" | { recovering: string };
+export type SyncState =
+  | "stopped"
+  | "starting"
+  | "running"
+  | { failed: string }
+  | { reconnecting: string };
 
 export interface NavigationState {
   active_space_id: string | null;
@@ -123,11 +146,18 @@ export interface AppError {
 
 export interface SidebarModel {
   active_space_id: string | null;
+  account_home: AccountHomeItem;
   space_rail: SpaceRailItem[];
   space_rooms: RoomListItem[];
   global_dms: RoomListItem[];
   space_unread_count: number;
   dm_unread_count: number;
+}
+
+export interface AccountHomeItem {
+  display_name: string;
+  unread_count: number;
+  is_active: boolean;
 }
 
 export interface SpaceRailItem {

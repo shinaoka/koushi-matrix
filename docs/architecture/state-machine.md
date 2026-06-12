@@ -39,10 +39,12 @@ stateDiagram-v2
     [*] --> Stopped
     Stopped --> Starting: Restore/Login success
     Starting --> Running: SyncStarted
-    Running --> Recovering: SyncFailed
-    Recovering --> Running: SyncRecovered
+    Running --> Failed: SyncFailed
+    Failed --> Reconnecting: SyncReconnecting
+    Reconnecting --> Running: SyncStarted/SyncRecovered
     Running --> Stopped: LogoutRequested
-    Recovering --> Stopped: LogoutRequested
+    Failed --> Stopped: LogoutRequested
+    Reconnecting --> Stopped: LogoutRequested
 ```
 
 Logout and lock clear navigation, room lists, the main timeline, thread pane, and

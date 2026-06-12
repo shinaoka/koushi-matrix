@@ -1,5 +1,6 @@
 use matrix_desktop_search::{
-    SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
+    SearchCandidate, SearchDocumentStore, SearchEdit, SearchMaintenanceQueue, SearchableEvent,
+    SensitiveString,
 };
 use matrix_desktop_state::{SearchMatchField, SearchMatchKind, TextRange};
 
@@ -201,4 +202,40 @@ fn redacted_event_is_not_returned() {
             )
             .is_none()
     );
+}
+
+#[test]
+fn late_decryption_queue_drains_events_per_room_without_duplicates() {
+    let mut queue = SearchMaintenanceQueue::default();
+
+    queue.enqueue_late_decryption("!room-a:example.invalid", "$event-a");
+    queue.enqueue_late_decryption("!room-a:example.invalid", "$event-a");
+    queue.enqueue_late_decryption("!room-b:example.invalid", "$event-b");
+
+    let room_a = queue.drain_late_decryption("!room-a:example.invalid");
+
+    assert_eq!(room_a.len(), 1);
+    assert_eq!(room_a[0].room_id, "!room-a:example.invalid");
+    assert_eq!(room_a[0].event_id, "$event-a");
+    assert!(
+        queue
+            .drain_late_decryption("!room-a:example.invalid")
+            .is_empty()
+    );
+    assert_eq!(queue.pending_late_decryption_count(), 1);
+}
+
+#[test]
+fn event_cache_lag_marks_room_for_reindex_once() {
+    let mut queue = SearchMaintenanceQueue::default();
+
+    queue.mark_room_reindex_needed("!room-a:example.invalid");
+    queue.mark_room_reindex_needed("!room-a:example.invalid");
+    queue.mark_room_reindex_needed("!room-b:example.invalid");
+
+    assert_eq!(
+        queue.drain_reindex_rooms(),
+        vec!["!room-a:example.invalid", "!room-b:example.invalid"]
+    );
+    assert!(queue.drain_reindex_rooms().is_empty());
 }

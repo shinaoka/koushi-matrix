@@ -1,8 +1,8 @@
 use matrix_desktop_backend::{DesktopSnapshot, ThreadMessage, ThreadSnapshot, TimelineMessage};
 use matrix_desktop_state::{
-    AppError, AppState, AuthDiscoveryState, ComposerState, NavigationState, RoomSummary,
-    SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState,
-    SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
+    AppError, AppState, AuthDiscoveryState, ComposerState, NavigationState, RecoveryMethod,
+    RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+    SessionState, SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -61,8 +61,25 @@ impl From<AppState> for FrontendAppState {
 pub enum FrontendSessionState {
     SignedOut,
     Restoring,
+    SwitchingAccount {
+        homeserver: String,
+        user_id: String,
+        device_id: String,
+    },
     Authenticating {
         homeserver: String,
+    },
+    NeedsRecovery {
+        homeserver: String,
+        user_id: String,
+        device_id: String,
+        recovery_methods: Vec<RecoveryMethod>,
+    },
+    Recovering {
+        homeserver: String,
+        user_id: String,
+        device_id: String,
+        recovery_methods: Vec<RecoveryMethod>,
     },
     Ready {
         homeserver: String,
@@ -82,7 +99,24 @@ impl From<SessionState> for FrontendSessionState {
         match session {
             SessionState::SignedOut => Self::SignedOut,
             SessionState::Restoring => Self::Restoring,
+            SessionState::SwitchingAccount { info } => Self::SwitchingAccount {
+                homeserver: info.homeserver,
+                user_id: info.user_id,
+                device_id: info.device_id,
+            },
             SessionState::Authenticating { homeserver } => Self::Authenticating { homeserver },
+            SessionState::NeedsRecovery { info, methods } => Self::NeedsRecovery {
+                homeserver: info.homeserver,
+                user_id: info.user_id,
+                device_id: info.device_id,
+                recovery_methods: methods,
+            },
+            SessionState::Recovering { info, methods } => Self::Recovering {
+                homeserver: info.homeserver,
+                user_id: info.user_id,
+                device_id: info.device_id,
+                recovery_methods: methods,
+            },
             SessionState::Ready(info) => Self::Ready {
                 homeserver: info.homeserver,
                 user_id: info.user_id,
@@ -102,7 +136,8 @@ impl From<SessionState> for FrontendSessionState {
 #[serde(untagged)]
 pub enum FrontendSyncState {
     Name(&'static str),
-    Recovering { recovering: String },
+    Failed { failed: String },
+    Reconnecting { reconnecting: String },
 }
 
 impl From<SyncState> for FrontendSyncState {
@@ -111,7 +146,10 @@ impl From<SyncState> for FrontendSyncState {
             SyncState::Stopped => Self::Name("stopped"),
             SyncState::Starting => Self::Name("starting"),
             SyncState::Running => Self::Name("running"),
-            SyncState::Recovering { reason } => Self::Recovering { recovering: reason },
+            SyncState::Failed { reason } => Self::Failed { failed: reason },
+            SyncState::Reconnecting { reason } => Self::Reconnecting {
+                reconnecting: reason,
+            },
         }
     }
 }
@@ -342,7 +380,7 @@ fn _assert_snapshot_children_are_serializable(
 
 #[cfg(test)]
 mod tests {
-    use matrix_desktop_backend::FakeDesktopBackend;
+    use matrix_desktop_backend::{E2eeRecoveryMode, FakeDesktopBackend, FakeDesktopBackendConfig};
     use matrix_desktop_state::SearchScope;
     use serde_json::json;
 
@@ -375,6 +413,47 @@ mod tests {
         assert_eq!(
             value["state"]["search"]["results"][0]["highlights"][0],
             json!({ "start_utf16": 0, "end_utf16": 5 })
+        );
+    }
+
+    #[test]
+    fn frontend_snapshot_serializes_e2ee_recovery_step() {
+        let backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
+            e2ee_recovery: E2eeRecoveryMode::RequiredDeferred,
+            ..FakeDesktopBackendConfig::default()
+        });
+
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from(backend.snapshot()))
+            .expect("snapshot should serialize");
+
+        assert_eq!(value["state"]["session"]["kind"], json!("needsRecovery"));
+        assert_eq!(
+            value["state"]["session"]["recovery_methods"],
+            json!(["recoveryKey", "securityPhrase"])
+        );
+        assert_eq!(value["state"]["sync"], json!("stopped"));
+        assert_eq!(value["state"]["rooms"], json!([]));
+    }
+
+    #[test]
+    fn frontend_sync_state_serializes_failed_and_reconnecting() {
+        assert_eq!(
+            serde_json::to_value(super::FrontendSyncState::from(
+                matrix_desktop_state::SyncState::Failed {
+                    reason: "limited network".to_owned(),
+                }
+            ))
+            .expect("failed sync should serialize"),
+            json!({ "failed": "limited network" })
+        );
+        assert_eq!(
+            serde_json::to_value(super::FrontendSyncState::from(
+                matrix_desktop_state::SyncState::Reconnecting {
+                    reason: "limited network".to_owned(),
+                }
+            ))
+            .expect("reconnecting sync should serialize"),
+            json!({ "reconnecting": "limited network" })
         );
     }
 }

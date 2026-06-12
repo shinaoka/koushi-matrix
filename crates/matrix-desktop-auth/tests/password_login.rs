@@ -1,0 +1,848 @@
+use futures_util::StreamExt;
+use matrix_desktop_auth::{
+    MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace, MatrixSearchCandidate,
+    MatrixTimelineItem,
+};
+use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest};
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread,
+};
+
+#[test]
+fn room_list_smoke_report_counts_without_private_names() {
+    let snapshot = MatrixRoomListSnapshot {
+        spaces: vec![MatrixRoomListSpace {
+            space_id: "!space:example.invalid".into(),
+            display_name: "Private Space Name".into(),
+        }],
+        rooms: vec![
+            MatrixRoomListRoom {
+                room_id: "!room-a:example.invalid".into(),
+                display_name: "Private Room Name".into(),
+                is_dm: false,
+                unread_count: 2,
+                parent_space_ids: Vec::new(),
+            },
+            MatrixRoomListRoom {
+                room_id: "!room-b:example.invalid".into(),
+                display_name: "Private DM Name".into(),
+                is_dm: true,
+                unread_count: 0,
+                parent_space_ids: Vec::new(),
+            },
+        ],
+    };
+
+    let report = matrix_desktop_auth::room_list_smoke_report(&snapshot);
+
+    assert_eq!(report.rooms, 2);
+    assert_eq!(report.spaces, 1);
+    assert_eq!(report.dms, 1);
+    assert_eq!(report.unread_rooms, 1);
+    assert_eq!(report.to_string(), "rooms=2 spaces=1 dms=1 unread_rooms=1");
+    assert!(!report.to_string().contains("Private"));
+}
+
+#[test]
+fn real_account_qa_report_counts_without_private_timeline_data() {
+    let snapshot = MatrixRoomListSnapshot {
+        spaces: vec![MatrixRoomListSpace {
+            space_id: "!space:example.invalid".into(),
+            display_name: "Private Space Name".into(),
+        }],
+        rooms: vec![MatrixRoomListRoom {
+            room_id: "!room:example.invalid".into(),
+            display_name: "Private Room Name".into(),
+            is_dm: false,
+            unread_count: 0,
+            parent_space_ids: Vec::new(),
+        }],
+    };
+    let timeline_items = vec![MatrixTimelineItem {
+        room_id: "!room:example.invalid".into(),
+        event_id: "$event:example.invalid".into(),
+        sender: "@private:example.invalid".into(),
+        timestamp_ms: 1_820_000_000_000,
+        body: "Private visible message body".into(),
+    }];
+
+    let report = matrix_desktop_auth::real_account_qa_report(&snapshot, true, &timeline_items);
+    let rendered = report.to_string();
+
+    assert_eq!(report.room_list.rooms, 1);
+    assert_eq!(report.timeline.timeline_items, 1);
+    assert!(report.timeline.selected_room_present);
+    assert_eq!(
+        rendered,
+        "rooms=1 spaces=1 dms=0 unread_rooms=0 selected_room_present=true timeline_items=1 session_restored=false search_invoked=false search_candidates=0"
+    );
+    assert!(!rendered.contains("Private"));
+    assert!(!rendered.contains("example.invalid"));
+}
+
+#[test]
+fn restored_real_account_qa_report_records_restore_without_private_data() {
+    let snapshot = MatrixRoomListSnapshot {
+        spaces: Vec::new(),
+        rooms: vec![MatrixRoomListRoom {
+            room_id: "!room:example.invalid".into(),
+            display_name: "Private Room Name".into(),
+            is_dm: false,
+            unread_count: 0,
+            parent_space_ids: Vec::new(),
+        }],
+    };
+    let timeline_items = vec![MatrixTimelineItem {
+        room_id: "!room:example.invalid".into(),
+        event_id: "$event:example.invalid".into(),
+        sender: "@private:example.invalid".into(),
+        timestamp_ms: 1_820_000_000_000,
+        body: "Private visible message body".into(),
+    }];
+
+    let report =
+        matrix_desktop_auth::restored_real_account_qa_report(&snapshot, true, &timeline_items);
+    let rendered = report.to_string();
+
+    assert!(report.session_restored);
+    assert_eq!(
+        rendered,
+        "rooms=1 spaces=0 dms=0 unread_rooms=0 selected_room_present=true timeline_items=1 session_restored=true search_invoked=false search_candidates=0"
+    );
+    assert!(!rendered.contains("Private"));
+    assert!(!rendered.contains("example.invalid"));
+}
+
+#[test]
+fn real_account_qa_report_records_search_without_private_candidate_ids() {
+    let snapshot = MatrixRoomListSnapshot {
+        spaces: Vec::new(),
+        rooms: vec![MatrixRoomListRoom {
+            room_id: "!room:example.invalid".into(),
+            display_name: "Private Room Name".into(),
+            is_dm: false,
+            unread_count: 0,
+            parent_space_ids: Vec::new(),
+        }],
+    };
+    let timeline_items = vec![MatrixTimelineItem {
+        room_id: "!room:example.invalid".into(),
+        event_id: "$timeline-event:example.invalid".into(),
+        sender: "@private:example.invalid".into(),
+        timestamp_ms: 1_820_000_000_000,
+        body: "Private visible message body".into(),
+    }];
+    let search_candidates = vec![MatrixSearchCandidate {
+        room_id: "!private-search-room:example.invalid".into(),
+        event_id: "$private-search-event:example.invalid".into(),
+        score_millis: 900,
+    }];
+
+    let report = matrix_desktop_auth::real_account_qa_report_with_search(
+        &snapshot,
+        true,
+        &timeline_items,
+        true,
+        &search_candidates,
+    );
+    let rendered = report.to_string();
+
+    assert!(report.search.invoked);
+    assert_eq!(report.search.candidates, 1);
+    assert_eq!(
+        rendered,
+        "rooms=1 spaces=0 dms=0 unread_rooms=0 selected_room_present=true timeline_items=1 session_restored=true search_invoked=true search_candidates=1"
+    );
+    assert!(!rendered.contains("Private"));
+    assert!(!rendered.contains("private-search"));
+    assert!(!rendered.contains("example.invalid"));
+}
+
+#[test]
+fn sdk_password_login_returns_session_info_without_exposing_secret() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver: homeserver.clone(),
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+
+    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+        .expect("password login should succeed");
+
+    assert_eq!(session.info.homeserver, homeserver);
+    assert_eq!(session.info.user_id, "@fixture-user:example.invalid");
+    assert_eq!(session.info.device_id, "FIXTUREDEVICE");
+    assert!(!format!("{session:?}").contains("synthetic-password"));
+}
+
+#[test]
+fn sdk_password_login_failure_does_not_include_secret() {
+    let homeserver = spawn_password_login_server(403);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+
+    let error = matrix_desktop_auth::login_with_password_blocking(&request)
+        .expect_err("password login should fail");
+
+    assert!(!error.to_string().contains("synthetic-password"));
+}
+
+#[test]
+fn encrypted_store_config_debug_redacts_raw_key() {
+    let store_config = matrix_desktop_auth::MatrixClientStoreConfig::new(
+        "/tmp/matrix-desktop-test-store",
+        matrix_desktop_auth::MatrixClientStoreKey::new([7; 32]),
+    )
+    .with_cache_path("/tmp/matrix-desktop-test-cache")
+    .with_search_index_store(matrix_desktop_auth::MatrixSearchIndexStoreConfig::new(
+        "/tmp/matrix-desktop-test-search",
+        matrix_desktop_auth::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
+    ));
+
+    let debug = format!("{store_config:?}");
+
+    assert!(debug.contains("MatrixClientStoreKey(..)"));
+    assert!(debug.contains("MatrixSearchIndexKey(..)"));
+    assert!(!debug.contains("7, 7"));
+    assert!(!debug.contains("synthetic-search-index-secret"));
+}
+
+#[test]
+fn sdk_password_login_can_use_encrypted_sqlite_store_without_exposing_store_key() {
+    let homeserver = spawn_password_login_server(200);
+    let store_dir = tempfile::tempdir().expect("store tempdir should be created");
+    let cache_dir = tempfile::tempdir().expect("cache tempdir should be created");
+    let search_dir = tempfile::tempdir().expect("search tempdir should be created");
+    let store_config = matrix_desktop_auth::MatrixClientStoreConfig::new(
+        store_dir.path(),
+        matrix_desktop_auth::MatrixClientStoreKey::new([11; 32]),
+    )
+    .with_cache_path(cache_dir.path())
+    .with_search_index_store(matrix_desktop_auth::MatrixSearchIndexStoreConfig::new(
+        search_dir.path(),
+        matrix_desktop_auth::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
+    ));
+    let request = LoginRequest {
+        homeserver: homeserver.clone(),
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session =
+            matrix_desktop_auth::login_with_password_with_store(&request, Some(&store_config))
+                .await
+                .expect("password login with encrypted store should succeed");
+
+        assert_eq!(session.info.homeserver, homeserver);
+        assert_eq!(session.info.user_id, "@fixture-user:example.invalid");
+        assert_eq!(session.info.device_id, "FIXTUREDEVICE");
+        assert!(store_dir.path().read_dir().unwrap().next().is_some());
+        assert!(!format!("{session:?}").contains("synthetic-password"));
+    });
+}
+
+#[test]
+fn encrypted_sqlite_store_rejects_wrong_key_without_exposing_key_material() {
+    let homeserver = spawn_password_login_server(200);
+    let store_dir = tempfile::tempdir().expect("store tempdir should be created");
+    let cache_dir = tempfile::tempdir().expect("cache tempdir should be created");
+    let search_dir = tempfile::tempdir().expect("search tempdir should be created");
+    let correct_store_config = matrix_desktop_auth::MatrixClientStoreConfig::new(
+        store_dir.path(),
+        matrix_desktop_auth::MatrixClientStoreKey::new([11; 32]),
+    )
+    .with_cache_path(cache_dir.path())
+    .with_search_index_store(matrix_desktop_auth::MatrixSearchIndexStoreConfig::new(
+        search_dir.path(),
+        matrix_desktop_auth::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
+    ));
+    let wrong_store_config = matrix_desktop_auth::MatrixClientStoreConfig::new(
+        store_dir.path(),
+        matrix_desktop_auth::MatrixClientStoreKey::new([12; 32]),
+    )
+    .with_cache_path(cache_dir.path())
+    .with_search_index_store(matrix_desktop_auth::MatrixSearchIndexStoreConfig::new(
+        search_dir.path(),
+        matrix_desktop_auth::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
+    ));
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password_with_store(
+            &request,
+            Some(&correct_store_config),
+        )
+        .await
+        .expect("password login with encrypted store should succeed");
+        let persistable = session
+            .persistable_session()
+            .expect("SDK should expose session data");
+        drop(session);
+
+        let error = matrix_desktop_auth::restore_session_with_store(
+            &persistable,
+            Some(&wrong_store_config),
+        )
+        .await
+        .expect_err("encrypted store should reject the wrong key");
+
+        assert!(!error.to_string().contains("12, 12"));
+        assert!(!format!("{error:?}").contains("12, 12"));
+        assert!(!error.to_string().contains("synthetic-password"));
+        assert!(!format!("{error:?}").contains("synthetic-password"));
+    });
+}
+
+#[test]
+fn sdk_password_login_session_can_logout_without_exposing_secret() {
+    let logout_seen = Arc::new(AtomicBool::new(false));
+    let homeserver = spawn_password_login_server_with_logout(200, Arc::clone(&logout_seen));
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+        .expect("password login should succeed");
+
+    matrix_desktop_auth::logout_blocking(&session).expect("logout should succeed");
+
+    assert!(logout_seen.load(Ordering::SeqCst));
+    assert!(!format!("{session:?}").contains("synthetic-password"));
+}
+
+#[test]
+fn sdk_password_login_exports_redacted_persistable_session() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver: homeserver.clone(),
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+        .expect("password login should succeed");
+
+    let persisted = session
+        .persistable_session()
+        .expect("SDK should expose session data");
+    let json = persisted
+        .to_json()
+        .expect("persistable session should serialize");
+    let restored = matrix_desktop_auth::PersistableMatrixSession::from_json(&json)
+        .expect("persistable session should deserialize");
+
+    assert_eq!(persisted.info, session.info);
+    assert_eq!(restored.info, session.info);
+    assert!(json.contains("fixture-access-token"));
+    assert!(!format!("{persisted:?}").contains("fixture-access-token"));
+    assert!(!format!("{restored:?}").contains("fixture-access-token"));
+    assert!(!format!("{persisted:?}").contains("synthetic-password"));
+}
+
+#[test]
+fn persisted_session_restores_sdk_client_without_exposing_token() {
+    let logout_seen = Arc::new(AtomicBool::new(false));
+    let homeserver = spawn_password_login_server_with_logout(200, Arc::clone(&logout_seen));
+    let request = LoginRequest {
+        homeserver: homeserver.clone(),
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+        .expect("password login should succeed");
+    let persisted = session
+        .persistable_session()
+        .expect("SDK should expose session data");
+
+    let restored = matrix_desktop_auth::restore_session_blocking(&persisted)
+        .expect("persisted session should restore");
+    matrix_desktop_auth::logout_blocking(&restored).expect("restored session should logout");
+
+    assert_eq!(restored.info.homeserver, homeserver);
+    assert_eq!(restored.info.user_id, "@fixture-user:example.invalid");
+    assert_eq!(restored.info.device_id, "FIXTUREDEVICE");
+    assert!(logout_seen.load(Ordering::SeqCst));
+    assert!(!format!("{restored:?}").contains("fixture-access-token"));
+}
+
+#[test]
+fn sdk_sync_once_failure_does_not_include_token_or_password() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+        let error = matrix_desktop_auth::sync_once(&session)
+            .await
+            .expect_err("fixture server does not provide sync");
+
+        assert!(!error.to_string().contains("fixture-access-token"));
+        assert!(!format!("{error:?}").contains("fixture-access-token"));
+        assert!(!error.to_string().contains("synthetic-password"));
+        assert!(!format!("{error:?}").contains("synthetic-password"));
+        assert!(!error.to_string().contains("Unexpected test request"));
+        assert!(!format!("{error:?}").contains("Unexpected test request"));
+    });
+}
+
+#[test]
+fn sdk_room_operation_failures_do_not_include_body_ids_or_token() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+        let room_id = "!missing-room:example.invalid";
+        let event_id = "$missing-event:example.invalid";
+        let transaction_id = "desktop-sensitive-transaction";
+        let body = "synthetic-body-secret";
+        let forbidden = [
+            room_id,
+            event_id,
+            transaction_id,
+            body,
+            "fixture-access-token",
+            "synthetic-password",
+        ];
+
+        let send_error =
+            matrix_desktop_auth::send_text_message(&session, room_id, body, transaction_id)
+                .await
+                .expect_err("missing room should make SDK send fail");
+        assert_error_redacts(&send_error, &forbidden);
+
+        let edit_error = matrix_desktop_auth::edit_text_message(&session, room_id, event_id, body)
+            .await
+            .expect_err("missing room should make SDK edit fail");
+        assert_error_redacts(&edit_error, &forbidden);
+
+        let redact_error = matrix_desktop_auth::redact_message(&session, room_id, event_id)
+            .await
+            .expect_err("missing room should make SDK redaction fail");
+        assert_error_redacts(&redact_error, &forbidden);
+    });
+}
+
+#[test]
+fn sdk_search_candidates_return_empty_without_joined_rooms() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+
+        let candidates =
+            matrix_desktop_auth::search_message_candidates(&session, "synthetic query", 20)
+                .await
+                .expect("empty joined room set should search successfully");
+
+        assert!(candidates.is_empty());
+    });
+}
+
+#[test]
+fn sdk_room_list_snapshot_returns_empty_without_synced_rooms() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+
+        let snapshot = matrix_desktop_auth::room_list_snapshot(&session)
+            .await
+            .expect("empty joined room set should snapshot successfully");
+
+        assert!(snapshot.spaces.is_empty());
+        assert!(snapshot.rooms.is_empty());
+        assert!(!format!("{snapshot:?}").contains("fixture-access-token"));
+        assert!(!format!("{snapshot:?}").contains("synthetic-password"));
+    });
+}
+
+#[test]
+fn sdk_search_candidates_blocking_returns_empty_for_empty_query() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+        .expect("password login should succeed");
+
+    let candidates = matrix_desktop_auth::search_message_candidates_blocking(&session, "  ", 10)
+        .expect("empty search should succeed");
+
+    assert!(candidates.is_empty());
+}
+
+#[test]
+fn sdk_timeline_subscription_failure_does_not_include_room_id_or_token() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+        let room_id = "!timeline-missing:example.invalid";
+        let error = matrix_desktop_auth::subscribe_room_timeline(&session, room_id)
+            .await
+            .expect_err("missing room should make timeline subscription fail");
+
+        assert_error_redacts(
+            &error,
+            &[
+                room_id,
+                "fixture-access-token",
+                "synthetic-password",
+                "synthetic query",
+            ],
+        );
+    });
+}
+
+#[test]
+fn sdk_sync_loop_reports_running_and_can_stop_after_callback() {
+    let sync_seen = Arc::new(AtomicUsize::new(0));
+    let homeserver = spawn_password_login_server_with_sync(Arc::clone(&sync_seen));
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = matrix_desktop_auth::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+        let callback_count = Arc::new(AtomicUsize::new(0));
+        let callback_count_for_loop = Arc::clone(&callback_count);
+
+        matrix_desktop_auth::sync_loop(&session, move || {
+            let callback_count = Arc::clone(&callback_count_for_loop);
+            async move {
+                callback_count.fetch_add(1, Ordering::SeqCst);
+                matrix_desktop_auth::MatrixSyncLoopControl::Stop
+            }
+        })
+        .await
+        .expect("sync loop should stop cleanly when callback asks");
+
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+        assert_eq!(sync_seen.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+fn sdk_e2ee_recovery_failure_does_not_include_secret() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+        .expect("password login should succeed");
+    let recovery = RecoveryRequest {
+        secret: AuthSecret::new("synthetic-recovery-secret"),
+    };
+
+    let error = matrix_desktop_auth::recover_e2ee_blocking(&session, &recovery)
+        .expect_err("fixture server does not provide secret storage");
+
+    assert!(!error.to_string().contains("synthetic-recovery-secret"));
+    assert!(!format!("{error:?}").contains("synthetic-recovery-secret"));
+}
+
+#[test]
+fn sdk_e2ee_recovery_state_is_exposed_without_secret_material() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+        .expect("password login should succeed");
+
+    let state = session.e2ee_recovery_state();
+
+    assert_eq!(state, matrix_desktop_auth::E2eeRecoveryState::Unknown);
+    assert!(!format!("{state:?}").contains("synthetic-password"));
+}
+
+#[test]
+fn sdk_e2ee_recovery_state_stream_emits_initial_state_without_secret_material() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+        .expect("password login should succeed");
+
+    let mut stream = session.e2ee_recovery_state_stream();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+    let state = runtime
+        .block_on(async { stream.next().await })
+        .expect("recovery stream should emit the initial state");
+
+    assert_eq!(state, matrix_desktop_auth::E2eeRecoveryState::Unknown);
+    assert!(!format!("{state:?}").contains("synthetic-password"));
+}
+
+fn assert_error_redacts(error: &(impl std::fmt::Display + std::fmt::Debug), forbidden: &[&str]) {
+    let display = error.to_string();
+    let debug = format!("{error:?}");
+
+    for value in forbidden {
+        assert!(
+            !display.contains(value),
+            "error Display leaked forbidden value {value:?}: {display}"
+        );
+        assert!(
+            !debug.contains(value),
+            "error Debug leaked forbidden value {value:?}: {debug}"
+        );
+    }
+}
+
+fn spawn_password_login_server(status: u16) -> String {
+    spawn_password_login_server_with_logout(status, Arc::new(AtomicBool::new(false)))
+}
+
+fn spawn_password_login_server_with_sync(sync_seen: Arc<AtomicUsize>) -> String {
+    spawn_password_login_server_with_options(200, Arc::new(AtomicBool::new(false)), Some(sync_seen))
+}
+
+fn spawn_password_login_server_with_logout(status: u16, logout_seen: Arc<AtomicBool>) -> String {
+    spawn_password_login_server_with_options(status, logout_seen, None)
+}
+
+fn spawn_password_login_server_with_options(
+    status: u16,
+    logout_seen: Arc<AtomicBool>,
+    sync_seen: Option<Arc<AtomicUsize>>,
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server should have an address");
+
+    thread::spawn(move || {
+        for _ in 0..8 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test server should accept a request");
+            let request = read_http_request(&mut stream);
+
+            if request.starts_with("GET /_matrix/client/versions ") {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
+                );
+                continue;
+            }
+
+            if request.starts_with("POST /_matrix/client/") && request.contains("/logout") {
+                logout_seen.store(true, Ordering::SeqCst);
+                write_json(&mut stream, 200, r#"{}"#);
+                return;
+            }
+
+            if request.starts_with("GET /_matrix/client/") && request.contains("/sync") {
+                if let Some(sync_seen) = &sync_seen {
+                    let sync_count = sync_seen.fetch_add(1, Ordering::SeqCst) + 1;
+                    write_json(
+                        &mut stream,
+                        200,
+                        &format!(
+                            r#"{{
+                                "device_one_time_keys_count": {{}},
+                                "next_batch": "sync-batch-{sync_count}",
+                                "device_lists": {{"changed": [], "left": []}},
+                                "rooms": {{"invite": {{}}, "join": {{}}, "leave": {{}}, "knock": {{}}}},
+                                "to_device": {{"events": []}},
+                                "presence": {{"events": []}},
+                                "account_data": {{"events": []}}
+                            }}"#
+                        ),
+                    );
+                    continue;
+                }
+            }
+
+            if request.starts_with("POST /_matrix/client/")
+                && request.contains("fixture-user")
+                && request.contains("synthetic-password")
+                && request.contains("Matrix Desktop Test")
+            {
+                if status == 200 {
+                    write_json(
+                        &mut stream,
+                        200,
+                        r#"{"access_token":"fixture-access-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#,
+                    );
+                    continue;
+                } else {
+                    write_json(
+                        &mut stream,
+                        status,
+                        r#"{"errcode":"M_FORBIDDEN","error":"Invalid credentials"}"#,
+                    );
+                    return;
+                }
+            }
+
+            write_json(
+                &mut stream,
+                404,
+                r#"{"errcode":"M_NOT_FOUND","error":"Unexpected test request"}"#,
+            );
+        }
+    });
+
+    format!("http://{addr}")
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+
+    loop {
+        let bytes_read = stream
+            .read(&mut buffer)
+            .expect("test server should read request");
+        if bytes_read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..bytes_read]);
+
+        let request_text = String::from_utf8_lossy(&request);
+        let Some(header_end) = request_text.find("\r\n\r\n") else {
+            continue;
+        };
+        let content_length = request_text
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("Content-Length: ")
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        if request.len() >= header_end + 4 + content_length {
+            break;
+        }
+    }
+
+    String::from_utf8(request).expect("test request should be UTF-8")
+}
+
+fn write_json(stream: &mut std::net::TcpStream, status: u16, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("test server should write response");
+}

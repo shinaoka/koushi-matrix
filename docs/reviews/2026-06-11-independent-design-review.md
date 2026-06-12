@@ -12,9 +12,9 @@ matrix-rust-sdk      72d2157 chore(deps): bump crate-ci/typos from 1.46.3 to 1.4
 element-x-ios        8262533 Update GitHub Actions to v6.0.3
 element-x-android    99b7c758 Merge pull request #6954 from element-hq/fix/try-fixing-flaky-location-timeline-item-screenshots
 seshat               33279d2 Merge remote-tracking branch 'upstream/main' into bump/v4.1.0
-element-web          eb6f973284 Merge remote-tracking branch 'upstream/develop' into shinaoka/tokenizer-mode
-fluffychat           f5c87bb Merge pull request #3085 from krille-chan/krille/display-tofu-state-in-encryption-page
-matrix-dart-sdk      280bc34 Merge pull request #2364 from famedly/krille/increase-timeout-for-create-key
+element-web          eb6f973284 Upstream develop snapshot
+fluffychat           f5c87bb Upstream encryption-page snapshot
+matrix-dart-sdk      280bc34 Upstream timeout snapshot
 ```
 
 ## Findings
@@ -50,4 +50,3 @@ The review recommended no-go for a full app implementation plan until prerequisi
 3. concrete key and credential-store integration.
 
 The design spec was updated to reflect these blockers before implementation planning.
-

@@ -2,12 +2,20 @@ use std::collections::VecDeque;
 
 use matrix_desktop_key::SessionKeyId;
 use matrix_desktop_search::SensitiveString;
-use matrix_desktop_search::{SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent};
+use matrix_desktop_search::{SearchDocumentStore, SearchEdit, SearchableEvent};
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, LoginFlow, RoomSummary, SearchResult, SearchScope, SessionInfo,
-    SidebarModel, SpaceSummary, ThreadPaneState, compose_sidebar, reduce,
+    AppAction, AppEffect, AppState, LoginFlow, LoginRequest, RecoveryMethod, RecoveryRequest,
+    RoomSummary, SearchResult, SearchScope, SessionInfo, SidebarModel, SpaceSummary,
+    ThreadPaneState, compose_sidebar, reduce,
 };
 use serde::{Deserialize, Serialize};
+
+mod composition;
+
+pub use composition::{
+    DesktopRoomListRoom, DesktopRoomListSpace, DesktopRoomListUpdate, compose_room_list_update,
+};
+pub use matrix_desktop_search::SearchCandidate;
 
 pub const DEFAULT_HOMESERVER: &str = "https://matrix.org";
 
@@ -18,12 +26,36 @@ pub struct FakeDesktopBackendConfig {
     pub device_id: String,
     pub restore_session: bool,
     pub login_discovery: LoginDiscoveryMode,
+    pub login: LoginMode,
+    pub e2ee_recovery: E2eeRecoveryMode,
+    pub sync: SyncMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LoginDiscoveryMode {
     Fixture,
     Http,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum LoginMode {
+    FixtureFailure,
+    MatrixSdk,
+    Deferred,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum E2eeRecoveryMode {
+    NotRequired,
+    SdkState,
+    RequiredFixtureSuccess,
+    RequiredDeferred,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SyncMode {
+    Fixture,
+    Deferred,
 }
 
 impl Default for FakeDesktopBackendConfig {
@@ -34,6 +66,9 @@ impl Default for FakeDesktopBackendConfig {
             device_id: "FAKEDEVICE".to_owned(),
             restore_session: true,
             login_discovery: LoginDiscoveryMode::Fixture,
+            login: LoginMode::FixtureFailure,
+            e2ee_recovery: E2eeRecoveryMode::NotRequired,
+            sync: SyncMode::Fixture,
         }
     }
 }
@@ -45,7 +80,9 @@ pub struct FakeDesktopBackend {
     search_candidates: Vec<SearchCandidate>,
     timeline_messages: Vec<TimelineMessage>,
     thread_replies: Vec<ThreadMessage>,
+    matrix_session: Option<matrix_desktop_auth::MatrixClientSession>,
     next_search_request_id: u64,
+    backward_timeline_messages: Vec<TimelineMessage>,
 }
 
 impl Default for FakeDesktopBackend {
@@ -57,6 +94,7 @@ impl Default for FakeDesktopBackend {
 impl FakeDesktopBackend {
     pub fn new(config: FakeDesktopBackendConfig) -> Self {
         let timeline_messages = fixture_timeline_messages();
+        let backward_timeline_messages = fixture_backward_timeline_messages();
         let thread_replies = fixture_thread_replies();
         let (search_store, search_candidates) = fixture_search_store(&timeline_messages);
 
@@ -67,7 +105,9 @@ impl FakeDesktopBackend {
             search_candidates,
             timeline_messages,
             thread_replies,
+            matrix_session: None,
             next_search_request_id: 1,
+            backward_timeline_messages,
         }
     }
 
@@ -85,6 +125,10 @@ impl FakeDesktopBackend {
 
     pub fn boot(&mut self) {
         self.dispatch(AppAction::AppStarted);
+        self.open_default_thread();
+    }
+
+    pub fn open_default_thread(&mut self) {
         self.dispatch(AppAction::OpenThread {
             room_id: DEFAULT_ROOM_ID.to_owned(),
             root_event_id: "$alpha-update".to_owned(),
@@ -132,6 +176,20 @@ impl FakeDesktopBackend {
         }
     }
 
+    pub fn matrix_session(&self) -> Option<matrix_desktop_auth::MatrixClientSession> {
+        self.matrix_session.clone()
+    }
+
+    pub fn observe_e2ee_recovery_state(
+        &mut self,
+        state: matrix_desktop_state::E2eeRecoveryState,
+    ) -> Vec<AppEffect> {
+        self.dispatch(AppAction::E2eeRecoveryStateChanged {
+            state,
+            methods: default_recovery_methods(),
+        })
+    }
+
     pub fn submit_search(
         &mut self,
         query: impl Into<String>,
@@ -157,6 +215,117 @@ impl FakeDesktopBackend {
         }
     }
 
+    pub fn submit_search_candidates(
+        &mut self,
+        query: impl Into<String>,
+        scope: SearchScope,
+        candidates: Vec<SearchCandidate>,
+    ) -> Vec<SearchResult> {
+        let query = query.into();
+        let request_id = self.next_search_request_id;
+        self.next_search_request_id += 1;
+
+        self.dispatch(AppAction::SearchEdited {
+            query: query.clone(),
+            scope: scope.clone(),
+        });
+        let _effects = reduce(
+            &mut self.state,
+            AppAction::SearchSubmitted {
+                request_id,
+                query: query.clone(),
+                scope: scope.clone(),
+            },
+        );
+
+        let results = self.search_candidates(&query, &scope, &candidates);
+        self.dispatch(AppAction::SearchSucceeded {
+            request_id,
+            results: results.clone(),
+        });
+        results
+    }
+
+    pub fn edit_message(&mut self, room_id: &str, event_id: &str, body: &str) {
+        let Some(message) = self
+            .timeline_messages
+            .iter_mut()
+            .find(|message| message.room_id == room_id && message.event_id == event_id)
+        else {
+            return;
+        };
+
+        message.body = body.to_owned();
+        message.attachment_filename = None;
+        self.search_store.upsert_edit(SearchEdit {
+            edit_event_id: format!("{event_id}.edit"),
+            target_event_id: event_id.to_owned(),
+            sender: self.config.user_id.clone(),
+            timestamp_ms: message.timestamp_ms + 1,
+            body: Some(SensitiveString::new(body)),
+            attachment_filename: None,
+        });
+    }
+
+    pub fn redact_message(&mut self, room_id: &str, event_id: &str) {
+        self.timeline_messages
+            .retain(|message| !(message.room_id == room_id && message.event_id == event_id));
+        self.search_store.redact(event_id);
+        self.search_candidates
+            .retain(|candidate| candidate.event_id != event_id);
+    }
+
+    pub fn upsert_timeline_messages(&mut self, messages: Vec<TimelineMessage>) {
+        for message in messages {
+            if let Some(existing) = self.timeline_messages.iter_mut().find(|existing| {
+                existing.room_id == message.room_id && existing.event_id == message.event_id
+            }) {
+                *existing = message.clone();
+            } else {
+                self.timeline_messages.push(message.clone());
+            }
+
+            self.search_store.upsert_message(SearchableEvent {
+                room_id: message.room_id.clone(),
+                event_id: message.event_id.clone(),
+                sender: message.sender.clone(),
+                timestamp_ms: message.timestamp_ms,
+                body: Some(SensitiveString::new(message.body.clone())),
+                attachment_filename: message
+                    .attachment_filename
+                    .clone()
+                    .map(SensitiveString::new),
+            });
+            if !self
+                .search_candidates
+                .iter()
+                .any(|candidate| candidate.event_id == message.event_id)
+            {
+                self.search_candidates.push(SearchCandidate {
+                    room_id: message.room_id,
+                    event_id: message.event_id,
+                    score_millis: 500,
+                });
+            }
+        }
+
+        self.timeline_messages
+            .sort_by(|left, right| left.timestamp_ms.cmp(&right.timestamp_ms));
+    }
+
+    pub fn apply_timeline_updates(&mut self, updates: Vec<TimelineUpdate>) {
+        for update in updates {
+            match update {
+                TimelineUpdate::Upsert(message) => {
+                    self.upsert_timeline_messages(vec![message]);
+                }
+                TimelineUpdate::Remove { room_id, event_id } => {
+                    self.redact_message(&room_id, &event_id);
+                }
+            }
+        }
+    }
+
     pub fn dispatch(&mut self, action: AppAction) -> Vec<AppEffect> {
         let mut emitted = Vec::new();
         let mut queue = VecDeque::from(reduce(&mut self.state, action));
@@ -175,16 +344,18 @@ impl FakeDesktopBackend {
         match effect {
             AppEffect::RestoreSession => {
                 if self.config.restore_session {
-                    vec![AppAction::RestoreSessionSucceeded(self.session_info())]
+                    vec![self.restored_session_action(self.session_info())]
                 } else {
                     vec![AppAction::RestoreSessionNotFound]
                 }
             }
             AppEffect::DiscoverLogin { homeserver } => self.discover_login(homeserver),
-            AppEffect::StartSync => self.start_fake_sync(),
-            AppEffect::SubscribeTimeline { room_id } => vec![AppAction::TimelineSubscribed {
-                room_id: room_id.clone(),
-            }],
+            AppEffect::StartSync => self.start_sync(),
+            AppEffect::SubscribeTimeline { room_id } => self.subscribe_timeline(room_id),
+            AppEffect::PaginateTimelineBackwards { room_id } => match self.config.sync {
+                SyncMode::Fixture => self.paginate_timeline_backwards(room_id),
+                SyncMode::Deferred => Vec::new(),
+            },
             AppEffect::OpenThreadTimeline {
                 room_id,
                 root_event_id,
@@ -211,13 +382,16 @@ impl FakeDesktopBackend {
                     transaction_id: transaction_id.clone(),
                 }]
             }
-            AppEffect::PersistSession(_)
-            | AppEffect::ClearSession
+            AppEffect::ClearSession => {
+                self.matrix_session = None;
+                Vec::new()
+            }
+            AppEffect::RestoreSessionFor(_)
+            | AppEffect::PersistSession(_)
             | AppEffect::StopSync
             | AppEffect::EmitUiEvent(_) => Vec::new(),
-            AppEffect::Login(_) => vec![AppAction::LoginFailed {
-                message: "real Matrix login is not wired in this pre-login foundation".to_owned(),
-            }],
+            AppEffect::Login(request) => self.login(request),
+            AppEffect::RecoverE2ee(request) => self.recover_e2ee(request),
         }
     }
 
@@ -251,13 +425,112 @@ impl FakeDesktopBackend {
         }
     }
 
+    fn login(&mut self, request: &LoginRequest) -> Vec<AppAction> {
+        match self.config.login {
+            LoginMode::FixtureFailure => vec![AppAction::LoginFailed {
+                message: "real Matrix login is not wired in this pre-login foundation".to_owned(),
+            }],
+            LoginMode::MatrixSdk => {
+                match matrix_desktop_auth::login_with_password_blocking(request) {
+                    Ok(session) => {
+                        let info = session.info.clone();
+                        self.matrix_session = Some(session);
+                        vec![self.authenticated_session_action(info)]
+                    }
+                    Err(error) => vec![AppAction::LoginFailed {
+                        message: error.to_string(),
+                    }],
+                }
+            }
+            LoginMode::Deferred => Vec::new(),
+        }
+    }
+
+    pub fn complete_matrix_login(
+        &mut self,
+        session: matrix_desktop_auth::MatrixClientSession,
+    ) -> Vec<AppEffect> {
+        let info = session.info.clone();
+        self.matrix_session = Some(session);
+        self.dispatch(self.authenticated_session_action(info))
+    }
+
+    pub fn complete_matrix_restore(
+        &mut self,
+        session: matrix_desktop_auth::MatrixClientSession,
+    ) -> Vec<AppEffect> {
+        let info = session.info.clone();
+        self.matrix_session = Some(session);
+        self.dispatch(self.restored_session_action(info))
+    }
+
+    pub fn fail_login(&mut self, message: impl Into<String>) -> Vec<AppEffect> {
+        self.dispatch(AppAction::LoginFailed {
+            message: message.into(),
+        })
+    }
+
+    pub fn record_session_persistence_failure(
+        &mut self,
+        message: impl Into<String>,
+    ) -> Vec<AppEffect> {
+        self.dispatch(AppAction::SessionPersistenceFailed {
+            message: message.into(),
+        })
+    }
+
+    fn authenticated_session_action(&self, info: SessionInfo) -> AppAction {
+        if self.e2ee_recovery_is_required() {
+            AppAction::E2eeRecoveryRequired {
+                info,
+                methods: default_recovery_methods(),
+            }
+        } else {
+            AppAction::LoginSucceeded(info)
+        }
+    }
+
+    fn restored_session_action(&self, info: SessionInfo) -> AppAction {
+        if self.e2ee_recovery_is_required() {
+            AppAction::E2eeRecoveryRequired {
+                info,
+                methods: default_recovery_methods(),
+            }
+        } else {
+            AppAction::RestoreSessionSucceeded(info)
+        }
+    }
+
+    fn e2ee_recovery_is_required(&self) -> bool {
+        matches!(
+            self.config.e2ee_recovery,
+            E2eeRecoveryMode::RequiredFixtureSuccess | E2eeRecoveryMode::RequiredDeferred
+        ) || (self.config.e2ee_recovery == E2eeRecoveryMode::SdkState
+            && self.matrix_session.as_ref().is_some_and(|session| {
+                session.e2ee_recovery_state() == matrix_desktop_auth::E2eeRecoveryState::Incomplete
+            }))
+    }
+
+    fn recover_e2ee(&self, _request: &RecoveryRequest) -> Vec<AppAction> {
+        match self.config.e2ee_recovery {
+            E2eeRecoveryMode::NotRequired
+            | E2eeRecoveryMode::SdkState
+            | E2eeRecoveryMode::RequiredDeferred => Vec::new(),
+            E2eeRecoveryMode::RequiredFixtureSuccess => vec![AppAction::E2eeRecoverySucceeded],
+        }
+    }
+
+    fn start_sync(&self) -> Vec<AppAction> {
+        match self.config.sync {
+            SyncMode::Fixture => self.start_fake_sync(),
+            SyncMode::Deferred => Vec::new(),
+        }
+    }
+
     fn start_fake_sync(&self) -> Vec<AppAction> {
         let mut actions = vec![
             AppAction::SyncStarted,
-            AppAction::RoomListUpdated {
-                spaces: fixture_spaces(),
-                rooms: fixture_rooms(),
-            },
+            compose_room_list_update(fixture_room_list_update()),
         ];
 
         if self.state.navigation.active_space_id.is_none() {
@@ -275,9 +548,26 @@ impl FakeDesktopBackend {
         actions
     }
 
+    fn subscribe_timeline(&self, room_id: &str) -> Vec<AppAction> {
+        match self.config.sync {
+            SyncMode::Fixture => vec![AppAction::TimelineSubscribed {
+                room_id: room_id.to_owned(),
+            }],
+            SyncMode::Deferred => Vec::new(),
+        }
+    }
+
     fn search(&self, query: &str, scope: &SearchScope) -> Vec<SearchResult> {
-        let mut results = self
-            .search_candidates
+        self.search_candidates(query, scope, &self.search_candidates)
+    }
+
+    fn search_candidates(
+        &self,
+        query: &str,
+        scope: &SearchScope,
+        candidates: &[SearchCandidate],
+    ) -> Vec<SearchResult> {
+        let mut results = candidates
             .iter()
             .filter(|candidate| self.room_is_in_scope(&candidate.room_id, scope))
             .filter_map(|candidate| self.search_store.verify_candidate(candidate.clone(), query))
@@ -366,6 +656,33 @@ impl FakeDesktopBackend {
             score_millis: 500,
         });
     }
+
+    fn paginate_timeline_backwards(&mut self, room_id: &str) -> Vec<AppAction> {
+        let mut older_messages = Vec::new();
+        self.backward_timeline_messages.retain(|message| {
+            if message.room_id == room_id {
+                older_messages.push(message.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        if !older_messages.is_empty() {
+            let insert_at = self
+                .timeline_messages
+                .iter()
+                .position(|message| message.room_id == room_id)
+                .unwrap_or(self.timeline_messages.len());
+            for (offset, message) in older_messages.into_iter().enumerate() {
+                self.timeline_messages.insert(insert_at + offset, message);
+            }
+        }
+
+        vec![AppAction::TimelineBackPaginationFinished {
+            room_id: room_id.to_owned(),
+        }]
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -385,6 +702,12 @@ pub struct TimelineMessage {
     pub body: String,
     pub attachment_filename: Option<String>,
     pub reply_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TimelineUpdate {
+    Upsert(TimelineMessage),
+    Remove { room_id: String, event_id: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -465,6 +788,28 @@ fn fixture_rooms() -> Vec<RoomSummary> {
     ]
 }
 
+fn fixture_room_list_update() -> DesktopRoomListUpdate {
+    DesktopRoomListUpdate {
+        spaces: fixture_spaces()
+            .into_iter()
+            .map(|space| DesktopRoomListSpace {
+                space_id: space.space_id,
+                display_name: space.display_name,
+            })
+            .collect(),
+        rooms: fixture_rooms()
+            .into_iter()
+            .map(|room| DesktopRoomListRoom {
+                room_id: room.room_id,
+                display_name: room.display_name,
+                is_dm: room.is_dm,
+                unread_count: room.unread_count,
+                parent_space_ids: room.parent_space_ids,
+            })
+            .collect(),
+    }
+}
+
 fn fixture_timeline_messages() -> Vec<TimelineMessage> {
     vec![
         TimelineMessage {
@@ -522,6 +867,18 @@ fn fixture_timeline_messages() -> Vec<TimelineMessage> {
             reply_count: 0,
         },
     ]
+}
+
+fn fixture_backward_timeline_messages() -> Vec<TimelineMessage> {
+    vec![TimelineMessage {
+        room_id: DEFAULT_ROOM_ID.to_owned(),
+        event_id: "$alpha-history".to_owned(),
+        sender: "Demo Coordinator".to_owned(),
+        timestamp_ms: 1_806_982_800_000,
+        body: "Older synthetic context from the selected room.".to_owned(),
+        attachment_filename: None,
+        reply_count: 0,
+    }]
 }
 
 fn fixture_thread_replies() -> Vec<ThreadMessage> {
@@ -600,6 +957,10 @@ fn fixture_login_flows() -> Vec<LoginFlow> {
 
     matrix_desktop_auth::parse_login_discovery(&response)
         .expect("synthetic login discovery fixture should parse")
+}
+
+fn default_recovery_methods() -> Vec<RecoveryMethod> {
+    vec![RecoveryMethod::RecoveryKey, RecoveryMethod::SecurityPhrase]
 }
 
 fn candidate_score(event_id: &str) -> u32 {

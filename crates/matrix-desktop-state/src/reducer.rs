@@ -2,8 +2,8 @@ use crate::{
     action::AppAction,
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, NavigationState, SearchState, SessionState, SyncState, ThreadPaneState,
-        TimelinePaneState,
+        AppError, AppState, E2eeRecoveryState, NavigationState, SearchState, SessionState,
+        SyncState, ThreadPaneState, TimelinePaneState,
     },
 };
 
@@ -22,6 +22,90 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             ]
         }
+        AppAction::E2eeRecoveryRequired { info, methods } => {
+            state.session = SessionState::NeedsRecovery {
+                info: info.clone(),
+                methods,
+            };
+            state.sync = SyncState::Starting;
+            vec![
+                AppEffect::PersistSession(info),
+                AppEffect::StartSync,
+                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            ]
+        }
+        AppAction::E2eeRecoverySubmitted(request) => {
+            let SessionState::NeedsRecovery { info, methods } = &state.session else {
+                return Vec::new();
+            };
+            state.session = SessionState::Recovering {
+                info: info.clone(),
+                methods: methods.clone(),
+            };
+            vec![
+                AppEffect::RecoverE2ee(request),
+                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            ]
+        }
+        AppAction::E2eeRecoverySucceeded => {
+            let SessionState::Recovering { info, .. } = &state.session else {
+                return Vec::new();
+            };
+            let info = info.clone();
+            state.session = SessionState::Ready(info.clone());
+            state.sync = SyncState::Starting;
+            vec![
+                AppEffect::PersistSession(info),
+                AppEffect::StartSync,
+                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            ]
+        }
+        AppAction::E2eeRecoveryFailed { message } => {
+            let SessionState::Recovering { info, methods } = &state.session else {
+                return Vec::new();
+            };
+            state.session = SessionState::NeedsRecovery {
+                info: info.clone(),
+                methods: methods.clone(),
+            };
+            state.errors.push(AppError {
+                code: "e2ee_recovery_failed".to_owned(),
+                message,
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
+        }
+        AppAction::E2eeRecoveryStateChanged {
+            state: recovery_state,
+            methods,
+        } => match recovery_state {
+            E2eeRecoveryState::Unknown => Vec::new(),
+            E2eeRecoveryState::Incomplete => {
+                let SessionState::Ready(info) = &state.session else {
+                    return Vec::new();
+                };
+                let info = info.clone();
+                state.session = SessionState::NeedsRecovery { info, methods };
+                vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+            }
+            E2eeRecoveryState::Enabled | E2eeRecoveryState::Disabled => {
+                let info = match &state.session {
+                    SessionState::NeedsRecovery { info, .. }
+                    | SessionState::Recovering { info, .. } => info.clone(),
+                    _ => return Vec::new(),
+                };
+                state.session = SessionState::Ready(info.clone());
+                state.sync = SyncState::Starting;
+                vec![
+                    AppEffect::PersistSession(info),
+                    AppEffect::StartSync,
+                    AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+                ]
+            }
+        },
         AppAction::RestoreSessionNotFound => {
             state.session = SessionState::SignedOut;
             vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
@@ -37,6 +121,22 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::SessionChanged),
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
+        }
+        AppAction::SwitchAccountRequested { info } => {
+            if current_session_info(state).as_ref() == Some(&info) {
+                return Vec::new();
+            }
+
+            state.session = SessionState::SwitchingAccount { info: info.clone() };
+            state.sync = SyncState::Stopped;
+            let mut effects = vec![
+                AppEffect::StopSync,
+                AppEffect::ClearSession,
+                AppEffect::RestoreSessionFor(info),
+                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            ];
+            effects.extend(clear_session_views(state));
+            effects
         }
         AppAction::LoginDiscoveryRequested { homeserver } => {
             state.auth = crate::state::AuthDiscoveryState::Discovering {
@@ -82,6 +182,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
         }
+        AppAction::SessionPersistenceFailed { message } => {
+            state.errors.push(AppError {
+                code: "session_persistence_failed".to_owned(),
+                message,
+                recoverable: true,
+            });
+            vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+        }
         AppAction::SessionLocked => {
             if let SessionState::Ready(info) = &state.session {
                 state.session = SessionState::Locked(info.clone());
@@ -111,12 +219,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
         }
         AppAction::SyncStarted => {
-            if !matches!(state.session, SessionState::Ready(_)) {
+            if !is_session_ready(state) {
                 return Vec::new();
             }
 
             match state.sync {
-                SyncState::Starting | SyncState::Recovering { .. } => {
+                SyncState::Starting | SyncState::Failed { .. } | SyncState::Reconnecting { .. } => {
                     state.sync = SyncState::Running;
                     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
                 }
@@ -124,18 +232,32 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
         }
         AppAction::SyncFailed { reason } => {
-            if !matches!(state.session, SessionState::Ready(_))
-                || matches!(state.sync, SyncState::Stopped)
+            if !is_session_ready(state) || matches!(state.sync, SyncState::Stopped) {
+                return Vec::new();
+            }
+
+            state.sync = SyncState::Failed { reason };
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+                AppEffect::StartSync,
+            ]
+        }
+        AppAction::SyncReconnecting { reason } => {
+            if !is_session_ready(state)
+                || matches!(state.sync, SyncState::Stopped | SyncState::Running)
             {
                 return Vec::new();
             }
 
-            state.sync = SyncState::Recovering { reason };
-            vec![AppEffect::StartSync]
+            state.sync = SyncState::Reconnecting { reason };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
         AppAction::SyncRecovered => {
-            if !matches!(state.session, SessionState::Ready(_))
-                || !matches!(state.sync, SyncState::Recovering { .. })
+            if !is_session_ready(state)
+                || !matches!(
+                    state.sync,
+                    SyncState::Failed { .. } | SyncState::Reconnecting { .. }
+                )
             {
                 return Vec::new();
             }
@@ -156,6 +278,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let had_active_room_before_update = state.navigation.active_room_id.is_some();
             state.spaces = spaces;
             state.rooms = rooms;
 
@@ -196,6 +319,23 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                         effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
                     }
                 }
+            }
+
+            if !had_active_room_before_update
+                && state.navigation.active_room_id.is_none()
+                && let Some(room_id) = first_default_room_id(state)
+            {
+                state.navigation.active_room_id = Some(room_id.clone());
+                state.timeline = TimelinePaneState {
+                    room_id: Some(room_id.clone()),
+                    is_subscribed: false,
+                    is_paginating_backwards: false,
+                    composer: Default::default(),
+                };
+                effects.push(AppEffect::SubscribeTimeline {
+                    room_id: room_id.clone(),
+                });
+                effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
             }
 
             effects
@@ -260,6 +400,33 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
+        }
+        AppAction::TimelineBackPaginationRequested { room_id } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+                || state.timeline.is_paginating_backwards
+            {
+                return Vec::new();
+            }
+
+            state.timeline.is_paginating_backwards = true;
+            vec![
+                AppEffect::PaginateTimelineBackwards {
+                    room_id: room_id.clone(),
+                },
+                AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
+            ]
+        }
+        AppAction::TimelineBackPaginationFinished { room_id } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+                || !state.timeline.is_paginating_backwards
+            {
+                return Vec::new();
+            }
+
+            state.timeline.is_paginating_backwards = false;
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
         }
         AppAction::ComposerDraftChanged { room_id, draft } => {
             if !is_session_ready(state)
@@ -460,7 +627,35 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 }
 
 fn is_session_ready(state: &AppState) -> bool {
-    matches!(state.session, SessionState::Ready(_))
+    matches!(
+        state.session,
+        SessionState::Ready(_)
+            | SessionState::NeedsRecovery { .. }
+            | SessionState::Recovering { .. }
+    )
+}
+
+fn first_default_room_id(state: &AppState) -> Option<String> {
+    state
+        .rooms
+        .iter()
+        .find(|room| !room.is_dm)
+        .or_else(|| state.rooms.first())
+        .map(|room| room.room_id.clone())
+}
+
+fn current_session_info(state: &AppState) -> Option<crate::state::SessionInfo> {
+    match &state.session {
+        SessionState::NeedsRecovery { info, .. }
+        | SessionState::Recovering { info, .. }
+        | SessionState::Ready(info)
+        | SessionState::Locked(info) => Some(info.clone()),
+        SessionState::SignedOut
+        | SessionState::Restoring
+        | SessionState::SwitchingAccount { .. }
+        | SessionState::Authenticating { .. }
+        | SessionState::LoggingOut => None,
+    }
 }
 
 fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {

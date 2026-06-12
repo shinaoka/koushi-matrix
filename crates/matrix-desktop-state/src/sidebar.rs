@@ -7,11 +7,19 @@ use crate::state::{RoomSummary, SpaceSummary};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SidebarModel {
     pub active_space_id: Option<String>,
+    pub account_home: AccountHomeItem,
     pub space_rail: Vec<SpaceRailItem>,
     pub space_rooms: Vec<RoomListItem>,
     pub global_dms: Vec<RoomListItem>,
     pub space_unread_count: u64,
     pub dm_unread_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountHomeItem {
+    pub display_name: String,
+    pub unread_count: u64,
+    pub is_active: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -49,6 +57,16 @@ pub fn compose_sidebar(
         })
         .collect();
 
+    let account_home = AccountHomeItem {
+        display_name: "Home".to_owned(),
+        unread_count: rooms
+            .iter()
+            .filter(|room| !room.is_dm)
+            .map(|room| room.unread_count)
+            .sum(),
+        is_active: active_space_id.is_none(),
+    };
+
     let space_rooms: Vec<_> = active_space_id
         .and_then(|space_id| spaces.iter().find(|space| space.space_id == space_id))
         .map(|space| {
@@ -63,7 +81,7 @@ pub fn compose_sidebar(
         .unwrap_or_else(|| {
             rooms
                 .iter()
-                .filter(|room| !room.is_dm && room.parent_space_ids.is_empty())
+                .filter(|room| !room.is_dm)
                 .map(room_list_item)
                 .collect()
         });
@@ -76,6 +94,7 @@ pub fn compose_sidebar(
 
     SidebarModel {
         active_space_id: active_space_id.map(str::to_owned),
+        account_home,
         space_unread_count: unread_count(&space_rooms),
         dm_unread_count: unread_count(&global_dms),
         space_rail,

@@ -9,3 +9,4 @@ members = [
     "spikes/key-management",
 ]
 resolver = "2"
+exclude = ["vendor/matrix-rust-sdk"]

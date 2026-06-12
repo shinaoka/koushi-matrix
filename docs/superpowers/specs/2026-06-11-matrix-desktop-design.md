@@ -5,7 +5,7 @@ Status: Spike-validated; ready for full implementation planning
 
 ## Goal
 
-Build a Windows/macOS desktop Matrix client prototype that follows Element X's Rust SDK direction while providing a Slack-like desktop user experience. The first version focuses on E2EE text chat, Spaces, room timelines, threads, desktop interaction, and ngram full-text search.
+Build a Windows/macOS desktop Matrix client prototype that follows Element X's Rust SDK direction while providing an Element Desktop/Web-like desktop user experience on a Tauri and Rust SDK backend. The first version focuses on E2EE text chat, Spaces, room timelines, threads, desktop interaction, and ngram full-text search.
 
 Video calls, voice calls, screen sharing, bots, widgets, and app integrations are out of scope for the MVP.
 
@@ -14,11 +14,12 @@ Video calls, voice calls, screen sharing, bots, widgets, and app integrations ar
 - Desktop shell: Tauri.
 - Frontend: React + TypeScript.
 - Backend: Rust, with Matrix state handled by `matrix-sdk` and `matrix-sdk-ui`.
-- UI style: Slack-like multi-pane desktop app.
+- UI style: Element Desktop/Web-like three-pane desktop app, adapted to a Tauri shell and Rust backend rather than Electron and the Element Web JavaScript state model.
 - Search: patch `matrix-sdk-search` with ngram tokenizer support as a prerequisite SDK milestone before full app implementation, then upstream feedback when stable.
 - DM model: DMs are global account-level conversations, not duplicated under Spaces. The MVP uses the SDK DM classification configured to the Element X Android-style two-member definition, then applies one consistent classification for sidebar grouping, search filtering, and Space exclusion.
-- Space model: Spaces drive the left rail and filter the room/channel list.
-- Thread model: threads open in a right-side pane when width permits, otherwise as a drawer or focused view. Thread subscriptions and read-state behavior are conditional until proven against the SDK and homeserver support.
+- Space model: Spaces drive the left navigation area and filter the room list.
+- Thread model: threads open in an Element-style contextual right panel when width permits, otherwise as a drawer or focused view. Thread subscriptions and read-state behavior are conditional until proven against the SDK and homeserver support.
+- Settings and shortcuts model: follow Element Desktop/Web placement and keyboard shortcut conventions where practical. Differences caused by Tauri, OS menu accelerators, or MVP scope must be recorded in a shortcut parity table.
 - Element X mobile code may be used as an implementation reference. Direct code ports must preserve upstream license and copyright notices.
 
 ## Prerequisite Spikes
@@ -30,7 +31,7 @@ Do not move directly from this design into a full app implementation plan. First
 2. Search correctness with Matrix event lifecycle.
    Prove edit, redaction, late decryption, event-cache lag recovery, encrypted index opening, and wrong-secret failure behavior with tests.
 3. Desktop sidebar composition.
-   Build a small Rust-side composition model over `RoomListService`, `SpaceService`, and room metadata that produces the Slack-like Space rail/sidebar DTOs, including global DMs.
+   Build a small Rust-side composition model over `RoomListService`, `SpaceService`, and room metadata that produces Element-like left navigation, Space, room list, and global DM DTOs.
 4. Key and credential-store integration.
    Prove macOS Keychain and Windows credential storage access from Tauri/Rust, including secret creation, retrieval, namespacing, zeroization, logout deletion, and missing-secret recovery.
 
@@ -60,6 +61,8 @@ matrix-desktop/
 
 Element X iOS and Element X Android should be used as primary references for how production apps consume the Rust SDK FFI, `RoomListService`, `Timeline`, Spaces, recovery, verification, and room-level services.
 
+Element Desktop/Web should be used as the primary user experience reference for desktop layout, room list behavior, thread/right-panel behavior, Space menus, settings placement, message actions, composer behavior, keyboard shortcuts, and desktop interaction conventions. Element Desktop is an Electron wrapper around Element Web; this project should not port its Electron IPC, JavaScript SDK state model, native module wiring, or Seshat integration. The reference boundary is UX, component behavior, assets where license-compatible, and keyboard shortcut conventions.
+
 Reference use means studying architecture, API usage, state flow, and edge cases, then writing original code for this project. Reference-only use does not copy implementation text.
 
 Direct porting means copying or closely adapting code, file structure, non-trivial functions, or tests from Element X mobile. Direct ports must follow these rules:
@@ -79,16 +82,17 @@ SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Element-Commercial.
 
 The Matrix Rust SDK itself is Apache-2.0. SDK changes intended for upstream feedback should remain inside the SDK patch area and follow the SDK's licensing and contribution style.
 
-Because this repository is private but may later produce distributed desktop binaries, implementation planning must include a license review before importing Element X mobile code verbatim. When practical, prefer using mobile code as a behavioral reference and reimplementing the desktop-specific layer independently.
+Because this repository is private but may later produce distributed desktop binaries, implementation planning must include a license review before importing Element X mobile code, Element Web code, Compound assets, icons, or styling verbatim. When practical, prefer using upstream projects as behavioral references and reimplementing the desktop-specific layer independently.
 
 ## Architecture
 
 ```text
 React UI
-  room list
+  Element-like left navigation and room list
   timeline
-  thread pane
+  contextual right panel
   search UI
+  settings UI
   context menus
   keyboard shortcuts
         |
@@ -117,24 +121,23 @@ The frontend does not own Matrix state transitions. It renders UI state and send
 
 The Rust backend owns session state, room list subscriptions, timeline subscriptions, E2EE state, search indexing, and conversion from SDK models into stable UI DTOs.
 
-`matrix-sdk-ui` should not be treated as a complete desktop UI state model. The backend needs a desktop composition layer that consumes SDK streams and produces app-specific DTOs for Space rail entries, Space-filtered room lists, global DMs, unread counts, selected room state, and thread pane state.
+`matrix-sdk-ui` should not be treated as a complete desktop UI state model. The backend needs a desktop composition layer that consumes SDK streams and produces app-specific DTOs for left navigation entries, Space-filtered room lists, global DMs, unread counts, selected room state, right-panel state, and settings entry points.
 
 ## UI Layout
 
-The primary desktop layout has four panes:
+The primary desktop layout has three panes:
 
-1. Space rail: account home, Space icons, add/manage controls.
-2. Sidebar: navigation, Space-filtered rooms, global DM section.
-3. Timeline: selected room or DM, header, messages, composer.
-4. Thread pane: selected thread, root message, replies, thread composer.
+1. Left pane: account navigation, Space navigation, Space-filtered room list, and global DM section.
+2. Center pane: selected room or DM, room header, timeline, message actions, and composer.
+3. Right pane: contextual panel for thread, room info, Space info, search context, or settings-related detail.
 
-The top bar contains global navigation and search. Search can operate on the current room, current Space, all rooms, or DMs.
+The top bar and room header should follow Element Desktop/Web conventions where practical. Search can operate on the current room, current Space, all rooms, or DMs.
 
 Responsive behavior:
 
-- Wide: show all four panes.
-- Medium: hide thread pane behind a drawer or toggle.
-- Narrow: show one primary pane at a time, with sidebar/thread reachable by commands.
+- Wide: show left pane, center pane, and the contextual right pane when active.
+- Medium: keep left and center panes visible, with the right pane behind a toggle or drawer.
+- Narrow: show one primary pane at a time, with navigation and right-panel content reachable by commands.
 
 Desktop behaviors are first-class:
 
@@ -144,9 +147,29 @@ Desktop behaviors are first-class:
 - native menus where useful;
 - no mobile long-press interaction as the primary path.
 
+The initial UI does not need pixel-perfect Element parity. It should be close enough that Element users recognize the interaction model: left room navigation, a room header with contextual actions, Element-like message rows and composer, a right panel for details and threads, and settings available from the account/user menu.
+
+## Element UX Reference Scope
+
+The project should reference Element Desktop/Web for:
+
+- three-pane layout proportions and responsive behavior;
+- room list grouping, selection, hover, unread, and notification states;
+- Space header/menu behavior, including Space home, preferences, settings, and invite entry points;
+- room header actions, including room info, search, and right-panel toggles;
+- message hover actions, including reply, reply in thread, edit, redact, and more actions where supported;
+- thread display in the contextual right panel, with root event, replies, close action, and room context;
+- user menu placement, including settings, account/session actions, and logout;
+- settings placement, especially user settings, room settings, Space settings, and the Keyboard shortcuts section;
+- keyboard shortcuts and shortcut display conventions.
+
+The project should not copy Element Desktop/Web architecture. Tauri commands/events remain the shell boundary, Rust owns SDK state, and React renders stable DTOs.
+
 ## Spaces and DMs
 
 Spaces are treated as top-level navigation filters. Selecting a Space filters the sidebar room list to rooms in that Space.
+
+Selecting a Space should also expose Element-like Space information and management entry points. The MVP can start with a lightweight Space home/info view in the contextual right panel, but the state model should leave room for Space preferences, Space settings, and invite flows.
 
 The SDK Space filters may be limited in graph depth, so the MVP treats Space filtering as a best-effort view over the first supported levels exposed by the SDK. The desktop composition layer must define behavior for multi-parent rooms, nested Spaces, and rooms that are not reachable through the current Space filter.
 
@@ -173,6 +196,8 @@ Thread support should use SDK thread timeline support where available. The MVP s
 
 If thread APIs, server support, or thread subscriptions are unavailable, the fallback UX opens a focused permalink-style context around the root event and replies instead of pretending full thread support exists.
 
+Thread UI should follow Element's interaction pattern rather than a generic chat pane. A message action opens the right panel, the panel shows the root event and replies, and the panel header provides close and contextual actions. The center timeline remains selected on wide screens. On narrow screens, the thread becomes a focused view or drawer.
+
 The MVP should support:
 
 - live timeline updates;
@@ -181,6 +206,30 @@ The MVP should support:
 - editing and redacting own messages if SDK support is available;
 - reply/thread open actions;
 - read state display if stable enough.
+
+## Settings and Keyboard Shortcuts
+
+Settings are part of the desktop shell contract, even if many settings remain read-only or placeholders in the MVP. The app should provide Element-like entry points:
+
+- user menu opens user settings;
+- room header opens room info/settings in the contextual right panel or a settings view;
+- Space menu opens Space home, preferences, settings, and invite entry points;
+- Keyboard settings displays supported shortcuts grouped similarly to Element's Composer, Room, Room List, Navigation, Autocomplete, and Accessibility categories.
+
+Shortcut behavior should match Element Desktop/Web where practical:
+
+- `Enter` sends a message; `Shift+Enter` inserts a newline unless the user setting later flips send behavior;
+- `Ctrl/Cmd+B`, `Ctrl/Cmd+I`, `Ctrl/Cmd+Shift+L`, and related composer shortcuts match Element where the composer supports the action;
+- `Esc` cancels reply/edit, closes menus, or closes the right panel depending on focus;
+- `Ctrl/Cmd+K` opens room/search navigation;
+- `Ctrl/Cmd+F` searches in the current room;
+- `Ctrl/Cmd+.` toggles the contextual right panel;
+- `Ctrl/Cmd+/` opens keyboard shortcut settings;
+- `Alt+Up/Down` navigates rooms, and `Alt+Shift+Up/Down` navigates unread rooms;
+- `Cmd+,` opens user settings on macOS through the native menu path where available;
+- browser/Electron-only or call/labs shortcuts are deferred unless the corresponding feature exists.
+
+The implementation plan must include a shortcut parity table with `same`, `adapted`, `deferred`, and `not applicable` statuses.
 
 ## Search
 
@@ -239,6 +288,10 @@ Initial commands:
 - `open_thread`
 - `search_messages`
 - `rebuild_search_index`
+- `open_user_settings`
+- `open_room_info`
+- `open_space_info`
+- `open_keyboard_settings`
 
 Initial event streams:
 
@@ -247,6 +300,8 @@ Initial event streams:
 - `timeline_updated`
 - `timeline_pagination_changed`
 - `thread_updated`
+- `right_panel_updated`
+- `settings_updated`
 - `search_index_state_changed`
 - `search_results_updated`
 - `error_reported`
@@ -353,8 +408,10 @@ Frontend tests:
 
 - layout rendering for wide, medium, and narrow widths;
 - right-click context menu behavior;
-- thread pane open/close behavior;
-- keyboard navigation basics;
+- contextual right panel open/close behavior;
+- Element-like right panel switching between thread, room info, Space info, search context, and settings context;
+- keyboard navigation basics and shortcut parity for implemented actions;
+- keyboard shortcut settings rendering;
 - search panel state transitions.
 
 Integration tests:
@@ -369,7 +426,7 @@ Integration tests:
 - Screen sharing.
 - Rich widgets.
 - Bot framework.
-- Full Element Web feature parity.
+- Full Element Web feature parity or architecture parity.
 - Mobile UI.
 - Multi-account support unless it falls out cheaply from the session model.
 

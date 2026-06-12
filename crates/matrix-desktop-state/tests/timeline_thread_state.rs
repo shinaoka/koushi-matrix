@@ -300,6 +300,82 @@ fn send_text_finished_clears_matching_active_transaction() {
 }
 
 #[test]
+fn timeline_backward_pagination_sets_pending_and_clears_on_completion() {
+    let mut state = selected_room_state("room-a");
+
+    let effects = reduce(
+        &mut state,
+        AppAction::TimelineBackPaginationRequested {
+            room_id: "room-a".to_owned(),
+        },
+    );
+
+    assert!(state.timeline.is_paginating_backwards);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PaginateTimelineBackwards {
+                room_id: "room-a".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+        ]
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::TimelineBackPaginationRequested {
+                room_id: "room-a".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::TimelineBackPaginationFinished {
+            room_id: "room-a".to_owned(),
+        },
+    );
+
+    assert!(!state.timeline.is_paginating_backwards);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+            room_id: "room-a".to_owned(),
+        })]
+    );
+}
+
+#[test]
+fn stale_timeline_backward_pagination_signals_are_ignored() {
+    let mut state = selected_room_state("room-a");
+    let previous_state = state.clone();
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::TimelineBackPaginationRequested {
+                room_id: "room-b".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::TimelineBackPaginationFinished {
+                room_id: "room-b".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(state, previous_state);
+}
+
+#[test]
 fn opening_thread_requests_thread_timeline_and_subscription_success_opens_pane() {
     let mut state = selected_room_state("room-a");
 

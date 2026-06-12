@@ -67,10 +67,38 @@ pub enum LoginFlowKind {
 pub enum SessionState {
     SignedOut,
     Restoring,
-    Authenticating { homeserver: String },
+    SwitchingAccount {
+        info: SessionInfo,
+    },
+    Authenticating {
+        homeserver: String,
+    },
+    NeedsRecovery {
+        info: SessionInfo,
+        methods: Vec<RecoveryMethod>,
+    },
+    Recovering {
+        info: SessionInfo,
+        methods: Vec<RecoveryMethod>,
+    },
     Ready(SessionInfo),
     Locked(SessionInfo),
     LoggingOut,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryMethod {
+    RecoveryKey,
+    SecurityPhrase,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum E2eeRecoveryState {
+    Unknown,
+    Enabled,
+    Disabled,
+    Incomplete,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -85,7 +113,8 @@ pub enum SyncState {
     Stopped,
     Starting,
     Running,
-    Recovering { reason: String },
+    Failed { reason: String },
+    Reconnecting { reason: String },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

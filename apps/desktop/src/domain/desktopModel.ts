@@ -28,14 +28,19 @@ export function composeSidebar(
         ?.child_room_ids.map((roomId) => rooms.find((room) => room.room_id === roomId))
         .filter(roomExists)
         .map(roomListItem) ?? []
-    : rooms
-        .filter((room) => !room.is_dm && room.parent_space_ids.length === 0)
-        .map(roomListItem);
+    : rooms.filter((room) => !room.is_dm).map(roomListItem);
 
   const globalDms = rooms.filter((room) => room.is_dm).map(roomListItem);
 
   return {
     active_space_id: activeSpaceId,
+    account_home: {
+      display_name: "Home",
+      unread_count: rooms
+        .filter((room) => !room.is_dm)
+        .reduce((sum, room) => sum + room.unread_count, 0),
+      is_active: activeSpaceId === null
+    },
     space_rail: spaces.map((space) => ({
       space_id: space.space_id,
       display_name: space.display_name,

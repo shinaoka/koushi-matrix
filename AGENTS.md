@@ -1,0 +1,68 @@
+# Agent Notes
+
+## macOS GUI Smoke Failures
+
+- `npm --prefix apps/desktop run qa:mac-gui` controls the Tauri window through
+  macOS `System Events`. If it fails with `AppleScript timed out while
+  controlling System Events`, grant Accessibility permission to the app running
+  the agent, such as Codex, Terminal, or iTerm, then restart that app.
+- If Accessibility is already enabled but the same timeout repeats, check
+  Privacy & Security > Automation and allow the same app to control
+  `System Events`. Restart the agent app after changing either permission.
+- A repeated timeout can also be caused by AppleScript code, not permissions.
+  In this repo, `process <variable>` hung when resolving the Tauri process.
+  Use `first process whose name is <variable>` for variable process names.
+- If screenshot capture is blocked, also grant Screen Recording permission to
+  the app running the agent.
+- In Tauri dev mode the macOS process name can be `matrix-desktop-app`, while
+  the product/window title is `matrix-desktop`. GUI automation must check both
+  names.
+- Failed GUI smoke runs must clean up the full process group. A stale Vite
+  process leaves port `5173` occupied and makes the next `tauri dev` fail.
+- If a GUI smoke run is interrupted manually with Ctrl-C, verify that
+  `lsof -nP -iTCP:5173 -sTCP:LISTEN` is empty before retrying. A stale
+  `npm run tauri dev` process group can survive interruption and make the next
+  run fail before the app reads the QA login FIFO.
+- Do not pass the parent shell environment wholesale into GUI smoke child
+  processes. Filter out secret-like variables such as API keys, tokens, and
+  passwords before spawning `npm run tauri dev`.
+- First-run GUI smoke should set `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1`.
+  Otherwise opening User Settings can read the macOS Keychain and show a
+  confirmation prompt, which blocks unattended automation.
+- Do not use `Cmd+Q` to stop the Tauri app from GUI smoke. If focus slips, the
+  shortcut can reach Codex and trigger the "Quit Codex?" confirmation dialog.
+  Let the script's process-group cleanup stop `tauri dev` and the app instead.
+
+## Real Account Smoke Failures
+
+- If `password-login-smoke --real-account-qa` fails at sync but
+  `--check-room-list` succeeds, isolate the restore path first. A no-store
+  `restore_session` can diverge from the product path; real-account QA should
+  restore with a temporary encrypted SQLite SDK store, cache path, and encrypted
+  search index path.
+- The smoke CLI must try logout cleanup after any post-login QA failure unless
+  `--keep-session` was explicitly requested. Otherwise failed sync/timeline QA
+  can leave a live smoke device on the homeserver.
+- Store-backed Matrix SDK sessions must be dropped while a Tokio runtime context
+  is entered. Dropping a sqlite-backed SDK client after the runtime context is
+  gone can panic in `deadpool-runtime` with `there is no reactor running`.
+- In this environment, starting `qa:mac-gui -- --real-login-from-stdin` through a
+  non-interactive `exec_command` can deliver immediate stdin EOF. Use a PTY with
+  terminal echo disabled, such as `stty -echo; npm --prefix apps/desktop run
+  qa:mac-gui -- --real-login-from-stdin; exit_code=$?; stty echo; exit $exit_code`,
+  then send the credential lines through stdin.
+- Do not drive real-account login by fixed window-relative coordinates. A
+  2026-06-12 GUI smoke attempt clicked the wrong login field and placed the
+  password in the username field. Real-login GUI smoke should pass credentials
+  through `MATRIX_DESKTOP_QA_LOGIN_PIPE`, which contains only a FIFO path in the
+  environment and keeps the credential payload out of argv, logs, screenshots,
+  and committed files.
+- Real-login GUI smoke must set `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`.
+  `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1` only prevents saved-session reads; a
+  successful login can still prompt macOS Keychain during session persistence or
+  encrypted SDK store key creation.
+- The `password-login-smoke` prompt order is homeserver, username, device name,
+  then password. The `qa:mac-gui -- --real-login-from-stdin` order is
+  homeserver, username, password, device name, then optional recovery code.
+  Leave the fifth line empty to accept `needsRecovery` as a post-login sync QA
+  state; provide it only when verifying recovery completion to `ready`.

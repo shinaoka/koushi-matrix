@@ -40,7 +40,7 @@ matrix-desktop/
       Cargo.toml
       src/lib.rs
   vendor/
-    matrix-rust-sdk/        # git submodule pointing at shinaoka/matrix-rust-sdk-work
+    matrix-rust-sdk/        # git submodule pointing at a private SDK mirror
 ```
 
 `vendor/matrix-rust-sdk` remains a nested SDK checkout. Do not add its crates as members of the top-level `matrix-desktop` workspace; run SDK tests with `--manifest-path vendor/matrix-rust-sdk/...`.
@@ -73,9 +73,9 @@ Run from the existing local SDK checkout:
 cd /Users/example/projects/Element-dev/matrix-rust-sdk
 git status --short
 git branch --show-current
-gh repo create shinaoka/matrix-rust-sdk-work --private --source=. --remote=shinaoka --push
-git checkout -b shinaoka/search-ngram
-git push -u shinaoka shinaoka/search-ngram
+gh repo create matrix-rust-sdk-work --private --source=. --remote=sdk-mirror --push
+git checkout -b search-ngram
+git push -u sdk-mirror search-ngram
 ```
 
 Expected:
@@ -84,7 +84,7 @@ Expected:
 main
 ```
 
-from `git branch --show-current`, no dirty status output, and a new private GitHub repository at `https://github.com/shinaoka/matrix-rust-sdk-work`.
+from `git branch --show-current`, no dirty status output, and a new private SDK mirror repository.
 
 - [ ] **Step 3: Add the SDK mirror as a submodule**
 
@@ -93,7 +93,7 @@ Run:
 ```bash
 cd /Users/example/projects/Element-dev/matrix-desktop
 mkdir -p vendor
-git submodule add -b shinaoka/search-ngram https://github.com/shinaoka/matrix-rust-sdk-work.git vendor/matrix-rust-sdk
+git submodule add -b search-ngram https://github.com/example-org/matrix-rust-sdk-work.git vendor/matrix-rust-sdk
 git -C vendor/matrix-rust-sdk rev-parse --short HEAD
 ```
 
@@ -127,7 +127,7 @@ Status: in progress
 
 Goal: prove configurable ngram search in `matrix-sdk-search` with Japanese/CJK mixed text, encrypted index opening, rebuild behavior, edits, redactions, and late decryption.
 
-SDK branch: `shinaoka/search-ngram`
+SDK branch: `search-ngram`
 SDK path: `vendor/matrix-rust-sdk`
 
 Acceptance:

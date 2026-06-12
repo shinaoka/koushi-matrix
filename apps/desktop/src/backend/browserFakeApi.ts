@@ -2,6 +2,7 @@ import { composeSidebar, roomIsInScope, textRangeUtf16 } from "../domain/desktop
 import type {
   DesktopSnapshot,
   RoomSummary,
+  SavedSessionInfo,
   SearchResult,
   SearchScopeKind,
   SpaceSummary,
@@ -17,8 +18,15 @@ export interface DesktopApi {
     password: string,
     deviceDisplayName: string
   ): Promise<DesktopSnapshot>;
+  listSavedSessions(): Promise<SavedSessionInfo[]>;
+  switchAccount(session: SavedSessionInfo): Promise<DesktopSnapshot>;
+  submitRecovery(secret: string): Promise<DesktopSnapshot>;
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
+  paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
+  sendText(roomId: string, body: string): Promise<DesktopSnapshot>;
+  editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
+  redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
@@ -26,6 +34,7 @@ export interface DesktopApi {
 
 export interface BrowserFakeApiOptions {
   restoreSession?: boolean;
+  session?: "ready" | "signedOut" | "needsRecovery";
 }
 
 export function createBrowserFakeApi(options: BrowserFakeApiOptions = {}): DesktopApi {
@@ -36,7 +45,7 @@ class BrowserFakeApi implements DesktopApi {
   private snapshot: DesktopSnapshot;
 
   constructor(options: BrowserFakeApiOptions) {
-    this.snapshot = createInitialSnapshot(shouldRestoreSession(options));
+    this.snapshot = createInitialSnapshot(initialSession(options));
   }
 
   async getSnapshot(): Promise<DesktopSnapshot> {
@@ -91,6 +100,49 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async listSavedSessions(): Promise<SavedSessionInfo[]> {
+    return clone(savedSessions);
+  }
+
+  async switchAccount(session: SavedSessionInfo): Promise<DesktopSnapshot> {
+    const knownSession =
+      savedSessions.find(
+        (candidate) =>
+          candidate.homeserver === session.homeserver &&
+          candidate.user_id === session.user_id &&
+          candidate.device_id === session.device_id
+      ) ?? session;
+    this.snapshot.state.session = {
+      ...knownSession,
+      kind: "switchingAccount"
+    };
+    this.snapshot.state.sync = "stopped";
+    this.clearSessionViews();
+    this.snapshot = createReadySnapshot(knownSession);
+    return this.getSnapshot();
+  }
+
+  async submitRecovery(secret: string): Promise<DesktopSnapshot> {
+    if (
+      this.snapshot.state.session.kind !== "needsRecovery" &&
+      this.snapshot.state.session.kind !== "recovering"
+    ) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.session = {
+      ...this.snapshot.state.session,
+      kind: "recovering"
+    };
+    this.snapshot.state.errors = this.snapshot.state.errors.filter(
+      (error) => error.code !== "e2ee_recovery_failed"
+    );
+    void secret;
+
+    this.snapshot = createReadySnapshot();
+    return this.getSnapshot();
+  }
+
   async selectSpace(spaceId: string | null): Promise<DesktopSnapshot> {
     if (!this.isReady()) {
       return this.getSnapshot();
@@ -122,6 +174,82 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.thread = null;
     this.snapshot.timeline = timelineMessages.filter((message) => message.room_id === roomId);
+    return this.getSnapshot();
+  }
+
+  async paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot> {
+    if (
+      !this.isReady() ||
+      this.snapshot.state.timeline.room_id !== roomId ||
+      this.snapshot.state.timeline.is_paginating_backwards
+    ) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.timeline.is_paginating_backwards = true;
+    const existingEventIds = new Set(this.snapshot.timeline.map((message) => message.event_id));
+    const olderMessages = backwardTimelineMessages.filter(
+      (message) => message.room_id === roomId && !existingEventIds.has(message.event_id)
+    );
+    this.snapshot.timeline = [...olderMessages, ...this.snapshot.timeline];
+    this.snapshot.state.timeline.is_paginating_backwards = false;
+    return this.getSnapshot();
+  }
+
+  async sendText(roomId: string, body: string): Promise<DesktopSnapshot> {
+    const session = this.snapshot.state.session;
+    if (
+      session.kind !== "ready" ||
+      !session.user_id ||
+      this.snapshot.state.timeline.room_id !== roomId ||
+      body.trim().length === 0
+    ) {
+      return this.getSnapshot();
+    }
+    const sender = session.user_id;
+
+    this.snapshot.timeline = [
+      ...this.snapshot.timeline,
+      {
+        room_id: roomId,
+        event_id: `$local-browser-${this.snapshot.timeline.length + 1}`,
+        sender,
+        timestamp_ms: 1_820_000_000_000 + this.snapshot.timeline.length,
+        body,
+        attachment_filename: null,
+        reply_count: 0
+      }
+    ];
+    this.snapshot.state.timeline.composer.pending_transaction_id = null;
+    this.snapshot.state.timeline.composer.draft = "";
+    return this.getSnapshot();
+  }
+
+  async editMessage(
+    roomId: string,
+    eventId: string,
+    body: string
+  ): Promise<DesktopSnapshot> {
+    if (!this.isReady() || body.trim().length === 0) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.timeline = this.snapshot.timeline.map((message) =>
+      message.room_id === roomId && message.event_id === eventId
+        ? { ...message, body, attachment_filename: null }
+        : message
+    );
+    return this.getSnapshot();
+  }
+
+  async redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.timeline = this.snapshot.timeline.filter(
+      (message) => !(message.room_id === roomId && message.event_id === eventId)
+    );
     return this.getSnapshot();
   }
 
@@ -202,21 +330,27 @@ class BrowserFakeApi implements DesktopApi {
   }
 }
 
-function createInitialSnapshot(restoreSession: boolean): DesktopSnapshot {
-  if (!restoreSession) {
+function createInitialSnapshot(session: BrowserFakeApiOptions["session"]): DesktopSnapshot {
+  if (session === "signedOut") {
     return createSignedOutSnapshot();
   }
 
+  if (session === "needsRecovery") {
+    return createNeedsRecoverySnapshot();
+  }
+
+  return createReadySnapshot();
+}
+
+function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): DesktopSnapshot {
   const active_space_id = "!space-alpha:example.invalid";
   const active_room_id = "!room-alpha:example.invalid";
   const sidebar = composeSidebar(active_space_id, spaces, rooms);
   const snapshot: DesktopSnapshot = {
     state: {
       session: {
-        kind: "ready",
-        homeserver: "https://matrix.org",
-        user_id: "@demo-user:example.invalid",
-        device_id: "FAKEDEVICE"
+        ...session,
+        kind: "ready"
       },
       auth: { kind: "unknown" },
       sync: "running",
@@ -262,6 +396,29 @@ function createInitialSnapshot(restoreSession: boolean): DesktopSnapshot {
   return snapshot;
 }
 
+const savedSessions: SavedSessionInfo[] = [
+  {
+    homeserver: "https://matrix.org",
+    user_id: "@demo-user:example.invalid",
+    device_id: "FAKEDEVICE"
+  },
+  {
+    homeserver: "https://matrix.org",
+    user_id: "@second-user:example.invalid",
+    device_id: "SECONDDEVICE"
+  }
+];
+
+function createNeedsRecoverySnapshot(): DesktopSnapshot {
+  const snapshot = createReadySnapshot();
+  snapshot.state.session = {
+    ...savedSessions[0],
+    kind: "needsRecovery",
+    recovery_methods: ["recoveryKey", "securityPhrase"]
+  };
+  return snapshot;
+}
+
 function createSignedOutSnapshot(): DesktopSnapshot {
   return {
     state: {
@@ -296,6 +453,11 @@ function createSignedOutSnapshot(): DesktopSnapshot {
 function emptySidebar() {
   return {
     active_space_id: null,
+    account_home: {
+      display_name: "Home",
+      unread_count: 0,
+      is_active: true
+    },
     space_rail: [],
     space_rooms: [],
     global_dms: [],
@@ -304,21 +466,37 @@ function emptySidebar() {
   };
 }
 
-function shouldRestoreSession(options: BrowserFakeApiOptions): boolean {
+function initialSession(options: BrowserFakeApiOptions): BrowserFakeApiOptions["session"] {
+  if (options.session) {
+    return options.session;
+  }
+
   if (options.restoreSession !== undefined) {
-    return options.restoreSession;
+    return options.restoreSession ? "ready" : "signedOut";
   }
 
   if (typeof window === "undefined") {
-    return true;
+    return "ready";
   }
 
-  return new URLSearchParams(window.location.search).get("session") !== "signed-out";
+  const session = new URLSearchParams(window.location.search).get("session");
+  if (session === "signed-out") {
+    return "signedOut";
+  }
+  if (session === "recovery") {
+    return "needsRecovery";
+  }
+
+  return "ready";
 }
 
 function normalizeHomeserver(homeserver: string): string {
   const trimmed = homeserver.trim();
-  return trimmed.length ? trimmed : "https://matrix.org";
+  if (!trimmed.length) {
+    return "https://matrix.org";
+  }
+
+  return trimmed.includes("://") ? trimmed : `https://${trimmed}`;
 }
 
 function search(
@@ -470,7 +648,7 @@ const timelineMessages: TimelineMessage[] = [
   {
     room_id: "!room-alpha:example.invalid",
     event_id: "$budget-file",
-    sender: "Slackbot",
+    sender: "Member 5",
     timestamp_ms: 1_806_993_600_000,
     body: "Budget spreadsheet attached.",
     attachment_filename: "fixture_budget.xlsx",
@@ -500,6 +678,18 @@ const timelineMessages: TimelineMessage[] = [
     sender: "Member 4",
     timestamp_ms: 1_807_004_400_000,
     body: "matrix-sdk-search adapter review notes",
+    attachment_filename: null,
+    reply_count: 0
+  }
+];
+
+const backwardTimelineMessages: TimelineMessage[] = [
+  {
+    room_id: "!room-alpha:example.invalid",
+    event_id: "$alpha-history",
+    sender: "Demo Coordinator",
+    timestamp_ms: 1_806_982_800_000,
+    body: "Older synthetic context from the selected room.",
     attachment_filename: null,
     reply_count: 0
   }

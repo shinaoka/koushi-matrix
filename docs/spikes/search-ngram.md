@@ -4,7 +4,7 @@ Status: in progress
 
 Goal: prove configurable ngram search in `matrix-sdk-search` with Japanese/CJK mixed text, encrypted index opening, rebuild behavior, edits, redactions, and late decryption.
 
-SDK branch: `shinaoka/search-ngram`
+SDK branch: `search-ngram`
 SDK path: `vendor/matrix-rust-sdk`
 
 Acceptance:

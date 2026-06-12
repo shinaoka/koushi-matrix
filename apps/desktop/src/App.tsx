@@ -2,16 +2,14 @@ import {
   AtSign,
   Bell,
   Bold,
-  ChevronDown,
   Clock3,
   Code2,
   Edit3,
-  FileText,
   Hash,
-  Headphones,
   HelpCircle,
   Home,
   Italic,
+  KeyRound,
   Link2,
   List,
   MessageCircle,
@@ -24,17 +22,53 @@ import {
   Search,
   Send,
   Settings,
+  ShieldCheck,
   Smile,
-  Star,
   Users,
   X
 } from "lucide-react";
-import { type FormEvent, type RefObject, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState
+} from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import { createDesktopApi } from "./backend/client";
+import { ContextMenuSurface } from "./components/ContextMenuSurface";
+import { KeyboardSettingsPanel } from "./components/KeyboardSettingsPanel";
+import { RoomInfoPanel } from "./components/RoomInfoPanel";
+import { SpaceInfoPanel } from "./components/SpaceInfoPanel";
+import { UserSettingsPanel } from "./components/UserSettingsPanel";
+import {
+  type ContextMenuActionId,
+  type ContextMenuItem,
+  contextMenuItems
+} from "./domain/contextMenus";
+import {
+  shortcutActionFromMenuPayload,
+  shortcutIdForKeyboardEvent
+} from "./domain/shortcuts";
+import {
+  restoreTimelineAnchor,
+  timelinePaginationAnchorEventId
+} from "./domain/timelineAnchor";
+import {
+  effectiveRightPanelModeForSnapshot,
+  type RightPanelContextMenuTarget,
+  type RightPanelMode,
+  rightPanelIntentForContextMenuAction,
+  rightPanelModeForSearchQuery
+} from "./domain/rightPanel";
+import { qaWindowTitle } from "./domain/qaTitle";
 import type {
   DesktopSnapshot,
   RoomListItem,
+  SavedSessionInfo,
   SearchResult,
   SearchScopeKind,
   TimelineMessage
@@ -42,6 +76,37 @@ import type {
 
 const api = createDesktopApi();
 const DEFAULT_HOMESERVER = "https://matrix.org";
+const MENU_EVENT_NAME = "matrix-desktop://menu";
+const STATE_EVENT_NAME = "matrix-desktop://state";
+type ContextMenuTarget =
+  | { kind: "message"; message: TimelineMessage }
+  | { kind: "room"; roomId: string }
+  | { kind: "space"; spaceId: string }
+  | { kind: "account" };
+type OpenContextMenu = (
+  event: MouseEvent<HTMLElement>,
+  target: ContextMenuTarget,
+  items: ContextMenuItem[]
+) => void;
+type ActiveContextMenu = {
+  x: number;
+  y: number;
+  target: ContextMenuTarget;
+  items: ContextMenuItem[];
+};
+
+function rightPanelTargetFromContextMenuTarget(
+  target: ContextMenuTarget
+): RightPanelContextMenuTarget {
+  if (target.kind === "message") {
+    return {
+      kind: "message",
+      roomId: target.message.room_id,
+      eventId: target.message.event_id
+    };
+  }
+  return target;
+}
 
 export function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
@@ -52,13 +117,67 @@ export function App() {
   const [loginUsername, setLoginUsername] = useState("");
   const [loginDeviceName, setLoginDeviceName] = useState("Matrix Desktop");
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
+  const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
+  const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("thread");
+  const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
+  const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const searchTimer = useRef<number | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const loginPasswordRef = useRef<HTMLInputElement>(null);
+  const recoverySecretRef = useRef<HTMLInputElement>(null);
+
+  function handleShortcutAction(shortcutId: string): boolean {
+    switch (shortcutId) {
+      case "showKeyboardSettings":
+        setRightPanelMode("keyboardSettings");
+        return true;
+      case "openUserSettings":
+        setRightPanelMode("userSettings");
+        return true;
+      case "searchInRoom":
+        setSearchScope("currentRoom");
+        searchInputRef.current?.focus();
+        return true;
+      case "filterRooms":
+        setSearchScope("allRooms");
+        searchInputRef.current?.focus();
+        return true;
+      case "toggleRightPanel":
+        setRightPanelMode((mode) => (mode === "closed" ? "roomInfo" : "closed"));
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function openContextMenu(
+    event: MouseEvent<HTMLElement>,
+    target: ContextMenuTarget,
+    items: ContextMenuItem[]
+  ) {
+    if (!items.length) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      target,
+      items
+    });
+  }
 
   useEffect(() => {
     void refresh();
   }, []);
+
+  useEffect(() => {
+    if (rightPanelMode === "userSettings") {
+      void refreshSavedSessions();
+    }
+  }, [rightPanelMode]);
 
   useEffect(() => {
     if (!snapshot) {
@@ -85,10 +204,97 @@ export function App() {
     snapshot?.state.navigation.active_space_id
   ]);
 
+  useEffect(() => {
+    if (!qaTitleEnabled()) {
+      return;
+    }
+    document.title = snapshot ? qaWindowTitle(snapshot) : "matrix-desktop qa session=booting";
+  }, [snapshot]);
+
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      const shortcutId = shortcutIdForKeyboardEvent(event);
+      if (!shortcutId) {
+        return;
+      }
+
+      if (handleShortcutAction(shortcutId)) {
+        event.preventDefault();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<string>(MENU_EVENT_NAME, (event) => {
+      const shortcutId = shortcutActionFromMenuPayload(event.payload);
+      if (shortcutId) {
+        handleShortcutAction(shortcutId);
+      }
+    }).then((dispose) => {
+      if (disposed) {
+        dispose();
+      } else {
+        unlisten = dispose;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<string>(STATE_EVENT_NAME, () => {
+      void refresh();
+    }).then((dispose) => {
+      if (disposed) {
+        dispose();
+      } else {
+        unlisten = dispose;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   async function refresh() {
     setIsBusy(true);
     try {
       setSnapshot(await api.getSnapshot());
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function refreshSavedSessions() {
+    setSavedSessions(await api.listSavedSessions());
+  }
+
+  async function switchAccount(session: SavedSessionInfo) {
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.switchAccount(session));
+      setRightPanelMode("thread");
+      await refreshSavedSessions();
     } finally {
       setIsBusy(false);
     }
@@ -125,6 +331,21 @@ export function App() {
     }
   }
 
+  async function submitRecovery(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const secret = recoverySecretRef.current?.value ?? "";
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.submitRecovery(secret));
+    } finally {
+      if (recoverySecretRef.current) {
+        recoverySecretRef.current.value = "";
+      }
+      setRecoverySecretFilled(false);
+      setIsBusy(false);
+    }
+  }
+
   async function selectSpace(spaceId: string | null) {
     setSnapshot(await api.selectSpace(spaceId));
   }
@@ -133,37 +354,147 @@ export function App() {
     setSnapshot(await api.selectRoom(roomId));
   }
 
+  async function paginateTimelineBackwards(roomId: string) {
+    const anchorEventId = timelinePaginationAnchorEventId(snapshot?.timeline ?? []);
+    setSnapshot(await api.paginateTimelineBackwards(roomId));
+    requestAnimationFrame(() => {
+      restoreTimelineAnchor(document, anchorEventId);
+    });
+  }
+
+  async function sendText() {
+    const roomId = snapshot?.state.timeline.room_id;
+    const body = composerDraft;
+    if (!roomId || !body.trim()) {
+      return;
+    }
+
+    setSnapshot(await api.sendText(roomId, body));
+    setComposerDraft("");
+  }
+
+  async function editMessage(message: TimelineMessage) {
+    const body = window.prompt("Edit message", message.body);
+    if (body === null || !body.trim()) {
+      return;
+    }
+
+    setSnapshot(await api.editMessage(message.room_id, message.event_id, body));
+  }
+
+  async function redactMessage(roomId: string, eventId: string) {
+    setSnapshot(await api.redactMessage(roomId, eventId));
+  }
+
   async function openThread(roomId: string, rootEventId: string) {
     setSnapshot(await api.openThread(roomId, rootEventId));
+    setRightPanelMode("thread");
   }
 
   async function closeThread() {
     setSnapshot(await api.closeThread());
+    setRightPanelMode("closed");
+  }
+
+  function selectSearchResult(roomId: string, eventId: string) {
+    void selectRoom(roomId).then(() => {
+      setSearchQuery("");
+      setRightPanelMode("closed");
+      requestAnimationFrame(() => {
+        document.querySelector(`[data-event-id="${cssEscape(eventId)}"]`)?.scrollIntoView({
+          block: "center"
+        });
+      });
+    });
+  }
+
+  function runContextMenuAction(actionId: ContextMenuActionId) {
+    const activeMenu = contextMenu;
+    setContextMenu(null);
+    if (!activeMenu) {
+      return;
+    }
+
+    const { target } = activeMenu;
+    if (target.kind === "message") {
+      switch (actionId) {
+        case "openThread":
+          void openThread(target.message.room_id, target.message.event_id);
+          return;
+        case "editMessage":
+          void editMessage(target.message);
+          return;
+        case "redactMessage":
+          void redactMessage(target.message.room_id, target.message.event_id);
+          return;
+        default:
+          return;
+      }
+    }
+
+    const intent = rightPanelIntentForContextMenuAction(
+      rightPanelTargetFromContextMenuTarget(target),
+      actionId
+    );
+    if (!intent) {
+      return;
+    }
+
+    const applyIntentMode = () => {
+      if (intent.mode) {
+        setRightPanelMode(intent.mode);
+      }
+      if (intent.focusSearch) {
+        setSearchScope("currentRoom");
+        searchInputRef.current?.focus();
+      }
+    };
+
+    if (intent.selectRoomId) {
+      void selectRoom(intent.selectRoomId).then(applyIntentMode);
+      return;
+    }
+    if (intent.selectSpaceId) {
+      void selectSpace(intent.selectSpaceId).then(applyIntentMode);
+      return;
+    }
+    applyIntentMode();
+    if (actionId === "switchAccount") {
+      void refreshSavedSessions();
+    }
   }
 
   async function runSearch(query: string, scope: SearchScopeKind) {
     const trimmed = query.trim();
+    const searchMode = rightPanelModeForSearchQuery(trimmed);
     if (!trimmed) {
       setSnapshot(await api.getSnapshot());
+      setRightPanelMode((mode) => (mode === "search" ? "closed" : mode));
       return;
     }
     setSnapshot(await api.submitSearch(trimmed, scope));
+    if (searchMode) {
+      setRightPanelMode(searchMode);
+    }
   }
 
   if (!snapshot) {
     return <div className="boot-screen">matrix-desktop</div>;
   }
 
-  if (snapshot.state.session.kind === "restoring" || snapshot.state.session.kind === "loggingOut") {
+  const sessionKind = snapshot.state.session.kind;
+  const recoveryRequired = sessionKind === "needsRecovery" || sessionKind === "recovering";
+
+  if (sessionKind === "restoring" || sessionKind === "loggingOut") {
     return <div className="boot-screen">matrix-desktop</div>;
   }
 
-  if (snapshot.state.session.kind !== "ready") {
+  if (sessionKind !== "ready" && !recoveryRequired) {
     return (
       <AuthScreen
         deviceName={loginDeviceName}
         homeserver={loginHomeserver}
-        isBusy={isBusy || snapshot.state.session.kind === "authenticating"}
+        isBusy={isBusy || sessionKind === "authenticating"}
         passwordFilled={loginPasswordFilled}
         passwordInputRef={loginPasswordRef}
         snapshot={snapshot}
@@ -185,22 +516,33 @@ export function App() {
     (space) => space.space_id === snapshot.state.navigation.active_space_id
   );
   const searchResults = snapshot.state.search.kind === "results" ? snapshot.state.search.results : [];
+  const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
+  const rightPanelOpen = effectiveRightPanelMode !== "closed";
 
   return (
     <div className="desktop">
       <TopBar
         activeSpaceName={activeSpace?.display_name ?? "Matrix"}
         isBusy={isBusy}
+        searchInputRef={searchInputRef}
         searchQuery={searchQuery}
         searchScope={searchScope}
+        onOpenKeyboardSettings={() => setRightPanelMode("keyboardSettings")}
         onSearchQueryChange={setSearchQuery}
         onSearchScopeChange={setSearchScope}
       />
-      <div className={`app-grid ${snapshot.thread ? "" : "thread-closed"}`}>
-        <WorkspaceRail snapshot={snapshot} onSelectSpace={selectSpace} />
+      <div className={`app-grid ${rightPanelOpen ? "right-panel-open" : "thread-closed"}`}>
+        <WorkspaceRail
+          snapshot={snapshot}
+          onOpenContextMenu={openContextMenu}
+          onOpenUserSettings={() => setRightPanelMode("userSettings")}
+          onSelectSpace={selectSpace}
+        />
         <Sidebar
           activeRoomId={snapshot.state.navigation.active_room_id}
           snapshot={snapshot}
+          onOpenContextMenu={openContextMenu}
+          onOpenSpaceInfo={() => setRightPanelMode("spaceInfo")}
           onSelectRoom={selectRoom}
         />
         <TimelinePane
@@ -208,39 +550,129 @@ export function App() {
           composerDraft={composerDraft}
           searchQuery={searchQuery}
           searchResults={searchResults}
+          showSearchResults={effectiveRightPanelMode !== "search"}
           snapshot={snapshot}
           onComposerDraftChange={setComposerDraft}
           onOpenThread={openThread}
-          onResultSelect={(roomId, eventId) => {
-            void selectRoom(roomId).then(() => {
-              setSearchQuery("");
-              requestAnimationFrame(() => {
-                document.querySelector(`[data-event-id="${cssEscape(eventId)}"]`)?.scrollIntoView({
-                  block: "center"
-                });
-              });
-            });
-          }}
+          onPaginateBackwards={paginateTimelineBackwards}
+          onSendText={sendText}
+          onEditMessage={editMessage}
+          onOpenContextMenu={openContextMenu}
+          onRedactMessage={redactMessage}
+          onResultSelect={selectSearchResult}
           onToggleThread={() => {
-            if (snapshot.thread) {
+            if (rightPanelOpen) {
               void closeThread();
             } else {
               const messageWithReplies = snapshot.timeline.find((message) => message.reply_count > 0);
               if (messageWithReplies) {
                 void openThread(messageWithReplies.room_id, messageWithReplies.event_id);
+              } else {
+                setRightPanelMode("roomInfo");
               }
             }
           }}
+          onOpenRoomInfo={() => setRightPanelMode("roomInfo")}
         />
-        <ThreadPane
+        <ContextualRightPanel
+          activeRoom={activeRoom ?? null}
+          activeSpace={activeSpace ?? null}
+          activeSpaceName={activeSpace?.display_name ?? snapshot.sidebar.account_home.display_name}
+          isRecoveryBusy={isBusy || sessionKind === "recovering"}
+          mode={effectiveRightPanelMode}
+          recoverySecretFilled={recoverySecretFilled}
+          recoverySecretInputRef={recoverySecretRef}
           snapshot={snapshot}
           searchQuery={searchQuery}
+          searchResults={searchResults}
+          savedSessions={savedSessions}
           onCloseThread={() => {
             void closeThread();
           }}
+          onClosePanel={() => setRightPanelMode("closed")}
+          onOpenKeyboardSettings={() => setRightPanelMode("keyboardSettings")}
+          onRecoverySecretPresenceChange={setRecoverySecretFilled}
+          onResultSelect={selectSearchResult}
+          onSubmitRecovery={submitRecovery}
+          onSwitchAccount={(session) => {
+            void switchAccount(session);
+          }}
         />
       </div>
+      {contextMenu ? (
+        <ContextMenuSurface
+          items={contextMenu.items}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onAction={runContextMenuAction}
+          onClose={() => setContextMenu(null)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function RecoveryPanel({
+  isBusy,
+  secretFilled,
+  secretInputRef,
+  snapshot,
+  onSecretPresenceChange,
+  onSubmit
+}: {
+  isBusy: boolean;
+  secretFilled: boolean;
+  secretInputRef: RefObject<HTMLInputElement | null>;
+  snapshot: DesktopSnapshot;
+  onSecretPresenceChange: (value: boolean) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const primaryError = snapshot.state.errors.at(-1);
+  const session = snapshot.state.session;
+
+  return (
+    <section className="recovery-panel-body" data-testid="recovery-panel">
+      <form className="recovery-panel-form" onSubmit={onSubmit}>
+        <div className="auth-brand">
+          <div className="auth-mark recovery-mark">
+            <ShieldCheck size={23} />
+          </div>
+          <div>
+            <h1>Encryption Recovery</h1>
+            <p>{session.user_id ?? "Matrix account"}</p>
+          </div>
+        </div>
+        <div className="recovery-summary">
+          <KeyRound size={18} />
+          <div className="recovery-methods" aria-label="Supported recovery methods">
+            {(session.recovery_methods ?? ["recoveryKey", "securityPhrase"]).map((method) => (
+              <span className="recovery-chip" key={method}>
+                {recoveryMethodLabel(method)}
+              </span>
+            ))}
+          </div>
+        </div>
+        <label className="auth-field">
+          <span>Recovery key or security phrase</span>
+          <input
+            autoComplete="off"
+            name="recoverySecret"
+            ref={secretInputRef}
+            spellCheck={false}
+            type="password"
+            onInput={(event) => onSecretPresenceChange(event.currentTarget.value.length > 0)}
+          />
+        </label>
+        {primaryError ? (
+          <div className="auth-error" role="alert">
+            {primaryError.message}
+          </div>
+        ) : null}
+        <button className="auth-submit" disabled={isBusy || !secretFilled} type="submit">
+          {isBusy ? "Recovering" : "Recover"}
+        </button>
+      </form>
+    </section>
   );
 }
 
@@ -387,6 +819,10 @@ function sessionLabel(kind: DesktopSnapshot["state"]["session"]["kind"]) {
   switch (kind) {
     case "authenticating":
       return "Connecting";
+    case "needsRecovery":
+      return "Encryption recovery";
+    case "recovering":
+      return "Recovering";
     case "locked":
       return "Session locked";
     case "signedOut":
@@ -395,18 +831,31 @@ function sessionLabel(kind: DesktopSnapshot["state"]["session"]["kind"]) {
   }
 }
 
+function recoveryMethodLabel(method: NonNullable<DesktopSnapshot["state"]["session"]["recovery_methods"]>[number]) {
+  switch (method) {
+    case "recoveryKey":
+      return "Recovery key";
+    case "securityPhrase":
+      return "Security phrase";
+  }
+}
+
 function TopBar({
   activeSpaceName,
   isBusy,
+  searchInputRef,
   searchQuery,
   searchScope,
+  onOpenKeyboardSettings,
   onSearchQueryChange,
   onSearchScopeChange
 }: {
   activeSpaceName: string;
   isBusy: boolean;
+  searchInputRef: RefObject<HTMLInputElement | null>;
   searchQuery: string;
   searchScope: SearchScopeKind;
+  onOpenKeyboardSettings: () => void;
   onSearchQueryChange: (value: string) => void;
   onSearchScopeChange: (value: SearchScopeKind) => void;
 }) {
@@ -431,6 +880,7 @@ function TopBar({
       <label className="top-search">
         <Search size={17} />
         <input
+          ref={searchInputRef}
           value={searchQuery}
           placeholder={`${activeSpaceName} 内を検索する`}
           onChange={(event) => onSearchQueryChange(event.target.value)}
@@ -449,7 +899,12 @@ function TopBar({
       </select>
       <div className="top-actions">
         <span className={`sync-dot ${isBusy ? "busy" : ""}`} />
-        <button className="icon-button" type="button" aria-label="Help">
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="Keyboard settings"
+          onClick={onOpenKeyboardSettings}
+        >
           <HelpCircle size={18} />
         </button>
       </div>
@@ -459,14 +914,27 @@ function TopBar({
 
 function WorkspaceRail({
   snapshot,
+  onOpenContextMenu,
+  onOpenUserSettings,
   onSelectSpace
 }: {
   snapshot: DesktopSnapshot;
-  onSelectSpace: (spaceId: string) => void;
+  onOpenContextMenu: OpenContextMenu;
+  onOpenUserSettings: () => void;
+  onSelectSpace: (spaceId: string | null) => void;
 }) {
   return (
     <nav className="workspace-rail" aria-label="Workspaces">
       <div className="workspace-list">
+        <button
+          className={`workspace-button ${snapshot.sidebar.account_home.is_active ? "is-active" : ""}`}
+          data-count={snapshot.sidebar.account_home.unread_count || undefined}
+          type="button"
+          aria-label={snapshot.sidebar.account_home.display_name}
+          onClick={() => onSelectSpace(null)}
+        >
+          <Home size={20} />
+        </button>
         {snapshot.sidebar.space_rail.map((space) => (
           <button
             className={`workspace-button ${space.is_active ? "is-active" : ""}`}
@@ -475,6 +943,13 @@ function WorkspaceRail({
             type="button"
             aria-label={space.display_name}
             onClick={() => onSelectSpace(space.space_id)}
+            onContextMenu={(event) =>
+              onOpenContextMenu(
+                event,
+                { kind: "space", spaceId: space.space_id },
+                contextMenuItems({ kind: "space" })
+              )
+            }
           >
             {initials(space.display_name)}
           </button>
@@ -484,7 +959,15 @@ function WorkspaceRail({
         <button className="rail-action" type="button" aria-label="Add workspace">
           <Plus size={22} />
         </button>
-        <div className="user-presence" aria-label="Online" />
+        <button
+          className="user-presence"
+          type="button"
+          aria-label="User settings"
+          onClick={onOpenUserSettings}
+          onContextMenu={(event) =>
+            onOpenContextMenu(event, { kind: "account" }, contextMenuItems({ kind: "account" }))
+          }
+        />
       </div>
     </nav>
   );
@@ -493,64 +976,81 @@ function WorkspaceRail({
 function Sidebar({
   activeRoomId,
   snapshot,
+  onOpenContextMenu,
+  onOpenSpaceInfo,
   onSelectRoom
 }: {
   activeRoomId: string | null;
   snapshot: DesktopSnapshot;
+  onOpenContextMenu: OpenContextMenu;
+  onOpenSpaceInfo: () => void;
   onSelectRoom: (roomId: string) => void;
 }) {
   return (
     <aside className="sidebar">
       <div className="workspace-header">
         <div className="workspace-name">
-          {snapshot.sidebar.space_rail.find((space) => space.is_active)?.display_name ?? "Matrix"}
+          {snapshot.sidebar.space_rail.find((space) => space.is_active)?.display_name ??
+            snapshot.sidebar.account_home.display_name}
         </div>
-        <button className="icon-button" type="button" aria-label="Preferences">
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="Space info and settings"
+          onClick={onOpenSpaceInfo}
+        >
           <Settings size={18} />
         </button>
         <button className="icon-button" type="button" aria-label="New message">
           <Edit3 size={18} />
         </button>
       </div>
-      <button className="upgrade" type="button">
-        <Star size={18} />
-        <span>プランをアップグレード</span>
-      </button>
       <div className="sidebar-scroll">
-        <NavButton icon={<Home size={18} />} label="ホーム" />
-        <NavButton icon={<MessageCircle size={18} />} label="スレッド" />
-        <NavButton icon={<Headphones size={18} />} label="ハドルミーティング" />
-        <NavButton icon={<Bell size={18} />} label="下書き & 送信済み" />
-        <SectionTitle label="チャンネル" />
+        <NavButton
+          active={snapshot.sidebar.account_home.is_active}
+          icon={<Home size={18} />}
+          label="Home"
+        />
+        <NavButton icon={<MessageCircle size={18} />} label="Threads" />
+        <NavButton icon={<Bell size={18} />} label="Invites" />
+        <SectionTitle label="Rooms" />
         {snapshot.sidebar.space_rooms.map((room) => (
           <RoomButton
             activeRoomId={activeRoomId}
             icon={<Hash size={16} />}
             key={room.room_id}
             room={room}
+            onOpenContextMenu={onOpenContextMenu}
             onSelectRoom={onSelectRoom}
           />
         ))}
-        <SectionTitle label="ダイレクトメッセージ" />
+        <SectionTitle label="People" />
         {snapshot.sidebar.global_dms.map((room) => (
           <RoomButton
             activeRoomId={activeRoomId}
             icon={<span className="presence-dot" />}
             key={room.room_id}
             room={room}
+            onOpenContextMenu={onOpenContextMenu}
             onSelectRoom={onSelectRoom}
           />
         ))}
-        <SectionTitle label="App" />
-        <NavButton icon={<FileText size={17} />} label="Slackbot" />
       </div>
     </aside>
   );
 }
 
-function NavButton({ icon, label }: { icon: React.ReactNode; label: string }) {
+function NavButton({
+  active = false,
+  icon,
+  label
+}: {
+  active?: boolean;
+  icon: React.ReactNode;
+  label: string;
+}) {
   return (
-    <button className="nav-item" type="button">
+    <button className={`nav-item ${active ? "is-active" : ""}`} type="button">
       {icon}
       <span className="nav-label">{label}</span>
     </button>
@@ -570,11 +1070,13 @@ function RoomButton({
   activeRoomId,
   icon,
   room,
+  onOpenContextMenu,
   onSelectRoom
 }: {
   activeRoomId: string | null;
   icon: React.ReactNode;
   room: RoomListItem;
+  onOpenContextMenu: OpenContextMenu;
   onSelectRoom: (roomId: string) => void;
 }) {
   return (
@@ -582,6 +1084,13 @@ function RoomButton({
       className={`room-item ${room.room_id === activeRoomId ? "is-active" : ""}`}
       type="button"
       onClick={() => onSelectRoom(room.room_id)}
+      onContextMenu={(event) =>
+        onOpenContextMenu(
+          event,
+          { kind: "room", roomId: room.room_id },
+          contextMenuItems({ kind: "room" })
+        )
+      }
     >
       {icon}
       <span className="room-name">{room.display_name}</span>
@@ -595,22 +1104,39 @@ function TimelinePane({
   composerDraft,
   searchQuery,
   searchResults,
+  showSearchResults,
   snapshot,
   onComposerDraftChange,
+  onEditMessage,
+  onOpenContextMenu,
   onOpenThread,
+  onPaginateBackwards,
+  onRedactMessage,
   onResultSelect,
-  onToggleThread
+  onSendText,
+  onToggleThread,
+  onOpenRoomInfo
 }: {
   activeRoomName: string;
   composerDraft: string;
   searchQuery: string;
   searchResults: SearchResult[];
+  showSearchResults: boolean;
   snapshot: DesktopSnapshot;
   onComposerDraftChange: (value: string) => void;
+  onEditMessage: (message: TimelineMessage) => void;
+  onOpenContextMenu: OpenContextMenu;
   onOpenThread: (roomId: string, rootEventId: string) => void;
+  onPaginateBackwards: (roomId: string) => void;
+  onRedactMessage: (roomId: string, eventId: string) => void;
   onResultSelect: (roomId: string, eventId: string) => void;
+  onSendText: () => void;
   onToggleThread: () => void;
+  onOpenRoomInfo: () => void;
 }) {
+  const timelineRoomId = snapshot.state.timeline.room_id;
+  const currentUserId = snapshot.state.session.user_id ?? null;
+
   return (
     <main className="main-pane">
       <header className="channel-header">
@@ -626,39 +1152,55 @@ function TimelinePane({
           <button className="icon-button" type="button" aria-label="Toggle thread" onClick={onToggleThread}>
             {snapshot.thread ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}
           </button>
-          <button className="icon-button" type="button" aria-label="More">
+          <button className="icon-button" type="button" aria-label="Room info" onClick={onOpenRoomInfo}>
             <MoreVertical size={19} />
           </button>
         </div>
       </header>
       <nav className="tabs" aria-label="Room tabs">
         <button className="tab is-active" type="button">
-          メッセージ
-        </button>
-        <button className="tab" type="button">
-          canvas を追加する
-        </button>
-        <button className="tab" type="button">
-          その他 <ChevronDown size={14} />
-        </button>
-        <button className="tab" type="button" aria-label="Add tab">
-          <Plus size={17} />
+          Messages
         </button>
       </nav>
       <section className="timeline-scroll">
-        <SearchResults
-          query={searchQuery}
-          results={searchResults}
-          rooms={snapshot.state.rooms}
-          onResultSelect={onResultSelect}
-        />
+        {showSearchResults ? (
+          <SearchResults
+            query={searchQuery}
+            results={searchResults}
+            rooms={snapshot.state.rooms}
+            onResultSelect={onResultSelect}
+          />
+        ) : null}
         <div className="message-list">
+          <div className="timeline-load-more">
+            <button
+              className="load-more-button"
+              type="button"
+              disabled={!timelineRoomId || snapshot.state.timeline.is_paginating_backwards}
+              onClick={() => {
+                if (timelineRoomId) {
+                  onPaginateBackwards(timelineRoomId);
+                }
+              }}
+            >
+              <Clock3 size={15} />
+              <span>
+                {snapshot.state.timeline.is_paginating_backwards
+                  ? "読み込み中"
+                  : "以前のメッセージ"}
+              </span>
+            </button>
+          </div>
           {snapshot.timeline.map((message) => (
             <MessageArticle
               key={message.event_id}
               message={message}
               query={searchQuery}
+              currentUserId={currentUserId}
+              onOpenContextMenu={onOpenContextMenu}
+              onEditMessage={onEditMessage}
               onOpenThread={onOpenThread}
+              onRedactMessage={onRedactMessage}
             />
           ))}
         </div>
@@ -666,6 +1208,7 @@ function TimelinePane({
       <Composer
         roomName={activeRoomName}
         value={composerDraft}
+        onSend={onSendText}
         onValueChange={onComposerDraftChange}
       />
     </main>
@@ -721,23 +1264,70 @@ function SearchResults({
 }
 
 function MessageArticle({
+  currentUserId,
   message,
   query,
-  onOpenThread
+  onOpenContextMenu,
+  onEditMessage,
+  onOpenThread,
+  onRedactMessage
 }: {
+  currentUserId: string | null;
   message: TimelineMessage;
   query: string;
+  onOpenContextMenu?: OpenContextMenu;
+  onEditMessage: (message: TimelineMessage) => void;
   onOpenThread: (roomId: string, rootEventId: string) => void;
+  onRedactMessage: (roomId: string, eventId: string) => void;
 }) {
+  const canManage = currentUserId === message.sender;
+
   return (
-    <article className="message" data-event-id={message.event_id}>
-      <div className={`avatar ${message.sender === "Slackbot" ? "bot" : ""}`} aria-hidden="true">
+    <article
+      className="message"
+      data-event-id={message.event_id}
+      onContextMenu={
+        onOpenContextMenu
+          ? (event) =>
+              onOpenContextMenu(
+                event,
+                { kind: "message", message },
+                contextMenuItems({
+                  kind: "message",
+                  canManage,
+                  hasThread: true
+                })
+              )
+          : undefined
+      }
+    >
+      <div className="avatar" aria-hidden="true">
         {initials(message.sender)}
       </div>
       <div className="message-main">
         <div className="message-heading">
           <span className="sender">{message.sender}</span>
           <span className="time">{formatTime(message.timestamp_ms)}</span>
+          {canManage ? (
+            <span className="message-actions">
+              <button
+                className="message-action"
+                type="button"
+                aria-label="Edit message"
+                onClick={() => onEditMessage(message)}
+              >
+                <Edit3 size={14} />
+              </button>
+              <button
+                className="message-action"
+                type="button"
+                aria-label="Redact message"
+                onClick={() => onRedactMessage(message.room_id, message.event_id)}
+              >
+                <X size={14} />
+              </button>
+            </span>
+          ) : null}
         </div>
         <div className="message-body">{highlightQueryLines(message.body, query)}</div>
         {message.attachment_filename ? (
@@ -763,12 +1353,21 @@ function MessageArticle({
 function Composer({
   roomName,
   value,
+  onSend,
   onValueChange
 }: {
   roomName: string;
   value: string;
+  onSend: () => void;
   onValueChange: (value: string) => void;
 }) {
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      onSend();
+    }
+  }
+
   return (
     <section className="composer" aria-label="Message composer">
       <div className="composer-tools">
@@ -791,6 +1390,7 @@ function Composer({
       <textarea
         value={value}
         placeholder={`${roomName} へのメッセージ`}
+        onKeyDown={onComposerKeyDown}
         onChange={(event) => onValueChange(event.target.value)}
       />
       <div className="composer-footer">
@@ -805,7 +1405,13 @@ function Composer({
             <Smile size={18} />
           </button>
         </div>
-        <button className={`send-button ${value.trim() ? "ready" : ""}`} type="button" aria-label="Send">
+        <button
+          className={`send-button ${value.trim() ? "ready" : ""}`}
+          type="button"
+          aria-label="Send"
+          disabled={!value.trim()}
+          onClick={onSend}
+        >
           <Send size={17} />
         </button>
       </div>
@@ -813,15 +1419,120 @@ function Composer({
   );
 }
 
-function ThreadPane({
+export function ContextualRightPanel({
+  activeRoom,
+  activeSpace,
+  activeSpaceName,
+  isRecoveryBusy,
+  mode,
+  recoverySecretFilled,
+  recoverySecretInputRef,
   snapshot,
   searchQuery,
-  onCloseThread
+  searchResults,
+  savedSessions,
+  onCloseThread,
+  onClosePanel,
+  onOpenKeyboardSettings,
+  onRecoverySecretPresenceChange,
+  onResultSelect,
+  onSubmitRecovery,
+  onSwitchAccount
 }: {
+  activeRoom: DesktopSnapshot["state"]["rooms"][number] | null;
+  activeSpace: DesktopSnapshot["state"]["spaces"][number] | null;
+  activeSpaceName: string;
+  isRecoveryBusy: boolean;
+  mode: RightPanelMode;
+  recoverySecretFilled: boolean;
+  recoverySecretInputRef: RefObject<HTMLInputElement | null>;
   snapshot: DesktopSnapshot;
   searchQuery: string;
+  searchResults: SearchResult[];
+  savedSessions: SavedSessionInfo[];
   onCloseThread: () => void;
+  onClosePanel: () => void;
+  onOpenKeyboardSettings: () => void;
+  onRecoverySecretPresenceChange: (value: boolean) => void;
+  onResultSelect: (roomId: string, eventId: string) => void;
+  onSubmitRecovery: (event: FormEvent<HTMLFormElement>) => void;
+  onSwitchAccount: (session: SavedSessionInfo) => void;
 }) {
+  if (mode === "closed") {
+    return <aside className="thread-pane" />;
+  }
+
+  if (mode === "recovery") {
+    return (
+      <aside className="thread-pane">
+        <PanelHeader title="Recovery" onClose={onClosePanel} showClose={false} />
+        <RecoveryPanel
+          isBusy={isRecoveryBusy}
+          secretFilled={recoverySecretFilled}
+          secretInputRef={recoverySecretInputRef}
+          snapshot={snapshot}
+          onSecretPresenceChange={onRecoverySecretPresenceChange}
+          onSubmit={onSubmitRecovery}
+        />
+      </aside>
+    );
+  }
+
+  if (mode === "keyboardSettings") {
+    return (
+      <aside className="thread-pane">
+        <PanelHeader title="Keyboard" onClose={onClosePanel} />
+        <KeyboardSettingsPanel />
+      </aside>
+    );
+  }
+
+  if (mode === "userSettings") {
+    return (
+      <aside className="thread-pane">
+        <PanelHeader title="User settings" onClose={onClosePanel} />
+        <UserSettingsPanel
+          currentSession={currentSavedSession(snapshot)}
+          savedSessions={savedSessions}
+          onOpenKeyboardSettings={onOpenKeyboardSettings}
+          onSwitchAccount={onSwitchAccount}
+        />
+      </aside>
+    );
+  }
+
+  if (mode === "roomInfo") {
+    return (
+      <aside className="thread-pane">
+        <PanelHeader title="Room info" onClose={onClosePanel} />
+        <RoomInfoPanel room={activeRoom} spaces={snapshot.state.spaces} />
+      </aside>
+    );
+  }
+
+  if (mode === "spaceInfo") {
+    return (
+      <aside className="thread-pane">
+        <PanelHeader title="Space info" onClose={onClosePanel} />
+        <SpaceInfoPanel fallbackName={activeSpaceName} rooms={snapshot.state.rooms} space={activeSpace} />
+      </aside>
+    );
+  }
+
+  if (mode === "search") {
+    return (
+      <aside className="thread-pane">
+        <PanelHeader title="Search" onClose={onClosePanel} />
+        <SearchResults
+          query={searchQuery}
+          results={searchResults}
+          rooms={snapshot.state.rooms}
+          onResultSelect={onResultSelect}
+        />
+      </aside>
+    );
+  }
+
   if (!snapshot.thread) {
     return <aside className="thread-pane" />;
   }
@@ -830,19 +1541,18 @@ function ThreadPane({
 
   return (
     <aside className="thread-pane">
-      <header className="thread-header">
-        <div className="thread-title">スレッド</div>
-        <button className="icon-button" type="button" aria-label="More">
-          <MoreHorizontal size={19} />
-        </button>
-        <button className="icon-button" type="button" aria-label="Close thread" onClick={onCloseThread}>
-          <X size={19} />
-        </button>
-      </header>
+      <PanelHeader title="Thread" onClose={onCloseThread} />
       <section className="thread-scroll">
         {root ? (
           <div className="thread-root">
-            <MessageArticle message={root} query={searchQuery} onOpenThread={() => undefined} />
+            <MessageArticle
+              currentUserId={null}
+              message={root}
+              query={searchQuery}
+              onEditMessage={() => undefined}
+              onOpenThread={() => undefined}
+              onRedactMessage={() => undefined}
+            />
           </div>
         ) : null}
         {snapshot.thread.replies.map((reply) => (
@@ -865,6 +1575,42 @@ function ThreadPane({
       </section>
     </aside>
   );
+}
+
+function PanelHeader({
+  title,
+  onClose,
+  showClose = true
+}: {
+  title: string;
+  onClose: () => void;
+  showClose?: boolean;
+}) {
+  return (
+    <header className="thread-header">
+      <div className="thread-title">{title}</div>
+      <button className="icon-button" type="button" aria-label="More">
+        <MoreHorizontal size={19} />
+      </button>
+      {showClose ? (
+        <button className="icon-button" type="button" aria-label={`Close ${title}`} onClick={onClose}>
+          <X size={19} />
+        </button>
+      ) : null}
+    </header>
+  );
+}
+
+function currentSavedSession(snapshot: DesktopSnapshot): SavedSessionInfo | null {
+  const session = snapshot.state.session;
+  if (!session.homeserver || !session.user_id || !session.device_id) {
+    return null;
+  }
+  return {
+    homeserver: session.homeserver,
+    user_id: session.user_id,
+    device_id: session.device_id
+  };
 }
 
 function highlightQueryLines(text: string, query: string) {
@@ -958,4 +1704,12 @@ function cssEscape(value: string): string {
 
 function initialSearchQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
+}
+
+function isTauriRuntime(): boolean {
+  return "__TAURI_INTERNALS__" in window;
+}
+
+function qaTitleEnabled(): boolean {
+  return import.meta.env.VITE_MATRIX_DESKTOP_QA_TITLE === "1";
 }

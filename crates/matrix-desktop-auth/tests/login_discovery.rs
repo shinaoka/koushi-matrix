@@ -70,6 +70,18 @@ fn builds_discovery_url_from_bare_homeserver_name() {
 }
 
 #[test]
+fn homeserver_input_allows_scheme_omission_and_explicit_port() {
+    let homeserver = matrix_desktop_auth::Homeserver::parse("matrix.example.org:8448")
+        .expect("homeserver with explicit port should parse");
+
+    assert_eq!(homeserver.normalized(), "https://matrix.example.org:8448");
+    assert_eq!(
+        homeserver.login_discovery_url().as_str(),
+        "https://matrix.example.org:8448/_matrix/client/v3/login"
+    );
+}
+
+#[test]
 fn rejects_homeserver_url_with_unsupported_scheme() {
     let error = matrix_desktop_auth::Homeserver::parse("file:///tmp/matrix")
         .expect_err("file homeserver URL should be rejected");

@@ -1,6 +1,9 @@
 use std::fmt;
 
-use crate::state::{LoginFlow, RoomSummary, SearchResult, SearchScope, SessionInfo, SpaceSummary};
+use crate::state::{
+    E2eeRecoveryState, LoginFlow, RecoveryMethod, RoomSummary, SearchResult, SearchScope,
+    SessionInfo, SpaceSummary,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppAction {
@@ -9,6 +12,9 @@ pub enum AppAction {
     RestoreSessionNotFound,
     RestoreSessionFailed {
         message: String,
+    },
+    SwitchAccountRequested {
+        info: SessionInfo,
     },
     LoginDiscoveryRequested {
         homeserver: String,
@@ -23,7 +29,23 @@ pub enum AppAction {
     },
     LoginSubmitted(LoginRequest),
     LoginSucceeded(SessionInfo),
+    E2eeRecoveryRequired {
+        info: SessionInfo,
+        methods: Vec<RecoveryMethod>,
+    },
+    E2eeRecoverySubmitted(RecoveryRequest),
+    E2eeRecoverySucceeded,
+    E2eeRecoveryFailed {
+        message: String,
+    },
+    E2eeRecoveryStateChanged {
+        state: E2eeRecoveryState,
+        methods: Vec<RecoveryMethod>,
+    },
     LoginFailed {
+        message: String,
+    },
+    SessionPersistenceFailed {
         message: String,
     },
     SessionLocked,
@@ -31,6 +53,9 @@ pub enum AppAction {
     LogoutFinished,
     SyncStarted,
     SyncFailed {
+        reason: String,
+    },
+    SyncReconnecting {
         reason: String,
     },
     SyncRecovered,
@@ -51,6 +76,12 @@ pub enum AppAction {
     TimelineSubscriptionFailed {
         room_id: String,
         message: String,
+    },
+    TimelineBackPaginationRequested {
+        room_id: String,
+    },
+    TimelineBackPaginationFinished {
+        room_id: String,
     },
     ComposerDraftChanged {
         room_id: String,
@@ -143,5 +174,19 @@ impl Drop for AuthSecret {
         use zeroize::Zeroize;
 
         self.0.zeroize();
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct RecoveryRequest {
+    pub secret: AuthSecret,
+}
+
+impl fmt::Debug for RecoveryRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RecoveryRequest")
+            .field("secret", &self.secret)
+            .finish()
     }
 }

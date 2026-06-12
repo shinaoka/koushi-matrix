@@ -68,7 +68,44 @@ fn room_list_update_replaces_state_and_emits_room_list_event() {
     assert_eq!(state.rooms.len(), 3);
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SubscribeTimeline {
+                room_id: "room-a".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+        ]
+    );
+}
+
+#[test]
+fn room_list_update_selects_first_room_when_no_room_is_active() {
+    let mut state = ready_state();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: spaces(),
+            rooms: rooms(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-a"));
+    assert_eq!(state.timeline.room_id.as_deref(), Some("room-a"));
+    assert!(!state.timeline.is_subscribed);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SubscribeTimeline {
+                room_id: "room-a".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+        ]
     );
 }
 
@@ -196,6 +233,32 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
     );
+}
+
+#[test]
+fn account_home_lists_all_non_dm_rooms_and_keeps_dms_global() {
+    let sidebar = compose_sidebar(None, &spaces(), &rooms());
+
+    assert!(sidebar.account_home.is_active);
+    assert_eq!(sidebar.account_home.unread_count, 7);
+    assert_eq!(
+        sidebar
+            .space_rooms
+            .iter()
+            .map(|room| room.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["room-a", "global-room"]
+    );
+    assert_eq!(
+        sidebar
+            .global_dms
+            .iter()
+            .map(|room| room.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["dm-a"]
+    );
+    assert_eq!(sidebar.space_unread_count, 7);
+    assert_eq!(sidebar.dm_unread_count, 3);
 }
 
 #[test]

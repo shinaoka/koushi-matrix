@@ -1,7 +1,8 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, AuthDiscoveryState, AuthSecret, LoginFlow, LoginFlowKind,
-    LoginRequest, NavigationState, RoomSummary, SearchScope, SearchState, SessionInfo,
-    SessionState, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState, UiEvent, reduce,
+    AppAction, AppEffect, AppState, AuthDiscoveryState, AuthSecret, E2eeRecoveryState, LoginFlow,
+    LoginFlowKind, LoginRequest, NavigationState, RecoveryMethod, RecoveryRequest, RoomSummary,
+    SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadPaneState,
+    TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -9,6 +10,14 @@ fn session_info() -> SessionInfo {
         homeserver: "https://matrix.example.org".to_owned(),
         user_id: "@user-a:example.invalid".to_owned(),
         device_id: "DEVICE".to_owned(),
+    }
+}
+
+fn alternate_session_info() -> SessionInfo {
+    SessionInfo {
+        homeserver: "https://matrix.example.org".to_owned(),
+        user_id: "@user-b:example.invalid".to_owned(),
+        device_id: "DEVICE-B".to_owned(),
     }
 }
 
@@ -204,6 +213,324 @@ fn login_failure_returns_to_signed_out_and_records_error() {
 }
 
 #[test]
+fn session_persistence_failure_records_error_without_leaving_ready_session() {
+    let info = session_info();
+    let mut state = AppState {
+        session: SessionState::Ready(info.clone()),
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SessionPersistenceFailed {
+            message: "session was not saved".to_owned(),
+        },
+    );
+
+    assert_eq!(state.session, SessionState::Ready(info));
+    assert_eq!(state.errors[0].code, "session_persistence_failed");
+    assert!(state.errors[0].recoverable);
+    assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]);
+}
+
+#[test]
+fn account_switch_request_stops_sync_clears_views_and_restores_target_session() {
+    let current = session_info();
+    let target = alternate_session_info();
+    let mut state = AppState {
+        session: SessionState::Ready(current),
+        sync: SyncState::Running,
+        navigation: NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+        },
+        spaces: vec![SpaceSummary {
+            space_id: "space-a".to_owned(),
+            display_name: "Space A".to_owned(),
+            child_room_ids: vec!["room-a".to_owned()],
+        }],
+        rooms: vec![RoomSummary {
+            room_id: "room-a".to_owned(),
+            display_name: "Room A".to_owned(),
+            is_dm: false,
+            unread_count: 0,
+            parent_space_ids: vec!["space-a".to_owned()],
+        }],
+        timeline: TimelinePaneState {
+            room_id: Some("room-a".to_owned()),
+            is_subscribed: true,
+            is_paginating_backwards: false,
+            composer: Default::default(),
+        },
+        thread: ThreadPaneState::Open {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            is_subscribed: true,
+            composer: Default::default(),
+        },
+        search: SearchState::Editing {
+            query: "hello".to_owned(),
+            scope: SearchScope::AllRooms,
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SwitchAccountRequested {
+            info: target.clone(),
+        },
+    );
+
+    assert_eq!(
+        state.session,
+        SessionState::SwitchingAccount {
+            info: target.clone()
+        }
+    );
+    assert_eq!(state.sync, SyncState::Stopped);
+    assert_eq!(state.navigation, NavigationState::default());
+    assert!(state.spaces.is_empty());
+    assert!(state.rooms.is_empty());
+    assert_eq!(state.timeline, TimelinePaneState::default());
+    assert_eq!(state.thread, ThreadPaneState::Closed);
+    assert_eq!(state.search, SearchState::Closed);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::StopSync,
+            AppEffect::ClearSession,
+            AppEffect::RestoreSessionFor(target),
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+            AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+            AppEffect::EmitUiEvent(UiEvent::SearchChanged),
+        ]
+    );
+}
+
+#[test]
+fn e2ee_recovery_required_after_login_stays_post_login_and_starts_sync() {
+    let mut state = AppState {
+        session: SessionState::Authenticating {
+            homeserver: "https://matrix.example.org".to_owned(),
+        },
+        ..AppState::default()
+    };
+    let info = session_info();
+    let methods = vec![RecoveryMethod::RecoveryKey, RecoveryMethod::SecurityPhrase];
+
+    let effects = reduce(
+        &mut state,
+        AppAction::E2eeRecoveryRequired {
+            info: info.clone(),
+            methods: methods.clone(),
+        },
+    );
+
+    assert_eq!(
+        state.session,
+        SessionState::NeedsRecovery {
+            info: info.clone(),
+            methods: methods.clone(),
+        }
+    );
+    assert_eq!(state.sync, SyncState::Starting);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSession(info),
+            AppEffect::StartSync,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ]
+    );
+}
+
+#[test]
+fn e2ee_recovery_submission_emits_recover_effect_without_exposing_secret() {
+    let info = session_info();
+    let methods = vec![RecoveryMethod::RecoveryKey, RecoveryMethod::SecurityPhrase];
+    let mut state = AppState {
+        session: SessionState::NeedsRecovery {
+            info: info.clone(),
+            methods: methods.clone(),
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::E2eeRecoverySubmitted(RecoveryRequest {
+            secret: AuthSecret::new("synthetic-recovery-secret"),
+        }),
+    );
+
+    assert_eq!(
+        state.session,
+        SessionState::Recovering {
+            info: info.clone(),
+            methods
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::RecoverE2ee(RecoveryRequest {
+                secret: AuthSecret::new("synthetic-recovery-secret"),
+            }),
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ]
+    );
+    assert!(!format!("{effects:?}").contains("synthetic-recovery-secret"));
+}
+
+#[test]
+fn e2ee_recovery_success_enters_ready_and_starts_sync() {
+    let info = session_info();
+    let mut state = AppState {
+        session: SessionState::Recovering {
+            info: info.clone(),
+            methods: vec![RecoveryMethod::RecoveryKey],
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(&mut state, AppAction::E2eeRecoverySucceeded);
+
+    assert_eq!(state.session, SessionState::Ready(info.clone()));
+    assert_eq!(state.sync, SyncState::Starting);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSession(info),
+            AppEffect::StartSync,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ]
+    );
+}
+
+#[test]
+fn unknown_e2ee_recovery_state_does_not_prompt_or_stop_sync() {
+    let info = session_info();
+    let mut state = AppState {
+        session: SessionState::Ready(info.clone()),
+        sync: SyncState::Running,
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::E2eeRecoveryStateChanged {
+            state: E2eeRecoveryState::Unknown,
+            methods: vec![RecoveryMethod::RecoveryKey],
+        },
+    );
+
+    assert_eq!(state.session, SessionState::Ready(info));
+    assert_eq!(state.sync, SyncState::Running);
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
+    let info = session_info();
+    let mut state = AppState {
+        session: SessionState::Ready(info.clone()),
+        sync: SyncState::Running,
+        navigation: NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+        },
+        spaces: vec![SpaceSummary {
+            space_id: "space-a".to_owned(),
+            display_name: "Space A".to_owned(),
+            child_room_ids: vec!["room-a".to_owned()],
+        }],
+        rooms: vec![RoomSummary {
+            room_id: "room-a".to_owned(),
+            display_name: "Room A".to_owned(),
+            is_dm: false,
+            unread_count: 3,
+            parent_space_ids: vec!["space-a".to_owned()],
+        }],
+        timeline: TimelinePaneState {
+            room_id: Some("room-a".to_owned()),
+            is_subscribed: true,
+            is_paginating_backwards: false,
+            composer: Default::default(),
+        },
+        ..AppState::default()
+    };
+
+    let methods = vec![RecoveryMethod::RecoveryKey, RecoveryMethod::SecurityPhrase];
+    let effects = reduce(
+        &mut state,
+        AppAction::E2eeRecoveryStateChanged {
+            state: E2eeRecoveryState::Incomplete,
+            methods: methods.clone(),
+        },
+    );
+
+    assert_eq!(
+        state.session,
+        SessionState::NeedsRecovery {
+            info: info.clone(),
+            methods
+        }
+    );
+    assert_eq!(state.sync, SyncState::Running);
+    assert_eq!(
+        state.navigation,
+        NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+        }
+    );
+    assert_eq!(state.spaces.len(), 1);
+    assert_eq!(state.rooms.len(), 1);
+    assert!(state.timeline.is_subscribed);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+    );
+}
+
+#[test]
+fn enabled_e2ee_recovery_state_releases_recovery_prompt() {
+    let info = session_info();
+    let mut state = AppState {
+        session: SessionState::NeedsRecovery {
+            info: info.clone(),
+            methods: vec![RecoveryMethod::RecoveryKey],
+        },
+        sync: SyncState::Stopped,
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::E2eeRecoveryStateChanged {
+            state: E2eeRecoveryState::Enabled,
+            methods: vec![RecoveryMethod::RecoveryKey],
+        },
+    );
+
+    assert_eq!(state.session, SessionState::Ready(info.clone()));
+    assert_eq!(state.sync, SyncState::Starting);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSession(info),
+            AppEffect::StartSync,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ]
+    );
+}
+
+#[test]
 fn logout_stops_sync_and_clears_session() {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),
@@ -319,7 +646,7 @@ fn session_locked_stops_sync_and_clears_session_views() {
 }
 
 #[test]
-fn sync_failure_enters_recovering_state() {
+fn sync_failure_enters_failed_state_before_retry() {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),
         sync: SyncState::Running,
@@ -335,11 +662,46 @@ fn sync_failure_enters_recovering_state() {
 
     assert_eq!(
         state.sync,
-        SyncState::Recovering {
+        SyncState::Failed {
             reason: "limited network".to_owned(),
         }
     );
-    assert_eq!(effects, vec![AppEffect::StartSync]);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::StartSync,
+        ]
+    );
+}
+
+#[test]
+fn sync_retry_enters_reconnecting_state() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        sync: SyncState::Failed {
+            reason: "limited network".to_owned(),
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SyncReconnecting {
+            reason: "limited network".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        state.sync,
+        SyncState::Reconnecting {
+            reason: "limited network".to_owned(),
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
 }
 
 #[test]
@@ -356,6 +718,15 @@ fn late_sync_signals_after_logout_are_ignored() {
             &mut state,
             AppAction::SyncFailed {
                 reason: "late failure".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::SyncReconnecting {
+                reason: "late reconnect".to_owned(),
             },
         ),
         Vec::new()
