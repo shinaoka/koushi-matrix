@@ -67,6 +67,19 @@ impl StoreActor {
         &self.credential_store
     }
 
+    /// Test-only constructor with an explicit backend (avoids the env-global
+    /// `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` race between unit tests).
+    #[cfg(test)]
+    pub(crate) fn with_backend(
+        credential_store: CredentialStoreBackend,
+        data_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            credential_store,
+            data_dir: data_dir.into(),
+        }
+    }
+
     /// Resolve (and if necessary create) a store configuration for the given
     /// account identity. On first use a fresh `LocalUnlockSecret` is generated
     /// and persisted; on subsequent uses the existing secret is loaded.
@@ -93,15 +106,17 @@ impl StoreActor {
         })
     }
 
-    /// Delete all stored credentials and store directory for an account.
-    /// Called during logout / account removal.
+    /// Delete the stored unlock secret and the per-account store/cache
+    /// directories for an account (shutdown step 7: "clear credentials and
+    /// stores"). Called during logout / account removal.
     ///
-    /// Errors are logged as diagnostics but do not propagate — a logout that
-    /// partially cleans up is better than a logout that fails.
+    /// Errors do not propagate — a logout that partially cleans up is better
+    /// than a logout that fails. Matrix session JSON / pointers stored via the
+    /// credential backend are cleaned up by AccountActor through the same
+    /// backend.
     pub fn delete_account_credentials(&self, key_id: &SessionKeyId) {
         let _ = self.credential_store.delete(key_id);
-        // Session data stored via CredentialStore (matrix session JSON) is
-        // managed by AccountActor directly using the same CredentialStore.
+        let _ = std::fs::remove_dir_all(self.account_root_dir(key_id));
     }
 
     /// The OS or file-based credential store backend.
@@ -129,18 +144,18 @@ impl StoreActor {
         }
     }
 
-    fn account_store_dir(&self, key_id: &SessionKeyId) -> PathBuf {
+    fn account_root_dir(&self, key_id: &SessionKeyId) -> PathBuf {
         self.data_dir
             .join("accounts")
             .join(account_dir_name(key_id))
-            .join("store")
+    }
+
+    fn account_store_dir(&self, key_id: &SessionKeyId) -> PathBuf {
+        self.account_root_dir(key_id).join("store")
     }
 
     fn account_cache_dir(&self, key_id: &SessionKeyId) -> PathBuf {
-        self.data_dir
-            .join("accounts")
-            .join(account_dir_name(key_id))
-            .join("cache")
+        self.account_root_dir(key_id).join("cache")
     }
 }
 
@@ -307,6 +322,60 @@ impl CredentialStoreBackend {
         }
     }
 
+    pub fn load_saved_sessions(
+        &self,
+    ) -> Result<matrix_desktop_key::SavedSessionIndex, matrix_desktop_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.load_saved_sessions(),
+            #[cfg(any(debug_assertions, test))]
+            Self::FileDir(store) => {
+                match store.load_named(matrix_desktop_key::CredentialStore::saved_sessions_account_name()) {
+                    Ok(json) => matrix_desktop_key::SavedSessionIndex::from_json(&json),
+                    Err(err) if matrix_desktop_key::is_missing_credential_error(&err) => {
+                        Ok(matrix_desktop_key::SavedSessionIndex::new())
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+        }
+    }
+
+    pub fn remember_saved_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.remember_saved_session(key_id),
+            #[cfg(any(debug_assertions, test))]
+            Self::FileDir(store) => {
+                let mut index = self.load_saved_sessions()?;
+                index.upsert(key_id.clone());
+                store.save_named(
+                    matrix_desktop_key::CredentialStore::saved_sessions_account_name(),
+                    &index.to_json()?,
+                )
+            }
+        }
+    }
+
+    pub fn forget_saved_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.forget_saved_session(key_id),
+            #[cfg(any(debug_assertions, test))]
+            Self::FileDir(store) => {
+                let mut index = self.load_saved_sessions()?;
+                index.remove(key_id);
+                store.save_named(
+                    matrix_desktop_key::CredentialStore::saved_sessions_account_name(),
+                    &index.to_json()?,
+                )
+            }
+        }
+    }
+
     /// Expose the underlying `CredentialStore` (for OS keychain backend).
     pub fn as_os_credential_store(&self) -> Option<&CredentialStore> {
         match self {
@@ -436,12 +505,33 @@ fn safe_filename(name: String) -> String {
         .collect()
 }
 
+/// Debug/test-only diagnostic helper. Compiled out of release builds along
+/// with its only call site (the file credential store branch in
+/// `CredentialStoreBackend::resolve`).
+#[cfg(any(debug_assertions, test))]
 fn tracing_or_eprintln(message: &str) {
     // Use eprintln as a simple diagnostic; in production the tracing crate
     // should be wired instead.
     if std::env::var_os("MATRIX_DESKTOP_DEBUG_SDK_ERROR").is_some() {
         eprintln!("[matrix-desktop-core] {message}");
     }
+}
+
+/// QA/debug structural guard: true only when the env-resolved credential
+/// store backend is the file-dir backend (i.e.
+/// `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` is set in a debug/test
+/// build). Headless QA binaries call this BEFORE any login so unattended runs
+/// are structurally unable to reach the OS keychain (engineering-rules
+/// Secrets rule: keychain prompts during automation are failures).
+///
+/// Debug/test only: release builds have no file backend, so this symbol does
+/// not exist there and a release-built QA guard cannot silently pass.
+#[cfg(any(debug_assertions, test))]
+pub fn resolved_credential_backend_is_file_dir() -> bool {
+    matches!(
+        CredentialStoreBackend::resolve(),
+        CredentialStoreBackend::FileDir(_)
+    )
 }
 
 /// Convert a `SessionInfo` (from matrix-desktop-state) into a `SessionKeyId`

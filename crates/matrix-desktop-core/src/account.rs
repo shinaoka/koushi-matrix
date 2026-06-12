@@ -7,19 +7,28 @@
 //! remain reducer-driven. Domain events (AccountEvent::LoggedIn etc.) plus
 //! OperationFailed are emitted on the CoreEvent stream.
 //!
-//! Shutdown order (overview.md Async rule 12): SDK handles dropped inside the
-//! Tokio runtime context. The actor never drops the session outside async context.
+//! Account store bootstrap invariant (overview.md, Runtime Model): per-account
+//! store paths derive from homeserver|user|device, so the device id is unknown
+//! until the password exchange completes. First login runs on a storeless
+//! client that never syncs or initializes encryption; immediately after login
+//! the session is persisted and restored into the per-account encrypted store,
+//! and only the store-backed session may start sync or E2EE traffic. The
+//! fail-closed local-encryption rule applies to the store creation step: if it
+//! fails, the storeless session is NOT kept as a fallback.
 //!
-//! SwitchAccount: design gap — the semantics of switching accounts before
-//! Phase 3 sync exists are not fully specified. In Phase 2 we implement the
-//! credential + store setup path but do not attempt to stop a non-existent sync.
-//! See design gap note in the final report.
+//! SwitchAccount (overview.md): ordered shutdown of the current account
+//! runtime WITHOUT clearing credentials or stores, followed by a store-backed
+//! restore of the target account. Phase 2 has no sync/timeline/search children
+//! yet, so those shutdown steps are no-ops.
+//!
+//! Shutdown order (overview.md Async rules 11/12): SDK handles dropped inside
+//! the Tokio runtime context.
 
 use std::sync::Arc;
 
 use matrix_desktop_auth::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
-use matrix_desktop_state::{AppAction, LoginRequest};
+use matrix_desktop_state::{AppAction, LoginRequest, SessionInfo};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::AccountCommand;
@@ -27,6 +36,21 @@ use crate::event::{AccountEvent, CoreEvent};
 use crate::failure::{CoreFailure, LoginFailureKind};
 use crate::ids::{AccountKey, RequestId};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
+
+/// Interim failure kind for "no stored session for that account" during
+/// restore/switch. None of the existing `CoreFailure`/`LoginFailureKind`
+/// variants names this condition precisely (the credential store itself is
+/// reachable and healthy); a dedicated kind needs a canon amendment — see the
+/// Phase 2 review report. `LoginFailed { kind: Store }` is the least-wrong
+/// existing kind because restore is a login-class flow whose stored material
+/// is missing. AppState semantics are carried correctly by the
+/// `RestoreSessionNotFound` reducer action regardless of this kind.
+const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::LoginFailed {
+    kind: LoginFailureKind::Store,
+};
+
+/// Redacted message used in reducer error projections (never raw SDK text).
+const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
 
 /// Messages routed to the AccountActor task.
 pub enum AccountMessage {
@@ -45,9 +69,17 @@ impl AccountActorHandle {
     }
 }
 
+/// How a successful store-backed restore is reported.
+enum RestoreOutcome {
+    /// `RestoreSession` command → `AccountEvent::SessionRestored`.
+    Restored,
+    /// `SwitchAccount` command → `AccountEvent::AccountSwitched`.
+    Switched,
+}
+
 /// The account actor's internal state.
 pub struct AccountActor {
-    /// Active session, if any.
+    /// Active store-backed session, if any.
     session: Option<Arc<MatrixClientSession>>,
     /// Session key for credential store operations.
     session_key_id: Option<SessionKeyId>,
@@ -115,9 +147,6 @@ impl AccountActor {
                 request_id,
                 account_key,
             } => {
-                // Design gap: SwitchAccount before Phase 3 sync has not been
-                // fully specified. We implement credential setup but do not yet
-                // stop a non-existent sync actor. Documented in final report.
                 self.handle_switch_account(request_id, account_key).await;
             }
             AccountCommand::SubmitRecovery {
@@ -140,47 +169,74 @@ impl AccountActor {
         request_id: RequestId,
         request: LoginRequest,
     ) {
-        // Login without a store config first — we don't have the device_id
-        // until after login, which is required to build the per-account store path.
-        // After a successful login we persist the session so RestoreSession can
-        // use the store-backed path.
+        // Store bootstrap step 1: the password exchange runs on a storeless
+        // client. The device id (and therefore the store path) is unknown
+        // before this completes. The storeless client must never sync or
+        // initialize encryption.
         let login_result =
             matrix_desktop_auth::login_with_password_with_store(&request, None).await;
 
-        match login_result {
+        let login_session = match login_result {
             Err(error) => {
                 let kind = classify_login_error(&error);
                 self.emit_failure(request_id, CoreFailure::LoginFailed { kind });
                 self.reduce(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
                 }]);
+                return;
             }
-            Ok(session) => {
-                let info = session.info.clone();
-                let key_id = session_key_id_from_info(&info);
-                let account_key = account_key_from_info(&info);
+            Ok(session) => session,
+        };
 
-                // Persist session in the credential store (using the unified
-                // backend that supports both OS keychain and file override).
-                let persist_result = self.persist_session(&session, &key_id);
-                if let Err(failure) = persist_result {
-                    self.emit_failure(request_id, failure);
-                    return;
-                }
+        let info = login_session.info.clone();
+        let key_id = session_key_id_from_info(&info);
+        let account_key = account_key_from_info(&info);
 
-                self.session = Some(Arc::new(session));
-                self.session_key_id = Some(key_id);
-
-                // Project login success through the reducer.
-                self.reduce(vec![AppAction::LoginSucceeded(info.clone())]);
-
-                // Emit domain event.
-                self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
-                    request_id,
-                    account_key,
-                }));
+        // Store bootstrap step 2a: persist the session credentials.
+        let persistable = match self.persist_session(&login_session, &key_id) {
+            Ok(persistable) => persistable,
+            Err(failure) => {
+                self.abort_login(login_session, &key_id, false).await;
+                self.emit_failure(request_id, failure);
+                self.reduce(vec![AppAction::LoginFailed {
+                    message: "login failed".to_owned(),
+                }]);
+                return;
             }
-        }
+        };
+
+        // Store bootstrap step 2b: restore the session into the per-account
+        // encrypted store. The store-backed session replaces the login client
+        // BEFORE any sync or E2EE traffic. Fail-closed: if store creation or
+        // the store-backed restore fails, the storeless session is dropped,
+        // never kept as a fallback.
+        let store_backed = match self.restore_into_store(&persistable, &key_id).await {
+            Ok(session) => session,
+            Err(failure) => {
+                self.abort_login(login_session, &key_id, true).await;
+                self.emit_failure(request_id, failure);
+                self.reduce(vec![AppAction::LoginFailed {
+                    message: "login failed".to_owned(),
+                }]);
+                return;
+            }
+        };
+
+        // The storeless client never synced; drop it inside the runtime
+        // context (Async rule 11).
+        drop(login_session);
+
+        self.session = Some(Arc::new(store_backed));
+        self.session_key_id = Some(key_id);
+
+        // Project login success through the reducer.
+        self.reduce(vec![AppAction::LoginSucceeded(info)]);
+
+        // Emit domain event.
+        self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
+            request_id,
+            account_key,
+        }));
     }
 
     async fn handle_restore_session(
@@ -188,76 +244,129 @@ impl AccountActor {
         request_id: RequestId,
         account_key: AccountKey,
     ) {
-        // Look up the last-session pointer from the credential store.
-        let last_session = match self.store.credential_backend().load_last_session() {
-            Ok(Some(key_id)) if key_id.user_id == account_key.0 => key_id,
-            Ok(_) => {
-                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+        let key_id = match self.lookup_session_key_id(&account_key) {
+            Ok(Some(key_id)) => key_id,
+            Ok(None) => {
+                // No stored session for this account: project
+                // RestoreSessionNotFound so AppState returns to SignedOut, and
+                // keep the redacted failure event for command correlation.
+                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
-            Err(_) => {
+            Err(()) => {
+                // Credential store unreachable.
+                self.reduce(vec![AppAction::RestoreSessionFailed {
+                    message: RESTORE_FAILED_MESSAGE.to_owned(),
+                }]);
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
         };
 
-        let session_json =
-            match self.store.credential_backend().load_matrix_session(&last_session) {
-                Ok(stored) => stored,
-                Err(_) => {
-                    self.emit_failure(request_id, CoreFailure::StoreUnavailable);
-                    return;
-                }
-            };
+        self.restore_account(request_id, key_id, RestoreOutcome::Restored)
+            .await;
+    }
+
+    async fn handle_switch_account(
+        &mut self,
+        request_id: RequestId,
+        account_key: AccountKey,
+    ) {
+        // Ordered shutdown of the current account runtime WITHOUT clearing
+        // credentials or stores. Phase 2 has no sync/timeline/search children;
+        // those shutdown steps are no-ops. The SDK handle is dropped inside
+        // the runtime context (Async rule 11).
+        drop(self.session.take());
+        self.session_key_id = None;
+
+        let key_id = match self.lookup_session_key_id(&account_key) {
+            Ok(Some(key_id)) => key_id,
+            Ok(None) => {
+                // Same not-found contract as RestoreSession.
+                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
+                return;
+            }
+            Err(()) => {
+                self.reduce(vec![AppAction::RestoreSessionFailed {
+                    message: RESTORE_FAILED_MESSAGE.to_owned(),
+                }]);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+                return;
+            }
+        };
+
+        // Project the switch intent so the reducer drives state
+        // (SwitchingAccount → cleared views), then run the store-backed
+        // restore of the target account.
+        self.reduce(vec![AppAction::SwitchAccountRequested {
+            info: session_info_from_key_id(&key_id),
+        }]);
+
+        self.restore_account(request_id, key_id, RestoreOutcome::Switched)
+            .await;
+    }
+
+    /// Store-backed restore of a known stored account. Shared by
+    /// `RestoreSession` and `SwitchAccount`.
+    async fn restore_account(
+        &mut self,
+        request_id: RequestId,
+        key_id: SessionKeyId,
+        outcome: RestoreOutcome,
+    ) {
+        let session_json = match self.store.credential_backend().load_matrix_session(&key_id) {
+            Ok(stored) => stored,
+            Err(err) if matrix_desktop_key::is_missing_credential_error(&err) => {
+                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
+                return;
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::RestoreSessionFailed {
+                    message: RESTORE_FAILED_MESSAGE.to_owned(),
+                }]);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+                return;
+            }
+        };
 
         let persistable = match PersistableMatrixSession::from_json(session_json.as_str()) {
             Ok(s) => s,
             Err(_) => {
+                self.reduce(vec![AppAction::RestoreSessionFailed {
+                    message: RESTORE_FAILED_MESSAGE.to_owned(),
+                }]);
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
         };
 
-        // Build store config using the credential-backed encryption key.
-        let store_config_result = self.store.account_store_config(&last_session);
-        let store_config = match store_config_result {
-            Ok(cfg) => cfg,
+        match self.restore_into_store(&persistable, &key_id).await {
             Err(failure) => {
-                self.emit_failure(request_id, failure);
-                return;
-            }
-        };
-
-        let restore_result = matrix_desktop_auth::restore_session_with_store(
-            &persistable,
-            Some(&store_config.store_config),
-        )
-        .await;
-
-        match restore_result {
-            Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::LoginFailed {
-                        kind: LoginFailureKind::Store,
-                    },
-                );
                 self.reduce(vec![AppAction::RestoreSessionFailed {
-                    message: "session restore failed".to_owned(),
+                    message: RESTORE_FAILED_MESSAGE.to_owned(),
                 }]);
+                self.emit_failure(request_id, failure);
             }
             Ok(session) => {
                 let info = session.info.clone();
-                let key_id = session_key_id_from_info(&info);
                 let account_key = account_key_from_info(&info);
 
                 self.session = Some(Arc::new(session));
                 self.session_key_id = Some(key_id);
 
                 self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
-                self.emit(CoreEvent::Account(AccountEvent::SessionRestored {
-                    request_id,
-                    account_key,
+                self.emit(CoreEvent::Account(match outcome {
+                    RestoreOutcome::Restored => AccountEvent::SessionRestored {
+                        request_id,
+                        account_key,
+                    },
+                    RestoreOutcome::Switched => AccountEvent::AccountSwitched {
+                        request_id,
+                        account_key,
+                    },
                 }));
             }
         }
@@ -279,11 +388,9 @@ impl AccountActor {
         // Drop the SDK handle inside the Tokio runtime context (Async rule 11).
         drop(session);
 
-        // Clean up credentials and stored session.
+        // Clean up credentials and stores for this account only.
         let account_key = if let Some(key_id) = &key_id {
-            let _ = self.store.credential_backend().delete_matrix_session(key_id);
-            let _ = self.store.credential_backend().delete_last_session();
-            self.store.delete_account_credentials(key_id);
+            self.clear_account_persistence(key_id);
             AccountKey(key_id.user_id.clone())
         } else {
             AccountKey(String::new())
@@ -296,24 +403,17 @@ impl AccountActor {
         }));
     }
 
-    async fn handle_switch_account(
-        &mut self,
-        request_id: RequestId,
-        account_key: AccountKey,
-    ) {
-        // Design gap (Phase 2): SwitchAccount before sync exists.
-        // Full implementation requires Phase 3 sync actor coordination.
-        self.emit_failure(request_id, CoreFailure::StoreUnavailable);
-        let _ = account_key;
-    }
-
     // --- helpers ---
 
+    /// Persist session credentials, mirroring the src-tauri flow: session
+    /// JSON, saved-session index entry, last-session pointer — with rollback
+    /// on partial failure.
     fn persist_session(
         &self,
         session: &MatrixClientSession,
         key_id: &SessionKeyId,
-    ) -> Result<(), CoreFailure> {
+    ) -> Result<PersistableMatrixSession, CoreFailure> {
+        let backend = self.store.credential_backend();
         let persistable = session
             .persistable_session()
             .map_err(|_| CoreFailure::StoreUnavailable)?;
@@ -321,15 +421,95 @@ impl AccountActor {
             .to_json()
             .map_err(|_| CoreFailure::StoreUnavailable)?;
         let stored = StoredMatrixSession::new(json);
-        self.store
-            .credential_backend()
+        backend
             .save_matrix_session(key_id, &stored)
             .map_err(|_| CoreFailure::StoreUnavailable)?;
-        self.store
-            .credential_backend()
-            .save_last_session(key_id)
-            .map_err(|_| CoreFailure::StoreUnavailable)?;
-        Ok(())
+        if backend.remember_saved_session(key_id).is_err() {
+            let _ = backend.delete_matrix_session(key_id);
+            return Err(CoreFailure::StoreUnavailable);
+        }
+        if backend.save_last_session(key_id).is_err() {
+            let _ = backend.delete_matrix_session(key_id);
+            let _ = backend.forget_saved_session(key_id);
+            return Err(CoreFailure::StoreUnavailable);
+        }
+        Ok(persistable)
+    }
+
+    /// Restore a persisted session into the per-account encrypted store
+    /// (fail-closed: any store init failure is `LocalEncryptionUnavailable`).
+    async fn restore_into_store(
+        &self,
+        persistable: &PersistableMatrixSession,
+        key_id: &SessionKeyId,
+    ) -> Result<MatrixClientSession, CoreFailure> {
+        let store_config = self.store.account_store_config(key_id)?;
+        matrix_desktop_auth::restore_session_with_store(
+            persistable,
+            Some(&store_config.store_config),
+        )
+        .await
+        .map_err(|_| CoreFailure::LocalEncryptionUnavailable)
+    }
+
+    /// Roll back a failed login bootstrap: best-effort server logout of the
+    /// storeless client (so no orphan device stays registered), drop it inside
+    /// the runtime context, and — if credentials were already persisted —
+    /// remove them again so a later restore does not pick up a session whose
+    /// token was just invalidated.
+    async fn abort_login(
+        &self,
+        login_session: MatrixClientSession,
+        key_id: &SessionKeyId,
+        credentials_persisted: bool,
+    ) {
+        let _ = matrix_desktop_auth::logout(&login_session).await;
+        drop(login_session);
+        if credentials_persisted {
+            self.clear_account_persistence(key_id);
+        }
+    }
+
+    /// Remove all persisted material for one account: session JSON, saved
+    /// session index entry, last-session pointer (only if it points at this
+    /// account), unlock secret, and store/cache directories.
+    fn clear_account_persistence(&self, key_id: &SessionKeyId) {
+        let backend = self.store.credential_backend();
+        let _ = backend.delete_matrix_session(key_id);
+        let _ = backend.forget_saved_session(key_id);
+        match backend.load_last_session() {
+            Ok(Some(last)) if last == *key_id => {
+                let _ = backend.delete_last_session();
+            }
+            Ok(_) => {}
+            Err(_) => {
+                let _ = backend.delete_last_session();
+            }
+        }
+        self.store.delete_account_credentials(key_id);
+    }
+
+    /// Find the stored `SessionKeyId` for an account key (the user's Matrix
+    /// ID). Checks the last-session pointer first, then the saved-session
+    /// index. `Ok(None)` = no stored session; `Err(())` = store unreachable.
+    fn lookup_session_key_id(
+        &self,
+        account_key: &AccountKey,
+    ) -> Result<Option<SessionKeyId>, ()> {
+        let backend = self.store.credential_backend();
+        match backend.load_last_session() {
+            Ok(Some(key_id)) if key_id.user_id == account_key.0 => {
+                return Ok(Some(key_id));
+            }
+            Ok(_) => {}
+            Err(_) => return Err(()),
+        }
+        let index = backend.load_saved_sessions().map_err(|_| ())?;
+        Ok(index
+            .sessions()
+            .iter()
+            .find(|session| session.user_id == account_key.0)
+            .cloned())
     }
 
     fn emit(&self, event: CoreEvent) {
@@ -345,6 +525,14 @@ impl AccountActor {
 
     fn reduce(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.try_send(actions);
+    }
+}
+
+fn session_info_from_key_id(key_id: &SessionKeyId) -> SessionInfo {
+    SessionInfo {
+        homeserver: key_id.homeserver.clone(),
+        user_id: key_id.user_id.clone(),
+        device_id: key_id.device_id.clone(),
     }
 }
 
@@ -374,5 +562,69 @@ fn classify_login_error(error: &matrix_desktop_auth::PasswordLoginError) -> Logi
         PasswordLoginError::Runtime(_) => LoginFailureKind::Server,
         PasswordLoginError::MissingSession => LoginFailureKind::Server,
         PasswordLoginError::Serialization(_) => LoginFailureKind::Store,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+    use tokio::sync::{broadcast, mpsc};
+
+    use super::*;
+    use crate::store::CredentialStoreBackend;
+
+    /// Network-free: restoring an account with no stored session must emit the
+    /// redacted not-found failure AND project `RestoreSessionNotFound` so the
+    /// reducer returns AppState to SignedOut. Same contract for SwitchAccount.
+    #[tokio::test]
+    async fn restore_and_switch_of_unknown_account_emit_not_found() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let store = StoreActor::with_backend(
+            CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+                cred_dir.path(),
+            )),
+            data_dir.path(),
+        );
+
+        let (action_tx, mut action_rx) = mpsc::channel(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let handle = AccountActor::spawn(store, action_tx, event_tx);
+
+        let request_id = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let account_key = AccountKey("@nobody:example.test".to_owned());
+
+        for command in [
+            AccountCommand::RestoreSession {
+                request_id,
+                account_key: account_key.clone(),
+            },
+            AccountCommand::SwitchAccount {
+                request_id,
+                account_key: account_key.clone(),
+            },
+        ] {
+            assert!(handle.send(AccountMessage::Command(command)).await);
+
+            let actions = action_rx.recv().await.expect("reducer actions");
+            assert!(
+                matches!(actions.as_slice(), [AppAction::RestoreSessionNotFound]),
+                "not-found must project RestoreSessionNotFound, got {actions:?}"
+            );
+
+            match event_rx.recv().await.expect("event") {
+                CoreEvent::OperationFailed {
+                    request_id: ev_id,
+                    failure,
+                } => {
+                    assert_eq!(ev_id, request_id);
+                    assert_eq!(failure, SESSION_NOT_FOUND_FAILURE);
+                }
+                other => panic!("expected OperationFailed, got {other:?}"),
+            }
+        }
     }
 }
