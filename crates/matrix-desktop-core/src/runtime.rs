@@ -7,19 +7,25 @@
 //! - state snapshots: latest-wins watch, coalesced to at most one
 //!   `StateChanged` per processed command batch
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use matrix_desktop_key::CredentialStore;
 use matrix_desktop_state::{AppAction, AppState, reduce};
 use tokio::sync::{broadcast, mpsc, watch};
 
+use crate::account::{AccountActorHandle, AccountMessage};
 use crate::command::CoreCommand;
 use crate::event::{AppStateSnapshot, CoreEvent};
 use crate::executor;
 use crate::failure::CoreFailure;
 use crate::ids::{RequestId, RuntimeConnectionId};
+use crate::store::StoreActor;
 
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
 pub const EVENT_QUEUE_CAPACITY: usize = 1024;
+
+const CREDENTIAL_STORE_SERVICE_NAME: &str = "matrix-desktop";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommandSubmitError {
@@ -54,14 +60,36 @@ pub struct CoreRuntime {
 impl CoreRuntime {
     /// Start the runtime. Must be called within an async runtime context.
     pub fn start() -> Self {
-        Self::start_with_event_capacity(EVENT_QUEUE_CAPACITY)
+        Self::start_with_data_dir(default_data_dir())
     }
 
+    /// Start with a custom data directory (used by QA binaries and tests).
+    pub fn start_with_data_dir(data_dir: PathBuf) -> Self {
+        Self::start_inner(EVENT_QUEUE_CAPACITY, data_dir)
+    }
+
+    #[cfg(test)]
     pub(crate) fn start_with_event_capacity(event_capacity: usize) -> Self {
+        Self::start_inner(event_capacity, default_data_dir())
+    }
+
+    fn start_inner(event_capacity: usize, data_dir: PathBuf) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
         let (event_tx, _) = broadcast::channel(event_capacity);
         let (snapshot_tx, snapshot_rx) = watch::channel(AppState::default());
         let (action_tx, action_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
+
+        // Build the store and credential store.
+        let store_actor = StoreActor::new(data_dir);
+        let credential_store = CredentialStore::new(CREDENTIAL_STORE_SERVICE_NAME);
+
+        // Spawn AccountActor with shared channels.
+        let account_actor = crate::account::AccountActor::spawn(
+            store_actor,
+            credential_store,
+            action_tx.clone(),
+            event_tx.clone(),
+        );
 
         let actor = AppActor {
             command_rx,
@@ -69,6 +97,7 @@ impl CoreRuntime {
             event_tx: event_tx.clone(),
             snapshot_tx,
             state: AppState::default(),
+            account_actor,
         };
         let actor = executor::spawn(actor.run());
 
@@ -175,6 +204,7 @@ struct AppActor {
     event_tx: broadcast::Sender<CoreEvent>,
     snapshot_tx: watch::Sender<AppStateSnapshot>,
     state: AppState,
+    account_actor: AccountActorHandle,
 }
 
 impl AppActor {
@@ -183,11 +213,11 @@ impl AppActor {
             tokio::select! {
                 command = self.command_rx.recv() => {
                     let Some(command) = command else { break };
-                    let mut state_changed = self.handle_command(command);
+                    let mut state_changed = self.handle_command(command).await;
                     // Coalesce: drain whatever is already queued before
                     // emitting a single StateChanged for the batch.
                     while let Ok(next) = self.command_rx.try_recv() {
-                        state_changed |= self.handle_command(next);
+                        state_changed |= self.handle_command(next).await;
                     }
                     if state_changed {
                         self.publish_snapshot();
@@ -209,10 +239,12 @@ impl AppActor {
                 }
             }
         }
+        // Shutdown: tell AccountActor to stop.
+        let _ = self.account_actor.send(AccountMessage::Shutdown).await;
     }
 
     /// Returns whether `AppState` changed.
-    fn handle_command(&mut self, command: CoreCommand) -> bool {
+    async fn handle_command(&mut self, command: CoreCommand) -> bool {
         if command.requires_ready_session()
             && !matches!(
                 self.state.session,
@@ -226,29 +258,58 @@ impl AppActor {
             return false;
         }
 
-        // Phase 1: routing and rejection only. Account/sync/room/timeline/
-        // search side effects land with their actors in later phases; until
-        // an actor owns a command, accepted commands fail explicitly rather
-        // than silently disappearing.
-        self.emit(CoreEvent::OperationFailed {
-            request_id: command.request_id(),
-            failure: match command {
-                CoreCommand::App(_) | CoreCommand::Account(_) => CoreFailure::StoreUnavailable,
-                CoreCommand::Sync(_) => CoreFailure::SyncFailed {
-                    kind: crate::failure::SyncFailureKind::Internal,
-                },
-                CoreCommand::Room(_) => CoreFailure::RoomOperationFailed {
-                    kind: crate::failure::RoomFailureKind::Sdk,
-                },
-                CoreCommand::Timeline(_) => CoreFailure::TimelineOperationFailed {
-                    kind: crate::failure::TimelineFailureKind::Sdk,
-                },
-                CoreCommand::Search(_) => CoreFailure::SearchFailed {
-                    kind: crate::failure::SearchFailureKind::Internal,
-                },
-            },
-        });
-        false
+        match command {
+            CoreCommand::Account(account_command) => {
+                // Route to AccountActor; it will produce AppActions and
+                // CoreEvents. AppActor does not immediately know the result —
+                // it observes it via the action channel.
+                let _ = self
+                    .account_actor
+                    .send(AccountMessage::Command(account_command))
+                    .await;
+                false
+            }
+            CoreCommand::App(_) => {
+                // App commands (Shutdown) handled here in later phases.
+                false
+            }
+            CoreCommand::Sync(_) => {
+                self.emit(CoreEvent::OperationFailed {
+                    request_id: command.request_id(),
+                    failure: CoreFailure::SyncFailed {
+                        kind: crate::failure::SyncFailureKind::Internal,
+                    },
+                });
+                false
+            }
+            CoreCommand::Room(_) => {
+                self.emit(CoreEvent::OperationFailed {
+                    request_id: command.request_id(),
+                    failure: CoreFailure::RoomOperationFailed {
+                        kind: crate::failure::RoomFailureKind::Sdk,
+                    },
+                });
+                false
+            }
+            CoreCommand::Timeline(_) => {
+                self.emit(CoreEvent::OperationFailed {
+                    request_id: command.request_id(),
+                    failure: CoreFailure::TimelineOperationFailed {
+                        kind: crate::failure::TimelineFailureKind::Sdk,
+                    },
+                });
+                false
+            }
+            CoreCommand::Search(_) => {
+                self.emit(CoreEvent::OperationFailed {
+                    request_id: command.request_id(),
+                    failure: CoreFailure::SearchFailed {
+                        kind: crate::failure::SearchFailureKind::Internal,
+                    },
+                });
+                false
+            }
+        }
     }
 
     fn emit(&self, event: CoreEvent) {
@@ -261,5 +322,19 @@ impl AppActor {
         let _ = self
             .event_tx
             .send(CoreEvent::StateChanged(self.state.clone()));
+    }
+}
+
+/// Default application data directory.
+fn default_data_dir() -> PathBuf {
+    // On macOS / Linux: $HOME/.local/share/matrix-desktop
+    // Fallback to current directory if HOME is not set.
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("matrix-desktop")
+    } else {
+        PathBuf::from("matrix-desktop-data")
     }
 }

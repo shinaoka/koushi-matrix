@@ -19,6 +19,10 @@ const checks = [
 const args = new Set(process.argv.slice(2));
 const serverOption = optionValue("--server") ?? "both";
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "90000");
+// --core: run the headless-core-qa binary in addition to (or instead of) the
+// headless-local-qa binary. When this flag is present, both QA paths run for
+// each server so both layers are exercised.
+const runCoreQa = args.has("--core");
 
 if (args.has("--list")) {
   for (const check of checks) {
@@ -111,6 +115,20 @@ async function runForServer(serverKind) {
       logPath
     });
     console.log(qaResult.trim());
+
+    if (runCoreQa) {
+      const coreQaResult = runCoreHeadlessQa({
+        serverKind,
+        homeserver,
+        serverName,
+        userA,
+        passwordA,
+        userB,
+        passwordB,
+        logPath
+      });
+      console.log(coreQaResult.trim());
+    }
   } finally {
     await stopProcess(serverProcess);
   }
@@ -229,6 +247,67 @@ function runHeadlessQa({
     const stdout = result.stdout.trim();
     throw new Error(
       `headless SDK QA failed for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
+    );
+  }
+  return result.stdout;
+}
+
+function runCoreHeadlessQa({
+  serverKind,
+  homeserver,
+  serverName,
+  userA,
+  passwordA,
+  userB,
+  passwordB,
+  logPath
+}) {
+  // Use a temp dir for per-run data so QA runs stay isolated.
+  const runDataDir = join(logPath, "..", "core-qa-data");
+  mkdirSync(runDataDir, { recursive: true });
+
+  // The file credential store dir keeps QA unattended (no OS keychain prompts).
+  const credStoreDir = join(logPath, "..", "core-qa-cred");
+  mkdirSync(credStoreDir, { recursive: true });
+
+  const result = spawnSync(
+    "cargo",
+    ["run", "-p", "matrix-desktop-core", "--features", "qa-bin", "--bin", "headless-core-qa"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...minimalEnvironment(),
+        MATRIX_DESKTOP_LOCAL_QA_SERVER_KIND: serverKind,
+        MATRIX_DESKTOP_LOCAL_QA_HOMESERVER: homeserver,
+        MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME: serverName,
+        MATRIX_DESKTOP_LOCAL_QA_USER_A: userA,
+        MATRIX_DESKTOP_LOCAL_QA_PASSWORD_A: passwordA,
+        MATRIX_DESKTOP_LOCAL_QA_USER_B: userB,
+        MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B: passwordB,
+        MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR: credStoreDir,
+        MATRIX_DESKTOP_QA_DATA_DIR: runDataDir
+      },
+      maxBuffer: 10 * 1024 * 1024
+    }
+  );
+  appendQaOutput(logPath, result.stdout, result.stderr);
+  // Secret redaction check: ensure passwords do not appear in QA output.
+  for (const [label, secret] of [
+    ["passwordA", passwordA],
+    ["passwordB", passwordB]
+  ]) {
+    if (result.stdout.includes(secret) || result.stderr.includes(secret)) {
+      throw new Error(
+        `headless core QA output contains ${label} — secret redaction failure`
+      );
+    }
+  }
+  if (result.status !== 0) {
+    const stderr = result.stderr.trim();
+    const stdout = result.stdout.trim();
+    throw new Error(
+      `headless core QA failed for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
     );
   }
   return result.stdout;
@@ -373,6 +452,9 @@ function sleep(ms) {
 }
 
 function printUsage() {
-  console.log("Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both]");
+  console.log(
+    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both] [--core]"
+  );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
+  console.log("  --core  Also run the headless-core-qa binary (Phase 2+ core runtime QA).");
 }

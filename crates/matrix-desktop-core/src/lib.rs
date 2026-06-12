@@ -7,12 +7,14 @@
 //! Normative architecture: `docs/architecture/overview.md`.
 //! Migration spec: `docs/superpowers/specs/2026-06-12-headless-core-runtime-design.md`.
 
+pub mod account;
 pub mod command;
 pub mod event;
 pub mod executor;
 pub mod failure;
 pub mod ids;
 pub mod runtime;
+pub mod store;
 
 pub use command::{
     AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, SearchScope, SyncCommand,

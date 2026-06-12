@@ -4,8 +4,17 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[[bin]]
+name = "headless-core-qa"
+path = "src/bin/headless-core-qa.rs"
+required-features = ["qa-bin"]
+
 [dependencies]
+matrix-desktop-auth = { path = "../matrix-desktop-auth" }
+matrix-desktop-key = { path = "../matrix-desktop-key" }
 matrix-desktop-state = { path = "../matrix-desktop-state" }
+base64 = "0.22"
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # Confined to executor.rs and channel plumbing per Platform Portability rule 2.
@@ -14,6 +23,9 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 [features]
 # Exposes CoreRuntime::inject_actions for QA binaries and integration tests.
 test-hooks = []
+# Enables the headless-core-qa binary.
+qa-bin = []
 
 [dev-dependencies]
+tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "sync", "time", "macros"] }
