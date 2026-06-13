@@ -192,6 +192,75 @@ describe("desktop release scripts", () => {
     }
   });
 
+  test("linux GUI smoke lists the local-login and local-send scenarios", () => {
+    const output = runScript("scripts/desktop-linux-gui-qa.mjs", ["--list"]);
+
+    for (const token of ["signed-out", "local-login", "local-send"]) {
+      expect(output).toContain(token);
+    }
+  });
+
+  test("linux GUI smoke resolves relative artifact dirs from the repo root", () => {
+    const output = execFileSync(
+      process.execPath,
+      [
+        "../../scripts/desktop-linux-gui-qa.mjs",
+        "--print-artifact-root",
+        "--artifact-dir=artifacts/linux-gui-local-login"
+      ],
+      {
+        cwd: `${repoRoot}apps/desktop`,
+        encoding: "utf8"
+      }
+    );
+
+    expect(output.trim()).toBe(
+      new URL("../../../../artifacts/linux-gui-local-login", import.meta.url).pathname
+    );
+  });
+
+  test("linux GUI smoke source emits the local scenario success tokens", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("gui_local_login=ok");
+    expect(source).toContain("gui_local_send=ok");
+  });
+
+  test("linux GUI local scenarios also emit DBus and window-state evidence", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("recordLocalGuiEvidence");
+    expect(source).toContain("notification_dbus=ok");
+    expect(source).toContain("window_state_path_contract=ok");
+    expect(source).toMatch(
+      /async function runLocalLoginScenario\(\)[\s\S]*await recordLocalGuiEvidence\(session\);[\s\S]*gui_local_login=ok/
+    );
+    expect(source).toMatch(
+      /async function runLocalSendScenario\(\)[\s\S]*await recordLocalGuiEvidence\(session\);[\s\S]*gui_local_send=ok/
+    );
+  });
+
+  test("linux GUI local login selects the first room when timeline subscription is still missing", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("shouldSelectFirstRoom(status, selectedRoom)");
+    expect(source).toMatch(
+      /function shouldSelectFirstRoom\(status, selectedRoom\)[\s\S]*status\.active_room === false \|\| status\.timeline_subscribed === false/
+    );
+    expect(source).toMatch(
+      /if \(shouldSelectFirstRoom\(status, selectedRoom\)\) \{[\s\S]*selectedRoom = await selectFirstRoom\(browser\);/
+    );
+  });
+
   test("linux GUI smoke parses the attention baseline title token", () => {
     const output = runScript("scripts/desktop-linux-gui-qa.mjs", [
       "--qa-title-attention-ready=matrix-desktop qa session=signedOut sync=stopped rooms=0 spaces=0 active_room=false timeline_subscribed=false timeline_items=0 errors=0 unread=0 badge=0 notify=none"
@@ -248,6 +317,70 @@ describe("desktop release scripts", () => {
     expect(output).toContain("NO_COLOR=1");
     expect(output).not.toContain("DEEPSEEK_API_KEY");
     expect(output).not.toContain("MATRIX_DESKTOP_TEST_SECRET");
+  });
+
+  test("linux GUI smoke child environment exposes only safe QA keys for local login", () => {
+    const output = execFileSync(
+      process.execPath,
+      ["scripts/desktop-linux-gui-qa.mjs", "--child-env-keys", "--real-login-from-stdin"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DEEPSEEK_API_KEY: "synthetic-secret",
+          MATRIX_DESKTOP_TEST_SECRET: "synthetic-secret"
+        }
+      }
+    );
+
+    expect(output).toContain("MATRIX_DESKTOP_DATA_DIR");
+    expect(output).toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR");
+    expect(output).toContain("MATRIX_DESKTOP_QA_LOGIN_PIPE");
+    expect(output).not.toContain("DEEPSEEK_API_KEY");
+    expect(output).not.toContain("MATRIX_DESKTOP_TEST_SECRET");
+  });
+
+  test("linux GUI smoke source wires the shared local homeserver helper module", () => {
+    const guiSource = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+    const sharedSource = readFileSync(
+      new URL("../../../../scripts/lib/local-homeserver-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(guiSource).toContain("local-homeserver-qa.mjs");
+    expect(guiSource).toContain("local-login");
+    expect(guiSource).toContain("local-send");
+    expect(guiSource).not.toContain("--password");
+    expect(sharedSource).toContain("checkInstalledHomeserver");
+    expect(sharedSource).toContain("registerUser");
+    expect(sharedSource).toContain("stopProcess");
+  });
+
+  test("linux GUI local setup keeps homeserver data separate and cleanup covers setup failures", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("serverDataDir");
+    expect(source).toContain("homeserver-data");
+    expect(source).toContain("const session = {");
+    expect(source).toContain("await cleanupLocalGuiScenario(session)");
+  });
+
+  test("linux GUI local setup defines the safe timestamp helper it uses for synthetic users", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("const userSuffix = safeTimestamp();");
+    expect(source).toContain("function safeTimestamp()");
+    expect(source).toContain("replaceAll(\"-\", \"_\")");
   });
 
   test("linux GUI smoke real login transport is FIFO and the script avoids password args", () => {
@@ -317,16 +450,25 @@ describe("desktop release scripts", () => {
     for (const token of [
       "node:22.22.3-bookworm",
       "ARG RUST_TOOLCHAIN=1.96.0",
+      "ARG CONDUIT_URL=https://gitlab.com/api/v4/projects/famedly%2Fconduit/jobs/artifacts/master/raw/x86_64-unknown-linux-musl?job=artifacts",
+      "ARG TUWUNEL_VERSION=v1.7.1",
+      "ARG TUWUNEL_ZST_URL=https://github.com/matrix-construct/tuwunel/releases/download/v1.7.1/v1.7.1-release-all-x86_64-v1-linux-gnu-tuwunel.zst",
       "RUST_TOOLCHAIN=${RUST_TOOLCHAIN}",
       '--default-toolchain "${RUST_TOOLCHAIN}"',
       'rustup default "${RUST_TOOLCHAIN}"',
       'RUSTUP_TOOLCHAIN="${RUST_TOOLCHAIN}"',
       "libwebkit2gtk-4.1-dev",
       "libayatana-appindicator3-dev",
+      "zstd",
       "webkit2gtk-driver",
       "xvfb",
       "fonts-noto-color-emoji",
       "cargo install tauri-driver --locked",
+      "curl --proto '=https' --tlsv1.2 -fsSLo /usr/local/bin/conduit",
+      "curl --proto '=https' --tlsv1.2 -fsSLo /tmp/tuwunel.zst",
+      "unzstd -f -o /usr/local/bin/tuwunel /tmp/tuwunel.zst",
+      "conduit --version",
+      "tuwunel --version",
       "RUSTC=\"$(rustup which rustc)\"",
       "RUSTDOC=\"$(rustup which rustdoc)\""
     ]) {
@@ -346,8 +488,14 @@ describe("desktop release scripts", () => {
     expect(agents).toContain("CARGO_HOME=/tmp/cargo-home");
     expect(agents).toContain("CARGO_TARGET_DIR=/tmp/matrix-desktop-gui-target");
     expect(agents).toContain("NPM_CONFIG_CACHE=/tmp/npm-cache");
-    expect(agents).toContain("--artifact-dir=/work/artifacts/linux-gui-qa");
+    expect(agents).toContain("matrix-desktop-linux-gui:basic-ops");
+    expect(agents).toContain("--scenario=local-send");
+    expect(agents).toContain("--server=conduit");
+    expect(agents).toContain("--artifact-dir=/work/artifacts/linux-gui-local-send-docker");
     expect(agents).toContain("--timeout-ms=180000");
+    expect(agents).toContain("conduit");
+    expect(agents).toContain("tuwunel");
+    expect(agents).toContain("zstd");
     expect(agents).toContain("PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     expect(agents).toContain("RUSTC=\"$(rustup which rustc)\"");
     expect(agents).toContain("RUSTDOC=\"$(rustup which rustdoc)\"");
@@ -378,6 +526,65 @@ describe("desktop release scripts", () => {
     expect(sendReady.trim()).toBe("ready");
   });
 
+  test("linux GUI smoke QA title contract uses the local send statuses", () => {
+    const titleSource = readFileSync(
+      new URL("../../../../apps/desktop/src/domain/qaTitle.ts", import.meta.url),
+      "utf8"
+    );
+    const sendSource = readFileSync(
+      new URL("../../../../apps/desktop/src/domain/qaSendSmoke.ts", import.meta.url),
+      "utf8"
+    );
+
+    expect(titleSource).toContain("send=");
+    expect(sendSource).toContain('"idle"');
+    expect(sendSource).toContain('"pending"');
+    expect(sendSource).toContain('"sent"');
+    expect(sendSource).toContain('"failed"');
+  });
+
+  test("app wires Tauri CoreEvent send completion into the QA send title token", () => {
+    const source = readFileSync(
+      new URL("../../../../apps/desktop/src/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("qaSendCompletionStatusFromCoreEvent");
+    expect(source).toContain("SendCompleted");
+    expect(source).toContain("OperationFailed");
+    expect(source).toContain("setQaSendStatus(eventStatus)");
+  });
+
+  test("app keeps Tauri send completion listener mounted and gates events with a pending ref", () => {
+    const source = readFileSync(
+      new URL("../../../../apps/desktop/src/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("const qaSendPending = useRef(false)");
+    expect(source).toMatch(
+      /useEffect\(\(\) => \{[\s\S]*if \(!isTauriRuntime\(\)\) \{[\s\S]*listen<CoreEventPayload>\(CORE_EVENT_NAME,[\s\S]*qaSendPending\.current[\s\S]*qaSendCompletionStatusFromCoreEvent[\s\S]*setQaSendStatus\(eventStatus\);[\s\S]*\}, \[\]\);/
+    );
+    expect(source).toMatch(
+      /qaSendStarted\.current = true;[\s\S]*qaSendPending\.current = true;[\s\S]*setQaSendStatus\("pending"\);/
+    );
+    expect(source).toMatch(
+      /async function sendText\(\)[\s\S]*qaSendPending\.current = true;[\s\S]*setQaSendStatus\("pending"\);/
+    );
+  });
+
+  test("linux GUI local login retries room selection until a displayed row is clicked", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("selectedRoom = await selectFirstRoom(browser);");
+    expect(source).toMatch(
+      /async function selectFirstRoom\(browser\)[\s\S]*return false;[\s\S]*await roomItems\[0\]\.click\(\);[\s\S]*return true;/
+    );
+  });
+
   test("headless local QA script lists homeserver and SDK checks", () => {
     const output = runScript("scripts/desktop-headless-local-qa.mjs", ["--list"]);
 
@@ -391,6 +598,18 @@ describe("desktop release scripts", () => {
     ]) {
       expect(output).toContain(check);
     }
+  });
+
+  test("headless local QA script imports the shared local homeserver helper module", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("local-homeserver-qa.mjs");
+    expect(source).toContain("checkInstalledHomeserver");
+    expect(source).toContain("registerUser");
+    expect(source).toContain("stopProcess");
   });
 
   test("headless local QA script lists staged scenarios", () => {
@@ -434,6 +653,32 @@ describe("desktop release scripts", () => {
     expect(tuwunel).toContain('address = ["127.0.0.1"]');
     expect(tuwunel).toContain('database_path = "/tmp/tuwunel-data"');
     expect(tuwunel).toContain("allow_federation = false");
+  });
+
+  test("headless basic operations docs mention the Linux GUI local scenarios and aggregators", () => {
+    const docs = readFileSync(
+      new URL("../../../../docs/qa/headless-basic-operations.md", import.meta.url),
+      "utf8"
+    );
+
+    expect(docs).toContain("qa:headless-basic:local");
+    expect(docs).toContain("qa:linux-gui");
+    expect(docs).toContain("--scenario=local-login");
+    expect(docs).toContain("--scenario=local-send");
+    expect(docs).toContain("gui_local_login=ok");
+    expect(docs).toContain("gui_local_send=ok");
+  });
+
+  test("headless basic operations docs describe the bundled Linux GUI homeserver binaries", () => {
+    const docs = readFileSync(
+      new URL("../../../../docs/qa/headless-basic-operations.md", import.meta.url),
+      "utf8"
+    );
+
+    expect(docs).toContain("conduit");
+    expect(docs).toContain("tuwunel");
+    expect(docs).toContain("zstd");
+    expect(docs).toContain("unzstd");
   });
 
   test("mac GUI smoke child environment excludes secret-like variables", () => {
@@ -645,7 +890,7 @@ describe("desktop release scripts", () => {
 
   test("mac GUI smoke waits for send smoke success token", () => {
     const pending = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 send=sending panel=closed"
+      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 send=pending panel=closed"
     ]);
     const sent = runScript("scripts/desktop-mac-gui-smoke.mjs", [
       "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=2 errors=0 send=sent panel=closed"

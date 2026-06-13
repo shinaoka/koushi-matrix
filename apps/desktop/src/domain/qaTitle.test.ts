@@ -44,4 +44,15 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("panel=closed");
     expect(title).toContain("send=sent");
   });
+
+  test("includes the local send QA statuses when provided", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+
+    const idleTitle = qaWindowTitle(snapshot, "closed", "idle");
+    const pendingTitle = qaWindowTitle(snapshot, "closed", "pending");
+
+    expect(idleTitle).toContain("send=idle");
+    expect(pendingTitle).toContain("send=pending");
+  });
 });

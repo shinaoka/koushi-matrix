@@ -1,6 +1,9 @@
 FROM node:22.22.3-bookworm
 
 ARG RUST_TOOLCHAIN=1.96.0
+ARG CONDUIT_URL=https://gitlab.com/api/v4/projects/famedly%2Fconduit/jobs/artifacts/master/raw/x86_64-unknown-linux-musl?job=artifacts
+ARG TUWUNEL_VERSION=v1.7.1
+ARG TUWUNEL_ZST_URL=https://github.com/matrix-construct/tuwunel/releases/download/v1.7.1/v1.7.1-release-all-x86_64-v1-linux-gnu-tuwunel.zst
 
 ENV DEBIAN_FRONTEND=noninteractive \
     RUST_TOOLCHAIN=${RUST_TOOLCHAIN} \
@@ -26,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxdo-dev \
     librsvg2-dev \
     pkg-config \
+    zstd \
     webkit2gtk-driver \
     xvfb \
   && rm -rf /var/lib/apt/lists/*
@@ -41,6 +45,16 @@ RUN set -eux; \
     RUSTC="$(rustup which rustc)"; \
     RUSTDOC="$(rustup which rustdoc)"; \
     RUSTUP_TOOLCHAIN="${RUST_TOOLCHAIN}" RUSTC="$RUSTC" RUSTDOC="$RUSTDOC" cargo install tauri-driver --locked
+
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -fsSLo /usr/local/bin/conduit "${CONDUIT_URL}"; \
+    chmod 0755 /usr/local/bin/conduit; \
+    curl --proto '=https' --tlsv1.2 -fsSLo /tmp/tuwunel.zst "${TUWUNEL_ZST_URL}"; \
+    unzstd -f -o /usr/local/bin/tuwunel /tmp/tuwunel.zst; \
+    chmod 0755 /usr/local/bin/tuwunel; \
+    rm -f /tmp/tuwunel.zst; \
+    conduit --version; \
+    tuwunel --version
 
 WORKDIR /work
 

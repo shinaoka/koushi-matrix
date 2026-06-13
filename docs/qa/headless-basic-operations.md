@@ -57,6 +57,28 @@ restore_cleanup=ok
 
 This lane exercises the real Linux Tauri client on a virtual display and uses
 the local homeserver setup for product-integration verification.
+The committed Docker lane image bundles the runnable `conduit` and
+`tuwunel` binaries plus `zstd`/`unzstd`, so the local-homeserver scenarios can
+run entirely inside the container.
+
+Run the local-client lanes:
+
+```bash
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-login --server=conduit --artifact-dir=artifacts/linux-gui-local-login --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-send --server=conduit --artifact-dir=artifacts/linux-gui-local-send --timeout-ms=180000
+```
+
+`local-login` proves the Linux client can boot against a disposable local
+homeserver, complete FIFO-driven login, seed exactly one synthetic room on the
+server side, and reach a ready synced UI with an active room. `local-send`
+proves the actual composer can send one message through WebDriver and the QA
+title reports `send=sent` with no errors.
+
+The combined Linux lane is exposed through the shared release aggregator:
+
+```bash
+npm --prefix apps/desktop run qa:linux-gui
+```
 
 Required target tokens:
 

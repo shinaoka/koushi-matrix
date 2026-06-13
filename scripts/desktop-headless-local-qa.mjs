@@ -1,9 +1,20 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createWriteStream, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import net from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  checkInstalledHomeserver,
+  conduitConfig,
+  freePort,
+  minimalEnvironment,
+  registerUser,
+  startHomeserver,
+  stopProcess,
+  tuwunelConfig,
+  waitForHomeserver
+} from "./lib/local-homeserver-qa.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localSecretsRoot = join(repoRoot, ".local-secrets", "headless-local-qa");
@@ -171,84 +182,6 @@ async function runForServer(serverKind) {
   }
 }
 
-function startHomeserver(serverKind, configPath, logPath) {
-  const log = createWriteStream(logPath, { flags: "a" });
-  const child =
-    serverKind === "conduit"
-      ? spawn("conduit", [], {
-          cwd: repoRoot,
-          env: { ...minimalEnvironment(), CONDUIT_CONFIG: configPath },
-          stdio: ["ignore", "pipe", "pipe"]
-        })
-      : spawn("tuwunel", ["--config", configPath], {
-          cwd: repoRoot,
-          env: minimalEnvironment(),
-          stdio: ["ignore", "pipe", "pipe"]
-        });
-  child.stdout.on("data", (chunk) => log.write(chunk));
-  child.stderr.on("data", (chunk) => log.write(chunk));
-  child.once("exit", () => log.end());
-  return child;
-}
-
-async function waitForHomeserver(homeserver, child, maxWaitMs, logPath) {
-  const deadline = Date.now() + maxWaitMs;
-  let lastError = "not attempted";
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`homeserver exited before readiness; see ${logPath}`);
-    }
-    try {
-      const response = await fetch(`${homeserver}/_matrix/client/versions`);
-      if (response.ok) {
-        return;
-      }
-      lastError = `HTTP ${response.status}`;
-    } catch (error) {
-      lastError = error.message;
-    }
-    await sleep(500);
-  }
-  throw new Error(`homeserver did not become ready: ${lastError}; see ${logPath}`);
-}
-
-async function registerUser(homeserver, username, password) {
-  const body = {
-    username,
-    password,
-    inhibit_login: false,
-    auth: { type: "m.login.dummy" }
-  };
-  let response = await postJson(`${homeserver}/_matrix/client/v3/register`, body);
-  if (response.status === 401 && response.json?.session) {
-    response = await postJson(`${homeserver}/_matrix/client/v3/register`, {
-      ...body,
-      auth: { type: "m.login.dummy", session: response.json.session }
-    });
-  }
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`register synthetic user ${username} failed with HTTP ${response.status}`);
-  }
-}
-
-async function postJson(url, body) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  const text = await response.text();
-  let json = null;
-  if (text.trim()) {
-    try {
-      json = JSON.parse(text);
-    } catch {
-      json = null;
-    }
-  }
-  return { status: response.status, json };
-}
-
 function runHeadlessQa({
   serverKind,
   homeserver,
@@ -376,51 +309,6 @@ function appendQaOutput(logPath, stdout, stderr) {
   log.end();
 }
 
-async function stopProcess(child) {
-  if (child.exitCode !== null) {
-    return;
-  }
-  const exited = new Promise((resolve) => child.once("exit", resolve));
-  child.kill("SIGTERM");
-  const stopped = await Promise.race([exited.then(() => true), sleep(5000).then(() => false)]);
-  if (!stopped && child.exitCode === null) {
-    child.kill("SIGKILL");
-    await exited;
-  }
-}
-
-function conduitConfig({ serverName, port, dataDir }) {
-  return `[global]
-server_name = ${tomlString(serverName)}
-database_backend = "sqlite"
-database_path = ${tomlString(dataDir)}
-address = "127.0.0.1"
-port = ${port}
-max_request_size = 20000000
-allow_registration = true
-allow_federation = false
-allow_room_creation = true
-allow_check_for_updates = false
-enable_lightning_bolt = false
-trusted_servers = []
-`;
-}
-
-function tuwunelConfig({ serverName, port, dataDir }) {
-  return `[global]
-server_name = ${tomlString(serverName)}
-database_path = ${tomlString(dataDir)}
-address = ["127.0.0.1"]
-port = ${port}
-new_user_displayname_suffix = ""
-allow_registration = true
-yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
-allow_federation = false
-allow_room_creation = true
-trusted_servers = []
-`;
-}
-
 function selectedServers(value) {
   if (value === "both") {
     return ["conduit", "tuwunel"];
@@ -429,28 +317,6 @@ function selectedServers(value) {
     return [value];
   }
   throw new Error("--server must be conduit, tuwunel, or both");
-}
-
-function checkInstalledHomeserver(name) {
-  const result = spawnSync(name, ["--version"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: minimalEnvironment()
-  });
-  if (result.status !== 0) {
-    throw new Error(`${name} is not installed or not runnable with --version`);
-  }
-}
-
-async function freePort() {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const server = net.createServer();
-    server.once("error", rejectPromise);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      server.close(() => resolvePromise(address.port));
-    });
-  });
 }
 
 function optionValue(name) {
@@ -463,42 +329,12 @@ function optionValue(name) {
   return undefined;
 }
 
-function minimalEnvironment() {
-  const env = {};
-  for (const key of [
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "TMPDIR",
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-    "RUSTC_WRAPPER",
-    "RUSTFLAGS",
-    "TERM"
-  ]) {
-    if (process.env[key] !== undefined) {
-      env[key] = process.env[key];
-    }
-  }
-  return env;
-}
-
 function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 function safeTimestamp() {
   return `${Date.now()}_${process.pid}`.replaceAll("-", "_");
-}
-
-function tomlString(value) {
-  return JSON.stringify(value);
-}
-
-function sleep(ms) {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
 function printUsage() {

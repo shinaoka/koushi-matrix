@@ -49,6 +49,7 @@
                 "event_id": "$e1"
               }
             },
+            "in_reply_to_event_id": null,
             "sender": "@u:example.test",
             "timestamp_ms": 123
           }
@@ -83,6 +84,7 @@
                     "event_id": "$e1"
                   }
                 },
+                "in_reply_to_event_id": null,
                 "sender": "@u:example.test",
                 "timestamp_ms": 123
               }

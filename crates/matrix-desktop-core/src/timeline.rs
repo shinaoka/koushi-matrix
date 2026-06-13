@@ -51,6 +51,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
+use matrix_desktop_state::AppAction;
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
 use matrix_sdk::ruma::events::room::message::{
@@ -115,6 +116,7 @@ pub struct TimelineManagerActor {
     session: Option<Arc<MatrixClientSession>>,
     room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
+    action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<TimelineMessage>,
     /// Search index mutation sender. Forwarded to individual `TimelineActor`s
@@ -124,12 +126,16 @@ pub struct TimelineManagerActor {
 }
 
 impl TimelineManagerActor {
-    pub fn spawn(event_tx: broadcast::Sender<CoreEvent>) -> TimelineManagerHandle {
+    pub fn spawn(
+        action_tx: mpsc::Sender<Vec<AppAction>>,
+        event_tx: broadcast::Sender<CoreEvent>,
+    ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let actor = TimelineManagerActor {
             session: None,
             room_list_service: None,
             timelines: HashMap::new(),
+            action_tx,
             event_tx,
             msg_rx,
             search_index_tx: None,
@@ -142,6 +148,7 @@ impl TimelineManagerActor {
     /// Called by `AccountActor::spawn_sync_actor` (Phase 6 wiring).
     pub fn spawn_with_session(
         session: Arc<MatrixClientSession>,
+        action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         search_index_tx: mpsc::Sender<SearchIndexMessage>,
     ) -> TimelineManagerHandle {
@@ -150,6 +157,7 @@ impl TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
             timelines: HashMap::new(),
+            action_tx,
             event_tx,
             msg_rx,
             search_index_tx: Some(search_index_tx),
@@ -402,6 +410,7 @@ impl TimelineManagerActor {
         )
         .await;
 
+        self.emit_timeline_subscribed_action(&key);
         self.timelines.insert(key, handle);
     }
 
@@ -435,6 +444,15 @@ impl TimelineManagerActor {
             request_id,
             failure,
         });
+    }
+
+    fn emit_timeline_subscribed_action(&self, key: &TimelineKey) {
+        let TimelineKind::Room { room_id } = &key.kind else {
+            return;
+        };
+        let _ = self.action_tx.try_send(vec![AppAction::TimelineSubscribed {
+            room_id: room_id.clone(),
+        }]);
     }
 }
 
@@ -1560,6 +1578,37 @@ mod tests {
                 _ => continue,
             }
         }
+    }
+
+    #[test]
+    fn room_subscribe_success_reduces_timeline_subscribed_action() {
+        let source = include_str!("timeline.rs");
+        let fn_offset = source
+            .find("async fn handle_subscribe")
+            .expect("handle_subscribe should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("async fn route_to_actor_or_fail")
+            .expect("next helper should exist");
+        let handle_subscribe_source = &rest[..end];
+        let spawn_token = concat!("TimelineActor::", "spawn");
+        let action_token = concat!("emit_timeline", "_subscribed_action");
+        let room_token = concat!("TimelineKind::", "Room");
+        let spawn_offset = handle_subscribe_source
+            .find(spawn_token)
+            .expect("subscribe success should spawn the timeline actor");
+        let action_offset = handle_subscribe_source
+            .find(action_token)
+            .expect("subscribe success should reduce TimelineSubscribed");
+
+        assert!(
+            spawn_offset < action_offset,
+            "TimelineSubscribed should be reduced only after subscribe succeeds"
+        );
+        assert!(
+            handle_subscribe_source.contains(room_token),
+            "main timeline subscription state should only be marked for room timelines"
+        );
     }
 
     #[tokio::test]

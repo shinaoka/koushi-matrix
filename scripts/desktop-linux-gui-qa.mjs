@@ -3,13 +3,28 @@ import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as net from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import {
+  checkInstalledHomeserver,
+  conduitConfig,
+  createRoom,
+  freePort,
+  registerUser,
+  startHomeserver,
+  stopProcess,
+  tuwunelConfig,
+  waitForHomeserver
+} from "./lib/local-homeserver-qa.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopDir = join(repoRoot, "apps", "desktop");
 const desktopPackageRequire = createRequire(new URL("../apps/desktop/package.json", import.meta.url));
 const checks = [
+  "scenario signed-out",
+  "scenario local-login",
+  "scenario local-send",
   "verify Xvfb virtual display",
   "verify tauri-driver and WebKitWebDriver",
   "verify debug Tauri build",
@@ -20,11 +35,18 @@ const checks = [
 ];
 
 const args = new Set(process.argv.slice(2));
+const guiScenario = optionValue("--scenario") ?? "signed-out";
+const serverOption = optionValue("--server") ?? "conduit";
 const qaProfile = optionValue("--qa-profile");
 const realLoginFromStdin = args.has("--real-login-from-stdin");
 const allowEmptyTimeline = args.has("--allow-empty-timeline");
-const artifactRoot = optionValue("--artifact-dir") ?? join(repoRoot, "artifacts", "linux-gui-qa");
+const artifactRoot = resolveArtifactRoot(optionValue("--artifact-dir"));
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "120000");
+
+if (args.has("--print-artifact-root")) {
+  console.log(artifactRoot);
+  process.exit(0);
+}
 
 if (args.has("--list")) {
   for (const check of checks) {
@@ -132,6 +154,22 @@ if (args.has("--run")) {
 printUsage();
 
 async function run() {
+  if (guiScenario === "signed-out") {
+    await runSignedOutScenario();
+    return;
+  }
+  if (guiScenario === "local-login") {
+    await runLocalLoginScenario();
+    return;
+  }
+  if (guiScenario === "local-send") {
+    await runLocalSendScenario();
+    return;
+  }
+  throw new Error(`unsupported --scenario: ${guiScenario}`);
+}
+
+async function runSignedOutScenario() {
   checkLinuxTools();
 
   const runDir = join(artifactRoot, timestamp());
@@ -148,8 +186,8 @@ async function run() {
     ...dbusSession.env
   };
   const xvfb = await startXvfb(logPath, buildEnv);
-  const driverPort = await findFreePort();
-  const nativePort = await findFreePort();
+  const driverPort = await freePort();
+  const nativePort = await freePort();
   const tauriDriver = spawnLogged(
     "tauri-driver",
     ["--port", String(driverPort), "--native-port", String(nativePort)],
@@ -234,6 +272,319 @@ async function run() {
   }
 }
 
+async function runLocalLoginScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_login=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalSendScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const composer = await session.browser.$('textarea[aria-label="Message composer"]');
+    await composer.waitForDisplayed({ timeout: timeoutMs });
+    const message = `Matrix Desktop GUI QA ${timestamp()}`;
+    await composer.click();
+    await composer.setValue(message);
+    await session.browser.keys("Enter");
+    await waitForLocalSendSuccess(session.browser, timeoutMs);
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_send=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function startLocalGuiScenario() {
+  checkLinuxTools();
+
+  const runDir = join(artifactRoot, `${timestamp()}-${guiScenario}`);
+  const appDataDir = qaDataDirForRun(runDir);
+  const serverDataDir = join(runDir, "homeserver-data");
+  const logPath = join(runDir, "run.log");
+  mkdirSync(runDir, { recursive: true });
+  mkdirSync(appDataDir, { recursive: true });
+  mkdirSync(serverDataDir, { recursive: true });
+
+  const session = {
+    appDataDir,
+    browser: null,
+    buildEnv: null,
+    dbusMonitor: null,
+    dbusSession: null,
+    logPath,
+    qaLoginPipePath: null,
+    runDir,
+    serverProcess: null,
+    tauriDriver: null,
+    xvfb: null,
+    credentials: null
+  };
+
+  try {
+    const serverKind = guiScenarioServerKind();
+    checkInstalledHomeserver(serverKind);
+    const port = await freePort();
+    const serverName = `localhost:${port}`;
+    const homeserver = `http://127.0.0.1:${port}`;
+    const configPath = join(runDir, `${serverKind}.toml`);
+    writeFileSync(
+      configPath,
+      serverKind === "conduit"
+        ? conduitConfig({ serverName, port, dataDir: serverDataDir })
+        : tuwunelConfig({ serverName, port, dataDir: serverDataDir })
+    );
+
+    session.serverProcess = startHomeserver(serverKind, configPath, logPath);
+    await waitForHomeserver(homeserver, session.serverProcess, timeoutMs, logPath);
+
+    const userSuffix = safeTimestamp();
+    const username = `qa_local_${userSuffix}`;
+    const password = `matrix-desktop-local-${userSuffix}`;
+    const registration = await registerUser(homeserver, username, password);
+    const accessToken = registration.access_token;
+    if (!accessToken) {
+      throw new Error("local GUI setup did not return an access token");
+    }
+    await createRoom(homeserver, accessToken, { name: "QA Seed Room" });
+
+    session.qaLoginPipePath = join(appDataDir, "qa-login.pipe");
+    createNamedPipe(session.qaLoginPipePath);
+
+    const baseEnv = childEnvironment(appDataDir, session.qaLoginPipePath);
+    session.dbusSession = ensureDbusSession(logPath, baseEnv);
+    session.buildEnv = {
+      ...baseEnv,
+      ...session.dbusSession.env
+    };
+    session.xvfb = await startXvfb(logPath, session.buildEnv);
+    const driverPort = await freePort();
+    const nativePort = await freePort();
+    session.tauriDriver = spawnLogged(
+      "tauri-driver",
+      ["--port", String(driverPort), "--native-port", String(nativePort)],
+      {
+        cwd: desktopDir,
+        env: { ...session.buildEnv, DISPLAY: `:${session.xvfb.display}` },
+        detached: true,
+        logPath,
+        label: "tauri-driver"
+      }
+    );
+
+    await runLoggedCommand("npm", ["run", "tauri", "build", "--", "--debug", "--no-bundle"], {
+      cwd: desktopDir,
+      env: session.buildEnv,
+      logPath,
+      label: "tauri build"
+    });
+
+    const appBinary = resolveDebugAppBinary();
+    await waitForPort("127.0.0.1", driverPort, timeoutMs);
+
+    const { remote } = await importDesktopWebdriverio();
+    session.browser = await remote({
+      hostname: "127.0.0.1",
+      port: driverPort,
+      logLevel: "error",
+      capabilities: webdriverCapabilities(appBinary)
+    });
+    session.credentials = {
+      homeserver,
+      username,
+      password,
+      deviceName: "Matrix Desktop Local QA"
+    };
+
+    return session;
+  } catch (error) {
+    await cleanupLocalGuiScenario(session);
+    throw error;
+  }
+}
+
+async function cleanupLocalGuiScenario(session) {
+  try {
+    if (session.dbusMonitor) {
+      terminateProcessGroup(session.dbusMonitor.child, "SIGTERM");
+      await settleChild(session.dbusMonitor.child);
+    }
+    if (session.browser) {
+      await safeDeleteSession(session.browser);
+    }
+  } finally {
+    if (session.dbusSession?.pid) {
+      try {
+        process.kill(session.dbusSession.pid, "SIGTERM");
+      } catch {
+        // ignore cleanup failures
+      }
+    }
+    if (session.tauriDriver) {
+      terminateProcessGroup(session.tauriDriver, "SIGTERM");
+      await settleChild(session.tauriDriver);
+    }
+    if (session.xvfb) {
+      terminateProcessGroup(session.xvfb.child, "SIGTERM");
+      await settleChild(session.xvfb.child);
+    }
+    if (session.serverProcess) {
+      await stopProcess(session.serverProcess);
+    }
+  }
+}
+
+async function recordLocalGuiEvidence(session) {
+  session.dbusMonitor = startDbusMonitor(session.logPath, session.buildEnv);
+  await waitForDbusMonitorReady(session.dbusMonitor, timeoutMs);
+  await triggerNotificationSmoke(session.browser, timeoutMs);
+  await waitForDbusMonitorToken(session.dbusMonitor, timeoutMs);
+  console.log("notification_dbus=ok");
+
+  const windowStatePath = join(session.appDataDir, "app-shell", "window-state.json");
+  console.log(`window_state_path=${windowStatePath}`);
+  console.log("window_state_path_contract=ok");
+  console.log(`run_dir=${session.runDir}`);
+}
+
+async function waitForAuthScreen(browser, timeout) {
+  const authScreen = await browser.$('[data-testid="auth-screen"]');
+  await authScreen.waitForDisplayed({ timeout });
+}
+
+async function waitForLocalLoginReady(browser, timeout) {
+  const startedAt = Date.now();
+  let lastTitle = "";
+  let selectedRoom = false;
+  while (Date.now() - startedAt < timeout) {
+    lastTitle = await browser.execute(() => document.title);
+    const status = parseQaTitle(lastTitle);
+    if (status.errors > 0) {
+      throw new Error(`local GUI login reported errors. Last title: ${lastTitle}`);
+    }
+    if (qaStatusIsReady(status, false, true)) {
+      return lastTitle;
+    }
+    if (shouldSelectFirstRoom(status, selectedRoom)) {
+      selectedRoom = await selectFirstRoom(browser);
+    }
+    await sleep(250);
+  }
+  throw new Error(`local GUI login did not reach a ready state. Last title: ${lastTitle}`);
+}
+
+async function waitForLocalSendSuccess(browser, timeout) {
+  const startedAt = Date.now();
+  let lastTitle = "";
+  while (Date.now() - startedAt < timeout) {
+    lastTitle = await browser.execute(() => document.title);
+    const status = parseQaTitle(lastTitle);
+    if (status.errors > 0) {
+      throw new Error(`local GUI send reported errors. Last title: ${lastTitle}`);
+    }
+    if (status.send === "failed") {
+      throw new Error(`local GUI send failed. Last title: ${lastTitle}`);
+    }
+    if (qaStatusHasSendSuccess(status)) {
+      return lastTitle;
+    }
+    await sleep(250);
+  }
+  throw new Error(`local GUI send did not reach send=sent. Last title: ${lastTitle}`);
+}
+
+async function selectFirstRoom(browser) {
+  const roomItems = await browser.$$("[data-testid='room-item'], .room-item");
+  if (!roomItems.length) {
+    return false;
+  }
+  try {
+    await roomItems[0].waitForDisplayed({ timeout: 1000 });
+    await roomItems[0].click();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function shouldSelectFirstRoom(status, selectedRoom) {
+  if (selectedRoom) {
+    return false;
+  }
+  if (status.session !== "ready" || status.rooms <= 0) {
+    return false;
+  }
+  return status.active_room === false || status.timeline_subscribed === false;
+}
+
+async function writeLocalLoginPipe(path, credentials) {
+  const payloadObject = {
+    homeserver: credentials.homeserver,
+    username: credentials.username,
+    password: credentials.password,
+    device_display_name: credentials.deviceName
+  };
+  const payload = JSON.stringify(payloadObject) + "\n";
+  await writeSensitivePayloadToPath(path, payload, 10000);
+}
+
+function createNamedPipe(path) {
+  execFileSync("mkfifo", [path], { stdio: "ignore" });
+}
+
+function guiScenarioServerKind() {
+  if (serverOption === "conduit" || serverOption === "tuwunel") {
+    return serverOption;
+  }
+  throw new Error("--server must be conduit or tuwunel for local GUI scenarios");
+}
+
+function writeSensitivePayloadToPath(path, payload, timeout) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("tee", [path], { stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    let settled = false;
+    const settle = (callback) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      settle(() => reject(new Error("local GUI login FIFO write timed out")));
+    }, timeout);
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => settle(() => reject(error)));
+    child.on("exit", (code, signal) => {
+      settle(() => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(stderr.trim() || `local GUI login writer exited with ${code ?? signal}`));
+        }
+      });
+    });
+    child.stdin.end(payload);
+  });
+}
+
 function checkLinuxTools() {
   if (process.platform !== "linux") {
     throw new Error("linux GUI smoke must run on Linux");
@@ -261,7 +612,7 @@ function checkLinuxTools() {
   }
 }
 
-function childEnvironment(dataDir) {
+function childEnvironment(dataDir, qaLoginPipePath = null) {
   const allowedKeys = [
     "AR",
     "CARGO_HOME",
@@ -310,7 +661,9 @@ function childEnvironment(dataDir) {
   if (qaProfile !== undefined) {
     env.MATRIX_DESKTOP_RESTORE_SESSION = "1";
   }
-  if (realLoginFromStdin) {
+  if (qaLoginPipePath) {
+    env.MATRIX_DESKTOP_QA_LOGIN_PIPE = qaLoginPipePath;
+  } else if (realLoginFromStdin) {
     env.MATRIX_DESKTOP_QA_LOGIN_PIPE = join(dataDir, "qa-login.pipe");
   }
   Object.assign(env, nssWrapperEnvironment(dataDir));
@@ -373,8 +726,14 @@ async function startXvfb(logPath, buildEnv) {
   });
   recordProcessOutput(child, logPath, "Xvfb");
   child.unref();
-  await waitForDisplaySocket(display, timeoutMs);
-  return { child, display };
+  try {
+    await waitForDisplaySocket(display, timeoutMs);
+    return { child, display };
+  } catch (error) {
+    terminateProcessGroup(child, "SIGTERM");
+    await settleChild(child);
+    throw error;
+  }
 }
 
 async function waitForSignedOutTitle(browser, timeout) {
@@ -571,6 +930,13 @@ function optionValue(name) {
   return value?.slice(prefix.length);
 }
 
+function resolveArtifactRoot(artifactDirOption) {
+  if (!artifactDirOption) {
+    return join(repoRoot, "artifacts", "linux-gui-qa");
+  }
+  return isAbsolute(artifactDirOption) ? artifactDirOption : resolve(repoRoot, artifactDirOption);
+}
+
 function requireNonEmptyFile(path, label) {
   if (!existsSync(path) || statSync(path).size === 0) {
     throw new Error(`${label} was not captured`);
@@ -596,23 +962,6 @@ async function findFreeDisplayNumber() {
     }
   }
   throw new Error("unable to find a free Xvfb display");
-}
-
-async function findFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address && typeof address === "object") {
-        const { port } = address;
-        server.close(() => resolve(port));
-        return;
-      }
-      server.close(() => reject(new Error("failed to acquire a free port")));
-    });
-  });
 }
 
 async function waitForPort(hostname, port, timeout) {
@@ -800,12 +1149,16 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
+function safeTimestamp() {
+  return `${Date.now()}_${process.pid}`.replaceAll("-", "_");
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-linux-gui-qa.mjs --list|--check-tools|--child-env|--child-env-keys|--print-real-login-transport|--print-webdriver-capabilities --app-binary=PATH|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-attention-ready=TITLE|--qa-window-state-ready=PATH|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
+    "Usage: node scripts/desktop-linux-gui-qa.mjs --list|--check-tools|--child-env|--child-env-keys|--print-artifact-root|--print-real-login-transport|--print-webdriver-capabilities --app-binary=PATH|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-attention-ready=TITLE|--qa-window-state-ready=PATH|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
   );
 }

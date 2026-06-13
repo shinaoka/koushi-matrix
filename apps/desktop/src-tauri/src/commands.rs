@@ -14,8 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
 
 use matrix_desktop_core::{
-    AccountCommand, AccountKey, CoreCommand, PaginationDirection, RoomCommand, SearchCommand,
-    SearchScope, SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
+    AccountCommand, AccountEvent, AccountKey, CoreCommand, CoreConnection, CoreEvent,
+    PaginationDirection, RequestId, RoomCommand, SearchCommand, SearchScope, SyncCommand,
+    TimelineCommand, TimelineKey, TimelineKind,
 };
 use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest, SessionInfo};
 #[cfg(any(debug_assertions, test))]
@@ -184,10 +185,115 @@ pub(crate) async fn submit_login_request(
     state: &CoreRuntimeState,
     login_request: LoginRequest,
 ) -> Result<(), String> {
-    let request_id = next_request_id(state).await;
-    submit_core_command(state, build_submit_login_command(request_id, login_request)).await?;
+    submit_login_and_start_sync(app, state, login_request).await?;
+    Ok(())
+}
+
+const LOGIN_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const SELECT_ROOM_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn submit_login_and_start_sync(
+    app: AppHandle,
+    state: &CoreRuntimeState,
+    login_request: LoginRequest,
+) -> Result<(), String> {
+    // Use a dedicated connection so the event cursor is attached before the
+    // login command is submitted and the correlated LoggedIn event cannot be
+    // missed by this product path.
+    let mut event_conn = state.runtime.attach();
+    let login_request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_submit_login_command(login_request_id, login_request))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+
+    wait_for_logged_in_ready(&mut event_conn, login_request_id, LOGIN_EVENT_TIMEOUT).await?;
+
+    let sync_request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_start_sync_command(sync_request_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
     update_qa_window_title_from_state(&app, state).await;
     Ok(())
+}
+
+async fn wait_for_logged_in_ready(
+    event_conn: &mut CoreConnection,
+    login_request_id: RequestId,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut logged_in = false;
+
+    loop {
+        if logged_in && snapshot_has_ready_session(&event_conn.snapshot()) {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "login did not complete".to_owned())?;
+        match event {
+            Ok(CoreEvent::Account(AccountEvent::LoggedIn { request_id, .. }))
+                if request_id == login_request_id =>
+            {
+                logged_in = true;
+            }
+            Ok(CoreEvent::OperationFailed { request_id, .. }) if request_id == login_request_id => {
+                return Err("login failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_) => return Err("login event stream lagged".to_owned()),
+        }
+    }
+}
+
+fn snapshot_has_ready_session(snapshot: &matrix_desktop_state::AppState) -> bool {
+    matches!(
+        snapshot.session,
+        matrix_desktop_state::SessionState::Ready(_)
+    )
+}
+
+async fn wait_for_selected_room(
+    event_conn: &mut CoreConnection,
+    select_request_id: RequestId,
+    selected_room_id: &str,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "room selection did not complete".to_owned())?;
+        match event {
+            Ok(CoreEvent::StateChanged(snapshot))
+                if snapshot_has_active_room(&snapshot, selected_room_id) =>
+            {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed { request_id, .. })
+                if request_id == select_request_id =>
+            {
+                return Err("room selection failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_) if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) => {
+                return Ok(());
+            }
+            Err(_) => return Err("room selection event stream lagged".to_owned()),
+        }
+    }
+}
+
+fn snapshot_has_active_room(snapshot: &matrix_desktop_state::AppState, room_id: &str) -> bool {
+    snapshot.navigation.active_room_id.as_deref() == Some(room_id)
 }
 
 /// How long the adapter waits for the `SavedSessionsListed` answer before
@@ -324,12 +430,30 @@ pub async fn select_room(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_select_room_command(request_id, room_id),
+    let selected_room_id = room_id.clone();
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_select_room_command(request_id, room_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_selected_room(
+        &mut event_conn,
+        request_id,
+        &selected_room_id,
+        SELECT_ROOM_EVENT_TIMEOUT,
     )
     .await?;
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let subscribe_request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_subscribe_timeline_command(
+            subscribe_request_id,
+            account_key,
+            selected_room_id,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -529,6 +653,10 @@ pub(crate) fn build_restart_sync_command(
     CoreCommand::Sync(SyncCommand::Restart { request_id })
 }
 
+pub(crate) fn build_start_sync_command(request_id: matrix_desktop_core::RequestId) -> CoreCommand {
+    CoreCommand::Sync(SyncCommand::Start { request_id })
+}
+
 pub(crate) fn build_select_space_command(
     request_id: matrix_desktop_core::RequestId,
     space_id: Option<String>,
@@ -554,6 +682,17 @@ fn build_timeline_key(account_key: AccountKey, room_id: String) -> TimelineKey {
         account_key,
         kind: TimelineKind::Room { room_id },
     }
+}
+
+pub(crate) fn build_subscribe_timeline_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Timeline(TimelineCommand::Subscribe {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+    })
 }
 
 pub(crate) fn build_paginate_timeline_backwards_command(
@@ -841,7 +980,8 @@ mod tests {
         build_logout_command, build_paginate_timeline_backwards_command,
         build_redact_message_command, build_restart_sync_command, build_select_room_command,
         build_select_space_command, build_send_text_command, build_submit_login_command,
-        build_submit_recovery_command, build_submit_search_command, build_switch_account_command,
+        build_submit_recovery_command, build_submit_search_command,
+        build_subscribe_timeline_command, build_switch_account_command,
         parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
@@ -1020,8 +1160,26 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
-        match build_paginate_timeline_backwards_command(
+        match build_subscribe_timeline_command(
             fake_request_id(8),
+            active_account_key.clone(),
+            room_id.clone(),
+        ) {
+            CoreCommand::Timeline(TimelineCommand::Subscribe { request_id, key }) => {
+                assert_eq!(request_id, fake_request_id(8));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_paginate_timeline_backwards_command(
+            fake_request_id(9),
             active_account_key.clone(),
             room_id.clone(),
         ) {
@@ -1031,7 +1189,7 @@ mod tests {
                 direction,
                 event_count,
             }) => {
-                assert_eq!(request_id, fake_request_id(8));
+                assert_eq!(request_id, fake_request_id(9));
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -1046,7 +1204,7 @@ mod tests {
         }
 
         match build_send_text_command(
-            fake_request_id(9),
+            fake_request_id(10),
             active_account_key.clone(),
             room_id.clone(),
             transaction_id.clone(),
@@ -1060,7 +1218,7 @@ mod tests {
                 transaction_id: route_transaction_id,
                 body: route_body,
             }) => {
-                assert_eq!(request_id, fake_request_id(9));
+                assert_eq!(request_id, fake_request_id(10));
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -1075,7 +1233,7 @@ mod tests {
         }
 
         match build_edit_message_command(
-            fake_request_id(10),
+            fake_request_id(11),
             active_account_key.clone(),
             room_id.clone(),
             "$event".to_owned(),
@@ -1089,7 +1247,7 @@ mod tests {
                 event_id,
                 body: route_body,
             }) => {
-                assert_eq!(request_id, fake_request_id(10));
+                assert_eq!(request_id, fake_request_id(11));
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -1104,7 +1262,7 @@ mod tests {
         }
 
         match build_redact_message_command(
-            fake_request_id(11),
+            fake_request_id(12),
             active_account_key.clone(),
             room_id.clone(),
             "$event".to_owned(),
@@ -1114,7 +1272,7 @@ mod tests {
                 key,
                 event_id,
             }) => {
-                assert_eq!(request_id, fake_request_id(11));
+                assert_eq!(request_id, fake_request_id(12));
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -1127,19 +1285,8 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
-        match build_leave_room_command(fake_request_id(12), room_id.clone()) {
+        match build_leave_room_command(fake_request_id(13), room_id.clone()) {
             CoreCommand::Room(RoomCommand::LeaveRoom {
-                request_id,
-                room_id: route_room_id,
-            }) => {
-                assert_eq!(request_id, fake_request_id(12));
-                assert_eq!(route_room_id, room_id);
-            }
-            other => panic!("unexpected command: {other:?}"),
-        }
-
-        match build_forget_room_command(fake_request_id(13), room_id.clone()) {
-            CoreCommand::Room(RoomCommand::ForgetRoom {
                 request_id,
                 room_id: route_room_id,
             }) => {
@@ -1149,8 +1296,19 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_forget_room_command(fake_request_id(14), room_id.clone()) {
+            CoreCommand::Room(RoomCommand::ForgetRoom {
+                request_id,
+                room_id: route_room_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(14));
+                assert_eq!(route_room_id, room_id);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_submit_search_command(
-            fake_request_id(14),
+            fake_request_id(15),
             query.clone(),
             resolve_search_scope_from_active_room(
                 SearchScopeKind::CurrentRoom,
@@ -1162,7 +1320,7 @@ mod tests {
                 query: route_query,
                 scope,
             }) => {
-                assert_eq!(request_id, fake_request_id(14));
+                assert_eq!(request_id, fake_request_id(15));
                 assert_eq!(route_query, query);
                 assert_eq!(scope, SearchScope::Room { room_id });
             }
@@ -1200,6 +1358,74 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn select_room_submits_timeline_subscribe_after_room_selection() {
+        let source = include_str!("commands.rs");
+        let fn_name = concat!("pub async fn select", "_room");
+        let select_token = concat!("build_select", "_room_command");
+        let attach_token = concat!("state.runtime.", "attach");
+        let wait_token = concat!("wait_for_selected", "_room");
+        let subscribe_token = concat!("build_subscribe", "_timeline_command");
+        let account_key_token = concat!("account_key", "_from_snapshot");
+        let timeout_token = concat!("SELECT_ROOM", "_EVENT_TIMEOUT");
+        let fn_offset = source
+            .find(fn_name)
+            .expect("select_room command should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("pub async fn paginate_timeline_backwards")
+            .expect("next command should exist");
+        let select_room_source = &rest[..end];
+        let attach_offset = select_room_source
+            .find(attach_token)
+            .expect("select_room should attach an event connection before selecting");
+        let select_offset = select_room_source
+            .find(select_token)
+            .expect("select_room should submit room selection");
+        let wait_offset = select_room_source
+            .find(wait_token)
+            .expect("select_room should wait for selected-room state");
+        let subscribe_offset = select_room_source
+            .find(subscribe_token)
+            .expect("select_room should subscribe the selected timeline");
+
+        assert!(
+            attach_offset < select_offset,
+            "event connection should be attached before room selection"
+        );
+        assert!(
+            select_offset < wait_offset && wait_offset < subscribe_offset,
+            "room selection state should be observed before timeline subscription"
+        );
+        assert!(
+            select_room_source.contains(account_key_token),
+            "select_room should derive the active account key for timeline subscription"
+        );
+        assert!(
+            select_room_source.contains(timeout_token),
+            "selected-room wait should be bounded"
+        );
+    }
+
+    #[test]
+    fn wait_for_selected_room_observes_state_changed_failures_and_timeout() {
+        let source = include_str!("commands.rs");
+        let helper_name = concat!("async fn wait_for_selected", "_room");
+        let helper_offset = source
+            .find(helper_name)
+            .expect("selected-room wait helper should exist");
+        let rest = &source[helper_offset..];
+        let end = rest
+            .find("fn snapshot_has_active_room")
+            .expect("active-room snapshot helper should follow selected-room wait");
+        let helper_source = &rest[..end];
+
+        assert!(helper_source.contains("timeout_at"));
+        assert!(helper_source.contains("CoreEvent::StateChanged"));
+        assert!(helper_source.contains(concat!("Operation", "Failed")));
+        assert!(helper_source.contains(concat!("snapshot_has_active", "_room")));
     }
 
     #[test]
@@ -1255,5 +1481,39 @@ mod tests {
                 "Debug output leaked a secret: {debug}"
             );
         }
+    }
+
+    #[test]
+    fn submit_login_request_waits_for_logged_in_then_starts_sync() {
+        let source = include_str!("commands.rs");
+        let helper_name = concat!("async fn submit_login", "_and_start_sync");
+        let wait_call_token = concat!("wait_for_logged", "_in_ready");
+        let logged_in_token = concat!("AccountEvent::", "LoggedIn");
+        let start_sync_token = concat!("build_start", "_sync_command");
+        let failed_token = concat!("Operation", "Failed");
+        let timeout_token = concat!("LOGIN_EVENT", "_TIMEOUT");
+        let helper_offset = source
+            .find(helper_name)
+            .expect("shared login helper should exist");
+        let helper_source = &source[helper_offset..];
+        let wait_call_offset = helper_source
+            .find(wait_call_token)
+            .expect("helper should wait for login before sync");
+        let start_sync_offset = helper_source
+            .find(start_sync_token)
+            .expect("helper should submit SyncCommand::Start");
+
+        assert!(
+            wait_call_offset < start_sync_offset,
+            "sync start must be submitted only after login success"
+        );
+        assert!(helper_source.contains(timeout_token));
+        let wait_helper_offset = source
+            .find(concat!("async fn wait_for_logged", "_in_ready"))
+            .expect("login wait helper should exist");
+        let wait_helper_source = &source[wait_helper_offset..];
+        assert!(wait_helper_source.contains(logged_in_token));
+        assert!(wait_helper_source.contains(failed_token));
+        assert!(wait_helper_source.contains("timeout_at"));
     }
 }

@@ -1,6 +1,7 @@
 import type { DesktopSnapshot, SyncState } from "./types";
+import type { CoreEventPayload } from "./coreEvents";
 
-export type QaSendSmokeStatus = "none" | "sending" | "sent" | "failed";
+export type QaSendSmokeStatus = "idle" | "pending" | "sent" | "failed";
 
 export function qaSendSmokeMessageFromEnv(value: string | undefined): string | null {
   const message = value?.trim();
@@ -27,12 +28,24 @@ export function qaSendSmokeCompletionStatus(
     return "failed";
   }
   if (snapshot.state.timeline.composer.pending_transaction_id !== null) {
-    return "sending";
+    return "pending";
   }
   if (snapshot.timeline.length > baselineTimelineItems) {
     return "sent";
   }
-  return "sending";
+  return "idle";
+}
+
+export function qaSendCompletionStatusFromCoreEvent(
+  payload: CoreEventPayload
+): Exclude<QaSendSmokeStatus, "idle" | "pending"> | null {
+  if (payload.kind === "Timeline" && "SendCompleted" in payload.event) {
+    return "sent";
+  }
+  if (payload.kind === "OperationFailed") {
+    return "failed";
+  }
+  return null;
 }
 
 function syncStateLabel(sync: SyncState): string {

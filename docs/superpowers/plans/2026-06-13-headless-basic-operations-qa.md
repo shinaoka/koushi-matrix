@@ -646,7 +646,7 @@ git commit -m "qa: add headless basic operations commands"
 - Modify: `apps/desktop/src/scripts/releaseScripts.test.ts`
 - Modify: `docs/qa/headless-basic-operations.md`
 
-- [ ] **Step 1: Add a local-server GUI scenario option**
+- [x] **Step 1: Add a local-server GUI scenario option**
 
 In `scripts/desktop-linux-gui-qa.mjs`, add:
 
@@ -667,7 +667,7 @@ disposable local homeserver, registers a synthetic user, logs in through the
 existing QA login transport, and waits for a ready synced client. `local-send`
 does the same, then sends one message through the actual composer.
 
-- [ ] **Step 2: Reuse local homeserver startup safely**
+- [x] **Step 2: Reuse local homeserver startup safely**
 
 Extract reusable server helpers from `scripts/desktop-headless-local-qa.mjs`
 into a new script module:
@@ -692,7 +692,7 @@ stopProcess
 Import them from both `desktop-headless-local-qa.mjs` and
 `desktop-linux-gui-qa.mjs`.
 
-- [ ] **Step 3: Add failing release script tests**
+- [x] **Step 3: Add failing release script tests**
 
 In `apps/desktop/src/scripts/releaseScripts.test.ts`, add:
 
@@ -711,7 +711,7 @@ test("linux GUI smoke supports local-login and local-send scenarios", () => {
 });
 ```
 
-- [ ] **Step 4: Run test to verify RED**
+- [x] **Step 4: Run test to verify RED**
 
 ```bash
 npm --prefix apps/desktop run test -- src/scripts/releaseScripts.test.ts
@@ -719,7 +719,7 @@ npm --prefix apps/desktop run test -- src/scripts/releaseScripts.test.ts
 
 Expected: fails until the scenario strings and tokens are implemented.
 
-- [ ] **Step 5: Implement `local-login`**
+- [x] **Step 5: Implement `local-login`**
 
 For `--scenario=local-login`:
 
@@ -753,7 +753,7 @@ errors=0
 gui_local_login=ok
 ```
 
-- [ ] **Step 6: Implement `local-send`**
+- [x] **Step 6: Implement `local-send`**
 
 For `--scenario=local-send`:
 
@@ -780,7 +780,7 @@ errors=0
 gui_local_send=ok
 ```
 
-- [ ] **Step 7: Add product UI tokens only, no message bodies in logs**
+- [x] **Step 7: Add product UI tokens only, no message bodies in logs**
 
 Ensure `qaWindowTitle` exposes only counts/status tokens and never includes
 message bodies, room IDs, event IDs, transaction IDs, or credentials. The
@@ -791,7 +791,7 @@ gui=local-login|local-send
 send=idle|pending|sent|failed
 ```
 
-- [ ] **Step 8: Verify host loop**
+- [x] **Step 8: Verify host loop**
 
 Run from repo root:
 
@@ -810,7 +810,11 @@ notification_dbus=ok
 window_state_path_contract=ok
 ```
 
-- [ ] **Step 9: Verify Docker lane**
+Verified on 2026-06-13:
+host local-login passed with `notification_dbus=ok`, `window_state_path_contract=ok`, `gui_local_login=ok`;
+host local-send passed with `notification_dbus=ok`, `window_state_path_contract=ok`, `gui_local_send=ok`.
+
+- [x] **Step 9: Verify Docker lane**
 
 ```bash
 docker build -f docker/linux-gui.Dockerfile -t matrix-desktop-linux-gui:basic-ops .
@@ -831,6 +835,11 @@ docker run --rm --shm-size=2g -u "$(id -u):$(id -g)" \
 ```
 
 Expected: same tokens as host.
+
+Verified on 2026-06-13:
+`docker build -f docker/linux-gui.Dockerfile -t matrix-desktop-linux-gui:basic-ops .` passed;
+Docker local-send passed with `notification_dbus=ok`, `window_state_path_contract=ok`, `gui_local_send=ok`;
+the image now includes `conduit`, `tuwunel`, and `zstd`.
 
 - [ ] **Step 10: Commit**
 

@@ -88,6 +88,7 @@ import {
 import { qaWindowTitle } from "./domain/qaTitle";
 import {
   type QaSendSmokeStatus,
+  qaSendCompletionStatusFromCoreEvent,
   qaSendSmokeCanStart,
   qaSendSmokeCompletionStatus,
   qaSendSmokeMessageFromEnv
@@ -181,12 +182,13 @@ export function App() {
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("thread");
-  const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("none");
+  const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const searchTimer = useRef<number | null>(null);
   const qaSendStarted = useRef(false);
+  const qaSendPending = useRef(false);
   const qaSendBaselineErrorCount = useRef(0);
   const qaSendBaselineTimelineItems = useRef(0);
   const previousAttentionInput = useRef<{
@@ -349,34 +351,78 @@ export function App() {
     qaSendStarted.current = true;
     qaSendBaselineErrorCount.current = snapshot.state.errors.length;
     qaSendBaselineTimelineItems.current = snapshot.timeline.length;
-    setQaSendStatus("sending");
+    qaSendPending.current = true;
+    setQaSendStatus("pending");
     void api
       .sendText(roomId, message)
       .then((nextSnapshot) => {
         setSnapshot(nextSnapshot);
-        setQaSendStatus(
-          qaSendSmokeCompletionStatus(
+        if (!isTauriRuntime()) {
+          const completionStatus = qaSendSmokeCompletionStatus(
             nextSnapshot,
             qaSendBaselineErrorCount.current,
             qaSendBaselineTimelineItems.current
-          )
-        );
+          );
+          qaSendPending.current = completionStatus === "pending";
+          setQaSendStatus(completionStatus);
+        }
       })
-      .catch(() => setQaSendStatus("failed"));
+      .catch(() => {
+        qaSendPending.current = false;
+        setQaSendStatus("failed");
+      });
   }, [snapshot]);
 
   useEffect(() => {
-    if (!snapshot || !qaSendStarted.current || qaSendStatus !== "sending") {
+    if (
+      !snapshot ||
+      !qaSendStarted.current ||
+      qaSendStatus !== "pending" ||
+      isTauriRuntime()
+    ) {
       return;
     }
-    setQaSendStatus(
-      qaSendSmokeCompletionStatus(
-        snapshot,
-        qaSendBaselineErrorCount.current,
-        qaSendBaselineTimelineItems.current
-      )
+    const completionStatus = qaSendSmokeCompletionStatus(
+      snapshot,
+      qaSendBaselineErrorCount.current,
+      qaSendBaselineTimelineItems.current
     );
+    qaSendPending.current = completionStatus === "pending";
+    setQaSendStatus(completionStatus);
   }, [snapshot, qaSendStatus]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    // Tauri production sends complete on the CoreEvent stream. Snapshots do
+    // not carry timeline rows, so SendCompleted/OperationFailed owns the QA
+    // send status while a WebDriver-driven send is pending.
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<CoreEventPayload>(CORE_EVENT_NAME, (event) => {
+      if (!qaSendPending.current) {
+        return;
+      }
+      const eventStatus = qaSendCompletionStatusFromCoreEvent(event.payload);
+      if (eventStatus) {
+        qaSendPending.current = false;
+        setQaSendStatus(eventStatus);
+      }
+    }).then((dispose) => {
+      if (disposed) {
+        dispose();
+      } else {
+        unlisten = dispose;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
@@ -545,7 +591,28 @@ export function App() {
       return;
     }
 
-    setSnapshot(await api.sendText(roomId, body));
+    qaSendStarted.current = true;
+    qaSendBaselineErrorCount.current = snapshot?.state.errors.length ?? 0;
+    qaSendBaselineTimelineItems.current = snapshot?.timeline.length ?? 0;
+    qaSendPending.current = true;
+    setQaSendStatus("pending");
+    try {
+      const nextSnapshot = await api.sendText(roomId, body);
+      setSnapshot(nextSnapshot);
+      if (!isTauriRuntime()) {
+        const completionStatus = qaSendSmokeCompletionStatus(
+          nextSnapshot,
+          qaSendBaselineErrorCount.current,
+          qaSendBaselineTimelineItems.current
+        );
+        qaSendPending.current = completionStatus === "pending";
+        setQaSendStatus(completionStatus);
+      }
+    } catch {
+      qaSendPending.current = false;
+      setQaSendStatus("failed");
+      return;
+    }
     setComposerDraft("");
   }
 

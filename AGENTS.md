@@ -79,13 +79,16 @@ follow
 ## Linux GUI QA Container
 
 - Build the committed lane image with
-  `docker build -f docker/linux-gui.Dockerfile -t matrix-desktop-linux-gui .`
+  `docker build -f docker/linux-gui.Dockerfile -t matrix-desktop-linux-gui:basic-ops .`
+- The committed image includes `conduit`, `tuwunel`, and `zstd` so the
+  `--scenario=local-login` and `--scenario=local-send` lanes can run against
+  local homeservers entirely inside the container.
 - The Docker recipe pins Rust toolchain `1.96.0` for reproducibility.
 - The lane image includes `libnss-wrapper` so the numeric container UID can be
   given a temporary passwd/group entry during DBus-authenticated GUI smoke.
 - Run the lane from the repo root with the workspace mounted at `/work`:
-  `docker run --rm -it --shm-size=2g -u "$(id -u):$(id -g)" -v "$PWD:/work" -v /tmp/matrix-desktop-cargo-home:/tmp/cargo-home -v /tmp/matrix-desktop-gui-target:/tmp/matrix-desktop-gui-target -v /tmp/matrix-desktop-npm-cache:/tmp/npm-cache -w /work -e HOME=/tmp -e RUSTUP_HOME=/opt/rustup -e CARGO_HOME=/tmp/cargo-home -e CARGO_TARGET_DIR=/tmp/matrix-desktop-gui-target -e NPM_CONFIG_CACHE=/tmp/npm-cache -e PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin matrix-desktop-linux-gui bash -c 'export RUSTC="$(rustup which rustc)"; export RUSTDOC="$(rustup which rustdoc)"; npm --prefix apps/desktop run qa:linux-gui -- --artifact-dir=/work/artifacts/linux-gui-qa --timeout-ms=180000'`
-- The runner writes artifacts to `artifacts/linux-gui-qa/` inside the mounted
+  `docker run --rm -it --shm-size=2g -u "$(id -u):$(id -g)" -v "$PWD:/work" -v /tmp/matrix-desktop-cargo-home:/tmp/cargo-home -v /tmp/matrix-desktop-gui-target:/tmp/matrix-desktop-gui-target -v /tmp/matrix-desktop-npm-cache:/tmp/npm-cache -w /work -e HOME=/tmp -e RUSTUP_HOME=/opt/rustup -e CARGO_HOME=/tmp/cargo-home -e CARGO_TARGET_DIR=/tmp/matrix-desktop-gui-target -e NPM_CONFIG_CACHE=/tmp/npm-cache -e PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin matrix-desktop-linux-gui:basic-ops bash -c 'export RUSTC="$(rustup which rustc)"; export RUSTDOC="$(rustup which rustdoc)"; npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-send --server=conduit --artifact-dir=/work/artifacts/linux-gui-local-send-docker --timeout-ms=180000'`
+- The runner writes artifacts to `artifacts/linux-gui-local-send-docker/` inside the mounted
   repo. Keep that directory ignored and inspect the run log and screenshots
   there when a lane fails.
 - Faster Ubuntu 24.04 host loop:
@@ -94,8 +97,49 @@ follow
   `sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential ca-certificates curl dbus-x11 file fontconfig fonts-dejavu-core fonts-noto-color-emoji fonts-noto-core git libayatana-appindicator3-dev libnss-wrapper libssl-dev libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev pkg-config webkit2gtk-driver xvfb`, then install the driver with `cargo install tauri-driver --locked`. Fast checks are
   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`,
   `node scripts/desktop-linux-gui-qa.mjs --check-tools`, and
-  `npm --prefix apps/desktop run qa:linux-gui -- --artifact-dir=artifacts/linux-gui-host --timeout-ms=180000`.
+  `npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-login --server=conduit --artifact-dir=artifacts/linux-gui-local-login-host --timeout-ms=180000` or
+  `npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-send --server=conduit --artifact-dir=artifacts/linux-gui-local-send-host --timeout-ms=180000`.
   Docker remains the reproducible release/CI gate.
+
+## Fast Linux GUI Inner Loop
+
+- After the one-time host package install, run the GUI QA lanes as a normal
+  user; no `su` or root shell is needed for the fast loop.
+- Prepend the local homeserver binaries when iterating so the host lanes use
+  the checked-in QA binaries first:
+  `export PATH=/tmp/matrix-desktop-local-qa-bin:$PATH`
+- When you only need a quick window-state sanity check, use the lane's cheap
+  QA title helpers such as `--qa-title-ready` and `--qa-title-send-ready`
+  before starting a full scenario run.
+- Use focused scenarios first. Keep the artifact directories scenario-specific
+  so retries do not blur login and send results:
+
+  ```bash
+  PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+    node scripts/desktop-linux-gui-qa.mjs --check-tools
+
+  PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+    node scripts/desktop-linux-gui-qa.mjs --list
+
+  PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+    npm --prefix apps/desktop run qa:linux-gui -- \
+      --scenario=local-login \
+      --server=conduit \
+      --artifact-dir=artifacts/linux-gui-local-login-host \
+      --timeout-ms=180000
+
+  PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+    npm --prefix apps/desktop run qa:linux-gui -- \
+      --scenario=local-send \
+      --server=conduit \
+      --artifact-dir=artifacts/linux-gui-local-send-host \
+      --timeout-ms=180000
+  ```
+- Reuse the existing Cargo, npm, and GUI target caches during the inner loop;
+  do not rebuild the Docker image for every trial.
+- Run Docker only when you need the committed reproducible lane or want to
+  prove the release/CI recipe end to end. It is not the default fast
+  iteration path.
 
 ## macOS GUI Smoke Failures
 

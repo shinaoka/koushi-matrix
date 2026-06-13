@@ -1064,6 +1064,7 @@ mod tests {
             sender: Some("@u:example.test".to_owned()),
             body: Some("hello".to_owned()),
             timestamp_ms: Some(123),
+            in_reply_to_event_id: None,
         };
 
         // InitialItems envelope + payload
@@ -1094,7 +1095,8 @@ mod tests {
                 "id": { "Event": { "event_id": "$e1" } },
                 "sender": "@u:example.test",
                 "body": "hello",
-                "timestamp_ms": 123
+                "timestamp_ms": 123,
+                "in_reply_to_event_id": null
             })
         );
 

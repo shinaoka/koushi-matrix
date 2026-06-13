@@ -132,7 +132,8 @@ impl AccountActor {
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
         // Spawn TimelineManagerActor. It starts with no session; the session
         // is injected when a store-backed session is established.
-        let timeline_manager = crate::timeline::TimelineManagerActor::spawn(event_tx.clone());
+        let timeline_manager =
+            crate::timeline::TimelineManagerActor::spawn(action_tx.clone(), event_tx.clone());
         let actor = AccountActor {
             session: None,
             session_key_id: None,
@@ -284,6 +285,7 @@ impl AccountActor {
         self.timeline_manager.try_send(TimelineMessage::Shutdown);
         self.timeline_manager = crate::timeline::TimelineManagerActor::spawn_with_session(
             session.clone(),
+            self.action_tx.clone(),
             self.event_tx.clone(),
             search_index_tx,
         );
