@@ -592,6 +592,7 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
             composer: ComposerState {
                 pending_transaction_id: Some("txn1".to_owned()),
                 draft: "draft".to_owned(),
+                mode: Default::default(),
             },
         },
         thread: ThreadPaneState::Opening {

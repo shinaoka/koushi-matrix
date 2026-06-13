@@ -2,8 +2,8 @@ use crate::{
     action::AppAction,
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, E2eeRecoveryState, NavigationState, SearchState, SessionState,
-        SyncState, ThreadPaneState, TimelinePaneState,
+        AppError, AppState, BasicOperationState, ComposerMode, E2eeRecoveryState, NavigationState,
+        SearchState, SessionState, SyncState, ThreadPaneState, TimelinePaneState,
     },
 };
 
@@ -665,6 +665,53 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::ClearError { code } => {
             state.errors.retain(|error| error.code != code);
             vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+        }
+        AppAction::BasicOperationStarted { operation } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            state.basic_operation = operation;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::BasicOperationFinished => {
+            if state.basic_operation == BasicOperationState::Idle {
+                return Vec::new();
+            }
+            state.basic_operation = BasicOperationState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::BasicOperationFailed { message } => {
+            state.basic_operation = BasicOperationState::Idle;
+            state.errors.push(AppError {
+                code: "basic_operation_failed".to_owned(),
+                message,
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
+        }
+        AppAction::ComposerReplyTargetSelected { room_id, event_id } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+            {
+                return Vec::new();
+            }
+            state.timeline.composer.mode = ComposerMode::Reply {
+                in_reply_to_event_id: event_id,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+        }
+        AppAction::ComposerReplyCancelled => {
+            let Some(room_id) = state.timeline.room_id.clone() else {
+                return Vec::new();
+            };
+            if state.timeline.composer.mode == ComposerMode::Plain {
+                return Vec::new();
+            }
+            state.timeline.composer.mode = ComposerMode::Plain;
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
         }
     }
 }

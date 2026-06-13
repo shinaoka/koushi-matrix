@@ -97,7 +97,7 @@ Expected: exit 0.
 - Modify: `crates/matrix-desktop-state/src/lib.rs`
 - Create: `crates/matrix-desktop-state/tests/basic_operation_state.rs`
 
-- [ ] **Step 1: Write failing reducer tests**
+- [x] **Step 1: Write failing reducer tests**
 
 Create `crates/matrix-desktop-state/tests/basic_operation_state.rs`:
 
@@ -189,7 +189,7 @@ cargo test -p matrix-desktop-state --test basic_operation_state
 
 Expected: fails because the types/actions do not exist.
 
-- [ ] **Step 2: Add serializable Rust state**
+- [x] **Step 2: Add serializable Rust state**
 
 In `crates/matrix-desktop-state/src/state.rs`, extend `AppState` and
 `ComposerState`:
@@ -242,7 +242,7 @@ basic_operation: BasicOperationState::Idle,
 
 Re-export `BasicOperationState` and `ComposerMode` from `src/lib.rs`.
 
-- [ ] **Step 3: Add reducer actions**
+- [x] **Step 3: Add reducer actions**
 
 In `crates/matrix-desktop-state/src/action.rs`, import the new type and add:
 
@@ -260,7 +260,7 @@ ComposerReplyTargetSelected { room_id: String, event_id: String },
 ComposerReplyCancelled,
 ```
 
-- [ ] **Step 4: Implement reducer transitions**
+- [x] **Step 4: Implement reducer transitions**
 
 In `crates/matrix-desktop-state/src/reducer.rs`, add match arms:
 

@@ -11,6 +11,7 @@ pub struct AppState {
     pub timeline: TimelinePaneState,
     pub thread: ThreadPaneState,
     pub search: SearchState,
+    pub basic_operation: BasicOperationState,
     pub errors: Vec<AppError>,
 }
 
@@ -26,6 +27,7 @@ impl Default for AppState {
             timeline: TimelinePaneState::default(),
             thread: ThreadPaneState::Closed,
             search: SearchState::Closed,
+            basic_operation: BasicOperationState::Idle,
             errors: Vec::new(),
         }
     }
@@ -209,6 +211,14 @@ pub struct TimelinePaneState {
 pub struct ComposerState {
     pub pending_transaction_id: Option<String>,
     pub draft: String,
+    pub mode: ComposerMode,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ComposerMode {
+    #[default]
+    Plain,
+    Reply { in_reply_to_event_id: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -289,6 +299,16 @@ pub enum SearchMatchKind {
 pub enum SearchMatchField {
     MessageBody,
     AttachmentFileName,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BasicOperationState {
+    #[default]
+    Idle,
+    CreatingRoom { name: String },
+    CreatingSpace { name: String },
+    LinkingSpaceChild { space_id: String, child_room_id: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

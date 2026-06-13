@@ -1,8 +1,8 @@
 use std::fmt;
 
 use crate::state::{
-    E2eeRecoveryState, LoginFlow, RecoveryMethod, RoomSummary, SearchResult, SearchScope,
-    SessionInfo, SpaceSummary,
+    BasicOperationState, E2eeRecoveryState, LoginFlow, RecoveryMethod, RoomSummary, SearchResult,
+    SearchScope, SessionInfo, SpaceSummary,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,6 +130,18 @@ pub enum AppAction {
     ClearError {
         code: String,
     },
+    BasicOperationStarted {
+        operation: BasicOperationState,
+    },
+    BasicOperationFinished,
+    BasicOperationFailed {
+        message: String,
+    },
+    ComposerReplyTargetSelected {
+        room_id: String,
+        event_id: String,
+    },
+    ComposerReplyCancelled,
 }
 
 #[derive(Clone, Eq, PartialEq)]
