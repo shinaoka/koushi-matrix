@@ -362,6 +362,24 @@ subscriptions, QA title ownership, persisted geometry, and shutdown behavior.
 Secondary OS dialogs or system prompts do not change this product-window
 contract.
 
+### Desktop Attention Surfaces
+
+Desktop notifications, dock/taskbar badges, and unread window-title hints are
+derived interaction surfaces. They do not own Matrix behavior and must be
+computed from the same serializable `AppState` projection used by the UI.
+Core/state may expose a notification decision surface, but it contains only
+allowed UI metadata: a safe room display label, notification kind
+(`mention`, `dm`, or `message`), unread notification/highlight counts, and the
+coarse unread total. It must not contain message bodies, sender identifiers,
+room IDs, event IDs, transaction IDs, raw SDK errors, or secrets.
+
+The Tauri adapter maps that transport-neutral surface to platform capabilities
+such as OS notifications, badge counts, and window-title updates. The redacted
+notification content policy is fail-closed: message bodies are excluded by
+default, and any future preview option requires an explicit settings design and
+new tests. Private-data-free QA title tokens may expose only aggregate values
+such as `unread=N`, `badge=N`, and `notify=<kind|none>`.
+
 Initial channel capacities are named constants, not scattered literals:
 
 - command inbox per runtime: 256

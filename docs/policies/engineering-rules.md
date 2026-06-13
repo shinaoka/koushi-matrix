@@ -51,6 +51,12 @@ Rules:
    automation failure, not something to click through. Fix the run's
    environment (`MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`,
    `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR`) instead.
+9. OS notifications, badge labels, and QA window-title tokens are
+   private-data-minimized surfaces. By default they may include only a safe
+   room display label, notification kind (`mention`, `dm`, `message`), and
+   aggregate unread/highlight counts. They must not include message bodies,
+   sender identifiers, room IDs, event IDs, transaction IDs, raw SDK errors,
+   or secrets.
 
 ## Logging and Diagnostics
 
