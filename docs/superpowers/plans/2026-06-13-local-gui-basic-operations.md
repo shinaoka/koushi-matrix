@@ -978,7 +978,7 @@ Expected: pass.
 **Files:**
 - All files touched by Tasks 2-8
 
-- [ ] **Step 1: Rust gates**
+- [x] **Step 1: Rust gates**
 
 Run:
 
@@ -991,7 +991,7 @@ cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-de
 
 Expected: all pass.
 
-- [ ] **Step 2: Frontend gates**
+- [x] **Step 2: Frontend gates**
 
 Run:
 
@@ -1004,7 +1004,7 @@ npm --prefix apps/desktop run qa:secret-scan
 
 Expected: all pass.
 
-- [ ] **Step 3: Local Matrix operation gates**
+- [x] **Step 3: Local Matrix operation gates**
 
 Run:
 
