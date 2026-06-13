@@ -20,15 +20,18 @@
 //!
 //! ## QA coverage (canon QA Model layer 3)
 //!
-//! 1. HTTPS login to the homeserver -> Ready snapshot (store bootstrap invariant).
-//! 2. Recovery: if RecoveryRequired observed -> SubmitRecovery -> RecoveryCompleted
-//!    -> assert Ready. If not required, print `recovery=not_required` and continue.
-//! 3. Sync lifecycle: Start -> Started{backend} -> Running (print backend).
+//! 1. HTTPS login to the homeserver -> pre-sync Ready snapshot (store bootstrap
+//!    invariant and reducer gate).
+//! 2. Sync lifecycle: Start -> Started{backend} -> Running (print backend).
+//! 3. Recovery: after sync/account data flows in, require RecoveryRequired ->
+//!    SubmitRecovery -> RecoveryCompleted -> assert Ready.
 //! 4. Room list: wait non-empty or timeout; print COUNTS ONLY (rooms=N spaces=N dms=N).
-//! 5. Create synthetic QA room, subscribe timeline, send 2 messages,
-//!    wait SendCompleted + diffs, edit one, redact the other, paginate backward
-//!    to EndReached. Only operations on the QA-created room.
-//! 6. Search smoke: query a unique token from a sent message; assert the QA room/event.
+//! 5. Create synthetic QA room, subscribe timeline, send edit/redact fixture
+//!    messages plus a dedicated search probe, wait SendCompleted + diffs, edit
+//!    one, redact the other, paginate backward to EndReached. Only operations
+//!    on the QA-created room.
+//! 6. Search smoke: query a unique token from the unedited probe message;
+//!    assert the QA room/event.
 //! 7. Encrypted store restore: stop sync, drop runtime, start fresh runtime over
 //!    same data dir, RestoreLastSession -> SessionRestored -> start sync -> Running ->
 //!    resubscribe QA room timeline and assert the edited message body arrives.
@@ -252,12 +255,41 @@ enum RecoveryOutcome {
     Failed(RecoveryFailureKind),
 }
 
-/// Disambiguates the session state observed after a successful login,
-/// once the async action channel has been processed.
 #[cfg(any(debug_assertions, test))]
-enum PostLoginState {
-    Ready,
-    NeedsRecovery,
+struct RealHomeserverQaMessagePlan {
+    search_token: String,
+    msg1_body: String,
+    search_probe_body: String,
+    msg2_body: String,
+    edited_body: String,
+}
+
+#[cfg(any(debug_assertions, test))]
+fn build_real_homeserver_qa_message_plan(ts: u64) -> RealHomeserverQaMessagePlan {
+    let search_token = format!("real-qa-search-{}-{}", std::process::id(), ts);
+    RealHomeserverQaMessagePlan {
+        search_token: search_token.clone(),
+        msg1_body: "Real homeserver QA message 1".to_owned(),
+        search_probe_body: format!("Real homeserver QA search probe {search_token}"),
+        msg2_body: "Real homeserver QA message 2".to_owned(),
+        edited_body: "Real homeserver QA message 1 EDITED".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod search_plan_tests {
+    use super::*;
+
+    #[test]
+    fn real_homeserver_qa_search_plan_uses_a_dedicated_unedited_probe_message() {
+        let plan = build_real_homeserver_qa_message_plan(1234567890);
+
+        assert!(plan.search_probe_body.contains(&plan.search_token));
+        assert_ne!(plan.search_probe_body, plan.msg1_body);
+        assert!(!plan.msg1_body.contains(&plan.search_token));
+        assert_eq!(plan.msg2_body, "Real homeserver QA message 2");
+        assert_eq!(plan.edited_body, "Real homeserver QA message 1 EDITED");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -314,60 +346,13 @@ async fn run_async(
     transcript.push(line.clone());
     println!("{line}");
 
-    // -----------------------------------------------------------------------
-    // Step 2: Recovery check
-    // -----------------------------------------------------------------------
-    // Wait for the snapshot to settle into Ready or NeedsRecovery. The
-    // LoggedIn event may arrive before the reducer has processed the
-    // LoginSucceeded/E2eeRecoveryRequired action (async action channel),
-    // so we must not rely on conn.snapshot() immediately after LoggedIn.
-    let post_login_state =
-        wait_for_ready_or_needs_recovery(&mut conn, "post-login state").await?;
-    let recovery_status = match post_login_state {
-        PostLoginState::NeedsRecovery => {
-            let submit_id = conn.next_request_id();
-            conn.command(CoreCommand::Account(AccountCommand::SubmitRecovery {
-                request_id: submit_id,
-                request: RecoveryRequest {
-                    secret: creds.recovery_key.clone(),
-                },
-            }))
-            .await
-            .map_err(|e| format!("submit recovery command failed: {e}"))?;
-
-            match wait_for_recovery_outcome(&mut conn, submit_id, "recovery").await? {
-                RecoveryOutcome::Completed => {
-                    let line = "recovery=completed".to_owned();
-                    transcript.push(line.clone());
-                    println!("{line}");
-                    "completed"
-                }
-                RecoveryOutcome::Failed(kind) => {
-                    // Recovery failure is a hard QA failure; attempt logout cleanup first.
-                    let line = format!("recovery=failed kind={kind:?}");
-                    transcript.push(line.clone());
-                    eprintln!("{line}");
-                    do_logout(&mut conn, &account_key, transcript).await;
-                    return Err(format!("recovery failed with kind {kind:?}"));
-                }
-            }
-        }
-        PostLoginState::Ready => {
-            let line = "recovery=not_required".to_owned();
-            transcript.push(line.clone());
-            println!("{line}");
-            "not_required"
-        }
-    };
-
-    // Assert Ready snapshot (covers both paths).
-    wait_for_ready_snapshot(&mut conn, "post-login Ready").await?;
-    let line = "session=ready".to_owned();
-    transcript.push(line.clone());
-    println!("{line}");
+    if let Err(e) = wait_for_post_login_ready_snapshot(&mut conn, "post-login Ready").await {
+        do_logout(&mut conn, &account_key, transcript).await;
+        return Err(e);
+    }
 
     // -----------------------------------------------------------------------
-    // Step 3: Sync lifecycle - Start -> Started{backend} -> Running
+    // Step 2: Sync lifecycle - Start -> Started{backend} -> Running
     // -----------------------------------------------------------------------
     let sync_start_id = conn.next_request_id();
     conn.command(CoreCommand::Sync(SyncCommand::Start {
@@ -398,6 +383,50 @@ async fn run_async(
         return Err(e);
     }
     let line = "sync=running".to_owned();
+    transcript.push(line.clone());
+    println!("{line}");
+
+    // -----------------------------------------------------------------------
+    // Step 3: Recovery check
+    // -----------------------------------------------------------------------
+    // Wait for the post-sync recovery observer to publish the final state.
+    // Recovery becomes actionable only once sync/account data has flowed in.
+    if let Err(e) =
+        wait_for_recovery_required_after_sync(&mut conn, "post-sync recovery gate").await
+    {
+        do_logout(&mut conn, &account_key, transcript).await;
+        return Err(e);
+    }
+
+    let submit_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::SubmitRecovery {
+        request_id: submit_id,
+        request: RecoveryRequest {
+            secret: creds.recovery_key.clone(),
+        },
+    }))
+    .await
+    .map_err(|e| format!("submit recovery command failed: {e}"))?;
+
+    match wait_for_recovery_outcome(&mut conn, submit_id, "recovery").await? {
+        RecoveryOutcome::Completed => {
+            let line = "recovery=completed".to_owned();
+            transcript.push(line.clone());
+            println!("{line}");
+        }
+        RecoveryOutcome::Failed(kind) => {
+            // Recovery failure is a hard QA failure; attempt logout cleanup first.
+            let line = format!("recovery=failed kind={kind:?}");
+            transcript.push(line.clone());
+            eprintln!("{line}");
+            do_logout(&mut conn, &account_key, transcript).await;
+            return Err(format!("recovery failed with kind {kind:?}"));
+        }
+    }
+
+    // Assert Ready snapshot after recovery completes.
+    wait_for_ready_snapshot(&mut conn, "post-recovery Ready").await?;
+    let line = "session=ready".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
@@ -446,22 +475,28 @@ async fn run_async(
     .await
     .map_err(|e| format!("subscribe timeline command submit failed: {e}"))?;
 
-    wait_for_initial_items(&mut conn, &timeline_key, subscribe_id, "subscribe QA timeline")
-        .await?;
+    wait_for_initial_items(
+        &mut conn,
+        &timeline_key,
+        subscribe_id,
+        "subscribe QA timeline",
+    )
+    .await?;
     let line = "timeline_subscribed=ok".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
-    // Send message 1 - includes a unique token for search smoke later.
-    let search_token = format!("real-qa-search-{}-{}", std::process::id(), ts);
+    // Send message 1, then a dedicated search probe message. The search probe
+    // is the only message that carries the unique search token; message 1 is
+    // reserved for edit coverage.
+    let message_plan = build_real_homeserver_qa_message_plan(ts);
     let txn1 = format!("real-qa-txn-1-{ts}");
-    let msg1_body = format!("Real homeserver QA message 1 {search_token}");
     let send1_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
         request_id: send1_id,
         key: timeline_key.clone(),
         transaction_id: txn1,
-        body: msg1_body,
+        body: message_plan.msg1_body.clone(),
     }))
     .await
     .map_err(|e| format!("send message 1 command submit failed: {e}"))?;
@@ -472,6 +507,29 @@ async fn run_async(
     transcript.push(line.clone());
     println!("{line}");
 
+    // Send the dedicated search probe. It is never edited or redacted.
+    let txn_search = format!("real-qa-txn-search-{ts}");
+    let send_search_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id: send_search_id,
+        key: timeline_key.clone(),
+        transaction_id: txn_search,
+        body: message_plan.search_probe_body.clone(),
+    }))
+    .await
+    .map_err(|e| format!("send search probe command submit failed: {e}"))?;
+
+    let (_, search_event_id) = wait_for_send_completed(
+        &mut conn,
+        send_search_id,
+        &timeline_key,
+        "send search probe",
+    )
+    .await?;
+    let line = format!("send_search=ok event_id={search_event_id}");
+    transcript.push(line.clone());
+    println!("{line}");
+
     // Send message 2.
     let txn2 = format!("real-qa-txn-2-{ts}");
     let send2_id = conn.next_request_id();
@@ -479,7 +537,7 @@ async fn run_async(
         request_id: send2_id,
         key: timeline_key.clone(),
         transaction_id: txn2,
-        body: "Real homeserver QA message 2".to_owned(),
+        body: message_plan.msg2_body.clone(),
     }))
     .await
     .map_err(|e| format!("send message 2 command submit failed: {e}"))?;
@@ -491,13 +549,12 @@ async fn run_async(
     println!("{line}");
 
     // Edit message 1.
-    let edited_body = "Real homeserver QA message 1 EDITED".to_owned();
     let edit1_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::EditText {
         request_id: edit1_id,
         key: timeline_key.clone(),
         event_id: event1_id.clone(),
-        body: edited_body.clone(),
+        body: message_plan.edited_body.clone(),
     }))
     .await
     .map_err(|e| format!("edit message 1 command submit failed: {e}"))?;
@@ -507,7 +564,7 @@ async fn run_async(
         &timeline_key,
         edit1_id,
         &event1_id,
-        &edited_body,
+        &message_plan.edited_body,
         "edit msg1",
         EDIT_REDACT_TIMEOUT,
     )
@@ -573,12 +630,12 @@ async fn run_async(
     println!("{line}");
 
     // -----------------------------------------------------------------------
-    // Step 6: Search smoke - query the unique token from message 1
+    // Step 6: Search smoke - query the dedicated unedited search probe.
     // -----------------------------------------------------------------------
     let search_status = match poll_search_until_found_or_timeout(
         &mut conn,
-        &search_token,
-        &event1_id,
+        &message_plan.search_token,
+        &search_event_id,
         &qa_room_id,
         "search smoke",
         SEARCH_TIMEOUT,
@@ -587,11 +644,11 @@ async fn run_async(
     {
         Ok(()) => "ok",
         Err(e) => {
-            // Non-fatal: search index may not be populated on first sync.
             let errline = format!("search_smoke=failed reason={e}");
             transcript.push(errline.clone());
             eprintln!("{errline}");
-            "skipped"
+            do_logout(&mut conn, &account_key, transcript).await;
+            return Err(format!("search smoke failed: {e}"));
         }
     };
     let line = format!("search={search_status}");
@@ -749,8 +806,8 @@ async fn run_async(
     // Step 8: Leave/forget QA room
     // LeaveRoom is not in RoomCommand as of this phase. Note for Phase 9.
     // -----------------------------------------------------------------------
-    let line = "leave_room=not_available (LeaveRoom not yet in RoomCommand; noted for Phase 9)"
-        .to_owned();
+    let line =
+        "leave_room=not_available (LeaveRoom not yet in RoomCommand; noted for Phase 9)".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
@@ -776,9 +833,7 @@ async fn run_async(
         ));
     }
     if !matches!(conn2.snapshot().session, SessionState::SignedOut) {
-        return Err(
-            "post-logout restore-last must leave session in SignedOut state".to_owned(),
-        );
+        return Err("post-logout restore-last must leave session in SignedOut state".to_owned());
     }
 
     let line = "post_logout_restore=not_found".to_owned();
@@ -800,7 +855,7 @@ async fn run_async(
          leave_room=not_available \
          logout=ok post_logout_restore=not_found",
         user_id = account_key.0,
-        recovery = recovery_status,
+        recovery = "completed",
         backend = backend_name,
         rooms = rooms_count,
         spaces = spaces_count,
@@ -903,8 +958,7 @@ async fn wait_for_recovery_outcome(
 
         match event {
             CoreEvent::Account(AccountEvent::RecoveryCompleted {
-                request_id: ev_id,
-                ..
+                request_id: ev_id, ..
             }) if ev_id == request_id => {
                 return Ok(RecoveryOutcome::Completed);
             }
@@ -930,30 +984,40 @@ async fn wait_for_recovery_outcome(
 /// may arrive before the reducer processes the LoginSucceeded action (the
 /// action is sent through an async mpsc channel to the AppActor).
 #[cfg(any(debug_assertions, test))]
-async fn wait_for_ready_or_needs_recovery(
+async fn wait_for_recovery_required_after_sync(
     conn: &mut CoreConnection,
     label: &str,
-) -> Result<PostLoginState, String> {
-    // Check the snapshot first in case the action channel was already drained.
-    match conn.snapshot().session {
-        SessionState::Ready(_) => return Ok(PostLoginState::Ready),
-        SessionState::NeedsRecovery { .. } => return Ok(PostLoginState::NeedsRecovery),
-        _ => {}
+) -> Result<(), String> {
+    // Check the snapshot first in case the action channel already advanced.
+    if matches!(conn.snapshot().session, SessionState::NeedsRecovery { .. }) {
+        return Ok(());
     }
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "{label}: timed out waiting for RecoveryRequired or NeedsRecovery"
+            ));
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let event = tokio::time::timeout(remaining, conn.recv_event())
             .await
             .map_err(|_| {
-                format!("{label}: timed out waiting for Ready or NeedsRecovery snapshot")
+                format!("{label}: timed out waiting for RecoveryRequired or NeedsRecovery")
             })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
-        if let CoreEvent::StateChanged(snapshot) = event {
-            match snapshot.session {
-                SessionState::Ready(_) => return Ok(PostLoginState::Ready),
-                SessionState::NeedsRecovery { .. } => return Ok(PostLoginState::NeedsRecovery),
-                _ => {}
+        match event {
+            CoreEvent::StateChanged(snapshot)
+                if matches!(snapshot.session, SessionState::NeedsRecovery { .. }) =>
+            {
+                return Ok(());
             }
+            CoreEvent::Account(AccountEvent::RecoveryRequired { .. }) => {
+                return Ok(());
+            }
+            _ => continue,
         }
     }
 }
@@ -975,6 +1039,17 @@ async fn wait_for_ready_snapshot(conn: &mut CoreConnection, label: &str) -> Resu
             }
         }
     }
+}
+
+/// Wait for the post-login `Ready` snapshot before starting sync.
+/// `LoggedIn` can arrive before the reducer has processed `LoginSucceeded`,
+/// so this gate closes the action-channel race before `SyncCommand::Start`.
+#[cfg(any(debug_assertions, test))]
+async fn wait_for_post_login_ready_snapshot(
+    conn: &mut CoreConnection,
+    label: &str,
+) -> Result<(), String> {
+    wait_for_ready_snapshot(conn, label).await
 }
 
 #[cfg(any(debug_assertions, test))]
@@ -1024,7 +1099,9 @@ async fn wait_for_sync_running(
             return Ok(());
         }
         if matches!(event, CoreEvent::Sync(SyncEvent::Failed)) {
-            return Err(format!("{label}: SyncEvent::Failed received before Running"));
+            return Err(format!(
+                "{label}: SyncEvent::Failed received before Running"
+            ));
         }
     }
 }
@@ -1048,7 +1125,10 @@ async fn wait_for_sync_stopped(
         ) {
             return Ok(());
         }
-        if matches!(event, CoreEvent::Sync(SyncEvent::Stopped { request_id: None })) {
+        if matches!(
+            event,
+            CoreEvent::Sync(SyncEvent::Stopped { request_id: None })
+        ) {
             return Ok(());
         }
         if let CoreEvent::OperationFailed {
@@ -1219,8 +1299,7 @@ async fn wait_for_edit_diff(
             }) if ev_key == key => {
                 for diff in diffs {
                     if let matrix_desktop_core::event::TimelineDiff::Set { item, .. } = diff {
-                        let body_ok =
-                            item.body.as_deref().unwrap_or("").contains(edited_body);
+                        let body_ok = item.body.as_deref().unwrap_or("").contains(edited_body);
                         let eid_ok = matches!(
                             &item.id,
                             matrix_desktop_core::event::TimelineItemId::Event { event_id: id }
@@ -1516,34 +1595,26 @@ async fn wait_for_body_substring_in_timeline(
 
         let found = match &event {
             CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: ev_key,
-                diffs,
-                ..
-            }) if ev_key == key => {
-                diffs.iter().any(|diff| {
-                    let item_opt = match diff {
-                        matrix_desktop_core::event::TimelineDiff::PushBack { item }
-                        | matrix_desktop_core::event::TimelineDiff::PushFront { item }
-                        | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
-                        | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => {
-                            Some(item)
-                        }
-                        matrix_desktop_core::event::TimelineDiff::Reset { items } => {
-                            return items.iter().any(|it| {
-                                it.body.as_deref().unwrap_or("").contains(body_substring)
-                            });
-                        }
-                        _ => None,
-                    };
-                    item_opt.map_or(false, |it| {
-                        it.body.as_deref().unwrap_or("").contains(body_substring)
-                    })
+                key: ev_key, diffs, ..
+            }) if ev_key == key => diffs.iter().any(|diff| {
+                let item_opt = match diff {
+                    matrix_desktop_core::event::TimelineDiff::PushBack { item }
+                    | matrix_desktop_core::event::TimelineDiff::PushFront { item }
+                    | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
+                    | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => Some(item),
+                    matrix_desktop_core::event::TimelineDiff::Reset { items } => {
+                        return items
+                            .iter()
+                            .any(|it| it.body.as_deref().unwrap_or("").contains(body_substring));
+                    }
+                    _ => None,
+                };
+                item_opt.map_or(false, |it| {
+                    it.body.as_deref().unwrap_or("").contains(body_substring)
                 })
-            }
+            }),
             CoreEvent::Timeline(TimelineEvent::InitialItems {
-                key: ev_key,
-                items,
-                ..
+                key: ev_key, items, ..
             }) if ev_key == key => items
                 .iter()
                 .any(|it| it.body.as_deref().unwrap_or("").contains(body_substring)),
@@ -1623,5 +1694,87 @@ async fn wait_for_search_results(
             }
             _ => continue,
         }
+    }
+}
+
+#[cfg(all(test, feature = "test-hooks"))]
+mod tests {
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+    use tokio::time::sleep;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn recovery_gate_waits_for_late_needs_recovery_after_ready_snapshot() {
+        let data_dir = tempdir().unwrap();
+        let runtime = Arc::new(CoreRuntime::start_with_data_dir(
+            data_dir.path().to_path_buf(),
+        ));
+        let mut conn = runtime.attach();
+
+        let info = matrix_desktop_state::SessionInfo {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@alice:example.test".to_owned(),
+            device_id: "DEVICE1".to_owned(),
+        };
+
+        runtime
+            .inject_actions(vec![matrix_desktop_state::AppAction::LoginSucceeded(
+                info.clone(),
+            )])
+            .await;
+
+        wait_for_ready_snapshot(&mut conn, "setup ready")
+            .await
+            .expect("setup ready snapshot");
+
+        let runtime2 = Arc::clone(&runtime);
+        let delayed = tokio::spawn(async move {
+            sleep(Duration::from_millis(50)).await;
+            runtime2
+                .inject_actions(vec![
+                    matrix_desktop_state::AppAction::E2eeRecoveryStateChanged {
+                        state: matrix_desktop_state::E2eeRecoveryState::Incomplete,
+                        methods: vec![matrix_desktop_state::RecoveryMethod::RecoveryKey],
+                    },
+                ])
+                .await;
+        });
+
+        let result = wait_for_recovery_required_after_sync(&mut conn, "gate").await;
+        delayed.await.expect("delayed injector");
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn post_login_ready_gate_waits_for_late_ready_snapshot_before_sync() {
+        let data_dir = tempdir().unwrap();
+        let runtime = Arc::new(CoreRuntime::start_with_data_dir(
+            data_dir.path().to_path_buf(),
+        ));
+        let mut conn = runtime.attach();
+
+        let runtime2 = Arc::clone(&runtime);
+        let delayed = tokio::spawn(async move {
+            sleep(Duration::from_millis(50)).await;
+            runtime2
+                .inject_actions(vec![matrix_desktop_state::AppAction::LoginSucceeded(
+                    matrix_desktop_state::SessionInfo {
+                        homeserver: "https://example.test".to_owned(),
+                        user_id: "@alice:example.test".to_owned(),
+                        device_id: "DEVICE1".to_owned(),
+                    },
+                )])
+                .await;
+        });
+
+        let result = wait_for_post_login_ready_snapshot(&mut conn, "post-login gate").await;
+        delayed.await.expect("delayed injector");
+
+        assert!(result.is_ok());
+        assert!(matches!(conn.snapshot().session, SessionState::Ready(_)));
     }
 }

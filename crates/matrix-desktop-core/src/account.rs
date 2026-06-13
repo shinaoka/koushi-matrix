@@ -28,10 +28,13 @@
 
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use matrix_desktop_auth::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
-use matrix_desktop_state::{AppAction, LoginRequest, RecoveryRequest, SessionInfo};
-use tokio::sync::{broadcast, mpsc};
+use matrix_desktop_state::{
+    AppAction, E2eeRecoveryState, LoginRequest, RecoveryMethod, RecoveryRequest, SessionInfo,
+};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
 use crate::event::{AccountEvent, CoreEvent};
@@ -79,6 +82,11 @@ enum RestoreOutcome {
     Switched,
 }
 
+struct RecoveryStateObservation {
+    stop_tx: oneshot::Sender<()>,
+    task: crate::executor::JoinHandle<()>,
+}
+
 /// The account actor's internal state.
 pub struct AccountActor {
     /// Active store-backed session, if any.
@@ -108,6 +116,8 @@ pub struct AccountActor {
     /// exists. Created at the same time as SyncActor; stopped in the ordered
     /// shutdown between timelines and sync (canon Async rule 12 step 3).
     search_actor: Option<SearchActorHandle>,
+    /// Recovery-state observer task for the active store-backed session.
+    recovery_observer: Option<RecoveryStateObservation>,
 }
 
 impl AccountActor {
@@ -134,6 +144,7 @@ impl AccountActor {
             room_actor,
             timeline_manager,
             search_actor: None,
+            recovery_observer: None,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -161,7 +172,8 @@ impl AccountActor {
             }
         }
         // Ordered shutdown (overview.md Async rule 12):
-        // timelines → search → room → sync → SDK handles.
+        // recovery observer → timelines → search → room → sync → SDK handles.
+        self.stop_recovery_observer().await;
         self.stop_timeline_actor().await;
         self.stop_search_actor().await;
         self.stop_room_actor().await;
@@ -175,10 +187,7 @@ impl AccountActor {
     /// SessionRequired check internally (it holds the session ref after
     /// SyncStarted).
     async fn route_room_command(&self, command: RoomCommand) {
-        let _ = self
-            .room_actor
-            .send(RoomMessage::Command(command))
-            .await;
+        let _ = self.room_actor.send(RoomMessage::Command(command)).await;
     }
 
     /// Route a TimelineCommand to the TimelineManagerActor.
@@ -264,18 +273,15 @@ impl AccountActor {
         // index (configured in restore_into_store / the client builder). The
         // search actor gets an mpsc::Sender<SearchIndexMessage> which will be
         // forwarded to the TimelineManagerActor below.
-        let search_handle = crate::search::SearchActor::spawn(
-            session.clone(),
-            self.event_tx.clone(),
-        );
+        let search_handle =
+            crate::search::SearchActor::spawn(session.clone(), self.event_tx.clone());
         let search_index_tx = search_handle.index_sender();
         self.search_actor = Some(search_handle);
 
         // Replace the TimelineManagerActor with one holding the current session
         // AND the search index sender. The old manager (with no session) is
         // stopped by dropping its handle. We use try_send to shut down the old.
-        self.timeline_manager
-            .try_send(TimelineMessage::Shutdown);
+        self.timeline_manager.try_send(TimelineMessage::Shutdown);
         self.timeline_manager = crate::timeline::TimelineManagerActor::spawn_with_session(
             session.clone(),
             self.event_tx.clone(),
@@ -292,11 +298,30 @@ impl AccountActor {
         self.sync_actor = Some(handle);
     }
 
+    fn start_recovery_observer(&mut self, session: Arc<MatrixClientSession>) {
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let task = crate::executor::spawn(run_recovery_state_observation(
+            session.e2ee_recovery_state_stream(),
+            account_key_from_info(&session.info),
+            self.action_tx.clone(),
+            self.event_tx.clone(),
+            stop_rx,
+        ));
+        self.recovery_observer = Some(RecoveryStateObservation { stop_tx, task });
+    }
+
     /// Ordered shutdown of the SyncActor (step 4 of the shutdown sequence).
     async fn stop_sync_actor(&mut self) {
         if let Some(handle) = self.sync_actor.take() {
             let _ = handle.send(SyncMessage::Shutdown).await;
             handle.join().await;
+        }
+    }
+
+    async fn stop_recovery_observer(&mut self) {
+        if let Some(observation) = self.recovery_observer.take() {
+            let _ = observation.stop_tx.send(());
+            let _ = observation.task.await;
         }
     }
 
@@ -345,11 +370,7 @@ impl AccountActor {
         }
     }
 
-    async fn handle_login_password(
-        &mut self,
-        request_id: RequestId,
-        request: LoginRequest,
-    ) {
+    async fn handle_login_password(&mut self, request_id: RequestId, request: LoginRequest) {
         // Store bootstrap step 1: the password exchange runs on a storeless
         // client. The device id (and therefore the store path) is unknown
         // before this completes. The storeless client must never sync or
@@ -415,44 +436,21 @@ impl AccountActor {
         // (store bootstrap invariant: sync only on the store-backed session).
         self.spawn_sync_actor(session_arc.clone());
 
-        // Check recovery state on the store-backed session. If recovery is
-        // needed (Incomplete), project NeedsRecovery before emitting LoggedIn
-        // so the snapshot and event are consistent. If recovery is not needed,
-        // proceed directly to Ready.
-        let recovery_state = session_arc.e2ee_recovery_state();
-        let needs_recovery = matches!(
-            recovery_state,
-            matrix_desktop_state::E2eeRecoveryState::Incomplete
-        );
-
-        if needs_recovery {
-            // Project NeedsRecovery through the reducer (uses RecoveryKey method).
-            self.reduce(vec![AppAction::E2eeRecoveryRequired {
-                info: info.clone(),
-                methods: vec![matrix_desktop_state::RecoveryMethod::RecoveryKey],
-            }]);
-            // Emit RecoveryRequired domain event before LoggedIn so consumers
-            // can observe the state before acting.
-            self.emit(CoreEvent::Account(AccountEvent::RecoveryRequired {
-                account_key: account_key.clone(),
-            }));
-        } else {
-            // Project login success through the reducer (session → Ready).
-            self.reduce(vec![AppAction::LoginSucceeded(info)]);
-        }
+        // Project login success through the reducer (session → Ready).
+        self.reduce(vec![AppAction::LoginSucceeded(info)]);
 
         // Emit domain event carrying the request_id for command correlation.
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
             request_id,
             account_key,
         }));
+
+        // Observe the SDK recovery stream asynchronously. New-device recovery
+        // can arrive after login completes, once account data syncs in.
+        self.start_recovery_observer(session_arc);
     }
 
-    async fn handle_restore_session(
-        &mut self,
-        request_id: RequestId,
-        account_key: AccountKey,
-    ) {
+    async fn handle_restore_session(&mut self, request_id: RequestId, account_key: AccountKey) {
         let key_id = match self.lookup_session_key_id(&account_key) {
             Ok(Some(key_id)) => key_id,
             Ok(None) => {
@@ -526,14 +524,11 @@ impl AccountActor {
         }
     }
 
-    async fn handle_switch_account(
-        &mut self,
-        request_id: RequestId,
-        account_key: AccountKey,
-    ) {
+    async fn handle_switch_account(&mut self, request_id: RequestId, account_key: AccountKey) {
         // Ordered shutdown of the current account runtime WITHOUT clearing
         // credentials or stores.
-        // Phase 3: stop sync. Phases 4-6 add their children here.
+        // Phase 3: stop recovery observer and sync. Phases 4-6 add their children here.
+        self.stop_recovery_observer().await;
         self.stop_sync_actor().await;
         // Drop the SDK handle inside the runtime context (Async rule 11).
         drop(self.session.take());
@@ -613,32 +608,13 @@ impl AccountActor {
                 let info = session.info.clone();
                 let account_key = account_key_from_info(&info);
 
-                // Check recovery state on the store-backed restored session.
-                let recovery_state = session.e2ee_recovery_state();
-                let needs_recovery = matches!(
-                    recovery_state,
-                    matrix_desktop_state::E2eeRecoveryState::Incomplete
-                );
-
                 let session_arc = Arc::new(session);
                 self.session = Some(session_arc.clone());
                 self.session_key_id = Some(key_id);
 
                 // Spawn the SyncActor for the newly restored store-backed session.
-                self.spawn_sync_actor(session_arc);
-
-                if needs_recovery {
-                    // Project NeedsRecovery before emitting the domain event.
-                    self.reduce(vec![AppAction::E2eeRecoveryRequired {
-                        info: info.clone(),
-                        methods: vec![matrix_desktop_state::RecoveryMethod::RecoveryKey],
-                    }]);
-                    self.emit(CoreEvent::Account(AccountEvent::RecoveryRequired {
-                        account_key: account_key.clone(),
-                    }));
-                } else {
-                    self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
-                }
+                self.spawn_sync_actor(session_arc.clone());
+                self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
 
                 self.emit(CoreEvent::Account(match outcome {
                     RestoreOutcome::Restored => AccountEvent::SessionRestored {
@@ -650,6 +626,8 @@ impl AccountActor {
                         account_key,
                     },
                 }));
+
+                self.start_recovery_observer(session_arc);
             }
         }
     }
@@ -662,11 +640,7 @@ impl AccountActor {
     ///
     /// The recovery secret is NEVER logged, included in error messages, or
     /// stored in any event/snapshot.
-    async fn handle_submit_recovery(
-        &mut self,
-        request_id: RequestId,
-        request: RecoveryRequest,
-    ) {
+    async fn handle_submit_recovery(&mut self, request_id: RequestId, request: RecoveryRequest) {
         let session = match &self.session {
             Some(s) => s.clone(),
             None => {
@@ -701,10 +675,7 @@ impl AccountActor {
                 self.reduce(vec![AppAction::E2eeRecoveryFailed {
                     message: "recovery failed".to_owned(),
                 }]);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RecoveryFailed { kind },
-                );
+                self.emit_failure(request_id, CoreFailure::RecoveryFailed { kind });
             }
         }
     }
@@ -719,6 +690,7 @@ impl AccountActor {
         };
         let key_id = self.session_key_id.take();
 
+        self.stop_recovery_observer().await;
         // Ordered shutdown step 4: stop sync before dropping the session.
         self.stop_sync_actor().await;
 
@@ -840,10 +812,7 @@ impl AccountActor {
     /// Find the stored `SessionKeyId` for an account key (the user's Matrix
     /// ID). Checks the last-session pointer first, then the saved-session
     /// index. `Ok(None)` = no stored session; `Err(())` = store unreachable.
-    fn lookup_session_key_id(
-        &self,
-        account_key: &AccountKey,
-    ) -> Result<Option<SessionKeyId>, ()> {
+    fn lookup_session_key_id(&self, account_key: &AccountKey) -> Result<Option<SessionKeyId>, ()> {
         let backend = self.store.credential_backend();
         match backend.load_last_session() {
             Ok(Some(key_id)) if key_id.user_id == account_key.0 => {
@@ -881,6 +850,60 @@ fn session_info_from_key_id(key_id: &SessionKeyId) -> SessionInfo {
         homeserver: key_id.homeserver.clone(),
         user_id: key_id.user_id.clone(),
         device_id: key_id.device_id.clone(),
+    }
+}
+
+async fn run_recovery_state_observation<S>(
+    state_stream: S,
+    account_key: AccountKey,
+    action_tx: mpsc::Sender<Vec<AppAction>>,
+    event_tx: broadcast::Sender<CoreEvent>,
+    mut stop_rx: oneshot::Receiver<()>,
+) where
+    S: futures_util::Stream<Item = E2eeRecoveryState> + Send + 'static,
+{
+    let mut state_stream = Box::pin(state_stream);
+    let mut last_state: Option<E2eeRecoveryState> = None;
+    let recovery_methods = vec![RecoveryMethod::RecoveryKey];
+
+    loop {
+        let mut pinned_stream = state_stream.as_mut();
+        let next_state = pinned_stream.next();
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            state = next_state => {
+                let Some(state) = state else {
+                    break;
+                };
+                if last_state == Some(state) {
+                    continue;
+                }
+                last_state = Some(state);
+
+                match state {
+                    E2eeRecoveryState::Unknown => {}
+                    E2eeRecoveryState::Incomplete => {
+                        let _ = action_tx
+                            .send(vec![AppAction::E2eeRecoveryStateChanged {
+                                state: E2eeRecoveryState::Incomplete,
+                                methods: recovery_methods.clone(),
+                            }])
+                            .await;
+                        let _ = event_tx.send(CoreEvent::Account(AccountEvent::RecoveryRequired {
+                            account_key: account_key.clone(),
+                        }));
+                    }
+                    E2eeRecoveryState::Enabled | E2eeRecoveryState::Disabled => {
+                        let _ = action_tx
+                            .send(vec![AppAction::E2eeRecoveryStateChanged {
+                                state,
+                                methods: recovery_methods.clone(),
+                            }])
+                            .await;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -924,8 +947,9 @@ fn classify_login_error(error: &matrix_desktop_auth::PasswordLoginError) -> Logi
     use matrix_desktop_auth::{LoginDiscoveryError, PasswordLoginError};
     match error {
         PasswordLoginError::InvalidHomeserver(discovery_err) => match discovery_err {
-            LoginDiscoveryError::RequestFailed(_)
-            | LoginDiscoveryError::HttpStatus { .. } => LoginFailureKind::Network,
+            LoginDiscoveryError::RequestFailed(_) | LoginDiscoveryError::HttpStatus { .. } => {
+                LoginFailureKind::Network
+            }
             _ => LoginFailureKind::Server,
         },
         PasswordLoginError::Sdk(message) => {
@@ -949,6 +973,7 @@ fn classify_login_error(error: &matrix_desktop_auth::PasswordLoginError) -> Logi
 
 #[cfg(test)]
 mod tests {
+    use futures_util::stream;
     use tempfile::tempdir;
     use tokio::sync::{broadcast, mpsc};
 
@@ -1198,12 +1223,16 @@ mod tests {
             }) => {
                 assert_eq!(ev_id, request_id);
                 assert_eq!(sessions.len(), 2);
-                assert!(sessions.iter().any(|s| {
-                    s.user_id == "@alpha:example.test" && s.device_id == "DEVICE-A"
-                }));
-                assert!(sessions.iter().any(|s| {
-                    s.user_id == "@beta:example.test" && s.device_id == "DEVICE-B"
-                }));
+                assert!(
+                    sessions.iter().any(|s| {
+                        s.user_id == "@alpha:example.test" && s.device_id == "DEVICE-A"
+                    })
+                );
+                assert!(
+                    sessions.iter().any(|s| {
+                        s.user_id == "@beta:example.test" && s.device_id == "DEVICE-B"
+                    })
+                );
                 // Identity data only: SessionInfo has exactly homeserver /
                 // user_id / device_id (enforced by type); the Debug output of
                 // the event must not contain anything token-shaped.
@@ -1213,6 +1242,74 @@ mod tests {
             }
             other => panic!("expected SavedSessionsListed, got {other:?}"),
         }
+    }
+
+    /// Recovery-state observation must emit the reducer-legal state change
+    /// once per Incomplete transition, even if the stream repeats that state
+    /// before later becoming Enabled.
+    #[tokio::test]
+    async fn recovery_state_observer_deduplicates_repeated_incomplete() {
+        let info = SessionInfo {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@alice:example.test".to_owned(),
+            device_id: "DEVICE1".to_owned(),
+        };
+        let account_key = AccountKey(info.user_id.clone());
+        let states = stream::iter([
+            matrix_desktop_state::E2eeRecoveryState::Unknown,
+            matrix_desktop_state::E2eeRecoveryState::Incomplete,
+            matrix_desktop_state::E2eeRecoveryState::Incomplete,
+            matrix_desktop_state::E2eeRecoveryState::Enabled,
+            matrix_desktop_state::E2eeRecoveryState::Enabled,
+        ]);
+        let (action_tx, mut action_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (_stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+
+        run_recovery_state_observation(states, account_key.clone(), action_tx, event_tx, stop_rx)
+            .await;
+
+        let first_actions = action_rx.recv().await.expect("first action batch");
+        assert_eq!(
+            first_actions,
+            vec![AppAction::E2eeRecoveryStateChanged {
+                state: matrix_desktop_state::E2eeRecoveryState::Incomplete,
+                methods: vec![matrix_desktop_state::RecoveryMethod::RecoveryKey],
+            }]
+        );
+
+        match event_rx.recv().await.expect("recovery event") {
+            CoreEvent::Account(AccountEvent::RecoveryRequired {
+                account_key: emitted_key,
+            }) => {
+                assert_eq!(emitted_key, account_key);
+            }
+            other => panic!("expected RecoveryRequired event, got {other:?}"),
+        }
+
+        let second_actions = action_rx.recv().await.expect("follow-up action batch");
+        assert_eq!(
+            second_actions,
+            vec![AppAction::E2eeRecoveryStateChanged {
+                state: matrix_desktop_state::E2eeRecoveryState::Enabled,
+                methods: vec![matrix_desktop_state::RecoveryMethod::RecoveryKey],
+            }]
+        );
+
+        assert!(
+            matches!(
+                action_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ),
+            "repeated recovery states must not emit duplicate actions"
+        );
+        assert!(
+            matches!(
+                event_rx.recv().await,
+                Err(tokio::sync::broadcast::error::RecvError::Closed)
+            ),
+            "repeated recovery states must not emit duplicate RecoveryRequired events"
+        );
     }
 
     // -----------------------------------------------------------------------

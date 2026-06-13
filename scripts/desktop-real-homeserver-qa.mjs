@@ -29,7 +29,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -97,18 +97,14 @@ async function run() {
   );
 
   // Write all output to the per-run log FIRST, before any checks.
-  const log = createWriteStream(logPath, { flags: "a" });
+  const logParts = [];
   if (result.stdout) {
-    log.write("[real-homeserver-qa stdout]\n");
-    log.write(result.stdout);
-    log.write("\n");
+    logParts.push("[real-homeserver-qa stdout]\n", result.stdout, "\n");
   }
   if (result.stderr) {
-    log.write("[real-homeserver-qa stderr]\n");
-    log.write(result.stderr);
-    log.write("\n");
+    logParts.push("[real-homeserver-qa stderr]\n", result.stderr, "\n");
   }
-  log.end();
+  writeFileSync(logPath, logParts.join(""), "utf8");
 
   // Script-side redaction check (defence in depth): load the credentials
   // file and verify neither password nor recovery_key appears in the output.

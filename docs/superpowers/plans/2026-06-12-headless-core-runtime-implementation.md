@@ -227,6 +227,36 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 
 ## Changelog
 
+- 2026-06-13: Phase 8 runner follow-up — after the live green `qa:real-homeserver`
+  run, the runner log persistence bug was fixed by writing `qa.log`
+  synchronously before leak checks and exit handling, so the promised run log
+  now survives fast successful exits.
+
+- 2026-06-13: Phase 8 exit review fixes — real homeserver QA exposed two
+  product-gate failures after the initial green report. Recovery requirement
+  detection moved from one synchronous `e2ee_recovery_state()` read after
+  login/restore to an AccountActor-owned `e2ee_recovery_state_stream()`
+  observer. Stream-observed `Incomplete` now projects
+  `E2eeRecoveryStateChanged` (preserving running sync) and emits
+  `RecoveryRequired`; the observer is stopped on logout, account switch, and
+  actor shutdown. `real-homeserver-qa` now starts sync first so account data
+  can drive the recovery stream, then requires the approved account to reach
+  `recovery=completed`; `recovery=not_required` is no longer accepted.
+  `search=skipped` was removed: search smoke is assert-or-fail with logout
+  cleanup on failure. The live matrix.org re-run validated the recovery-path
+  fix and exposed a search probe ordering bug; search smoke now
+  uses a dedicated unedited probe message and polls search for that event
+  instead of the edited message 1 event. A subsequent live rerun failed earlier
+  at sync start with `SessionRequired`, exposing a post-login reducer race:
+  `LoggedIn` can arrive before the reducer publishes `SessionState::Ready`.
+  The QA binary now waits for a pre-sync Ready snapshot after login and before
+  `SyncCommand::Start`, while keeping the post-sync recovery-required flow
+  unchanged. Local verification: core lib tests green, real QA binary unit
+  tests green, `cargo check` for the QA binary green, secret scan green. Final
+  live matrix.org rerun (`2026-06-13T00-29-48-327Z`) is green:
+  `recovery=completed`, `search=ok`, `store_restore=ok`, `restore_body=ok`,
+  logout cleanup green.
+
 - 2026-06-13: Phase 7 exit review item 1 — startup-restore boundary
   implemented per the resolved canon. `AccountCommand::RestoreLastSession`
   (last-session pointer resolved inside AccountActor via StoreActor; missing
