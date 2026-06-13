@@ -473,11 +473,15 @@ primary correctness gate.
    HTTPS login, recovery, encrypted store restore, sync lifecycle, room list,
    timeline, send, search smoke, logout, account switch.
 4. **Headless UI tests** — the frontend runs in a plain headless browser
-   (Vite dev server + mocked Tauri IPC, e.g. WebdriverIO/Playwright browser
-   mode) against fake `CoreEvent`/snapshot streams. This layer owns React
-   UI behavior: timeline diff application, generation handling, scroll
-   anchoring and DOM scrollback behavior, command invocation shapes. It
-   runs without any native window or OS keychain access.
+   (Vite dev server + mocked Tauri IPC) against fake `CoreEvent`/snapshot
+   streams. This layer owns React UI behavior: timeline diff application,
+   generation handling, scroll anchoring and DOM scrollback behavior, command
+   invocation shapes, right-panel/settings/search interactions, and responsive
+   layout states. It runs without any native window or OS keychain access.
+   The current canonical harness is Playwright headless Chromium via
+   `npm --prefix apps/desktop run test:ui-headless`; WebdriverIO/Tauri
+   browser mode is allowed only after a package spike proves it keeps the
+   same no-native-app property.
 5. **GUI smoke** — a deliberately minimal, last layer for what only the
    real Tauri app can prove: native window behavior, real IPC, WKWebView
    integration. Subject to the automation rules in the policies document;
@@ -494,3 +498,21 @@ code and back-filled into core later.
 QA waits on events, never on fixed sleeps. QA asserts on `CoreEvent` and
 `AppStateSnapshot`, never on logs. Diagnostics are structured, redacted, and
 not a source of truth.
+
+## Phase 10+ Product Surface Roadmap
+
+The headless core runtime is complete through Phase 9 cleanup. Product UI work
+continues in
+`docs/superpowers/plans/2026-06-13-phase-10-ui-headless-product-surface.md`
+and keeps the same QA hierarchy.
+
+- **Phase 10:** harden the headless browser harness and IPC mock so the real
+  app shell can be mounted under fake `CoreEvent` and snapshot streams.
+- **Phase 11:** build the three-pane product surface, right panel, settings,
+  search, shortcut, and responsive UI behaviors in React, verified headless.
+- **Phase 12:** harden the Tauri transport contract and rerun local/real
+  homeserver QA for runtime-affecting changes, still without launching GUI.
+- **Phase 13:** run the minimal native GUI smoke for real IPC, native window,
+  OS menu, WebView, and keychain/system-dialog behavior only.
+- **Phase 14+:** finish distribution hardening, platform credential-store
+  evidence, signing/notarization, and device verification/cross-signing design.

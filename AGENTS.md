@@ -13,6 +13,8 @@ the operational detail here.
 
 All agents implementing the headless core runtime follow
 [docs/superpowers/plans/2026-06-12-headless-core-runtime-implementation.md](docs/superpowers/plans/2026-06-12-headless-core-runtime-implementation.md).
+All agents implementing the Phase 10+ product surface follow
+[docs/superpowers/plans/2026-06-13-phase-10-ui-headless-product-surface.md](docs/superpowers/plans/2026-06-13-phase-10-ui-headless-product-surface.md).
 
 - **Headless-first, local-server-first.** New Matrix behavior lands in
   `matrix-desktop-core`, verified via `CoreCommand`/`CoreEvent` against local
@@ -47,6 +49,11 @@ All agents implementing the headless core runtime follow
   Assignment in the implementation plan.
 - **Phase exits include a docs-sync check**: no known contradiction between
   landed code and the canon documents.
+- **Phase 10+ GUI launch policy.** React UI, DOM scroll behavior, command
+  shapes, fake `CoreEvent` streams, and Tauri IPC mock behavior are verified
+  in headless browser tests. Do not launch the native Tauri app for these.
+  Native GUI smoke is reserved for real IPC, native window, OS menu, WebView,
+  and keychain/system-dialog behavior; on macOS it is attended only.
 
 ## Local Gates Setup
 

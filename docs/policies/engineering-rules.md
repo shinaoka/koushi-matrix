@@ -97,6 +97,12 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    native-integration smoke, and on macOS only attended — unattended agent
    sessions must not launch the GUI app (it opens real windows, reads the
    OS keychain, and surfaces crash dialogs on the user's desktop).
+   The repository's canonical headless DOM gate is currently
+   `npm --prefix apps/desktop run test:ui-headless` using Playwright against
+   the Vite harness. `@wdio/tauri-service` browser mode may be adopted only
+   after a spike proves the installed package can run the frontend in a
+   normal browser without a Tauri binary, native driver, native window, or
+   OS keychain access.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.
@@ -144,6 +150,9 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    `qa:headless-local -- --server=both`.
 4. Real homeserver QA is a release/preflight gate (network + approved
    credentials), not an every-CI gate.
+   It is also required before GUI-level confidence claims and after changes
+   that affect login, recovery, sync, encrypted restore, search, room cleanup,
+   or logout.
 5. Production Tauri paths must not execute fixture-backend behavior;
    `matrix-desktop-backend` is dev/demo only.
 6. Core crates stay platform-portable (a future browser/wasm target must not

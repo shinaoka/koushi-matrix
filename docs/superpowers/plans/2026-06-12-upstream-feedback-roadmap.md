@@ -26,8 +26,16 @@
 - The local search adapter already treats ngram as a candidate generator and verifies exact visible spans before showing highlights.
 - `vendor/matrix-rust-sdk/crates/matrix-sdk-search` contains the ngram tokenizer spike.
 
-The prototype is now past the code-level roadmap items through Milestone 9. Remaining gates are distribution-focused: live OS credential-store tests on Windows, real-account QA for flows that are not covered by smoke automation, macOS signing/notarization, and Windows signing.
-Real-account smoke coverage has verified password login, in-memory persistable session export/import, SDK session restore, one SDK sync, private-data-free room-list counts, selected-room timeline item counts after timeline backfill, and logout; the broader real-account QA checklist still remains for search, edit, redaction, account switch, and UI-specific flows.
+The prototype is now past the code-level roadmap items through Milestone 9.
+Phase 10+ work moves the product surface forward while preserving the
+headless-first rule. The next execution plan is
+`docs/superpowers/plans/2026-06-13-phase-10-ui-headless-product-surface.md`.
+Remaining distribution gates are live OS credential-store tests on Windows,
+macOS signing/notarization, Windows signing, and trust UX work for device
+verification/cross-signing.
+Real-homeserver QA now covers password login, recovery completion, encrypted
+store restore, message body restore, room list/timeline behavior, send/edit/
+redaction/search smoke, synthetic QA room leave/forget cleanup, and logout.
 
 ## Milestone 1: Harden The Login And Recovery Boundary
 
@@ -185,11 +193,98 @@ git -C vendor/matrix-rust-sdk diff --check
 
 Implementation evidence is tracked in `docs/qa/milestone-9-completion-audit.md`.
 Distribution gates still required before shipping signed binaries are macOS signing/notarization,
-Windows signing, live OS credential-store ignored tests on Windows, and real-account QA
-for flows not covered by the smoke automation.
+Windows signing, live OS credential-store ignored tests on Windows, and
+real-homeserver QA as release/preflight evidence.
+
+## Milestone 10: Headless UI Contract And Harness Hardening
+
+- [ ] Treat `npm --prefix apps/desktop run test:ui-headless` as the canonical
+  GUI-free DOM gate.
+- [ ] Extend the Vite/Playwright harness and `TauriIpcMock` so the real app
+  shell, not only isolated timeline pieces, can be mounted with synthetic
+  snapshots and fake `CoreEvent` streams.
+- [ ] Add command-shape assertions for room selection, right-panel open/close,
+  search entry, settings entry, and logout entry.
+- [ ] Keep `@wdio/tauri-service` browser mode behind a spike until the
+  installed package proves it can run browser mode without a Tauri binary,
+  native driver, native window, or OS keychain access.
+- [ ] Run:
+
+```bash
+npm --prefix apps/desktop run typecheck
+npm --prefix apps/desktop run test
+npm --prefix apps/desktop run test:ui-headless
+npm --prefix apps/desktop run test:ipc-contract
+```
+
+## Milestone 11: Product UI Layout And Interaction Surface
+
+- [ ] Build the Element-like three-pane desktop surface in React over the
+  existing snapshot/event contract.
+- [ ] Verify right-panel modes, settings, search, shortcut UI, focus return,
+  narrow-width behavior, and scroll anchoring in Vitest/Playwright headless
+  tests.
+- [ ] Keep new Matrix behavior out of React. If a UI action requires runtime
+  behavior that core does not expose, design the core command/event first and
+  verify it headlessly.
+- [ ] Run:
+
+```bash
+npm --prefix apps/desktop run typecheck
+npm --prefix apps/desktop run test
+npm --prefix apps/desktop run test:ui-headless
+npm --prefix apps/desktop run qa:secret-scan
+```
+
+## Milestone 12: Runtime Transport Integration Hardening
+
+- [ ] Add or update Rust tests for every Tauri command that forwards to
+  `CoreRuntime`.
+- [ ] Keep production Tauri command paths free of fixture-backend behavior.
+- [ ] Rerun local homeserver QA whenever Matrix behavior changes.
+- [ ] Rerun real-homeserver QA before GUI-level confidence, release-preflight
+  claims, or changes affecting login, recovery, sync, encrypted restore,
+  search, room cleanup, or logout.
+- [ ] Run:
+
+```bash
+cargo test -p matrix-desktop-core --lib
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+npm --prefix apps/desktop run qa:headless-local -- --server=both
+npm --prefix apps/desktop run qa:real-homeserver
+```
+
+## Milestone 13: Native GUI Smoke And OS Integration
+
+- [ ] Launch the real Tauri app only for native behavior that headless tests
+  cannot prove: real IPC, native window lifecycle, OS menu accelerators,
+  WebView integration, and keychain/system-dialog behavior.
+- [ ] Keep macOS native GUI smoke attended. Unattended agents must not launch
+  the GUI app.
+- [ ] Continue credential entry only through FIFO or approved debug/test
+  credential-store paths.
+- [ ] Run, only after coordination with the user:
+
+```bash
+npm --prefix apps/desktop run qa:mac-gui
+```
+
+## Milestone 14: Distribution, Trust UX, And Release Hardening
+
+- [ ] Run live OS credential-store ignored tests on Windows.
+- [ ] Prepare signed macOS and Windows release builds, including notarization
+  and installer verification.
+- [ ] Design device verification and cross-signing under `AccountActor` before
+  claiming E2EE trust UX completeness.
+- [ ] Review vendored SDK patches at phase exit and remove any patch that is
+  no longer indispensable.
 
 ## Immediate Next Work
 
-1. Run the live OS credential-store ignored tests on Windows.
-2. Extend real-account smoke automation beyond restored login, room list, and timeline to cover recovery prompting, search, edit, redaction, account switch, shortcut parity, right-panel behavior, settings placement, and Space info/settings flows where practical.
-3. Prepare signed macOS and Windows release builds, including notarization/signing credentials and platform-specific installer verification.
+1. Execute Milestone 10 from
+   `2026-06-13-phase-10-ui-headless-product-surface.md` using the subagent
+   reviewer/implementer pattern.
+2. Keep real-homeserver QA in Milestone 12 and release preflight, not in
+   ordinary React-only headless UI loops.
+3. Defer native GUI smoke to Milestone 13 after headless UI, runtime transport,
+   local homeserver, secret-scan, and real-homeserver gates are green.
