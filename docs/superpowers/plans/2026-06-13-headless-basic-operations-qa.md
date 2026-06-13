@@ -841,14 +841,18 @@ Verified on 2026-06-13:
 Docker local-send passed with `notification_dbus=ok`, `window_state_path_contract=ok`, `gui_local_send=ok`;
 the image now includes `conduit`, `tuwunel`, and `zstd`.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add scripts/desktop-linux-gui-qa.mjs scripts/lib/local-homeserver-qa.mjs scripts/desktop-headless-local-qa.mjs apps/desktop/src/domain/qaTitle.ts apps/desktop/src/App.tsx apps/desktop/src/scripts/releaseScripts.test.ts docs/qa/headless-basic-operations.md
 git commit -m "qa: drive basic operations through Linux virtual display"
 ```
 
+Verified on 2026-06-13 with commit `951056c` (`qa: drive Linux GUI basic operations locally`).
+
 ## Task 9: Expand Virtual-Display Client To Room/Space/Reply Controls
+
+Gate review, 2026-06-13: deferred until the real product UI exposes the needed room/space/reply controls. Current audit shows the Add workspace button in `apps/desktop/src/App.tsx` has no handler, the room and space panels are read-only info panels, the thread composer is only a textarea and is not wired to send a reply, and `apps/desktop/src/backend/client.ts` exposes select/open/send text but no UI API for create room, create space, or reply. Do not treat Task 9 as implemented yet; keep the scenario steps unchecked. If the next pass proceeds without GUI controls, the remaining coverage path is headless Task 10.
 
 **Files:**
 - Modify after product controls exist: `scripts/desktop-linux-gui-qa.mjs`
