@@ -903,6 +903,24 @@ git commit -m "qa: verify replies through Linux client"
 git commit -m "qa: verify threads through Linux client"
 ```
 
+## Task 10: No-GUI Headless Acceptance
+
+Task 10 was accepted without launching the GUI.
+
+- Local headless basic operations were checked with `server=conduit` and
+  `server=tuwunel`, and the final safe tokens were
+  `safety=ok`, `login_sync=ok`, `room_space=ok`, `timeline=ok`,
+  `reply=ok`, `thread=ok`, `edit_redact_search=ok`, `restore_cleanup=ok`.
+- matrix.org headless compatibility was checked once through the package
+  script's compat scenario with a one-login budget, and the final summary
+  tokens were `login=ok`, `recovery=completed`, `sync=ok`, `rooms=5`,
+  `spaces=1`, `dms=1`, `qa_room=created`, `send_msg1=ok`,
+  `send_msg2=ok`, `edit_msg1=ok`, `redact_msg2=ok`,
+  `paginate=end_reached`, `search=ok`, `store_restore=ok`,
+  `restore_body=ok`, `leave_room=ok`, `forget_room=ok`,
+  `logout=ok`, `post_logout_restore=not_found`.
+- No GUI was launched for Task 10.
+
 ## Final Verification
 
 Before claiming the plan complete, run:
