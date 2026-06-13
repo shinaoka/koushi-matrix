@@ -842,19 +842,18 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit send1: {e}"))?;
 
-    // Assert local echo appears as a Transaction diff (SDK-generated txn_id).
-    let echo1_sdk_txn =
-        wait_for_local_echo_diff(&mut conn_a, &key_a, &txn1, "local echo msg1").await?;
+    let send1_outcome = wait_for_send_flow_completion(
+        &mut conn_a,
+        send1_id,
+        &key_a,
+        &txn1,
+        "Phase 5 QA message 1",
+        "send flow msg1",
+    )
+    .await?;
+    let echo1_sdk_txn = send1_outcome.sdk_transaction_id.clone();
     println!("local_echo_msg1=ok sdk_txn={echo1_sdk_txn}");
-
-    // Assert SendCompleted with matching txn_id and an event_id.
-    let (send1_completed_txn, event1_id) =
-        wait_for_send_completed(&mut conn_a, send1_id, &key_a, "send completed msg1").await?;
-    if send1_completed_txn != txn1 {
-        return Err(format!(
-            "send1 txn_id mismatch: expected {txn1}, got {send1_completed_txn}"
-        ));
-    }
+    let event1_id = send1_outcome.event_id;
     println!("send_completed_msg1=ok event_id={event1_id}");
 
     // A sends message 2.
@@ -870,17 +869,18 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit send2: {e}"))?;
 
-    let echo2_sdk_txn =
-        wait_for_local_echo_diff(&mut conn_a, &key_a, &txn2, "local echo msg2").await?;
+    let send2_outcome = wait_for_send_flow_completion(
+        &mut conn_a,
+        send2_id,
+        &key_a,
+        &txn2,
+        "Phase 5 QA message 2",
+        "send flow msg2",
+    )
+    .await?;
+    let echo2_sdk_txn = send2_outcome.sdk_transaction_id.clone();
     println!("local_echo_msg2=ok sdk_txn={echo2_sdk_txn}");
-
-    let (send2_completed_txn, event2_id) =
-        wait_for_send_completed(&mut conn_a, send2_id, &key_a, "send completed msg2").await?;
-    if send2_completed_txn != txn2 {
-        return Err(format!(
-            "send2 txn_id mismatch: expected {txn2}, got {send2_completed_txn}"
-        ));
-    }
+    let event2_id = send2_outcome.event_id;
     println!("send_completed_msg2=ok event_id={event2_id}");
 
     // B subscribes and receives both messages (event-driven wait on diffs).
@@ -2063,46 +2063,148 @@ fn thread_reply_should_repaginate_on_idle(pagination_ended: bool) -> bool {
     !pagination_ended
 }
 
-/// Wait for an `ItemsUpdated` diff batch containing any new Transaction item
-/// (local echo). Since the SDK send queue generates its own txn_id (not the
-/// client-supplied one), we just wait for ANY Transaction-id item to appear.
-/// Returns the SDK-generated transaction_id string from the matching item.
-async fn wait_for_local_echo_diff(
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct SendFlowOutcome {
+    sdk_transaction_id: String,
+    send_transaction_id: String,
+    event_id: String,
+}
+
+#[derive(Debug)]
+struct SendFlowWaiter {
+    request_id: matrix_desktop_core::ids::RequestId,
+    key: TimelineKey,
+    expected_client_txn_id: String,
+    expected_body: String,
+    sdk_transaction_id: Option<String>,
+    send_transaction_id: Option<String>,
+    event_id: Option<String>,
+}
+
+impl SendFlowWaiter {
+    fn new(
+        request_id: matrix_desktop_core::ids::RequestId,
+        key: TimelineKey,
+        expected_client_txn_id: impl Into<String>,
+        expected_body: impl Into<String>,
+    ) -> Self {
+        Self {
+            request_id,
+            key,
+            expected_client_txn_id: expected_client_txn_id.into(),
+            expected_body: expected_body.into(),
+            sdk_transaction_id: None,
+            send_transaction_id: None,
+            event_id: None,
+        }
+    }
+
+    fn observe(&mut self, event: CoreEvent) -> Result<(), String> {
+        match event {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == &self.key => {
+                if self.sdk_transaction_id.is_none() {
+                    self.observe_local_echo(diffs);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id: ev_id,
+                key: ref ev_key,
+                transaction_id,
+                event_id,
+            }) if ev_id == self.request_id && ev_key == &self.key => {
+                if transaction_id != self.expected_client_txn_id {
+                    return Err(format!(
+                        "send completed txn_id mismatch: expected {}, got {}",
+                        self.expected_client_txn_id, transaction_id
+                    ));
+                }
+                self.send_transaction_id = Some(transaction_id);
+                self.event_id = Some(event_id);
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == self.request_id => {
+                return Err(format!("send flow failed: {failure:?}"));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn observe_local_echo(&mut self, diffs: Vec<matrix_desktop_core::event::TimelineDiff>) {
+        for diff in &diffs {
+            let item = match diff {
+                matrix_desktop_core::event::TimelineDiff::PushBack { item }
+                | matrix_desktop_core::event::TimelineDiff::PushFront { item }
+                | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
+                | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => item,
+                _ => continue,
+            };
+            if item
+                .body
+                .as_ref()
+                .map(|body| body.contains(&self.expected_body))
+                .unwrap_or(false)
+            {
+                if let matrix_desktop_core::event::TimelineItemId::Transaction {
+                    transaction_id,
+                } = &item.id
+                {
+                    self.sdk_transaction_id = Some(transaction_id.clone());
+                    break;
+                }
+            }
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.sdk_transaction_id.is_some()
+            && self.send_transaction_id.is_some()
+            && self.event_id.is_some()
+    }
+
+    fn finish(self) -> Result<SendFlowOutcome, String> {
+        Ok(SendFlowOutcome {
+            sdk_transaction_id: self
+                .sdk_transaction_id
+                .ok_or_else(|| "send flow: missing local echo".to_owned())?,
+            send_transaction_id: self
+                .send_transaction_id
+                .ok_or_else(|| "send flow: missing SendCompleted".to_owned())?,
+            event_id: self
+                .event_id
+                .ok_or_else(|| "send flow: missing SendCompleted event id".to_owned())?,
+        })
+    }
+}
+
+/// Wait for both the local echo diff and `TimelineEvent::SendCompleted`
+/// for a single send sequence, accepting either order.
+async fn wait_for_send_flow_completion(
     conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
     key: &TimelineKey,
-    _client_txn_id: &str,
+    client_txn_id: &str,
+    expected_body: &str,
     label: &str,
-) -> Result<String, String> {
+) -> Result<SendFlowOutcome, String> {
+    let mut waiter =
+        SendFlowWaiter::new(request_id, key.clone(), client_txn_id, expected_body);
+
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for local echo diff"))?
+            .map_err(|_| format!("{label}: timed out waiting for send flow completion"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
-        if let CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-            key: ref ev_key,
-            diffs,
-            ..
-        }) = event
-        {
-            if ev_key != key {
-                continue;
-            }
-            for diff in &diffs {
-                let item = match diff {
-                    matrix_desktop_core::event::TimelineDiff::PushBack { item }
-                    | matrix_desktop_core::event::TimelineDiff::PushFront { item }
-                    | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
-                    | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => item,
-                    _ => continue,
-                };
-                if let matrix_desktop_core::event::TimelineItemId::Transaction {
-                    transaction_id: ref t,
-                } = item.id
-                {
-                    return Ok(t.clone());
-                }
-            }
+        waiter.observe(event)?;
+        if waiter.is_complete() {
+            return waiter.finish();
         }
     }
 }
@@ -2884,6 +2986,59 @@ mod tests {
         }];
 
         assert!(find_timeline_item_with_body(&items, "thread reply from B").is_none());
+    }
+
+    #[test]
+    fn send_flow_waiter_accepts_send_completed_before_local_echo() {
+        let key = TimelineKey::room(
+            AccountKey("@alice:test".to_owned()),
+            "!room:test".to_owned(),
+        );
+        let request_id = matrix_desktop_core::ids::RequestId {
+            connection_id: matrix_desktop_core::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let mut waiter = SendFlowWaiter::new(
+            request_id,
+            key.clone(),
+            "qa-phase5-txn-1",
+            "Phase 5 QA message 1",
+        );
+
+        assert!(!waiter.is_complete());
+        waiter
+            .observe(CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id,
+                key: key.clone(),
+                transaction_id: "qa-phase5-txn-1".to_owned(),
+                event_id: "$event:test".to_owned(),
+            }))
+            .unwrap();
+        assert!(!waiter.is_complete());
+
+        waiter
+            .observe(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: key.clone(),
+                generation: matrix_desktop_core::ids::TimelineGeneration(1),
+                batch_id: matrix_desktop_core::ids::TimelineBatchId(1),
+                diffs: vec![matrix_desktop_core::event::TimelineDiff::PushBack {
+                    item: matrix_desktop_core::event::TimelineItem {
+                        id: matrix_desktop_core::event::TimelineItemId::Transaction {
+                            transaction_id: "sdk-txn-1".to_owned(),
+                        },
+                        sender: Some("@alice:test".to_owned()),
+                        body: Some("Phase 5 QA message 1".to_owned()),
+                        timestamp_ms: None,
+                        in_reply_to_event_id: None,
+                    },
+                }],
+            }))
+            .unwrap();
+
+        let result = waiter.finish().unwrap();
+        assert_eq!(result.sdk_transaction_id, "sdk-txn-1");
+        assert_eq!(result.send_transaction_id, "qa-phase5-txn-1");
+        assert_eq!(result.event_id, "$event:test");
     }
 
     #[test]
