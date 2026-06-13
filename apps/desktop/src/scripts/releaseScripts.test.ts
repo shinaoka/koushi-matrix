@@ -347,6 +347,33 @@ describe("desktop release scripts", () => {
     }
   });
 
+  test("headless local QA script lists staged scenarios", () => {
+    const output = runScript("scripts/desktop-headless-local-qa.mjs", ["--list"]);
+
+    for (const scenario of [
+      "scenario safety",
+      "scenario login_sync",
+      "scenario room_space",
+      "scenario timeline",
+      "scenario reply",
+      "scenario thread",
+      "scenario edit_redact_search",
+      "scenario restore_cleanup"
+    ]) {
+      expect(output).toContain(scenario);
+    }
+  });
+
+  test("headless local QA forwards the selected scenario to core QA", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("--scenario");
+    expect(source).toContain("MATRIX_DESKTOP_QA_SCENARIO");
+  });
+
   test("headless local QA configs bind only to loopback disposable stores", () => {
     const conduit = runScript("scripts/desktop-headless-local-qa.mjs", [
       "--print-conduit-config"

@@ -56,6 +56,7 @@ const ENV_PASSWORD_B: &str = "MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B";
 /// needed): when set, QA fails if the backend reported in SyncEvent::Started
 /// differs. Valid values: "SyncService" | "LegacySync".
 const ENV_EXPECT_SYNC_BACKEND: &str = "MATRIX_DESKTOP_LOCAL_QA_EXPECT_SYNC_BACKEND";
+const ENV_QA_SCENARIO: &str = "MATRIX_DESKTOP_QA_SCENARIO";
 #[cfg(any(debug_assertions, test))]
 const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR";
 
@@ -64,6 +65,19 @@ const DEVICE_B: &str = "Matrix Desktop Core QA B";
 
 /// Maximum time to wait for a single event.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QaScenario {
+    All,
+    Safety,
+    LoginSync,
+    RoomSpace,
+    Timeline,
+    Reply,
+    Thread,
+    EditRedactSearch,
+    RestoreCleanup,
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -79,6 +93,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<String, String> {
+    let scenario = QaScenario::from_env()?;
+    scenario_preflight_error(scenario)?;
+
     // Hard guard BEFORE any login: unattended QA must never touch the OS
     // keychain, even if env wiring regresses.
     assert_file_credential_store_active()?;
@@ -123,6 +140,56 @@ fn assert_file_credential_store_active() -> Result<(), String> {
                 .to_owned(),
         )
     }
+}
+
+impl QaScenario {
+    fn from_env() -> Result<Self, String> {
+        match std::env::var(ENV_QA_SCENARIO) {
+            Ok(value) => Self::from_env_value(&value),
+            Err(_) => Ok(Self::All),
+        }
+    }
+
+    fn from_env_value(value: &str) -> Result<Self, String> {
+        match value {
+            "all" => Ok(Self::All),
+            "safety" => Ok(Self::Safety),
+            "login_sync" => Ok(Self::LoginSync),
+            "room_space" => Ok(Self::RoomSpace),
+            "timeline" => Ok(Self::Timeline),
+            "reply" => Ok(Self::Reply),
+            "thread" => Ok(Self::Thread),
+            "edit_redact_search" => Ok(Self::EditRedactSearch),
+            "restore_cleanup" => Ok(Self::RestoreCleanup),
+            other => Err(format!(
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, room_space, timeline, reply, thread, edit_redact_search, restore_cleanup; got {other}"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Safety => "safety",
+            Self::LoginSync => "login_sync",
+            Self::RoomSpace => "room_space",
+            Self::Timeline => "timeline",
+            Self::Reply => "reply",
+            Self::Thread => "thread",
+            Self::EditRedactSearch => "edit_redact_search",
+            Self::RestoreCleanup => "restore_cleanup",
+        }
+    }
+}
+
+fn scenario_preflight_error(scenario: QaScenario) -> Result<(), String> {
+    if scenario != QaScenario::All {
+        return Err(format!(
+            "staged scenarios are parsed but not wired yet: {}",
+            scenario.as_str()
+        ));
+    }
+    Ok(())
 }
 
 async fn run_async(config: QaConfig) -> Result<String, String> {
@@ -1996,5 +2063,54 @@ async fn wait_for_search_result(
             }
             _ => continue,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_all_scenarios_from_env_value() {
+        assert_eq!(QaScenario::from_env_value("all").unwrap(), QaScenario::All);
+        assert_eq!(QaScenario::from_env_value("safety").unwrap(), QaScenario::Safety);
+        assert_eq!(
+            QaScenario::from_env_value("login_sync").unwrap(),
+            QaScenario::LoginSync
+        );
+        assert_eq!(
+            QaScenario::from_env_value("room_space").unwrap(),
+            QaScenario::RoomSpace
+        );
+        assert_eq!(
+            QaScenario::from_env_value("timeline").unwrap(),
+            QaScenario::Timeline
+        );
+        assert_eq!(QaScenario::from_env_value("reply").unwrap(), QaScenario::Reply);
+        assert_eq!(QaScenario::from_env_value("thread").unwrap(), QaScenario::Thread);
+        assert_eq!(
+            QaScenario::from_env_value("edit_redact_search").unwrap(),
+            QaScenario::EditRedactSearch
+        );
+        assert_eq!(
+            QaScenario::from_env_value("restore_cleanup").unwrap(),
+            QaScenario::RestoreCleanup
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_scenario_names() {
+        let error = QaScenario::from_env_value("unknown").unwrap_err();
+
+        assert!(error.contains("MATRIX_DESKTOP_QA_SCENARIO"));
+        assert!(error.contains("unknown"));
+    }
+
+    #[test]
+    fn non_all_scenarios_are_staged_but_not_wired() {
+        let error = scenario_preflight_error(QaScenario::Reply).unwrap_err();
+
+        assert!(error.contains("staged scenarios are parsed but not wired yet"));
+        assert!(error.contains("reply"));
     }
 }

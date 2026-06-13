@@ -8,6 +8,14 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localSecretsRoot = join(repoRoot, ".local-secrets", "headless-local-qa");
 const checks = [
+  "scenario safety",
+  "scenario login_sync",
+  "scenario room_space",
+  "scenario timeline",
+  "scenario reply",
+  "scenario thread",
+  "scenario edit_redact_search",
+  "scenario restore_cleanup",
   "verify installed Conduit binary",
   "verify installed Tuwunel binary",
   "start disposable local homeserver",
@@ -19,6 +27,7 @@ const checks = [
 const args = new Set(process.argv.slice(2));
 const serverOption = optionValue("--server") ?? "both";
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "90000");
+const scenarioOption = optionValue("--scenario") ?? "all";
 // --core: run the headless-core-qa binary in addition to (or instead of) the
 // headless-local-qa binary. When this flag is present, both QA paths run for
 // each server so both layers are exercised.
@@ -311,7 +320,8 @@ function runCoreHeadlessQa({
     MATRIX_DESKTOP_LOCAL_QA_USER_B: userB,
     MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B: passwordB,
     MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR: credStoreDir,
-    MATRIX_DESKTOP_QA_DATA_DIR: runDataDir
+    MATRIX_DESKTOP_QA_DATA_DIR: runDataDir,
+    MATRIX_DESKTOP_QA_SCENARIO: scenarioOption
   };
   if (forceLegacyBackend) {
     // Debug/test-only override; release builds ignore it entirely.
@@ -493,7 +503,7 @@ function sleep(ms) {
 
 function printUsage() {
   console.log(
-    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both] [--core]"
+    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both] [--scenario=all] [--core]"
   );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
   console.log("  --core  Also run the headless-core-qa binary (Phase 2+ core runtime QA).");
