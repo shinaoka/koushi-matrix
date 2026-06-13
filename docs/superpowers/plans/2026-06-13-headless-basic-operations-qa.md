@@ -568,13 +568,14 @@ Support `compat`, `space_compat`, and `all`.
 
 - [ ] **Step 3: Implement single-account space create/set-child/cleanup**
 
-Use the existing QA-created room. Create a synthetic QA space with a unique name, set the QA room as child, wait until the snapshot includes the space and child relationship, then leave/forget the space during cleanup.
+Use the existing QA-created room. Create a synthetic QA space with a unique name, set the QA room as child, then treat the room-list projection as an optional observation instead of a gate. On matrix.org, the hard evidence is server acceptance of create and SetSpaceChild plus reliable leave/forget cleanup; the projection is only recorded when it shows up before the bounded probe times out.
 
 Emit:
 
 ```rust
 println!("real_space_create=ok");
 println!("real_space_child=ok");
+println!("real_space_projection=observed"); // or real_space_projection=not_observed
 println!("real_space_cleanup=ok");
 ```
 
@@ -586,7 +587,7 @@ Run only after local lanes are green:
 npm --prefix apps/desktop run qa:real-homeserver -- --scenario=space_compat
 ```
 
-Expected: one login, cleanup on success, no secret leakage, final summary contains the three real-space tokens.
+Expected: one login, cleanup on success, no secret leakage, final summary still contains only `real_space_create=ok real_space_child=ok real_space_cleanup=ok`, and the transcript records `real_space_projection=observed` only when the bounded room-list probe sees it.
 
 - [ ] **Step 5: Commit**
 

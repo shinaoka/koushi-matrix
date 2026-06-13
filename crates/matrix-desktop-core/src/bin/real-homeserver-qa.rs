@@ -74,11 +74,42 @@ use matrix_desktop_state::{AppState, AuthSecret, LoginRequest, RecoveryRequest, 
 // ---------------------------------------------------------------------------
 
 const ENV_DATA_DIR: &str = "MATRIX_DESKTOP_QA_DATA_DIR";
+const ENV_REAL_QA_SCENARIO: &str = "MATRIX_DESKTOP_REAL_QA_SCENARIO";
 
 #[cfg(any(debug_assertions, test))]
 const ENV_CREDENTIALS_PATH: &str = "MATRIX_DESKTOP_REAL_QA_CREDENTIALS_PATH";
 #[cfg(any(debug_assertions, test))]
 const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR";
+
+#[cfg(any(debug_assertions, test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RealQaScenario {
+    Compat,
+    SpaceCompat,
+    All,
+}
+
+#[cfg(any(debug_assertions, test))]
+impl RealQaScenario {
+    fn from_env() -> Result<Self, String> {
+        Self::from_env_value(std::env::var(ENV_REAL_QA_SCENARIO).ok())
+    }
+
+    fn from_env_value(value: Option<String>) -> Result<Self, String> {
+        match value.as_deref() {
+            None | Some("compat") => Ok(Self::Compat),
+            Some("space_compat") => Ok(Self::SpaceCompat),
+            Some("all") => Ok(Self::All),
+            Some(other) => Err(format!(
+                "unsupported {ENV_REAL_QA_SCENARIO} value '{other}'; expected compat, space_compat, or all"
+            )),
+        }
+    }
+
+    fn includes_space_stage(self) -> bool {
+        matches!(self, Self::SpaceCompat | Self::All)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Timeout constants - matrix.org is slower than local servers
@@ -90,6 +121,8 @@ const EVENT_TIMEOUT: Duration = Duration::from_secs(60);
 const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 /// Extended timeout for room list non-empty wait.
 const ROOM_LIST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Shorter timeout for the optional space-child projection observation.
+const SPACE_CHILD_PROJECTION_TIMEOUT: Duration = Duration::from_secs(20);
 /// Timeout for search indexing (ngram index updated by sync loop).
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(90);
 /// Timeout for edit/redact confirmation (sync round-trip).
@@ -202,6 +235,7 @@ fn run() -> Result<String, String> {
     assert_file_credential_store_active()?;
 
     let creds = RealCredentials::load()?;
+    let scenario = RealQaScenario::from_env()?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -209,7 +243,7 @@ fn run() -> Result<String, String> {
         .map_err(|e| format!("Tokio runtime creation failed: {e}"))?;
 
     let mut transcript: Vec<String> = Vec::new();
-    let result = rt.block_on(run_async(&creds, &mut transcript));
+    let result = rt.block_on(run_async(&creds, scenario, &mut transcript));
 
     // Self-check: scan every line of the transcript for the secret values
     // before we emit the summary to stdout.
@@ -292,6 +326,35 @@ mod search_plan_tests {
     }
 }
 
+#[cfg(test)]
+mod scenario_tests {
+    use super::*;
+
+    #[test]
+    fn real_homeserver_qa_scenario_parses_known_names() {
+        assert_eq!(
+            RealQaScenario::from_env_value(Some("compat".to_owned())).unwrap(),
+            RealQaScenario::Compat
+        );
+        assert_eq!(
+            RealQaScenario::from_env_value(Some("space_compat".to_owned())).unwrap(),
+            RealQaScenario::SpaceCompat
+        );
+        assert_eq!(
+            RealQaScenario::from_env_value(Some("all".to_owned())).unwrap(),
+            RealQaScenario::All
+        );
+    }
+
+    #[test]
+    fn real_homeserver_qa_scenario_defaults_to_compat_when_missing() {
+        assert_eq!(
+            RealQaScenario::from_env_value(None).unwrap(),
+            RealQaScenario::Compat
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Data directory helper
 // ---------------------------------------------------------------------------
@@ -317,6 +380,7 @@ fn real_qa_data_dir() -> std::path::PathBuf {
 #[cfg(any(debug_assertions, test))]
 async fn run_async(
     creds: &RealCredentials,
+    scenario: RealQaScenario,
     transcript: &mut Vec<String>,
 ) -> Result<String, String> {
     let data_dir = real_qa_data_dir();
@@ -464,6 +528,81 @@ async fn run_async(
     let line = format!("qa_room=created room_id={qa_room_id}");
     transcript.push(line.clone());
     println!("{line}");
+
+    let mut real_space_id: Option<String> = None;
+    if scenario.includes_space_stage() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let qa_space_name = format!("core-real-space-{ts}-{}", std::process::id());
+
+        let create_space_id = conn.next_request_id();
+        conn.command(CoreCommand::Room(RoomCommand::CreateSpace {
+            request_id: create_space_id,
+            name: qa_space_name.clone(),
+        }))
+        .await
+        .map_err(|e| format!("create QA space command submit failed: {e}"))?;
+
+        let qa_space_id =
+            wait_for_space_created(&mut conn, create_space_id, "create QA space").await?;
+        let line = format!("real_space_create=ok space_id={qa_space_id}");
+        transcript.push(line.clone());
+        println!("{line}");
+
+        let via_server = creds
+            .user_id
+            .split_once(':')
+            .map(|(_, server)| server.to_owned())
+            .ok_or_else(|| "cannot derive space via_server from user_id".to_owned())?;
+
+        let set_child_id = conn.next_request_id();
+        conn.command(CoreCommand::Room(RoomCommand::SetSpaceChild {
+            request_id: set_child_id,
+            space_id: qa_space_id.clone(),
+            child_room_id: qa_room_id.clone(),
+            via_server,
+        }))
+        .await
+        .map_err(|e| format!("set QA space child command submit failed: {e}"))?;
+
+        wait_for_space_child_set(
+            &mut conn,
+            set_child_id,
+            &qa_space_id,
+            &qa_room_id,
+            "set QA space child",
+        )
+        .await?;
+
+        let line = "real_space_child=ok".to_owned();
+        transcript.push(line.clone());
+        println!("{line}");
+
+        match wait_for_room_list_space_child(
+            &mut conn,
+            &qa_space_id,
+            &qa_room_id,
+            "space child projection",
+            SPACE_CHILD_PROJECTION_TIMEOUT,
+        )
+        .await
+        {
+            Ok(_) => {
+                let line = "real_space_projection=observed".to_owned();
+                transcript.push(line.clone());
+                println!("{line}");
+            }
+            Err(_) => {
+                let line = "real_space_projection=not_observed".to_owned();
+                transcript.push(line.clone());
+                println!("{line}");
+            }
+        }
+
+        real_space_id = Some(qa_space_id);
+    }
 
     // Subscribe to the QA room timeline.
     let timeline_key = TimelineKey::room(account_key.clone(), qa_room_id.clone());
@@ -805,29 +944,65 @@ async fn run_async(
     // -----------------------------------------------------------------------
     // Step 8: Leave/forget QA room
     // -----------------------------------------------------------------------
-    let leave_room_id = conn2.next_request_id();
-    conn2
-        .command(CoreCommand::Room(RoomCommand::LeaveRoom {
-            request_id: leave_room_id,
-            room_id: qa_room_id.clone(),
-        }))
-        .await
-        .map_err(|e| format!("leave QA room command submit failed: {e}"))?;
-    wait_for_room_left(&mut conn2, leave_room_id, &qa_room_id, "leave QA room").await?;
+    let cleanup_result: Result<(), String> = async {
+        let leave_room_id = conn2.next_request_id();
+        conn2
+            .command(CoreCommand::Room(RoomCommand::LeaveRoom {
+                request_id: leave_room_id,
+                room_id: qa_room_id.clone(),
+            }))
+            .await
+            .map_err(|e| format!("leave QA room command submit failed: {e}"))?;
+        wait_for_room_left(&mut conn2, leave_room_id, &qa_room_id, "leave QA room").await?;
 
-    let forget_room_id = conn2.next_request_id();
-    conn2
-        .command(CoreCommand::Room(RoomCommand::ForgetRoom {
-            request_id: forget_room_id,
-            room_id: qa_room_id.clone(),
-        }))
-        .await
-        .map_err(|e| format!("forget QA room command submit failed: {e}"))?;
-    wait_for_room_forgotten(&mut conn2, forget_room_id, &qa_room_id, "forget QA room").await?;
+        let forget_room_id = conn2.next_request_id();
+        conn2
+            .command(CoreCommand::Room(RoomCommand::ForgetRoom {
+                request_id: forget_room_id,
+                room_id: qa_room_id.clone(),
+            }))
+            .await
+            .map_err(|e| format!("forget QA room command submit failed: {e}"))?;
+        wait_for_room_forgotten(&mut conn2, forget_room_id, &qa_room_id, "forget QA room").await?;
 
-    let line = "leave_room=ok forget_room=ok".to_owned();
-    transcript.push(line.clone());
-    println!("{line}");
+        let line = "leave_room=ok forget_room=ok".to_owned();
+        transcript.push(line.clone());
+        println!("{line}");
+
+        if let Some(space_id) = real_space_id.as_ref() {
+            let leave_space_id = conn2.next_request_id();
+            conn2
+                .command(CoreCommand::Room(RoomCommand::LeaveRoom {
+                    request_id: leave_space_id,
+                    room_id: space_id.clone(),
+                }))
+                .await
+                .map_err(|e| format!("leave QA space command submit failed: {e}"))?;
+            wait_for_room_left(&mut conn2, leave_space_id, space_id, "leave QA space").await?;
+
+            let forget_space_id = conn2.next_request_id();
+            conn2
+                .command(CoreCommand::Room(RoomCommand::ForgetRoom {
+                    request_id: forget_space_id,
+                    room_id: space_id.clone(),
+                }))
+                .await
+                .map_err(|e| format!("forget QA space command submit failed: {e}"))?;
+            wait_for_room_forgotten(&mut conn2, forget_space_id, space_id, "forget QA space").await?;
+
+            let line = "real_space_cleanup=ok".to_owned();
+            transcript.push(line.clone());
+            println!("{line}");
+        }
+
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = cleanup_result {
+        do_logout(&mut conn2, &account_key, transcript).await;
+        return Err(e);
+    }
 
     // -----------------------------------------------------------------------
     // Step 9: Logout -> SignedOut + post-logout RestoreLastSession = SessionNotFound
@@ -861,7 +1036,7 @@ async fn run_async(
     // -----------------------------------------------------------------------
     // Summary line (tokens only; no secret values)
     // -----------------------------------------------------------------------
-    Ok(format!(
+    let mut summary = format!(
         "Real homeserver QA OK. \
          user={user_id} login=ok recovery={recovery} \
          sync_backend={backend} sync=ok \
@@ -881,7 +1056,13 @@ async fn run_async(
         paginate = paginate_result,
         search = search_status,
         body_ok = restore_body_tag,
-    ))
+    );
+
+    if real_space_id.is_some() {
+        summary.push_str(" real_space_create=ok real_space_child=ok real_space_cleanup=ok");
+    }
+
+    Ok(summary)
 }
 
 // ---------------------------------------------------------------------------
@@ -1287,6 +1468,131 @@ async fn wait_for_room_forgotten(
                 failure,
             } if ev_id == request_id => {
                 return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[cfg(any(debug_assertions, test))]
+async fn wait_for_space_created(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+) -> Result<String, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::SpaceCreated"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::SpaceCreated {
+                request_id: ev_id,
+                space_id,
+            }) if ev_id == request_id => {
+                return Ok(space_id);
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[cfg(any(debug_assertions, test))]
+async fn wait_for_space_child_set(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    space_id: &str,
+    child_room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::SpaceChildSet"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::SpaceChildSet {
+                request_id: ev_id,
+                space_id: ev_space,
+                child_room_id: ev_child,
+            }) if ev_id == request_id => {
+                if ev_space != space_id || ev_child != child_room_id {
+                    return Err(format!(
+                        "{label}: SpaceChildSet IDs mismatch: space={ev_space} child={ev_child}"
+                    ));
+                }
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[cfg(any(debug_assertions, test))]
+async fn wait_for_room_list_space_child(
+    conn: &mut CoreConnection,
+    space_id: &str,
+    child_room_id: &str,
+    label: &str,
+    timeout: Duration,
+) -> Result<AppState, String> {
+    let contains_expected = |snapshot: &AppState| {
+        snapshot
+            .spaces
+            .iter()
+            .any(|space| {
+                space.space_id == space_id
+                    && space.child_room_ids.iter().any(|room_id| room_id == child_room_id)
+            })
+            || snapshot
+                .rooms
+                .iter()
+                .any(|room| {
+                    room.room_id == child_room_id
+                        && room.parent_space_ids.iter().any(|id| id == space_id)
+                })
+    };
+
+    let snapshot = conn.snapshot();
+    if contains_expected(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(timeout, conn.recv_event())
+            .await
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out waiting for space {space_id} to gain child room {child_room_id}"
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
             }
             _ => continue,
         }

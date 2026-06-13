@@ -24,7 +24,7 @@
  *
  * ## Usage
  *
- *   node scripts/desktop-real-homeserver-qa.mjs --run
+ *   node scripts/desktop-real-homeserver-qa.mjs --run [--scenario=compat|space_compat|all]
  *   npm --prefix apps/desktop run qa:real-homeserver
  */
 
@@ -36,6 +36,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const realAccountDir = join(repoRoot, ".local-secrets", "real-account-qa");
 const credentialsPath = join(realAccountDir, "credentials.json");
+const scenarioOption = optionValue("--scenario") ?? "compat";
 
 const args = process.argv.slice(2);
 if (args.includes("--run")) {
@@ -68,6 +69,7 @@ async function run() {
     ...minimalEnvironment(),
     // Path to the credentials file — not a secret itself.
     MATRIX_DESKTOP_REAL_QA_CREDENTIALS_PATH: credentialsPath,
+    MATRIX_DESKTOP_REAL_QA_SCENARIO: scenarioOption,
     // File-dir credential store backend: prevents OS keychain prompts.
     MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR: credStoreDir,
     // Fresh per-run data dir (SQLite store, media cache, etc.).
@@ -191,12 +193,20 @@ function minimalEnvironment() {
   return env;
 }
 
+function optionValue(prefix) {
+  const arg = process.argv.slice(2).find((argument) => argument.startsWith(`${prefix}=`));
+  return arg?.slice(prefix.length + 1);
+}
+
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-real-homeserver-qa.mjs --run"
+    "Usage: node scripts/desktop-real-homeserver-qa.mjs --run [--scenario=compat|space_compat|all]"
   );
   console.log(
     "Runs the real-homeserver-qa binary against a real Matrix homeserver."
+  );
+  console.log(
+    "Scenario defaults to compat; space_compat and all add the real-space compatibility stage."
   );
   console.log(
     "Requires: .local-secrets/real-account-qa/credentials.json (git-ignored, mode 600)"

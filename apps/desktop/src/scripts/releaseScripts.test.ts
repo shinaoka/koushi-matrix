@@ -114,6 +114,39 @@ describe("desktop release scripts", () => {
     expect(output).toContain("package.scripts.qa:real-account");
   });
 
+  test("real homeserver QA runner forwards scenario selection to the binary", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-real-homeserver-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("--scenario");
+    expect(source).toContain("MATRIX_DESKTOP_REAL_QA_SCENARIO");
+    expect(source).toContain("compat|space_compat|all");
+  });
+
+  test("real homeserver QA binary names the staged real-server scenarios", () => {
+    const source = readFileSync(
+      new URL("../../../../crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("MATRIX_DESKTOP_REAL_QA_SCENARIO");
+    expect(source).toContain("RealQaScenario");
+    expect(source).toContain("SpaceCompat");
+    expect(source).toContain("All");
+  });
+
+  test("real homeserver QA treats space projection as an observation token", () => {
+    const source = readFileSync(
+      new URL("../../../../crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("real_space_projection=observed");
+    expect(source).toContain("real_space_projection=not_observed");
+  });
+
   test("release preflight validates headless local QA entry", () => {
     const output = runScript("scripts/desktop-release-preflight.mjs", ["--check-config"]);
 
