@@ -639,7 +639,7 @@ Expected: both pass.
 - Modify: `apps/desktop/src/styles.css`
 - Test: `apps/desktop/src/App.test.tsx`
 
-- [ ] **Step 1: Add failing render tests**
+- [x] **Step 1: Add failing render tests**
 
 Add tests to `apps/desktop/src/App.test.tsx`:
 
@@ -692,7 +692,7 @@ npm --prefix apps/desktop run test -- src/App.test.tsx
 
 Expected: fails because the props/controls do not exist.
 
-- [ ] **Step 2: Add create room and create space dialogs**
+- [x] **Step 2: Add create room and create space dialogs**
 
 Use the existing icon-button visual language. The dialog state and typed form
 text may remain React-local; submit calls the Rust-backed API. Required
@@ -709,7 +709,7 @@ After `createRoom`, select the created room if the backend snapshot exposes it
 as active. After `createSpace`, select the created space. Keep `isBusy` and
 `snapshot.state.basic_operation` aligned so the UI cannot double-submit.
 
-- [ ] **Step 3: Add reply action to production timeline rows**
+- [x] **Step 3: Add reply action to production timeline rows**
 
 Extend `TimelineView`:
 
@@ -737,7 +737,7 @@ Render a small icon button for real event rows:
 Add `data-reply="true"` to rows where `item.in_reply_to_event_id` is present.
 Do not expose the raw reply event ID in QA title tokens.
 
-- [ ] **Step 4: Wire composer reply mode**
+- [x] **Step 4: Wire composer reply mode**
 
 In `App.tsx`, derive composer mode from
 `snapshot.state.timeline.composer.mode`. `sendText()` should dispatch

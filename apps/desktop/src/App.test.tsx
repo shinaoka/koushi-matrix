@@ -15,9 +15,11 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <Composer
+        composerMode={{ kind: "plain" }}
         isSending={true}
         roomName="Room Alpha"
         value="hello"
+        onCancelReply={() => undefined}
         onSend={() => undefined}
         onValueChange={() => undefined}
       />
@@ -25,6 +27,45 @@ describe("ContextualRightPanel", () => {
 
     expect(markup).toContain('aria-label="Sending"');
     expect(markup).toContain("disabled");
+  });
+
+  test("workspace rail exposes create space control", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { WorkspaceRail } = await import("./App");
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+
+    const markup = renderToStaticMarkup(
+      <WorkspaceRail
+        snapshot={snapshot}
+        onCreateSpace={() => undefined}
+        onOpenContextMenu={() => undefined}
+        onOpenUserSettings={() => undefined}
+        onSelectSpace={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('aria-label="Create space"');
+  });
+
+  test("composer renders reply mode from snapshot state", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { Composer } = await import("./App");
+
+    const markup = renderToStaticMarkup(
+      <Composer
+        composerMode={{ kind: "reply", in_reply_to_event_id: "$root" }}
+        isSending={false}
+        roomName="QA Room"
+        value="reply"
+        onCancelReply={() => undefined}
+        onSend={() => undefined}
+        onValueChange={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Replying");
+    expect(markup).toContain('aria-label="Cancel reply"');
   });
 
   test("renders search results as a contextual right panel mode", async () => {
@@ -197,6 +238,8 @@ describe("Timeline item row rendering", () => {
             in_reply_to_event_id: null
           } as TimelineItem
         }
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
       />
     );
 
@@ -214,6 +257,8 @@ describe("Timeline item row rendering", () => {
             in_reply_to_event_id: null
           } as TimelineItem
         }
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
       />
     );
 

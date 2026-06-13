@@ -22,6 +22,7 @@
  * the headless test harness (mock IPC).
  */
 
+import { MessageCircle } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -56,6 +57,15 @@ export interface TimelineTransport {
   listenCoreEvents(listener: (payload: CoreEventPayload) => void): () => void;
   /** Invoke a backward-pagination command for the room. */
   paginateBackwards(roomId: string): Promise<void>;
+}
+
+/**
+ * Row-level actions surfaced on timeline items. Matrix semantics stay
+ * Rust-owned: the row only reports the (roomId, eventId) intent; the reply
+ * target is recorded by the backend (setComposerReplyTarget).
+ */
+export interface TimelineRowActionHandlers {
+  onReply: (roomId: string, eventId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,11 +123,13 @@ const AUTO_BACKFILL_THRESHOLD_PX = 80;
 export function TimelineView({
   timelineKey,
   roomId,
-  transport
+  transport,
+  onReply
 }: {
   timelineKey: TimelineKey;
   roomId: string;
   transport: TimelineTransport;
+  onReply: TimelineRowActionHandlers["onReply"];
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -246,21 +258,36 @@ export function TimelineView({
         </div>
       ) : null}
       {items.map((item) => (
-        <TimelineItemRow item={item} key={timelineItemDomId(item.id)} />
+        <TimelineItemRow
+          item={item}
+          key={timelineItemDomId(item.id)}
+          roomId={roomId}
+          onReply={onReply}
+        />
       ))}
     </div>
   );
 }
 
-export function TimelineItemRow({ item }: { item: TimelineItem }) {
+export function TimelineItemRow({
+  item,
+  roomId,
+  onReply
+}: {
+  item: TimelineItem;
+  roomId: string;
+  onReply: TimelineRowActionHandlers["onReply"];
+}) {
   const domId = timelineItemDomId(item.id);
   const isLocalEcho = "Transaction" in item.id;
+  const eventId = "Event" in item.id ? item.id.Event.event_id : null;
   return (
     <article
       className="message"
       data-item-id={domId}
       data-send-state={isLocalEcho ? "unsent" : undefined}
-      data-event-id={"Event" in item.id ? item.id.Event.event_id : undefined}
+      data-event-id={eventId ?? undefined}
+      data-reply={item.in_reply_to_event_id ? "true" : undefined}
     >
       <div className="message-main">
         <div className="message-heading">
@@ -272,6 +299,18 @@ export function TimelineItemRow({ item }: { item: TimelineItem }) {
           ) : null}
         </div>
         <div className="message-body">{item.body ?? ""}</div>
+      </div>
+      <div className="message-actions">
+        {eventId ? (
+          <button
+            className="message-action"
+            type="button"
+            aria-label="Reply to message"
+            onClick={() => onReply(roomId, eventId)}
+          >
+            <MessageCircle size={14} />
+          </button>
+        ) : null}
       </div>
     </article>
   );

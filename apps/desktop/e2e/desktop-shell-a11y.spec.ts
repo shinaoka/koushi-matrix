@@ -36,7 +36,7 @@ test("the three-pane shell exposes landmarks and reachable keyboard focus stops"
   expect(labels).toContain("Keyboard settings");
   expect(labels).toContain("Synthetic Workspace");
   expect(labels).toContain("Synthetic Lab");
-  expect(labels).toContain("Add workspace");
+  expect(labels).toContain("Create space");
   expect(labels).toContain("User settings");
   expect(labels).toContain("Space info and settings");
   expect(labels).toContain("Message composer");

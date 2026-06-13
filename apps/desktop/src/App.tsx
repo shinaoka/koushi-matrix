@@ -45,6 +45,7 @@ import { createDesktopApi } from "./backend/client";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   TimelineView,
+  type TimelineRowActionHandlers,
   type TimelineTransport
 } from "./components/TimelineView";
 import {
@@ -94,6 +95,7 @@ import {
   qaSendSmokeMessageFromEnv
 } from "./domain/qaSendSmoke";
 import type {
+  ComposerMode,
   DesktopSnapshot,
   RoomListItem,
   SavedSessionInfo,
@@ -158,6 +160,21 @@ type ActiveContextMenu = {
   items: ContextMenuItem[];
 };
 
+/**
+ * React-local view of the composer mode. Matrix semantics (the reply target)
+ * stay Rust-owned; this is a presentational mapping of the WIRE value
+ * `snapshot.state.timeline.composer.mode` (externally tagged ComposerMode).
+ */
+type ComposerModeProp =
+  | { kind: "plain" }
+  | { kind: "reply"; in_reply_to_event_id: string };
+
+function composerModeProp(mode: ComposerMode): ComposerModeProp {
+  return mode === "Plain"
+    ? { kind: "plain" }
+    : { kind: "reply", in_reply_to_event_id: mode.Reply.in_reply_to_event_id };
+}
+
 function rightPanelTargetFromContextMenuTarget(
   target: ContextMenuTarget
 ): RightPanelContextMenuTarget {
@@ -186,6 +203,11 @@ export function App() {
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  // React-local ephemeral state only: which create dialog is open and the
+  // unsent name draft. The pending op status comes from the snapshot
+  // (basic_operation); the created room/space identity comes from the API.
+  const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
+  const [createDraftName, setCreateDraftName] = useState("");
   const searchTimer = useRef<number | null>(null);
   const qaSendStarted = useRef(false);
   const qaSendPending = useRef(false);
@@ -576,6 +598,48 @@ export function App() {
     setSnapshot(await api.selectRoom(roomId));
   }
 
+  function openCreateDialog(kind: "room" | "space") {
+    setCreateDraftName("");
+    setCreateDialog(kind);
+  }
+
+  function closeCreateDialog() {
+    setCreateDialog(null);
+    setCreateDraftName("");
+  }
+
+  async function submitCreateDialog() {
+    const kind = createDialog;
+    const name = createDraftName.trim();
+    // Guard against double-submit: a create already in flight (isBusy) or a
+    // pending basic_operation (Rust-owned) must block re-entry.
+    if (
+      !kind ||
+      !name ||
+      isBusy ||
+      (snapshot && snapshot.state.basic_operation.kind !== "idle")
+    ) {
+      return;
+    }
+    setIsBusy(true);
+    try {
+      const nextSnapshot =
+        kind === "space" ? await api.createSpace(name) : await api.createRoom(name);
+      setSnapshot(nextSnapshot);
+      closeCreateDialog();
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function setComposerReplyTarget(roomId: string, eventId: string) {
+    setSnapshot(await api.setComposerReplyTarget(roomId, eventId));
+  }
+
+  async function cancelComposerReply() {
+    setSnapshot(await api.cancelComposerReply());
+  }
+
   async function paginateTimelineBackwards(roomId: string) {
     const anchorEventId = timelinePaginationAnchorEventId(snapshot?.timeline ?? []);
     setSnapshot(await api.paginateTimelineBackwards(roomId));
@@ -590,6 +654,9 @@ export function App() {
     if (!roomId || !body.trim()) {
       return;
     }
+    // Reply semantics are Rust-owned: dispatch sendReply when the composer is
+    // in reply mode, otherwise plain sendText.
+    const composerMode = snapshot?.state.timeline.composer.mode ?? "Plain";
 
     qaSendStarted.current = true;
     qaSendBaselineErrorCount.current = snapshot?.state.errors.length ?? 0;
@@ -597,8 +664,15 @@ export function App() {
     qaSendPending.current = true;
     setQaSendStatus("pending");
     try {
-      const nextSnapshot = await api.sendText(roomId, body);
+      const nextSnapshot =
+        composerMode === "Plain"
+          ? await api.sendText(roomId, body)
+          : await api.sendReply(roomId, composerMode.Reply.in_reply_to_event_id, body);
       setSnapshot(nextSnapshot);
+      // Ensure the semantic reply mode is cleared even if the backend left it.
+      if (nextSnapshot.state.timeline.composer.mode !== "Plain") {
+        setSnapshot(await api.cancelComposerReply());
+      }
       if (!isTauriRuntime()) {
         const completionStatus = qaSendSmokeCompletionStatus(
           nextSnapshot,
@@ -779,6 +853,7 @@ export function App() {
       <div className={`app-grid ${rightPanelOpen ? "right-panel-open" : "thread-closed"}`}>
         <WorkspaceRail
           snapshot={snapshot}
+          onCreateSpace={() => openCreateDialog("space")}
           onOpenContextMenu={openContextMenu}
           onOpenUserSettings={() => setRightPanelMode("userSettings")}
           onSelectSpace={selectSpace}
@@ -786,6 +861,7 @@ export function App() {
         <Sidebar
           activeRoomId={snapshot.state.navigation.active_room_id}
           snapshot={snapshot}
+          onCreateRoom={() => openCreateDialog("room")}
           onOpenContextMenu={openContextMenu}
           onOpenSpaceInfo={() => setRightPanelMode("spaceInfo")}
           onSelectRoom={selectRoom}
@@ -793,13 +869,20 @@ export function App() {
         <TimelinePane
           activeRoomName={activeRoom?.display_name ?? "No room"}
           composerDraft={composerDraft}
+          composerMode={composerModeProp(snapshot.state.timeline.composer.mode)}
           searchQuery={searchQuery}
           searchResults={searchResults}
           showSearchResults={effectiveRightPanelMode !== "search"}
           snapshot={snapshot}
+          onCancelReply={() => {
+            void cancelComposerReply();
+          }}
           onComposerDraftChange={setComposerDraft}
           onOpenThread={openThread}
           onPaginateBackwards={paginateTimelineBackwards}
+          onReply={(roomId, eventId) => {
+            void setComposerReplyTarget(roomId, eventId);
+          }}
           onSendText={sendText}
           onEditMessage={editMessage}
           onOpenContextMenu={openContextMenu}
@@ -853,6 +936,100 @@ export function App() {
           onClose={() => setContextMenu(null)}
         />
       ) : null}
+      {createDialog ? (
+        <CreateEntityDialog
+          isBusy={isBusy || snapshot.state.basic_operation.kind !== "idle"}
+          kind={createDialog}
+          value={createDraftName}
+          onCancel={closeCreateDialog}
+          onSubmit={() => {
+            void submitCreateDialog();
+          }}
+          onValueChange={setCreateDraftName}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Modal for creating a room or a space. Open state + the unsent name are
+ * React-local (passed in); the create itself goes through the Rust-owned API.
+ */
+function CreateEntityDialog({
+  isBusy,
+  kind,
+  value,
+  onCancel,
+  onSubmit,
+  onValueChange
+}: {
+  isBusy: boolean;
+  kind: "room" | "space";
+  value: string;
+  onCancel: () => void;
+  onSubmit: () => void;
+  onValueChange: (value: string) => void;
+}) {
+  const isSpace = kind === "space";
+  const title = isSpace ? "スペースを作成" : "ルームを作成";
+  const inputLabel = isSpace ? "Space name" : "Room name";
+  const submitLabel = isSpace ? "Submit create space" : "Submit create room";
+  const canSubmit = value.trim().length > 0 && !isBusy;
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={onDialogKeyDown}
+    >
+      <form
+        className="dialog-box"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) {
+            onSubmit();
+          }
+        }}
+      >
+        <div className="dialog-title">{title}</div>
+        <input
+          className="dialog-input"
+          type="text"
+          autoFocus
+          aria-label={inputLabel}
+          placeholder={inputLabel}
+          value={value}
+          onChange={(event) => onValueChange(event.target.value)}
+        />
+        <div className="dialog-actions">
+          <button
+            className="dialog-button"
+            type="button"
+            aria-label="Cancel create"
+            onClick={onCancel}
+          >
+            キャンセル
+          </button>
+          <button
+            className="dialog-button is-primary"
+            type="submit"
+            aria-label={submitLabel}
+            disabled={!canSubmit}
+          >
+            作成
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1246,13 +1423,15 @@ export function TopBar({
   );
 }
 
-function WorkspaceRail({
+export function WorkspaceRail({
   snapshot,
+  onCreateSpace,
   onOpenContextMenu,
   onOpenUserSettings,
   onSelectSpace
 }: {
   snapshot: DesktopSnapshot;
+  onCreateSpace: () => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenUserSettings: () => void;
   onSelectSpace: (spaceId: string | null) => void;
@@ -1290,7 +1469,12 @@ function WorkspaceRail({
         ))}
       </div>
       <div className="rail-footer">
-        <button className="rail-action" type="button" aria-label="Add workspace">
+        <button
+          className="rail-action"
+          type="button"
+          aria-label="Create space"
+          onClick={onCreateSpace}
+        >
           <Plus size={22} />
         </button>
         <button
@@ -1310,12 +1494,14 @@ function WorkspaceRail({
 function Sidebar({
   activeRoomId,
   snapshot,
+  onCreateRoom,
   onOpenContextMenu,
   onOpenSpaceInfo,
   onSelectRoom
 }: {
   activeRoomId: string | null;
   snapshot: DesktopSnapshot;
+  onCreateRoom: () => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenSpaceInfo: () => void;
   onSelectRoom: (roomId: string) => void;
@@ -1335,7 +1521,12 @@ function Sidebar({
         >
           <Settings size={18} />
         </button>
-        <button className="icon-button" type="button" aria-label="New message">
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="Create room"
+          onClick={onCreateRoom}
+        >
           <Edit3 size={18} />
         </button>
       </div>
@@ -1436,16 +1627,19 @@ function RoomButton({
 function TimelinePane({
   activeRoomName,
   composerDraft,
+  composerMode,
   searchQuery,
   searchResults,
   showSearchResults,
   snapshot,
+  onCancelReply,
   onComposerDraftChange,
   onEditMessage,
   onOpenContextMenu,
   onOpenThread,
   onPaginateBackwards,
   onRedactMessage,
+  onReply,
   onResultSelect,
   onSendText,
   onToggleThread,
@@ -1453,16 +1647,19 @@ function TimelinePane({
 }: {
   activeRoomName: string;
   composerDraft: string;
+  composerMode: ComposerModeProp;
   searchQuery: string;
   searchResults: SearchResult[];
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
+  onCancelReply: () => void;
   onComposerDraftChange: (value: string) => void;
   onEditMessage: (message: TimelineMessage) => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenThread: (roomId: string, rootEventId: string) => void;
   onPaginateBackwards: (roomId: string) => void;
   onRedactMessage: (roomId: string, eventId: string) => void;
+  onReply: TimelineRowActionHandlers["onReply"];
   onResultSelect: (roomId: string, eventId: string) => void;
   onSendText: () => void;
   onToggleThread: () => void;
@@ -1533,6 +1730,7 @@ function TimelinePane({
               roomId={timelineRoomId}
               timelineKey={roomTimelineKey(currentUserId, timelineRoomId)}
               transport={tauriTimelineTransport}
+              onReply={onReply}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -1552,9 +1750,11 @@ function TimelinePane({
         </div>
       </section>
       <Composer
+        composerMode={composerMode}
         isSending={Boolean(snapshot.state.timeline.composer.pending_transaction_id)}
         roomName={activeRoomName}
         value={composerDraft}
+        onCancelReply={onCancelReply}
         onSend={onSendText}
         onValueChange={onComposerDraftChange}
       />
@@ -1698,15 +1898,19 @@ function MessageArticle({
 }
 
 export function Composer({
+  composerMode,
   isSending,
   roomName,
   value,
+  onCancelReply,
   onSend,
   onValueChange
 }: {
+  composerMode: ComposerModeProp;
   isSending: boolean;
   roomName: string;
   value: string;
+  onCancelReply: () => void;
   onSend: () => void;
   onValueChange: (value: string) => void;
 }) {
@@ -1721,6 +1925,19 @@ export function Composer({
 
   return (
     <section className="composer" aria-label="Message composer">
+      {composerMode.kind === "reply" ? (
+        <div className="composer-reply-banner">
+          <span className="composer-reply-label">返信中 (Replying)</span>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="Cancel reply"
+            onClick={onCancelReply}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      ) : null}
       <div className="composer-tools">
         <button className="icon-button" type="button" aria-label="Bold">
           <Bold size={17} />

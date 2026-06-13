@@ -60,5 +60,8 @@ createRoot(root).render(
     roomId={ROOM_ID}
     timelineKey={roomTimelineKey(ACCOUNT_KEY, ROOM_ID)}
     transport={transport}
+    onReply={(roomId, eventId) => {
+      void ipc.invoke("set_composer_reply_target", { roomId, eventId });
+    }}
   />
 );

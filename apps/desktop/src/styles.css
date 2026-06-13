@@ -948,6 +948,92 @@ mark {
   background: var(--accent);
 }
 
+.composer-reply-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--faint);
+  background: #f3eef6;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+
+.composer-reply-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand);
+}
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgb(25 17 31 / 38%);
+}
+
+.dialog-box {
+  display: grid;
+  gap: 14px;
+  width: min(360px, calc(100vw - 48px));
+  padding: 20px;
+  border: 1px solid #d8d1dc;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 24px 56px rgb(25 17 31 / 28%);
+}
+
+.dialog-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #211a28;
+}
+
+.dialog-input {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid #d8d1dc;
+  border-radius: 8px;
+  color: var(--text);
+  background: #ffffff;
+  outline: none;
+}
+
+.dialog-input:focus {
+  border-color: var(--brand);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog-button {
+  min-width: 84px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid #d8d1dc;
+  border-radius: 8px;
+  color: #211a28;
+  background: #ffffff;
+}
+
+.dialog-button.is-primary {
+  color: #ffffff;
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.dialog-button:disabled {
+  opacity: 0.55;
+}
+
 .thread-pane {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
