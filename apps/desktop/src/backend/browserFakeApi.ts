@@ -21,6 +21,7 @@ export interface DesktopApi {
   listSavedSessions(): Promise<SavedSessionInfo[]>;
   switchAccount(session: SavedSessionInfo): Promise<DesktopSnapshot>;
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
+  restartSync(): Promise<DesktopSnapshot>;
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
   paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
@@ -160,6 +161,14 @@ class BrowserFakeApi implements DesktopApi {
     const firstRoom = this.snapshot.sidebar.space_rooms[0];
     if (firstRoom) {
       await this.selectRoom(firstRoom.room_id);
+    }
+
+    return this.getSnapshot();
+  }
+
+  async restartSync(): Promise<DesktopSnapshot> {
+    if (this.canRestartSync()) {
+      this.snapshot.state.sync = "running";
     }
 
     return this.getSnapshot();
@@ -321,6 +330,15 @@ class BrowserFakeApi implements DesktopApi {
       sessionKind === "ready" ||
       sessionKind === "needsRecovery" ||
       sessionKind === "recovering"
+    );
+  }
+
+  private canRestartSync() {
+    const sync = this.snapshot.state.sync;
+    return (
+      sync === "stopped" ||
+      sync === "starting" ||
+      (typeof sync === "object" && ("failed" in sync || "reconnecting" in sync))
     );
   }
 

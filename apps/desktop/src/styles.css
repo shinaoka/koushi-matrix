@@ -346,6 +346,50 @@ button {
   background: #f4c247;
 }
 
+.sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 220px;
+  color: #f6ecfa;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sync-status-label,
+.sync-status-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-status-detail {
+  color: #d7c9dc;
+  font-weight: 700;
+}
+
+.sync-status[data-sync-state="running"] .sync-dot {
+  background: #66d08f;
+}
+
+.sync-status[data-sync-state="starting"] .sync-dot {
+  background: #f4c247;
+}
+
+.sync-status[data-sync-state="stopped"] .sync-dot {
+  background: #9a90a1;
+}
+
+.sync-status[data-sync-state="reconnecting"] .sync-dot {
+  background: #f4c247;
+}
+
+.sync-status[data-sync-state="failed"] .sync-dot {
+  background: #f15c5c;
+}
+
 .app-grid {
   display: grid;
   grid-template-columns: 72px 318px minmax(420px, 1fr) 390px;
@@ -793,6 +837,19 @@ button {
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.message-send-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: #7c4d17;
+  background: #fff0cc;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 .time {

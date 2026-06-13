@@ -50,6 +50,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("submit_recovery", { secret });
   }
 
+  async restartSync(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("restart_sync");
+  }
+
   async selectSpace(spaceId: string | null): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("select_space", { spaceId });
   }

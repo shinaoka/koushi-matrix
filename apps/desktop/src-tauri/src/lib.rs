@@ -48,6 +48,12 @@ const MIN_RESTORABLE_WINDOW_HEIGHT: u32 = 620;
 const QA_LOGIN_PIPE_ENV: &str = "MATRIX_DESKTOP_QA_LOGIN_PIPE";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct ForwardedWebviewEvent {
+    event_name: &'static str,
+    payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DesktopMenuItem {
     pub id: &'static str,
     pub label: &'static str,
@@ -472,17 +478,19 @@ fn spawn_core_event_forwarder(
         loop {
             match event_conn.recv_event().await {
                 Ok(event) => {
-                    forward_core_event(&app, &event, timeline_items_count);
+                    emit_forwarded_webview_events(
+                        &app,
+                        forwarded_webview_events_for_core_event(&event, timeline_items_count),
+                    );
                 }
                 Err(_lag) => {
                     // Consumer fell behind. Emit the latest snapshot so the
                     // frontend can resync, then a ResyncMarker so it resets
                     // its timeline stores.
                     let snapshot = event_conn.snapshot();
-                    emit_state_snapshot(&app, &snapshot, timeline_items_count);
-                    let _ = app.emit(
-                        CORE_EVENT_NAME,
-                        serde_json::json!({ "kind": "ResyncMarker" }),
+                    emit_forwarded_webview_events(
+                        &app,
+                        forwarded_webview_events_for_lag_resync(&snapshot),
                     );
                 }
             }
@@ -490,11 +498,12 @@ fn spawn_core_event_forwarder(
     });
 }
 
-fn forward_core_event(
-    app: &tauri::AppHandle,
+fn forwarded_webview_events_for_core_event(
     event: &CoreEvent,
-    timeline_items_count: &'static AtomicUsize,
-) {
+    timeline_items_count: &AtomicUsize,
+) -> Vec<ForwardedWebviewEvent> {
+    let mut forwarded = Vec::new();
+
     // Track timeline item count for QA window title.
     match event {
         CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) => {
@@ -510,17 +519,18 @@ fn forward_core_event(
         _ => {}
     }
 
-    // Serialize and forward as `matrix-desktop://event`.
     if let Some(payload) = serialize_core_event(event) {
-        let _ = app.emit(CORE_EVENT_NAME, payload);
+        forwarded.push(ForwardedWebviewEvent {
+            event_name: CORE_EVENT_NAME,
+            payload,
+        });
     }
 
-    // On StateChanged: also emit `matrix-desktop://state` for backward compat
-    // (the React app currently listens on this event to trigger a `get_snapshot`
-    // poll; future work is to eliminate the poll entirely).
     if let CoreEvent::StateChanged(snapshot) = event {
-        emit_state_snapshot(app, snapshot, timeline_items_count);
+        forwarded.extend(forwarded_webview_events_for_state_changed(snapshot));
     }
+
+    forwarded
 }
 
 fn diffs_net_count_change(diffs: &[matrix_desktop_core::TimelineDiff]) -> i64 {
@@ -539,13 +549,33 @@ fn diffs_net_count_change(diffs: &[matrix_desktop_core::TimelineDiff]) -> i64 {
         .sum()
 }
 
-fn emit_state_snapshot(
-    app: &tauri::AppHandle,
+fn forwarded_webview_events_for_state_changed(
     _snapshot: &AppStateSnapshot,
-    _timeline_items_count: &AtomicUsize,
+) -> Vec<ForwardedWebviewEvent> {
+    vec![ForwardedWebviewEvent {
+        event_name: STATE_EVENT_NAME,
+        payload: serde_json::Value::String("stateChanged".to_owned()),
+    }]
+}
+
+fn forwarded_webview_events_for_lag_resync(
+    snapshot: &AppStateSnapshot,
+) -> Vec<ForwardedWebviewEvent> {
+    let mut forwarded = forwarded_webview_events_for_state_changed(snapshot);
+    forwarded.push(ForwardedWebviewEvent {
+        event_name: CORE_EVENT_NAME,
+        payload: serde_json::json!({ "kind": "ResyncMarker" }),
+    });
+    forwarded
+}
+
+fn emit_forwarded_webview_events(
+    app: &tauri::AppHandle,
+    forwarded_events: Vec<ForwardedWebviewEvent>,
 ) {
-    // Emit the snapshot event (triggers React to call get_snapshot).
-    let _ = app.emit(STATE_EVENT_NAME, "stateChanged");
+    for forwarded_event in forwarded_events {
+        let _ = app.emit(forwarded_event.event_name, forwarded_event.payload);
+    }
 }
 
 /// Serialize a `CoreEvent` to a JSON value for IPC.
@@ -677,6 +707,7 @@ pub fn run() {
             commands::switch_account,
             commands::submit_recovery,
             commands::logout,
+            commands::restart_sync,
             commands::select_space,
             commands::select_room,
             commands::paginate_timeline_backwards,
@@ -696,8 +727,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::serialize_core_event;
+    use super::{
+        CORE_EVENT_NAME, STATE_EVENT_NAME, forwarded_webview_events_for_core_event,
+        forwarded_webview_events_for_lag_resync, serialize_core_event,
+    };
     use super::{
         PersistedWindowState, desktop_menu_items, desktop_standard_menu_items,
         load_window_state_with_base, persist_window_state_with_base,
@@ -759,6 +794,76 @@ mod tests {
         );
         assert!(!format!("{request:?}").contains("synthetic-password"));
         assert!(!format!("{request:?}").contains("synthetic-recovery-secret"));
+    }
+
+    #[test]
+    fn timeline_items_updated_forwarding_emits_core_event_name_and_all_diffs() {
+        use matrix_desktop_core::{
+            AccountKey, CoreEvent, TimelineDiff, TimelineEvent, TimelineKey,
+            ids::{TimelineBatchId, TimelineGeneration},
+        };
+        use serde_json::json;
+
+        let timeline_items_count = AtomicUsize::new(500);
+        let diffs = (0..1000)
+            .map(|index| TimelineDiff::Remove { index })
+            .collect::<Vec<_>>();
+        let event = CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: TimelineKey::room(
+                AccountKey("@u:example.test".to_owned()),
+                "!room:example.test",
+            ),
+            generation: TimelineGeneration(7),
+            batch_id: TimelineBatchId(13),
+            diffs,
+        });
+
+        let forwarded = forwarded_webview_events_for_core_event(&event, &timeline_items_count);
+
+        assert_eq!(timeline_items_count.load(Ordering::Relaxed), 0);
+        assert_eq!(forwarded.len(), 1);
+        assert_eq!(forwarded[0].event_name, CORE_EVENT_NAME);
+        assert_eq!(forwarded[0].payload["kind"], json!("Timeline"));
+        let diffs = forwarded[0].payload["event"]["ItemsUpdated"]["diffs"]
+            .as_array()
+            .expect("timeline diffs should serialize as an array");
+        assert_eq!(diffs.len(), 1000);
+        assert_eq!(diffs[0], json!({ "Remove": { "index": 0 } }));
+        assert_eq!(diffs[999], json!({ "Remove": { "index": 999 } }));
+    }
+
+    #[test]
+    fn state_changed_forwarding_emits_state_event_only() {
+        use matrix_desktop_core::CoreEvent;
+        use matrix_desktop_state::AppState;
+        use serde_json::Value;
+
+        let timeline_items_count = AtomicUsize::new(17);
+        let event = CoreEvent::StateChanged(AppState::default());
+
+        let forwarded = forwarded_webview_events_for_core_event(&event, &timeline_items_count);
+
+        assert_eq!(timeline_items_count.load(Ordering::Relaxed), 17);
+        assert_eq!(forwarded.len(), 1);
+        assert_eq!(forwarded[0].event_name, STATE_EVENT_NAME);
+        assert_eq!(
+            forwarded[0].payload,
+            Value::String("stateChanged".to_owned())
+        );
+    }
+
+    #[test]
+    fn lag_resync_forwarding_emits_state_then_resync_marker() {
+        use matrix_desktop_state::AppState;
+        use serde_json::json;
+
+        let forwarded = forwarded_webview_events_for_lag_resync(&AppState::default());
+
+        assert_eq!(forwarded.len(), 2);
+        assert_eq!(forwarded[0].event_name, STATE_EVENT_NAME);
+        assert_eq!(forwarded[0].payload, json!("stateChanged"));
+        assert_eq!(forwarded[1].event_name, CORE_EVENT_NAME);
+        assert_eq!(forwarded[1].payload, json!({ "kind": "ResyncMarker" }));
     }
 
     #[test]

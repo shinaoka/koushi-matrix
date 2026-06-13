@@ -20,6 +20,7 @@ import {
   Paperclip,
   Plus,
   Search,
+  RefreshCw,
   Send,
   Settings,
   ShieldCheck,
@@ -446,6 +447,15 @@ export function App() {
     }
   }
 
+  async function restartSync() {
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.restartSync());
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function selectSpace(spaceId: string | null) {
     setSnapshot(await api.selectSpace(spaceId));
   }
@@ -627,7 +637,9 @@ export function App() {
         searchInputRef={searchInputRef}
         searchQuery={searchQuery}
         searchScope={searchScope}
+        sync={snapshot.state.sync}
         onOpenKeyboardSettings={() => setRightPanelMode("keyboardSettings")}
+        onRestartSync={restartSync}
         onSearchQueryChange={setSearchQuery}
         onSearchScopeChange={setSearchScope}
       />
@@ -931,7 +943,9 @@ function sessionLabel(kind: DesktopSnapshot["state"]["session"]["kind"]) {
   }
 }
 
-function recoveryMethodLabel(method: NonNullable<DesktopSnapshot["state"]["session"]["recovery_methods"]>[number]) {
+function recoveryMethodLabel(
+  method: NonNullable<DesktopSnapshot["state"]["session"]["recovery_methods"]>[number]
+) {
   switch (method) {
     case "recoveryKey":
       return "Recovery key";
@@ -940,13 +954,73 @@ function recoveryMethodLabel(method: NonNullable<DesktopSnapshot["state"]["sessi
   }
 }
 
-function TopBar({
+type SyncPresentation = {
+  state: "running" | "starting" | "reconnecting" | "failed" | "stopped";
+  label: string;
+  detail: string | null;
+  ariaLabel: string;
+  restartable: boolean;
+};
+
+function syncStatePresentation(sync: DesktopSnapshot["state"]["sync"]): SyncPresentation {
+  if (typeof sync === "string") {
+    switch (sync) {
+      case "starting":
+        return {
+          state: "starting",
+          label: "Starting",
+          detail: null,
+          ariaLabel: "Sync starting",
+          restartable: false
+        };
+      case "running":
+        return {
+          state: "running",
+          label: "Running",
+          detail: null,
+          ariaLabel: "Sync running",
+          restartable: false
+        };
+      case "stopped":
+      default:
+        return {
+          state: "stopped",
+          label: "Stopped",
+          detail: null,
+          ariaLabel: "Sync stopped",
+          restartable: true
+        };
+    }
+  }
+
+  if ("reconnecting" in sync) {
+    return {
+      state: "reconnecting",
+      label: "Reconnecting",
+      detail: sync.reconnecting,
+      ariaLabel: sync.reconnecting ? `Sync reconnecting: ${sync.reconnecting}` : "Sync reconnecting",
+      restartable: true
+    };
+  }
+
+  return {
+    state: "failed",
+    label: "Failed",
+    detail: sync.failed,
+    ariaLabel: sync.failed ? `Sync failed: ${sync.failed}` : "Sync failed",
+    restartable: true
+  };
+}
+
+export function TopBar({
   activeSpaceName,
   isBusy,
   searchInputRef,
   searchQuery,
   searchScope,
+  sync,
   onOpenKeyboardSettings,
+  onRestartSync,
   onSearchQueryChange,
   onSearchScopeChange
 }: {
@@ -955,10 +1029,13 @@ function TopBar({
   searchInputRef: RefObject<HTMLInputElement | null>;
   searchQuery: string;
   searchScope: SearchScopeKind;
+  sync: DesktopSnapshot["state"]["sync"];
   onOpenKeyboardSettings: () => void;
+  onRestartSync: () => void;
   onSearchQueryChange: (value: string) => void;
   onSearchScopeChange: (value: SearchScopeKind) => void;
 }) {
+  const syncStatus = syncStatePresentation(sync);
   return (
     <header className="titlebar">
       <div className="traffic">
@@ -998,7 +1075,30 @@ function TopBar({
         <option value="dms">DM</option>
       </select>
       <div className="top-actions">
-        <span className={`sync-dot ${isBusy ? "busy" : ""}`} />
+        <div
+          className="sync-status"
+          data-sync-state={syncStatus.state}
+          role="status"
+          aria-live="polite"
+          aria-label={syncStatus.ariaLabel}
+        >
+          <span className={`sync-dot ${isBusy ? "busy" : ""}`} />
+          <span className="sync-status-label">{syncStatus.label}</span>
+          {syncStatus.detail ? (
+            <span className="sync-status-detail">{syncStatus.detail}</span>
+          ) : null}
+        </div>
+        {syncStatus.restartable ? (
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="Restart sync"
+            disabled={isBusy}
+            onClick={onRestartSync}
+          >
+            <RefreshCw size={18} />
+          </button>
+        ) : null}
         <button
           className="icon-button"
           type="button"

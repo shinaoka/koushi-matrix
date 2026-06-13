@@ -102,6 +102,12 @@ describe("desktop release scripts", () => {
     expect(output).toContain("package.scripts.qa:mac-gui");
   });
 
+  test("release preflight validates linux GUI smoke entry", () => {
+    const output = runScript("scripts/desktop-release-preflight.mjs", ["--check-config"]);
+
+    expect(output).toContain("package.scripts.qa:linux-gui");
+  });
+
   test("release preflight validates real account QA entry", () => {
     const output = runScript("scripts/desktop-release-preflight.mjs", ["--check-config"]);
 
@@ -112,6 +118,187 @@ describe("desktop release scripts", () => {
     const output = runScript("scripts/desktop-release-preflight.mjs", ["--check-config"]);
 
     expect(output).toContain("package.scripts.qa:headless-local");
+  });
+
+  test("package scripts expose the linux GUI smoke runner", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../../../../apps/desktop/package.json", import.meta.url), "utf8")
+    );
+
+    expect(packageJson.scripts?.["qa:linux-gui"]).toBe(
+      "node ../../scripts/desktop-linux-gui-qa.mjs --run"
+    );
+  });
+
+  test("linux GUI smoke script lists the expected foundation checks", () => {
+    const output = runScript("scripts/desktop-linux-gui-qa.mjs", ["--list"]);
+
+    for (const check of [
+      "verify Xvfb virtual display",
+      "verify tauri-driver and WebKitWebDriver",
+      "verify debug Tauri build",
+      "drive WebdriverIO session",
+      "exercise real IPC and DOM smoke",
+      "optional local homeserver login via FIFO",
+      "clean process teardown"
+    ]) {
+      expect(output).toContain(check);
+    }
+  });
+
+  test("linux GUI smoke child environment filters secrets and enables QA file credentials", () => {
+    const output = execFileSync(
+      process.execPath,
+      ["scripts/desktop-linux-gui-qa.mjs", "--child-env"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DEEPSEEK_API_KEY: "synthetic-secret",
+          MATRIX_DESKTOP_TEST_SECRET: "synthetic-secret"
+        }
+      }
+    );
+
+    expect(output).toContain("MATRIX_DESKTOP_DATA_DIR=");
+    expect(output).toContain("MATRIX_DESKTOP_QA_TITLE=1");
+    expect(output).toContain("VITE_MATRIX_DESKTOP_QA_TITLE=1");
+    expect(output).toContain("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1");
+    expect(output).toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1");
+    expect(output).toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR=");
+    expect(output).toContain("/qa-credential-store");
+    expect(output).toContain("NO_COLOR=1");
+    expect(output).not.toContain("DEEPSEEK_API_KEY");
+    expect(output).not.toContain("MATRIX_DESKTOP_TEST_SECRET");
+  });
+
+  test("linux GUI smoke real login transport is FIFO and the script avoids password args", () => {
+    const transport = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--print-real-login-transport"
+    ]);
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(transport.trim()).toBe("fifo");
+    expect(source).toContain("MATRIX_DESKTOP_QA_LOGIN_PIPE");
+    expect(source).not.toContain("--password");
+  });
+
+  test("linux GUI smoke prints WebDriver capabilities for the app binary", () => {
+    const output = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--print-webdriver-capabilities",
+      "--app-binary=/tmp/app"
+    ]);
+
+    expect(JSON.parse(output)).toEqual(
+      expect.objectContaining({
+        browserName: "wry",
+        "wdio:enforceWebDriverClassic": true,
+        "tauri:options": expect.objectContaining({
+          application: "/tmp/app"
+        })
+      })
+    );
+    expect(JSON.parse(output)["tauri:options"]).not.toHaveProperty("args");
+  });
+
+  test("linux GUI smoke run path now wires WebdriverIO and the signed-out screenshot", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("webdriverio");
+    expect(source).toContain("createRequire(new URL(\"../apps/desktop/package.json\"");
+    expect(source).toContain("importDesktopWebdriverio");
+    expect(source).toContain("remote({");
+    expect(source).toContain("screenshots/01-signed-out.png");
+    expect(source).not.toContain("foundation is wired, but the WebDriver session");
+  });
+
+  test("linux GUI smoke launches Xvfb with the sanitized child environment", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("const xvfb = await startXvfb(logPath, buildEnv);");
+    expect(source).toContain("async function startXvfb(logPath, buildEnv)");
+    expect(source).toContain("env: buildEnv");
+    expect(source).not.toContain("env: process.env");
+  });
+
+  test("linux GUI Docker recipe pins Rust 1.96.0 and keeps the tauri-driver mitigation", () => {
+    const dockerfile = readFileSync(
+      new URL("../../../../docker/linux-gui.Dockerfile", import.meta.url),
+      "utf8"
+    );
+
+    for (const token of [
+      "node:22.22.3-bookworm",
+      "ARG RUST_TOOLCHAIN=1.96.0",
+      "RUST_TOOLCHAIN=${RUST_TOOLCHAIN}",
+      '--default-toolchain "${RUST_TOOLCHAIN}"',
+      'rustup default "${RUST_TOOLCHAIN}"',
+      'RUSTUP_TOOLCHAIN="${RUST_TOOLCHAIN}"',
+      "libwebkit2gtk-4.1-dev",
+      "libayatana-appindicator3-dev",
+      "webkit2gtk-driver",
+      "xvfb",
+      "fonts-noto-color-emoji",
+      "cargo install tauri-driver --locked",
+      "RUSTC=\"$(rustup which rustc)\"",
+      "RUSTDOC=\"$(rustup which rustdoc)\""
+    ]) {
+      expect(dockerfile).toContain(token);
+    }
+  });
+
+  test("linux GUI container docs use bash -c and the audited artifact lane", () => {
+    const agents = readFileSync(new URL("../../../../AGENTS.md", import.meta.url), "utf8");
+
+    expect(agents).toContain("bash -c");
+    expect(agents).not.toContain("bash -lc");
+    expect(agents).toContain('-u "$(id -u):$(id -g)"');
+    expect(agents).toContain("-v /tmp/matrix-desktop-cargo-home:/tmp/cargo-home");
+    expect(agents).toContain("-v /tmp/matrix-desktop-gui-target:/tmp/matrix-desktop-gui-target");
+    expect(agents).toContain("-v /tmp/matrix-desktop-npm-cache:/tmp/npm-cache");
+    expect(agents).toContain("CARGO_HOME=/tmp/cargo-home");
+    expect(agents).toContain("CARGO_TARGET_DIR=/tmp/matrix-desktop-gui-target");
+    expect(agents).toContain("NPM_CONFIG_CACHE=/tmp/npm-cache");
+    expect(agents).toContain("--artifact-dir=/work/artifacts/linux-gui-qa");
+    expect(agents).toContain("--timeout-ms=180000");
+    expect(agents).toContain("PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+    expect(agents).toContain("RUSTC=\"$(rustup which rustc)\"");
+    expect(agents).toContain("RUSTDOC=\"$(rustup which rustdoc)\"");
+  });
+
+  test("linux GUI smoke QA title helpers match the mac runner contract", () => {
+    const ready = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-title-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=closed"
+    ]);
+    const readyRecovered = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-title-ready-require-recovered=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=closed"
+    ]);
+    const panel = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-title-panel=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings"
+    ]);
+    const panelReady = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-title-panel-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings",
+      "--required-panel=keyboardSettings"
+    ]);
+    const sendReady = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 send=sent panel=closed"
+    ]);
+
+    expect(ready.trim()).toBe("ready");
+    expect(readyRecovered.trim()).toBe("ready");
+    expect(panel.trim()).toBe("keyboardSettings");
+    expect(panelReady.trim()).toBe("ready");
+    expect(sendReady.trim()).toBe("ready");
   });
 
   test("headless local QA script lists homeserver and SDK checks", () => {

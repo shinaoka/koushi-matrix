@@ -351,6 +351,17 @@ stream), and the runtime must relay that model, not fight it.
     drop SDK handles → (on logout/removal) clear credentials and stores →
     emit final `StateChanged`.
 
+### Desktop Window Model
+
+The product runtime is single-window for now. The native shell creates and
+restores one Tauri webview window labelled `main`, and one process-wide
+`CoreRuntime` owns command dispatch, event forwarding, QA title state, and
+window-state persistence. Opening additional product windows is out of scope
+until a later explicit design defines per-window navigation, timeline
+subscriptions, QA title ownership, persisted geometry, and shutdown behavior.
+Secondary OS dialogs or system prompts do not change this product-window
+contract.
+
 Initial channel capacities are named constants, not scattered literals:
 
 - command inbox per runtime: 256
@@ -510,16 +521,19 @@ not a source of truth.
 
 The headless core runtime is complete through Phase 9 cleanup. Product UI work
 continues in
-`docs/superpowers/plans/2026-06-13-phase-10-ui-headless-product-surface.md`
+`docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md`
 and keeps the same QA hierarchy.
 
 - **Phase 10:** harden the headless browser harness and IPC mock so the real
   app shell can be mounted under fake `CoreEvent` and snapshot streams.
-- **Phase 11:** build the three-pane product surface, right panel, settings,
+- **Phase 11:** complete the thread model core-to-UI path headless-first.
+- **Phase 12:** build the three-pane product surface, right panel, settings,
   search, shortcut, and responsive UI behaviors in React, verified headless.
-- **Phase 12:** harden the Tauri transport contract and rerun local/real
-  homeserver QA for runtime-affecting changes, still without launching GUI.
-- **Phase 13:** run the minimal native GUI smoke for real IPC, native window,
-  OS menu, WebView, and keychain/system-dialog behavior only.
-- **Phase 14+:** finish distribution hardening, platform credential-store
-  evidence, signing/notarization, and device verification/cross-signing design.
+- **Phase 13:** complete remaining transport integration hardening on Linux as
+  the primary agent environment; still no native GUI launch.
+- **Phase 14:** build the Linux virtual-display real-Tauri lane for native
+  window, IPC, menu, and WebKitGTK behavior under Xvfb + `tauri-driver`.
+  macOS-specific WKWebView/menu/Keychain checks remain attended only.
+- **Phase 15+:** finish desktop interaction completeness, device
+  verification/cross-signing, performance/soak, distribution hardening,
+  platform credential-store evidence, signing/notarization, and release.

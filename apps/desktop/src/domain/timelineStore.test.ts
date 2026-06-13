@@ -514,6 +514,15 @@ describe("send path — command shape and local echo from diff", () => {
     expect(calls[0].args["body"]).toBe("hello world");
   });
 
+  test("mock IPC records restart_sync invocation", async () => {
+    const ipc = new TauriIpcMock();
+    await ipc.invoke("restart_sync");
+
+    const calls = ipc.invocationsOf("restart_sync");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe("restart_sync");
+  });
+
   test("local echo from PushBack diff appears in store after send", () => {
     let store = createTimelineStore();
     store = applyTimelineEvent(store, {

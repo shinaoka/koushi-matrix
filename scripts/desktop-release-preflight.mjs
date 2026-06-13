@@ -69,6 +69,11 @@ requireCheck(
   "npm macOS GUI smoke entry exists"
 );
 requireCheck(
+  packageJson.scripts?.["qa:linux-gui"]?.includes("desktop-linux-gui-qa"),
+  "package.scripts.qa:linux-gui",
+  "npm Linux GUI smoke entry exists"
+);
+requireCheck(
   packageJson.scripts?.["qa:real-account"]?.includes("password-login-smoke") &&
     packageJson.scripts?.["qa:real-account"]?.includes("--real-account-qa"),
   "package.scripts.qa:real-account",

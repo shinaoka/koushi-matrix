@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
 import { createBrowserFakeApi } from "./backend/browserFakeApi";
+import { TimelineItemRow } from "./components/TimelineView";
+import type { TimelineItem } from "./domain/coreEvents";
+import type { DesktopSnapshot } from "./domain/types";
 import type { RightPanelMode } from "./domain/rightPanel";
 
 describe("ContextualRightPanel", () => {
@@ -126,5 +129,87 @@ describe("Tauri state refresh wiring", () => {
     expect(source).toContain("qaSendStatus");
     expect(source).toContain("getCurrentWindow()");
     expect(source).toContain(".setTitle(title)");
+  });
+});
+
+describe("TopBar sync state rendering", () => {
+  test("renders reconnecting and failed states with a restart control", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { TopBar } = await import("./App");
+    const baseProps = {
+      activeSpaceName: "Matrix",
+      isBusy: false,
+      searchInputRef: { current: null },
+      searchQuery: "",
+      searchScope: "allRooms" as const,
+      onOpenKeyboardSettings: () => undefined,
+      onRestartSync: () => undefined,
+      onSearchQueryChange: () => undefined,
+      onSearchScopeChange: () => undefined
+    };
+
+    const reconnectingMarkup = renderToStaticMarkup(
+      <TopBar
+        {...baseProps}
+        sync={
+          {
+            reconnecting: "sync service is unavailable"
+          } as DesktopSnapshot["state"]["sync"]
+        }
+      />
+    );
+    expect(reconnectingMarkup).toContain("Reconnecting");
+    expect(reconnectingMarkup).toContain("sync service is unavailable");
+    expect(reconnectingMarkup).toContain('aria-label="Restart sync"');
+
+    const failedMarkup = renderToStaticMarkup(
+      <TopBar
+        {...baseProps}
+        sync={
+          {
+            failed: "transport error"
+          } as DesktopSnapshot["state"]["sync"]
+        }
+      />
+    );
+    expect(failedMarkup).toContain("Failed");
+    expect(failedMarkup).toContain("transport error");
+    expect(failedMarkup).toContain('aria-label="Restart sync"');
+  });
+});
+
+describe("Timeline item row rendering", () => {
+  test("marks Transaction timeline items as unsent local echoes", () => {
+    const localEcho = renderToStaticMarkup(
+      <TimelineItemRow
+        item={
+          {
+            id: { Transaction: { transaction_id: "desktop-1" } },
+            sender: "@me:example.invalid",
+            body: "queued message",
+            timestamp_ms: 1_820_000_000_000
+          } as TimelineItem
+        }
+      />
+    );
+
+    expect(localEcho).toContain('data-send-state="unsent"');
+    expect(localEcho).toContain("Unsent");
+
+    const remoteEvent = renderToStaticMarkup(
+      <TimelineItemRow
+        item={
+          {
+            id: { Event: { event_id: "$remote" } },
+            sender: "@me:example.invalid",
+            body: "sent message",
+            timestamp_ms: 1_820_000_000_100
+          } as TimelineItem
+        }
+      />
+    );
+
+    expect(remoteEvent).not.toContain('data-send-state="unsent"');
+    expect(remoteEvent).not.toContain("Unsent");
   });
 });

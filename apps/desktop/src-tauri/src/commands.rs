@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use matrix_desktop_core::{
     AccountCommand, AccountKey, CoreCommand, PaginationDirection, RoomCommand, SearchCommand,
-    SearchScope, TimelineCommand, TimelineKey, TimelineKind,
+    SearchScope, SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
 };
 use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest, SessionInfo};
 #[cfg(any(debug_assertions, test))]
@@ -185,14 +185,7 @@ pub(crate) async fn submit_login_request(
     login_request: LoginRequest,
 ) -> Result<(), String> {
     let request_id = next_request_id(state).await;
-    submit_core_command(
-        state,
-        CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id,
-            request: login_request,
-        }),
-    )
-    .await?;
+    submit_core_command(state, build_submit_login_command(request_id, login_request)).await?;
     update_qa_window_title_from_state(&app, state).await;
     Ok(())
 }
@@ -254,14 +247,10 @@ pub async fn switch_account(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = AccountKey(user_id);
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        CoreCommand::Account(AccountCommand::SwitchAccount {
-            request_id,
-            account_key,
-        }),
+        build_switch_account_command(request_id, user_id),
     )
     .await?;
     // AccountKey canonically identifies the account by user_id.
@@ -286,14 +275,7 @@ pub(crate) async fn submit_recovery_request(
     secret: AuthSecret,
 ) -> Result<(), String> {
     let request_id = next_request_id(state).await;
-    submit_core_command(
-        state,
-        CoreCommand::Account(AccountCommand::SubmitRecovery {
-            request_id,
-            request: RecoveryRequest { secret },
-        }),
-    )
-    .await?;
+    submit_core_command(state, build_submit_recovery_command(request_id, secret)).await?;
     update_qa_window_title_from_state(&app, state).await;
     Ok(())
 }
@@ -304,11 +286,18 @@ pub async fn logout(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::Logout { request_id }),
-    )
-    .await?;
+    submit_core_command(state.inner(), build_logout_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn restart_sync(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_restart_sync_command(request_id)).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -322,10 +311,7 @@ pub async fn select_space(
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        CoreCommand::Room(RoomCommand::SelectSpace {
-            request_id,
-            space_id,
-        }),
+        build_select_space_command(request_id, space_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -341,10 +327,7 @@ pub async fn select_room(
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        CoreCommand::Room(RoomCommand::SelectRoom {
-            request_id,
-            room_id,
-        }),
+        build_select_room_command(request_id, room_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -358,21 +341,10 @@ pub async fn paginate_timeline_backwards(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let key = TimelineKey {
-        account_key,
-        kind: TimelineKind::Room {
-            room_id: room_id.clone(),
-        },
-    };
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        CoreCommand::Timeline(TimelineCommand::Paginate {
-            request_id,
-            key,
-            direction: PaginationDirection::Backward,
-            event_count: 30,
-        }),
+        build_paginate_timeline_backwards_command(request_id, account_key, room_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -395,23 +367,12 @@ pub async fn send_text(
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let key = TimelineKey {
-        account_key,
-        kind: TimelineKind::Room {
-            room_id: room_id.clone(),
-        },
-    };
     let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Timeline(TimelineCommand::SendText {
-            request_id,
-            key,
-            transaction_id,
-            body,
-        }),
-    )
-    .await?;
+    if let Some(command) =
+        build_send_text_command(request_id, account_key, room_id, transaction_id, body)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -428,23 +389,12 @@ pub async fn edit_message(
         return current_snapshot(state.inner()).await;
     }
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let key = TimelineKey {
-        account_key,
-        kind: TimelineKind::Room {
-            room_id: room_id.clone(),
-        },
-    };
     let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Timeline(TimelineCommand::EditText {
-            request_id,
-            key,
-            event_id,
-            body,
-        }),
-    )
-    .await?;
+    if let Some(command) =
+        build_edit_message_command(request_id, account_key, room_id, event_id, body)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -457,20 +407,10 @@ pub async fn redact_message(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let key = TimelineKey {
-        account_key,
-        kind: TimelineKind::Room {
-            room_id: room_id.clone(),
-        },
-    };
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        CoreCommand::Timeline(TimelineCommand::Redact {
-            request_id,
-            key,
-            event_id,
-        }),
+        build_redact_message_command(request_id, account_key, room_id, event_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -484,14 +424,7 @@ pub async fn leave_room(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Room(RoomCommand::LeaveRoom {
-            request_id,
-            room_id,
-        }),
-    )
-    .await?;
+    submit_core_command(state.inner(), build_leave_room_command(request_id, room_id)).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -505,10 +438,7 @@ pub async fn forget_room(
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        CoreCommand::Room(RoomCommand::ForgetRoom {
-            request_id,
-            room_id,
-        }),
+        build_forget_room_command(request_id, room_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -550,11 +480,7 @@ pub async fn submit_search(
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        CoreCommand::Search(SearchCommand::Query {
-            request_id,
-            query,
-            scope: search_scope,
-        }),
+        build_submit_search_command(request_id, query, search_scope),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -562,6 +488,167 @@ pub async fn submit_search(
 }
 
 // ---- Helpers ----
+
+pub(crate) fn build_submit_login_command(
+    request_id: matrix_desktop_core::RequestId,
+    login_request: LoginRequest,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::LoginPassword {
+        request_id,
+        request: login_request,
+    })
+}
+
+pub(crate) fn build_switch_account_command(
+    request_id: matrix_desktop_core::RequestId,
+    user_id: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SwitchAccount {
+        request_id,
+        account_key: AccountKey(user_id),
+    })
+}
+
+pub(crate) fn build_submit_recovery_command(
+    request_id: matrix_desktop_core::RequestId,
+    secret: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SubmitRecovery {
+        request_id,
+        request: RecoveryRequest { secret },
+    })
+}
+
+pub(crate) fn build_logout_command(request_id: matrix_desktop_core::RequestId) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::Logout { request_id })
+}
+
+pub(crate) fn build_restart_sync_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::Sync(SyncCommand::Restart { request_id })
+}
+
+pub(crate) fn build_select_space_command(
+    request_id: matrix_desktop_core::RequestId,
+    space_id: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::SelectSpace {
+        request_id,
+        space_id,
+    })
+}
+
+pub(crate) fn build_select_room_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::SelectRoom {
+        request_id,
+        room_id,
+    })
+}
+
+fn build_timeline_key(account_key: AccountKey, room_id: String) -> TimelineKey {
+    TimelineKey {
+        account_key,
+        kind: TimelineKind::Room { room_id },
+    }
+}
+
+pub(crate) fn build_paginate_timeline_backwards_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Timeline(TimelineCommand::Paginate {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        direction: PaginationDirection::Backward,
+        event_count: 30,
+    })
+}
+
+pub(crate) fn build_send_text_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    transaction_id: String,
+    body: String,
+) -> Option<CoreCommand> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        transaction_id,
+        body,
+    }))
+}
+
+pub(crate) fn build_edit_message_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+    body: String,
+) -> Option<CoreCommand> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::EditText {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+        body,
+    }))
+}
+
+pub(crate) fn build_redact_message_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+) -> CoreCommand {
+    CoreCommand::Timeline(TimelineCommand::Redact {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+    })
+}
+
+pub(crate) fn build_leave_room_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::LeaveRoom {
+        request_id,
+        room_id,
+    })
+}
+
+pub(crate) fn build_forget_room_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::ForgetRoom {
+        request_id,
+        room_id,
+    })
+}
+
+pub(crate) fn build_submit_search_command(
+    request_id: matrix_desktop_core::RequestId,
+    query: String,
+    scope: SearchScope,
+) -> CoreCommand {
+    CoreCommand::Search(SearchCommand::Query {
+        request_id,
+        query,
+        scope,
+    })
+}
 
 /// Derive the `AccountKey` for the currently active session from the snapshot.
 ///
@@ -581,23 +668,25 @@ async fn account_key_from_snapshot(state: &CoreRuntimeState) -> AccountKey {
     }
 }
 
+fn resolve_search_scope_from_active_room(
+    scope: SearchScopeKind,
+    active_room_id: Option<String>,
+) -> SearchScope {
+    match scope {
+        SearchScopeKind::CurrentRoom => active_room_id
+            .map(|room_id| SearchScope::Room { room_id })
+            .unwrap_or(SearchScope::Global),
+        SearchScopeKind::CurrentSpace | SearchScopeKind::AllRooms => SearchScope::Global,
+        SearchScopeKind::Dms => SearchScope::Global,
+    }
+}
+
 async fn resolve_search_scope(
     scope: SearchScopeKind,
     state: &CoreRuntimeState,
 ) -> matrix_desktop_core::SearchScope {
     let snapshot = state.connection.lock().await.snapshot();
-    match scope {
-        SearchScopeKind::CurrentRoom => snapshot
-            .navigation
-            .active_room_id
-            .as_ref()
-            .map(|room_id| SearchScope::Room {
-                room_id: room_id.clone(),
-            })
-            .unwrap_or(SearchScope::Global),
-        SearchScopeKind::CurrentSpace | SearchScopeKind::AllRooms => SearchScope::Global,
-        SearchScopeKind::Dms => SearchScope::Global,
-    }
+    resolve_search_scope_from_active_room(scope, snapshot.navigation.active_room_id)
 }
 
 // ---- QA login pipe (debug/test only) ----
@@ -739,12 +828,24 @@ pub(crate) fn qa_recovery_prompt_is_available(state: &matrix_desktop_state::AppS
 
 #[cfg(test)]
 mod tests {
-    use matrix_desktop_state::{SessionInfo, SessionState};
-
-    use super::{
-        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
+    use matrix_desktop_core::AccountKey;
+    use matrix_desktop_core::{
+        AccountCommand, CoreCommand, PaginationDirection, RoomCommand, SearchCommand, SearchScope,
+        SyncCommand, TimelineCommand,
     };
-    use matrix_desktop_state::{AppState, RoomSummary};
+    use matrix_desktop_state::{AppState, AuthSecret, LoginRequest, SessionInfo, SessionState};
+
+    use super::SearchScopeKind;
+    use super::{
+        build_edit_message_command, build_forget_room_command, build_leave_room_command,
+        build_logout_command, build_paginate_timeline_backwards_command,
+        build_redact_message_command, build_restart_sync_command, build_select_room_command,
+        build_select_space_command, build_send_text_command, build_submit_login_command,
+        build_submit_recovery_command, build_submit_search_command, build_switch_account_command,
+        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
+        resolve_search_scope_from_active_room,
+    };
+    use matrix_desktop_state::RoomSummary;
 
     #[test]
     fn qa_login_pipe_payload_maps_to_login_request_without_debugging_secret() {
@@ -813,5 +914,342 @@ mod tests {
         assert!(title.contains("sync=stopped"));
         assert!(title.contains("rooms=2"));
         assert!(title.contains("timeline_items=42"));
+    }
+
+    fn fake_request_id(sequence: u64) -> matrix_desktop_core::RequestId {
+        matrix_desktop_core::RequestId {
+            connection_id: matrix_desktop_core::RuntimeConnectionId(7),
+            sequence,
+        }
+    }
+
+    #[test]
+    fn tauri_command_routes_build_expected_core_commands() {
+        let active_account_key = AccountKey("@alice:example.org".to_owned());
+        let room_id = "!room:example.org".to_owned();
+        let transaction_id = "desktop-1".to_owned();
+        let body = "body with visible content".to_owned();
+        let edit_body = "updated body".to_owned();
+        let query = "search terms".to_owned();
+
+        match build_submit_login_command(
+            fake_request_id(1),
+            LoginRequest {
+                homeserver: "https://matrix.example.org".to_owned(),
+                username: "alice".to_owned(),
+                password: AuthSecret::new("password-123"),
+                device_display_name: Some("Laptop".to_owned()),
+            },
+        ) {
+            CoreCommand::Account(AccountCommand::LoginPassword {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(1));
+                assert_eq!(request.homeserver, "https://matrix.example.org");
+                assert_eq!(request.username, "alice");
+                assert_eq!(request.password.expose_secret(), "password-123");
+                assert_eq!(request.device_display_name.as_deref(), Some("Laptop"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_switch_account_command(fake_request_id(2), "@bob:example.org".to_owned()) {
+            CoreCommand::Account(AccountCommand::SwitchAccount {
+                request_id,
+                account_key,
+            }) => {
+                assert_eq!(request_id, fake_request_id(2));
+                assert_eq!(
+                    account_key,
+                    matrix_desktop_core::AccountKey("@bob:example.org".to_owned())
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_submit_recovery_command(fake_request_id(3), AuthSecret::new("recovery-123")) {
+            CoreCommand::Account(AccountCommand::SubmitRecovery {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(3));
+                assert_eq!(request.secret.expose_secret(), "recovery-123");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_logout_command(fake_request_id(4)) {
+            CoreCommand::Account(AccountCommand::Logout { request_id }) => {
+                assert_eq!(request_id, fake_request_id(4));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_restart_sync_command(fake_request_id(5)) {
+            CoreCommand::Sync(SyncCommand::Restart { request_id }) => {
+                assert_eq!(request_id, fake_request_id(5));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_select_space_command(fake_request_id(6), Some("!space:example.org".to_owned()))
+        {
+            CoreCommand::Room(RoomCommand::SelectSpace {
+                request_id,
+                space_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(6));
+                assert_eq!(space_id.as_deref(), Some("!space:example.org"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_select_room_command(fake_request_id(7), room_id.clone()) {
+            CoreCommand::Room(RoomCommand::SelectRoom {
+                request_id,
+                room_id: route_room_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(7));
+                assert_eq!(route_room_id, room_id);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_paginate_timeline_backwards_command(
+            fake_request_id(8),
+            active_account_key.clone(),
+            room_id.clone(),
+        ) {
+            CoreCommand::Timeline(TimelineCommand::Paginate {
+                request_id,
+                key,
+                direction,
+                event_count,
+            }) => {
+                assert_eq!(request_id, fake_request_id(8));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(direction, PaginationDirection::Backward);
+                assert_eq!(event_count, 30);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_send_text_command(
+            fake_request_id(9),
+            active_account_key.clone(),
+            room_id.clone(),
+            transaction_id.clone(),
+            body.clone(),
+        )
+        .expect("send_text should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::SendText {
+                request_id,
+                key,
+                transaction_id: route_transaction_id,
+                body: route_body,
+            }) => {
+                assert_eq!(request_id, fake_request_id(9));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(route_transaction_id, transaction_id);
+                assert_eq!(route_body, body);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_edit_message_command(
+            fake_request_id(10),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$event".to_owned(),
+            edit_body.clone(),
+        )
+        .expect("edit_message should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::EditText {
+                request_id,
+                key,
+                event_id,
+                body: route_body,
+            }) => {
+                assert_eq!(request_id, fake_request_id(10));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$event");
+                assert_eq!(route_body, edit_body);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_redact_message_command(
+            fake_request_id(11),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$event".to_owned(),
+        ) {
+            CoreCommand::Timeline(TimelineCommand::Redact {
+                request_id,
+                key,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(11));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$event");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_leave_room_command(fake_request_id(12), room_id.clone()) {
+            CoreCommand::Room(RoomCommand::LeaveRoom {
+                request_id,
+                room_id: route_room_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(12));
+                assert_eq!(route_room_id, room_id);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_forget_room_command(fake_request_id(13), room_id.clone()) {
+            CoreCommand::Room(RoomCommand::ForgetRoom {
+                request_id,
+                room_id: route_room_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(13));
+                assert_eq!(route_room_id, room_id);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_submit_search_command(
+            fake_request_id(14),
+            query.clone(),
+            resolve_search_scope_from_active_room(
+                SearchScopeKind::CurrentRoom,
+                Some(room_id.clone()),
+            ),
+        ) {
+            CoreCommand::Search(SearchCommand::Query {
+                request_id,
+                query: route_query,
+                scope,
+            }) => {
+                assert_eq!(request_id, fake_request_id(14));
+                assert_eq!(route_query, query);
+                assert_eq!(scope, SearchScope::Room { room_id });
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert_eq!(
+            resolve_search_scope_from_active_room(SearchScopeKind::CurrentRoom, None,),
+            SearchScope::Global
+        );
+    }
+
+    #[test]
+    fn tauri_command_routes_blank_message_bodies_return_no_command() {
+        let account_key = AccountKey("@alice:example.org".to_owned());
+        let room_id = "!room:example.org".to_owned();
+
+        assert!(
+            build_send_text_command(
+                fake_request_id(14),
+                account_key.clone(),
+                room_id.clone(),
+                "desktop-14".to_owned(),
+                "   ".to_owned(),
+            )
+            .is_none()
+        );
+        assert!(
+            build_edit_message_command(
+                fake_request_id(15),
+                account_key,
+                room_id,
+                "$event".to_owned(),
+                "\n\t ".to_owned(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn tauri_command_routes_redact_secret_bearing_values_from_debug() {
+        let account_key = AccountKey("@alice:example.org".to_owned());
+        let room_id = "!room:example.org".to_owned();
+        let login = build_submit_login_command(
+            fake_request_id(16),
+            LoginRequest {
+                homeserver: "https://matrix.example.org".to_owned(),
+                username: "alice".to_owned(),
+                password: AuthSecret::new("password-123"),
+                device_display_name: Some("Laptop".to_owned()),
+            },
+        );
+        let recovery =
+            build_submit_recovery_command(fake_request_id(17), AuthSecret::new("recovery-123"));
+        let send = build_send_text_command(
+            fake_request_id(18),
+            account_key.clone(),
+            room_id.clone(),
+            "desktop-18".to_owned(),
+            "sensitive body".to_owned(),
+        )
+        .expect("send_text should build a command");
+        let edit = build_edit_message_command(
+            fake_request_id(19),
+            account_key,
+            room_id,
+            "$event".to_owned(),
+            "sensitive edit body".to_owned(),
+        )
+        .expect("edit_message should build a command");
+        let search = build_submit_search_command(
+            fake_request_id(20),
+            "secret search terms".to_owned(),
+            resolve_search_scope_from_active_room(
+                SearchScopeKind::CurrentRoom,
+                Some("!room:example.org".to_owned()),
+            ),
+        );
+
+        for (command, secret) in [
+            (&login, "password-123"),
+            (&recovery, "recovery-123"),
+            (&send, "sensitive body"),
+            (&edit, "sensitive edit body"),
+            (&search, "secret search terms"),
+        ] {
+            let debug = format!("{command:?}");
+            assert!(
+                !debug.contains(secret),
+                "Debug output leaked a secret: {debug}"
+            );
+        }
     }
 }

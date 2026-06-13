@@ -16,14 +16,38 @@ themselves.
 
 ## Environment strategy
 
-- Phases 10–13 run on the current macOS environment: everything is headless
-  (Vitest, Playwright + mock IPC, local homeserver QA, real homeserver QA).
-- Phase 14 builds the Linux virtual-display lane. From Phase 14 on, GUI
-  integration work runs primarily on Linux (Xvfb + `tauri-driver`); macOS
+- Phases 10–12 may run on the current macOS environment because they stay
+  headless (Vitest, Playwright + mock IPC, local homeserver QA, real
+  homeserver QA).
+- The remaining Phase 13 work and every later phase are handed off to Linux as
+  the primary agent environment. Phase 13 is still headless/transport work,
+  but its exit gates should be re-run on Linux before accepting the phase.
+- Phase 14 builds the Linux virtual-display GUI lane. From that point, real
+  Tauri GUI integration work runs on Linux (Xvfb + `tauri-driver`); macOS
   remains for attended WKWebView/menu/Keychain smoke and for release
   signing/notarization in Phase 18.
-- The switch to Linux as the primary agent environment happens at the
-  Phase 14 exit if the lane is green; the canon already accepts this.
+- Linux local homeserver QA setup is rootless and disposable. The binaries are
+  not checked into the repo; `/tmp/matrix-desktop-local-qa-bin` is an example
+  scratch location only, and persistent agents may use any ignored/local bin
+  dir as long as they prepend it to `PATH`.
+
+  ```bash
+  BIN=/tmp/matrix-desktop-local-qa-bin
+  mkdir -p "$BIN"
+
+  curl -L 'https://gitlab.com/api/v4/projects/famedly%2Fconduit/jobs/artifacts/master/raw/x86_64-unknown-linux-musl?job=artifacts' \
+    -o "$BIN/conduit"
+  chmod +x "$BIN/conduit"
+  "$BIN/conduit" --version
+
+  curl -L 'https://github.com/matrix-construct/tuwunel/releases/download/v1.7.1/v1.7.1-release-all-x86_64-v1-linux-gnu-tuwunel.zst' \
+    -o "$BIN/tuwunel.zst"
+  unzstd -f -o "$BIN/tuwunel" "$BIN/tuwunel.zst"
+  chmod +x "$BIN/tuwunel"
+  "$BIN/tuwunel" --version
+
+  PATH="$BIN:$PATH" npm --prefix apps/desktop run qa:headless-local -- --server=both
+  ```
 
 ## Standing gates (every phase exit, executed by the reviewer)
 
@@ -175,55 +199,58 @@ validation with 500-room synthetic snapshots).
 
 ## Phase 13 — Transport integration hardening
 
-Goal: adapter, TS contract, and runtime agree under stress, still headless.
+Goal: adapter, TS contract, and runtime agree under stress on the Linux
+handoff environment, still headless.
 
-- [ ] Rust tests for every Tauri command → CoreCommand route (table-driven;
+- [x] Linux handoff first: use or provision a Linux checkout/container/VM,
+  install the standing-gate prerequisites, run the full standing-gate suite,
+  and record any Linux-only setup deltas before completing the remaining
+  Phase 13 transport tasks.
+- [x] Rust tests for every Tauri command → CoreCommand route (table-driven;
   redacted failures asserted).
-- [ ] Event-flood test: synthetic burst (1k diffs) through the adapter →
+- [x] Event-flood test: synthetic burst (1k diffs) through the adapter →
   webview event channel; assert coalescing, lag marker + snapshot resync
   path end to end (harness consumes the real serialized stream).
-- [ ] Reconnect/offline surface: sync Reconnecting/Failed states render;
+- [x] Reconnect/offline surface: sync Reconnecting/Failed states render;
   Restart command path from the UI; send-queue offline behavior surfaced
   (queued sends visible as unsent local echoes; assert via mock + local QA
   leg with a stopped server if cheap, else unit-level).
-- [ ] Multi-window decision recorded (single-window assumption documented
+- [x] Multi-window decision recorded (single-window assumption documented
   in canon if we keep it).
-- [ ] `qa:headless-local -- --server=both` + `qa:real-homeserver` rerun
+- [x] `qa:headless-local -- --server=both` + `qa:real-homeserver` rerun
   (this phase touches Matrix-facing paths).
 
-Exit gate: standing gates + both QA tiers. Gap watchlist: Tauri event
-throughput on large bursts (if the IPC channel saturates, the canon
+Exit gate: standing gates on Linux + both QA tiers. Gap watchlist: Tauri
+event throughput on large bursts (if the IPC channel saturates, the canon
 backpressure rules need an adapter-side coalescer — escalate with
-measurements).
+measurements). Linux setup drift discovered here is Phase 13 work, not a
+reason to defer the handoff to Phase 14.
 
-## Phase 14 — Linux virtual-display lane (environment switch point)
+## Phase 14 — Linux virtual-display GUI lane
 
-Goal: agents drive the REAL Tauri app unattended under Xvfb on Linux;
-primary GUI development moves to Linux at exit.
+Goal: with Phase 13 already running on Linux, agents drive the REAL Tauri app
+unattended under Xvfb; primary GUI development stays on Linux after exit.
 
-- [ ] Provision Linux env (container or VM): Rust toolchain, Node, tauri
-  deps (`webkit2gtk`, `libayatana-appindicator`…), Xvfb, `tauri-driver`,
-  WebdriverIO; Conduit/Tuwunel built with the documented flags (AGENTS.md
-  caveats apply on Linux too — record deltas). Install Noto Color Emoji
-  (D7): without it WebKitGTK renders tofu for emoji and Phase 16's emoji
-  SAS display cannot be verified.
-- [ ] Repo runs whole standing-gate suite on Linux (fix platform breaks:
-  keychain → file credential store is debug-gated already; `keyring`
-  crate's linux backend behavior documented; paths).
-- [ ] `qa:linux-gui` script: Xvfb + tauri-driver + WebdriverIO drives the
-  real app: window lifecycle, real IPC bridge round trip (command →
-  CoreEvent → DOM), menu wiring, login-via-FIFO smoke against a local
-  homeserver, scrollback in the real webview (WebKitGTK), clean process
-  teardown. Screenshots only from synthetic accounts, stored in ignored
-  artifacts.
-- [ ] Keychain-prompt equivalent on Linux (secret service): the QA guard
-  pattern ports (file credential store enforced; no DBus secret prompts in
-  unattended runs).
-- [ ] AGENTS.md: Linux lane setup + footguns section; canon amendment
-  recording the lane as the primary GUI verification path.
-- [ ] macOS attended smoke checklist doc updated to ONLY macOS-specific
-  items (WKWebView rendering spot-check, OS menu accelerators, Keychain
-  prompt suppression, notarized-build launch).
+- [x] Provision Linux env via the committed Docker recipe
+  `docker/linux-gui.Dockerfile`: Rust toolchain, Node, Tauri deps
+  (`webkit2gtk`, `libayatana-appindicator`…), Xvfb, `tauri-driver`,
+  WebKitWebDriver/WebdriverIO, and Noto Color Emoji for GUI/emoji parity.
+- [x] Repo runs the standing-gate suite on Linux; Phase 13 gates were
+  rerun there, and Phase 14 keeps the focused GUI gate separate.
+- [x] `qa:linux-gui` script exists and verifies the real Tauri app in a
+  signed-out smoke through Xvfb + `tauri-driver` + WebdriverIO: window
+  lifecycle, real IPC/DOM path, `auth_screen=ok`,
+  `title_signed_out=ok`, `screenshot=ok`, and clean teardown. The
+  local-homeserver login-via-FIFO, scrollback, and other authenticated
+  extensions remain future work.
+- [x] Linux secret-service prompt guard is represented by the debug file
+  credential store env plus sanitized child env; the unattended signed-out
+  run does not hit a DBus secret prompt.
+- [x] AGENTS.md: Linux lane setup + footguns section added.
+- [x] macOS attended smoke checklist doc updated to ONLY macOS-specific
+  items (`docs/qa/macos-attended-smoke.md`: WKWebView rendering
+  spot-check, OS menu accelerators, Keychain prompt suppression,
+  signing/notarization/Gatekeeper launch when applicable).
 
 Exit gate: full gate suite + `qa:linux-gui` green on Linux, unattended.
 Gap watchlist: WebKitGTK vs WKWebView rendering differences (track a
@@ -349,9 +376,12 @@ deltas, canon Last-amended current, docs-sync clean repo-wide.
 ## Phase ordering rationale and dependencies
 
 ```
-P10 harness ─► P11 threads(core→UI) ─► P12 surface ─► P13 transport ─► P14 Linux lane
-                                                                        │ (env switch)
-                                          P15 desktop ◄────────────────┘
+P10 harness ─► P11 threads(core→UI) ─► P12 surface ─► P13 transport + Linux handoff
+                                                              │
+                                                              ▼
+                                                 P14 Linux GUI lane
+                                                              │
+                                          P15 desktop ◄───────┘
                                           P16 verification (spec gate)
                                           P17 perf/soak
                                           P18 release
@@ -364,5 +394,33 @@ are green.
 
 - 2026-06-13: roadmap created (absorbs and supersedes the Phase 10 UI
   plan; extends to release as Phases 10–18; thread model phase added from
-  the 2026-06-13 timeline-thread review; Linux lane becomes the
-  environment switch point at Phase 14).
+  the 2026-06-13 timeline-thread review; Phase 14 initially held the Linux
+  lane setup).
+- 2026-06-13: user handoff decision recorded: remaining Phase 13 work and
+  all Phase 13+ execution move to Linux. Phase 14 is now the Linux
+  virtual-display GUI lane, not the environment switch point.
+- 2026-06-13: rootless Linux local homeserver install method recorded for
+  Phase 13 handoff (`/tmp/matrix-desktop-local-qa-bin`, Conduit/Tuwunel
+  downloads, `PATH` prepend, disposable binaries).
+- 2026-06-13: local headless QA passed on both homeserver legs via
+  `PATH="$BIN:$PATH" npm --prefix apps/desktop run qa:headless-local -- --server=both`.
+- 2026-06-13: real-homeserver QA passed after local credentials were
+  provisioned; evidence tokens: `login=ok`, `recovery=completed`,
+  `sync_backend=SyncService`, `leave_room=ok`, `forget_room=ok`,
+  `logout=ok`.
+- 2026-06-13: Phase 13 command-route and event-flood/resync adapter tests
+  landed and passed under the Linux container lane
+  (`matrix-desktop-linux-gate:phase13`).
+- 2026-06-13: Phase 13 reconnect/offline surface landed headless-first:
+  `restart_sync` routes to `SyncCommand::Restart`, Reconnecting/Failed render
+  with a restart control, and Transaction local echoes render as unsent.
+- 2026-06-13: Phase 13 multi-window decision recorded in
+  `docs/architecture/overview.md`: the product runtime remains a single
+  `main` Tauri window until a later explicit multi-window design exists.
+- 2026-06-13: Linux GUI lane verified from the committed Docker recipe
+  `docker/linux-gui.Dockerfile`; `qa:linux-gui` passed with
+  `auth_screen=ok`, `title_signed_out=ok`, `screenshot=ok`, and artifacts
+  written under ignored `artifacts/linux-gui-qa/`.
+- 2026-06-13: macOS attended-smoke checklist added at
+  `docs/qa/macos-attended-smoke.md`; scope narrowed to macOS-specific
+  attended checks and private-data-safe QA handling.

@@ -13,8 +13,9 @@ the operational detail here.
 
 All agents implementing the headless core runtime follow
 [docs/superpowers/plans/2026-06-12-headless-core-runtime-implementation.md](docs/superpowers/plans/2026-06-12-headless-core-runtime-implementation.md).
-All agents implementing the Phase 10+ product surface follow
-[docs/superpowers/plans/2026-06-13-phase-10-ui-headless-product-surface.md](docs/superpowers/plans/2026-06-13-phase-10-ui-headless-product-surface.md).
+All agents implementing the Phase 10+ product surface and release roadmap
+follow
+[docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md](docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md).
 
 - **Headless-first, local-server-first.** New Matrix behavior lands in
   `matrix-desktop-core`, verified via `CoreCommand`/`CoreEvent` against local
@@ -54,6 +55,11 @@ All agents implementing the Phase 10+ product surface follow
   in headless browser tests. Do not launch the native Tauri app for these.
   Native GUI smoke is reserved for real IPC, native window, OS menu, WebView,
   and keychain/system-dialog behavior; on macOS it is attended only.
+- **Phase 13+ Linux handoff.** The remaining Phase 13 transport hardening and
+  all later agent work run primarily on Linux. Phase 13 remains headless but
+  must rerun its standing gates on Linux; Phase 14 adds the Xvfb +
+  `tauri-driver` real-Tauri GUI lane. macOS remains for attended
+  WKWebView/menu/Keychain smoke and release signing/notarization only.
 
 ## Local Gates Setup
 
@@ -69,6 +75,17 @@ All agents implementing the Phase 10+ product surface follow
   quick structural pass).
 - There is no hosted CI in this repo yet; these gates run locally and in
   `release:preflight`. Wire them into CI when CI infrastructure appears.
+
+## Linux GUI QA Container
+
+- Build the committed lane image with
+  `docker build -f docker/linux-gui.Dockerfile -t matrix-desktop-linux-gui .`
+- The Docker recipe pins Rust toolchain `1.96.0` for reproducibility.
+- Run the lane from the repo root with the workspace mounted at `/work`:
+  `docker run --rm -it --shm-size=2g -u "$(id -u):$(id -g)" -v "$PWD:/work" -v /tmp/matrix-desktop-cargo-home:/tmp/cargo-home -v /tmp/matrix-desktop-gui-target:/tmp/matrix-desktop-gui-target -v /tmp/matrix-desktop-npm-cache:/tmp/npm-cache -w /work -e HOME=/tmp -e RUSTUP_HOME=/opt/rustup -e CARGO_HOME=/tmp/cargo-home -e CARGO_TARGET_DIR=/tmp/matrix-desktop-gui-target -e NPM_CONFIG_CACHE=/tmp/npm-cache -e PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin matrix-desktop-linux-gui bash -c 'export RUSTC="$(rustup which rustc)"; export RUSTDOC="$(rustup which rustdoc)"; npm --prefix apps/desktop run qa:linux-gui -- --artifact-dir=/work/artifacts/linux-gui-qa --timeout-ms=180000'`
+- The runner writes artifacts to `artifacts/linux-gui-qa/` inside the mounted
+  repo. Keep that directory ignored and inspect the run log and screenshots
+  there when a lane fails.
 
 ## macOS GUI Smoke Failures
 

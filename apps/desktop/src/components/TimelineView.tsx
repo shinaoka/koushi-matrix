@@ -252,17 +252,24 @@ export function TimelineView({
   );
 }
 
-function TimelineItemRow({ item }: { item: TimelineItem }) {
+export function TimelineItemRow({ item }: { item: TimelineItem }) {
   const domId = timelineItemDomId(item.id);
+  const isLocalEcho = "Transaction" in item.id;
   return (
     <article
       className="message"
       data-item-id={domId}
+      data-send-state={isLocalEcho ? "unsent" : undefined}
       data-event-id={"Event" in item.id ? item.id.Event.event_id : undefined}
     >
       <div className="message-main">
         <div className="message-heading">
           <span className="sender">{item.sender ?? ""}</span>
+          {isLocalEcho ? (
+            <span className="message-send-state" data-send-state="unsent">
+              Unsent
+            </span>
+          ) : null}
         </div>
         <div className="message-body">{item.body ?? ""}</div>
       </div>

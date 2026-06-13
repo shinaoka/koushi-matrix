@@ -29,7 +29,7 @@
 The prototype is now past the code-level roadmap items through Milestone 9.
 Phase 10+ work moves the product surface forward while preserving the
 headless-first rule. The next execution plan is
-`docs/superpowers/plans/2026-06-13-phase-10-ui-headless-product-surface.md`.
+`docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md`.
 Remaining distribution gates are live OS credential-store tests on Windows,
 macOS signing/notarization, Windows signing, and trust UX work for device
 verification/cross-signing.
@@ -256,6 +256,12 @@ npm --prefix apps/desktop run qa:real-homeserver
 
 ## Milestone 13: Native GUI Smoke And OS Integration
 
+Superseded for execution by
+`2026-06-13-roadmap-phases-10-18.md`: remaining Phase 13 transport work and
+all later agent work now hand off to Linux. Real-Tauri GUI automation starts
+with the Phase 14 Linux virtual-display lane; macOS native smoke remains
+attended and limited to macOS-specific behavior.
+
 - [ ] Launch the real Tauri app only for native behavior that headless tests
   cannot prove: real IPC, native window lifecycle, OS menu accelerators,
   WebView integration, and keychain/system-dialog behavior.
@@ -281,8 +287,8 @@ npm --prefix apps/desktop run qa:mac-gui
 
 ## Immediate Next Work
 
-1. Execute Milestone 10 from
-   `2026-06-13-phase-10-ui-headless-product-surface.md` using the subagent
+1. Execute Milestone 10+ from
+   `2026-06-13-roadmap-phases-10-18.md` using the subagent
    reviewer/implementer pattern.
 2. Keep real-homeserver QA in Milestone 12 and release preflight, not in
    ordinary React-only headless UI loops.
