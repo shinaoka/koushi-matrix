@@ -25,6 +25,9 @@ const checks = [
   "scenario signed-out",
   "scenario local-login",
   "scenario local-send",
+  "scenario local-create-room",
+  "scenario local-create-space",
+  "scenario local-reply",
   "verify Xvfb virtual display",
   "verify tauri-driver and WebKitWebDriver",
   "verify debug Tauri build",
@@ -166,6 +169,18 @@ async function run() {
     await runLocalSendScenario();
     return;
   }
+  if (guiScenario === "local-create-room") {
+    await runLocalCreateRoomScenario();
+    return;
+  }
+  if (guiScenario === "local-create-space") {
+    await runLocalCreateSpaceScenario();
+    return;
+  }
+  if (guiScenario === "local-reply") {
+    await runLocalReplyScenario();
+    return;
+  }
   throw new Error(`unsupported --scenario: ${guiScenario}`);
 }
 
@@ -204,14 +219,7 @@ async function runSignedOutScenario() {
   let appLaunched = false;
   let dbusMonitor = null;
   try {
-    await runLoggedCommand("npm", ["run", "tauri", "build", "--", "--debug", "--no-bundle"], {
-      cwd: desktopDir,
-      env: buildEnv,
-      logPath,
-      label: "tauri build"
-    });
-
-    const appBinary = resolveDebugAppBinary();
+    const appBinary = await ensureAppBinary({ cwd: desktopDir, env: buildEnv, logPath });
     await waitForPort("127.0.0.1", driverPort, timeoutMs);
 
     const { remote } = await importDesktopWebdriverio();
@@ -306,6 +314,157 @@ async function runLocalSendScenario() {
   }
 }
 
+async function runLocalCreateRoomScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const baselineRooms = parseQaTitle(
+      await session.browser.execute(() => document.title)
+    ).rooms;
+
+    const createButton = await session.browser.$('button[aria-label="Create room"]');
+    await createButton.waitForDisplayed({ timeout: timeoutMs });
+    await createButton.click();
+    const nameInput = await session.browser.$('input[aria-label="Room name"]');
+    await nameInput.waitForDisplayed({ timeout: timeoutMs });
+    await nameInput.setValue(`QA Room ${timestamp()}`);
+    const submit = await session.browser.$('button[aria-label="Submit create room"]');
+    await submit.click();
+
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.rooms > baselineRooms,
+      timeoutMs,
+      "local GUI create room"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_create_room=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalCreateSpaceScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const baselineSpaces = parseQaTitle(
+      await session.browser.execute(() => document.title)
+    ).spaces;
+
+    const createButton = await session.browser.$('button[aria-label="Create space"]');
+    await createButton.waitForDisplayed({ timeout: timeoutMs });
+    await createButton.click();
+    const nameInput = await session.browser.$('input[aria-label="Space name"]');
+    await nameInput.waitForDisplayed({ timeout: timeoutMs });
+    await nameInput.setValue(`QA Space ${timestamp()}`);
+    const submit = await session.browser.$('button[aria-label="Submit create space"]');
+    await submit.click();
+
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.spaces > baselineSpaces,
+      timeoutMs,
+      "local GUI create space"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_create_space=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalReplyScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    // A reply needs a real, server-acked event to target. Send one first so a
+    // timeline row with a reply affordance exists.
+    const composer = await session.browser.$('textarea[aria-label="Message composer"]');
+    await composer.waitForDisplayed({ timeout: timeoutMs });
+    await composer.click();
+    await composer.setValue(`QA reply root ${timestamp()}`);
+    await session.browser.keys("Enter");
+    await waitForLocalSendSuccess(session.browser, timeoutMs);
+
+    // The reply action sits in a hover-revealed `.message-actions` container
+    // (opacity:0 until `.message:hover`/`:focus-within`), so move the pointer
+    // over it before interacting. Then open reply mode and confirm the composer
+    // surfaced the Rust-backed reply state (Cancel reply affordance).
+    const replyButton = await session.browser.$('[aria-label="Reply to message"]');
+    await replyButton.waitForExist({ timeout: timeoutMs });
+    await replyButton.moveTo();
+    await replyButton.waitForDisplayed({ timeout: timeoutMs });
+    await replyButton.click();
+    const cancelReply = await session.browser.$('[aria-label="Cancel reply"]');
+    await cancelReply.waitForDisplayed({ timeout: timeoutMs });
+
+    // Send the reply and wait for it to land (a new timeline row, or a
+    // `data-reply="true"` row when the reply relation is surfaced).
+    const baselineMessages = await session.browser.execute(
+      () => document.querySelectorAll(".message").length
+    );
+    await composer.click();
+    await composer.setValue(`QA reply body ${timestamp()}`);
+    await session.browser.keys("Enter");
+    await waitForReplyLanded(session.browser, baselineMessages, timeoutMs);
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_reply=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function waitForQaTitle(browser, predicate, timeout, description) {
+  const startedAt = Date.now();
+  let lastTitle = "";
+  while (Date.now() - startedAt < timeout) {
+    lastTitle = await browser.execute(() => document.title);
+    const status = parseQaTitle(lastTitle);
+    if (status.errors > 0) {
+      throw new Error(`${description} reported errors. Last title: ${lastTitle}`);
+    }
+    if (predicate(status)) {
+      return lastTitle;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} did not reach its expected state. Last title: ${lastTitle}`);
+}
+
+async function waitForReplyLanded(browser, baselineMessages, timeout) {
+  const startedAt = Date.now();
+  let lastTitle = "";
+  while (Date.now() - startedAt < timeout) {
+    lastTitle = await browser.execute(() => document.title);
+    const status = parseQaTitle(lastTitle);
+    if (status.errors > 0) {
+      throw new Error(`local GUI reply reported errors. Last title: ${lastTitle}`);
+    }
+    if (status.send === "failed") {
+      throw new Error(`local GUI reply send failed. Last title: ${lastTitle}`);
+    }
+    const observed = await browser.execute(() => ({
+      messages: document.querySelectorAll(".message").length,
+      replyRows: document.querySelectorAll('[data-reply="true"]').length
+    }));
+    if (observed.replyRows > 0 || observed.messages > baselineMessages) {
+      return lastTitle;
+    }
+    await sleep(250);
+  }
+  throw new Error(`local GUI reply did not land. Last title: ${lastTitle}`);
+}
+
 async function startLocalGuiScenario() {
   checkLinuxTools();
 
@@ -383,14 +542,7 @@ async function startLocalGuiScenario() {
       }
     );
 
-    await runLoggedCommand("npm", ["run", "tauri", "build", "--", "--debug", "--no-bundle"], {
-      cwd: desktopDir,
-      env: session.buildEnv,
-      logPath,
-      label: "tauri build"
-    });
-
-    const appBinary = resolveDebugAppBinary();
+    const appBinary = await ensureAppBinary({ cwd: desktopDir, env: session.buildEnv, logPath });
     await waitForPort("127.0.0.1", driverPort, timeoutMs);
 
     const { remote } = await importDesktopWebdriverio();
@@ -817,6 +969,37 @@ function resolveDebugAppBinary() {
     throw new Error(`unable to resolve debug Tauri binary. Checked: ${candidates.join(", ")}`);
   }
   return found;
+}
+
+/**
+ * Resolve the debug Tauri binary to drive, building it first unless
+ * `--skip-build` is passed. `--skip-build` is the fast inner-loop path: it
+ * reuses an already-built binary (via `--app-binary=PATH` or the default
+ * debug target) so iterating on a scenario does not pay the full Tauri
+ * rebuild each time.
+ */
+async function ensureAppBinary({ cwd, env, logPath }) {
+  if (!args.has("--skip-build")) {
+    await runLoggedCommand("npm", ["run", "tauri", "build", "--", "--debug", "--no-bundle"], {
+      cwd,
+      env,
+      logPath,
+      label: "tauri build"
+    });
+  }
+  const explicit = optionValue("--app-binary");
+  const appBinary = explicit
+    ? isAbsolute(explicit)
+      ? explicit
+      : resolve(explicit)
+    : resolveDebugAppBinary();
+  if (!existsSync(appBinary)) {
+    throw new Error(
+      `app binary not found at ${appBinary}. With --skip-build, pass --app-binary=PATH ` +
+        `or build once first: npm --prefix apps/desktop run tauri build -- --debug --no-bundle`
+    );
+  }
+  return appBinary;
 }
 
 function webdriverCapabilities(appBinary) {

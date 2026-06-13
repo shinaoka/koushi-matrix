@@ -804,7 +804,7 @@ Expected: pass before GUI QA begins.
 - Modify: `AGENTS.md`
 - Test: `apps/desktop/src/scripts/releaseScripts.test.ts`
 
-- [ ] **Step 1: Add skip-build support**
+- [x] **Step 1: Add skip-build support**
 
 Add `--skip-build` and `--app-binary=PATH` support. When `--skip-build` is
 present, the runner must not execute:
@@ -831,17 +831,17 @@ PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
     --timeout-ms=180000
 ```
 
-- [ ] **Step 2: Keep local server startup disposable**
+- [x] **Step 2: Keep local server startup disposable**
 
 Do not add persistent matrix.org profiles or real-account login to the GUI
 basic-operation runner. Disposable local server startup is cheaper than
 debugging leaked remote artifacts.
 
-- [ ] **Step 3: Document the fast loop**
+- [x] **Step 3: Document the fast loop**
 
 Add the skip-build command to `AGENTS.md` under `Fast Linux GUI Inner Loop`.
 
-- [ ] **Step 4: Add source-level release check for skip-build**
+- [x] **Step 4: Add source-level release check for skip-build**
 
 Extend `apps/desktop/src/scripts/releaseScripts.test.ts` so the release guard
 asserts the Linux GUI runner supports:
@@ -866,7 +866,7 @@ Expected: both pass.
 - Modify: `docs/qa/headless-basic-operations.md`
 - Test: `apps/desktop/src/scripts/releaseScripts.test.ts`
 
-- [ ] **Step 1: Add scenario names**
+- [x] **Step 1: Add scenario names**
 
 Extend the runner's scenario switch:
 
@@ -893,7 +893,7 @@ scenario local-create-space
 scenario local-reply
 ```
 
-- [ ] **Step 2: Drive real controls**
+- [x] **Step 2: Drive real controls**
 
 Each scenario must call `startLocalGuiScenario()`, complete FIFO login, wait
 for `qaStatusIsReady`, then use WebDriver controls:
@@ -909,7 +909,7 @@ for `qaStatusIsReady`, then use WebDriver controls:
   `data-reply="true"` row containing the synthetic body, print
   `gui_local_reply=ok`.
 
-- [ ] **Step 3: Keep assertions private-data-free**
+- [x] **Step 3: Keep assertions private-data-free**
 
 Allowed stdout tokens:
 
@@ -925,7 +925,7 @@ notification_dbus=ok
 Do not print access tokens, passwords, recovery secrets, Matrix IDs from real
 accounts, or raw SDK errors.
 
-- [ ] **Step 4: Run focused local GUI lanes**
+- [x] **Step 4: Run focused local GUI lanes**
 
 Run:
 
@@ -954,7 +954,7 @@ PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
 
 Expected: each command prints its `gui_local_*=ok` token with no errors.
 
-- [ ] **Step 5: Add source-level release checks for scenario names**
+- [x] **Step 5: Add source-level release checks for scenario names**
 
 Extend `apps/desktop/src/scripts/releaseScripts.test.ts` so the release guard
 asserts the Linux GUI runner supports:

@@ -75,6 +75,9 @@ Run the local-client lanes:
 ```bash
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-login --server=conduit --artifact-dir=artifacts/linux-gui-local-login --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-send --server=conduit --artifact-dir=artifacts/linux-gui-local-send --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --artifact-dir=artifacts/linux-gui-local-create-room --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-space --server=conduit --artifact-dir=artifacts/linux-gui-local-create-space --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
 ```
 
 `local-login` proves the Linux client can boot against a disposable local
@@ -82,6 +85,22 @@ homeserver, complete FIFO-driven login, seed exactly one synthetic room on the
 server side, and reach a ready synced UI with an active room. `local-send`
 proves the actual composer can send one message through WebDriver and the QA
 title reports `send=sent` with no errors.
+
+`local-create-room`, `local-create-space`, and `local-reply` exercise the real
+basic-operation controls through WebDriver against a disposable local
+homeserver: clicking `Create room`/`Create space`, submitting the dialog, and
+replying to a real timeline event. They assert the Rust-owned snapshot reacts
+(`rooms`/`spaces` counts grow; a `data-reply="true"` row renders) rather than
+relying on React-only state. These destructive operations stay local-only;
+matrix.org is reserved for the final compatibility gate.
+
+For fast iteration, build the debug app once and reuse it with `--skip-build`
+(optionally `--app-binary=PATH`):
+
+```bash
+npm --prefix apps/desktop run tauri build -- --debug --no-bundle
+PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-create-room-fast --timeout-ms=180000
+```
 
 The combined Linux lane is exposed through the shared release aggregator:
 
@@ -94,4 +113,7 @@ Required target tokens:
 ```text
 gui_local_login=ok
 gui_local_send=ok
+gui_local_create_room=ok
+gui_local_create_space=ok
+gui_local_reply=ok
 ```

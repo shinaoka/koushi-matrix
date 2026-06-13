@@ -130,6 +130,10 @@ All agents implementing local GUI room/space/reply operations follow
 - Prepend the local homeserver binaries when iterating so the host lanes use
   the checked-in QA binaries first:
   `export PATH=/tmp/matrix-desktop-local-qa-bin:$PATH`
+- Build the debug app once, then reuse it with `--skip-build` (optionally
+  `--app-binary=PATH`) so each scenario trial skips the full Tauri rebuild:
+  `npm --prefix apps/desktop run tauri build -- --debug --no-bundle`, then
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-create-room-fast --timeout-ms=180000`
 - When you only need a quick window-state sanity check, use the lane's cheap
   QA title helpers such as `--qa-title-ready` and `--qa-title-send-ready`
   before starting a full scenario run.
@@ -162,6 +166,44 @@ All agents implementing local GUI room/space/reply operations follow
 - Run Docker only when you need the committed reproducible lane or want to
   prove the release/CI recipe end to end. It is not the default fast
   iteration path.
+
+## Linux GUI Local Operation Failures
+
+- `--skip-build` reuses an existing debug binary, but the QA window-title
+  tokens (`matrix-desktop qa session=...`) are baked into the frontend at build
+  time behind `VITE_MATRIX_DESKTOP_QA_TITLE=1`. A binary built without that env
+  shows the normal product title (e.g. `matrix-desktop · 1 unread`) instead, so
+  the lane's `waitForLocalLoginReady` times out with "local GUI login did not
+  reach a ready state. Last title: matrix-desktop · 1 unread". The runner's own
+  build sets this env; when pre-building manually for `--skip-build`
+  (`npm --prefix apps/desktop run tauri build -- --debug --no-bundle`), also set
+  `VITE_MATRIX_DESKTOP_QA_TITLE=1`, or run one lane without `--skip-build` first
+  to produce a QA-title binary the remaining `--skip-build` lanes can reuse.
+- The Tauri snapshot is a hand-maintained DTO
+  (`apps/desktop/src-tauri/src/dto.rs`, `FrontendAppState` / `From<AppState>`),
+  NOT a passthrough of `AppState`. When `AppState` gains a field (e.g.
+  `basic_operation`), the DTO must be extended in the same change, or the
+  serialized snapshot silently omits it and the React UI crashes the moment it
+  reads the missing field. Symptom: clicking a control blanks the WebView and
+  `window.onerror` reports `undefined is not an object (evaluating
+  'e.state.basic_operation.kind')`. Headless tests that use the browser fake or
+  mock IPC will NOT catch this (they build their own snapshots); only the real
+  Tauri lane or the `dto.rs` serialization-contract test does. Extend that test
+  when adding `AppState` fields.
+- WebDriver `waitForDisplayed`/`click` does NOT reveal hover-gated controls.
+  Timeline row actions (`.message-action` inside `.message-actions`) are
+  `opacity:0` until `.message:hover`/`:focus-within`, so a direct
+  `waitForDisplayed` on the reply button times out ("still not displayed") even
+  though the headless Playwright tier passes (its click implicitly hovers).
+  Move the pointer first: `await el.waitForExist(); await el.moveTo(); await
+  el.waitForDisplayed(); await el.click();`.
+- A reply must target a MESSAGE event, not a state event. The timeline includes
+  state events (room create, membership) that carry no body; the SDK's
+  `make_reply_event` rejects them (app stderr `make_reply_event failed:
+  StateEvent`, surfaced as `send=failed`). `TimelineItemRow` therefore gates the
+  reply affordance on `item.body !== null`, so only message rows are replyable.
+  A `local-reply` lane must send/target a message and reply to that row, not the
+  first event row in a fresh room (whose first events are state events).
 
 ## macOS GUI Smoke Failures
 

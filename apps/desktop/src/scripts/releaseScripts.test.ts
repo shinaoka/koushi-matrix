@@ -200,6 +200,53 @@ describe("desktop release scripts", () => {
     }
   });
 
+  test("linux GUI smoke lists the local basic-operation scenarios", () => {
+    const output = runScript("scripts/desktop-linux-gui-qa.mjs", ["--list"]);
+
+    for (const token of [
+      "scenario local-create-room",
+      "scenario local-create-space",
+      "scenario local-reply"
+    ]) {
+      expect(output).toContain(token);
+    }
+  });
+
+  test("linux GUI smoke supports the fast skip-build inner loop", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("--skip-build");
+    expect(source).toContain("--app-binary");
+    expect(source).toContain("async function ensureAppBinary(");
+  });
+
+  test("linux GUI smoke source emits the basic-operation success tokens", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("gui_local_create_room=ok");
+    expect(source).toContain("gui_local_create_space=ok");
+    expect(source).toContain("gui_local_reply=ok");
+  });
+
+  test("headless basic operations docs mention the local create and reply GUI scenarios", () => {
+    const docs = readFileSync(
+      new URL("../../../../docs/qa/headless-basic-operations.md", import.meta.url),
+      "utf8"
+    );
+
+    expect(docs).toContain("--scenario=local-create-room");
+    expect(docs).toContain("--scenario=local-create-space");
+    expect(docs).toContain("--scenario=local-reply");
+    expect(docs).toContain("gui_local_create_room=ok");
+    expect(docs).toContain("gui_local_reply=ok");
+  });
+
   test("linux GUI smoke resolves relative artifact dirs from the repo root", () => {
     const output = execFileSync(
       process.execPath,
