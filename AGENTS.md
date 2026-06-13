@@ -65,7 +65,13 @@ All agents implementing local GUI room/space/reply operations follow
   The implementing model resumes only after the canon is amended. See Model
   Assignment in the implementation plan.
 - **Phase exits include a docs-sync check**: no known contradiction between
-  landed code and the canon documents.
+  landed code and the canon documents. This includes state-machine fidelity:
+  every reducer state machine must match its Mermaid diagram in
+  [docs/architecture/state-machine.md](docs/architecture/state-machine.md) — a
+  transition in code but not the diagram (or the reverse) is a defect. New state
+  transitions are designed as explicit guarded state machines, not ad-hoc field
+  assignments. See [engineering-rules.md](docs/policies/engineering-rules.md) →
+  Documentation.
 - **Phase 10+ GUI launch policy.** React UI, DOM scroll behavior, command
   shapes, fake `CoreEvent` streams, and Tauri IPC mock behavior are verified
   in headless browser tests. Do not launch the native Tauri app for these.

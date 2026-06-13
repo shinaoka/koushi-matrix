@@ -182,3 +182,12 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
 2. Durable rules discovered during operations are promoted from `AGENTS.md`
    into this document; AGENTS.md keeps the troubleshooting detail.
 3. Docs, examples, and fixtures use synthetic data only (see Secrets rules).
+4. State-machine diagrams are normative. Every reducer state machine in
+   `reduce(AppState, AppAction)` — its states, transitions, and guards — is
+   documented as a Mermaid `stateDiagram-v2` in
+   `docs/architecture/state-machine.md`. A change to a reducer state machine
+   must update the matching diagram and its guard notes in the same change; a
+   transition present in code but not in the diagram (or the reverse) is a
+   defect. Phase-exit docs-sync verifies diagram↔reducer agreement. Design new
+   state transitions as explicit guarded state machines (events distinct from
+   states, invalid/stale inputs rejected), not ad-hoc field assignments.

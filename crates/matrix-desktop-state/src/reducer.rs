@@ -2,8 +2,9 @@ use crate::{
     action::AppAction,
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, BasicOperationState, ComposerMode, E2eeRecoveryState, NavigationState,
-        SearchState, SessionState, SyncState, ThreadPaneState, TimelinePaneState,
+        AppError, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
+        E2eeRecoveryState, NavigationState, SearchState, SessionState, SyncState, ThreadPaneState,
+        TimelinePaneState,
     },
 };
 
@@ -666,21 +667,48 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.errors.retain(|error| error.code != code);
             vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
         }
-        AppAction::BasicOperationStarted { operation } => {
-            if !is_session_ready(state) {
+        AppAction::BasicOperationRequested { request_id, request } => {
+            // Start transition. Guarded like the composer's pending-transaction
+            // rule: a new operation is accepted only from `Idle` and only with a
+            // ready session, so an in-flight operation is never clobbered.
+            if !is_session_ready(state) || !state.basic_operation.is_idle() {
                 return Vec::new();
             }
-            state.basic_operation = operation;
+            state.basic_operation = match request {
+                BasicOperationRequest::CreateRoom { name } => {
+                    BasicOperationState::CreatingRoom { request_id, name }
+                }
+                BasicOperationRequest::CreateSpace { name } => {
+                    BasicOperationState::CreatingSpace { request_id, name }
+                }
+                BasicOperationRequest::LinkSpaceChild {
+                    space_id,
+                    child_room_id,
+                } => BasicOperationState::LinkingSpaceChild {
+                    request_id,
+                    space_id,
+                    child_room_id,
+                },
+            };
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
-        AppAction::BasicOperationFinished => {
-            if state.basic_operation == BasicOperationState::Idle {
+        AppAction::BasicOperationSucceeded { request_id } => {
+            // Settle transition. Like search's `request_id` check, a completion is
+            // applied only when it correlates to the in-flight operation; stale,
+            // duplicate, or idle-state completions are ignored.
+            if state.basic_operation.request_id() != Some(request_id) {
                 return Vec::new();
             }
             state.basic_operation = BasicOperationState::Idle;
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
-        AppAction::BasicOperationFailed { message } => {
+        AppAction::BasicOperationFailed {
+            request_id,
+            message,
+        } => {
+            if state.basic_operation.request_id() != Some(request_id) {
+                return Vec::new();
+            }
             state.basic_operation = BasicOperationState::Idle;
             state.errors.push(AppError {
                 code: "basic_operation_failed".to_owned(),

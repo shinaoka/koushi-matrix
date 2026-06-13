@@ -1,7 +1,12 @@
 # Matrix Desktop State Machine
 
-Status: historical foundation. The current production runtime architecture is
-documented in [overview.md](./overview.md).
+Status: maintained reference for the reducer state machines. The
+`reduce(AppState, AppAction)` reducer described here is the live UI
+state-transition mechanism — production wires `CoreEvent -> AppAction ->
+reduce(AppState)` (see [overview.md](./overview.md)). The `AppEffect`
+fixture/demo backend contract mentioned below is historical (dev/demo only).
+The state-transition diagrams in this document are normative and must track the
+reducer; see [Maintenance Contract](#maintenance-contract).
 
 Date: 2026-06-11
 
@@ -21,6 +26,22 @@ uses `CoreCommand` / `CoreEvent` in `docs/architecture/overview.md`.
 
 Actions that touch room, timeline, thread, or search state are accepted only when
 the session is `Ready`. Late backend signals after logout or lock are ignored.
+
+## Maintenance Contract
+
+The state-transition diagrams in this document are normative, not illustrative.
+Every reducer state machine — its states, the `AppAction` events that drive
+transitions, and the guards that reject invalid or stale inputs — is documented
+here as a Mermaid `stateDiagram-v2`. When the reducer changes (a new state,
+transition, or guard), the matching diagram and its guard notes are updated in
+the same change. A transition that exists in the reducer but not in the diagram,
+or vice versa, is a defect; phase-exit docs-sync checks for it (see
+[engineering-rules.md](../policies/engineering-rules.md) → Documentation).
+
+Convention: each transition is labeled with the `AppAction` that causes it, and
+guards are stated as prose under the diagram. Unless noted, every transition
+also requires a `Ready` session, and late or stale signals are ignored rather
+than applied.
 
 ## Session And Sync
 
@@ -76,7 +97,72 @@ search state. The reducer emits UI events for any cleared visible panes.
 - Thread subscription success must match the current opening room and root event;
   stale thread signals are ignored.
 
+## Composer Reply Mode
+
+The selected room's composer carries a reply mode (`ComposerMode`) alongside its
+pending-transaction tracking:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Plain
+    Plain --> Reply: ComposerReplyTargetSelected
+    Reply --> Reply: ComposerReplyTargetSelected
+    Reply --> Plain: ComposerReplyCancelled
+```
+
+- `ComposerReplyTargetSelected { room_id, event_id }` enters `Reply` only when the
+  session is `Ready` and `room_id` is the selected timeline room; otherwise it is
+  ignored. Re-selecting while already in `Reply` replaces the target (idempotent).
+- `ComposerReplyCancelled` returns to `Plain`; it is a no-op when already `Plain`
+  or when no room is selected. The send path also returns the composer to `Plain`
+  after a reply is sent.
+- The reply target is Rust-owned `AppState`, not React-local, so the send path,
+  snapshots, and QA can read which event a draft replies to.
+
+## Basic Operations (Room / Space Creation, Space Linking)
+
+Room creation, space creation, and space-child linking share one in-flight slot,
+`AppState.basic_operation`, modeled as a guarded, request-correlated state
+machine — the same shape as the composer's pending transaction and search's
+`request_id` correlation:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> CreatingRoom: BasicOperationRequested(CreateRoom)
+    Idle --> CreatingSpace: BasicOperationRequested(CreateSpace)
+    Idle --> LinkingSpaceChild: BasicOperationRequested(LinkSpaceChild)
+    CreatingRoom --> Idle: BasicOperationSucceeded / BasicOperationFailed
+    CreatingSpace --> Idle: BasicOperationSucceeded / BasicOperationFailed
+    LinkingSpaceChild --> Idle: BasicOperationSucceeded / BasicOperationFailed
+```
+
+- Start guard: `BasicOperationRequested { request_id, request }` is accepted only
+  from `Idle` with a `Ready` session. A request arriving while an operation is in
+  flight is ignored, so the in-flight operation is never clobbered (mirrors "a
+  second send is ignored until the pending transaction completes").
+- Correlation: the pending state carries the request's `request_id`.
+- Settle guard: `BasicOperationSucceeded { request_id }` and
+  `BasicOperationFailed { request_id, message }` apply only when `request_id`
+  matches the in-flight operation; stale, duplicate, or idle-state completions are
+  ignored (mirrors search's `request_id` check). Failure also records a
+  recoverable `basic_operation_failed` error.
+- Event vs. state: `BasicOperationRequest` describes intent; the reducer derives
+  the resulting `BasicOperationState`. An action never carries the target state.
+
 ## Search
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Editing: SearchEdited
+    Editing --> Searching: SearchSubmitted
+    Searching --> Results: SearchSucceeded
+    Searching --> Failed: SearchFailed
+    Results --> Editing: SearchEdited
+    Failed --> Editing: SearchEdited
+    Searching --> Editing: SearchEdited
+```
 
 - Search has editing, searching, results, and failed states.
 - Search responses carry a `request_id`.

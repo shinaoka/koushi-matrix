@@ -104,12 +104,13 @@ export type ComposerMode =
   | { Reply: { in_reply_to_event_id: string } };
 
 // Rust BasicOperationState is #[serde(tag = "kind", rename_all = "camelCase")]
-// → internally tagged, camelCase VARIANT names, snake_case fields
+// → internally tagged, camelCase VARIANT names, snake_case fields. Pending
+// variants carry the correlation request_id (see docs/architecture/state-machine.md).
 export type BasicOperationState =
   | { kind: "idle" }
-  | { kind: "creatingRoom"; name: string }
-  | { kind: "creatingSpace"; name: string }
-  | { kind: "linkingSpaceChild"; space_id: string; child_room_id: string };
+  | { kind: "creatingRoom"; request_id: number; name: string }
+  | { kind: "creatingSpace"; request_id: number; name: string }
+  | { kind: "linkingSpaceChild"; request_id: number; space_id: string; child_room_id: string };
 
 export interface ThreadPaneState {
   kind: "closed" | "opening" | "open";

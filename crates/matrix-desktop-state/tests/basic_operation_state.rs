@@ -1,5 +1,5 @@
 use matrix_desktop_state::{
-    reduce, AppAction, AppState, BasicOperationState, ComposerMode,
+    reduce, AppAction, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
     ComposerState, RoomSummary, SessionInfo, SessionState, TimelinePaneState,
 };
 
@@ -53,14 +53,58 @@ fn composer_reply_target_is_rust_state() {
 }
 
 #[test]
-fn room_creation_status_is_rust_state() {
+fn basic_operation_tracks_request_and_settles_on_matching_success() {
     let mut state = ready_state();
 
     reduce(
         &mut state,
-        AppAction::BasicOperationStarted {
-            operation: BasicOperationState::CreatingRoom {
+        AppAction::BasicOperationRequested {
+            request_id: 7,
+            request: BasicOperationRequest::CreateRoom {
                 name: "Local QA Room".to_owned(),
+            },
+        },
+    );
+    assert_eq!(
+        state.basic_operation,
+        BasicOperationState::CreatingRoom {
+            request_id: 7,
+            name: "Local QA Room".to_owned(),
+        }
+    );
+
+    // A completion that does not correlate to the in-flight request is ignored.
+    reduce(
+        &mut state,
+        AppAction::BasicOperationSucceeded { request_id: 999 },
+    );
+    assert!(!state.basic_operation.is_idle());
+
+    // The correlated completion settles the operation back to Idle.
+    reduce(&mut state, AppAction::BasicOperationSucceeded { request_id: 7 });
+    assert_eq!(state.basic_operation, BasicOperationState::Idle);
+}
+
+#[test]
+fn basic_operation_rejects_a_second_request_while_in_flight() {
+    let mut state = ready_state();
+
+    reduce(
+        &mut state,
+        AppAction::BasicOperationRequested {
+            request_id: 1,
+            request: BasicOperationRequest::CreateRoom {
+                name: "First".to_owned(),
+            },
+        },
+    );
+    // No-clobber: a second request while one is already pending is ignored.
+    reduce(
+        &mut state,
+        AppAction::BasicOperationRequested {
+            request_id: 2,
+            request: BasicOperationRequest::CreateSpace {
+                name: "Second".to_owned(),
             },
         },
     );
@@ -68,10 +112,61 @@ fn room_creation_status_is_rust_state() {
     assert_eq!(
         state.basic_operation,
         BasicOperationState::CreatingRoom {
-            name: "Local QA Room".to_owned(),
+            request_id: 1,
+            name: "First".to_owned(),
         }
     );
+}
 
-    reduce(&mut state, AppAction::BasicOperationFinished);
+#[test]
+fn basic_operation_failure_requires_a_matching_in_flight_request() {
+    let mut state = ready_state();
+
+    // A failure while Idle correlates to nothing: ignored, records no error.
+    reduce(
+        &mut state,
+        AppAction::BasicOperationFailed {
+            request_id: 1,
+            message: "boom".to_owned(),
+        },
+    );
+    assert_eq!(state.basic_operation, BasicOperationState::Idle);
+    assert!(state.errors.is_empty());
+
+    // An in-flight failure with the matching id settles to Idle and records it.
+    reduce(
+        &mut state,
+        AppAction::BasicOperationRequested {
+            request_id: 5,
+            request: BasicOperationRequest::CreateSpace {
+                name: "QA".to_owned(),
+            },
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::BasicOperationFailed {
+            request_id: 5,
+            message: "boom".to_owned(),
+        },
+    );
+    assert_eq!(state.basic_operation, BasicOperationState::Idle);
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].code, "basic_operation_failed");
+}
+
+#[test]
+fn basic_operation_request_requires_a_ready_session() {
+    let mut state = AppState::default();
+
+    reduce(
+        &mut state,
+        AppAction::BasicOperationRequested {
+            request_id: 1,
+            request: BasicOperationRequest::CreateRoom {
+                name: "QA".to_owned(),
+            },
+        },
+    );
     assert_eq!(state.basic_operation, BasicOperationState::Idle);
 }

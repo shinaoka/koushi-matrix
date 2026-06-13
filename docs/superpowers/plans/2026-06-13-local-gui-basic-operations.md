@@ -8,6 +8,25 @@
 
 **Tech Stack:** Rust `matrix-desktop-state`/`matrix-desktop-core`, Tauri v2 IPC, React/TypeScript/Vitest/Playwright, WebDriverIO + `tauri-driver`, local Conduit/Tuwunel homeservers.
 
+## Amendments
+
+- **2026-06-13 — Basic-operation state machine (supersedes Task 2/Task 3 literal
+  code).** Per maintainer direction to use state-machine best practices instead
+  of ad-hoc transitions, `BasicOperationState` was redesigned to match the
+  reducer's existing async-operation conventions (composer pending transaction,
+  search `request_id`). The start event is now
+  `BasicOperationRequested { request_id, request: BasicOperationRequest }` —
+  intent, not a raw next-state payload; the reducer derives the pending state and
+  ignores a second request while one is in flight (no clobber). Completion
+  (`BasicOperationSucceeded` / `BasicOperationFailed`) applies only when its
+  `request_id` correlates to the in-flight operation; stale/idle completions are
+  ignored. The machine is documented as a normative Mermaid diagram in
+  [docs/architecture/state-machine.md](../../architecture/state-machine.md), and a
+  new Engineering Rules item plus the AGENTS.md docs-sync gate require reducer
+  state machines to stay in sync with their diagrams. The Task 2/Task 3 code
+  blocks below show the original shape; the redesigned types/actions in
+  `matrix-desktop-state` are the source of truth.
+
 ---
 
 ## Current Understanding
