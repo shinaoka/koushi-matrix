@@ -299,46 +299,38 @@ git commit -m "qa: add headless local scenario selection"
 
 ## Task 3: Split Local QA Into Staged Scenario Functions
 
+This task now lands as staged execution in `headless-core-qa.rs` with
+scenario-aware early exits and cleanup reuse. `reply` and `thread` stay
+explicitly unsupported until the true Matrix reply relation exists.
+
 **Files:**
 - Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
 
-- [ ] **Step 1: Introduce a shared context struct**
+- [x] **Step 1: Introduce staged scenario helpers**
 
-Add a local struct near `run_async`:
+Add local helpers near `run_async` for scenario gating, implemented final
+tokens, final reports, and cleanup reuse:
 
 ```rust
-struct LocalQaContext {
-    config: QaConfig,
-    account_key_a: AccountKey,
-    account_key_b: Option<AccountKey>,
-    room_id: Option<String>,
-    space_id: Option<String>,
-    timeline_key_a: Option<TimelineKey>,
-    timeline_key_b: Option<TimelineKey>,
-    root_event_id: Option<String>,
-    second_event_id: Option<String>,
-}
+enum QaStage { Safety, LoginSync, RoomSpace, Timeline, EditRedactSearch, RestoreCleanup }
+fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage>;
+fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str>;
+async fn cleanup_after_login_sync(...) -> Result<String, String>;
+async fn cleanup_after_full_flow(...) -> Result<String, String>;
 ```
 
-- [ ] **Step 2: Extract stage functions without changing behavior**
+- [x] **Step 2: Keep behavior and add scenario-aware early exits**
 
-Extract the existing blocks into functions with these signatures:
+Use the existing helper functions and exact event waits. Do not change
+operation semantics in this task. Supported scenarios run through the
+requested stage, then perform restore/logout cleanup where possible.
 
-```rust
-async fn scenario_login_sync(config: &QaConfig) -> Result<(CoreRuntime, CoreConnection, AccountKey), String>;
-async fn scenario_room_space(ctx: &mut LocalQaContext, conn_a: &mut CoreConnection) -> Result<(), String>;
-async fn scenario_timeline(ctx: &mut LocalQaContext, conn_a: &mut CoreConnection, conn_b: &mut CoreConnection) -> Result<(), String>;
-async fn scenario_edit_redact_search(ctx: &mut LocalQaContext, conn_a: &mut CoreConnection) -> Result<(), String>;
-async fn scenario_restore_cleanup(ctx: &mut LocalQaContext, conn_a: CoreConnection) -> Result<(), String>;
-```
+- [x] **Step 3: Emit one final token per implemented stage**
 
-Use the existing helper functions and exact event waits. Do not change operation semantics in this task.
-
-- [ ] **Step 3: Emit one final token per stage**
-
-After each extracted stage completes, print:
+After each implemented stage completes, print only:
 
 ```rust
+println!("safety=ok");
 println!("login_sync=ok");
 println!("room_space=ok");
 println!("timeline=ok");
@@ -346,7 +338,11 @@ println!("edit_redact_search=ok");
 println!("restore_cleanup=ok");
 ```
 
-- [ ] **Step 4: Verify local lane**
+Do not emit `reply=ok` or `thread=ok` in Task 3. Every supported scenario
+includes `safety=ok` in its final token report because the guard/preflight
+is a completed prerequisite for the run.
+
+- [x] **Step 4: Verify local lane**
 
 ```bash
 npm --prefix apps/desktop run qa:headless-local -- --server=both --core --scenario=all

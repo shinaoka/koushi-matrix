@@ -79,6 +79,16 @@ enum QaScenario {
     RestoreCleanup,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QaStage {
+    Safety,
+    LoginSync,
+    RoomSpace,
+    Timeline,
+    EditRedactSearch,
+    RestoreCleanup,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(report) => {
@@ -107,7 +117,7 @@ fn run() -> Result<String, String> {
         .map_err(|e| format!("runtime creation failed: {e}"))?;
 
     // Run inside the Tokio runtime so SDK handles drop in context (Async rule 11).
-    runtime.block_on(run_async(config))
+    runtime.block_on(run_async(config, scenario))
 }
 
 /// Refuse to run against the OS keychain. In debug/test builds this checks
@@ -180,19 +190,351 @@ impl QaScenario {
             Self::RestoreCleanup => "restore_cleanup",
         }
     }
+
+    fn should_run_stage(self, stage: QaStage) -> bool {
+        match self {
+            Self::All => true,
+            Self::Safety => matches!(stage, QaStage::Safety),
+            Self::LoginSync => matches!(stage, QaStage::Safety | QaStage::LoginSync),
+            Self::RoomSpace => matches!(
+                stage,
+                QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace
+            ),
+            Self::Timeline => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+            ),
+            Self::EditRedactSearch => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::EditRedactSearch
+            ),
+            Self::RestoreCleanup => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::EditRedactSearch
+                    | QaStage::RestoreCleanup
+            ),
+            Self::Reply | Self::Thread => false,
+        }
+    }
 }
 
 fn scenario_preflight_error(scenario: QaScenario) -> Result<(), String> {
-    if scenario != QaScenario::All {
-        return Err(format!(
-            "staged scenarios are parsed but not wired yet: {}",
+    match scenario {
+        QaScenario::Reply | QaScenario::Thread => Err(format!(
+            "scenario {} is not implemented until true Matrix reply support lands",
             scenario.as_str()
-        ));
+        )),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
-async fn run_async(config: QaConfig) -> Result<String, String> {
+fn implemented_final_tokens() -> [&'static str; 6] {
+    [
+        "safety=ok",
+        "login_sync=ok",
+        "room_space=ok",
+        "timeline=ok",
+        "edit_redact_search=ok",
+        "restore_cleanup=ok",
+    ]
+}
+
+fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
+    match scenario {
+        QaScenario::Safety => vec![QaStage::Safety],
+        QaScenario::LoginSync => vec![QaStage::Safety, QaStage::LoginSync],
+        QaScenario::RoomSpace => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+        ],
+        QaScenario::Timeline => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+        ],
+        QaScenario::EditRedactSearch => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::EditRedactSearch,
+        ],
+        QaScenario::RestoreCleanup => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::EditRedactSearch,
+            QaStage::RestoreCleanup,
+        ],
+        QaScenario::All => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::EditRedactSearch,
+            QaStage::RestoreCleanup,
+        ],
+        QaScenario::Reply | QaScenario::Thread => Vec::new(),
+    }
+}
+
+fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
+    match scenario {
+        QaScenario::Safety => vec!["safety=ok"],
+        QaScenario::LoginSync => {
+            let mut tokens = stages_for_scenario(scenario)
+                .into_iter()
+                .map(|stage| match stage {
+                    QaStage::Safety => "safety=ok",
+                    QaStage::LoginSync => "login_sync=ok",
+                    QaStage::RoomSpace => "room_space=ok",
+                    QaStage::Timeline => "timeline=ok",
+                    QaStage::EditRedactSearch => "edit_redact_search=ok",
+                    QaStage::RestoreCleanup => "restore_cleanup=ok",
+                })
+                .collect::<Vec<_>>();
+            tokens.push("restore_cleanup=ok");
+            tokens.dedup();
+            tokens
+        }
+        QaScenario::RoomSpace
+        | QaScenario::Timeline
+        | QaScenario::EditRedactSearch
+        | QaScenario::RestoreCleanup => {
+            let mut tokens = stages_for_scenario(scenario)
+                .into_iter()
+                .map(|stage| match stage {
+                    QaStage::Safety => "safety=ok",
+                    QaStage::LoginSync => "login_sync=ok",
+                    QaStage::RoomSpace => "room_space=ok",
+                    QaStage::Timeline => "timeline=ok",
+                    QaStage::EditRedactSearch => "edit_redact_search=ok",
+                    QaStage::RestoreCleanup => "restore_cleanup=ok",
+                })
+                .collect::<Vec<_>>();
+            tokens.push("restore_cleanup=ok");
+            tokens.dedup();
+            tokens
+        }
+        QaScenario::All => implemented_final_tokens().to_vec(),
+        QaScenario::Reply | QaScenario::Thread => Vec::new(),
+    }
+}
+
+fn scenario_report(server_kind: &str, scenario: QaScenario) -> String {
+    format!(
+        "server={server_kind}\n{}",
+        final_tokens_for_scenario(scenario).join("\n")
+    )
+}
+
+async fn cleanup_after_login_sync(
+    mut conn_a: CoreConnection,
+    runtime_a: CoreRuntime,
+    data_dir_a: std::path::PathBuf,
+    account_key_a: AccountKey,
+) -> Result<String, String> {
+    let sync_stop_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Sync(SyncCommand::Stop {
+            request_id: sync_stop_id,
+        }))
+        .await
+        .map_err(|e| format!("submit sync stop A: {e}"))?;
+
+    wait_for_sync_stopped(&mut conn_a, sync_stop_id, "sync stop A").await?;
+    println!("sync_a=stopped");
+
+    drop(conn_a);
+    drop(runtime_a);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
+    let mut conn_a2 = runtime_a2.attach();
+
+    let restore_a_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Account(AccountCommand::RestoreSession {
+            request_id: restore_a_id,
+            account_key: account_key_a.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit restore A: {e}"))?;
+
+    wait_for_session_restored(&mut conn_a2, restore_a_id, &account_key_a, "restore A").await?;
+    wait_for_ready_snapshot(&mut conn_a2, "restored session A Ready").await?;
+
+    let logout_a_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Account(AccountCommand::Logout {
+            request_id: logout_a_id,
+        }))
+        .await
+        .map_err(|e| format!("submit logout A: {e}"))?;
+
+    wait_for_logged_out(&mut conn_a2, logout_a_id, &account_key_a, "logout A").await?;
+
+    let restore_gone_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Account(AccountCommand::RestoreSession {
+            request_id: restore_gone_id,
+            account_key: account_key_a.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit post-logout restore A: {e}"))?;
+
+    let failure = wait_for_operation_failed(
+        &mut conn_a2,
+        restore_gone_id,
+        "post-logout restore A (must fail)",
+    )
+    .await?;
+    if failure != CoreFailure::SessionNotFound {
+        return Err(format!(
+            "post-logout restore A failed with unexpected kind: {failure:?}"
+        ));
+    }
+    if !matches!(conn_a2.snapshot().session, SessionState::SignedOut) {
+        return Err("post-logout restore A must leave the session SignedOut".to_owned());
+    }
+
+    println!("restore_cleanup=ok");
+    Ok("restore_cleanup=ok".to_owned())
+}
+
+async fn cleanup_after_full_flow(
+    mut conn_a: CoreConnection,
+    mut conn_b: CoreConnection,
+    runtime_a: CoreRuntime,
+    runtime_b: CoreRuntime,
+    data_dir_a: std::path::PathBuf,
+    account_key_a: AccountKey,
+    account_key_b: AccountKey,
+) -> Result<String, String> {
+    let sync_stop_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Sync(SyncCommand::Stop {
+            request_id: sync_stop_id,
+        }))
+        .await
+        .map_err(|e| format!("submit sync stop A: {e}"))?;
+
+    wait_for_sync_stopped(&mut conn_a, sync_stop_id, "sync stop A").await?;
+    println!("sync_a=stopped");
+
+    drop(conn_a);
+    drop(runtime_a);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
+    let mut conn_a2 = runtime_a2.attach();
+
+    let restore_a_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Account(AccountCommand::RestoreSession {
+            request_id: restore_a_id,
+            account_key: account_key_a.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit restore A: {e}"))?;
+
+    wait_for_session_restored(&mut conn_a2, restore_a_id, &account_key_a, "restore A").await?;
+    wait_for_ready_snapshot(&mut conn_a2, "restored session A Ready").await?;
+
+    let logout_a_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Account(AccountCommand::Logout {
+            request_id: logout_a_id,
+        }))
+        .await
+        .map_err(|e| format!("submit logout A: {e}"))?;
+
+    wait_for_logged_out(&mut conn_a2, logout_a_id, &account_key_a, "logout A").await?;
+
+    let restore_gone_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Account(AccountCommand::RestoreSession {
+            request_id: restore_gone_id,
+            account_key: account_key_a.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit post-logout restore A: {e}"))?;
+
+    let failure = wait_for_operation_failed(
+        &mut conn_a2,
+        restore_gone_id,
+        "post-logout restore A (must fail)",
+    )
+    .await?;
+    if failure != CoreFailure::SessionNotFound {
+        return Err(format!(
+            "post-logout restore A failed with unexpected kind: {failure:?}"
+        ));
+    }
+    if !matches!(conn_a2.snapshot().session, SessionState::SignedOut) {
+        return Err("post-logout restore A must leave the session SignedOut".to_owned());
+    }
+
+    let logout_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Account(AccountCommand::Logout {
+            request_id: logout_b_id,
+        }))
+        .await
+        .map_err(|e| format!("submit logout B: {e}"))?;
+
+    wait_for_logged_out(&mut conn_b, logout_b_id, &account_key_b, "logout B").await?;
+
+    let restore_last_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Account(AccountCommand::RestoreLastSession {
+            request_id: restore_last_id,
+        }))
+        .await
+        .map_err(|e| format!("submit post-logout restore-last: {e}"))?;
+
+    let failure = wait_for_operation_failed(
+        &mut conn_b,
+        restore_last_id,
+        "post-logout restore-last (must be not-found)",
+    )
+    .await?;
+    if failure != CoreFailure::SessionNotFound {
+        return Err(format!(
+            "post-logout restore-last failed with unexpected kind: {failure:?}"
+        ));
+    }
+    if !matches!(conn_b.snapshot().session, SessionState::SignedOut) {
+        return Err("post-logout restore-last must leave the session SignedOut".to_owned());
+    }
+
+    drop(conn_b);
+    drop(runtime_b);
+
+    println!("restore_cleanup=ok");
+    Ok("restore_cleanup=ok".to_owned())
+}
+
+async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, String> {
+    if scenario == QaScenario::Safety {
+        println!("safety=ok");
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
+
     // One CoreRuntime per synthetic user (two-device topology).
     let data_dir_a = qa_data_dir("a");
     let data_dir_b = qa_data_dir("b");
@@ -241,6 +583,12 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
 
     wait_for_sync_running(&mut conn_a, "sync A running").await?;
     println!("sync_a=running");
+    println!("login_sync=ok");
+
+    if !scenario.should_run_stage(QaStage::RoomSpace) {
+        cleanup_after_login_sync(conn_a, runtime_a, data_dir_a, account_key_a).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
 
     // -----------------------------------------------------------------------
     // --- Phase 4: Room operations (A creates room + space, invites B) ---
@@ -433,6 +781,21 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     .await?;
     let room_list_b = room_list_summary(&snapshot_b);
     println!("room_list_b={room_list_b}");
+    println!("room_space=ok");
+
+    if !scenario.should_run_stage(QaStage::Timeline) {
+        cleanup_after_full_flow(
+            conn_a,
+            conn_b,
+            runtime_a,
+            runtime_b,
+            data_dir_a,
+            account_key_a,
+            account_key_b,
+        )
+        .await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
 
     // -----------------------------------------------------------------------
     // --- Phase 5: Timeline subscribe, send, receive, edit, redact, paginate ---
@@ -649,7 +1012,21 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
     // Brief wait so the unsubscribe commands are processed before search QA.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    println!("sent=2 recv=2 reply=1 edit=ok redact=ok paginate={paginate_result}");
+    println!("timeline=ok");
+
+    if !scenario.should_run_stage(QaStage::EditRedactSearch) {
+        cleanup_after_full_flow(
+            conn_a,
+            conn_b,
+            runtime_a,
+            runtime_b,
+            data_dir_a,
+            account_key_a,
+            account_key_b,
+        )
+        .await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
 
     // -----------------------------------------------------------------------
     // --- Phase 6: Search QA (CJK query, edit, redact) ---
@@ -757,6 +1134,7 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         "search_redact=ok (redacted msg absent)",
     ).await?;
     println!("search_redact=ok");
+    println!("edit_redact_search=ok");
 
     // Unsubscribe search timeline.
     let unsub_search_id = conn_a.next_request_id();
@@ -880,23 +1258,8 @@ async fn run_async(config: QaConfig) -> Result<String, String> {
         return Err("post-logout restore-last must leave the session SignedOut".to_owned());
     }
 
-    Ok(format!(
-        "Headless core QA OK. server={server} \
-         login_a={user_a} sync_a=ok backend_a={backend_a:?} \
-         room_created=ok space_created=ok space_child_set=ok \
-         invite_ok=ok room_list_a={room_list_a} \
-         restore_a=ok logout_a=ok post_logout_restore_a=not_found \
-         post_logout_restore_last=not_found \
-         login_b={user_b} sync_b=ok backend_b={backend_b:?} \
-         joined_room=ok joined_space=ok room_list_b={room_list_b} \
-         logout_b=ok \
-         search=ok search_edit=ok search_redact=ok",
-        server = config.server_kind,
-        user_a = account_key_a.0,
-        backend_a = sync_backend_a,
-        user_b = account_key_b.0,
-        backend_b = sync_backend_b,
-    ))
+    println!("restore_cleanup=ok");
+    Ok(scenario_report(&config.server_kind, scenario))
 }
 
 // ---------------------------------------------------------------------------
@@ -2107,10 +2470,128 @@ mod tests {
     }
 
     #[test]
-    fn non_all_scenarios_are_staged_but_not_wired() {
-        let error = scenario_preflight_error(QaScenario::Reply).unwrap_err();
+    fn supported_scenarios_are_allowed_by_preflight() {
+        for scenario in [
+            QaScenario::Safety,
+            QaScenario::LoginSync,
+            QaScenario::RoomSpace,
+            QaScenario::Timeline,
+            QaScenario::EditRedactSearch,
+            QaScenario::RestoreCleanup,
+        ] {
+            scenario_preflight_error(scenario).unwrap();
+        }
+    }
 
-        assert!(error.contains("staged scenarios are parsed but not wired yet"));
-        assert!(error.contains("reply"));
+    #[test]
+    fn reply_and_thread_are_explicitly_unimplemented() {
+        let reply = scenario_preflight_error(QaScenario::Reply).unwrap_err();
+        let thread = scenario_preflight_error(QaScenario::Thread).unwrap_err();
+
+        assert_eq!(
+            reply,
+            "scenario reply is not implemented until true Matrix reply support lands"
+        );
+        assert_eq!(
+            thread,
+            "scenario thread is not implemented until true Matrix reply support lands"
+        );
+    }
+
+    #[test]
+    fn staged_scenarios_stop_after_their_requested_stage() {
+        assert!(QaScenario::Safety.should_run_stage(QaStage::Safety));
+        assert!(!QaScenario::Safety.should_run_stage(QaStage::LoginSync));
+
+        assert!(QaScenario::LoginSync.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::LoginSync.should_run_stage(QaStage::LoginSync));
+        assert!(!QaScenario::LoginSync.should_run_stage(QaStage::RoomSpace));
+
+        assert!(QaScenario::RoomSpace.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::RoomSpace.should_run_stage(QaStage::RoomSpace));
+        assert!(!QaScenario::RoomSpace.should_run_stage(QaStage::Timeline));
+
+        assert!(QaScenario::Timeline.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::Timeline.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::Timeline.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::Timeline.should_run_stage(QaStage::EditRedactSearch));
+
+        assert!(QaScenario::All.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::All.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::All.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::All.should_run_stage(QaStage::EditRedactSearch));
+        assert!(QaScenario::All.should_run_stage(QaStage::RestoreCleanup));
+    }
+
+    #[test]
+    fn implemented_final_tokens_exclude_reply_and_thread() {
+        assert_eq!(
+            implemented_final_tokens(),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "edit_redact_search=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+    }
+
+    #[test]
+    fn final_tokens_follow_the_requested_scenario() {
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::Safety),
+            ["safety=ok"]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::LoginSync),
+            ["safety=ok", "login_sync=ok", "restore_cleanup=ok"]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::RoomSpace),
+            ["safety=ok", "login_sync=ok", "room_space=ok", "restore_cleanup=ok"]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::Timeline),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::EditRedactSearch),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "edit_redact_search=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::All),
+            implemented_final_tokens()
+        );
+    }
+
+    #[test]
+    fn implemented_final_tokens_include_safety() {
+        assert_eq!(
+            implemented_final_tokens(),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "edit_redact_search=ok",
+                "restore_cleanup=ok",
+            ]
+        );
     }
 }
