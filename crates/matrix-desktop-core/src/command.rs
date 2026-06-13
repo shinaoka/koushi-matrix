@@ -43,6 +43,8 @@ impl CoreCommand {
                 | RoomCommand::SetSpaceChild { request_id, .. }
                 | RoomCommand::InviteUser { request_id, .. }
                 | RoomCommand::JoinRoom { request_id, .. }
+                | RoomCommand::LeaveRoom { request_id, .. }
+                | RoomCommand::ForgetRoom { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
                 | RoomCommand::SelectRoom { request_id, .. } => *request_id,
             },
@@ -142,6 +144,14 @@ pub enum RoomCommand {
         user_id: String,
     },
     JoinRoom {
+        request_id: RequestId,
+        room_id: String,
+    },
+    LeaveRoom {
+        request_id: RequestId,
+        room_id: String,
+    },
+    ForgetRoom {
         request_id: RequestId,
         room_id: String,
     },

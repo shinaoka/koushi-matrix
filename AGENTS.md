@@ -25,11 +25,9 @@ All agents implementing the headless core runtime follow
   `docs/upstream/matrix-rust-sdk-feedback.md` stays the place for PR
   candidates. Edit vendored SDK code only inside that submodule branch, then
   update the superproject submodule pointer intentionally.
-- **Rename deferred.** The `matrix-desktop-auth` -> `matrix-desktop-sdk`
-  rename is deferred to
-  `docs/superpowers/specs/2026-06-13-post-headless-core-followups.md`.
-  Phase 8/9 already landed the runtime cleanup; the remaining rename would be
-  broad package, lockfile, and doc churn.
+- **SDK adapter naming.** The low-level Matrix SDK adapter crate is
+  `matrix-desktop-sdk`. It owns SDK-facing primitives only; app state,
+  actor lifecycle, and QA orchestration stay in `matrix-desktop-core`.
 - **Canon-first redesign protocol.** Implementation will hit gaps the design
   did not foresee. When code contradicts the canon or the canon is silent:
   stop coding on that point — do not improvise an undocumented behavior.

@@ -34,7 +34,7 @@ These are distribution gates, not code-level Milestone 9 implementation gaps:
 ```bash
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 cargo test -p matrix-desktop-key --test key_management -- --ignored --nocapture
-cargo run -p matrix-desktop-auth --features smoke --bin password-login-smoke -- --real-account-qa
+cargo run -p matrix-desktop-sdk --features smoke --bin password-login-smoke -- --real-account-qa
 npm --prefix apps/desktop test
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run build

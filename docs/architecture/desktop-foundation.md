@@ -21,7 +21,7 @@ apps/desktop
 crates/matrix-desktop-backend
   fake effect runner around reducer/search/key contracts
         |
-        +--> crates/matrix-desktop-auth
+        +--> crates/matrix-desktop-sdk
         +--> crates/matrix-desktop-state
         +--> crates/matrix-desktop-search
         +--> crates/matrix-desktop-key
@@ -42,7 +42,7 @@ homeserver and perform password login through Matrix Rust SDK. That was the
 foundation step; current production behavior now lives in `overview.md` and
 uses `CoreCommand` / `CoreEvent`.
 
-`matrix-desktop-auth` owns Matrix authentication discovery and password login.
+`matrix-desktop-sdk` owns Matrix authentication discovery and password login.
 It normalizes homeserver URLs to HTTPS by default, permits plain HTTP only for
 localhost or loopback development servers, builds `GET /_matrix/client/v3/login`,
 parses the response into app DTOs, calls Matrix Rust SDK for password login, and
@@ -70,7 +70,7 @@ points:
    `AppState`, frontend snapshots, debug output, logs, or persisted stores.
 4. Successful login dispatched `AppAction::LoginSucceeded(SessionInfo)` and
    kept the SDK client in memory for the current process.
-5. `matrix-desktop-auth` could extract a redacted
+5. `matrix-desktop-sdk` could extract a redacted
    `PersistableMatrixSession` from the SDK client and restore a fresh SDK client
    from that payload. The serialized JSON contains access/refresh tokens and is
    therefore a secret; it must go only to an approved secure store.
@@ -155,8 +155,8 @@ Before typing live credentials into the native shell, the SDK password-login pat
 can be smoke-tested from a terminal without storing secrets:
 
 ```bash
-cargo run -p matrix-desktop-auth --features smoke --bin password-login-smoke
-cargo run -p matrix-desktop-auth --features smoke --bin password-login-smoke -- --real-account-qa
+cargo run -p matrix-desktop-sdk --features smoke --bin password-login-smoke
+cargo run -p matrix-desktop-sdk --features smoke --bin password-login-smoke -- --real-account-qa
 ```
 
 The smoke command prompts interactively, hides the password, prints no access

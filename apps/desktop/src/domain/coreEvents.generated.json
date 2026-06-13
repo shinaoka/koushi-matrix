@@ -1,0 +1,145 @@
+{
+  "accountSavedSessionsListed": {
+    "event": {
+      "SavedSessionsListed": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "sessions": [
+          {
+            "device_id": "DEV",
+            "homeserver": "https://example.test",
+            "user_id": "@u:example.test"
+          }
+        ]
+      }
+    },
+    "kind": "Account"
+  },
+  "operationFailedSessionNotFound": {
+    "failure": "SessionNotFound",
+    "kind": "OperationFailed",
+    "request_id": {
+      "connection_id": 3,
+      "sequence": 7
+    }
+  },
+  "roomLeft": {
+    "event": {
+      "RoomLeft": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Room"
+  },
+  "timelineInitialItems": {
+    "event": {
+      "InitialItems": {
+        "generation": 1,
+        "items": [
+          {
+            "body": "hello",
+            "id": {
+              "Event": {
+                "event_id": "$e1"
+              }
+            },
+            "sender": "@u:example.test",
+            "timestamp_ms": 123
+          }
+        ],
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineItemsUpdated": {
+    "event": {
+      "ItemsUpdated": {
+        "batch_id": 9,
+        "diffs": [
+          {
+            "PushFront": {
+              "item": {
+                "body": "hello",
+                "id": {
+                  "Event": {
+                    "event_id": "$e1"
+                  }
+                },
+                "sender": "@u:example.test",
+                "timestamp_ms": 123
+              }
+            }
+          },
+          {
+            "Remove": {
+              "index": 2
+            }
+          },
+          "Clear"
+        ],
+        "generation": 1,
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelinePaginationEndReached": {
+    "event": {
+      "PaginationStateChanged": {
+        "direction": "Backward",
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": null,
+        "state": "EndReached"
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineResyncRequired": {
+    "event": {
+      "ResyncRequired": {
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "reason": "QueueOverflow"
+      }
+    },
+    "kind": "Timeline"
+  }
+}

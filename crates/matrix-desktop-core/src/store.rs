@@ -14,8 +14,11 @@
 
 use std::path::PathBuf;
 
-use matrix_desktop_auth::{MatrixClientStoreConfig, MatrixClientStoreKey, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig};
 use matrix_desktop_key::{CredentialStore, LocalUnlockSecret, SessionKeyId};
+use matrix_desktop_sdk::{
+    MatrixClientStoreConfig, MatrixClientStoreKey, MatrixSearchIndexKey,
+    MatrixSearchIndexStoreConfig,
+};
 
 use crate::failure::CoreFailure;
 
@@ -105,8 +108,8 @@ impl StoreActor {
         let store_dir = self.account_store_dir(key_id);
         let cache_dir = self.account_cache_dir(key_id);
 
-        let store_config = MatrixClientStoreConfig::new(&store_dir, store_key)
-            .with_cache_path(&cache_dir);
+        let store_config =
+            MatrixClientStoreConfig::new(&store_dir, store_key).with_cache_path(&cache_dir);
 
         Ok(AccountStoreConfig {
             store_config,
@@ -250,10 +253,7 @@ impl CredentialStoreBackend {
         }
     }
 
-    fn delete(
-        &self,
-        key_id: &SessionKeyId,
-    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+    fn delete(&self, key_id: &SessionKeyId) -> Result<(), matrix_desktop_key::LocalSecretError> {
         match self {
             Self::OsKeychain(store) => store.delete(key_id),
             #[cfg(any(debug_assertions, test))]
@@ -273,10 +273,9 @@ impl CredentialStoreBackend {
         match self {
             Self::OsKeychain(store) => store.save_matrix_session(key_id, session),
             #[cfg(any(debug_assertions, test))]
-            Self::FileDir(store) => store.save_named(
-                &key_id.matrix_session_account_name(),
-                session.as_str(),
-            ),
+            Self::FileDir(store) => {
+                store.save_named(&key_id.matrix_session_account_name(), session.as_str())
+            }
         }
     }
 
@@ -301,9 +300,7 @@ impl CredentialStoreBackend {
         match self {
             Self::OsKeychain(store) => store.delete_matrix_session(key_id),
             #[cfg(any(debug_assertions, test))]
-            Self::FileDir(store) => {
-                store.delete_named(&key_id.matrix_session_account_name())
-            }
+            Self::FileDir(store) => store.delete_named(&key_id.matrix_session_account_name()),
         }
     }
 
@@ -317,7 +314,10 @@ impl CredentialStoreBackend {
             Self::FileDir(store) => {
                 let pointer = matrix_desktop_key::LastSessionPointer::new(key_id.clone());
                 let json = pointer.to_json()?;
-                store.save_named(matrix_desktop_key::CredentialStore::last_session_account_name(), &json)
+                store.save_named(
+                    matrix_desktop_key::CredentialStore::last_session_account_name(),
+                    &json,
+                )
             }
         }
     }
@@ -329,14 +329,14 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.load_last_session(),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => {
-                match store.load_named(matrix_desktop_key::CredentialStore::last_session_account_name()) {
-                    Ok(json) => {
-                        Ok(Some(
-                            matrix_desktop_key::LastSessionPointer::from_json(&json)?
-                                .session_key_id()
-                                .clone(),
-                        ))
-                    }
+                match store
+                    .load_named(matrix_desktop_key::CredentialStore::last_session_account_name())
+                {
+                    Ok(json) => Ok(Some(
+                        matrix_desktop_key::LastSessionPointer::from_json(&json)?
+                            .session_key_id()
+                            .clone(),
+                    )),
                     Err(err) if matrix_desktop_key::is_missing_credential_error(&err) => Ok(None),
                     Err(err) => Err(err),
                 }
@@ -344,9 +344,7 @@ impl CredentialStoreBackend {
         }
     }
 
-    pub fn delete_last_session(
-        &self,
-    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+    pub fn delete_last_session(&self) -> Result<(), matrix_desktop_key::LocalSecretError> {
         match self {
             Self::OsKeychain(store) => store.delete_last_session(),
             #[cfg(any(debug_assertions, test))]
@@ -363,7 +361,9 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.load_saved_sessions(),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => {
-                match store.load_named(matrix_desktop_key::CredentialStore::saved_sessions_account_name()) {
+                match store
+                    .load_named(matrix_desktop_key::CredentialStore::saved_sessions_account_name())
+                {
                     Ok(json) => matrix_desktop_key::SavedSessionIndex::from_json(&json),
                     Err(err) if matrix_desktop_key::is_missing_credential_error(&err) => {
                         Ok(matrix_desktop_key::SavedSessionIndex::new())
@@ -453,10 +453,9 @@ impl FileCredentialStore {
         key_id: &SessionKeyId,
     ) -> Result<LocalUnlockSecret, matrix_desktop_key::LocalSecretError> {
         let path = self.account_file(key_id);
-        let value = std::fs::read_to_string(&path)
-            .map_err(|_| matrix_desktop_key::LocalSecretError::CredentialStore(
-                keyring::Error::NoEntry,
-            ))?;
+        let value = std::fs::read_to_string(&path).map_err(|_| {
+            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoEntry)
+        })?;
         LocalUnlockSecret::from_storage_string(value.trim())
     }
 
@@ -471,10 +470,7 @@ impl FileCredentialStore {
         self.write_file(&path, storage_string.as_str())
     }
 
-    fn delete(
-        &self,
-        key_id: &SessionKeyId,
-    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+    fn delete(&self, key_id: &SessionKeyId) -> Result<(), matrix_desktop_key::LocalSecretError> {
         let path = self.account_file(key_id);
         let _ = std::fs::remove_file(&path);
         Ok(())
@@ -497,10 +493,9 @@ impl FileCredentialStore {
         name: &str,
     ) -> Result<String, matrix_desktop_key::LocalSecretError> {
         let path = self.named_file(name);
-        std::fs::read_to_string(&path)
-            .map_err(|_| matrix_desktop_key::LocalSecretError::CredentialStore(
-                keyring::Error::NoEntry,
-            ))
+        std::fs::read_to_string(&path).map_err(|_| {
+            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoEntry)
+        })
     }
 
     /// Delete an arbitrary named credential (no error if absent).
@@ -513,10 +508,11 @@ impl FileCredentialStore {
     }
 
     fn ensure_dir(&self) -> Result<(), matrix_desktop_key::LocalSecretError> {
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| matrix_desktop_key::LocalSecretError::CredentialStore(
-                keyring::Error::PlatformFailure(Box::new(e)),
+        std::fs::create_dir_all(&self.dir).map_err(|e| {
+            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::PlatformFailure(
+                Box::new(e),
             ))
+        })
     }
 
     fn write_file(
@@ -524,10 +520,11 @@ impl FileCredentialStore {
         path: &std::path::Path,
         value: &str,
     ) -> Result<(), matrix_desktop_key::LocalSecretError> {
-        std::fs::write(path, value)
-            .map_err(|e| matrix_desktop_key::LocalSecretError::CredentialStore(
-                keyring::Error::PlatformFailure(Box::new(e)),
+        std::fs::write(path, value).map_err(|e| {
+            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::PlatformFailure(
+                Box::new(e),
             ))
+        })
     }
 }
 
@@ -535,7 +532,13 @@ impl FileCredentialStore {
 #[cfg(any(debug_assertions, test))]
 fn safe_filename(name: String) -> String {
     name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -641,19 +644,11 @@ mod tests {
             .expect("store config should succeed");
 
         // Path is inside our data dir.
-        assert!(config
-            .store_config
-            .path()
-            .starts_with(data_dir.path()));
+        assert!(config.store_config.path().starts_with(data_dir.path()));
 
         // Calling again yields a consistent store path (same key_id).
-        let config2 = actor
-            .account_store_config(&key_id)
-            .expect("second call");
-        assert_eq!(
-            config.store_config.path(),
-            config2.store_config.path()
-        );
+        let config2 = actor.account_store_config(&key_id).expect("second call");
+        assert_eq!(config.store_config.path(), config2.store_config.path());
     }
 
     #[test]

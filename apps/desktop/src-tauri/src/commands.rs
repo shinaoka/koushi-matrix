@@ -5,7 +5,7 @@
 //! diffs) flow back to the webview as Tauri events — not as command return
 //! values.
 //!
-//! No Matrix semantics live here. No SDK types. No `matrix_desktop_auth` calls.
+//! No Matrix semantics live here. No SDK types. No `matrix_desktop_sdk` calls.
 //! (Secret-bearing QA helpers remain behind `#[cfg(any(debug_assertions, test))]`.)
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,9 +20,9 @@ use matrix_desktop_core::{
 use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest, SessionInfo};
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
-use tauri::{AppHandle, Manager, State};
 #[cfg(any(debug_assertions, test))]
 use tauri::Emitter;
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     CoreRuntimeState,
@@ -104,10 +104,7 @@ pub(crate) fn qa_window_title_string(
             "active_room={}",
             snapshot.navigation.active_room_id.is_some()
         ),
-        format!(
-            "timeline_subscribed={}",
-            snapshot.timeline.is_subscribed
-        ),
+        format!("timeline_subscribed={}", snapshot.timeline.is_subscribed),
         format!("timeline_items={timeline_items}"),
         format!("errors={}", snapshot.errors.len()),
     ]
@@ -155,11 +152,10 @@ pub async fn discover_login_methods(
     homeserver: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // Phase 7: discovery is implicit in LoginPassword (the core resolves it).
-    // Return the current snapshot; the frontend reads homeserver from the login
-    // form, not from state.
-    // This remains a transport shim until login discovery gets a dedicated
-    // core command.
+    // Compatibility shim: discovery is implicit in LoginPassword (core
+    // resolves it), and the frontend keeps homeserver form text locally.
+    // Keeping this command avoids frontend API churn without adding a core
+    // command that would duplicate login behavior.
     let _ = homeserver;
     current_snapshot(state.inner()).await
 }
@@ -345,7 +341,10 @@ pub async fn select_room(
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        CoreCommand::Room(RoomCommand::SelectRoom { request_id, room_id }),
+        CoreCommand::Room(RoomCommand::SelectRoom {
+            request_id,
+            room_id,
+        }),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -479,14 +478,52 @@ pub async fn redact_message(
 }
 
 #[tauri::command]
+pub async fn leave_room(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::LeaveRoom {
+            request_id,
+            room_id,
+        }),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn forget_room(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::ForgetRoom {
+            request_id,
+            room_id,
+        }),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn open_thread(
     room_id: String,
     root_event_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // Thread open/close are UI navigation shims; the current contract is to
-    // return the snapshot so the frontend can update local state.
+    // Frontend navigation shim: opening/closing the thread pane is local UI
+    // state until product design requires native cross-window thread commands.
     let _ = (room_id, root_event_id);
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
@@ -497,7 +534,7 @@ pub async fn close_thread(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // Same UI-navigation shim as `open_thread`.
+    // Same frontend navigation shim as `open_thread`.
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -693,9 +730,7 @@ async fn wait_for_qa_recovery_prompt(
 }
 
 #[cfg(any(debug_assertions, test))]
-pub(crate) fn qa_recovery_prompt_is_available(
-    state: &matrix_desktop_state::AppState,
-) -> bool {
+pub(crate) fn qa_recovery_prompt_is_available(state: &matrix_desktop_state::AppState) -> bool {
     matches!(
         state.session,
         matrix_desktop_state::SessionState::NeedsRecovery { .. }

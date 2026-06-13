@@ -1,4 +1,4 @@
-use matrix_desktop_auth::parse_login_discovery;
+use matrix_desktop_sdk::parse_login_discovery;
 use matrix_desktop_state::LoginFlowKind;
 use std::{
     io::{Read, Write},
@@ -59,7 +59,7 @@ fn rejects_response_without_flows_array() {
 
 #[test]
 fn builds_discovery_url_from_bare_homeserver_name() {
-    let homeserver = matrix_desktop_auth::Homeserver::parse("matrix.example.org")
+    let homeserver = matrix_desktop_sdk::Homeserver::parse("matrix.example.org")
         .expect("bare homeserver name should parse");
 
     assert_eq!(homeserver.normalized(), "https://matrix.example.org");
@@ -71,7 +71,7 @@ fn builds_discovery_url_from_bare_homeserver_name() {
 
 #[test]
 fn homeserver_input_allows_scheme_omission_and_explicit_port() {
-    let homeserver = matrix_desktop_auth::Homeserver::parse("matrix.example.org:8448")
+    let homeserver = matrix_desktop_sdk::Homeserver::parse("matrix.example.org:8448")
         .expect("homeserver with explicit port should parse");
 
     assert_eq!(homeserver.normalized(), "https://matrix.example.org:8448");
@@ -83,7 +83,7 @@ fn homeserver_input_allows_scheme_omission_and_explicit_port() {
 
 #[test]
 fn rejects_homeserver_url_with_unsupported_scheme() {
-    let error = matrix_desktop_auth::Homeserver::parse("file:///tmp/matrix")
+    let error = matrix_desktop_sdk::Homeserver::parse("file:///tmp/matrix")
         .expect_err("file homeserver URL should be rejected");
 
     assert_eq!(
@@ -94,7 +94,7 @@ fn rejects_homeserver_url_with_unsupported_scheme() {
 
 #[test]
 fn rejects_plain_http_for_non_loopback_homeserver() {
-    let error = matrix_desktop_auth::Homeserver::parse("http://matrix.example.org")
+    let error = matrix_desktop_sdk::Homeserver::parse("http://matrix.example.org")
         .expect_err("non-loopback HTTP homeserver should be rejected");
 
     assert_eq!(
@@ -105,7 +105,7 @@ fn rejects_plain_http_for_non_loopback_homeserver() {
 
 #[test]
 fn maps_non_successful_http_response_to_discovery_error() {
-    let error = matrix_desktop_auth::parse_login_discovery_http_response(
+    let error = matrix_desktop_sdk::parse_login_discovery_http_response(
         404,
         r#"{"errcode":"M_UNRECOGNIZED","error":"OAuth 2.0 authentication is in use on this homeserver."}"#,
     )
@@ -125,7 +125,7 @@ fn discovers_login_flows_over_http() {
     );
 
     let discovery =
-        matrix_desktop_auth::discover_login_flows(&homeserver).expect("discovery should succeed");
+        matrix_desktop_sdk::discover_login_flows(&homeserver).expect("discovery should succeed");
 
     assert_eq!(discovery.homeserver, homeserver);
     assert_eq!(discovery.flows[0].kind, LoginFlowKind::Password);

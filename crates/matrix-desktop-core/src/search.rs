@@ -45,7 +45,7 @@
 
 use std::sync::Arc;
 
-use matrix_desktop_auth::MatrixClientSession;
+use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_search::{
     SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
 };
@@ -102,13 +102,19 @@ pub enum SearchIndexMessage {
 impl std::fmt::Debug for SearchIndexMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Upsert { room_id, event_id, .. } => f
+            Self::Upsert {
+                room_id, event_id, ..
+            } => f
                 .debug_struct("SearchIndexMessage::Upsert")
                 .field("room_id", room_id)
                 .field("event_id", event_id)
                 .field("body", &"MessageBody(..)")
                 .finish(),
-            Self::Edit { edit_event_id, target_event_id, .. } => f
+            Self::Edit {
+                edit_event_id,
+                target_event_id,
+                ..
+            } => f
                 .debug_struct("SearchIndexMessage::Edit")
                 .field("edit_event_id", edit_event_id)
                 .field("target_event_id", target_event_id)
@@ -141,7 +147,9 @@ enum SearchActorMessage {
 impl std::fmt::Debug for SearchActorMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Query { request_id, scope, .. } => f
+            Self::Query {
+                request_id, scope, ..
+            } => f
                 .debug_struct("SearchActorMessage::Query")
                 .field("request_id", request_id)
                 .field("query", &"SearchQuery(..)")
@@ -163,9 +171,15 @@ pub struct SearchActorHandle {
 impl SearchActorHandle {
     pub async fn send_command(&self, command: SearchCommand) -> bool {
         let msg = match command {
-            SearchCommand::Query { request_id, query, scope } => {
-                SearchActorMessage::Query { request_id, query, scope }
-            }
+            SearchCommand::Query {
+                request_id,
+                query,
+                scope,
+            } => SearchActorMessage::Query {
+                request_id,
+                query,
+                scope,
+            },
         };
         self.tx.send(msg).await.is_ok()
     }
@@ -238,12 +252,7 @@ impl SearchActor {
         }
     }
 
-    async fn handle_query(
-        &self,
-        request_id: RequestId,
-        query: &str,
-        scope: SearchScope,
-    ) {
+    async fn handle_query(&self, request_id: RequestId, query: &str, scope: SearchScope) {
         if query.trim().is_empty() {
             self.emit(CoreEvent::Search(SearchEvent::Results {
                 request_id,
@@ -252,20 +261,21 @@ impl SearchActor {
             return;
         }
 
-        let candidates =
-            matrix_desktop_auth::search_message_candidates(
-                &self.session,
-                query,
-                SEARCH_CANDIDATE_LIMIT,
-            )
-            .await;
+        let candidates = matrix_desktop_sdk::search_message_candidates(
+            &self.session,
+            query,
+            SEARCH_CANDIDATE_LIMIT,
+        )
+        .await;
 
         let candidates = match candidates {
             Ok(c) => c,
             Err(_) => {
                 self.emit_failure(
                     request_id,
-                    CoreFailure::SearchFailed { kind: SearchFailureKind::IndexUnavailable },
+                    CoreFailure::SearchFailed {
+                        kind: SearchFailureKind::IndexUnavailable,
+                    },
                 );
                 return;
             }
@@ -354,7 +364,10 @@ impl SearchActor {
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
-        self.emit(CoreEvent::OperationFailed { request_id, failure });
+        self.emit(CoreEvent::OperationFailed {
+            request_id,
+            failure,
+        });
     }
 }
 
@@ -420,7 +433,9 @@ mod tests {
         let candidate = make_candidate("!r:test", "$e1");
         // Query doesn't appear in the body — false positive.
         assert!(
-            store.verify_candidate(candidate, "foobar_not_present").is_none(),
+            store
+                .verify_candidate(candidate, "foobar_not_present")
+                .is_none(),
             "candidate must not verify against a query not in the body"
         );
     }
@@ -446,7 +461,9 @@ mod tests {
         // Verify old text matches before edit.
         let candidate_before = make_candidate("!r:test", "$e1");
         assert!(
-            store.verify_candidate(candidate_before, "original").is_some(),
+            store
+                .verify_candidate(candidate_before, "original")
+                .is_some(),
             "original body must verify before edit"
         );
 
@@ -456,14 +473,18 @@ mod tests {
         // Old query must no longer verify.
         let candidate_after_old = make_candidate("!r:test", "$e1");
         assert!(
-            store.verify_candidate(candidate_after_old, "original").is_none(),
+            store
+                .verify_candidate(candidate_after_old, "original")
+                .is_none(),
             "old body must not verify after edit"
         );
 
         // New query must verify.
         let candidate_after_new = make_candidate("!r:test", "$e1");
         assert!(
-            store.verify_candidate(candidate_after_new, "replacement").is_some(),
+            store
+                .verify_candidate(candidate_after_new, "replacement")
+                .is_some(),
             "new body must verify after edit"
         );
     }

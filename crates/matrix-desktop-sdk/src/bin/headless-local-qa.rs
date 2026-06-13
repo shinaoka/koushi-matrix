@@ -125,10 +125,10 @@ async fn run(config: HeadlessQaConfig) -> Result<HeadlessQaReport, String> {
     .await;
 
     if let Some(session) = session_a.as_ref() {
-        let _ = matrix_desktop_auth::logout(session).await;
+        let _ = matrix_desktop_sdk::logout(session).await;
     }
     if let Some(session) = session_b.as_ref() {
-        let _ = matrix_desktop_auth::logout(session).await;
+        let _ = matrix_desktop_sdk::logout(session).await;
     }
     drop(session_b.take());
     drop(session_a.take());
@@ -138,32 +138,32 @@ async fn run(config: HeadlessQaConfig) -> Result<HeadlessQaReport, String> {
 
 async fn run_authenticated(
     config: &HeadlessQaConfig,
-    session_a: &matrix_desktop_auth::MatrixClientSession,
-    session_b: &matrix_desktop_auth::MatrixClientSession,
+    session_a: &matrix_desktop_sdk::MatrixClientSession,
+    session_b: &matrix_desktop_sdk::MatrixClientSession,
 ) -> Result<HeadlessQaReport, String> {
     let suffix = timestamp_millis()?;
-    let room_id = matrix_desktop_auth::create_room(
+    let room_id = matrix_desktop_sdk::create_room(
         session_a,
         &format!("Matrix Desktop Headless QA Room {suffix}"),
     )
     .await
     .map_err(|error| format!("create room failed: {error}"))?;
-    let space_id = matrix_desktop_auth::create_space(
+    let space_id = matrix_desktop_sdk::create_space(
         session_a,
         &format!("Matrix Desktop Headless QA Space {suffix}"),
     )
     .await
     .map_err(|error| format!("create space failed: {error}"))?;
 
-    matrix_desktop_auth::set_space_child(session_a, &space_id, &room_id, &config.server_name)
+    matrix_desktop_sdk::set_space_child(session_a, &space_id, &room_id, &config.server_name)
         .await
         .map_err(|error| format!("set space child failed: {error}"))?;
 
     let user_b_id = matrix_user_id(&config.user_b, &config.server_name);
-    matrix_desktop_auth::invite_user_to_room(session_a, &space_id, &user_b_id)
+    matrix_desktop_sdk::invite_user_to_room(session_a, &space_id, &user_b_id)
         .await
         .map_err(|error| format!("invite user to space failed: {error}"))?;
-    matrix_desktop_auth::invite_user_to_room(session_a, &room_id, &user_b_id)
+    matrix_desktop_sdk::invite_user_to_room(session_a, &room_id, &user_b_id)
         .await
         .map_err(|error| format!("invite user to room failed: {error}"))?;
 
@@ -175,7 +175,7 @@ async fn run_authenticated(
     assert_can_send(session_b, &room_id, "sender B").await?;
 
     let message_a_to_b = format!("matrix-desktop-headless-a-to-b-{suffix}");
-    matrix_desktop_auth::send_text_message(
+    matrix_desktop_sdk::send_text_message(
         session_a,
         &room_id,
         &message_a_to_b,
@@ -186,7 +186,7 @@ async fn run_authenticated(
     wait_for_message(session_b, &room_id, &message_a_to_b, "B receive").await?;
 
     let message_b_to_a = format!("matrix-desktop-headless-b-to-a-{suffix}");
-    matrix_desktop_auth::send_text_message(
+    matrix_desktop_sdk::send_text_message(
         session_b,
         &room_id,
         &message_b_to_a,
@@ -214,27 +214,27 @@ async fn login(
     username: &str,
     password: &str,
     device_display_name: &str,
-) -> Result<matrix_desktop_auth::MatrixClientSession, String> {
+) -> Result<matrix_desktop_sdk::MatrixClientSession, String> {
     let request = LoginRequest {
         homeserver: homeserver.to_owned(),
         username: username.to_owned(),
         password: AuthSecret::new(password.to_owned()),
         device_display_name: Some(device_display_name.to_owned()),
     };
-    matrix_desktop_auth::login_with_password(&request)
+    matrix_desktop_sdk::login_with_password(&request)
         .await
         .map_err(|error| format!("login failed: {error}"))
 }
 
 async fn join_with_retry(
-    session: &matrix_desktop_auth::MatrixClientSession,
+    session: &matrix_desktop_sdk::MatrixClientSession,
     room_id: &str,
     label: &str,
 ) -> Result<(), String> {
     let mut last_error = "join was not attempted".to_owned();
     for _ in 0..POLL_ATTEMPTS {
-        let _ = matrix_desktop_auth::sync_once(session).await;
-        match matrix_desktop_auth::join_room_by_id(session, room_id).await {
+        let _ = matrix_desktop_sdk::sync_once(session).await;
+        match matrix_desktop_sdk::join_room_by_id(session, room_id).await {
             Ok(_) => return Ok(()),
             Err(error) => last_error = error.to_string(),
         }
@@ -244,16 +244,16 @@ async fn join_with_retry(
 }
 
 async fn wait_for_room_list_entries(
-    session: &matrix_desktop_auth::MatrixClientSession,
+    session: &matrix_desktop_sdk::MatrixClientSession,
     room_id: &str,
     space_id: &str,
-) -> Result<matrix_desktop_auth::MatrixRoomListSnapshot, String> {
+) -> Result<matrix_desktop_sdk::MatrixRoomListSnapshot, String> {
     let mut last_error = "room list was not attempted".to_owned();
     for _ in 0..POLL_ATTEMPTS {
-        matrix_desktop_auth::sync_once(session)
+        matrix_desktop_sdk::sync_once(session)
             .await
             .map_err(|error| format!("sync before room list failed: {error}"))?;
-        match matrix_desktop_auth::room_list_snapshot(session).await {
+        match matrix_desktop_sdk::room_list_snapshot(session).await {
             Ok(snapshot)
                 if snapshot.rooms.iter().any(|room| room.room_id == room_id)
                     && snapshot
@@ -278,11 +278,11 @@ async fn wait_for_room_list_entries(
 }
 
 async fn assert_can_send(
-    session: &matrix_desktop_auth::MatrixClientSession,
+    session: &matrix_desktop_sdk::MatrixClientSession,
     room_id: &str,
     label: &str,
 ) -> Result<(), String> {
-    let can_send = matrix_desktop_auth::room_can_send_text_message(session, room_id)
+    let can_send = matrix_desktop_sdk::room_can_send_text_message(session, room_id)
         .await
         .map_err(|error| format!("{label} send permission check failed: {error}"))?;
     if can_send {
@@ -293,17 +293,17 @@ async fn assert_can_send(
 }
 
 async fn wait_for_message(
-    session: &matrix_desktop_auth::MatrixClientSession,
+    session: &matrix_desktop_sdk::MatrixClientSession,
     room_id: &str,
     expected_body: &str,
     label: &str,
 ) -> Result<(), String> {
     let mut last_error = "timeline was not attempted".to_owned();
     for _ in 0..POLL_ATTEMPTS {
-        matrix_desktop_auth::sync_once(session)
+        matrix_desktop_sdk::sync_once(session)
             .await
             .map_err(|error| format!("{label} sync failed: {error}"))?;
-        match matrix_desktop_auth::room_timeline_visible_items(
+        match matrix_desktop_sdk::room_timeline_visible_items(
             session,
             room_id,
             TIMELINE_BACKFILL_EVENT_COUNT,

@@ -27,6 +27,8 @@ export interface DesktopApi {
   sendText(roomId: string, body: string): Promise<DesktopSnapshot>;
   editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
   redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  leaveRoom(roomId: string): Promise<DesktopSnapshot>;
+  forgetRoom(roomId: string): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
@@ -253,6 +255,14 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async leaveRoom(roomId: string): Promise<DesktopSnapshot> {
+    return this.removeRoomFromFakeSnapshot(roomId);
+  }
+
+  async forgetRoom(roomId: string): Promise<DesktopSnapshot> {
+    return this.removeRoomFromFakeSnapshot(roomId);
+  }
+
   async openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
@@ -336,6 +346,32 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.sidebar = emptySidebar();
     this.snapshot.timeline = [];
     this.snapshot.thread = null;
+  }
+
+  private async removeRoomFromFakeSnapshot(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.rooms = this.snapshot.state.rooms.filter((room) => room.room_id !== roomId);
+    this.snapshot.state.spaces = this.snapshot.state.spaces.map((space) => ({
+      ...space,
+      child_room_ids: space.child_room_ids.filter((childRoomId) => childRoomId !== roomId)
+    }));
+    if (this.snapshot.state.navigation.active_room_id === roomId) {
+      this.snapshot.state.navigation.active_room_id = null;
+      this.snapshot.state.timeline.room_id = null;
+      this.snapshot.state.timeline.is_subscribed = false;
+      this.snapshot.timeline = [];
+      this.snapshot.state.thread = { kind: "closed" };
+      this.snapshot.thread = null;
+    }
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
+    return this.getSnapshot();
   }
 }
 

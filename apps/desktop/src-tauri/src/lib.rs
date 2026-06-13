@@ -176,7 +176,6 @@ pub(crate) struct PersistedWindowState {
     pub maximized: bool,
 }
 
-
 impl Default for BackendState {
     fn default() -> Self {
         let config = FakeDesktopBackendConfig {
@@ -226,8 +225,6 @@ fn qa_login_pipe_path_from_env_value(value: Option<&str>) -> Option<PathBuf> {
 fn qa_login_pipe_path_from_env() -> Option<PathBuf> {
     qa_login_pipe_path_from_env_value(std::env::var(QA_LOGIN_PIPE_ENV).ok().as_deref())
 }
-
-
 
 /// GUI-smoke toggle: when `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS` is set, the
 /// adapter answers `list_saved_sessions` with an empty list WITHOUT routing
@@ -404,8 +401,6 @@ fn persist_current_window_state<R: tauri::Runtime>(
     persist_window_state(&state)
 }
 
-
-
 fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     manager: &M,
 ) -> tauri::Result<tauri::menu::Menu<R>> {
@@ -485,7 +480,10 @@ fn spawn_core_event_forwarder(
                     // its timeline stores.
                     let snapshot = event_conn.snapshot();
                     emit_state_snapshot(&app, &snapshot, timeline_items_count);
-                    let _ = app.emit(CORE_EVENT_NAME, serde_json::json!({ "kind": "ResyncMarker" }));
+                    let _ = app.emit(
+                        CORE_EVENT_NAME,
+                        serde_json::json!({ "kind": "ResyncMarker" }),
+                    );
                 }
             }
         }
@@ -526,16 +524,19 @@ fn forward_core_event(
 }
 
 fn diffs_net_count_change(diffs: &[matrix_desktop_core::TimelineDiff]) -> i64 {
-    diffs.iter().map(|diff| match diff {
-        matrix_desktop_core::TimelineDiff::PushFront { .. }
-        | matrix_desktop_core::TimelineDiff::PushBack { .. }
-        | matrix_desktop_core::TimelineDiff::Insert { .. } => 1_i64,
-        matrix_desktop_core::TimelineDiff::Remove { .. } => -1_i64,
-        matrix_desktop_core::TimelineDiff::Truncate { .. }
-        | matrix_desktop_core::TimelineDiff::Clear
-        | matrix_desktop_core::TimelineDiff::Reset { .. }
-        | matrix_desktop_core::TimelineDiff::Set { .. } => 0_i64,
-    }).sum()
+    diffs
+        .iter()
+        .map(|diff| match diff {
+            matrix_desktop_core::TimelineDiff::PushFront { .. }
+            | matrix_desktop_core::TimelineDiff::PushBack { .. }
+            | matrix_desktop_core::TimelineDiff::Insert { .. } => 1_i64,
+            matrix_desktop_core::TimelineDiff::Remove { .. } => -1_i64,
+            matrix_desktop_core::TimelineDiff::Truncate { .. }
+            | matrix_desktop_core::TimelineDiff::Clear
+            | matrix_desktop_core::TimelineDiff::Reset { .. }
+            | matrix_desktop_core::TimelineDiff::Set { .. } => 0_i64,
+        })
+        .sum()
 }
 
 fn emit_state_snapshot(
@@ -564,7 +565,10 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
         CoreEvent::Room(e) => serde_json::json!({ "kind": "Room", "event": e }),
         CoreEvent::Timeline(e) => serde_json::json!({ "kind": "Timeline", "event": e }),
         CoreEvent::Search(e) => serde_json::json!({ "kind": "Search", "event": e }),
-        CoreEvent::OperationFailed { request_id, failure } => {
+        CoreEvent::OperationFailed {
+            request_id,
+            failure,
+        } => {
             serde_json::json!({
                 "kind": "OperationFailed",
                 "request_id": request_id,
@@ -588,8 +592,8 @@ pub fn run() {
             // `executor::spawn` which requires a Tokio runtime context. Tauri
             // starts its tokio runtime before invoking setup; we enter the
             // handle so `tokio::task::spawn` can find it from the main thread.
-            let data_dir = matrix_desktop_data_dir()
-                .unwrap_or_else(|_| PathBuf::from("matrix-desktop-data"));
+            let data_dir =
+                matrix_desktop_data_dir().unwrap_or_else(|_| PathBuf::from("matrix-desktop-data"));
             // Enter Tauri's tokio runtime so `executor::spawn` (tokio::task::spawn)
             // can find a runtime handle from this non-tokio-worker thread.
             let async_handle = tauri::async_runtime::handle();
@@ -645,9 +649,7 @@ pub fn run() {
                     let request_id = core_state.connection.lock().await.next_request_id();
                     let _ = commands::submit_core_command(
                         &core_state,
-                        CoreCommand::Account(AccountCommand::RestoreLastSession {
-                            request_id,
-                        }),
+                        CoreCommand::Account(AccountCommand::RestoreLastSession { request_id }),
                     )
                     .await;
                 });
@@ -681,6 +683,8 @@ pub fn run() {
             commands::send_text,
             commands::edit_message,
             commands::redact_message,
+            commands::leave_room,
+            commands::forget_room,
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
@@ -693,6 +697,7 @@ pub fn run() {
 mod tests {
     use std::path::Path;
 
+    use super::serialize_core_event;
     use super::{
         PersistedWindowState, desktop_menu_items, desktop_standard_menu_items,
         load_window_state_with_base, persist_window_state_with_base,
@@ -701,7 +706,6 @@ mod tests {
         saved_sessions_disabled_from_env_value, window_event_should_persist,
         window_event_should_stop_background_tasks, window_state_path,
     };
-    use super::serialize_core_event;
     use crate::commands::parse_qa_login_pipe_payload;
 
     #[test]
@@ -928,14 +932,14 @@ mod tests {
     /// layer types against (apps/desktop/src/domain/coreEvents.ts). Serde
     /// enums are externally tagged: struct variants serialize as
     /// {"Variant":{..}}, unit variants as "Variant". If this test changes,
-    /// coreEvents.ts must change with it.
+    /// coreEvents.ts and coreEvents.generated.json must change with it.
     #[test]
-    fn core_event_wire_format_matches_typescript_contract() {
+    fn core_event_wire_format_matches_checked_in_contract_artifact() {
         use matrix_desktop_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
-                AccountEvent, PaginationDirection, PaginationState, TimelineEvent, TimelineItem,
-                TimelineItemId, TimelineResyncReason,
+                AccountEvent, PaginationDirection, PaginationState, RoomEvent, TimelineEvent,
+                TimelineItem, TimelineItemId, TimelineResyncReason,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1007,14 +1011,15 @@ mod tests {
         assert_eq!(updated["event"]["ItemsUpdated"]["batch_id"], json!(9));
 
         // PaginationStateChanged: unit states are strings, Failed is tagged
-        let pagination =
-            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+        let pagination = serialize_core_event(&CoreEvent::Timeline(
+            TimelineEvent::PaginationStateChanged {
                 request_id: None,
                 key: key.clone(),
                 direction: PaginationDirection::Backward,
                 state: PaginationState::EndReached,
-            }))
-            .expect("serialize");
+            },
+        ))
+        .expect("serialize");
         let pagination = &pagination["event"]["PaginationStateChanged"];
         assert_eq!(pagination["request_id"], json!(null));
         assert_eq!(pagination["direction"], json!("Backward"));
@@ -1055,5 +1060,38 @@ mod tests {
         .expect("serialize");
         assert_eq!(failed["kind"], json!("OperationFailed"));
         assert_eq!(failed["failure"], json!("SessionNotFound"));
+
+        let room_left = serialize_core_event(&CoreEvent::Room(RoomEvent::RoomLeft {
+            request_id,
+            room_id: "!r:example.test".to_owned(),
+        }))
+        .expect("serialize");
+        assert_eq!(room_left["kind"], json!("Room"));
+        assert_eq!(
+            room_left["event"]["RoomLeft"]["room_id"],
+            json!("!r:example.test")
+        );
+
+        let actual_contract = json!({
+            "accountSavedSessionsListed": listed,
+            "operationFailedSessionNotFound": failed,
+            "roomLeft": room_left,
+            "timelineInitialItems": initial,
+            "timelineItemsUpdated": updated,
+            "timelinePaginationEndReached": serialize_core_event(&CoreEvent::Timeline(
+                TimelineEvent::PaginationStateChanged {
+                    request_id: None,
+                    key: key.clone(),
+                    direction: PaginationDirection::Backward,
+                    state: PaginationState::EndReached,
+                },
+            ))
+            .expect("serialize"),
+            "timelineResyncRequired": resync,
+        });
+        let checked_in_contract: serde_json::Value =
+            serde_json::from_str(include_str!("../../src/domain/coreEvents.generated.json"))
+                .expect("checked-in core event contract artifact must be valid JSON");
+        assert_eq!(actual_contract, checked_in_contract);
     }
 }

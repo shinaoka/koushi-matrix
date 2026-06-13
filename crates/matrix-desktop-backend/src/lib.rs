@@ -80,7 +80,7 @@ pub struct FakeDesktopBackend {
     search_candidates: Vec<SearchCandidate>,
     timeline_messages: Vec<TimelineMessage>,
     thread_replies: Vec<ThreadMessage>,
-    matrix_session: Option<matrix_desktop_auth::MatrixClientSession>,
+    matrix_session: Option<matrix_desktop_sdk::MatrixClientSession>,
     next_search_request_id: u64,
     backward_timeline_messages: Vec<TimelineMessage>,
 }
@@ -176,7 +176,7 @@ impl FakeDesktopBackend {
         }
     }
 
-    pub fn matrix_session(&self) -> Option<matrix_desktop_auth::MatrixClientSession> {
+    pub fn matrix_session(&self) -> Option<matrix_desktop_sdk::MatrixClientSession> {
         self.matrix_session.clone()
     }
 
@@ -414,17 +414,18 @@ impl FakeDesktopBackend {
                     flows: fixture_login_flows(),
                 }]
             }
-            LoginDiscoveryMode::Http => match matrix_desktop_auth::discover_login_flows(homeserver)
-            {
-                Ok(discovery) => vec![AppAction::LoginDiscoverySucceeded {
-                    homeserver: discovery.homeserver,
-                    flows: discovery.flows,
-                }],
-                Err(error) => vec![AppAction::LoginDiscoveryFailed {
-                    homeserver: homeserver.to_owned(),
-                    message: error.to_string(),
-                }],
-            },
+            LoginDiscoveryMode::Http => {
+                match matrix_desktop_sdk::discover_login_flows(homeserver) {
+                    Ok(discovery) => vec![AppAction::LoginDiscoverySucceeded {
+                        homeserver: discovery.homeserver,
+                        flows: discovery.flows,
+                    }],
+                    Err(error) => vec![AppAction::LoginDiscoveryFailed {
+                        homeserver: homeserver.to_owned(),
+                        message: error.to_string(),
+                    }],
+                }
+            }
         }
     }
 
@@ -434,7 +435,7 @@ impl FakeDesktopBackend {
                 message: "real Matrix login is not wired in this pre-login foundation".to_owned(),
             }],
             LoginMode::MatrixSdk => {
-                match matrix_desktop_auth::login_with_password_blocking(request) {
+                match matrix_desktop_sdk::login_with_password_blocking(request) {
                     Ok(session) => {
                         let info = session.info.clone();
                         self.matrix_session = Some(session);
@@ -451,7 +452,7 @@ impl FakeDesktopBackend {
 
     pub fn complete_matrix_login(
         &mut self,
-        session: matrix_desktop_auth::MatrixClientSession,
+        session: matrix_desktop_sdk::MatrixClientSession,
     ) -> Vec<AppEffect> {
         let info = session.info.clone();
         self.matrix_session = Some(session);
@@ -460,7 +461,7 @@ impl FakeDesktopBackend {
 
     pub fn complete_matrix_restore(
         &mut self,
-        session: matrix_desktop_auth::MatrixClientSession,
+        session: matrix_desktop_sdk::MatrixClientSession,
     ) -> Vec<AppEffect> {
         let info = session.info.clone();
         self.matrix_session = Some(session);
@@ -510,7 +511,7 @@ impl FakeDesktopBackend {
             E2eeRecoveryMode::RequiredFixtureSuccess | E2eeRecoveryMode::RequiredDeferred
         ) || (self.config.e2ee_recovery == E2eeRecoveryMode::SdkState
             && self.matrix_session.as_ref().is_some_and(|session| {
-                session.e2ee_recovery_state() == matrix_desktop_auth::E2eeRecoveryState::Incomplete
+                session.e2ee_recovery_state() == matrix_desktop_sdk::E2eeRecoveryState::Incomplete
             }))
     }
 
@@ -958,7 +959,7 @@ fn fixture_login_flows() -> Vec<LoginFlow> {
         ]
     });
 
-    matrix_desktop_auth::parse_login_discovery(&response)
+    matrix_desktop_sdk::parse_login_discovery(&response)
         .expect("synthetic login discovery fixture should parse")
 }
 

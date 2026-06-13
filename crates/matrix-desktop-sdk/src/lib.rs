@@ -992,6 +992,30 @@ pub async fn join_room_by_id(
     Ok(room.room_id().to_string())
 }
 
+pub async fn leave_room(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<String, MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let room_id = room.room_id().to_string();
+    room.leave()
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?;
+    Ok(room_id)
+}
+
+pub async fn forget_room(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<String, MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let room_id = room.room_id().to_string();
+    room.forget()
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?;
+    Ok(room_id)
+}
+
 pub async fn set_space_child(
     session: &MatrixClientSession,
     space_id: &str,

@@ -804,11 +804,28 @@ async fn run_async(
 
     // -----------------------------------------------------------------------
     // Step 8: Leave/forget QA room
-    // LeaveRoom is not in RoomCommand yet; tracked in the post-headless-core
-    // follow-up spec.
     // -----------------------------------------------------------------------
-    let line =
-        "leave_room=not_available (LeaveRoom not yet in RoomCommand; tracked follow-up)".to_owned();
+    let leave_room_id = conn2.next_request_id();
+    conn2
+        .command(CoreCommand::Room(RoomCommand::LeaveRoom {
+            request_id: leave_room_id,
+            room_id: qa_room_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("leave QA room command submit failed: {e}"))?;
+    wait_for_room_left(&mut conn2, leave_room_id, &qa_room_id, "leave QA room").await?;
+
+    let forget_room_id = conn2.next_request_id();
+    conn2
+        .command(CoreCommand::Room(RoomCommand::ForgetRoom {
+            request_id: forget_room_id,
+            room_id: qa_room_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("forget QA room command submit failed: {e}"))?;
+    wait_for_room_forgotten(&mut conn2, forget_room_id, &qa_room_id, "forget QA room").await?;
+
+    let line = "leave_room=ok forget_room=ok".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
@@ -853,7 +870,7 @@ async fn run_async(
          edit_msg1=ok redact_msg2=ok \
          paginate={paginate} search={search} \
          store_restore=ok restore_body={body_ok} \
-         leave_room=not_available \
+         leave_room=ok forget_room=ok \
          logout=ok post_logout_restore=not_found",
         user_id = account_key.0,
         recovery = "completed",
@@ -1196,6 +1213,74 @@ async fn wait_for_room_created(
                 room_id,
             }) if ev_id == request_id => {
                 return Ok(room_id);
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[cfg(any(debug_assertions, test))]
+async fn wait_for_room_left(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    expected_room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::RoomLeft"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomLeft {
+                request_id: ev_id,
+                room_id,
+            }) if ev_id == request_id => {
+                if room_id == expected_room_id {
+                    return Ok(());
+                }
+                return Err(format!("{label}: unexpected room id {room_id}"));
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[cfg(any(debug_assertions, test))]
+async fn wait_for_room_forgotten(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    expected_room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::RoomForgotten"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomForgotten {
+                request_id: ev_id,
+                room_id,
+            }) if ev_id == request_id => {
+                if room_id == expected_room_id {
+                    return Ok(());
+                }
+                return Err(format!("{label}: unexpected room id {room_id}"));
             }
             CoreEvent::OperationFailed {
                 request_id: ev_id,

@@ -252,7 +252,7 @@ function runHeadlessQa({
 }) {
   const result = spawnSync(
     "cargo",
-    ["run", "-p", "matrix-desktop-auth", "--features", "smoke", "--bin", "headless-local-qa"],
+    ["run", "-p", "matrix-desktop-sdk", "--features", "smoke", "--bin", "headless-local-qa"],
     {
       cwd: repoRoot,
       encoding: "utf8",

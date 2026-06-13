@@ -16,7 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 dirs = "6"
 futures-util = "0.3"
-matrix-desktop-auth = { path = "../../../crates/matrix-desktop-auth" }
+matrix-desktop-sdk = { path = "../../../crates/matrix-desktop-sdk" }
 matrix-desktop-backend = { path = "../../../crates/matrix-desktop-backend" }
 matrix-desktop-core = { path = "../../../crates/matrix-desktop-core" }
 matrix-desktop-key = { path = "../../../crates/matrix-desktop-key" }

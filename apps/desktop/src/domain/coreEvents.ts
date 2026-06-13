@@ -9,10 +9,9 @@
  * TimelineBatchId) collapse to their inner value.
  *
  * The wire format is pinned by the Rust contract test
- * `core_event_wire_format_matches_typescript_contract` in src-tauri lib.rs.
- * If that test changes, this module must change with it. Codegen from the
- * Rust types is tracked in
- * docs/superpowers/specs/2026-06-13-post-headless-core-followups.md.
+ * `core_event_wire_format_matches_checked_in_contract_artifact` in src-tauri
+ * lib.rs. That test compares representative serialized payloads with
+ * coreEvents.generated.json, so Rust/TypeScript drift fails locally.
  *
  * Security: message bodies flow in Timeline events. These are visible
  * content (not secrets). Passwords, access tokens, and store keys NEVER
@@ -193,6 +192,8 @@ export type RoomEvent =
     }
   | { UserInvited: { request_id: RequestId; room_id: string; user_id: string } }
   | { RoomJoined: { request_id: RequestId; room_id: string } }
+  | { RoomLeft: { request_id: RequestId; room_id: string } }
+  | { RoomForgotten: { request_id: RequestId; room_id: string } }
   | "RoomListUpdated";
 
 export interface SearchResultItem {

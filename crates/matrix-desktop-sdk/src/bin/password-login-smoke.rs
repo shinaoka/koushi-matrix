@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use matrix_desktop_auth::{
+use matrix_desktop_sdk::{
     MatrixClientSession, MatrixClientStoreConfig, MatrixClientStoreKey, MatrixRoomListSnapshot,
     MatrixSearchIndexKey, MatrixSearchIndexStoreConfig, MatrixTimelineItem,
 };
@@ -92,7 +92,7 @@ fn run(options: SmokeOptions) -> Result<(), String> {
     let mut smoke_store = None;
     let mut session = Some(
         runtime
-            .block_on(matrix_desktop_auth::login_with_password(&request))
+            .block_on(matrix_desktop_sdk::login_with_password(&request))
             .map_err(|_| "login request failed".to_owned())?,
     );
 
@@ -111,7 +111,7 @@ fn run(options: SmokeOptions) -> Result<(), String> {
             .as_ref()
             .expect("session should exist until explicit runtime-entered drop");
         runtime
-            .block_on(matrix_desktop_auth::logout(session))
+            .block_on(matrix_desktop_sdk::logout(session))
             .map_err(|_| "logout request failed after successful login".to_owned())
     });
     let runtime_guard = runtime.enter();
@@ -135,11 +135,11 @@ fn run_authenticated_smoke(
         let persisted_json = persisted
             .to_json()
             .map_err(|_| "persistable session serialization failed".to_owned())?;
-        let persisted = matrix_desktop_auth::PersistableMatrixSession::from_json(&persisted_json)
+        let persisted = matrix_desktop_sdk::PersistableMatrixSession::from_json(&persisted_json)
             .map_err(|_| "persistable session deserialization failed".to_owned())?;
         let store = SmokeStore::new()?;
         *session = runtime
-            .block_on(matrix_desktop_auth::restore_session_with_store(
+            .block_on(matrix_desktop_sdk::restore_session_with_store(
                 &persisted,
                 Some(store.config()),
             ))
@@ -150,27 +150,27 @@ fn run_authenticated_smoke(
 
     if options.check_room_list || options.real_account_qa {
         runtime
-            .block_on(matrix_desktop_auth::sync_once(&session))
+            .block_on(matrix_desktop_sdk::sync_once(&session))
             .map_err(|_| "sync request failed".to_owned())?;
         let snapshot = runtime
-            .block_on(matrix_desktop_auth::room_list_snapshot(&session))
+            .block_on(matrix_desktop_sdk::room_list_snapshot(&session))
             .map_err(|_| "room list request failed".to_owned())?;
         if options.check_room_list {
             println!(
                 "Room list OK. {}",
-                matrix_desktop_auth::room_list_smoke_report(&snapshot)
+                matrix_desktop_sdk::room_list_smoke_report(&snapshot)
             );
         }
         if options.real_account_qa {
             let timeline_items = first_visible_timeline_items(runtime, &session, &snapshot)?;
             let search_candidates = runtime
-                .block_on(matrix_desktop_auth::search_message_candidates(
+                .block_on(matrix_desktop_sdk::search_message_candidates(
                     &session,
                     SEARCH_SMOKE_QUERY,
                     SEARCH_SMOKE_LIMIT,
                 ))
                 .map_err(|_| "search request failed".to_owned())?;
-            let report = matrix_desktop_auth::real_account_qa_report_with_search(
+            let report = matrix_desktop_sdk::real_account_qa_report_with_search(
                 &snapshot,
                 true,
                 &timeline_items,
@@ -287,7 +287,7 @@ fn first_visible_timeline_items(
 
     let mut subscribed_room_count = 0;
     for room in snapshot.rooms.iter().take(TIMELINE_ROOM_SAMPLE_LIMIT) {
-        let Ok(items) = runtime.block_on(matrix_desktop_auth::room_timeline_visible_items(
+        let Ok(items) = runtime.block_on(matrix_desktop_sdk::room_timeline_visible_items(
             session,
             &room.room_id,
             TIMELINE_BACKFILL_EVENT_COUNT,

@@ -41,7 +41,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use matrix_desktop_auth::MatrixClientSession;
+use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_state::AppAction;
 use tokio::sync::{broadcast, mpsc};
 
@@ -323,10 +323,7 @@ impl SyncActor {
     }
 
     /// Returns Ok(()) on success, Err(()) when SyncService build fails (caller falls back).
-    async fn start_sync_service(
-        &mut self,
-        client: matrix_sdk::Client,
-    ) -> Result<(), ()> {
+    async fn start_sync_service(&mut self, client: matrix_sdk::Client) -> Result<(), ()> {
         let service = matrix_sdk_ui::sync_service::SyncService::builder(client)
             .with_offline_mode()
             .build()
@@ -396,7 +393,7 @@ impl SyncActor {
 
     /// QA/debug: one-shot sync, does not affect the continuous sync state machine.
     async fn handle_sync_once(&self, request_id: RequestId) {
-        match matrix_desktop_auth::sync_once(&self.session).await {
+        match matrix_desktop_sdk::sync_once(&self.session).await {
             Ok(()) => {
                 self.emit(CoreEvent::Sync(SyncEvent::Stopped {
                     request_id: Some(request_id),
@@ -577,20 +574,16 @@ pub(crate) fn classify_sdk_sync_error(error: &matrix_sdk::Error) -> SyncFailureK
     match error {
         matrix_sdk::Error::AuthenticationRequired => SyncFailureKind::Auth,
         matrix_sdk::Error::Http(http_error) => {
-            if http_error
-                .as_client_api_error()
-                .is_some_and(|e| {
-                    let code = e.status_code.as_u16();
-                    code == 401 || code == 403
-                })
-                || matches!(
-                    http_error.client_api_error_kind(),
-                    Some(
-                        matrix_sdk::ruma::api::error::ErrorKind::Forbidden
-                            | matrix_sdk::ruma::api::error::ErrorKind::UnknownToken { .. }
-                    )
+            if http_error.as_client_api_error().is_some_and(|e| {
+                let code = e.status_code.as_u16();
+                code == 401 || code == 403
+            }) || matches!(
+                http_error.client_api_error_kind(),
+                Some(
+                    matrix_sdk::ruma::api::error::ErrorKind::Forbidden
+                        | matrix_sdk::ruma::api::error::ErrorKind::UnknownToken { .. }
                 )
-            {
+            ) {
                 SyncFailureKind::Auth
             } else {
                 SyncFailureKind::Http
@@ -638,8 +631,10 @@ pub mod tests {
     fn classify_store_error() {
         // StoreError::Backend wraps any Send+Sync error.
         use matrix_sdk_base::store::StoreError;
-        let backend_err: Box<dyn std::error::Error + Send + Sync> =
-            Box::new(std::io::Error::new(std::io::ErrorKind::Other, "state store failure"));
+        let backend_err: Box<dyn std::error::Error + Send + Sync> = Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "state store failure",
+        ));
         let store_err = matrix_sdk::Error::StateStore(Box::new(StoreError::Backend(backend_err)));
         assert_eq!(classify_sdk_sync_error(&store_err), SyncFailureKind::Store);
     }
@@ -817,7 +812,10 @@ pub mod tests {
         let fake_raw_error = "HTTP 500 Internal Server Error";
         let kind = SyncFailureKind::Http;
         let reason = sync_failure_kind_label(kind);
-        assert_ne!(reason, fake_raw_error, "reason must not be raw SDK error text");
+        assert_ne!(
+            reason, fake_raw_error,
+            "reason must not be raw SDK error text"
+        );
         assert_eq!(reason, "sync_failed_http");
     }
 
@@ -839,9 +837,17 @@ pub mod tests {
         assert_eq!(lifecycle, SyncLifecycle::Failed, "starts in Failed");
         // do_stop resets to Stopped:
         let lifecycle = SyncLifecycle::Stopped;
-        assert_eq!(lifecycle, SyncLifecycle::Stopped, "do_stop produces Stopped");
+        assert_eq!(
+            lifecycle,
+            SyncLifecycle::Stopped,
+            "do_stop produces Stopped"
+        );
         // handle_start completes, setting Running:
         let lifecycle = SyncLifecycle::Running;
-        assert_eq!(lifecycle, SyncLifecycle::Running, "handle_start produces Running");
+        assert_eq!(
+            lifecycle,
+            SyncLifecycle::Running,
+            "handle_start produces Running"
+        );
     }
 }

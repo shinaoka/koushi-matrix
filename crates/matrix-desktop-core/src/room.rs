@@ -38,9 +38,10 @@
 //! product path, not a stub."
 //!
 //! ## Room operations
-//! `CreateRoom`, `CreateSpace`, `SetSpaceChild`, `InviteUser`, `JoinRoom` call
-//! `matrix-desktop-auth` primitives and emit domain events with `request_id`.
-//! Errors are classified into `RoomFailureKind` (never raw SDK text).
+//! `CreateRoom`, `CreateSpace`, `SetSpaceChild`, `InviteUser`, `JoinRoom`,
+//! `LeaveRoom`, and `ForgetRoom` call `matrix-desktop-sdk` primitives and emit
+//! domain events with `request_id`. Errors are classified into
+//! `RoomFailureKind` (never raw SDK text).
 //!
 //! ## SelectSpace / SelectRoom
 //! Pure navigation — project `AppAction::SelectSpace` / `AppAction::SelectRoom`
@@ -53,7 +54,7 @@
 
 use std::sync::Arc;
 
-use matrix_desktop_auth::{MatrixClientSession, MatrixRoomOperationError};
+use matrix_desktop_sdk::{MatrixClientSession, MatrixRoomOperationError};
 use matrix_desktop_state::{AppAction, RoomSummary, SpaceSummary};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -277,6 +278,18 @@ impl RoomActor {
             } => {
                 self.handle_join_room(request_id, room_id).await;
             }
+            RoomCommand::LeaveRoom {
+                request_id,
+                room_id,
+            } => {
+                self.handle_leave_room(request_id, room_id).await;
+            }
+            RoomCommand::ForgetRoom {
+                request_id,
+                room_id,
+            } => {
+                self.handle_forget_room(request_id, room_id).await;
+            }
             RoomCommand::SelectSpace {
                 request_id: _,
                 space_id,
@@ -302,7 +315,7 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        match matrix_desktop_auth::create_room(session, &name).await {
+        match matrix_desktop_sdk::create_room(session, &name).await {
             Ok(room_id) => {
                 self.emit(CoreEvent::Room(RoomEvent::RoomCreated {
                     request_id,
@@ -324,7 +337,7 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        match matrix_desktop_auth::create_space(session, &name).await {
+        match matrix_desktop_sdk::create_space(session, &name).await {
             Ok(space_id) => {
                 self.emit(CoreEvent::Room(RoomEvent::SpaceCreated {
                     request_id,
@@ -351,7 +364,7 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        match matrix_desktop_auth::set_space_child(session, &space_id, &child_room_id, &via_server)
+        match matrix_desktop_sdk::set_space_child(session, &space_id, &child_room_id, &via_server)
             .await
         {
             Ok(()) => {
@@ -375,7 +388,7 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        match matrix_desktop_auth::invite_user_to_room(session, &room_id, &user_id).await {
+        match matrix_desktop_sdk::invite_user_to_room(session, &room_id, &user_id).await {
             Ok(()) => {
                 self.emit(CoreEvent::Room(RoomEvent::UserInvited {
                     request_id,
@@ -395,13 +408,53 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        match matrix_desktop_auth::join_room_by_id(session, &room_id).await {
+        match matrix_desktop_sdk::join_room_by_id(session, &room_id).await {
             Ok(joined_room_id) => {
                 self.emit(CoreEvent::Room(RoomEvent::RoomJoined {
                     request_id,
                     room_id: joined_room_id,
                 }));
                 // Reflect the actor's own mutation immediately.
+                self.refresh_room_list().await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_leave_room(&self, request_id: RequestId, room_id: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        match matrix_desktop_sdk::leave_room(session, &room_id).await {
+            Ok(left_room_id) => {
+                self.emit(CoreEvent::Room(RoomEvent::RoomLeft {
+                    request_id,
+                    room_id: left_room_id,
+                }));
+                self.refresh_room_list().await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_forget_room(&self, request_id: RequestId, room_id: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        match matrix_desktop_sdk::forget_room(session, &room_id).await {
+            Ok(forgotten_room_id) => {
+                self.emit(CoreEvent::Room(RoomEvent::RoomForgotten {
+                    request_id,
+                    room_id: forgotten_room_id,
+                }));
                 self.refresh_room_list().await;
             }
             Err(error) => {
@@ -457,7 +510,7 @@ const ROOM_LIST_ENTRIES_LIMIT: usize = 4096;
 /// Normalize a snapshot and project it as `AppAction::RoomListUpdated` +
 /// `RoomEvent::RoomListUpdated`.
 fn project_room_list_snapshot(
-    snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot,
+    snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
@@ -475,7 +528,7 @@ async fn refresh_room_list_from_joined_rooms(
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
     let snapshot =
-        matrix_desktop_auth::room_list_snapshot_from_sdk_rooms(session.client().joined_rooms())
+        matrix_desktop_sdk::room_list_snapshot_from_sdk_rooms(session.client().joined_rooms())
             .await;
     project_room_list_snapshot(&snapshot, action_tx, event_tx);
 }
@@ -548,7 +601,7 @@ async fn normalize_and_project_entries(
     for item in current.iter() {
         rooms.push(item.clone().into_inner());
     }
-    let snapshot = matrix_desktop_auth::room_list_snapshot_from_sdk_rooms(rooms).await;
+    let snapshot = matrix_desktop_sdk::room_list_snapshot_from_sdk_rooms(rooms).await;
     project_room_list_snapshot(&snapshot, action_tx, event_tx);
 }
 
@@ -595,7 +648,7 @@ async fn run_legacy_room_list_observation(
 /// Convert `MatrixRoomListSnapshot` spaces into `SpaceSummary` values with
 /// child room id lists. child_room_ids is populated by cross-referencing the
 /// rooms' `parent_space_ids`.
-fn normalize_spaces(snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot) -> Vec<SpaceSummary> {
+fn normalize_spaces(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec<SpaceSummary> {
     snapshot
         .spaces
         .iter()
@@ -616,7 +669,7 @@ fn normalize_spaces(snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot) -> V
 }
 
 /// Convert `MatrixRoomListSnapshot` rooms into `RoomSummary` values.
-fn normalize_rooms(snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot) -> Vec<RoomSummary> {
+fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec<RoomSummary> {
     snapshot
         .rooms
         .iter()
@@ -638,7 +691,7 @@ fn normalize_rooms(snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot) -> Ve
 /// The spec defines: Forbidden / NotFound / Network / Sdk.
 /// Raw SDK error text must never appear in public events.
 pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailureKind {
-    use matrix_desktop_auth::MatrixRoomOperationFailureKind;
+    use matrix_desktop_sdk::MatrixRoomOperationFailureKind;
     match error {
         MatrixRoomOperationError::InvalidRoomId
         | MatrixRoomOperationError::InvalidEventId
@@ -663,7 +716,7 @@ pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailu
 
 #[cfg(test)]
 pub mod tests {
-    use matrix_desktop_auth::{MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace};
+    use matrix_desktop_sdk::{MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace};
     use tokio::sync::{broadcast, mpsc};
 
     use super::*;
@@ -684,7 +737,7 @@ pub mod tests {
     #[test]
     fn forbidden_sdk_error_classifies_as_forbidden() {
         let error = MatrixRoomOperationError::Sdk(
-            matrix_desktop_auth::MatrixRoomOperationFailureKind::Forbidden,
+            matrix_desktop_sdk::MatrixRoomOperationFailureKind::Forbidden,
         );
         assert_eq!(classify_room_error(&error), RoomFailureKind::Forbidden);
     }
@@ -692,16 +745,15 @@ pub mod tests {
     #[test]
     fn auth_required_sdk_error_classifies_as_forbidden() {
         let error = MatrixRoomOperationError::Sdk(
-            matrix_desktop_auth::MatrixRoomOperationFailureKind::AuthenticationRequired,
+            matrix_desktop_sdk::MatrixRoomOperationFailureKind::AuthenticationRequired,
         );
         assert_eq!(classify_room_error(&error), RoomFailureKind::Forbidden);
     }
 
     #[test]
     fn http_sdk_error_classifies_as_network() {
-        let error = MatrixRoomOperationError::Sdk(
-            matrix_desktop_auth::MatrixRoomOperationFailureKind::Http,
-        );
+        let error =
+            MatrixRoomOperationError::Sdk(matrix_desktop_sdk::MatrixRoomOperationFailureKind::Http);
         assert_eq!(classify_room_error(&error), RoomFailureKind::Network);
     }
 
@@ -720,7 +772,7 @@ pub mod tests {
     #[test]
     fn sdk_error_classifies_as_sdk() {
         let error =
-            MatrixRoomOperationError::Sdk(matrix_desktop_auth::MatrixRoomOperationFailureKind::Sdk);
+            MatrixRoomOperationError::Sdk(matrix_desktop_sdk::MatrixRoomOperationFailureKind::Sdk);
         assert_eq!(classify_room_error(&error), RoomFailureKind::Sdk);
     }
 
@@ -872,6 +924,68 @@ pub mod tests {
             .send(RoomMessage::Command(RoomCommand::CreateRoom {
                 request_id,
                 name: "test room".to_owned(),
+            }))
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("event");
+
+        match event {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, CoreFailure::SessionRequired);
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn leave_room_without_session_emits_session_required() {
+        let (action_tx, _action_rx) = mpsc::channel(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let handle = RoomActor::spawn(action_tx, event_tx);
+
+        let request_id = make_request_id(4);
+        handle
+            .send(RoomMessage::Command(RoomCommand::LeaveRoom {
+                request_id,
+                room_id: "!room:example.test".to_owned(),
+            }))
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("event");
+
+        match event {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, CoreFailure::SessionRequired);
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forget_room_without_session_emits_session_required() {
+        let (action_tx, _action_rx) = mpsc::channel(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let handle = RoomActor::spawn(action_tx, event_tx);
+
+        let request_id = make_request_id(5);
+        handle
+            .send(RoomMessage::Command(RoomCommand::ForgetRoom {
+                request_id,
+                room_id: "!room:example.test".to_owned(),
             }))
             .await;
 

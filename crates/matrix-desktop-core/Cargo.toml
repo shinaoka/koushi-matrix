@@ -15,7 +15,7 @@ path = "src/bin/real-homeserver-qa.rs"
 required-features = ["qa-bin"]
 
 [dependencies]
-matrix-desktop-auth = { path = "../matrix-desktop-auth" }
+matrix-desktop-sdk = { path = "../matrix-desktop-sdk" }
 matrix-desktop-key = { path = "../matrix-desktop-key" }
 matrix-desktop-search = { path = "../matrix-desktop-search" }
 matrix-desktop-state = { path = "../matrix-desktop-state" }

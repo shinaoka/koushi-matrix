@@ -33,7 +33,7 @@ Tauri adapter (apps/desktop/src-tauri)      transport only
         |  CoreCommand -> / <- CoreEvent, AppStateSnapshot
 matrix-desktop-core                         the ONLY production runtime owner
         |  actors own SDK handles, tasks, projection
-matrix-desktop-auth (SDK adapter; rename deferred)
+matrix-desktop-sdk                         thin matrix-rust-sdk adapter
 matrix-desktop-state                        pure reducer + snapshot DTOs
 matrix-desktop-search / matrix-desktop-key  search verification / credential store
         |
@@ -44,7 +44,7 @@ Crate responsibilities:
 
 - `matrix-desktop-state` — pure. `AppState`, `AppAction`, `reduce()`,
   serializable snapshot DTOs. No SDK handles, no Tauri, no async.
-- `matrix-desktop-auth` — low-level SDK adapter (login, restore, recovery,
+- `matrix-desktop-sdk` — low-level SDK adapter (login, restore, recovery,
   sync, room, timeline, search primitives). No app state, no QA orchestration.
 - `matrix-desktop-core` — actor lifecycle, command routing, event emission,
   SDK session handles, background tasks, AppState projection, headless QA
@@ -66,10 +66,9 @@ Upstream SDK deltas are carried in the
 `docs/upstream/matrix-rust-sdk-feedback.md` remains the ledger for PR
 candidate material. The vendored fork already contains the behavior/API deltas
 needed for the current search and runtime work; Phase 9 added explanatory
-comments and management docs, not new runtime behavior. Post-headless cleanup
-items, including the
-`matrix-desktop-auth` rename, live in
-`docs/superpowers/specs/2026-06-13-post-headless-core-followups.md`.
+comments and management docs, not new runtime behavior. The Phase 9 cleanup
+follow-up completed the SDK adapter rename, room lifecycle commands, runtime
+IPC contract drift check, and optional AppCommand decision.
 
 GUI, Tauri, CLI, and QA all use the same command/event boundary. There is no
 standalone daemon; the runtime is in-process.

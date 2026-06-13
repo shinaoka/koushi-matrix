@@ -4,9 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::failure::{CoreFailure, TimelineFailureKind};
-use crate::ids::{
-    AccountKey, RequestId, TimelineBatchId, TimelineGeneration, TimelineKey,
-};
+use crate::ids::{AccountKey, RequestId, TimelineBatchId, TimelineGeneration, TimelineKey};
 
 /// Serializable UI snapshot. The full timeline item lists never live here
 /// (Async rule 4); timeline data flows as diffs.
@@ -102,6 +100,14 @@ pub enum RoomEvent {
         user_id: String,
     },
     RoomJoined {
+        request_id: RequestId,
+        room_id: String,
+    },
+    RoomLeft {
+        request_id: RequestId,
+        room_id: String,
+    },
+    RoomForgotten {
         request_id: RequestId,
         room_id: String,
     },

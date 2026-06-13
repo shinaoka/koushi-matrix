@@ -219,10 +219,9 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 
 ## Phase 9 — Cleanup And Canon Sync
 
-- Remove dead `AppEffect` paths and superseded wrappers; decide the
-  `matrix-desktop-auth` → `matrix-desktop-sdk` rename is deferred to
-  `../specs/2026-06-13-post-headless-core-followups.md`, because the remaining
-  churn is broad package/lockfile/doc cleanup after the Phase 8 green run.
+- Remove dead `AppEffect` paths and superseded wrappers. The SDK adapter
+  rename was deferred from the original Phase 9 exit and then completed in
+  `2026-06-13-phase-9-cleanup-implementation.md`.
 - Final docs-sync pass: overview, engineering rules, spec status, AGENTS.md
   operational notes.
 - Mark this plan completed; any open items move into new dated specs.
@@ -234,15 +233,13 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   synchronously before leak checks and exit handling, so the promised run log
   now survives fast successful exits.
 
-- 2026-06-13: Phase 9 docs-sync completed. Canon docs now record the
-  post-Phase-8 state: the SDK adapter rename, runtime IPC type generation,
-  room lifecycle cleanup commands, and optional AppCommand surfaces are moved
-  to `../specs/2026-06-13-post-headless-core-followups.md`; upstream SDK
-  deltas are managed on the shinaoka submodule branch with local comments at
-  the patch surfaces; those behavior/API deltas predated Phase 9, which only
-  added explanatory comments and management docs; and
-  `docs/upstream/matrix-rust-sdk-feedback.md` remains the PR-candidate ledger.
-  The plan is marked completed.
+- 2026-06-13: Phase 9 cleanup follow-up completed. The SDK adapter is now
+  `matrix-desktop-sdk`, runtime IPC drift is checked by a JSON artifact and
+  Rust contract test, room lifecycle cleanup commands are implemented, and the
+  optional AppCommand shims are documented as shims. Upstream SDK deltas remain
+  managed on the shinaoka submodule branch with local comments at the patch
+  surfaces, and `docs/upstream/matrix-rust-sdk-feedback.md` remains the
+  PR-candidate ledger.
 
 - 2026-06-13: Phase 8 exit review fixes — real homeserver QA exposed two
   product-gate failures after the initial green report. Recovery requirement
@@ -287,7 +284,7 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   orphaned DesktopCredentialStore/QaFileCredentialStore/session-persistence
   cluster in src-tauri lib.rs was deleted (≈700 lines + 10 tests whose
   coverage lives in core store.rs/account.rs); src-tauri now builds with 0
-  warnings and never imports matrix-desktop-auth/key types. The
+  warnings and never imports matrix-desktop-sdk/key types. The
   file-credential-store release-gate regression test was rewritten to point
   at core store.rs and to assert the adapter contains no credential-store
   references at all. headless-core-qa: post-logout RestoreLastSession →
@@ -470,7 +467,7 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   (1) **SyncService handoff design gap resolved without escalation**: the
   original design implied RoomActor would hold an `Arc<SyncService>` from
   SyncActor to do room-list snapshots. This was over-engineered; the simpler
-  approach is `matrix_desktop_auth::room_list_snapshot(session)` which creates
+  approach is `matrix_desktop_sdk::room_list_snapshot(session)` which creates
   a short-lived `RoomListService` internally and falls back to
   `client.joined_rooms()` for LegacySync — `RoomActor` needs only the session
   reference. `RoomMessage::SyncStarted { session }` carries only the session.

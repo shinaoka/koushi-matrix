@@ -50,9 +50,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use matrix_desktop_auth::MatrixClientSession;
-use matrix_sdk::send_queue::RoomSendQueueUpdate;
+use matrix_desktop_sdk::MatrixClientSession;
 use matrix_sdk::room::edit::EditedContent;
+use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk_ui::timeline::{
     Timeline, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
 };
@@ -60,8 +60,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::command::TimelineCommand;
 use crate::event::{
-    CoreEvent, PaginationDirection, PaginationState, TimelineDiff, TimelineEvent,
-    TimelineItem, TimelineItemId, TimelineResyncReason,
+    CoreEvent, PaginationDirection, PaginationState, TimelineDiff, TimelineEvent, TimelineItem,
+    TimelineItemId, TimelineResyncReason,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -80,8 +80,7 @@ pub enum TimelineMessage {
     /// room's new timeline events (canon: TimelineActor description; without
     /// this, e.g. Conduit's sliding sync only delivers the initial window).
     SyncStarted {
-        room_list_service:
-            Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
+        room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     },
     Shutdown,
 }
@@ -121,9 +120,7 @@ pub struct TimelineManagerActor {
 }
 
 impl TimelineManagerActor {
-    pub fn spawn(
-        event_tx: broadcast::Sender<CoreEvent>,
-    ) -> TimelineManagerHandle {
+    pub fn spawn(event_tx: broadcast::Sender<CoreEvent>) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let actor = TimelineManagerActor {
             session: None,
@@ -312,10 +309,14 @@ impl TimelineManagerActor {
         }
 
         let focus = match &key.kind {
-            TimelineKind::Room { .. } => TimelineFocus::Live { hide_threaded_events: false },
+            TimelineKind::Room { .. } => TimelineFocus::Live {
+                hide_threaded_events: false,
+            },
             TimelineKind::Thread { root_event_id, .. } => {
                 match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
-                    Ok(event_id) => TimelineFocus::Thread { root_event_id: event_id },
+                    Ok(event_id) => TimelineFocus::Thread {
+                        root_event_id: event_id,
+                    },
                     Err(_) => {
                         self.emit_failure(
                             request_id,
@@ -407,7 +408,10 @@ impl TimelineManagerActor {
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
-        self.emit(CoreEvent::OperationFailed { request_id, failure });
+        self.emit(CoreEvent::OperationFailed {
+            request_id,
+            failure,
+        });
     }
 }
 
@@ -554,14 +558,16 @@ impl TimelineActor {
                 direction,
                 event_count,
             } => {
-                self.handle_paginate(request_id, direction, event_count).await;
+                self.handle_paginate(request_id, direction, event_count)
+                    .await;
             }
             TimelineActorMessage::SendText {
                 request_id,
                 transaction_id,
                 body,
             } => {
-                self.handle_send_text(request_id, transaction_id, body).await;
+                self.handle_send_text(request_id, transaction_id, body)
+                    .await;
             }
             TimelineActorMessage::EditText {
                 request_id,
@@ -616,12 +622,8 @@ impl TimelineActor {
         }));
 
         let result = match direction {
-            PaginationDirection::Backward => {
-                self.timeline.paginate_backwards(event_count).await
-            }
-            PaginationDirection::Forward => {
-                self.timeline.paginate_forwards(event_count).await
-            }
+            PaginationDirection::Backward => self.timeline.paginate_backwards(event_count).await,
+            PaginationDirection::Forward => self.timeline.paginate_forwards(event_count).await,
         };
 
         let next_state = match result {
@@ -682,7 +684,8 @@ impl TimelineActor {
         // SDK-generated txn_id returned by send_queue().send(). The SendHandle
         // gives us the SDK txn_id; we store client_txn_id → sdk_txn_id here so
         // the SentEvent handler can emit SendCompleted with the client's txn_id.
-        let content = matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(&body);
+        let content =
+            matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(&body);
         let content = matrix_sdk::ruma::events::AnyMessageLikeEventContent::RoomMessage(content);
 
         match room.send_queue().send(content).await {
@@ -690,7 +693,8 @@ impl TimelineActor {
                 let sdk_txn_id = handle.transaction_id().to_string();
                 // Map SDK txn_id → (client txn_id, request_id) so SentEvent can emit
                 // SendCompleted with the client's original txn_id.
-                self.pending_sends.insert(sdk_txn_id, (client_txn_id, request_id));
+                self.pending_sends
+                    .insert(sdk_txn_id, (client_txn_id, request_id));
             }
             Err(err) => {
                 self.emit_failure(
@@ -705,12 +709,7 @@ impl TimelineActor {
         // SendCompleted arrives via SendQueueUpdate::SentEvent.
     }
 
-    async fn handle_edit_text(
-        &mut self,
-        request_id: RequestId,
-        event_id: String,
-        body: String,
-    ) {
+    async fn handle_edit_text(&mut self, request_id: RequestId, event_id: String, body: String) {
         // Edits go through the SDK Timeline so the Set diff on the original
         // item is produced locally (send-queue local echo) instead of
         // depending on the server echoing the edit back through sync —
@@ -754,11 +753,7 @@ impl TimelineActor {
         // arrives through the subscription; no dedicated EditCompleted event.
     }
 
-    async fn handle_redact(
-        &mut self,
-        request_id: RequestId,
-        event_id: String,
-    ) {
+    async fn handle_redact(&mut self, request_id: RequestId, event_id: String) {
         // Same rationale as edits: redact through the SDK Timeline so the
         // diff is produced locally instead of waiting for the server echo.
         let candidates = self.item_ids_for_event(&event_id);
@@ -823,10 +818,12 @@ impl TimelineActor {
     /// Fire-and-forget: if the channel is full, the mutation is dropped rather
     /// than blocking the diff relay (search index is best-effort for freshness).
     fn forward_diff_to_search(&self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
-        use eyeball_im::VectorDiff;
         use crate::search::SearchIndexMessage;
+        use eyeball_im::VectorDiff;
 
-        let Some(tx) = &self.search_index_tx else { return };
+        let Some(tx) = &self.search_index_tx else {
+            return;
+        };
 
         let room_id = match &self.key.kind {
             TimelineKind::Room { room_id }
@@ -843,7 +840,9 @@ impl TimelineActor {
             VectorDiff::Append { values } => {
                 // Bulk append: process each item in order.
                 for item in values.iter() {
-                    let sub_diff = VectorDiff::PushBack { value: item.clone() };
+                    let sub_diff = VectorDiff::PushBack {
+                        value: item.clone(),
+                    };
                     self.forward_diff_to_search(&sub_diff);
                 }
                 return;
@@ -851,7 +850,9 @@ impl TimelineActor {
             VectorDiff::Reset { values } => {
                 // Full reset: process each item.
                 for item in values.iter() {
-                    let sub_diff = VectorDiff::PushBack { value: item.clone() };
+                    let sub_diff = VectorDiff::PushBack {
+                        value: item.clone(),
+                    };
                     self.forward_diff_to_search(&sub_diff);
                 }
                 return;
@@ -907,10 +908,19 @@ impl TimelineActor {
         // index the edit event under the edit event_id (not the original).
         // We must register an alias so verify_candidate can resolve it back.
         // Extract the edit event_id from latest_edit_json if available.
-        let edit_event_id: Option<String> = if event_item.content().as_message().map(|m| m.is_edited()).unwrap_or(false) {
+        let edit_event_id: Option<String> = if event_item
+            .content()
+            .as_message()
+            .map(|m| m.is_edited())
+            .unwrap_or(false)
+        {
             event_item
                 .latest_edit_json()
-                .and_then(|raw| raw.get_field::<matrix_sdk::ruma::OwnedEventId>("event_id").ok().flatten())
+                .and_then(|raw| {
+                    raw.get_field::<matrix_sdk::ruma::OwnedEventId>("event_id")
+                        .ok()
+                        .flatten()
+                })
                 .map(|id| id.to_string())
         } else {
             None
@@ -949,7 +959,6 @@ impl TimelineActor {
         }
     }
 
-
     /// Resolve the timeline item identity for `event_id`, falling back to the
     /// local-echo transaction identity for events this actor sent whose
     /// remote echo has not arrived.
@@ -965,7 +974,11 @@ impl TimelineActor {
     }
 
     fn handle_send_queue_update(&mut self, update: RoomSendQueueUpdate) {
-        if let RoomSendQueueUpdate::SentEvent { transaction_id, event_id } = update {
+        if let RoomSendQueueUpdate::SentEvent {
+            transaction_id,
+            event_id,
+        } = update
+        {
             // The SDK fires SentEvent with its own txn_id; look up the client txn_id.
             let sdk_txn_str = transaction_id.to_string();
             self.sent_event_txns
@@ -1015,7 +1028,10 @@ impl TimelineActor {
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
-        self.emit(CoreEvent::OperationFailed { request_id, failure });
+        self.emit(CoreEvent::OperationFailed {
+            request_id,
+            failure,
+        });
     }
 }
 
@@ -1025,14 +1041,17 @@ impl TimelineActor {
 
 async fn run_diff_relay(
     actor_tx: mpsc::Sender<TimelineActorMessage>,
-    mut diff_stream: impl futures_util::Stream<Item = Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>> + Unpin,
+    mut diff_stream: impl futures_util::Stream<Item = Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>>
+    + Unpin,
     _timeline: Arc<Timeline>,
 ) {
     use futures_util::StreamExt;
 
     let mut overflow = false;
     loop {
-        let Some(diffs) = diff_stream.next().await else { break };
+        let Some(diffs) = diff_stream.next().await else {
+            break;
+        };
 
         if overflow {
             // Already in overflow state — stay silent, the actor has already
@@ -1101,12 +1120,18 @@ pub fn sdk_item_to_timeline_item(item: &Arc<SdkTimelineItem>) -> TimelineItem {
         TimelineItemKind::Event(event_item) => {
             // Stable identity: remote event_id when known, otherwise transaction_id.
             let id = if let Some(event_id) = event_item.event_id() {
-                TimelineItemId::Event { event_id: event_id.to_string() }
+                TimelineItemId::Event {
+                    event_id: event_id.to_string(),
+                }
             } else if let Some(txn_id) = event_item.transaction_id() {
-                TimelineItemId::Transaction { transaction_id: txn_id.to_string() }
+                TimelineItemId::Transaction {
+                    transaction_id: txn_id.to_string(),
+                }
             } else {
                 // Fallback: use the internal unique_id as a synthetic id.
-                TimelineItemId::Synthetic { synthetic_id: item.unique_id().0.clone() }
+                TimelineItemId::Synthetic {
+                    synthetic_id: item.unique_id().0.clone(),
+                }
             };
 
             let sender = Some(event_item.sender().to_string());
@@ -1118,7 +1143,12 @@ pub fn sdk_item_to_timeline_item(item: &Arc<SdkTimelineItem>) -> TimelineItem {
                 .as_message()
                 .map(|msg| msg.body().to_owned());
 
-            TimelineItem { id, sender, body, timestamp_ms }
+            TimelineItem {
+                id,
+                sender,
+                body,
+                timestamp_ms,
+            }
         }
         TimelineItemKind::Virtual(virtual_item) => {
             let synthetic_id = match virtual_item {
@@ -1141,12 +1171,12 @@ fn sdk_vector_diff_to_timeline_diff(
     diff: eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
 ) -> TimelineDiff {
     match diff {
-        eyeball_im::VectorDiff::PushFront { value } => {
-            TimelineDiff::PushFront { item: sdk_item_to_timeline_item(&value) }
-        }
-        eyeball_im::VectorDiff::PushBack { value } => {
-            TimelineDiff::PushBack { item: sdk_item_to_timeline_item(&value) }
-        }
+        eyeball_im::VectorDiff::PushFront { value } => TimelineDiff::PushFront {
+            item: sdk_item_to_timeline_item(&value),
+        },
+        eyeball_im::VectorDiff::PushBack { value } => TimelineDiff::PushBack {
+            item: sdk_item_to_timeline_item(&value),
+        },
         eyeball_im::VectorDiff::Insert { index, value } => TimelineDiff::Insert {
             index,
             item: sdk_item_to_timeline_item(&value),
@@ -1207,7 +1237,9 @@ fn classify_pagination_error(err: &matrix_sdk_ui::timeline::Error) -> TimelineFa
     }
 }
 
-fn classify_send_queue_error(err: &matrix_sdk::send_queue::RoomSendQueueError) -> TimelineFailureKind {
+fn classify_send_queue_error(
+    err: &matrix_sdk::send_queue::RoomSendQueueError,
+) -> TimelineFailureKind {
     use matrix_sdk::send_queue::RoomSendQueueError;
     match err {
         RoomSendQueueError::RoomNotJoined => TimelineFailureKind::Forbidden,
@@ -1315,9 +1347,10 @@ mod tests {
             let timeout = tokio::time::timeout(Duration::from_secs(5), conn.recv_event()).await;
             let event = timeout.expect("no timeout").expect("no lag");
             match event {
-                CoreEvent::OperationFailed { request_id, failure }
-                    if request_id == paginate_id =>
-                {
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure,
+                } if request_id == paginate_id => {
                     // Subscribe failed, so the key is not subscribed — we get NotSubscribed.
                     // OR we get InvalidDirection if subscribe somehow succeeded.
                     // Either way, it MUST NOT succeed.
@@ -1325,7 +1358,9 @@ mod tests {
                         matches!(
                             failure,
                             CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::InvalidDirection | TimelineFailureKind::NotSubscribed | TimelineFailureKind::Sdk,
+                                kind: TimelineFailureKind::InvalidDirection
+                                    | TimelineFailureKind::NotSubscribed
+                                    | TimelineFailureKind::Sdk,
                             }
                         ),
                         "expected timeline failure, got: {failure:?}"
@@ -1371,14 +1406,16 @@ mod tests {
             let timeout = tokio::time::timeout(Duration::from_secs(5), conn.recv_event()).await;
             let event = timeout.expect("no timeout").expect("no lag");
             match event {
-                CoreEvent::OperationFailed { request_id, failure }
-                    if request_id == paginate_id =>
-                {
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure,
+                } if request_id == paginate_id => {
                     assert!(
                         matches!(
                             failure,
                             CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::InvalidDirection | TimelineFailureKind::NotSubscribed,
+                                kind: TimelineFailureKind::InvalidDirection
+                                    | TimelineFailureKind::NotSubscribed,
                             }
                         ),
                         "got: {failure:?}"
@@ -1401,7 +1438,10 @@ mod tests {
         let direction = PaginationDirection::Forward;
         let is_invalid = direction == PaginationDirection::Forward
             && !matches!(key.kind, TimelineKind::Focused { .. });
-        assert!(!is_invalid, "forward on Focused must not be invalid direction");
+        assert!(
+            !is_invalid,
+            "forward on Focused must not be invalid direction"
+        );
     }
 
     #[test]
@@ -1452,9 +1492,10 @@ mod tests {
             let timeout = tokio::time::timeout(Duration::from_secs(5), conn.recv_event()).await;
             let event = timeout.expect("no timeout").expect("no lag");
             match event {
-                CoreEvent::OperationFailed { request_id, failure }
-                    if request_id == rid =>
-                {
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure,
+                } if request_id == rid => {
                     assert_eq!(
                         failure,
                         CoreFailure::TimelineOperationFailed {
@@ -1501,9 +1542,10 @@ mod tests {
             let timeout = tokio::time::timeout(Duration::from_secs(5), conn.recv_event()).await;
             let event = timeout.expect("no timeout").expect("no lag");
             match event {
-                CoreEvent::OperationFailed { request_id, failure }
-                    if request_id == rid =>
-                {
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure,
+                } if request_id == rid => {
                     assert_eq!(
                         failure,
                         CoreFailure::TimelineOperationFailed {
@@ -1541,8 +1583,7 @@ mod tests {
     async fn relay_overflow_signal_triggers_generation_bump() {
         // Test the overflow logic directly on the actor message pathway,
         // using a synthetic mpsc channel at capacity 1 to force overflow.
-        let (event_tx, mut event_rx): (broadcast::Sender<CoreEvent>, _) =
-            broadcast::channel(256);
+        let (event_tx, mut event_rx): (broadcast::Sender<CoreEvent>, _) = broadcast::channel(256);
         let (actor_tx, actor_rx) = mpsc::channel::<TimelineActorMessage>(2);
 
         let key = room_key();
@@ -1565,15 +1606,26 @@ mod tests {
         // Verify the event was emitted.
         let event = event_rx.recv().await.expect("event");
         match event {
-            CoreEvent::Timeline(TimelineEvent::ResyncRequired { key: ev_key, reason }) => {
+            CoreEvent::Timeline(TimelineEvent::ResyncRequired {
+                key: ev_key,
+                reason,
+            }) => {
                 assert_eq!(ev_key, key);
                 assert_eq!(reason, TimelineResyncReason::QueueOverflow);
             }
             other => panic!("expected ResyncRequired, got {other:?}"),
         }
 
-        assert_eq!(generation.load(Ordering::SeqCst), 1, "generation must be bumped");
-        assert_eq!(next_batch_id.load(Ordering::SeqCst), 0, "batch_id resets to 0");
+        assert_eq!(
+            generation.load(Ordering::SeqCst),
+            1,
+            "generation must be bumped"
+        );
+        assert_eq!(
+            next_batch_id.load(Ordering::SeqCst),
+            0,
+            "batch_id resets to 0"
+        );
 
         drop(actor_tx);
         drop(actor_rx);
@@ -1618,8 +1670,14 @@ mod tests {
             body: "very-private-body".to_owned(),
         };
         let debug = format!("{cmd:?}");
-        assert!(!debug.contains("very-private-body"), "body leaked in Debug: {debug}");
-        assert!(debug.contains("txn-vis"), "txn_id should be visible: {debug}");
+        assert!(
+            !debug.contains("very-private-body"),
+            "body leaked in Debug: {debug}"
+        );
+        assert!(
+            debug.contains("txn-vis"),
+            "txn_id should be visible: {debug}"
+        );
     }
 
     // --- VectorDiff → TimelineDiff conversion ---

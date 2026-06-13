@@ -438,10 +438,7 @@ mod tests {
                     user_id: "@user:matrix.org".to_owned(),
                     device_id: "DEVICE".to_owned(),
                 },
-                methods: vec![
-                    RecoveryMethod::RecoveryKey,
-                    RecoveryMethod::SecurityPhrase,
-                ],
+                methods: vec![RecoveryMethod::RecoveryKey, RecoveryMethod::SecurityPhrase],
             },
             sync: SyncState::Running,
             ..AppState::default()

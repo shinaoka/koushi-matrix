@@ -39,7 +39,7 @@ Real-account smoke coverage has verified password login, in-memory persistable s
 - [x] Run:
 
 ```bash
-cargo test -p matrix-desktop-auth e2ee_recovery
+cargo test -p matrix-desktop-sdk e2ee_recovery
 cargo test -p matrix-desktop-backend sdk_state_recovery_mode_does_not_prompt_before_sdk_reports_incomplete --test fake_backend
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml deferred_recovery_request_only_returns_request_while_recovering
 ```
@@ -59,7 +59,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml deferred_recovery_r
 
 ```bash
 cargo test -p matrix-desktop-key
-cargo test -p matrix-desktop-auth session
+cargo test -p matrix-desktop-sdk session
 cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-search/Cargo.toml encrypted
 ```
 

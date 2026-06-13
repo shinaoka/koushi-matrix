@@ -13,7 +13,7 @@ Scope: design review of `docs/superpowers/specs/2026-06-12-headless-core-runtime
 - `docs/architecture/state-machine.md`
 - `docs/architecture/desktop-foundation.md`
 - `docs/architecture/search-adapter.md`
-- `crates/matrix-desktop-auth/src/lib.rs` (current SDK adapter)
+- `crates/matrix-desktop-sdk/src/lib.rs` (current SDK adapter)
 - `crates/matrix-desktop-state/src/` (pure state crate)
 - `apps/desktop/src-tauri/src/commands.rs` (2038-line monolithic Tauri backend)
 - `vendor/matrix-rust-sdk/` (vendored SDK, 10 crates)
@@ -66,6 +66,7 @@ implementation.
    authentication. The spec acknowledges this ("can later be renamed to
    `matrix-desktop-sdk`") but defers the rename. Renaming during Milestone A
    would reduce long-term confusion at minimal cost.
+   Resolved in Phase 9 cleanup: the crate is now `matrix-desktop-sdk`.
 
 6. **Concrete types and constants are missing.**
    `TimelineKey`, `RequestId`, channel capacities, and backpressure recovery
@@ -74,7 +75,7 @@ implementation.
 
 7. **Wasm portability path is aspirational, not concrete.**
    `overview.md` mandates executor abstraction and wasm-clean pure crates, but
-   the current `matrix-desktop-auth` uses `tokio::runtime::Builder` and
+   the current `matrix-desktop-sdk` uses `tokio::runtime::Builder` and
    `block_on` extensively. The spec should acknowledge which parts of the
    migration will resolve this and which are deferred.
 

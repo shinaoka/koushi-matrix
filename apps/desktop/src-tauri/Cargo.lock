@@ -2963,10 +2963,10 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "futures-util",
- "matrix-desktop-auth",
  "matrix-desktop-backend",
  "matrix-desktop-core",
  "matrix-desktop-key",
+ "matrix-desktop-sdk",
  "matrix-desktop-state",
  "serde",
  "serde_json",
@@ -2977,29 +2977,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "matrix-desktop-auth"
-version = "0.1.0"
-dependencies = [
- "eyeball-im",
- "futures-util",
- "matrix-desktop-state",
- "matrix-sdk",
- "matrix-sdk-ui",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "url",
- "zeroize",
-]
-
-[[package]]
 name = "matrix-desktop-backend"
 version = "0.1.0"
 dependencies = [
- "matrix-desktop-auth",
  "matrix-desktop-key",
+ "matrix-desktop-sdk",
  "matrix-desktop-search",
  "matrix-desktop-state",
  "serde",
@@ -3015,8 +2997,8 @@ dependencies = [
  "eyeball-im",
  "futures-util",
  "keyring",
- "matrix-desktop-auth",
  "matrix-desktop-key",
+ "matrix-desktop-sdk",
  "matrix-desktop-search",
  "matrix-desktop-state",
  "matrix-sdk",
@@ -3039,6 +3021,24 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "matrix-desktop-sdk"
+version = "0.1.0"
+dependencies = [
+ "eyeball-im",
+ "futures-util",
+ "matrix-desktop-state",
+ "matrix-sdk",
+ "matrix-sdk-ui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
  "zeroize",
 ]
 

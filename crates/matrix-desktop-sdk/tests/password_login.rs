@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use matrix_desktop_auth::{
+use matrix_desktop_sdk::{
     MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace, MatrixSearchCandidate,
     MatrixTimelineItem,
 };
@@ -39,7 +39,7 @@ fn room_list_smoke_report_counts_without_private_names() {
         ],
     };
 
-    let report = matrix_desktop_auth::room_list_smoke_report(&snapshot);
+    let report = matrix_desktop_sdk::room_list_smoke_report(&snapshot);
 
     assert_eq!(report.rooms, 2);
     assert_eq!(report.spaces, 1);
@@ -72,7 +72,7 @@ fn real_account_qa_report_counts_without_private_timeline_data() {
         body: "Private visible message body".into(),
     }];
 
-    let report = matrix_desktop_auth::real_account_qa_report(&snapshot, true, &timeline_items);
+    let report = matrix_desktop_sdk::real_account_qa_report(&snapshot, true, &timeline_items);
     let rendered = report.to_string();
 
     assert_eq!(report.room_list.rooms, 1);
@@ -107,7 +107,7 @@ fn restored_real_account_qa_report_records_restore_without_private_data() {
     }];
 
     let report =
-        matrix_desktop_auth::restored_real_account_qa_report(&snapshot, true, &timeline_items);
+        matrix_desktop_sdk::restored_real_account_qa_report(&snapshot, true, &timeline_items);
     let rendered = report.to_string();
 
     assert!(report.session_restored);
@@ -144,7 +144,7 @@ fn real_account_qa_report_records_search_without_private_candidate_ids() {
         score_millis: 900,
     }];
 
-    let report = matrix_desktop_auth::real_account_qa_report_with_search(
+    let report = matrix_desktop_sdk::real_account_qa_report_with_search(
         &snapshot,
         true,
         &timeline_items,
@@ -174,7 +174,7 @@ fn sdk_password_login_returns_session_info_without_exposing_secret() {
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
 
-    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+    let session = matrix_desktop_sdk::login_with_password_blocking(&request)
         .expect("password login should succeed");
 
     assert_eq!(session.info.homeserver, homeserver);
@@ -193,7 +193,7 @@ fn sdk_password_login_failure_does_not_include_secret() {
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
 
-    let error = matrix_desktop_auth::login_with_password_blocking(&request)
+    let error = matrix_desktop_sdk::login_with_password_blocking(&request)
         .expect_err("password login should fail");
 
     assert!(!error.to_string().contains("synthetic-password"));
@@ -201,14 +201,14 @@ fn sdk_password_login_failure_does_not_include_secret() {
 
 #[test]
 fn encrypted_store_config_debug_redacts_raw_key() {
-    let store_config = matrix_desktop_auth::MatrixClientStoreConfig::new(
+    let store_config = matrix_desktop_sdk::MatrixClientStoreConfig::new(
         "/tmp/matrix-desktop-test-store",
-        matrix_desktop_auth::MatrixClientStoreKey::new([7; 32]),
+        matrix_desktop_sdk::MatrixClientStoreKey::new([7; 32]),
     )
     .with_cache_path("/tmp/matrix-desktop-test-cache")
-    .with_search_index_store(matrix_desktop_auth::MatrixSearchIndexStoreConfig::new(
+    .with_search_index_store(matrix_desktop_sdk::MatrixSearchIndexStoreConfig::new(
         "/tmp/matrix-desktop-test-search",
-        matrix_desktop_auth::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
+        matrix_desktop_sdk::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
     ));
 
     let debug = format!("{store_config:?}");
@@ -225,14 +225,14 @@ fn sdk_password_login_can_use_encrypted_sqlite_store_without_exposing_store_key(
     let store_dir = tempfile::tempdir().expect("store tempdir should be created");
     let cache_dir = tempfile::tempdir().expect("cache tempdir should be created");
     let search_dir = tempfile::tempdir().expect("search tempdir should be created");
-    let store_config = matrix_desktop_auth::MatrixClientStoreConfig::new(
+    let store_config = matrix_desktop_sdk::MatrixClientStoreConfig::new(
         store_dir.path(),
-        matrix_desktop_auth::MatrixClientStoreKey::new([11; 32]),
+        matrix_desktop_sdk::MatrixClientStoreKey::new([11; 32]),
     )
     .with_cache_path(cache_dir.path())
-    .with_search_index_store(matrix_desktop_auth::MatrixSearchIndexStoreConfig::new(
+    .with_search_index_store(matrix_desktop_sdk::MatrixSearchIndexStoreConfig::new(
         search_dir.path(),
-        matrix_desktop_auth::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
+        matrix_desktop_sdk::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
     ));
     let request = LoginRequest {
         homeserver: homeserver.clone(),
@@ -248,7 +248,7 @@ fn sdk_password_login_can_use_encrypted_sqlite_store_without_exposing_store_key(
 
     runtime.block_on(async {
         let session =
-            matrix_desktop_auth::login_with_password_with_store(&request, Some(&store_config))
+            matrix_desktop_sdk::login_with_password_with_store(&request, Some(&store_config))
                 .await
                 .expect("password login with encrypted store should succeed");
 
@@ -266,23 +266,23 @@ fn encrypted_sqlite_store_rejects_wrong_key_without_exposing_key_material() {
     let store_dir = tempfile::tempdir().expect("store tempdir should be created");
     let cache_dir = tempfile::tempdir().expect("cache tempdir should be created");
     let search_dir = tempfile::tempdir().expect("search tempdir should be created");
-    let correct_store_config = matrix_desktop_auth::MatrixClientStoreConfig::new(
+    let correct_store_config = matrix_desktop_sdk::MatrixClientStoreConfig::new(
         store_dir.path(),
-        matrix_desktop_auth::MatrixClientStoreKey::new([11; 32]),
+        matrix_desktop_sdk::MatrixClientStoreKey::new([11; 32]),
     )
     .with_cache_path(cache_dir.path())
-    .with_search_index_store(matrix_desktop_auth::MatrixSearchIndexStoreConfig::new(
+    .with_search_index_store(matrix_desktop_sdk::MatrixSearchIndexStoreConfig::new(
         search_dir.path(),
-        matrix_desktop_auth::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
+        matrix_desktop_sdk::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
     ));
-    let wrong_store_config = matrix_desktop_auth::MatrixClientStoreConfig::new(
+    let wrong_store_config = matrix_desktop_sdk::MatrixClientStoreConfig::new(
         store_dir.path(),
-        matrix_desktop_auth::MatrixClientStoreKey::new([12; 32]),
+        matrix_desktop_sdk::MatrixClientStoreKey::new([12; 32]),
     )
     .with_cache_path(cache_dir.path())
-    .with_search_index_store(matrix_desktop_auth::MatrixSearchIndexStoreConfig::new(
+    .with_search_index_store(matrix_desktop_sdk::MatrixSearchIndexStoreConfig::new(
         search_dir.path(),
-        matrix_desktop_auth::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
+        matrix_desktop_sdk::MatrixSearchIndexKey::new("synthetic-search-index-secret"),
     ));
     let request = LoginRequest {
         homeserver,
@@ -297,7 +297,7 @@ fn encrypted_sqlite_store_rejects_wrong_key_without_exposing_key_material() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password_with_store(
+        let session = matrix_desktop_sdk::login_with_password_with_store(
             &request,
             Some(&correct_store_config),
         )
@@ -308,12 +308,10 @@ fn encrypted_sqlite_store_rejects_wrong_key_without_exposing_key_material() {
             .expect("SDK should expose session data");
         drop(session);
 
-        let error = matrix_desktop_auth::restore_session_with_store(
-            &persistable,
-            Some(&wrong_store_config),
-        )
-        .await
-        .expect_err("encrypted store should reject the wrong key");
+        let error =
+            matrix_desktop_sdk::restore_session_with_store(&persistable, Some(&wrong_store_config))
+                .await
+                .expect_err("encrypted store should reject the wrong key");
 
         assert!(!error.to_string().contains("12, 12"));
         assert!(!format!("{error:?}").contains("12, 12"));
@@ -332,10 +330,10 @@ fn sdk_password_login_session_can_logout_without_exposing_secret() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+    let session = matrix_desktop_sdk::login_with_password_blocking(&request)
         .expect("password login should succeed");
 
-    matrix_desktop_auth::logout_blocking(&session).expect("logout should succeed");
+    matrix_desktop_sdk::logout_blocking(&session).expect("logout should succeed");
 
     assert!(logout_seen.load(Ordering::SeqCst));
     assert!(!format!("{session:?}").contains("synthetic-password"));
@@ -350,7 +348,7 @@ fn sdk_password_login_exports_redacted_persistable_session() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+    let session = matrix_desktop_sdk::login_with_password_blocking(&request)
         .expect("password login should succeed");
 
     let persisted = session
@@ -359,7 +357,7 @@ fn sdk_password_login_exports_redacted_persistable_session() {
     let json = persisted
         .to_json()
         .expect("persistable session should serialize");
-    let restored = matrix_desktop_auth::PersistableMatrixSession::from_json(&json)
+    let restored = matrix_desktop_sdk::PersistableMatrixSession::from_json(&json)
         .expect("persistable session should deserialize");
 
     assert_eq!(persisted.info, session.info);
@@ -380,15 +378,15 @@ fn persisted_session_restores_sdk_client_without_exposing_token() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+    let session = matrix_desktop_sdk::login_with_password_blocking(&request)
         .expect("password login should succeed");
     let persisted = session
         .persistable_session()
         .expect("SDK should expose session data");
 
-    let restored = matrix_desktop_auth::restore_session_blocking(&persisted)
+    let restored = matrix_desktop_sdk::restore_session_blocking(&persisted)
         .expect("persisted session should restore");
-    matrix_desktop_auth::logout_blocking(&restored).expect("restored session should logout");
+    matrix_desktop_sdk::logout_blocking(&restored).expect("restored session should logout");
 
     assert_eq!(restored.info.homeserver, homeserver);
     assert_eq!(restored.info.user_id, "@fixture-user:example.invalid");
@@ -412,10 +410,10 @@ fn sdk_sync_once_failure_does_not_include_token_or_password() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
-        let error = matrix_desktop_auth::sync_once(&session)
+        let error = matrix_desktop_sdk::sync_once(&session)
             .await
             .expect_err("fixture server does not provide sync");
 
@@ -443,7 +441,7 @@ fn sdk_room_operation_failures_do_not_include_body_ids_or_token() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
         let room_id = "!missing-room:example.invalid";
@@ -460,17 +458,17 @@ fn sdk_room_operation_failures_do_not_include_body_ids_or_token() {
         ];
 
         let send_error =
-            matrix_desktop_auth::send_text_message(&session, room_id, body, transaction_id)
+            matrix_desktop_sdk::send_text_message(&session, room_id, body, transaction_id)
                 .await
                 .expect_err("missing room should make SDK send fail");
         assert_error_redacts(&send_error, &forbidden);
 
-        let edit_error = matrix_desktop_auth::edit_text_message(&session, room_id, event_id, body)
+        let edit_error = matrix_desktop_sdk::edit_text_message(&session, room_id, event_id, body)
             .await
             .expect_err("missing room should make SDK edit fail");
         assert_error_redacts(&edit_error, &forbidden);
 
-        let redact_error = matrix_desktop_auth::redact_message(&session, room_id, event_id)
+        let redact_error = matrix_desktop_sdk::redact_message(&session, room_id, event_id)
             .await
             .expect_err("missing room should make SDK redaction fail");
         assert_error_redacts(&redact_error, &forbidden);
@@ -492,23 +490,23 @@ fn sdk_send_forbidden_failure_is_classified_without_private_data() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
-        matrix_desktop_auth::sync_once(&session)
+        matrix_desktop_sdk::sync_once(&session)
             .await
             .expect("sync with joined room should succeed");
         let room_id = "!joined-room:example.invalid";
         let transaction_id = "desktop-sensitive-transaction";
         let body = "synthetic-body-secret";
 
-        let error = matrix_desktop_auth::send_text_message(&session, room_id, body, transaction_id)
+        let error = matrix_desktop_sdk::send_text_message(&session, room_id, body, transaction_id)
             .await
             .expect_err("forbidden send should fail");
 
         assert_eq!(
             error.failure_kind(),
-            Some(matrix_desktop_auth::MatrixRoomOperationFailureKind::Forbidden)
+            Some(matrix_desktop_sdk::MatrixRoomOperationFailureKind::Forbidden)
         );
         assert_error_redacts(
             &error,
@@ -538,20 +536,20 @@ fn sdk_room_can_send_text_message_respects_power_levels() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
-        matrix_desktop_auth::sync_once(&session)
+        matrix_desktop_sdk::sync_once(&session)
             .await
             .expect("sync with power levels should succeed");
 
-        let read_only = matrix_desktop_auth::room_can_send_text_message(
+        let read_only = matrix_desktop_sdk::room_can_send_text_message(
             &session,
             "!readonly-room:example.invalid",
         )
         .await
         .expect("read-only room sendability should be available");
-        let sendable = matrix_desktop_auth::room_can_send_text_message(
+        let sendable = matrix_desktop_sdk::room_can_send_text_message(
             &session,
             "!sendable-room:example.invalid",
         )
@@ -578,12 +576,12 @@ fn sdk_search_candidates_return_empty_without_joined_rooms() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
 
         let candidates =
-            matrix_desktop_auth::search_message_candidates(&session, "synthetic query", 20)
+            matrix_desktop_sdk::search_message_candidates(&session, "synthetic query", 20)
                 .await
                 .expect("empty joined room set should search successfully");
 
@@ -606,11 +604,11 @@ fn sdk_room_list_snapshot_returns_empty_without_synced_rooms() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
 
-        let snapshot = matrix_desktop_auth::room_list_snapshot(&session)
+        let snapshot = matrix_desktop_sdk::room_list_snapshot(&session)
             .await
             .expect("empty joined room set should snapshot successfully");
 
@@ -636,14 +634,14 @@ fn sdk_room_list_snapshot_preserves_synced_parent_spaces() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
-        matrix_desktop_auth::sync_once(&session)
+        matrix_desktop_sdk::sync_once(&session)
             .await
             .expect("sync with space relationship should succeed");
 
-        let snapshot = matrix_desktop_auth::room_list_snapshot(&session)
+        let snapshot = matrix_desktop_sdk::room_list_snapshot(&session)
             .await
             .expect("synced rooms should snapshot successfully");
 
@@ -686,14 +684,14 @@ fn sdk_room_list_snapshot_excludes_left_rooms() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
-        matrix_desktop_auth::sync_once(&session)
+        matrix_desktop_sdk::sync_once(&session)
             .await
             .expect("sync with left room should succeed");
 
-        let snapshot = matrix_desktop_auth::room_list_snapshot(&session)
+        let snapshot = matrix_desktop_sdk::room_list_snapshot(&session)
             .await
             .expect("synced room snapshot should succeed");
 
@@ -718,10 +716,10 @@ fn sdk_search_candidates_blocking_returns_empty_for_empty_query() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+    let session = matrix_desktop_sdk::login_with_password_blocking(&request)
         .expect("password login should succeed");
 
-    let candidates = matrix_desktop_auth::search_message_candidates_blocking(&session, "  ", 10)
+    let candidates = matrix_desktop_sdk::search_message_candidates_blocking(&session, "  ", 10)
         .expect("empty search should succeed");
 
     assert!(candidates.is_empty());
@@ -742,11 +740,11 @@ fn sdk_timeline_subscription_failure_does_not_include_room_id_or_token() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
         let room_id = "!timeline-missing:example.invalid";
-        let error = matrix_desktop_auth::subscribe_room_timeline(&session, room_id)
+        let error = matrix_desktop_sdk::subscribe_room_timeline(&session, room_id)
             .await
             .expect_err("missing room should make timeline subscription fail");
 
@@ -778,17 +776,17 @@ fn sdk_sync_loop_reports_running_and_can_stop_after_callback() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = matrix_desktop_auth::login_with_password(&request)
+        let session = matrix_desktop_sdk::login_with_password(&request)
             .await
             .expect("password login should succeed");
         let callback_count = Arc::new(AtomicUsize::new(0));
         let callback_count_for_loop = Arc::clone(&callback_count);
 
-        matrix_desktop_auth::sync_loop(&session, move || {
+        matrix_desktop_sdk::sync_loop(&session, move || {
             let callback_count = Arc::clone(&callback_count_for_loop);
             async move {
                 callback_count.fetch_add(1, Ordering::SeqCst);
-                matrix_desktop_auth::MatrixSyncLoopControl::Stop
+                matrix_desktop_sdk::MatrixSyncLoopControl::Stop
             }
         })
         .await
@@ -808,13 +806,13 @@ fn sdk_e2ee_recovery_failure_does_not_include_secret() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+    let session = matrix_desktop_sdk::login_with_password_blocking(&request)
         .expect("password login should succeed");
     let recovery = RecoveryRequest {
         secret: AuthSecret::new("synthetic-recovery-secret"),
     };
 
-    let error = matrix_desktop_auth::recover_e2ee_blocking(&session, &recovery)
+    let error = matrix_desktop_sdk::recover_e2ee_blocking(&session, &recovery)
         .expect_err("fixture server does not provide secret storage");
 
     assert!(!error.to_string().contains("synthetic-recovery-secret"));
@@ -830,12 +828,12 @@ fn sdk_e2ee_recovery_state_is_exposed_without_secret_material() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+    let session = matrix_desktop_sdk::login_with_password_blocking(&request)
         .expect("password login should succeed");
 
     let state = session.e2ee_recovery_state();
 
-    assert_eq!(state, matrix_desktop_auth::E2eeRecoveryState::Unknown);
+    assert_eq!(state, matrix_desktop_sdk::E2eeRecoveryState::Unknown);
     assert!(!format!("{state:?}").contains("synthetic-password"));
 }
 
@@ -848,7 +846,7 @@ fn sdk_e2ee_recovery_state_stream_emits_initial_state_without_secret_material() 
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = matrix_desktop_auth::login_with_password_blocking(&request)
+    let session = matrix_desktop_sdk::login_with_password_blocking(&request)
         .expect("password login should succeed");
 
     let mut stream = session.e2ee_recovery_state_stream();
@@ -860,7 +858,7 @@ fn sdk_e2ee_recovery_state_stream_emits_initial_state_without_secret_material() 
         .block_on(async { stream.next().await })
         .expect("recovery stream should emit the initial state");
 
-    assert_eq!(state, matrix_desktop_auth::E2eeRecoveryState::Unknown);
+    assert_eq!(state, matrix_desktop_sdk::E2eeRecoveryState::Unknown);
     assert!(!format!("{state:?}").contains("synthetic-password"));
 }
 

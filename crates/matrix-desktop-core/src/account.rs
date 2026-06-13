@@ -29,8 +29,8 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use matrix_desktop_auth::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
+use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
     AppAction, E2eeRecoveryState, LoginRequest, RecoveryMethod, RecoveryRequest, SessionInfo,
 };
@@ -375,8 +375,7 @@ impl AccountActor {
         // client. The device id (and therefore the store path) is unknown
         // before this completes. The storeless client must never sync or
         // initialize encryption.
-        let login_result =
-            matrix_desktop_auth::login_with_password_with_store(&request, None).await;
+        let login_result = matrix_desktop_sdk::login_with_password_with_store(&request, None).await;
 
         let login_session = match login_result {
             Err(error) => {
@@ -655,7 +654,7 @@ impl AccountActor {
         // NeedsRecovery → Recovering while the async call runs.
         self.reduce(vec![AppAction::E2eeRecoverySubmitted(request.clone())]);
 
-        let result = matrix_desktop_auth::recover_e2ee(&session, &request).await;
+        let result = matrix_desktop_sdk::recover_e2ee(&session, &request).await;
 
         // Zero the request secret now — it has been consumed.
         drop(request);
@@ -695,7 +694,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
 
         // Attempt server-side logout (best-effort; local cleanup always happens).
-        let _ = matrix_desktop_auth::logout(&session).await;
+        let _ = matrix_desktop_sdk::logout(&session).await;
 
         // Drop the SDK handle inside the Tokio runtime context (Async rule 11).
         drop(session);
@@ -764,12 +763,9 @@ impl AccountActor {
         let store_config_with_search = store_config
             .store_config
             .with_search_index_store(search_config.search_index_config);
-        matrix_desktop_auth::restore_session_with_store(
-            persistable,
-            Some(&store_config_with_search),
-        )
-        .await
-        .map_err(|_| CoreFailure::LocalEncryptionUnavailable)
+        matrix_desktop_sdk::restore_session_with_store(persistable, Some(&store_config_with_search))
+            .await
+            .map_err(|_| CoreFailure::LocalEncryptionUnavailable)
     }
 
     /// Roll back a failed login bootstrap: best-effort server logout of the
@@ -783,7 +779,7 @@ impl AccountActor {
         key_id: &SessionKeyId,
         credentials_persisted: bool,
     ) {
-        let _ = matrix_desktop_auth::logout(&login_session).await;
+        let _ = matrix_desktop_sdk::logout(&login_session).await;
         drop(login_session);
         if credentials_persisted {
             self.clear_account_persistence(key_id);
@@ -912,10 +908,10 @@ async fn run_recovery_state_observation<S>(
 /// Conservative classification: prefer InvalidRecoveryKey for auth-type SDK
 /// errors, Network for network errors, Server for anything else.
 fn classify_recovery_error(
-    error: &matrix_desktop_auth::E2eeRecoveryError,
+    error: &matrix_desktop_sdk::E2eeRecoveryError,
 ) -> crate::failure::RecoveryFailureKind {
     use crate::failure::RecoveryFailureKind;
-    use matrix_desktop_auth::E2eeRecoveryError;
+    use matrix_desktop_sdk::E2eeRecoveryError;
     match error {
         E2eeRecoveryError::Runtime(_) => RecoveryFailureKind::Network,
         E2eeRecoveryError::Sdk(message) => {
@@ -943,8 +939,8 @@ fn classify_recovery_error(
 
 /// Map a `PasswordLoginError` to a coarse `LoginFailureKind` without exposing
 /// raw SDK error text in public events.
-fn classify_login_error(error: &matrix_desktop_auth::PasswordLoginError) -> LoginFailureKind {
-    use matrix_desktop_auth::{LoginDiscoveryError, PasswordLoginError};
+fn classify_login_error(error: &matrix_desktop_sdk::PasswordLoginError) -> LoginFailureKind {
+    use matrix_desktop_sdk::{LoginDiscoveryError, PasswordLoginError};
     match error {
         PasswordLoginError::InvalidHomeserver(discovery_err) => match discovery_err {
             LoginDiscoveryError::RequestFailed(_) | LoginDiscoveryError::HttpStatus { .. } => {
@@ -1320,7 +1316,7 @@ mod tests {
     /// without leaking the raw message in any public type.
     #[test]
     fn recovery_error_classification_invalid_key() {
-        let err = matrix_desktop_auth::E2eeRecoveryError::Sdk("invalid recovery key".to_owned());
+        let err = matrix_desktop_sdk::E2eeRecoveryError::Sdk("invalid recovery key".to_owned());
         assert_eq!(
             classify_recovery_error(&err),
             crate::failure::RecoveryFailureKind::InvalidRecoveryKey,
@@ -1330,7 +1326,7 @@ mod tests {
 
     #[test]
     fn recovery_error_classification_network() {
-        let err = matrix_desktop_auth::E2eeRecoveryError::Runtime("runtime error".to_owned());
+        let err = matrix_desktop_sdk::E2eeRecoveryError::Runtime("runtime error".to_owned());
         assert_eq!(
             classify_recovery_error(&err),
             crate::failure::RecoveryFailureKind::Network,
@@ -1340,7 +1336,7 @@ mod tests {
 
     #[test]
     fn recovery_error_classification_server_fallback() {
-        let err = matrix_desktop_auth::E2eeRecoveryError::Sdk("unexpected server error".to_owned());
+        let err = matrix_desktop_sdk::E2eeRecoveryError::Sdk("unexpected server error".to_owned());
         assert_eq!(
             classify_recovery_error(&err),
             crate::failure::RecoveryFailureKind::Server,
