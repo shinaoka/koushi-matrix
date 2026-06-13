@@ -1,5 +1,10 @@
 # Phase 10 UI Headless Product Surface Implementation Plan
 
+> **SUPERSEDED (2026-06-13):** absorbed into
+> [2026-06-13-roadmap-phases-10-18.md](2026-06-13-roadmap-phases-10-18.md),
+> which renumbers these phases and extends the roadmap to the first release.
+> Do not execute from this document.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the post-runtime desktop product surface while keeping GUI launches out of ordinary agent work.
