@@ -53,8 +53,8 @@ Phase 8/9 changelog). Docs-sync check closes every phase.
 | D3 | Media: view/download attachments? Send? | View/download filenames only via search results; no media send | P12, P17 |
 | D4 | Desktop notifications on new messages? | Yes, OS notifications with redacted content option | P15 |
 | D5 | Auto-update channel for releases? | No auto-update in first release; manual download | P18 |
-| D6 | Identity server (vector.im) — 3PID lookup / email invites? | No identity server in first release: invites by MXID only, no 3PID binding (privacy-default; Element itself gates it behind consent) | P12 invite UI copy, P18 scope freeze |
-| D7 | Emoji rendering: system fonts or bundled twemoji-colr? | System emoji fonts (zero bundling/licensing); revisit if cross-platform consistency complaints arise. If twemoji-colr is ever bundled, THIRD_PARTY_NOTICES must carry the Mozilla Apache-2.0 (font) and Twitter CC-BY-4.0 (art) attributions | P14 (Linux container must install Noto Color Emoji or render checks break), P16 (emoji SAS display), P18 notices |
+| D6 | Identity server (vector.im) — 3PID lookup / email invites? | **DECIDED (user, 2026-06-13): no identity server in the first release.** Invites by MXID only, no 3PID binding. | P12 invite UI copy, P18 scope freeze |
+| D7 | Emoji rendering | **DECIDED (user, 2026-06-13): emoji support is mandatory.** Bundle twemoji-colr (Element-style) for identical rendering on macOS/Windows/Linux; composer gets an emoji picker (P12); THIRD_PARTY_NOTICES carries the Mozilla Apache-2.0 (font) and Twitter CC-BY-4.0 (art) attributions (P18). Linux container still installs Noto Color Emoji as system fallback for non-bundled surfaces. | P12 picker, P14 fonts, P16 SAS display, P18 notices |
 
 ## Phase 10 — Headless UI contract and harness hardening
 
@@ -144,6 +144,10 @@ render-only over existing commands/events, verified headless.
 - [ ] Center: timeline (Phase 7/11 component), composer with drafts
   (reducer `ComposerDraftChanged`), edit/redact affordances on own
   messages (context menu), send states from local echo → SendCompleted.
+- [ ] Emoji (D7, mandatory): bundle twemoji-colr webfont, render message
+  bodies and UI emoji with it; composer emoji picker (searchable, recent
+  section, keyboard accessible); headless tests for picker insertion and
+  consistent glyph rendering (screenshot-free DOM/font assertions).
 - [ ] Right panel: thread panel (Phase 11 data path), room info stub,
   search results panel wired to `SearchCommand::Query` + result navigation
   (select room + focused timeline jump via `TimelineKind::Focused` —
@@ -328,7 +332,9 @@ Goal: signed, installable first release with release-grade gates.
   SDK patch final review (drop obsolete patches; upstream PR drafts per
   docs/upstream roadmap).
 - [ ] THIRD_PARTY_NOTICES regeneration; license audit for ported Element X
-  code (engineering rule Build 1).
+  code (engineering rule Build 1); twemoji-colr attributions (D7): the
+  font © Mozilla Foundation under Apache 2.0, the Twemoji art © Twitter,
+  Inc and contributors under CC-BY 4.0.
 - [ ] Release smoke on a CLEAN machine/VM per OS: install → login (test
   account) → recovery → send/receive → logout (attended where OS dialogs
   are involved).
