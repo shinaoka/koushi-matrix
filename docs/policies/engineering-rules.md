@@ -103,6 +103,10 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    after a spike proves the installed package can run the frontend in a
    normal browser without a Tauri binary, native driver, native window, or
    OS keychain access.
+   Real-Tauri GUI automation by agents is allowed only under a virtual
+   display (Linux Xvfb + `tauri-driver`; not available on macOS). The goal
+   is that agents carry GUI design and testing as far as headless/virtual
+   harnesses allow; only macOS-specific native behavior remains attended.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

@@ -483,10 +483,17 @@ primary correctness gate.
    browser mode is allowed only after a package spike proves it keeps the
    same no-native-app property.
 5. **GUI smoke** — a deliberately minimal, last layer for what only the
-   real Tauri app can prove: native window behavior, real IPC, WKWebView
-   integration. Subject to the automation rules in the policies document;
-   on macOS it launches a real window and is run attended (coordinated
-   with the user), never as part of unattended agent verification.
+   real Tauri app can prove: native window behavior, real IPC, webview
+   integration. Subject to the automation rules in the policies document.
+   Agents drive GUI design and testing as far as possible without a visible
+   window: headless browser first (layer 4), and — once a Linux lane
+   exists — the real Tauri app under a virtual display (Xvfb +
+   `tauri-driver`, which supports Linux/Windows but not macOS), unattended.
+   macOS-specific behavior (WKWebView, OS menu accelerators, Keychain
+   prompts) stays a minimal attended smoke coordinated with the user —
+   never unattended agent verification. If the virtual-display lane proves
+   valuable, moving primary GUI development/testing to Linux is an accepted
+   option.
 
 **Implementation workflow: headless-first, local-server-first.** New Matrix
 behavior lands in `matrix-desktop-core`, is exercised through

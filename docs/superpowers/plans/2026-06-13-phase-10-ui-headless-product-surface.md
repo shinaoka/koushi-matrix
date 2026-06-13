@@ -24,7 +24,8 @@
 | DOM scroll behavior, focus behavior that a browser can model, fake `CoreEvent` streams | No | Playwright headless browser + `TauriIpcMock` |
 | Tauri command invocation shape and frontend event subscription shape | No | Mocked `@tauri-apps/api` transport and IPC contract tests |
 | Rust backend behavior, Matrix behavior, sync, recovery, search, room operations | No | core tests, local homeserver QA, real-homeserver QA |
-| Real IPC, native window lifecycle, OS menu accelerators, WKWebView/WebView integration, keychain/system prompts | Yes, only in Phase 13 | `qa:mac-gui` attended on macOS; Xvfb may be used on Linux if added |
+| Real IPC, native window lifecycle, menus, WebKitGTK integration (Linux) | Yes, unattended under a virtual display | Linux Xvfb + `tauri-driver` + WebdriverIO (Phase 13 Linux lane; `tauri-driver` does not support macOS) |
+| macOS-specific: WKWebView, OS menu accelerators, keychain/system prompts | Yes, only attended (Phase 13) | `qa:mac-gui` coordinated with the user |
 
 `@wdio/tauri-service` browser mode is not canon yet. It may replace or augment the Playwright browser harness only after a spike proves the installed package can run Vite/browser mode without a Tauri binary, native driver, or real window. Until then, `npm --prefix apps/desktop run test:ui-headless` is the canonical GUI-free DOM gate.
 
@@ -137,6 +138,13 @@ Purpose: verify only the behavior that cannot be proven headless.
 - Modify: `docs/qa/*.md`
 - Modify: `AGENTS.md`
 
+- [ ] Linux virtual-display lane (priority — maximizes agent-driven GUI testing):
+  spike a Linux environment (container or CI runner) with Xvfb +
+  `tauri-driver` + WebdriverIO driving the REAL Tauri app invisibly;
+  port the native-integration checks (window lifecycle, real IPC bridge,
+  menu wiring) to it so they run unattended. If the lane proves out,
+  moving primary GUI development/testing to Linux is an accepted option
+  (canon, QA Model layer 5) — record the outcome as a canon amendment.
 - [ ] Before launching native GUI smoke, confirm Phase 10, Phase 11, Phase 12, secret scan, and real-homeserver QA are green for the relevant change set.
 - [ ] Keep macOS native GUI smoke attended. Do not launch a real Tauri window from unattended agent verification.
 - [ ] Verify native-only behavior: window creation, real IPC bridge, OS menu accelerators, close/quit semantics, first-run saved-session suppression, and keychain prompt suppression.
@@ -165,7 +173,12 @@ Purpose: finish the work that blocks signed desktop distribution and E2EE trust 
 
 - [ ] Run live OS credential-store ignored tests on Windows before Windows distribution claims.
 - [ ] Prepare signed macOS and Windows release builds, including notarization/signing credentials and installer verification.
-- [ ] Design and implement device verification and cross-signing under `AccountActor` with explicit `CoreCommand`/`CoreEvent` surfaces before claiming E2EE trust UX completeness.
+- [ ] PRECONDITION: device verification / cross-signing is a major design
+  task on a canon-declared open area. Before any implementation, the
+  strongest available model (per Model Assignment) authors a dated spec
+  amending `docs/architecture/overview.md`; implementation starts only
+  after that spec is approved.
+- [ ] Implement device verification and cross-signing under `AccountActor` with explicit `CoreCommand`/`CoreEvent` surfaces per the approved spec, before claiming E2EE trust UX completeness.
 - [ ] Review vendored SDK patches at phase exit. Remove any patch that became unnecessary through public SDK APIs; keep indispensable patches recorded in `docs/upstream/matrix-rust-sdk-feedback.md`.
 - [ ] Run release preflight:
 
@@ -179,7 +192,11 @@ Exit gate: Phase 14 exits only with signed-build evidence, platform credential-s
 
 ## Subagent Execution Pattern
 
-For Phase 10 and later, use a reviewer/implementer split:
+For Phase 10 and later, use a reviewer/implementer split. Model Assignment
+(2026-06-12 implementation plan) still binds: canon amendments and redesign
+decisions escalate to the strongest available model of the agent family
+(never a mini/lightweight tier); implementers stop on gaps instead of
+improvising. Phase exits require the reviewer to re-execute the gates.
 
 1. A mini/subagent implements one task or one narrow phase slice.
 2. The main agent reviews the diff against `docs/architecture/overview.md`, `docs/policies/engineering-rules.md`, this plan, and the relevant tests.
