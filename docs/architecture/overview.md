@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-06-12.
+Last amended: 2026-06-13.
 
 ## Product Scope
 
@@ -33,7 +33,7 @@ Tauri adapter (apps/desktop/src-tauri)      transport only
         |  CoreCommand -> / <- CoreEvent, AppStateSnapshot
 matrix-desktop-core                         the ONLY production runtime owner
         |  actors own SDK handles, tasks, projection
-matrix-desktop-auth (-> matrix-desktop-sdk) thin matrix-rust-sdk adapter
+matrix-desktop-auth (SDK adapter; rename deferred)
 matrix-desktop-state                        pure reducer + snapshot DTOs
 matrix-desktop-search / matrix-desktop-key  search verification / credential store
         |
@@ -59,6 +59,17 @@ Crate responsibilities:
   commands, forwards events/snapshots. No direct SDK wrapper calls.
 - `apps/desktop` — view and interaction code only, including viewport state,
   DOM measurement, and scroll anchoring.
+
+Upstream SDK deltas are carried in the
+`github.com/shinaoka/matrix-rust-sdk-work` submodule branch
+(`shinaoka/search-ngram`). Local comments document the patch surfaces, and
+`docs/upstream/matrix-rust-sdk-feedback.md` remains the ledger for PR
+candidate material. The vendored fork already contains the behavior/API deltas
+needed for the current search and runtime work; Phase 9 added explanatory
+comments and management docs, not new runtime behavior. Post-headless cleanup
+items, including the
+`matrix-desktop-auth` rename, live in
+`docs/superpowers/specs/2026-06-13-post-headless-core-followups.md`.
 
 GUI, Tauri, CLI, and QA all use the same command/event boundary. There is no
 standalone daemon; the runtime is in-process.

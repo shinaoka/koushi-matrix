@@ -44,9 +44,8 @@
 //!
 //! ## SelectSpace / SelectRoom
 //! Pure navigation — project `AppAction::SelectSpace` / `AppAction::SelectRoom`
-//! through the action channel. The reducer may return `AppEffect::SubscribeTimeline`
-//! for `SelectRoom` — effects are currently dropped by `AppActor`. That is
-//! Phase 5's job; see the comment in `AppActor::run()`.
+//! through the action channel. Core applies the navigation state update here
+//! and does not consume reducer effects in this actor.
 //!
 //! ## Security
 //! Raw SDK error text never appears in events or AppState. All errors are
@@ -72,9 +71,7 @@ pub enum RoomMessage {
     /// Enables room operations; does NOT start the room-list observation —
     /// that starts on `SyncStarted` when the backend (and its live
     /// `RoomListService`, if any) is known.
-    SessionEstablished {
-        session: Arc<MatrixClientSession>,
-    },
+    SessionEstablished { session: Arc<MatrixClientSession> },
     /// Sync started. Sent by `SyncActor` after the backend is launched.
     /// `room_list_service` is the ONE live service owned by the running
     /// `SyncService` (`Some` on the SyncService backend, `None` on
@@ -293,9 +290,8 @@ impl RoomActor {
                 room_id,
             } => {
                 // Pure navigation: project to reducer; no domain event.
-                // The reducer may return AppEffect::SubscribeTimeline — effects
-                // are dropped by AppActor until Phase 5 implements TimelineActor.
-                // TODO(phase-5): handle AppEffect::SubscribeTimeline here.
+                // Core updates navigation state here and does not consume
+                // reducer effects in this actor.
                 self.reduce(vec![AppAction::SelectRoom { room_id }]);
             }
         }
@@ -318,10 +314,7 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RoomOperationFailed { kind },
-                );
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
     }
@@ -342,10 +335,7 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RoomOperationFailed { kind },
-                );
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
     }
@@ -375,20 +365,12 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RoomOperationFailed { kind },
-                );
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
     }
 
-    async fn handle_invite_user(
-        &self,
-        request_id: RequestId,
-        room_id: String,
-        user_id: String,
-    ) {
+    async fn handle_invite_user(&self, request_id: RequestId, room_id: String, user_id: String) {
         let Some(session) = &self.session else {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
@@ -403,10 +385,7 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RoomOperationFailed { kind },
-                );
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
     }
@@ -427,10 +406,7 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RoomOperationFailed { kind },
-                );
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
     }
@@ -498,10 +474,9 @@ async fn refresh_room_list_from_joined_rooms(
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
-    let snapshot = matrix_desktop_auth::room_list_snapshot_from_sdk_rooms(
-        session.client().joined_rooms(),
-    )
-    .await;
+    let snapshot =
+        matrix_desktop_auth::room_list_snapshot_from_sdk_rooms(session.client().joined_rooms())
+            .await;
     project_room_list_snapshot(&snapshot, action_tx, event_tx);
 }
 
@@ -620,9 +595,7 @@ async fn run_legacy_room_list_observation(
 /// Convert `MatrixRoomListSnapshot` spaces into `SpaceSummary` values with
 /// child room id lists. child_room_ids is populated by cross-referencing the
 /// rooms' `parent_space_ids`.
-fn normalize_spaces(
-    snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot,
-) -> Vec<SpaceSummary> {
+fn normalize_spaces(snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot) -> Vec<SpaceSummary> {
     snapshot
         .spaces
         .iter()
@@ -643,9 +616,7 @@ fn normalize_spaces(
 }
 
 /// Convert `MatrixRoomListSnapshot` rooms into `RoomSummary` values.
-fn normalize_rooms(
-    snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot,
-) -> Vec<RoomSummary> {
+fn normalize_rooms(snapshot: &matrix_desktop_auth::MatrixRoomListSnapshot) -> Vec<RoomSummary> {
     snapshot
         .rooms
         .iter()
@@ -748,9 +719,8 @@ pub mod tests {
 
     #[test]
     fn sdk_error_classifies_as_sdk() {
-        let error = MatrixRoomOperationError::Sdk(
-            matrix_desktop_auth::MatrixRoomOperationFailureKind::Sdk,
-        );
+        let error =
+            MatrixRoomOperationError::Sdk(matrix_desktop_auth::MatrixRoomOperationFailureKind::Sdk);
         assert_eq!(classify_room_error(&error), RoomFailureKind::Sdk);
     }
 
@@ -905,13 +875,10 @@ pub mod tests {
             }))
             .await;
 
-        let event = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            event_rx.recv(),
-        )
-        .await
-        .expect("timeout")
-        .expect("event");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("event");
 
         match event {
             CoreEvent::OperationFailed {

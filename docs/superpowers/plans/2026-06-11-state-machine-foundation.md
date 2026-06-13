@@ -1,10 +1,14 @@
 # State Machine Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+Status: historical plan. The current production runtime architecture is
+documented in `docs/architecture/overview.md`; this file records the foundation
+work before the headless core runtime.
+
+> **Historical execution note:** this plan originally required `superpowers:subagent-driven-development` or `superpowers:executing-plans` for task-by-task implementation. It is no longer the active implementation plan.
 
 **Goal:** Build a pure Rust application state machine that defines the Matrix desktop client's session, sync, navigation, timeline, thread, and search transitions before adding Tauri or React integration.
 
-**Architecture:** Add a production Rust crate, `matrix-desktop-state`, with no Matrix SDK or Tauri dependency. The crate exposes serializable state DTOs, user/SDK actions, and effect requests; a pure reducer maps `AppAction` into mutated `AppState` plus `AppEffect` values that a future Tauri backend will execute. Sidebar composition and key-management spike findings are folded into the state model without copying SDK objects into UI state.
+**Architecture:** Add a production Rust crate, `matrix-desktop-state`, with no Matrix SDK or Tauri dependency. The crate exposes serializable state DTOs, user/SDK actions, and effect requests; a pure reducer maps `AppAction` into mutated `AppState` plus `AppEffect` values that the planned Tauri backend would execute. Sidebar composition and key-management spike findings are folded into the state model without copying SDK objects into UI state.
 
 **Tech Stack:** Rust 2024, Cargo workspace, serde, table-driven reducer tests, Mermaid state-machine documentation.
 
@@ -18,7 +22,7 @@ This plan intentionally does not build the Tauri shell, React UI, Matrix SDK cli
 2. Space/room/DM navigation state.
 3. Timeline and thread pane state.
 4. Search request/result state with stale-result rejection.
-5. Reducer effects that future command runners execute.
+5. Reducer effects that the planned command runners at this stage would execute.
 
 The reducer must stay deterministic and testable without network access or OS credential-store access.
 
@@ -1515,7 +1519,7 @@ The app state machine is a pure Rust reducer:
 reduce(&mut AppState, AppAction) -> Vec<AppEffect>
 ```
 
-`AppAction` is either user intent from React or a completed SDK/backend operation. `AppEffect` is a request for the future Tauri backend to perform work. The reducer does not call Matrix SDK, Tauri, filesystem, keyring, or network APIs.
+`AppAction` is either user intent from React or a completed SDK/backend operation. `AppEffect` is a request for the planned Tauri backend at this foundation stage to perform work. The reducer does not call Matrix SDK, Tauri, filesystem, keyring, or network APIs.
 
 ## Session And Sync
 

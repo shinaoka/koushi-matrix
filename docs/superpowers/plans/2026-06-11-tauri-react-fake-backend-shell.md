@@ -1,6 +1,10 @@
 # Tauri React Fake Backend Shell Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+Status: historical plan. The current production runtime architecture is
+documented in `docs/architecture/overview.md`; this file records the fake
+backend shell stage before the headless core runtime.
+
+> **Historical execution note:** this plan originally required `superpowers:subagent-driven-development` or `superpowers:executing-plans` for task-by-task implementation. It is no longer the active implementation plan.
 
 **Goal:** Move the pre-login desktop shell into a Tauri v2 + React app that talks to the no-network fake backend through the same command boundary the real Matrix SDK runner will use later.
 

@@ -1,7 +1,7 @@
 # Headless Core Runtime Implementation Plan
 
 Date: 2026-06-12
-Status: active plan.
+Status: completed.
 
 Implements the migration spec
 (`../specs/2026-06-12-headless-core-runtime-design.md`) toward the normative
@@ -220,10 +220,12 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
 ## Phase 9 — Cleanup And Canon Sync
 
 - Remove dead `AppEffect` paths and superseded wrappers; decide the
-  `matrix-desktop-auth` → `matrix-desktop-sdk` rename.
+  `matrix-desktop-auth` → `matrix-desktop-sdk` rename is deferred to
+  `../specs/2026-06-13-post-headless-core-followups.md`, because the remaining
+  churn is broad package/lockfile/doc cleanup after the Phase 8 green run.
 - Final docs-sync pass: overview, engineering rules, spec status, AGENTS.md
   operational notes.
-- Mark this plan completed; open items become new dated specs.
+- Mark this plan completed; any open items move into new dated specs.
 
 ## Changelog
 
@@ -231,6 +233,16 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   run, the runner log persistence bug was fixed by writing `qa.log`
   synchronously before leak checks and exit handling, so the promised run log
   now survives fast successful exits.
+
+- 2026-06-13: Phase 9 docs-sync completed. Canon docs now record the
+  post-Phase-8 state: the SDK adapter rename, runtime IPC type generation,
+  room lifecycle cleanup commands, and optional AppCommand surfaces are moved
+  to `../specs/2026-06-13-post-headless-core-followups.md`; upstream SDK
+  deltas are managed on the shinaoka submodule branch with local comments at
+  the patch surfaces; those behavior/API deltas predated Phase 9, which only
+  added explanatory comments and management docs; and
+  `docs/upstream/matrix-rust-sdk-feedback.md` remains the PR-candidate ledger.
+  The plan is marked completed.
 
 - 2026-06-13: Phase 8 exit review fixes — real homeserver QA exposed two
   product-gate failures after the initial green report. Recovery requirement

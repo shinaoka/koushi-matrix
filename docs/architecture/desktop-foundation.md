@@ -1,8 +1,12 @@
 # Desktop Foundation Before Login
 
+Status: historical foundation. The current production runtime architecture is
+documented in [overview.md](./overview.md).
+
 Date: 2026-06-11
 
-This repository is now structured up to the point immediately before real Matrix login.
+This document captures the repository shape from the foundation stage, just
+before real Matrix login moved into the current core runtime.
 
 ## Current Layers
 
@@ -23,19 +27,20 @@ crates/matrix-desktop-backend
         +--> crates/matrix-desktop-key
 ```
 
-`matrix-desktop-backend` executes the same loop the real backend will use:
+`matrix-desktop-backend` executed the same loop the real backend would use in
+that foundation stage:
 
 ```text
 AppAction -> reduce(AppState) -> AppEffect -> backend effect runner -> follow-up AppAction
 ```
 
-The effect runner still fakes session restore, sync start, timeline subscription,
+The effect runner faked session restore, sync start, timeline subscription,
 thread subscription, sending synthetic local text, and search. Login discovery
-and password login are switchable: tests and the browser fallback can use
-deterministic fixture flows, while the Tauri runtime can call the homeserver and
-perform password login through Matrix Rust SDK. Real Matrix integration should
-replace the remaining fake handlers with Matrix SDK services without moving
-state transitions into the UI.
+and password login were switchable in that phase: tests and the browser fallback
+could use deterministic fixture flows, while the Tauri runtime could call the
+homeserver and perform password login through Matrix Rust SDK. That was the
+foundation step; current production behavior now lives in `overview.md` and
+uses `CoreCommand` / `CoreEvent`.
 
 `matrix-desktop-auth` owns Matrix authentication discovery and password login.
 It normalizes homeserver URLs to HTTPS by default, permits plain HTTP only for
@@ -47,38 +52,48 @@ only the success or failure action to the state machine.
 
 ## Login Boundary
 
-The next real-login step should attach at these points:
+At that stage, the planned real-login work was expected to attach at these
+points:
 
-1. `AppEffect::DiscoverLogin` can now query `GET /_matrix/client/v3/login` on
+1. `AppEffect::DiscoverLogin` could query `GET /_matrix/client/v3/login` on
    the configured homeserver and record supported flows such as
    `m.login.password`, `m.login.sso`, or `m.login.token`.
-2. The UI enables the password path only when discovery reports
+2. The UI enabled the password path only when discovery reported
    `m.login.password`; SSO/OIDC-capable homeservers can branch into a browser
    flow from the same snapshot state.
-3. `AppEffect::Login` now marks the point where password login leaves the state
-   machine. In the Tauri runtime, `submit_login` releases the backend lock,
-   creates a `matrix_sdk::Client` using the configured homeserver, and calls
+3. `AppEffect::Login` marked the point where password login left the state
+   machine. In the Tauri runtime, `submit_login` released the backend lock,
+   created a `matrix_sdk::Client` using the configured homeserver, and called
    `matrix_auth().login_username(...)` on Tauri's blocking task pool. The login
-   request carries homeserver, login identifier, password, and device display
-   name. The password is an in-memory redacted secret and must not enter
+   request carried homeserver, login identifier, password, and device display
+   name. The password was an in-memory redacted secret and did not enter
    `AppState`, frontend snapshots, debug output, logs, or persisted stores.
-4. Successful login dispatches `AppAction::LoginSucceeded(SessionInfo)` and keeps
-   the SDK client in memory for the current process.
-5. `matrix-desktop-auth` can now extract a redacted
+4. Successful login dispatched `AppAction::LoginSucceeded(SessionInfo)` and
+   kept the SDK client in memory for the current process.
+5. `matrix-desktop-auth` could extract a redacted
    `PersistableMatrixSession` from the SDK client and restore a fresh SDK client
    from that payload. The serialized JSON contains access/refresh tokens and is
    therefore a secret; it must go only to an approved secure store.
-6. `matrix-desktop-key` now has a redacted `StoredMatrixSession` wrapper and
+6. `matrix-desktop-key` had a redacted `StoredMatrixSession` wrapper and
    account-name separation for Matrix session JSON in the OS credential store.
    The next persistence step must connect `AppEffect::PersistSession` to that
    store and add a restore pointer/index for finding the last account/device at
    app startup.
-7. `matrix-desktop-key` loads or creates the local unlock secret through the OS credential store.
-8. The SDK store key and search index key are derived from that local unlock secret.
-9. `AppEffect::StartSync` still uses fake data. It should next start SDK sync,
-   room-list services, timeline subscriptions, and search indexing.
+7. `matrix-desktop-key` loaded or created the local unlock secret through the OS
+   credential store.
+8. The SDK store key and search index key were derived from that local unlock
+   secret.
+9. `AppEffect::StartSync` still used fake data. The planned next step was to
+   start SDK sync, room-list services, timeline subscriptions, and search
+   indexing.
 
-The default homeserver remains `https://matrix.org`, but `FakeDesktopBackendConfig` already keeps homeserver configurable. The real login UI should expose the same setting before submitting credentials. Users do not need to type `https://`; bare homeserver input such as `matrix.org` is normalized to HTTPS. Explicit ports such as `matrix.example.org:8448` are allowed. Plain `http://` remains restricted to localhost or loopback development servers.
+The default homeserver remained `https://matrix.org`, but
+`FakeDesktopBackendConfig` kept homeserver configurable. The real login UI
+should expose the same setting before submitting credentials. Users do not
+need to type `https://`; bare homeserver input such as `matrix.org` is
+normalized to HTTPS. Explicit ports such as `matrix.example.org:8448` are
+allowed. Plain `http://` remains restricted to localhost or loopback
+development servers.
 
 ## Pre-Login Shell
 
@@ -86,18 +101,19 @@ The app now has an explicit first-run path before real Matrix login:
 
 1. `AppEffect::RestoreSession` may resolve to `AppAction::RestoreSessionNotFound`.
 2. The reducer enters `SessionState::SignedOut` without recording an error.
-3. The React shell renders a homeserver-configurable sign-in form instead of the Slack-like ready surface.
+3. The React shell rendered a homeserver-configurable sign-in form instead of
+   the Slack-like ready surface.
 4. `discover_login_methods` dispatches `AppAction::LoginDiscoveryRequested`,
    which emits `AppEffect::DiscoverLogin`.
-5. The browser fallback returns synthetic password and SSO flows so the UI can
-   exercise the same branching contract without external network dependency.
-   The Tauri runtime uses HTTP discovery by default.
+5. The browser fallback returned synthetic password and SSO flows so the UI
+   could exercise the same branching contract without external network
+   dependency. The Tauri runtime used HTTP discovery by default.
 6. `submit_login` dispatches `AppAction::LoginSubmitted`, which emits
    `AppEffect::Login`.
-7. The browser fallback intentionally turns that effect into
-   `AppAction::LoginFailed` with a non-secret message. The Tauri runtime defers
-   that effect to the native command runner, which uses Matrix Rust SDK password
-   login outside the backend mutex.
+7. The browser fallback intentionally turned that effect into
+   `AppAction::LoginFailed` with a non-secret message. The Tauri runtime
+   deferred that effect to the native command runner, which used Matrix Rust
+   SDK password login outside the backend mutex.
 
 Recovery key or security phrase input is not part of Matrix login. It belongs
 after login, when the client needs to restore encrypted room-key backup or
@@ -105,16 +121,17 @@ cross-signing secrets. That recovery input must have the same secret-handling
 rules as passwords and must not be stored in React state longer than the active
 recovery step requires.
 
-The current desktop shell models that boundary with a post-login
-`needsRecovery` session state. While in that state, sync, room navigation,
-timeline, thread, and search effects stay blocked because the session is not
-`ready`. The frontend renders a dedicated recovery screen rather than reusing
-the login form. The recovery key/security phrase is read from an uncontrolled
-input, submitted to the backend, and cleared immediately after submission.
+The desktop shell modeled that boundary with a post-login `needsRecovery`
+session state. While in that state, sync, room navigation, timeline, thread,
+and search effects stayed blocked because the session was not `ready`. The
+frontend rendered a dedicated recovery screen rather than reusing the login
+form. The recovery key/security phrase was read from an uncontrolled input,
+submitted to the backend, and cleared immediately after submission.
 
-The Matrix Rust SDK exposes this as `client.encryption().recovery().recover(...)`.
-The present Tauri command has the state/effect boundary for that call, but the
-actual SDK recovery invocation is still a follow-up task.
+The Matrix Rust SDK exposes this as
+`client.encryption().recovery().recover(...)`. The present Tauri command had
+the state/effect boundary for that call, but the actual SDK recovery
+invocation was still a follow-up task.
 
 Open the browser shell in first-run mode with:
 

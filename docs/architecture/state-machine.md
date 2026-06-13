@@ -1,5 +1,8 @@
 # Matrix Desktop State Machine
 
+Status: historical foundation. The current production runtime architecture is
+documented in [overview.md](./overview.md).
+
 Date: 2026-06-11
 
 ## Contract
@@ -11,8 +14,10 @@ reduce(&mut AppState, AppAction) -> Vec<AppEffect>
 ```
 
 `AppAction` is either user intent from React or a completed SDK/backend operation.
-`AppEffect` is a request for the future Tauri backend to perform work. The reducer
-does not call Matrix SDK, Tauri, filesystem, keyring, or network APIs.
+`AppEffect` is a request for the reducer-backed fixture/demo backend contract
+used by older shell layers and tests. The reducer does not call Matrix SDK,
+Tauri, filesystem, keyring, or network APIs. Current production runtime work
+uses `CoreCommand` / `CoreEvent` in `docs/architecture/overview.md`.
 
 Actions that touch room, timeline, thread, or search state are accepted only when
 the session is `Ready`. Late backend signals after logout or lock are ignored.

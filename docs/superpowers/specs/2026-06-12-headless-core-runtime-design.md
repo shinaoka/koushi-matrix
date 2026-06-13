@@ -72,7 +72,7 @@ flowchart LR
 
 `matrix-desktop-state` remains the pure state crate. It owns `AppState`, `AppAction`, reducer logic, and serializable UI snapshot DTOs. It does not know about Matrix SDK handles, Tauri, or async tasks.
 
-`matrix-desktop-auth` remains the Matrix SDK adapter for now. It owns low-level login, restore, recovery, sync, room operation, timeline, and search primitives. It should not own app state or QA orchestration. It can later be renamed to `matrix-desktop-sdk`, but the initial refactor should avoid a rename unless it clearly reduces confusion.
+`matrix-desktop-auth` remains the Matrix SDK adapter for now. It owns low-level login, restore, recovery, sync, room operation, timeline, and search primitives. It should not own app state or QA orchestration. The `matrix-desktop-auth` -> `matrix-desktop-sdk` rename is deferred to `2026-06-13-post-headless-core-followups.md`; this refactor should not absorb the broad package, lockfile, and doc churn needed for that rename.
 
 `matrix-desktop-core` becomes the only production runtime owner. It owns actor lifecycle, command routing, event emission, SDK session handles, background tasks, AppState projection, and headless QA binaries.
 

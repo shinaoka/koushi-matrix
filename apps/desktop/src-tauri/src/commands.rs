@@ -158,7 +158,8 @@ pub async fn discover_login_methods(
     // Phase 7: discovery is implicit in LoginPassword (the core resolves it).
     // Return the current snapshot; the frontend reads homeserver from the login
     // form, not from state.
-    // TODO(Phase 9): wire a dedicated DiscoverLoginMethods command through core.
+    // This remains a transport shim until login discovery gets a dedicated
+    // core command.
     let _ = homeserver;
     current_snapshot(state.inner()).await
 }
@@ -484,9 +485,8 @@ pub async fn open_thread(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // Phase 7: thread open/close are UI navigation that will get a dedicated
-    // AppCommand in Phase 9. For now, return current snapshot so the UI can
-    // update its local state.
+    // Thread open/close are UI navigation shims; the current contract is to
+    // return the snapshot so the frontend can update local state.
     let _ = (room_id, root_event_id);
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
@@ -497,7 +497,7 @@ pub async fn close_thread(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // Phase 7: see open_thread.
+    // Same UI-navigation shim as `open_thread`.
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }

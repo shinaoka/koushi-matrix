@@ -11,7 +11,8 @@
  * The wire format is pinned by the Rust contract test
  * `core_event_wire_format_matches_typescript_contract` in src-tauri lib.rs.
  * If that test changes, this module must change with it. Codegen from the
- * Rust types is recorded as future work (Phase 9 cleanup).
+ * Rust types is tracked in
+ * docs/superpowers/specs/2026-06-13-post-headless-core-followups.md.
  *
  * Security: message bodies flow in Timeline events. These are visible
  * content (not secrets). Passwords, access tokens, and store keys NEVER

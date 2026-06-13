@@ -804,10 +804,11 @@ async fn run_async(
 
     // -----------------------------------------------------------------------
     // Step 8: Leave/forget QA room
-    // LeaveRoom is not in RoomCommand as of this phase. Note for Phase 9.
+    // LeaveRoom is not in RoomCommand yet; tracked in the post-headless-core
+    // follow-up spec.
     // -----------------------------------------------------------------------
     let line =
-        "leave_room=not_available (LeaveRoom not yet in RoomCommand; noted for Phase 9)".to_owned();
+        "leave_room=not_available (LeaveRoom not yet in RoomCommand; tracked follow-up)".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 

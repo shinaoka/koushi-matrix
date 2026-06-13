@@ -130,8 +130,12 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    public API or a wrapper on our side. Each patch must be minimal
    (prefer additive accessors over behavioral changes), recorded in
    `docs/upstream/matrix-rust-sdk-feedback.md` with rationale and
-   upstreaming intent, and reviewed at phase exit. Convenience patches are
-   rejected; every patch increases the cost of tracking upstream.
+   upstreaming intent, and reviewed at phase exit. In this repo the actual
+   deltas live on the `github.com/shinaoka/matrix-rust-sdk-work`
+   submodule branch (`shinaoka/search-ngram`), and local comments should
+   point at the patch surface.
+   Convenience patches are rejected; every patch increases the cost of
+   tracking upstream.
 2. Local homeserver toolchain caveats (Conduit/Tuwunel install flags such as
    `RUMA_UNSTABLE_EXHAUSTIVE_TYPES=1`, macOS `--no-default-features`) are
    tracked in `AGENTS.md` and the QA scripts, not hand-run.

@@ -18,6 +18,18 @@ All agents implementing the headless core runtime follow
   `matrix-desktop-core`, verified via `CoreCommand`/`CoreEvent` against local
   Conduit/Tuwunel QA, before any Tauri/React wiring. GUI-first implementation
   is prohibited.
+- **SDK fork management.** Upstream SDK deltas live on the
+  `github.com/shinaoka/matrix-rust-sdk-work` submodule branch
+  (`shinaoka/search-ngram`). Local code comments should explain the patch
+  surfaces, and
+  `docs/upstream/matrix-rust-sdk-feedback.md` stays the place for PR
+  candidates. Edit vendored SDK code only inside that submodule branch, then
+  update the superproject submodule pointer intentionally.
+- **Rename deferred.** The `matrix-desktop-auth` -> `matrix-desktop-sdk`
+  rename is deferred to
+  `docs/superpowers/specs/2026-06-13-post-headless-core-followups.md`.
+  Phase 8/9 already landed the runtime cleanup; the remaining rename would be
+  broad package, lockfile, and doc churn.
 - **Canon-first redesign protocol.** Implementation will hit gaps the design
   did not foresee. When code contradicts the canon or the canon is silent:
   stop coding on that point — do not improvise an undocumented behavior.
@@ -96,6 +108,9 @@ All agents implementing the headless core runtime follow
 - The smoke CLI must try logout cleanup after any post-login QA failure unless
   `--keep-session` was explicitly requested. Otherwise failed sync/timeline QA
   can leave a live smoke device on the homeserver.
+- `qa:real-homeserver` writes `qa.log` synchronously before leak checks and
+  exit handling. If the log is missing after a fast successful exit, treat it
+  as a regression in the runner.
 - Store-backed Matrix SDK sessions must be dropped while a Tokio runtime context
   is entered. Dropping a sqlite-backed SDK client after the runtime context is
   gone can panic in `deadpool-runtime` with `there is no reactor running`.
