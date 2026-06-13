@@ -780,7 +780,7 @@ Expected: both pass.
 - Modify: `apps/desktop/e2e`
 - Modify: `apps/desktop/src/test/tauriIpcMock.ts`
 
-- [ ] **Step 1: Add Playwright scenarios**
+- [x] **Step 1: Add Playwright scenarios**
 
 Add headless UI tests that mock Tauri IPC and prove:
 

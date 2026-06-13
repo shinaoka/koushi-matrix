@@ -149,11 +149,12 @@ function defaultSnapshotResponse() {
         room_id: null,
         is_subscribed: false,
         is_paginating_backwards: false,
-        composer: { pending_transaction_id: null, draft: "" }
+        composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
       },
       thread: { kind: "closed" },
       search: { kind: "closed" },
-      errors: []
+      errors: [],
+      basic_operation: { kind: "idle" }
     },
     sidebar: {
       active_space_id: null,
