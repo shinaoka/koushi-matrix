@@ -35,7 +35,10 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use matrix_desktop_core::command::{AccountCommand, CoreCommand, RoomCommand, SearchCommand, SearchScope, SyncCommand, TimelineCommand};
+use matrix_desktop_core::command::{
+    AccountCommand, CoreCommand, RoomCommand, SearchCommand, SearchScope, SyncCommand,
+    TimelineCommand,
+};
 use matrix_desktop_core::event::{
     AccountEvent, CoreEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
     SyncBackendKind, SyncEvent, TimelineEvent,
@@ -85,6 +88,7 @@ enum QaStage {
     LoginSync,
     RoomSpace,
     Timeline,
+    Reply,
     EditRedactSearch,
     RestoreCleanup,
 }
@@ -202,10 +206,15 @@ impl QaScenario {
             ),
             Self::Timeline => matches!(
                 stage,
+                QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace | QaStage::Timeline
+            ),
+            Self::Reply => matches!(
+                stage,
                 QaStage::Safety
                     | QaStage::LoginSync
                     | QaStage::RoomSpace
                     | QaStage::Timeline
+                    | QaStage::Reply
             ),
             Self::EditRedactSearch => matches!(
                 stage,
@@ -224,14 +233,14 @@ impl QaScenario {
                     | QaStage::EditRedactSearch
                     | QaStage::RestoreCleanup
             ),
-            Self::Reply | Self::Thread => false,
+            Self::Thread => false,
         }
     }
 }
 
 fn scenario_preflight_error(scenario: QaScenario) -> Result<(), String> {
     match scenario {
-        QaScenario::Reply | QaScenario::Thread => Err(format!(
+        QaScenario::Thread => Err(format!(
             "scenario {} is not implemented until true Matrix reply support lands",
             scenario.as_str()
         )),
@@ -239,12 +248,13 @@ fn scenario_preflight_error(scenario: QaScenario) -> Result<(), String> {
     }
 }
 
-fn implemented_final_tokens() -> [&'static str; 6] {
+fn implemented_final_tokens() -> [&'static str; 7] {
     [
         "safety=ok",
         "login_sync=ok",
         "room_space=ok",
         "timeline=ok",
+        "reply=ok",
         "edit_redact_search=ok",
         "restore_cleanup=ok",
     ]
@@ -254,16 +264,19 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
     match scenario {
         QaScenario::Safety => vec![QaStage::Safety],
         QaScenario::LoginSync => vec![QaStage::Safety, QaStage::LoginSync],
-        QaScenario::RoomSpace => vec![
-            QaStage::Safety,
-            QaStage::LoginSync,
-            QaStage::RoomSpace,
-        ],
+        QaScenario::RoomSpace => vec![QaStage::Safety, QaStage::LoginSync, QaStage::RoomSpace],
         QaScenario::Timeline => vec![
             QaStage::Safety,
             QaStage::LoginSync,
             QaStage::RoomSpace,
             QaStage::Timeline,
+        ],
+        QaScenario::Reply => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::Reply,
         ],
         QaScenario::EditRedactSearch => vec![
             QaStage::Safety,
@@ -285,10 +298,11 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::LoginSync,
             QaStage::RoomSpace,
             QaStage::Timeline,
+            QaStage::Reply,
             QaStage::EditRedactSearch,
             QaStage::RestoreCleanup,
         ],
-        QaScenario::Reply | QaScenario::Thread => Vec::new(),
+        QaScenario::Thread => Vec::new(),
     }
 }
 
@@ -303,6 +317,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
                     QaStage::LoginSync => "login_sync=ok",
                     QaStage::RoomSpace => "room_space=ok",
                     QaStage::Timeline => "timeline=ok",
+                    QaStage::Reply => "reply=ok",
                     QaStage::EditRedactSearch => "edit_redact_search=ok",
                     QaStage::RestoreCleanup => "restore_cleanup=ok",
                 })
@@ -313,6 +328,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         }
         QaScenario::RoomSpace
         | QaScenario::Timeline
+        | QaScenario::Reply
         | QaScenario::EditRedactSearch
         | QaScenario::RestoreCleanup => {
             let mut tokens = stages_for_scenario(scenario)
@@ -322,6 +338,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
                     QaStage::LoginSync => "login_sync=ok",
                     QaStage::RoomSpace => "room_space=ok",
                     QaStage::Timeline => "timeline=ok",
+                    QaStage::Reply => "reply=ok",
                     QaStage::EditRedactSearch => "edit_redact_search=ok",
                     QaStage::RestoreCleanup => "restore_cleanup=ok",
                 })
@@ -331,7 +348,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
             tokens
         }
         QaScenario::All => implemented_final_tokens().to_vec(),
-        QaScenario::Reply | QaScenario::Thread => Vec::new(),
+        QaScenario::Thread => Vec::new(),
     }
 }
 
@@ -772,13 +789,9 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     // Wait (event-driven, bounded) until B's room list contains the joined
     // room AND the joined space; the wait itself is the assertion.
-    let snapshot_b = wait_for_room_list_containing(
-        &mut conn_b,
-        &room_id,
-        &space_id,
-        "room list B after joins",
-    )
-    .await?;
+    let snapshot_b =
+        wait_for_room_list_containing(&mut conn_b, &room_id, &space_id, "room list B after joins")
+            .await?;
     let room_list_b = room_list_summary(&snapshot_b);
     println!("room_list_b={room_list_b}");
     println!("room_space=ok");
@@ -829,7 +842,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .map_err(|e| format!("submit send1: {e}"))?;
 
     // Assert local echo appears as a Transaction diff (SDK-generated txn_id).
-    let echo1_sdk_txn = wait_for_local_echo_diff(&mut conn_a, &key_a, &txn1, "local echo msg1").await?;
+    let echo1_sdk_txn =
+        wait_for_local_echo_diff(&mut conn_a, &key_a, &txn1, "local echo msg1").await?;
     println!("local_echo_msg1=ok sdk_txn={echo1_sdk_txn}");
 
     // Assert SendCompleted with matching txn_id and an event_id.
@@ -855,7 +869,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit send2: {e}"))?;
 
-    let echo2_sdk_txn = wait_for_local_echo_diff(&mut conn_a, &key_a, &txn2, "local echo msg2").await?;
+    let echo2_sdk_txn =
+        wait_for_local_echo_diff(&mut conn_a, &key_a, &txn2, "local echo msg2").await?;
     println!("local_echo_msg2=ok sdk_txn={echo2_sdk_txn}");
 
     let (send2_completed_txn, event2_id) =
@@ -878,7 +893,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit subscribe timeline B: {e}"))?;
 
-    let b_initial = wait_for_initial_items(&mut conn_b, &key_b, subscribe_b_id, "subscribe timeline B").await?;
+    let b_initial =
+        wait_for_initial_items(&mut conn_b, &key_b, subscribe_b_id, "subscribe timeline B").await?;
     println!("timeline_subscribed_b=ok");
 
     // Paginate backward on B to ensure A's messages are loaded from server
@@ -908,33 +924,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     )
     .await?;
     println!("b_recv_msgs=ok");
-
-    // B replies to A (sends its own message).
-    let txn_b_reply = "qa-phase5-txn-b-reply".to_owned();
-    let send_b_reply_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Timeline(TimelineCommand::SendText {
-            request_id: send_b_reply_id,
-            key: key_b.clone(),
-            transaction_id: txn_b_reply.clone(),
-            body: "Phase 5 QA reply from B".to_owned(),
-        }))
-        .await
-        .map_err(|e| format!("submit B reply: {e}"))?;
-
-    let (_b_echo_txn, _b_reply_event_id) =
-        wait_for_send_completed(&mut conn_b, send_b_reply_id, &key_b, "B reply completed").await?;
-    println!("b_reply_sent=ok");
-
-    // A receives B's reply in its timeline diffs.
-    wait_for_item_bodies(
-        &mut conn_a,
-        &key_a,
-        &["Phase 5 QA reply from B"],
-        "A receives reply from B",
-    )
-    .await?;
-    println!("a_recv_reply=ok");
 
     // A edits message 1 — assert a Set diff reflecting the edit on original item identity.
     let edit1_id = conn_a.next_request_id();
@@ -987,8 +976,49 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .map_err(|e| format!("submit paginate: {e}"))?;
 
     let paginate_result =
-        wait_for_paginate_end_reached(&mut conn_a, &key_a, paginate_id, "paginate to EndReached").await?;
+        wait_for_paginate_end_reached(&mut conn_a, &key_a, paginate_id, "paginate to EndReached")
+            .await?;
     println!("paginate={paginate_result}");
+
+    if scenario.should_run_stage(QaStage::Reply) {
+        // -------------------------------------------------------------------
+        // --- Phase 5b: True reply relation QA ---
+        // -------------------------------------------------------------------
+
+        let txn_b_reply = "qa-phase5-txn-b-reply".to_owned();
+        let send_b_reply_id = conn_b.next_request_id();
+        conn_b
+            .command(CoreCommand::Timeline(TimelineCommand::SendReply {
+                request_id: send_b_reply_id,
+                key: key_b.clone(),
+                transaction_id: txn_b_reply.clone(),
+                in_reply_to_event_id: event1_id.clone(),
+                body: "Phase 5 QA reply from B".to_owned(),
+            }))
+            .await
+            .map_err(|e| format!("submit B reply: {e}"))?;
+
+        let (_b_echo_txn, _b_reply_event_id) =
+            wait_for_send_completed(&mut conn_b, send_b_reply_id, &key_b, "B reply completed")
+                .await?;
+        println!("b_reply_sent=ok");
+
+        let reply_item = wait_for_item_with_body(
+            &mut conn_a,
+            &key_a,
+            "Phase 5 QA reply from B",
+            "A receives reply from B",
+        )
+        .await?;
+        if reply_item.in_reply_to_event_id != Some(event1_id.clone()) {
+            return Err(format!(
+                "reply relation mismatch: expected {:?}, got {:?}",
+                Some(event1_id.clone()),
+                reply_item.in_reply_to_event_id
+            ));
+        }
+        println!("reply=ok");
+    }
 
     // Unsubscribe A and B to confirm no leaks.
     let unsub_a_id = conn_a.next_request_id();
@@ -1043,7 +1073,13 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit subscribe timeline A (search): {e}"))?;
 
-    wait_for_initial_items(&mut conn_a, &key_a_search, subscribe_search_id, "subscribe timeline A search").await?;
+    wait_for_initial_items(
+        &mut conn_a,
+        &key_a_search,
+        subscribe_search_id,
+        "subscribe timeline A search",
+    )
+    .await?;
 
     // Send a message with a CJK body that will be indexed.
     const SEARCH_BODY: &str = "検索対象メッセージ Phase6 QA";
@@ -1063,8 +1099,13 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit search send: {e}"))?;
 
-    let (_, search_event_id) =
-        wait_for_send_completed(&mut conn_a, send_search_id, &key_a_search, "send search msg").await?;
+    let (_, search_event_id) = wait_for_send_completed(
+        &mut conn_a,
+        send_search_id,
+        &key_a_search,
+        "send search msg",
+    )
+    .await?;
     println!("search_msg_sent=ok event_id={search_event_id}");
 
     // Poll SearchCommand::Query until Results contains search_event_id.
@@ -1076,7 +1117,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         &search_event_id,
         &room_id,
         "search=ok (CJK query)",
-    ).await?;
+    )
+    .await?;
     println!("search=ok");
 
     // Edit the search message.
@@ -1098,7 +1140,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         &search_event_id,
         EDITED_BODY,
         "edit search msg diff",
-    ).await?;
+    )
+    .await?;
 
     // Poll until new text is found.
     poll_search_until_found(
@@ -1108,7 +1151,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         &search_event_id,
         &room_id,
         "search_edit=ok (new text found)",
-    ).await?;
+    )
+    .await?;
 
     // Assert old text is no longer verifiable (document store canonical text
     // has changed; even if the ngram index still has the old token, the document
@@ -1120,7 +1164,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         &search_event_id,
         &room_id,
         "search_edit=ok (old text absent)",
-    ).await?;
+    )
+    .await?;
 
     println!("search_edit=ok");
 
@@ -1132,7 +1177,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         &event2_id,
         &room_id,
         "search_redact=ok (redacted msg absent)",
-    ).await?;
+    )
+    .await?;
     println!("search_redact=ok");
     println!("edit_redact_search=ok");
 
@@ -1271,11 +1317,7 @@ fn room_list_summary(snapshot: &AppState) -> String {
     let spaces = snapshot.spaces.len();
     let rooms = snapshot.rooms.len();
     let dms = snapshot.rooms.iter().filter(|r| r.is_dm).count();
-    let unread = snapshot
-        .rooms
-        .iter()
-        .filter(|r| r.unread_count > 0)
-        .count();
+    let unread = snapshot.rooms.iter().filter(|r| r.unread_count > 0).count();
     format!("rooms={rooms} spaces={spaces} dms={dms} unread_rooms={unread}")
 }
 
@@ -1562,7 +1604,9 @@ async fn wait_for_sync_running(conn: &mut CoreConnection, label: &str) -> Result
             return Ok(());
         }
         if matches!(event, CoreEvent::Sync(SyncEvent::Failed)) {
-            return Err(format!("{label}: SyncEvent::Failed received before Running"));
+            return Err(format!(
+                "{label}: SyncEvent::Failed received before Running"
+            ));
         }
     }
 }
@@ -1587,7 +1631,10 @@ async fn wait_for_sync_stopped(
         ) {
             return Ok(());
         }
-        if matches!(event, CoreEvent::Sync(SyncEvent::Stopped { request_id: None })) {
+        if matches!(
+            event,
+            CoreEvent::Sync(SyncEvent::Stopped { request_id: None })
+        ) {
             return Ok(());
         }
         if let CoreEvent::OperationFailed {
@@ -1987,9 +2034,7 @@ async fn wait_for_bodies_and_pagination_settle(
 
         match &event {
             CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: ev_key,
-                diffs,
-                ..
+                key: ev_key, diffs, ..
             }) if ev_key == key => {
                 for diff in diffs {
                     let item = match diff {
@@ -2013,9 +2058,7 @@ async fn wait_for_bodies_and_pagination_settle(
                 }
             }
             CoreEvent::Timeline(TimelineEvent::InitialItems {
-                key: ev_key,
-                items,
-                ..
+                key: ev_key, items, ..
             }) if ev_key == key => {
                 for item in items {
                     if let Some(ref body) = item.body {
@@ -2027,76 +2070,38 @@ async fn wait_for_bodies_and_pagination_settle(
                 key: ev_key,
                 state,
                 ..
-            }) if ev_key == key => {
-                match state {
-                    PaginationState::Idle
-                    | PaginationState::EndReached
-                    | PaginationState::Failed { .. } => {
-                        pagination_settled = true;
-                    }
-                    PaginationState::Paginating => {}
+            }) if ev_key == key => match state {
+                PaginationState::Idle
+                | PaginationState::EndReached
+                | PaginationState::Failed { .. } => {
+                    pagination_settled = true;
                 }
-            }
+                PaginationState::Paginating => {}
+            },
             _ => {}
         }
     }
 }
 
-/// Wait until the timeline diff stream for `key` delivers all `expected_bodies`
-/// (as substrings) across any combination of InitialItems + ItemsUpdated events.
-/// Searches in the body field of every item seen.
-async fn wait_for_item_bodies(
+/// Wait for an item whose body contains `expected_body` and return the item so
+/// the caller can assert relation metadata on the projected DTO.
+async fn wait_for_item_with_body(
     conn: &mut CoreConnection,
     key: &TimelineKey,
-    expected_bodies: &[&str],
+    expected_body: &str,
     label: &str,
-) -> Result<(), String> {
-    let mut remaining: Vec<&str> = expected_bodies.to_vec();
-
-    // Helper: scan a slice of items for matching bodies.
-    let scan_items = |items: &[matrix_desktop_core::event::TimelineItem],
-                      remaining: &mut Vec<&str>| {
-        for item in items {
-            if let Some(ref body) = item.body {
-                remaining.retain(|expected| !body.contains(expected));
-            }
-        }
+) -> Result<matrix_desktop_core::event::TimelineItem, String> {
+    let body_matches = |item: &matrix_desktop_core::event::TimelineItem| {
+        item.body
+            .as_ref()
+            .map(|body| body.contains(expected_body))
+            .unwrap_or(false)
     };
-
-    // Helper: scan diffs for item bodies.
-    let scan_diffs =
-        |diffs: &[matrix_desktop_core::event::TimelineDiff], remaining: &mut Vec<&str>| {
-            for diff in diffs {
-                let item = match diff {
-                    matrix_desktop_core::event::TimelineDiff::PushBack { item }
-                    | matrix_desktop_core::event::TimelineDiff::PushFront { item }
-                    | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
-                    | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => item,
-                    matrix_desktop_core::event::TimelineDiff::Reset { items } => {
-                        for it in items {
-                            if let Some(ref body) = it.body {
-                                remaining.retain(|expected| !body.contains(expected));
-                            }
-                        }
-                        continue;
-                    }
-                    _ => continue,
-                };
-                if let Some(ref body) = item.body {
-                    remaining.retain(|expected| !body.contains(expected));
-                }
-            }
-        };
 
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| {
-                format!(
-                    "{label}: timed out; still waiting for bodies: {:?}",
-                    remaining
-                )
-            })?
+            .map_err(|_| format!("{label}: timed out waiting for body {expected_body:?}"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -2105,20 +2110,35 @@ async fn wait_for_item_bodies(
                 items,
                 ..
             }) if ev_key == key => {
-                scan_items(&items, &mut remaining);
+                if let Some(item) = items.into_iter().find(|item| body_matches(item)) {
+                    return Ok(item);
+                }
             }
             CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
                 key: ref ev_key,
                 diffs,
                 ..
             }) if ev_key == key => {
-                scan_diffs(&diffs, &mut remaining);
+                for diff in diffs {
+                    let item = match diff {
+                        matrix_desktop_core::event::TimelineDiff::PushBack { item }
+                        | matrix_desktop_core::event::TimelineDiff::PushFront { item }
+                        | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
+                        | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => item,
+                        matrix_desktop_core::event::TimelineDiff::Reset { items } => {
+                            if let Some(item) = items.into_iter().find(|item| body_matches(item)) {
+                                return Ok(item);
+                            }
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    if body_matches(&item) {
+                        return Ok(item.clone());
+                    }
+                }
             }
             _ => {}
-        }
-
-        if remaining.is_empty() {
-            return Ok(());
         }
     }
 }
@@ -2141,7 +2161,9 @@ async fn wait_for_edit_diff(
     loop {
         let event = tokio::time::timeout(timeout, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for edit Set diff (event_id: {event_id})"))?
+            .map_err(|_| {
+                format!("{label}: timed out waiting for edit Set diff (event_id: {event_id})")
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -2246,13 +2268,10 @@ async fn wait_for_paginate_end_reached(
     let mut saw_paginating = false;
 
     loop {
-        let event = tokio::time::timeout(
-            Duration::from_secs(60),
-            conn.recv_event(),
-        )
-        .await
-        .map_err(|_| format!("{label}: timed out waiting for pagination state change"))?
-        .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        let event = tokio::time::timeout(Duration::from_secs(60), conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for pagination state change"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
             CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
@@ -2334,7 +2353,9 @@ async fn poll_search_until_found(
         conn.command(CoreCommand::Search(SearchCommand::Query {
             request_id: rid,
             query: query.to_owned(),
-            scope: SearchScope::Room { room_id: room_id.to_owned() },
+            scope: SearchScope::Room {
+                room_id: room_id.to_owned(),
+            },
         }))
         .await
         .map_err(|e| format!("{label}: submit search query: {e}"))?;
@@ -2372,7 +2393,9 @@ async fn poll_search_until_absent(
         conn.command(CoreCommand::Search(SearchCommand::Query {
             request_id: rid,
             query: query.to_owned(),
-            scope: SearchScope::Room { room_id: room_id.to_owned() },
+            scope: SearchScope::Room {
+                room_id: room_id.to_owned(),
+            },
         }))
         .await
         .map_err(|e| format!("{label}: submit search query: {e}"))?;
@@ -2436,7 +2459,10 @@ mod tests {
     #[test]
     fn parses_all_scenarios_from_env_value() {
         assert_eq!(QaScenario::from_env_value("all").unwrap(), QaScenario::All);
-        assert_eq!(QaScenario::from_env_value("safety").unwrap(), QaScenario::Safety);
+        assert_eq!(
+            QaScenario::from_env_value("safety").unwrap(),
+            QaScenario::Safety
+        );
         assert_eq!(
             QaScenario::from_env_value("login_sync").unwrap(),
             QaScenario::LoginSync
@@ -2449,8 +2475,14 @@ mod tests {
             QaScenario::from_env_value("timeline").unwrap(),
             QaScenario::Timeline
         );
-        assert_eq!(QaScenario::from_env_value("reply").unwrap(), QaScenario::Reply);
-        assert_eq!(QaScenario::from_env_value("thread").unwrap(), QaScenario::Thread);
+        assert_eq!(
+            QaScenario::from_env_value("reply").unwrap(),
+            QaScenario::Reply
+        );
+        assert_eq!(
+            QaScenario::from_env_value("thread").unwrap(),
+            QaScenario::Thread
+        );
         assert_eq!(
             QaScenario::from_env_value("edit_redact_search").unwrap(),
             QaScenario::EditRedactSearch
@@ -2476,6 +2508,7 @@ mod tests {
             QaScenario::LoginSync,
             QaScenario::RoomSpace,
             QaScenario::Timeline,
+            QaScenario::Reply,
             QaScenario::EditRedactSearch,
             QaScenario::RestoreCleanup,
         ] {
@@ -2484,14 +2517,9 @@ mod tests {
     }
 
     #[test]
-    fn reply_and_thread_are_explicitly_unimplemented() {
-        let reply = scenario_preflight_error(QaScenario::Reply).unwrap_err();
+    fn thread_is_explicitly_unimplemented() {
         let thread = scenario_preflight_error(QaScenario::Thread).unwrap_err();
 
-        assert_eq!(
-            reply,
-            "scenario reply is not implemented until true Matrix reply support lands"
-        );
         assert_eq!(
             thread,
             "scenario thread is not implemented until true Matrix reply support lands"
@@ -2514,18 +2542,26 @@ mod tests {
         assert!(QaScenario::Timeline.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::Timeline.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::Timeline.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::Timeline.should_run_stage(QaStage::Reply));
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::EditRedactSearch));
+
+        assert!(QaScenario::Reply.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::Reply.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::Reply.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::Reply.should_run_stage(QaStage::Reply));
+        assert!(!QaScenario::Reply.should_run_stage(QaStage::EditRedactSearch));
 
         assert!(QaScenario::All.should_run_stage(QaStage::Safety));
         assert!(QaScenario::All.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::All.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::All.should_run_stage(QaStage::Reply));
         assert!(QaScenario::All.should_run_stage(QaStage::EditRedactSearch));
         assert!(QaScenario::All.should_run_stage(QaStage::RestoreCleanup));
     }
 
     #[test]
-    fn implemented_final_tokens_exclude_reply_and_thread() {
+    fn implemented_final_tokens_include_reply_and_exclude_thread() {
         assert_eq!(
             implemented_final_tokens(),
             [
@@ -2533,6 +2569,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "reply=ok",
                 "edit_redact_search=ok",
                 "restore_cleanup=ok",
             ]
@@ -2541,17 +2578,19 @@ mod tests {
 
     #[test]
     fn final_tokens_follow_the_requested_scenario() {
-        assert_eq!(
-            final_tokens_for_scenario(QaScenario::Safety),
-            ["safety=ok"]
-        );
+        assert_eq!(final_tokens_for_scenario(QaScenario::Safety), ["safety=ok"]);
         assert_eq!(
             final_tokens_for_scenario(QaScenario::LoginSync),
             ["safety=ok", "login_sync=ok", "restore_cleanup=ok"]
         );
         assert_eq!(
             final_tokens_for_scenario(QaScenario::RoomSpace),
-            ["safety=ok", "login_sync=ok", "room_space=ok", "restore_cleanup=ok"]
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "restore_cleanup=ok"
+            ]
         );
         assert_eq!(
             final_tokens_for_scenario(QaScenario::Timeline),
@@ -2560,6 +2599,17 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::Reply),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "reply=ok",
                 "restore_cleanup=ok",
             ]
         );
@@ -2589,6 +2639,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "reply=ok",
                 "edit_redact_search=ok",
                 "restore_cleanup=ok",
             ]

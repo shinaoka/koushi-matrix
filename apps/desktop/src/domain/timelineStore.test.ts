@@ -47,7 +47,8 @@ function makeMsg(id: string, body: string): TimelineItem {
     id: { Event: { event_id: id } },
     sender: "@sender:example.invalid",
     body,
-    timestamp_ms: 1_800_000_000_000
+    timestamp_ms: 1_800_000_000_000,
+    in_reply_to_event_id: null
   };
 }
 
@@ -56,7 +57,8 @@ function makeLocalEcho(txnId: string, body: string): TimelineItem {
     id: { Transaction: { transaction_id: txnId } },
     sender: "@qa-user:example.invalid",
     body,
-    timestamp_ms: 1_820_000_000_000
+    timestamp_ms: 1_820_000_000_000,
+    in_reply_to_event_id: null
   };
 }
 

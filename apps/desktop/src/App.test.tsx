@@ -193,7 +193,8 @@ describe("Timeline item row rendering", () => {
             id: { Transaction: { transaction_id: "desktop-1" } },
             sender: "@me:example.invalid",
             body: "queued message",
-            timestamp_ms: 1_820_000_000_000
+            timestamp_ms: 1_820_000_000_000,
+            in_reply_to_event_id: null
           } as TimelineItem
         }
       />
@@ -209,7 +210,8 @@ describe("Timeline item row rendering", () => {
             id: { Event: { event_id: "$remote" } },
             sender: "@me:example.invalid",
             body: "sent message",
-            timestamp_ms: 1_820_000_000_100
+            timestamp_ms: 1_820_000_000_100,
+            in_reply_to_event_id: null
           } as TimelineItem
         }
       />

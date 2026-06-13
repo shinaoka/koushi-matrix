@@ -79,6 +79,7 @@ export interface TimelineItem {
   sender: string | null;
   body: string | null;
   timestamp_ms: number | null;
+  in_reply_to_event_id: string | null;
 }
 
 /** Stable string id usable as a React key and a `data-item-id` DOM hook. */

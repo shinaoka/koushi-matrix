@@ -395,7 +395,7 @@ cargo test -p matrix-desktop-core send_reply_debug_redacts_body_and_event_ids
 
 Expected: fails because `SendReply` does not exist.
 
-- [ ] **Step 3: Add `TimelineCommand::SendReply`**
+- [x] **Step 3: Add `TimelineCommand::SendReply`**
 
 In `crates/matrix-desktop-core/src/command.rs`:
 
@@ -411,7 +411,7 @@ SendReply {
 
 Update `CoreCommand::request_id()` and the custom `Debug` impl so `body` and `in_reply_to_event_id` are redacted.
 
-- [ ] **Step 4: Route the command through TimelineActor**
+- [x] **Step 4: Route the command through TimelineActor**
 
 In `crates/matrix-desktop-core/src/timeline.rs`, add a `TimelineActorMessage::SendReply` variant:
 
@@ -427,7 +427,7 @@ SendReply {
 
 Route it from `TimelineCommand::SendReply` in the command handler.
 
-- [ ] **Step 5: Use SDK UI `Timeline::send_reply`**
+- [x] **Step 5: Build the reply relation with public SDK APIs**
 
 Inside the timeline actor send path, parse `in_reply_to_event_id` as an `OwnedEventId`, build:
 
@@ -438,35 +438,31 @@ let content =
     );
 ```
 
-Then call the vendored UI API:
+Then build a `matrix_sdk::room::reply::Reply` and call:
 
 ```rust
-timeline.send_reply(content, replied_to_event_id).await
+let reply_content = timeline.room().make_reply_event(content, reply).await?;
+let handle = timeline.send(reply_content.into()).await?;
 ```
 
-Classify errors through the existing timeline failure path and never include body or event ids in error text.
+Use `handle.transaction_id()` to populate `pending_sends` so `SendCompleted`
+still correlates through the existing send-queue path. Classify errors through
+the existing timeline failure path and never include body or event ids in error
+text.
 
-- [ ] **Step 6: Add local QA reply stage**
+- [x] **Step 6: Add local QA reply stage**
 
-In `scenario_reply`, after A sends root event `event1_id`, have B send:
-
-```rust
-CoreCommand::Timeline(TimelineCommand::SendReply {
-    request_id: send_reply_id,
-    key: key_b.clone(),
-    transaction_id: "qa-reply-relation-txn".to_owned(),
-    in_reply_to_event_id: event1_id.clone(),
-    body: "Phase reply QA true reply".to_owned(),
-})
-```
-
-Wait for SendCompleted on B and for A to receive the reply body. Emit:
+In `scenario_reply`, after A sends root event `event1_id`, have B send a
+`SendReply` command, wait for `SendCompleted` on B, wait for A to receive the
+reply body, assert `in_reply_to_event_id` matches `event1_id`, and print:
 
 ```rust
 println!("reply=ok");
 ```
 
-- [ ] **Step 7: Verify local lane**
+`scenario_thread` remains explicitly unsupported until Task 5 lands.
+
+- [x] **Step 7: Verify local lane**
 
 ```bash
 cargo test -p matrix-desktop-core send_reply

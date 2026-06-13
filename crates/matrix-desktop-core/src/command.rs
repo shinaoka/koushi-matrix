@@ -53,6 +53,7 @@ impl CoreCommand {
                 | TimelineCommand::Unsubscribe { request_id, .. }
                 | TimelineCommand::Paginate { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
+                | TimelineCommand::SendReply { request_id, .. }
                 | TimelineCommand::EditText { request_id, .. }
                 | TimelineCommand::Redact { request_id, .. } => *request_id,
             },
@@ -186,6 +187,13 @@ pub enum TimelineCommand {
         transaction_id: String,
         body: String,
     },
+    SendReply {
+        request_id: RequestId,
+        key: TimelineKey,
+        transaction_id: String,
+        in_reply_to_event_id: String,
+        body: String,
+    },
     EditText {
         request_id: RequestId,
         key: TimelineKey,
@@ -236,6 +244,19 @@ impl fmt::Debug for TimelineCommand {
                 .field("request_id", request_id)
                 .field("key", key)
                 .field("transaction_id", transaction_id)
+                .field("body", &"MessageBody(..)")
+                .finish(),
+            Self::SendReply {
+                request_id,
+                key,
+                transaction_id,
+                ..
+            } => formatter
+                .debug_struct("SendReply")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("transaction_id", transaction_id)
+                .field("in_reply_to_event_id", &"EventId(..)")
                 .field("body", &"MessageBody(..)")
                 .finish(),
             Self::EditText {
@@ -291,5 +312,34 @@ impl fmt::Debug for SearchCommand {
                 .field("scope", scope)
                 .finish(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_rid(seq: u64) -> RequestId {
+        RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(999),
+            sequence: seq,
+        }
+    }
+
+    #[test]
+    fn send_reply_debug_redacts_body_and_event_ids() {
+        let command = TimelineCommand::SendReply {
+            request_id: fake_rid(7),
+            key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test"),
+            transaction_id: "txn-reply".to_owned(),
+            in_reply_to_event_id: "$event:test".to_owned(),
+            body: "secret reply body".to_owned(),
+        };
+
+        let debug = format!("{command:?}");
+        assert!(debug.contains("SendReply"), "{debug}");
+        assert!(debug.contains("txn-reply"), "{debug}");
+        assert!(!debug.contains("secret reply body"), "{debug}");
+        assert!(!debug.contains("$event:test"), "{debug}");
     }
 }

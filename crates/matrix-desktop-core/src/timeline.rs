@@ -52,6 +52,10 @@ use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
 use matrix_sdk::room::edit::EditedContent;
+use matrix_sdk::room::reply::{EnforceThread, Reply};
+use matrix_sdk::ruma::events::room::message::{
+    AddMentions, ReplyWithinThread, RoomMessageEventContentWithoutRelation,
+};
 use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk_ui::timeline::{
     Timeline, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
@@ -209,6 +213,25 @@ impl TimelineManagerActor {
                     TimelineActorMessage::SendText {
                         request_id,
                         transaction_id,
+                        body,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::SendReply {
+                request_id,
+                key,
+                transaction_id,
+                in_reply_to_event_id,
+                body,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::SendReply {
+                        request_id,
+                        transaction_id,
+                        in_reply_to_event_id,
                         body,
                     },
                 )
@@ -430,6 +453,12 @@ enum TimelineActorMessage {
         transaction_id: String,
         body: String,
     },
+    SendReply {
+        request_id: RequestId,
+        transaction_id: String,
+        in_reply_to_event_id: String,
+        body: String,
+    },
     EditText {
         request_id: RequestId,
         event_id: String,
@@ -465,10 +494,8 @@ struct TimelineActor {
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
     generation: TimelineGeneration,
     next_batch_id: TimelineBatchId,
-    /// Pending send requests: sdk_txn_id → (client_txn_id, request_id).
-    /// The SDK send queue generates its own txn_id; we map it back to the
-    /// client-supplied txn_id so SendCompleted carries the client's txn_id.
-    pending_sends: HashMap<String, (String, RequestId)>,
+    /// Correlates send queue completions across the enqueue / SentEvent race.
+    send_completion: SendCompletionTracker,
     /// event_id → SDK transaction id for events this actor sent. Used to
     /// address local-echo items whose remote echo has not arrived (e.g.
     /// Conduit's sliding sync does not echo own events into the timeline),
@@ -535,7 +562,7 @@ impl TimelineActor {
             msg_rx: actor_rx,
             generation,
             next_batch_id: TimelineBatchId(0),
-            pending_sends: HashMap::new(), // sdk_txn → (client_txn, request_id)
+            send_completion: SendCompletionTracker::default(),
             sent_event_txns: HashMap::new(),
             search_index_tx,
         };
@@ -567,6 +594,15 @@ impl TimelineActor {
                 body,
             } => {
                 self.handle_send_text(request_id, transaction_id, body)
+                    .await;
+            }
+            TimelineActorMessage::SendReply {
+                request_id,
+                transaction_id,
+                in_reply_to_event_id,
+                body,
+            } => {
+                self.handle_send_reply(request_id, transaction_id, in_reply_to_event_id, body)
                     .await;
             }
             TimelineActorMessage::EditText {
@@ -691,10 +727,17 @@ impl TimelineActor {
         match room.send_queue().send(content).await {
             Ok(handle) => {
                 let sdk_txn_id = handle.transaction_id().to_string();
-                // Map SDK txn_id → (client txn_id, request_id) so SentEvent can emit
-                // SendCompleted with the client's original txn_id.
-                self.pending_sends
-                    .insert(sdk_txn_id, (client_txn_id, request_id));
+                if let Some((client_txn_id, request_id, event_id)) = self
+                    .send_completion
+                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id)
+                {
+                    self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                        request_id,
+                        key: self.key.clone(),
+                        transaction_id: client_txn_id,
+                        event_id,
+                    }));
+                }
             }
             Err(err) => {
                 self.emit_failure(
@@ -707,6 +750,105 @@ impl TimelineActor {
         }
         // On success: local echo appears via diff (Transaction id = SDK txn_id).
         // SendCompleted arrives via SendQueueUpdate::SentEvent.
+    }
+
+    async fn handle_send_reply(
+        &mut self,
+        request_id: RequestId,
+        client_txn_id: String,
+        in_reply_to_event_id: String,
+        body: String,
+    ) {
+        let room_id_str = match &self.key.kind {
+            TimelineKind::Room { room_id }
+            | TimelineKind::Thread { room_id, .. }
+            | TimelineKind::Focused { room_id, .. } => room_id.clone(),
+        };
+
+        let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
+            Ok(id) => id,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+
+        let reply_event_id = match matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id) {
+            Ok(id) => id,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+
+        let client = self.session.client();
+        if client.get_room(&room_id).is_none() {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+            return;
+        }
+
+        let content = RoomMessageEventContentWithoutRelation::text_plain(&body);
+        let reply = Reply {
+            event_id: reply_event_id,
+            enforce_thread: match &self.key.kind {
+                TimelineKind::Thread { .. } => EnforceThread::Threaded(ReplyWithinThread::Yes),
+                _ => EnforceThread::MaybeThreaded,
+            },
+            add_mentions: AddMentions::Yes,
+        };
+
+        let content = match self.timeline.room().make_reply_event(content, reply).await {
+            Ok(content) => content,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+
+        match self.timeline.send(content.into()).await {
+            Ok(handle) => {
+                let sdk_txn_id = handle.transaction_id().to_string();
+                if let Some((client_txn_id, request_id, event_id)) = self
+                    .send_completion
+                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id)
+                {
+                    self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                        request_id,
+                        key: self.key.clone(),
+                        transaction_id: client_txn_id,
+                        event_id,
+                    }));
+                }
+            }
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+            }
+        }
     }
 
     async fn handle_edit_text(&mut self, request_id: RequestId, event_id: String, body: String) {
@@ -983,12 +1125,15 @@ impl TimelineActor {
             let sdk_txn_str = transaction_id.to_string();
             self.sent_event_txns
                 .insert(event_id.to_string(), transaction_id.clone());
-            if let Some((client_txn_id, request_id)) = self.pending_sends.remove(&sdk_txn_str) {
+            if let Some((client_txn_id, request_id, event_id)) = self
+                .send_completion
+                .record_sent_event(sdk_txn_str, event_id.to_string())
+            {
                 self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                     request_id,
                     key: self.key.clone(),
                     transaction_id: client_txn_id,
-                    event_id: event_id.to_string(),
+                    event_id,
                 }));
             }
         }
@@ -1142,12 +1287,17 @@ pub fn sdk_item_to_timeline_item(item: &Arc<SdkTimelineItem>) -> TimelineItem {
                 .content()
                 .as_message()
                 .map(|msg| msg.body().to_owned());
+            let in_reply_to_event_id = event_item
+                .content()
+                .in_reply_to()
+                .map(|details| details.event_id.to_string());
 
             TimelineItem {
                 id,
                 sender,
                 body,
                 timestamp_ms,
+                in_reply_to_event_id,
             }
         }
         TimelineItemKind::Virtual(virtual_item) => {
@@ -1161,6 +1311,7 @@ pub fn sdk_item_to_timeline_item(item: &Arc<SdkTimelineItem>) -> TimelineItem {
                 sender: None,
                 body: None,
                 timestamp_ms: None,
+                in_reply_to_event_id: None,
             }
         }
     }
@@ -1246,6 +1397,45 @@ fn classify_send_queue_error(
         RoomSendQueueError::RoomDisappeared => TimelineFailureKind::Sdk,
         RoomSendQueueError::StorageError(_) => TimelineFailureKind::Sdk,
         _ => TimelineFailureKind::Sdk,
+    }
+}
+
+#[derive(Default)]
+struct SendCompletionTracker {
+    /// Pending send requests: sdk_txn_id → (client_txn_id, request_id).
+    pending_sends: HashMap<String, (String, RequestId)>,
+    /// SentEvent updates that arrived before the pending mapping existed:
+    /// sdk_txn_id → event_id.
+    completed_sends: HashMap<String, String>,
+}
+
+impl SendCompletionTracker {
+    fn remember_pending_send(
+        &mut self,
+        sdk_txn_id: String,
+        client_txn_id: String,
+        request_id: RequestId,
+    ) -> Option<(String, RequestId, String)> {
+        if let Some(event_id) = self.completed_sends.remove(&sdk_txn_id) {
+            Some((client_txn_id, request_id, event_id))
+        } else {
+            self.pending_sends
+                .insert(sdk_txn_id, (client_txn_id, request_id));
+            None
+        }
+    }
+
+    fn record_sent_event(
+        &mut self,
+        sdk_txn_id: String,
+        event_id: String,
+    ) -> Option<(String, RequestId, String)> {
+        if let Some((client_txn_id, request_id)) = self.pending_sends.remove(&sdk_txn_id) {
+            Some((client_txn_id, request_id, event_id))
+        } else {
+            self.completed_sends.insert(sdk_txn_id, event_id);
+            None
+        }
     }
 }
 
@@ -1653,6 +1843,26 @@ mod tests {
 
         // After removal, the mapping is gone.
         assert!(!pending.contains_key("sdk-auto-generated-txn"));
+    }
+
+    #[test]
+    fn send_completion_race_delivers_completion_when_sent_event_arrives_first() {
+        let mut tracker = SendCompletionTracker::default();
+        let sdk_txn = "sdk-race-txn".to_owned();
+        let client_txn = "client-race-txn".to_owned();
+        let request_id = fake_rid(77);
+        let event_id = "$event-race".to_owned();
+
+        assert_eq!(
+            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
+            None
+        );
+        assert_eq!(
+            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), request_id),
+            Some((client_txn.clone(), request_id, event_id.clone()))
+        );
+        assert!(tracker.pending_sends.is_empty());
+        assert!(tracker.completed_sends.is_empty());
     }
 
     // --- Debug redaction of new types ---

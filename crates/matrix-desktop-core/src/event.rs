@@ -184,6 +184,7 @@ pub struct TimelineItem {
     pub sender: Option<String>,
     pub body: Option<String>,
     pub timestamp_ms: Option<u64>,
+    pub in_reply_to_event_id: Option<String>,
 }
 
 /// `VectorDiff`-shaped update preserving positional operations so the UI can
