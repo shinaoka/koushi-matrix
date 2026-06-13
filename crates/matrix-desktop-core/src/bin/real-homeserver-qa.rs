@@ -296,6 +296,7 @@ struct RealHomeserverQaMessagePlan {
     search_probe_body: String,
     msg2_body: String,
     edited_body: String,
+    reply_body: String,
 }
 
 #[cfg(any(debug_assertions, test))]
@@ -307,6 +308,7 @@ fn build_real_homeserver_qa_message_plan(ts: u64) -> RealHomeserverQaMessagePlan
         search_probe_body: format!("Real homeserver QA search probe {search_token}"),
         msg2_body: "Real homeserver QA message 2".to_owned(),
         edited_body: "Real homeserver QA message 1 EDITED".to_owned(),
+        reply_body: "Real homeserver QA reply to message 1".to_owned(),
     }
 }
 
@@ -323,6 +325,10 @@ mod search_plan_tests {
         assert!(!plan.msg1_body.contains(&plan.search_token));
         assert_eq!(plan.msg2_body, "Real homeserver QA message 2");
         assert_eq!(plan.edited_body, "Real homeserver QA message 1 EDITED");
+        assert_eq!(plan.reply_body, "Real homeserver QA reply to message 1");
+        // The reply body must not carry the search token, so replying does not
+        // perturb the later search-probe assertion.
+        assert!(!plan.reply_body.contains(&plan.search_token));
     }
 }
 
@@ -684,6 +690,28 @@ async fn run_async(
     let (_, event2_id) =
         wait_for_send_completed(&mut conn, send2_id, &timeline_key, "send msg2").await?;
     let line = format!("send_msg2=ok event_id={event2_id}");
+    transcript.push(line.clone());
+    println!("{line}");
+
+    // Reply to message 1, proving SendReply works against the real homeserver
+    // now that reply support is green on the local lanes (roadmap Phase 15).
+    // The reply targets a plain message event and its body carries no search
+    // token, so it does not perturb the later search-probe assertion.
+    let txn_reply = format!("real-qa-txn-reply-{ts}");
+    let reply_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendReply {
+        request_id: reply_id,
+        key: timeline_key.clone(),
+        transaction_id: txn_reply,
+        in_reply_to_event_id: event1_id.clone(),
+        body: message_plan.reply_body.clone(),
+    }))
+    .await
+    .map_err(|e| format!("send reply command submit failed: {e}"))?;
+
+    let (_, reply_event_id) =
+        wait_for_send_completed(&mut conn, reply_id, &timeline_key, "send reply").await?;
+    let line = format!("real_reply=ok event_id={reply_event_id}");
     transcript.push(line.clone());
     println!("{line}");
 

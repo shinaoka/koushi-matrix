@@ -52,6 +52,12 @@ This lane validates the same core flows against matrix.org with a bounded
 compatibility subset. It must avoid OS keychain access, use one login per run,
 and clean up created rooms, spaces, and sessions even after earlier failures.
 
+The subset exercises room creation, space creation, space-child linking,
+send/edit/redact/search, and — added once reply was proven on the local lanes
+(roadmap Phase 15) — **reply** (`SendReply`). It leaves and forgets every
+created room and space. Real-homeserver run tokens include `real_reply=ok`,
+`leave_room=ok forget_room=ok`, and `real_space_cleanup=ok`.
+
 Required success tokens for the compatibility subset:
 
 ```text
