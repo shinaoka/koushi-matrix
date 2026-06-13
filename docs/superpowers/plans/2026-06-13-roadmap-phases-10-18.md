@@ -282,6 +282,13 @@ Exit gate: standing gates + Linux lane suite incl. notification/badge
 assertions. Gap watchlist: resolved by the canon/policy line for redacted
 attention fields.
 
+Headless basic-operation QA is tracked in
+[headless-basic-operations.md](../../qa/headless-basic-operations.md).
+Local headless lanes run all scenarios; matrix.org uses the compatibility
+subset until room-space cleanup and reply/thread support are proven locally.
+Linux virtual-display client QA targets `gui_local_login=ok` and
+`gui_local_send=ok`.
+
 ## Phase 16 — Device verification and cross-signing (E2EE trust)
 
 Goal: close the canon's declared open area. PRECONDITION: a dated spec
