@@ -149,6 +149,9 @@ stateDiagram-v2
   recoverable `basic_operation_failed` error.
 - Event vs. state: `BasicOperationRequest` describes intent; the reducer derives
   the resulting `BasicOperationState`. An action never carries the target state.
+- Producer: in production `matrix-desktop-core`'s `RoomActor` dispatches these
+  events around the `CreateRoom` / `CreateSpace` / `SetSpaceChild` SDK calls,
+  using the command's `request_id` (its `sequence`) as the correlation id.
 
 ## Search
 

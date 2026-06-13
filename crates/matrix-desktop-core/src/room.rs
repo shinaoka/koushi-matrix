@@ -55,7 +55,7 @@
 use std::sync::Arc;
 
 use matrix_desktop_sdk::{MatrixClientSession, MatrixRoomOperationError};
-use matrix_desktop_state::{AppAction, RoomSummary, SpaceSummary};
+use matrix_desktop_state::{AppAction, BasicOperationRequest, RoomSummary, SpaceSummary};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::RoomCommand;
@@ -63,6 +63,13 @@ use crate::event::{CoreEvent, RoomEvent};
 use crate::executor;
 use crate::failure::{CoreFailure, RoomFailureKind};
 use crate::ids::RequestId;
+
+/// Fixed, content-free messages recorded in `AppState.errors` when a basic
+/// operation fails. Raw SDK errors are classified into `RoomFailureKind` for the
+/// transport `OperationFailed` event and never placed in product state.
+const CREATE_ROOM_FAILED_MESSAGE: &str = "Room creation failed";
+const CREATE_SPACE_FAILED_MESSAGE: &str = "Space creation failed";
+const LINK_SPACE_CHILD_FAILED_MESSAGE: &str = "Linking the room to the space failed";
 
 /// Messages sent to the RoomActor from AccountActor / SyncActor.
 pub enum RoomMessage {
@@ -315,12 +322,22 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
+        // Drive the basic-operation state machine: Idle -> CreatingRoom. The
+        // reducer guards re-entry; `request_id.sequence` is the correlation id
+        // the settle action below must match.
+        self.reduce(vec![AppAction::BasicOperationRequested {
+            request_id: request_id.sequence,
+            request: BasicOperationRequest::CreateRoom { name: name.clone() },
+        }]);
         match matrix_desktop_sdk::create_room(session, &name).await {
             Ok(room_id) => {
                 self.emit(CoreEvent::Room(RoomEvent::RoomCreated {
                     request_id,
                     room_id,
                 }));
+                self.reduce(vec![AppAction::BasicOperationSucceeded {
+                    request_id: request_id.sequence,
+                }]);
                 // Reflect the actor's own mutation immediately instead of
                 // waiting for the next sync round-trip.
                 self.refresh_room_list().await;
@@ -328,6 +345,10 @@ impl RoomActor {
             Err(error) => {
                 let kind = classify_room_error(&error);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+                self.reduce(vec![AppAction::BasicOperationFailed {
+                    request_id: request_id.sequence,
+                    message: CREATE_ROOM_FAILED_MESSAGE.to_owned(),
+                }]);
             }
         }
     }
@@ -337,18 +358,30 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
+        // Drive the basic-operation state machine: Idle -> CreatingSpace.
+        self.reduce(vec![AppAction::BasicOperationRequested {
+            request_id: request_id.sequence,
+            request: BasicOperationRequest::CreateSpace { name: name.clone() },
+        }]);
         match matrix_desktop_sdk::create_space(session, &name).await {
             Ok(space_id) => {
                 self.emit(CoreEvent::Room(RoomEvent::SpaceCreated {
                     request_id,
                     space_id,
                 }));
+                self.reduce(vec![AppAction::BasicOperationSucceeded {
+                    request_id: request_id.sequence,
+                }]);
                 // Reflect the actor's own mutation immediately.
                 self.refresh_room_list().await;
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+                self.reduce(vec![AppAction::BasicOperationFailed {
+                    request_id: request_id.sequence,
+                    message: CREATE_SPACE_FAILED_MESSAGE.to_owned(),
+                }]);
             }
         }
     }
@@ -364,6 +397,14 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
+        // Drive the basic-operation state machine: Idle -> LinkingSpaceChild.
+        self.reduce(vec![AppAction::BasicOperationRequested {
+            request_id: request_id.sequence,
+            request: BasicOperationRequest::LinkSpaceChild {
+                space_id: space_id.clone(),
+                child_room_id: child_room_id.clone(),
+            },
+        }]);
         match matrix_desktop_sdk::set_space_child(session, &space_id, &child_room_id, &via_server)
             .await
         {
@@ -373,12 +414,19 @@ impl RoomActor {
                     space_id,
                     child_room_id,
                 }));
+                self.reduce(vec![AppAction::BasicOperationSucceeded {
+                    request_id: request_id.sequence,
+                }]);
                 // Reflect the actor's own mutation immediately.
                 self.refresh_room_list().await;
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+                self.reduce(vec![AppAction::BasicOperationFailed {
+                    request_id: request_id.sequence,
+                    message: LINK_SPACE_CHILD_FAILED_MESSAGE.to_owned(),
+                }]);
             }
         }
     }
