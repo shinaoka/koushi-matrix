@@ -720,6 +720,12 @@ pub fn run() {
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
+            commands::create_room,
+            commands::create_space,
+            commands::set_space_child,
+            commands::set_composer_reply_target,
+            commands::cancel_composer_reply,
+            commands::send_reply,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run matrix desktop app");

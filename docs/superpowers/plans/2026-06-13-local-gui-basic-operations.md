@@ -507,7 +507,7 @@ Expected: both pass.
 - Test: `apps/desktop/src-tauri/src/commands.rs`
 - Test: `apps/desktop/src/domain/desktopModel.test.ts`
 
-- [ ] **Step 1: Add failing Tauri command-builder tests**
+- [x] **Step 1: Add failing Tauri command-builder tests**
 
 Extend `tauri_command_routes_build_expected_core_commands` in
 `apps/desktop/src-tauri/src/commands.rs` to assert builders for:
@@ -539,7 +539,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml tauri_command_route
 
 Expected: fails because the builders are missing.
 
-- [ ] **Step 2: Add transport-only Tauri commands**
+- [x] **Step 2: Add transport-only Tauri commands**
 
 Add commands:
 
@@ -596,7 +596,7 @@ QA title, and return `current_snapshot`. The `create_*` commands should wait
 for the correlated `RoomEvent` before returning when practical, following the
 existing `select_room` event-wait pattern.
 
-- [ ] **Step 3: Register commands**
+- [x] **Step 3: Register commands**
 
 Add the new commands to `tauri::generate_handler!` in
 `apps/desktop/src-tauri/src/lib.rs`.

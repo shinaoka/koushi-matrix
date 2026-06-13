@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
 
 use matrix_desktop_core::{
-    AccountCommand, AccountEvent, AccountKey, CoreCommand, CoreConnection, CoreEvent,
-    PaginationDirection, RequestId, RoomCommand, SearchCommand, SearchScope, SyncCommand,
+    AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
+    PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand, SearchScope, SyncCommand,
     TimelineCommand, TimelineKey, TimelineKind,
 };
 use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest, SessionInfo};
@@ -611,6 +611,182 @@ pub async fn submit_search(
     current_snapshot(state.inner()).await
 }
 
+const CREATE_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+async fn wait_for_room_created(
+    event_conn: &mut CoreConnection,
+    create_request_id: RequestId,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "room creation did not complete".to_owned())?;
+        match event {
+            Ok(CoreEvent::Room(RoomEvent::RoomCreated { request_id, .. }))
+                if request_id == create_request_id =>
+            {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed { request_id, .. })
+                if request_id == create_request_id =>
+            {
+                return Err("room creation failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_) => return Err("room creation event stream lagged".to_owned()),
+        }
+    }
+}
+
+async fn wait_for_space_created(
+    event_conn: &mut CoreConnection,
+    create_request_id: RequestId,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "space creation did not complete".to_owned())?;
+        match event {
+            Ok(CoreEvent::Room(RoomEvent::SpaceCreated { request_id, .. }))
+                if request_id == create_request_id =>
+            {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed { request_id, .. })
+                if request_id == create_request_id =>
+            {
+                return Err("space creation failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_) => return Err("space creation event stream lagged".to_owned()),
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn create_room(
+    name: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_create_room_command(request_id, name))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_created(&mut event_conn, request_id, CREATE_EVENT_TIMEOUT).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn create_space(
+    name: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_create_space_command(request_id, name))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_space_created(&mut event_conn, request_id, CREATE_EVENT_TIMEOUT).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_space_child(
+    space_id: String,
+    child_room_id: String,
+    via_server: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_space_child_command(request_id, space_id, child_room_id, via_server),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_composer_reply_target(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::App(AppCommand::SetComposerReplyTarget {
+            request_id,
+            room_id,
+            event_id,
+        }),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn cancel_composer_reply(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::App(AppCommand::CancelComposerReply { request_id }),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn send_reply(
+    room_id: String,
+    in_reply_to_event_id: String,
+    body: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if body.trim().is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let transaction_id = format!(
+        "desktop-{}",
+        NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) = build_send_reply_command(
+        request_id,
+        account_key,
+        room_id,
+        transaction_id,
+        in_reply_to_event_id,
+        body,
+    ) {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
 // ---- Helpers ----
 
 pub(crate) fn build_submit_login_command(
@@ -787,6 +963,54 @@ pub(crate) fn build_submit_search_command(
         query,
         scope,
     })
+}
+
+pub(crate) fn build_create_room_command(
+    request_id: matrix_desktop_core::RequestId,
+    name: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::CreateRoom { request_id, name })
+}
+
+pub(crate) fn build_create_space_command(
+    request_id: matrix_desktop_core::RequestId,
+    name: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::CreateSpace { request_id, name })
+}
+
+pub(crate) fn build_set_space_child_command(
+    request_id: matrix_desktop_core::RequestId,
+    space_id: String,
+    child_room_id: String,
+    via_server: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::SetSpaceChild {
+        request_id,
+        space_id,
+        child_room_id,
+        via_server,
+    })
+}
+
+pub(crate) fn build_send_reply_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    transaction_id: String,
+    in_reply_to_event_id: String,
+    body: String,
+) -> Option<CoreCommand> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SendReply {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        transaction_id,
+        in_reply_to_event_id,
+        body,
+    }))
 }
 
 /// Derive the `AccountKey` for the currently active session from the snapshot.
@@ -976,11 +1200,12 @@ mod tests {
 
     use super::SearchScopeKind;
     use super::{
-        build_edit_message_command, build_forget_room_command, build_leave_room_command,
-        build_logout_command, build_paginate_timeline_backwards_command,
-        build_redact_message_command, build_restart_sync_command, build_select_room_command,
-        build_select_space_command, build_send_text_command, build_submit_login_command,
-        build_submit_recovery_command, build_submit_search_command,
+        build_create_room_command, build_create_space_command, build_edit_message_command,
+        build_forget_room_command, build_leave_room_command, build_logout_command,
+        build_paginate_timeline_backwards_command, build_redact_message_command,
+        build_restart_sync_command, build_select_room_command, build_select_space_command,
+        build_send_reply_command, build_send_text_command, build_set_space_child_command,
+        build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
         build_subscribe_timeline_command, build_switch_account_command,
         parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
@@ -1322,7 +1547,7 @@ mod tests {
             }) => {
                 assert_eq!(request_id, fake_request_id(15));
                 assert_eq!(route_query, query);
-                assert_eq!(scope, SearchScope::Room { room_id });
+                assert_eq!(scope, SearchScope::Room { room_id: room_id.clone() });
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -1331,6 +1556,72 @@ mod tests {
             resolve_search_scope_from_active_room(SearchScopeKind::CurrentRoom, None,),
             SearchScope::Global
         );
+
+        match build_create_room_command(fake_request_id(16), "Local QA Room".to_owned()) {
+            CoreCommand::Room(RoomCommand::CreateRoom { request_id, name }) => {
+                assert_eq!(request_id, fake_request_id(16));
+                assert_eq!(name, "Local QA Room");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_create_space_command(fake_request_id(17), "Local QA Space".to_owned()) {
+            CoreCommand::Room(RoomCommand::CreateSpace { request_id, name }) => {
+                assert_eq!(request_id, fake_request_id(17));
+                assert_eq!(name, "Local QA Space");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_space_child_command(
+            fake_request_id(18),
+            "!space:example.org".to_owned(),
+            "!room:example.org".to_owned(),
+            "example.org".to_owned(),
+        ) {
+            CoreCommand::Room(RoomCommand::SetSpaceChild {
+                request_id,
+                space_id,
+                child_room_id,
+                via_server,
+            }) => {
+                assert_eq!(request_id, fake_request_id(18));
+                assert_eq!(space_id, "!space:example.org");
+                assert_eq!(child_room_id, "!room:example.org");
+                assert_eq!(via_server, "example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_send_reply_command(
+            fake_request_id(19),
+            active_account_key.clone(),
+            room_id.clone(),
+            "desktop-reply-1".to_owned(),
+            "$root".to_owned(),
+            "reply body".to_owned(),
+        )
+        .expect("send_reply should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::SendReply {
+                request_id,
+                key,
+                transaction_id,
+                in_reply_to_event_id,
+                body,
+            }) => {
+                assert_eq!(request_id, fake_request_id(19));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room { room_id: room_id.clone() }
+                );
+                assert_eq!(transaction_id, "desktop-reply-1");
+                assert_eq!(in_reply_to_event_id, "$root");
+                assert_eq!(body, "reply body");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]
