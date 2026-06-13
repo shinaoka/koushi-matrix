@@ -53,6 +53,8 @@ Phase 8/9 changelog). Docs-sync check closes every phase.
 | D3 | Media: view/download attachments? Send? | View/download filenames only via search results; no media send | P12, P17 |
 | D4 | Desktop notifications on new messages? | Yes, OS notifications with redacted content option | P15 |
 | D5 | Auto-update channel for releases? | No auto-update in first release; manual download | P18 |
+| D6 | Identity server (vector.im) — 3PID lookup / email invites? | No identity server in first release: invites by MXID only, no 3PID binding (privacy-default; Element itself gates it behind consent) | P12 invite UI copy, P18 scope freeze |
+| D7 | Emoji rendering: system fonts or bundled twemoji-colr? | System emoji fonts (zero bundling/licensing); revisit if cross-platform consistency complaints arise. If twemoji-colr is ever bundled, THIRD_PARTY_NOTICES must carry the Mozilla Apache-2.0 (font) and Twitter CC-BY-4.0 (art) attributions | P14 (Linux container must install Noto Color Emoji or render checks break), P16 (emoji SAS display), P18 notices |
 
 ## Phase 10 — Headless UI contract and harness hardening
 
@@ -198,7 +200,9 @@ primary GUI development moves to Linux at exit.
 - [ ] Provision Linux env (container or VM): Rust toolchain, Node, tauri
   deps (`webkit2gtk`, `libayatana-appindicator`…), Xvfb, `tauri-driver`,
   WebdriverIO; Conduit/Tuwunel built with the documented flags (AGENTS.md
-  caveats apply on Linux too — record deltas).
+  caveats apply on Linux too — record deltas). Install Noto Color Emoji
+  (D7): without it WebKitGTK renders tofu for emoji and Phase 16's emoji
+  SAS display cannot be verified.
 - [ ] Repo runs whole standing-gate suite on Linux (fix platform breaks:
   keychain → file credential store is debug-gated already; `keyring`
   crate's linux backend behavior documented; paths).
@@ -271,8 +275,9 @@ Implementation after spec:
 - [ ] Real homeserver QA: cross-sign the QA device via recovery key
   (`recovery=completed` already proves secret storage access); verify a
   second ephemeral device end to end, then sign out both.
-- [ ] UI: verification dialogs (emoji grid), device list in settings,
-  shield badges — headless + Linux lane specs.
+- [ ] UI: verification dialogs (emoji grid — rendering per D7; the 64 SAS
+  emoji must be visually distinct on every supported platform), device
+  list in settings, shield badges — headless + Linux lane specs.
 
 Exit gate: standing gates + both QA tiers + Linux lane verification flow.
 Gap watchlist: SDK verification API stream shapes; Conduit/Tuwunel
