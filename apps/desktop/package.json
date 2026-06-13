@@ -11,6 +11,8 @@
     "qa:linux-gui": "node ../../scripts/desktop-linux-gui-qa.mjs --run",
     "qa:headless-local": "node ../../scripts/desktop-headless-local-qa.mjs --run",
     "qa:headless-core": "node ../../scripts/desktop-headless-local-qa.mjs --run --core",
+    "qa:headless-basic:local": "node ../../scripts/desktop-headless-local-qa.mjs --run --server=both --core --scenario=all",
+    "qa:headless-basic:real": "node ../../scripts/desktop-real-homeserver-qa.mjs --run --scenario=compat",
     "qa:manual": "node ../../scripts/desktop-manual-qa.mjs --markdown",
     "qa:real-account": "cargo run -p matrix-desktop-sdk --features smoke --bin password-login-smoke -- --real-account-qa",
     "qa:real-homeserver": "node ../../scripts/desktop-real-homeserver-qa.mjs --run",

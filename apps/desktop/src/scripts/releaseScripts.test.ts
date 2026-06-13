@@ -153,6 +153,19 @@ describe("desktop release scripts", () => {
     expect(output).toContain("package.scripts.qa:headless-local");
   });
 
+  test("package scripts expose the headless basic QA aggregators", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../../../../apps/desktop/package.json", import.meta.url), "utf8")
+    );
+
+    expect(packageJson.scripts?.["qa:headless-basic:local"]).toBe(
+      "node ../../scripts/desktop-headless-local-qa.mjs --run --server=both --core --scenario=all"
+    );
+    expect(packageJson.scripts?.["qa:headless-basic:real"]).toBe(
+      "node ../../scripts/desktop-real-homeserver-qa.mjs --run --scenario=compat"
+    );
+  });
+
   test("package scripts expose the linux GUI smoke runner", () => {
     const packageJson = JSON.parse(
       readFileSync(new URL("../../../../apps/desktop/package.json", import.meta.url), "utf8")

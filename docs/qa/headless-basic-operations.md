@@ -9,6 +9,12 @@ This contract covers three lanes:
 
 ## Local headless lane
 
+Run:
+
+```bash
+npm --prefix apps/desktop run qa:headless-basic:local
+```
+
 This lane runs against disposable local homeservers and must prove the full
 basic-operations scenario set.
 
@@ -26,6 +32,12 @@ restore_cleanup=ok
 ```
 
 ## matrix.org compatibility lane
+
+Run:
+
+```bash
+npm --prefix apps/desktop run qa:headless-basic:real
+```
 
 This lane validates the same core flows against matrix.org with a bounded
 compatibility subset. It must avoid OS keychain access, use one login per run,

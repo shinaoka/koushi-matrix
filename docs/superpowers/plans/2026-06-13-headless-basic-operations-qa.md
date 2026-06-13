@@ -157,7 +157,7 @@ git diff --check docs/qa/headless-basic-operations.md docs/superpowers/plans/202
 
 Expected: exit 0.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/qa/headless-basic-operations.md docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md
@@ -602,7 +602,7 @@ git commit -m "qa: add real homeserver space compatibility stage"
 - Modify: `apps/desktop/package.json`
 - Modify: `docs/qa/headless-basic-operations.md`
 
-- [ ] **Step 1: Add package scripts**
+- [x] **Step 1: Add package scripts**
 
 In `apps/desktop/package.json`:
 
@@ -611,7 +611,7 @@ In `apps/desktop/package.json`:
 "qa:headless-basic:real": "node ../../scripts/desktop-real-homeserver-qa.mjs --run --scenario=compat"
 ```
 
-- [ ] **Step 2: Update docs commands**
+- [x] **Step 2: Update docs commands**
 
 In `docs/qa/headless-basic-operations.md`, replace long commands with:
 
@@ -620,7 +620,7 @@ npm --prefix apps/desktop run qa:headless-basic:local
 npm --prefix apps/desktop run qa:headless-basic:real
 ```
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
 npm --prefix apps/desktop run qa:headless-basic:local
@@ -630,7 +630,7 @@ node scripts/desktop-release-gate-check.mjs --no-compile
 
 Expected: local QA passes; secret scan and release gate pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/desktop/package.json docs/qa/headless-basic-operations.md
