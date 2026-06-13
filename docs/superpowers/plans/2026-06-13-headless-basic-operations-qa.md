@@ -484,7 +484,7 @@ git commit -m "feat: add headless Matrix reply command"
 - Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
 - Modify if needed: `crates/matrix-desktop-core/src/timeline.rs`
 
-- [ ] **Step 1: Write a local thread scenario using existing `TimelineKind::Thread`**
+- [x] **Step 1: Write a local thread scenario using existing `TimelineKind::Thread`**
 
 After the root event id is known, build:
 
@@ -498,17 +498,23 @@ let thread_key_b = TimelineKey {
 };
 ```
 
-Subscribe B to `thread_key_b`, send text or `SendReply` through the thread key, and assert A can subscribe to the same thread key and receive the item.
+Subscribe B to `thread_key_b`, send `SendReply` through the thread key, and
+assert A can subscribe to the same thread key and receive the reply item.
+The reply item may require backward pagination when the initial snapshot does
+not already contain it, and the QA must still verify that
+`in_reply_to_event_id` matches the known root event id. The root event itself
+is already proven by the room timeline flow and does not need to be reloaded
+inside the thread-focused timeline.
 
-- [ ] **Step 2: Emit thread token**
+- [x] **Step 2: Emit thread token**
 
-When the thread timeline receives root + reply:
+When the thread timeline receives the reply and confirms its relation:
 
 ```rust
 println!("thread=ok");
 ```
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
 npm --prefix apps/desktop run qa:headless-local -- --server=both --core --scenario=all

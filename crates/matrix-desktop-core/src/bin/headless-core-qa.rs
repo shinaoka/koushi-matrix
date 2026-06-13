@@ -44,7 +44,7 @@ use matrix_desktop_core::event::{
     SyncBackendKind, SyncEvent, TimelineEvent,
 };
 use matrix_desktop_core::failure::CoreFailure;
-use matrix_desktop_core::ids::{AccountKey, TimelineKey};
+use matrix_desktop_core::ids::{AccountKey, TimelineKey, TimelineKind};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{AppState, AuthSecret, SessionState};
 
@@ -89,6 +89,7 @@ enum QaStage {
     RoomSpace,
     Timeline,
     Reply,
+    Thread,
     EditRedactSearch,
     RestoreCleanup,
 }
@@ -181,20 +182,6 @@ impl QaScenario {
         }
     }
 
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Safety => "safety",
-            Self::LoginSync => "login_sync",
-            Self::RoomSpace => "room_space",
-            Self::Timeline => "timeline",
-            Self::Reply => "reply",
-            Self::Thread => "thread",
-            Self::EditRedactSearch => "edit_redact_search",
-            Self::RestoreCleanup => "restore_cleanup",
-        }
-    }
-
     fn should_run_stage(self, stage: QaStage) -> bool {
         match self {
             Self::All => true,
@@ -216,6 +203,15 @@ impl QaScenario {
                     | QaStage::Timeline
                     | QaStage::Reply
             ),
+            Self::Thread => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::Reply
+                    | QaStage::Thread
+            ),
             Self::EditRedactSearch => matches!(
                 stage,
                 QaStage::Safety
@@ -233,28 +229,23 @@ impl QaScenario {
                     | QaStage::EditRedactSearch
                     | QaStage::RestoreCleanup
             ),
-            Self::Thread => false,
         }
     }
 }
 
 fn scenario_preflight_error(scenario: QaScenario) -> Result<(), String> {
-    match scenario {
-        QaScenario::Thread => Err(format!(
-            "scenario {} is not implemented until true Matrix reply support lands",
-            scenario.as_str()
-        )),
-        _ => Ok(()),
-    }
+    let _ = scenario;
+    Ok(())
 }
 
-fn implemented_final_tokens() -> [&'static str; 7] {
+fn implemented_final_tokens() -> [&'static str; 8] {
     [
         "safety=ok",
         "login_sync=ok",
         "room_space=ok",
         "timeline=ok",
         "reply=ok",
+        "thread=ok",
         "edit_redact_search=ok",
         "restore_cleanup=ok",
     ]
@@ -278,6 +269,14 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Timeline,
             QaStage::Reply,
         ],
+        QaScenario::Thread => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::Reply,
+            QaStage::Thread,
+        ],
         QaScenario::EditRedactSearch => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -299,10 +298,10 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::RoomSpace,
             QaStage::Timeline,
             QaStage::Reply,
+            QaStage::Thread,
             QaStage::EditRedactSearch,
             QaStage::RestoreCleanup,
         ],
-        QaScenario::Thread => Vec::new(),
     }
 }
 
@@ -318,6 +317,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
                     QaStage::RoomSpace => "room_space=ok",
                     QaStage::Timeline => "timeline=ok",
                     QaStage::Reply => "reply=ok",
+                    QaStage::Thread => "thread=ok",
                     QaStage::EditRedactSearch => "edit_redact_search=ok",
                     QaStage::RestoreCleanup => "restore_cleanup=ok",
                 })
@@ -329,6 +329,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         QaScenario::RoomSpace
         | QaScenario::Timeline
         | QaScenario::Reply
+        | QaScenario::Thread
         | QaScenario::EditRedactSearch
         | QaScenario::RestoreCleanup => {
             let mut tokens = stages_for_scenario(scenario)
@@ -339,6 +340,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
                     QaStage::RoomSpace => "room_space=ok",
                     QaStage::Timeline => "timeline=ok",
                     QaStage::Reply => "reply=ok",
+                    QaStage::Thread => "thread=ok",
                     QaStage::EditRedactSearch => "edit_redact_search=ok",
                     QaStage::RestoreCleanup => "restore_cleanup=ok",
                 })
@@ -348,7 +350,6 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
             tokens
         }
         QaScenario::All => implemented_final_tokens().to_vec(),
-        QaScenario::Thread => Vec::new(),
     }
 }
 
@@ -1018,6 +1019,124 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             ));
         }
         println!("reply=ok");
+    }
+
+    if scenario.should_run_stage(QaStage::Thread) {
+        // -------------------------------------------------------------------
+        // --- Phase 5c: Thread timeline QA ---
+        // -------------------------------------------------------------------
+
+        let thread_key_b = TimelineKey {
+            account_key: account_key_b.clone(),
+            kind: TimelineKind::Thread {
+                room_id: room_id.clone(),
+                root_event_id: event1_id.clone(),
+            },
+        };
+        let subscribe_thread_b_id = conn_b.next_request_id();
+        conn_b
+            .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+                request_id: subscribe_thread_b_id,
+                key: thread_key_b.clone(),
+            }))
+            .await
+            .map_err(|e| format!("submit subscribe thread B: {e}"))?;
+
+        wait_for_initial_items(
+            &mut conn_b,
+            &thread_key_b,
+            subscribe_thread_b_id,
+            "subscribe thread B",
+        )
+        .await?;
+
+        let txn_b_thread_reply = "qa-phase5-txn-b-thread-reply".to_owned();
+        let send_b_thread_reply_id = conn_b.next_request_id();
+        conn_b
+            .command(CoreCommand::Timeline(TimelineCommand::SendReply {
+                request_id: send_b_thread_reply_id,
+                key: thread_key_b.clone(),
+                transaction_id: txn_b_thread_reply.clone(),
+                in_reply_to_event_id: event1_id.clone(),
+                body: "Phase 5 QA thread reply from B".to_owned(),
+            }))
+            .await
+            .map_err(|e| format!("submit B thread reply: {e}"))?;
+
+        let (_thread_b_echo_txn, _thread_b_reply_event_id) = wait_for_send_completed(
+            &mut conn_b,
+            send_b_thread_reply_id,
+            &thread_key_b,
+            "B thread reply completed",
+        )
+        .await?;
+
+        let thread_key_a = TimelineKey {
+            account_key: account_key_a.clone(),
+            kind: TimelineKind::Thread {
+                room_id: room_id.clone(),
+                root_event_id: event1_id.clone(),
+            },
+        };
+        let subscribe_thread_a_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+                request_id: subscribe_thread_a_id,
+                key: thread_key_a.clone(),
+            }))
+            .await
+            .map_err(|e| format!("submit subscribe thread A: {e}"))?;
+
+        let thread_initial_items = wait_for_initial_items(
+            &mut conn_a,
+            &thread_key_a,
+            subscribe_thread_a_id,
+            "subscribe thread A",
+        )
+        .await?;
+
+        let thread_item = if thread_initial_items_need_paginate_backfill(
+            &thread_initial_items,
+            "Phase 5 QA thread reply from B",
+        ) {
+            wait_for_thread_reply_item(
+                &mut conn_a,
+                &thread_key_a,
+                &thread_initial_items,
+                "Phase 5 QA thread reply from B",
+                "A receives thread reply from B",
+            )
+            .await?
+        } else {
+            find_timeline_item_with_body(&thread_initial_items, "Phase 5 QA thread reply from B")
+                .expect("thread reply present after initial scan")
+        };
+        if thread_item.in_reply_to_event_id != Some(event1_id.clone()) {
+            return Err(format!(
+                "thread relation mismatch: expected {:?}, got {:?}",
+                Some(event1_id.clone()),
+                thread_item.in_reply_to_event_id
+            ));
+        }
+        println!("thread=ok");
+
+        let unsub_thread_a_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+                request_id: unsub_thread_a_id,
+                key: thread_key_a.clone(),
+            }))
+            .await
+            .map_err(|e| format!("submit unsubscribe thread A: {e}"))?;
+
+        let unsub_thread_b_id = conn_b.next_request_id();
+        conn_b
+            .command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+                request_id: unsub_thread_b_id,
+                key: thread_key_b.clone(),
+            }))
+            .await
+            .map_err(|e| format!("submit unsubscribe thread B: {e}"))?;
     }
 
     // Unsubscribe A and B to confirm no leaks.
@@ -1918,6 +2037,32 @@ async fn wait_for_initial_items(
     }
 }
 
+fn find_timeline_item_with_body(
+    items: &[matrix_desktop_core::event::TimelineItem],
+    expected_body: &str,
+) -> Option<matrix_desktop_core::event::TimelineItem> {
+    items
+        .iter()
+        .find(|item| {
+            item.body
+                .as_ref()
+                .map(|body| body.contains(expected_body))
+                .unwrap_or(false)
+        })
+        .cloned()
+}
+
+fn thread_initial_items_need_paginate_backfill(
+    initial_items: &[matrix_desktop_core::event::TimelineItem],
+    expected_body: &str,
+) -> bool {
+    find_timeline_item_with_body(initial_items, expected_body).is_none()
+}
+
+fn thread_reply_should_repaginate_on_idle(pagination_ended: bool) -> bool {
+    !pagination_ended
+}
+
 /// Wait for an `ItemsUpdated` diff batch containing any new Transaction item
 /// (local echo). Since the SDK send queue generates its own txn_id (not the
 /// client-supplied one), we just wait for ANY Transaction-id item to appear.
@@ -1992,6 +2137,66 @@ async fn wait_for_send_completed(
                 return Err(format!("{label} failed: {failure:?}"));
             }
             _ => continue,
+        }
+    }
+}
+
+/// Wait for an item whose body contains `expected_body` and return the item so
+/// the caller can assert relation metadata on the projected DTO.
+async fn wait_for_item_with_body(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    expected_body: &str,
+    label: &str,
+) -> Result<matrix_desktop_core::event::TimelineItem, String> {
+    let body_matches = |item: &matrix_desktop_core::event::TimelineItem| {
+        item.body
+            .as_ref()
+            .map(|body| body.contains(expected_body))
+            .unwrap_or(false)
+    };
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for body {expected_body:?}"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                if let Some(item) = find_timeline_item_with_body(&items, expected_body) {
+                    return Ok(item);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                for diff in diffs {
+                    let item = match diff {
+                        matrix_desktop_core::event::TimelineDiff::PushBack { item }
+                        | matrix_desktop_core::event::TimelineDiff::PushFront { item }
+                        | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
+                        | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => item,
+                        matrix_desktop_core::event::TimelineDiff::Reset { items } => {
+                            if let Some(item) = items.into_iter().find(|item| body_matches(item)) {
+                                return Ok(item);
+                            }
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    if body_matches(&item) {
+                        return Ok(item.clone());
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -2083,25 +2288,36 @@ async fn wait_for_bodies_and_pagination_settle(
     }
 }
 
-/// Wait for an item whose body contains `expected_body` and return the item so
-/// the caller can assert relation metadata on the projected DTO.
-async fn wait_for_item_with_body(
+/// Wait for the thread reply item by scanning `initial_items` and subsequent
+/// `InitialItems`, `ItemsUpdated`, and `PaginationStateChanged` events for the
+/// reply body. If the reply is not yet visible, this helper drives additional
+/// backward pagination until the reply arrives or pagination ends/fails.
+async fn wait_for_thread_reply_item(
     conn: &mut CoreConnection,
     key: &TimelineKey,
+    initial_items: &[matrix_desktop_core::event::TimelineItem],
     expected_body: &str,
     label: &str,
 ) -> Result<matrix_desktop_core::event::TimelineItem, String> {
-    let body_matches = |item: &matrix_desktop_core::event::TimelineItem| {
-        item.body
-            .as_ref()
-            .map(|body| body.contains(expected_body))
-            .unwrap_or(false)
-    };
+    if let Some(item) = find_timeline_item_with_body(initial_items, expected_body) {
+        return Ok(item);
+    }
+
+    let mut current_paginate_request_id = conn.next_request_id();
+    let mut pagination_ended = false;
+    conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+        request_id: current_paginate_request_id,
+        key: key.clone(),
+        direction: PaginationDirection::Backward,
+        event_count: 20,
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit thread paginate failed: {e}"))?;
 
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for body {expected_body:?}"))?
+            .map_err(|_| format!("{label}: timed out waiting for thread reply body {expected_body:?}"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -2110,7 +2326,7 @@ async fn wait_for_item_with_body(
                 items,
                 ..
             }) if ev_key == key => {
-                if let Some(item) = items.into_iter().find(|item| body_matches(item)) {
+                if let Some(item) = find_timeline_item_with_body(&items, expected_body) {
                     return Ok(item);
                 }
             }
@@ -2126,17 +2342,56 @@ async fn wait_for_item_with_body(
                         | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
                         | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => item,
                         matrix_desktop_core::event::TimelineDiff::Reset { items } => {
-                            if let Some(item) = items.into_iter().find(|item| body_matches(item)) {
+                            if let Some(item) = find_timeline_item_with_body(&items, expected_body)
+                            {
                                 return Ok(item);
                             }
                             continue;
                         }
                         _ => continue,
                     };
-                    if body_matches(&item) {
+                    if item
+                        .body
+                        .as_ref()
+                        .map(|body| body.contains(expected_body))
+                        .unwrap_or(false)
+                    {
                         return Ok(item.clone());
                     }
                 }
+            }
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                key: ref ev_key,
+                direction,
+                state,
+                ..
+            }) if ev_key == key && direction == PaginationDirection::Backward => match state {
+                PaginationState::Idle => {
+                    if thread_reply_should_repaginate_on_idle(pagination_ended) {
+                        current_paginate_request_id = conn.next_request_id();
+                        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+                            request_id: current_paginate_request_id,
+                            key: key.clone(),
+                            direction: PaginationDirection::Backward,
+                            event_count: 20,
+                        }))
+                        .await
+                        .map_err(|e| format!("{label}: re-paginate thread failed: {e}"))?;
+                    }
+                }
+                PaginationState::EndReached => {
+                    pagination_ended = true;
+                }
+                PaginationState::Failed { kind } => {
+                    return Err(format!("{label}: thread pagination failed: {kind:?}"));
+                }
+                PaginationState::Paginating => {}
+            },
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == current_paginate_request_id => {
+                return Err(format!("{label}: thread paginate failed: {failure:?}"));
             }
             _ => {}
         }
@@ -2509,6 +2764,7 @@ mod tests {
             QaScenario::RoomSpace,
             QaScenario::Timeline,
             QaScenario::Reply,
+            QaScenario::Thread,
             QaScenario::EditRedactSearch,
             QaScenario::RestoreCleanup,
         ] {
@@ -2517,13 +2773,117 @@ mod tests {
     }
 
     #[test]
-    fn thread_is_explicitly_unimplemented() {
-        let thread = scenario_preflight_error(QaScenario::Thread).unwrap_err();
+    fn thread_is_allowed_by_preflight() {
+        scenario_preflight_error(QaScenario::Thread).unwrap();
+    }
+
+    #[test]
+    fn finds_timeline_item_in_initial_items_by_body_substring() {
+        let items = vec![
+            matrix_desktop_core::event::TimelineItem {
+                id: matrix_desktop_core::event::TimelineItemId::Synthetic {
+                    synthetic_id: "skip".to_owned(),
+                },
+                sender: None,
+                body: Some("first item".to_owned()),
+                timestamp_ms: None,
+                in_reply_to_event_id: None,
+            },
+            matrix_desktop_core::event::TimelineItem {
+                id: matrix_desktop_core::event::TimelineItemId::Event {
+                    event_id: "$thread:test".to_owned(),
+                },
+                sender: Some("@b:test".to_owned()),
+                body: Some("Phase 5 QA thread reply from B".to_owned()),
+                timestamp_ms: None,
+                in_reply_to_event_id: Some("$root:test".to_owned()),
+            },
+        ];
+
+        let item = find_timeline_item_with_body(&items, "thread reply from B")
+            .expect("expected to find thread reply in initial items");
+
+        assert_eq!(item.in_reply_to_event_id, Some("$root:test".to_owned()));
+        assert_eq!(item.body.as_deref(), Some("Phase 5 QA thread reply from B"));
+    }
+
+    #[test]
+    fn thread_reply_missing_from_initial_items_requires_paginate_backfill() {
+        let initial_items = vec![matrix_desktop_core::event::TimelineItem {
+            id: matrix_desktop_core::event::TimelineItemId::Synthetic {
+                synthetic_id: "placeholder".to_owned(),
+            },
+            sender: None,
+            body: Some("Phase 5 QA message 1".to_owned()),
+            timestamp_ms: None,
+            in_reply_to_event_id: None,
+        }];
+
+        assert!(thread_initial_items_need_paginate_backfill(
+            &initial_items,
+            "Phase 5 QA thread reply from B"
+        ));
+    }
+
+    #[test]
+    fn thread_reply_present_in_initial_items_does_not_require_backfill() {
+        let initial_items = vec![matrix_desktop_core::event::TimelineItem {
+            id: matrix_desktop_core::event::TimelineItemId::Synthetic {
+                synthetic_id: "thread-reply".to_owned(),
+            },
+            sender: Some("@b:test".to_owned()),
+            body: Some("Phase 5 QA thread reply from B".to_owned()),
+            timestamp_ms: None,
+            in_reply_to_event_id: Some("$root:test".to_owned()),
+        }];
+
+        assert!(!thread_initial_items_need_paginate_backfill(
+            &initial_items,
+            "Phase 5 QA thread reply from B"
+        ));
+    }
+
+    #[test]
+    fn thread_reply_stops_repagination_after_end_reached() {
+        assert!(thread_reply_should_repaginate_on_idle(false));
+        assert!(!thread_reply_should_repaginate_on_idle(true));
+    }
+
+    #[test]
+    fn find_timeline_item_with_body_finds_thread_reply_in_one_batch() {
+        let items = vec![
+            matrix_desktop_core::event::TimelineItem {
+                id: matrix_desktop_core::event::TimelineItemId::Synthetic {
+                    synthetic_id: "thread-reply".to_owned(),
+                },
+                sender: Some("@b:test".to_owned()),
+                body: Some("Phase 5 QA thread reply from B".to_owned()),
+                timestamp_ms: None,
+                in_reply_to_event_id: Some("$root:test".to_owned()),
+            },
+        ];
 
         assert_eq!(
-            thread,
-            "scenario thread is not implemented until true Matrix reply support lands"
+            find_timeline_item_with_body(&items, "thread reply from B")
+                .as_ref()
+                .and_then(|item| item.body.as_deref()),
+            Some("Phase 5 QA thread reply from B")
         );
+    }
+
+    #[test]
+    fn find_timeline_item_with_body_returns_none_when_missing() {
+        let items = vec![matrix_desktop_core::event::TimelineItem {
+            id: matrix_desktop_core::event::TimelineItemId::Synthetic {
+                synthetic_id: "placeholder".to_owned(),
+            },
+            sender: None,
+            body: Some("Phase 5 QA message 1".to_owned()),
+            timestamp_ms: None,
+            in_reply_to_event_id: None,
+        }];
+
+        assert!(find_timeline_item_with_body(&items, "thread reply from B").is_none());
     }
 
     #[test]
@@ -2551,17 +2911,26 @@ mod tests {
         assert!(QaScenario::Reply.should_run_stage(QaStage::Reply));
         assert!(!QaScenario::Reply.should_run_stage(QaStage::EditRedactSearch));
 
+        assert!(QaScenario::Thread.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::Thread.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::Thread.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::Thread.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::Thread.should_run_stage(QaStage::Reply));
+        assert!(QaScenario::Thread.should_run_stage(QaStage::Thread));
+        assert!(!QaScenario::Thread.should_run_stage(QaStage::EditRedactSearch));
+
         assert!(QaScenario::All.should_run_stage(QaStage::Safety));
         assert!(QaScenario::All.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::All.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
+        assert!(QaScenario::All.should_run_stage(QaStage::Thread));
         assert!(QaScenario::All.should_run_stage(QaStage::EditRedactSearch));
         assert!(QaScenario::All.should_run_stage(QaStage::RestoreCleanup));
     }
 
     #[test]
-    fn implemented_final_tokens_include_reply_and_exclude_thread() {
+    fn implemented_final_tokens_include_thread() {
         assert_eq!(
             implemented_final_tokens(),
             [
@@ -2570,6 +2939,7 @@ mod tests {
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
+                "thread=ok",
                 "edit_redact_search=ok",
                 "restore_cleanup=ok",
             ]
@@ -2614,6 +2984,18 @@ mod tests {
             ]
         );
         assert_eq!(
+            final_tokens_for_scenario(QaScenario::Thread),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "reply=ok",
+                "thread=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
             final_tokens_for_scenario(QaScenario::EditRedactSearch),
             [
                 "safety=ok",
@@ -2640,6 +3022,7 @@ mod tests {
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
+                "thread=ok",
                 "edit_redact_search=ok",
                 "restore_cleanup=ok",
             ]
