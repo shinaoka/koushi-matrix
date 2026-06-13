@@ -58,15 +58,34 @@ send/edit/redact/search, and — added once reply was proven on the local lanes
 created room and space. Real-homeserver run tokens include `real_reply=ok`,
 `leave_room=ok forget_room=ok`, and `real_space_cleanup=ok`.
 
-Required success tokens for the compatibility subset:
+The default scenario is `space_compat` (full cleanup-proving lane); `compat` is
+a reduced debug subset. Required success tokens for the default `space_compat`
+lane (the runner enforces these via `scripts/lib/qa-token-contract.mjs`, not just
+the process exit code):
 
 ```text
-safety=ok
-login_sync=ok
-timeline=ok
-edit_redact_search=ok
-restore_cleanup=ok
+login=ok
+sync=running
+qa_room=created
+send_msg1=ok
+send_search=ok
+send_msg2=ok
+real_reply=ok
+edit_msg1=ok
+redact_msg2=ok
+search=ok
+store_restore=ok
+leave_room=ok
+forget_room=ok
+real_space_create=ok
+real_space_child=ok
+real_space_cleanup=ok
+logout=ok
+post_logout_restore=not_found
 ```
+
+Real QA output is private-data-free: the runner additionally rejects any Matrix
+identifier (`@user:server`, `!room:server`, `$event:server`) in the output.
 
 ## Linux virtual-display client lane
 

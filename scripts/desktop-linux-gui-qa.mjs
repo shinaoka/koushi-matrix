@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { createRequire } from "node:module";
 import * as net from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -702,39 +703,27 @@ function guiScenarioServerKind() {
   throw new Error("--server must be conduit or tuwunel for local GUI scenarios");
 }
 
-function writeSensitivePayloadToPath(path, payload, timeout) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("tee", [path], { stdio: ["pipe", "ignore", "pipe"] });
-    let stderr = "";
-    let settled = false;
-    const settle = (callback) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      callback();
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      settle(() => reject(new Error("local GUI login FIFO write timed out")));
-    }, timeout);
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => settle(() => reject(error)));
-    child.on("exit", (code, signal) => {
-      settle(() => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(stderr.trim() || `local GUI login writer exited with ${code ?? signal}`));
-        }
-      });
-    });
-    child.stdin.end(payload);
-  });
+// Write a sensitive payload directly to the FIFO via node:fs/promises. No
+// helper child process is spawned, so no parent environment is inherited by a
+// `tee`-style writer (security: credential payloads must not leak the parent
+// env to a child). `open(path, "w")` blocks until the reader opens the pipe,
+// so the write is bounded by `timeout`.
+async function writeSensitivePayloadToPath(path, payload, timeout) {
+  let handle;
+  const write = async () => {
+    handle = await open(path, "w");
+    await handle.writeFile(payload, "utf8");
+  };
+  try {
+    await Promise.race([
+      write(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("local GUI login FIFO write timed out")), timeout)
+      )
+    ]);
+  } finally {
+    await handle?.close();
+  }
 }
 
 function checkLinuxTools() {

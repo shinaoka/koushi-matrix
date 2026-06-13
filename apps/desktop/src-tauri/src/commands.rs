@@ -153,10 +153,15 @@ pub async fn discover_login_methods(
     homeserver: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // Compatibility shim: discovery is implicit in LoginPassword (core
-    // resolves it), and the frontend keeps homeserver form text locally.
-    // Keeping this command avoids frontend API churn without adding a core
-    // command that would duplicate login behavior.
+    // KNOWN DEFERRED SHIM (tracked, not endorsed): login-flow discovery is
+    // currently implicit in LoginPassword, so this command returns the snapshot
+    // without driving the `auth` LoginDiscovery state machine. Per
+    // REPOSITORY_RULES "State-Machine Discipline" this should become a real core
+    // command that transitions auth `unknown -> discovering -> ready/failed` from
+    // an SDK homeserver/login-flow query (the `LoginDiscovery` reducer state
+    // already exists). It is intentionally left for a focused auth-discovery
+    // change rather than deleted, because removing it would drop the homeserver
+    // login-method UX (e.g. SSO discovery). Do not extend this shim.
     let _ = homeserver;
     current_snapshot(state.inner()).await
 }
@@ -576,9 +581,19 @@ pub async fn open_thread(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // Frontend navigation shim: opening/closing the thread pane is local UI
-    // state until product design requires native cross-window thread commands.
-    let _ = (room_id, root_event_id);
+    // Thread open/close is Rust-owned product state: drive the reducer's
+    // ThreadPaneState through a first-class core command instead of discarding
+    // the inputs in a snapshot-only shim.
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::App(AppCommand::OpenThread {
+            request_id,
+            room_id,
+            root_event_id,
+        }),
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -588,7 +603,12 @@ pub async fn close_thread(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // Same frontend navigation shim as `open_thread`.
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::App(AppCommand::CloseThread { request_id }),
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -1189,6 +1209,88 @@ pub(crate) fn qa_recovery_prompt_is_available(state: &matrix_desktop_state::AppS
     )
 }
 
+// ---- QA control pipe (debug/test only) ----
+//
+// A newline-delimited JSON control channel that lets unattended GUI smoke drive
+// a clean logout after a real login, so no stale device survives the run. This
+// mirrors the QA login pipe: it carries no secrets, only control commands, and
+// is gated to debug/test builds (release builds never read the env var).
+
+#[cfg(any(debug_assertions, test))]
+#[derive(Deserialize)]
+struct QaControlPipeCommand {
+    command: String,
+}
+
+/// Parsed QA control command. Only logout is supported today; unknown commands
+/// are ignored by the reader rather than treated as failures.
+#[cfg(any(debug_assertions, test))]
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum QaControlCommand {
+    Logout,
+    Unknown(String),
+}
+
+#[cfg(any(debug_assertions, test))]
+pub(crate) fn parse_qa_control_pipe_line(line: &str) -> Result<QaControlCommand, String> {
+    let parsed: QaControlPipeCommand =
+        serde_json::from_str(line).map_err(|_| "QA control command was invalid".to_owned())?;
+    Ok(match parsed.command.as_str() {
+        "logout" => QaControlCommand::Logout,
+        other => QaControlCommand::Unknown(other.to_owned()),
+    })
+}
+
+#[cfg(any(debug_assertions, test))]
+pub(crate) fn spawn_qa_control_pipe_reader(app: AppHandle, pipe_path: PathBuf) {
+    tauri::async_runtime::spawn(async move {
+        let contents = match read_qa_control_pipe(pipe_path).await {
+            Ok(contents) => contents,
+            Err(message) => {
+                record_qa_login_failure(&app, &message).await;
+                return;
+            }
+        };
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match parse_qa_control_pipe_line(line) {
+                Ok(QaControlCommand::Logout) => {
+                    let state = app.state::<CoreRuntimeState>();
+                    let request_id = next_request_id(state.inner()).await;
+                    if let Err(message) =
+                        submit_core_command(state.inner(), build_logout_command(request_id)).await
+                    {
+                        record_qa_login_failure(&app, &message).await;
+                        continue;
+                    }
+                    // Surface the post-logout state in the QA window title so the
+                    // smoke harness can wait for `session=signedOut`.
+                    update_qa_window_title_from_state(&app, state.inner()).await;
+                }
+                Ok(QaControlCommand::Unknown(_)) => {
+                    // Forward-compatible: ignore commands we do not recognise.
+                }
+                Err(message) => {
+                    record_qa_login_failure(&app, &message).await;
+                }
+            }
+        }
+    });
+}
+
+#[cfg(any(debug_assertions, test))]
+async fn read_qa_control_pipe(pipe_path: PathBuf) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(pipe_path)
+            .map_err(|_| "QA control pipe could not be read".to_owned())
+    })
+    .await
+    .map_err(|_| "QA control pipe reader failed".to_owned())?
+}
+
 #[cfg(test)]
 mod tests {
     use matrix_desktop_core::AccountKey;
@@ -1207,9 +1309,10 @@ mod tests {
         build_send_reply_command, build_send_text_command, build_set_space_child_command,
         build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
         build_subscribe_timeline_command, build_switch_account_command,
-        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
-        resolve_search_scope_from_active_room,
+        parse_qa_control_pipe_line, parse_qa_login_pipe_payload, qa_recovery_prompt_is_available,
+        qa_window_title_string, resolve_search_scope_from_active_room,
     };
+    use super::QaControlCommand;
     use matrix_desktop_state::RoomSummary;
 
     #[test]
@@ -1235,6 +1338,31 @@ mod tests {
         );
         assert!(!format!("{request:?}").contains("synthetic-password"));
         assert!(!format!("{request:?}").contains("synthetic-recovery-secret"));
+    }
+
+    #[test]
+    fn qa_control_pipe_line_parses_logout_and_ignores_unknown_commands() {
+        assert_eq!(
+            parse_qa_control_pipe_line(r#"{"command":"logout"}"#).expect("logout should parse"),
+            QaControlCommand::Logout
+        );
+        assert_eq!(
+            parse_qa_control_pipe_line(r#"{"command":"focus"}"#).expect("unknown should parse"),
+            QaControlCommand::Unknown("focus".to_owned())
+        );
+        assert!(parse_qa_control_pipe_line("not json").is_err());
+    }
+
+    #[test]
+    fn qa_control_logout_builds_account_logout_command() {
+        // The control pipe must reuse the same logout core command the manual
+        // logout button submits — no bespoke logout path.
+        match build_logout_command(fake_request_id(99)) {
+            CoreCommand::Account(AccountCommand::Logout { request_id }) => {
+                assert_eq!(request_id, fake_request_id(99));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

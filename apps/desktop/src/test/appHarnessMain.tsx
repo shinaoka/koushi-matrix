@@ -55,6 +55,7 @@ interface AppHarnessControl {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   setCommandResponse(command: string, response: any): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
+  replyModeSnapshot(): DesktopSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +237,8 @@ const harnessControl: AppHarnessControl = {
   clearInvocations: () => mock.clearInvocations(),
   setCommandResponse: (command, response) =>
     mock.setCommandResponse(command, response),
-  pushCoreEvent: (event) => emit(CORE_EVENT_NAME, event)
+  pushCoreEvent: (event) => emit(CORE_EVENT_NAME, event),
+  replyModeSnapshot
 };
 (window as unknown as { __harness: AppHarnessControl }).__harness =
   harnessControl;

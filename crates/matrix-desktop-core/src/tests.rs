@@ -385,3 +385,57 @@ async fn app_command_sets_and_clears_reply_target() {
     .await;
     assert_eq!(snapshot.timeline.composer.mode, ComposerMode::Plain);
 }
+
+#[tokio::test]
+async fn send_completion_clears_reply_mode_through_runtime() {
+    // Regression: production send/reply completion must be Rust-owned. The core
+    // drives SendTextSubmitted -> SendTextFinished into AppState so the composer
+    // returns to Plain without React repairing product state after the fact.
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::ComposerReplyTargetSelected {
+                room_id: "!room:example.test".to_owned(),
+                event_id: "$root:example.test".to_owned(),
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.timeline.composer.mode, ComposerMode::Reply { .. })
+    })
+    .await;
+
+    runtime
+        .inject_actions(vec![
+            AppAction::SendTextSubmitted {
+                room_id: "!room:example.test".to_owned(),
+                transaction_id: "txn-reply".to_owned(),
+                body: "reply body".to_owned(),
+            },
+            AppAction::SendTextFinished {
+                room_id: "!room:example.test".to_owned(),
+                transaction_id: "txn-reply".to_owned(),
+            },
+        ])
+        .await;
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        state.timeline.composer.pending_transaction_id.is_none()
+            && state.timeline.composer.mode == ComposerMode::Plain
+    })
+    .await;
+    assert_eq!(snapshot.timeline.composer.mode, ComposerMode::Plain);
+    assert_eq!(snapshot.timeline.composer.pending_transaction_id, None);
+}

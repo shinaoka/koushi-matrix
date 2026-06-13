@@ -147,6 +147,43 @@ describe("desktop release scripts", () => {
     expect(source).toContain("real_space_projection=not_observed");
   });
 
+  test("real homeserver QA runner enforces the private-data-free token contract", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-real-homeserver-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("./lib/qa-token-contract.mjs");
+    expect(source).toContain("assertNoMatrixIdentifiers");
+    expect(source).toContain("assertRequiredTokens");
+    expect(source).toContain("requiredTokensForScenario");
+  });
+
+  test("real homeserver QA binary emits private-data-free tokens (no Matrix ids)", () => {
+    const source = readFileSync(
+      new URL("../../../../crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs", import.meta.url),
+      "utf8"
+    );
+
+    // No token line or summary may interpolate a Matrix identifier.
+    expect(source).not.toContain("event_id={");
+    expect(source).not.toContain("user_id={");
+    expect(source).not.toContain("room_id={");
+    expect(source).not.toContain("space_id={");
+    expect(source).not.toContain("user={user_id}");
+  });
+
+  test("qa token contract helper exposes token and private-data assertions", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/lib/qa-token-contract.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("export function tokensFromOutput");
+    expect(source).toContain("export function assertRequiredTokens");
+    expect(source).toContain("export function assertNoMatrixIdentifiers");
+  });
+
   test("release preflight validates headless local QA entry", () => {
     const output = runScript("scripts/desktop-release-preflight.mjs", ["--check-config"]);
 
@@ -162,8 +199,28 @@ describe("desktop release scripts", () => {
       "node ../../scripts/desktop-headless-local-qa.mjs --run --server=both --core --scenario=all"
     );
     expect(packageJson.scripts?.["qa:headless-basic:real"]).toBe(
-      "node ../../scripts/desktop-real-homeserver-qa.mjs --run --scenario=compat"
+      "node ../../scripts/desktop-real-homeserver-qa.mjs --run --scenario=space_compat"
     );
+  });
+
+  test("headless basic operations docs list the default real space_compat tokens", () => {
+    const docs = readFileSync(
+      new URL("../../../../docs/qa/headless-basic-operations.md", import.meta.url),
+      "utf8"
+    );
+
+    for (const token of [
+      "login=ok",
+      "sync=running",
+      "real_reply=ok",
+      "real_space_create=ok",
+      "real_space_child=ok",
+      "real_space_cleanup=ok",
+      "logout=ok",
+      "post_logout_restore=not_found"
+    ]) {
+      expect(docs).toContain(token);
+    }
   });
 
   test("package scripts expose the linux GUI smoke runner", () => {
@@ -829,6 +886,46 @@ describe("desktop release scripts", () => {
     expect(output).toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE");
   });
 
+  test("mac GUI smoke drives a logout cleanup over the QA control pipe for real login", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    // A second debug/test-only FIFO carries control commands to the app.
+    expect(source).toContain("MATRIX_DESKTOP_QA_CONTROL_PIPE");
+    expect(source).toContain("qa-control.pipe");
+    // The runner writes a logout command and waits for a signed-out QA title
+    // before terminating the process group (no stale device survives the run).
+    expect(source).toContain('JSON.stringify({ command: "logout" })');
+    expect(source).toContain("requestQaLogout");
+    expect(source).toContain("waitForQaSignedOut");
+    expect(source).toContain("--keep-session");
+    // The cleanup runs in teardown only after a real login reached ready.
+    expect(source).toMatch(
+      /finally \{[\s\S]*if \(qaControlPipePath && realLoginReachedReady && !keepSession\)[\s\S]*requestQaLogout\(qaControlPipePath\);[\s\S]*waitForQaSignedOut\(timeoutMs\);[\s\S]*terminateProcessGroup\(child, "SIGTERM"\);/
+    );
+  });
+
+  test("mac GUI smoke control pipe rides the filtered child environment, not the parent env", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    // The control pipe path is threaded through the allow-listed childEnvironment
+    // helper, never via process.env passthrough.
+    expect(source).toContain(
+      "childEnvironment(dataDir, qaLoginPipePath, qaControlPipePath)"
+    );
+    expect(source).toMatch(
+      /function childEnvironment\(dataDir, qaLoginPipePath = null, qaControlPipePath = null\)/
+    );
+    expect(source).toMatch(
+      /if \(qaControlPipePath\) \{[\s\S]*env\.MATRIX_DESKTOP_QA_CONTROL_PIPE = qaControlPipePath;/
+    );
+  });
+
   test("mac GUI smoke reusable profile keeps restore and saved sessions enabled", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
       "--child-env",
@@ -991,5 +1088,27 @@ describe("desktop release scripts", () => {
 
     expect(source).toContain("terminateProcessGroup");
     expect(source).not.toContain('keystroke "q" using command down');
+  });
+
+  test("GUI smoke FIFO writers use node:fs/promises open and never spawn tee", () => {
+    const linuxSource = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+    const macSource = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    for (const source of [linuxSource, macSource]) {
+      // The sensitive-payload writer must use a direct node:fs/promises FIFO
+      // write so no child process inherits the parent environment.
+      expect(source).toContain('import { open } from "node:fs/promises";');
+      expect(source).toContain("async function writeSensitivePayloadToPath(path, payload, timeout)");
+      expect(source).toContain("await open(path, ");
+      // No `tee` helper process anywhere (it would inherit the parent env).
+      expect(source).not.toContain('spawn("tee"');
+      expect(source).not.toContain('"tee"');
+    }
   });
 });

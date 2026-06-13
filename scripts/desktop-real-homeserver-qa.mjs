@@ -33,10 +33,15 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  assertNoMatrixIdentifiers,
+  assertRequiredTokens
+} from "./lib/qa-token-contract.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const realAccountDir = join(repoRoot, ".local-secrets", "real-account-qa");
 const credentialsPath = join(realAccountDir, "credentials.json");
-const scenarioOption = optionValue("--scenario") ?? "compat";
+const scenarioOption = optionValue("--scenario") ?? "space_compat";
 
 const args = process.argv.slice(2);
 if (args.includes("--run")) {
@@ -114,6 +119,11 @@ async function run() {
   // if the binary also failed for a different reason.
   checkForLeaks(result.stdout, result.stderr, credentialsPath, logPath);
 
+  // Matrix identifiers must never appear in real QA output — enforce this even
+  // on failure, since a failed run can still leak an id into captured output.
+  const combinedOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
+  assertNoMatrixIdentifiers(combinedOutput, "real-homeserver-qa");
+
   // Now check exit code.
   if (result.status !== 0) {
     const stdout = (result.stdout || "").trim();
@@ -125,6 +135,14 @@ async function run() {
         `log: ${logPath}`
     );
   }
+
+  // Enforce scenario-specific success tokens (not just exit code): a clean exit
+  // must still prove every documented checkpoint was reached.
+  assertRequiredTokens(
+    combinedOutput,
+    requiredTokensForScenario(scenarioOption),
+    "real-homeserver-qa"
+  );
 
   // Print the binary's summary line (last non-empty stdout line).
   const summaryLine = (result.stdout || "")
@@ -198,6 +216,35 @@ function optionValue(prefix) {
   return arg?.slice(prefix.length + 1);
 }
 
+/**
+ * Required success tokens per scenario. The base set covers login through
+ * logout; space scenarios additionally require the real-space create/link/
+ * cleanup tokens. These mirror docs/qa/headless-basic-operations.md.
+ */
+function requiredTokensForScenario(scenario) {
+  const base = [
+    "login=ok",
+    "sync=running",
+    "qa_room=created",
+    "send_msg1=ok",
+    "send_search=ok",
+    "send_msg2=ok",
+    "real_reply=ok",
+    "edit_msg1=ok",
+    "redact_msg2=ok",
+    "search=ok",
+    "store_restore=ok",
+    "leave_room=ok",
+    "forget_room=ok",
+    "logout=ok",
+    "post_logout_restore=not_found"
+  ];
+  if (scenario === "space_compat" || scenario === "all") {
+    return [...base, "real_space_create=ok", "real_space_child=ok", "real_space_cleanup=ok"];
+  }
+  return base;
+}
+
 function printUsage() {
   console.log(
     "Usage: node scripts/desktop-real-homeserver-qa.mjs --run [--scenario=compat|space_compat|all]"
@@ -206,7 +253,7 @@ function printUsage() {
     "Runs the real-homeserver-qa binary against a real Matrix homeserver."
   );
   console.log(
-    "Scenario defaults to compat; space_compat and all add the real-space compatibility stage."
+    "Scenario defaults to space_compat (full cleanup-proving lane); compat is a reduced debug subset."
   );
   console.log(
     "Requires: .local-secrets/real-account-qa/credentials.json (git-ignored, mode 600)"

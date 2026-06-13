@@ -73,14 +73,16 @@ export function rightPanelModeForSearchQuery(query: string): RightPanelMode | nu
 
 export function effectiveRightPanelModeForSnapshot(
   requestedMode: RightPanelMode,
-  snapshot: Pick<DesktopSnapshot, "state" | "thread">
+  snapshot: Pick<DesktopSnapshot, "state">
 ): RightPanelMode {
   const sessionKind = snapshot.state.session.kind;
   if (sessionKind === "needsRecovery" || sessionKind === "recovering") {
     return "recovery";
   }
 
-  if (requestedMode === "thread" && !snapshot.thread) {
+  // Thread open/closed is Rust-owned product state: read it from state.thread,
+  // not the legacy top-level `thread` placeholder (always null in production).
+  if (requestedMode === "thread" && snapshot.state.thread.kind === "closed") {
     return "closed";
   }
 

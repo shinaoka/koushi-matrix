@@ -1,5 +1,6 @@
 import { Keyboard, RefreshCcw, ShieldCheck, SlidersHorizontal, UserRound } from "lucide-react";
 
+import { t } from "../i18n/messages";
 import type { SavedSessionInfo } from "../domain/types";
 
 export function UserSettingsPanel({
@@ -17,8 +18,8 @@ export function UserSettingsPanel({
     <section className="settings-panel user-settings-panel" aria-labelledby="user-settings-title">
       <header className="settings-panel-header">
         <div>
-          <h2 id="user-settings-title">User settings</h2>
-          <p>{currentSession?.user_id ?? "Matrix account"}</p>
+          <h2 id="user-settings-title">{t("panel.userSettings")}</h2>
+          <p>{currentSession?.user_id ?? t("settings.matrixAccount")}</p>
         </div>
       </header>
 
@@ -28,7 +29,7 @@ export function UserSettingsPanel({
             <span className="settings-list-icon" aria-hidden="true">
               <UserRound size={16} />
             </span>
-            <span>General</span>
+            <span>{t("settings.general")}</span>
           </span>
         </button>
         <button className="settings-list-item" type="button">
@@ -36,7 +37,7 @@ export function UserSettingsPanel({
             <span className="settings-list-icon" aria-hidden="true">
               <ShieldCheck size={16} />
             </span>
-            <span>Security & Privacy</span>
+            <span>{t("settings.securityPrivacy")}</span>
           </span>
         </button>
         <button className="settings-list-item" type="button" onClick={onOpenKeyboardSettings}>
@@ -44,7 +45,7 @@ export function UserSettingsPanel({
             <span className="settings-list-icon" aria-hidden="true">
               <Keyboard size={16} />
             </span>
-            <span>Keyboard</span>
+            <span>{t("settings.keyboard")}</span>
           </span>
         </button>
         <button className="settings-list-item" type="button">
@@ -52,30 +53,30 @@ export function UserSettingsPanel({
             <span className="settings-list-icon" aria-hidden="true">
               <SlidersHorizontal size={16} />
             </span>
-            <span>Preferences</span>
+            <span>{t("settings.preferences")}</span>
           </span>
         </button>
       </div>
 
-      <section className="settings-section" aria-label="Session">
-        <h3>Session</h3>
+      <section className="settings-section" aria-label={t("settings.session")}>
+        <h3>{t("settings.session")}</h3>
         <div className="settings-detail-list">
-          <DetailRow label="Homeserver" value={currentSession?.homeserver ?? "Not restored"} />
-          <DetailRow label="User ID" value={currentSession?.user_id ?? "Not restored"} />
-          <DetailRow label="Device" value={currentSession?.device_id ?? "Not restored"} />
-          <DetailRow label="Local store" value="Separate encrypted namespace" />
+          <DetailRow label={t("settings.homeserver")} value={currentSession?.homeserver ?? t("settings.notRestored")} />
+          <DetailRow label={t("settings.userId")} value={currentSession?.user_id ?? t("settings.notRestored")} />
+          <DetailRow label={t("settings.device")} value={currentSession?.device_id ?? t("settings.notRestored")} />
+          <DetailRow label="Local store" value={t("settings.localStore")} />
         </div>
       </section>
 
-      <section className="settings-section" aria-label="Security">
-        <h3>Security</h3>
+      <section className="settings-section" aria-label={t("settings.security")}>
+        <h3>{t("settings.security")}</h3>
         <div className="settings-detail-list">
-          <DetailRow label="Session secret" value="OS credential store" />
-          <DetailRow label="Search index" value="Encrypted local index" />
+          <DetailRow label="Session secret" value={t("settings.sessionSecret")} />
+          <DetailRow label="Search index" value={t("settings.searchIndex")} />
         </div>
       </section>
 
-      <section className="account-switcher" aria-label="Account switcher">
+      <section className="account-switcher" aria-label={t("settings.accountSwitcher")}>
         <h3>Accounts</h3>
         <div className="account-switcher-list">
           {savedSessions.map((session) => {
@@ -98,7 +99,7 @@ export function UserSettingsPanel({
                   onClick={() => onSwitchAccount(session)}
                 >
                   <RefreshCcw size={14} />
-                  <span>{isCurrent ? "Current" : "Switch"}</span>
+                  <span>{isCurrent ? t("settings.current") : t("settings.switch")}</span>
                 </button>
               </article>
             );

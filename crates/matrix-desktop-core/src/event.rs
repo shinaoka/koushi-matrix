@@ -207,6 +207,14 @@ pub enum SearchEvent {
         request_id: RequestId,
         results: Vec<SearchResultItem>,
     },
+    /// The encrypted search index applied a document mutation for this event.
+    /// Carries only app-owned visible-state identifiers (room/event ids) so
+    /// pollers can wake on indexing progress instead of sleeping; the message
+    /// body is never included (Security Model — Search).
+    IndexUpdated {
+        room_id: String,
+        event_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

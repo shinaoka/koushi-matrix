@@ -1,6 +1,7 @@
 import { Bell, ChevronRight, FileText, Settings, Users } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { t } from "../i18n/messages";
 import type { RoomSummary, SpaceSummary } from "../domain/types";
 
 export function RoomInfoPanel({
@@ -15,7 +16,7 @@ export function RoomInfoPanel({
       <section className="settings-panel" aria-labelledby="room-info-title">
         <header className="settings-panel-header">
           <div>
-            <h2 id="room-info-title">Room info</h2>
+            <h2 id="room-info-title">{t("room.roomInfo")}</h2>
             <p>No room selected</p>
           </div>
         </header>

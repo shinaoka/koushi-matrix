@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +26,7 @@ const args = new Set(process.argv.slice(2));
 const artifactDir = optionValue("--artifact-dir") ?? join(repoRoot, "artifacts", "mac-gui-smoke");
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "120000");
 const realLoginFromStdin = args.has("--real-login-from-stdin");
+const keepSession = args.has("--keep-session");
 const allowEmptyTimeline = args.has("--allow-empty-timeline");
 const allowPrivateScreenshots = args.has("--allow-private-screenshots");
 const qaProfile = optionValue("--qa-profile");
@@ -137,18 +139,28 @@ async function run() {
   const dataDir = qaDataDirForRun(runDir);
   const logPath = join(runDir, "tauri-dev.log");
   const qaLoginPipePath = realLogin ? join(runDir, "qa-login.pipe") : null;
+  // Second FIFO: a debug/test-only control channel the harness uses to drive a
+  // clean logout after a real login so no stale device survives the run.
+  const qaControlPipePath = realLogin ? join(runDir, "qa-control.pipe") : null;
   mkdirSync(screenshotDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
   if (qaLoginPipePath) {
     createNamedPipe(qaLoginPipePath);
   }
+  if (qaControlPipePath) {
+    createNamedPipe(qaControlPipePath);
+  }
 
   const child = spawn("npm", ["run", "tauri", "dev"], {
     cwd: desktopDir,
-    env: childEnvironment(dataDir, qaLoginPipePath),
+    env: childEnvironment(dataDir, qaLoginPipePath, qaControlPipePath),
     detached: true,
     stdio: ["ignore", "pipe", "pipe"]
   });
+
+  // Tracks whether a real login reached the ready room/timeline state, so the
+  // teardown only attempts a logout cleanup when there is a session to clear.
+  let realLoginReachedReady = false;
 
   const output = [];
   child.stdout.on("data", (chunk) => recordOutput(output, logPath, chunk));
@@ -176,6 +188,7 @@ async function run() {
         Boolean(realLogin.recoverySecret),
         allowEmptyTimeline
       );
+      realLoginReachedReady = true;
       console.log(`ok real login QA: ${qaTitle}`);
       console.log("skip real login screenshot: post-login windows can contain private room data");
     } else if (qaProfile !== undefined) {
@@ -188,7 +201,6 @@ async function run() {
     }
 
     await keyChord("/");
-    await sleep(1000);
     const keyboardTitle = await waitForQaPanel(timeoutMs, "keyboardSettings");
     console.log(`ok keyboard settings QA: ${keyboardTitle}`);
     if (postLoginScreenshotsAreAllowed) {
@@ -198,7 +210,6 @@ async function run() {
     }
 
     await keyChord(",");
-    await sleep(1000);
     const userSettingsTitle = await waitForQaPanel(timeoutMs, "userSettings");
     console.log(`ok user settings QA: ${userSettingsTitle}`);
     if (postLoginScreenshotsAreAllowed) {
@@ -213,6 +224,19 @@ async function run() {
     console.error(tail(output.join(""), 40));
     throw error;
   } finally {
+    // Real-login cleanup guard: if a real login reached ready and the caller
+    // did not ask to keep the session, drive a logout through the QA control
+    // pipe and wait for `session=signedOut` so no stale device survives the
+    // run. Best-effort: a cleanup failure is logged, never thrown.
+    if (qaControlPipePath && realLoginReachedReady && !keepSession) {
+      try {
+        await requestQaLogout(qaControlPipePath);
+        const signedOutTitle = await waitForQaSignedOut(timeoutMs);
+        console.log(`ok real login logout cleanup: ${signedOutTitle}`);
+      } catch (cleanupError) {
+        console.error(`real login logout cleanup failed: ${cleanupError.message}`);
+      }
+    }
     terminateProcessGroup(child, "SIGTERM");
     await settleChild(child);
     if (output.join("").includes("error:")) {
@@ -230,7 +254,7 @@ function checkMacTools() {
   }
 }
 
-function childEnvironment(dataDir, qaLoginPipePath = null) {
+function childEnvironment(dataDir, qaLoginPipePath = null, qaControlPipePath = null) {
   const allowedKeys = [
     "AR",
     "CARGO_HOME",
@@ -283,6 +307,9 @@ function childEnvironment(dataDir, qaLoginPipePath = null) {
   }
   if (qaLoginPipePath) {
     env.MATRIX_DESKTOP_QA_LOGIN_PIPE = qaLoginPipePath;
+  }
+  if (qaControlPipePath) {
+    env.MATRIX_DESKTOP_QA_CONTROL_PIPE = qaControlPipePath;
   }
   env.NO_COLOR = "1";
   return env;
@@ -477,39 +504,34 @@ async function writeRealLoginPipe(path, credentials) {
   await writeSensitivePayloadToPath(path, payload, 10000);
 }
 
-function writeSensitivePayloadToPath(path, payload, timeout) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("tee", [path], { stdio: ["pipe", "ignore", "pipe"] });
-    let stderr = "";
-    let settled = false;
-    const settle = (callback) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      callback();
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      settle(() => reject(new Error("real login FIFO write timed out")));
-    }, timeout);
+async function requestQaLogout(path) {
+  // Reuse the FIFO writer (no parent environment is inherited) to push a single
+  // control command. The logout command carries no secret values.
+  const payload = JSON.stringify({ command: "logout" }) + "\n";
+  await writeSensitivePayloadToPath(path, payload, 10000);
+}
 
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => settle(() => reject(error)));
-    child.on("exit", (code, signal) => {
-      settle(() => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(stderr.trim() || `real login FIFO writer exited with ${code ?? signal}`));
-        }
-      });
-    });
-    child.stdin.end(payload);
-  });
+// Write a sensitive payload directly to the FIFO via node:fs/promises. No
+// helper child process is spawned, so no parent environment is inherited by a
+// `tee`-style writer (security: credential payloads must not leak the parent
+// env to a child). `open(path, "w")` blocks until the reader opens the pipe,
+// so the write is bounded by `timeout`.
+async function writeSensitivePayloadToPath(path, payload, timeout) {
+  let handle;
+  const write = async () => {
+    handle = await open(path, "w");
+    await handle.writeFile(payload, "utf8");
+  };
+  try {
+    await Promise.race([
+      write(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("real login FIFO write timed out")), timeout)
+      )
+    ]);
+  } finally {
+    await handle?.close();
+  }
 }
 
 async function waitForQaTitle(timeout, requireRecovered, allowEmptyTimeline) {
@@ -575,6 +597,25 @@ async function waitForQaSend(timeout) {
   throw new Error(`send smoke QA did not reach send=sent. Last title: ${lastTitle}`);
 }
 
+async function waitForQaSignedOut(timeout) {
+  const startedAt = Date.now();
+  let lastTitle = "";
+  while (Date.now() - startedAt < timeout) {
+    try {
+      const windowInfo = await currentWindowInfo();
+      lastTitle = windowInfo.windowName;
+      const status = parseQaTitle(lastTitle);
+      if (qaStatusIsSignedOut(status)) {
+        return summarizeQaStatus(status);
+      }
+    } catch (error) {
+      lastTitle = error.message;
+    }
+    await sleep(1000);
+  }
+  throw new Error(`logout cleanup did not reach session=signedOut. Last title: ${lastTitle}`);
+}
+
 function parseQaTitle(title) {
   const status = {};
   for (const token of title.split(/\s+/)) {
@@ -608,6 +649,10 @@ function qaStatusHasRequiredPanel(status, requiredPanel) {
 
 function qaStatusHasSendSuccess(status) {
   return status.errors === 0 && status.send === "sent";
+}
+
+function qaStatusIsSignedOut(status) {
+  return status.session === "signedOut";
 }
 
 function qaStatusIsReady(status, requireRecovered, allowEmptyTimeline = false) {
@@ -768,6 +813,6 @@ function tail(value, lines) {
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--send-smoke-message[=BODY]] [--allow-empty-timeline] [--allow-private-screenshots] [--artifact-dir=PATH] [--timeout-ms=MS]"
+    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--keep-session] [--qa-profile=NAME] [--send-smoke-message[=BODY]] [--allow-empty-timeline] [--allow-private-screenshots] [--artifact-dir=PATH] [--timeout-ms=MS]"
   );
 }

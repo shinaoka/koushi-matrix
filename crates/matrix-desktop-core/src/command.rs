@@ -24,7 +24,9 @@ impl CoreCommand {
             Self::App(
                 AppCommand::Shutdown { request_id }
                 | AppCommand::SetComposerReplyTarget { request_id, .. }
-                | AppCommand::CancelComposerReply { request_id },
+                | AppCommand::CancelComposerReply { request_id }
+                | AppCommand::OpenThread { request_id, .. }
+                | AppCommand::CloseThread { request_id },
             ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
@@ -85,6 +87,12 @@ pub enum AppCommand {
         event_id: String,
     },
     CancelComposerReply { request_id: RequestId },
+    OpenThread {
+        request_id: RequestId,
+        room_id: String,
+        root_event_id: String,
+    },
+    CloseThread { request_id: RequestId },
 }
 
 // LoginRequest and RecoveryRequest redact their own Debug in

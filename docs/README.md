@@ -12,8 +12,13 @@ not dated snapshots; they are amended in place through review.
 - [architecture/overview.md](architecture/overview.md) — the overall
   architecture blueprint: layers, crate boundaries, runtime model, async design
   rules, security model, QA model.
+- [`../REPOSITORY_RULES.md`](../REPOSITORY_RULES.md) — root durable repository
+  rules: authority order, architecture boundaries, state-machine discipline,
+  security/privacy prohibitions, QA cleanup, tests, and documentation rules.
+- [architecture/state-machine.md](architecture/state-machine.md) — normative
+  reducer state-machine diagrams and guard notes.
 - [policies/engineering-rules.md](policies/engineering-rules.md) — prohibitions
-  and unified rules: secrets, logging, QA automation, build gates.
+  and detailed policy rules: secrets, logging, QA automation, build gates.
 
 ## Working documents (dated, short-term)
 
@@ -27,9 +32,7 @@ design change, amend `architecture/overview.md` first.
   guide toward the runtime described in `architecture/overview.md`).
 - `superpowers/plans/` — dated execution plans.
 - `architecture/` (dated files) — point-in-time architecture snapshots such as
-  `desktop-foundation.md` and `state-machine.md`. The state-machine contract in
-  `state-machine.md` remains authoritative for reducer semantics until folded
-  into `overview.md`.
+  `desktop-foundation.md`.
 - `spikes/` — spike results.
 - `reviews/` — review records.
 - `qa/` — QA audit records.
@@ -40,5 +43,5 @@ design change, amend `architecture/overview.md` first.
 - [`/AGENTS.md`](../AGENTS.md) (repo root) — environment-specific
   troubleshooting for agents and QA automation (macOS permissions, process
   cleanup, homeserver install caveats). Durable rules that emerge there must be
-  promoted to `policies/engineering-rules.md`; AGENTS.md keeps the operational
-  how-to.
+  promoted to `../REPOSITORY_RULES.md` or `policies/engineering-rules.md`;
+  AGENTS.md keeps the operational how-to.

@@ -97,3 +97,29 @@ test("submitting the composer in reply mode invokes send_reply, not send_text", 
   await expect.poll(() => invocationCount(page, "send_reply")).toBeGreaterThanOrEqual(1);
   expect(await invocationCount(page, "send_text")).toBe(0);
 });
+
+test("reply send does not repair product state by cancelling reply mode", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: "Reply to message" }).first().click();
+  await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+
+  // Simulate the realistic backend timing where send_reply returns before the
+  // Rust SendTextFinished action has cleared reply mode. React must NOT repair
+  // product state by issuing cancel_composer_reply; the Rust state machine owns
+  // the completion transition (driven asynchronously via the snapshot stream).
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse(
+      "send_reply",
+      window.__harness.replyModeSnapshot()
+    );
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("textbox", { name: "Message composer" }).fill("A reply body");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect.poll(() => invocationCount(page, "send_reply")).toBeGreaterThanOrEqual(1);
+  expect(await invocationCount(page, "cancel_composer_reply")).toBe(0);
+});

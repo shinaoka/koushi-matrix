@@ -494,6 +494,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
 
             state.timeline.composer.pending_transaction_id = None;
+            state.timeline.composer.mode = ComposerMode::Plain;
             vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
         }
         AppAction::SendTextFailed {

@@ -215,6 +215,13 @@ impl TimelineManagerActor {
                 transaction_id,
                 body,
             } => {
+                if let Some(room_id) = reducer_room_id(&key) {
+                    let _ = self.action_tx.try_send(vec![AppAction::SendTextSubmitted {
+                        room_id,
+                        transaction_id: transaction_id.clone(),
+                        body: body.clone(),
+                    }]);
+                }
                 self.route_to_actor_or_fail(
                     request_id,
                     &key,
@@ -233,6 +240,13 @@ impl TimelineManagerActor {
                 in_reply_to_event_id,
                 body,
             } => {
+                if let Some(room_id) = reducer_room_id(&key) {
+                    let _ = self.action_tx.try_send(vec![AppAction::SendTextSubmitted {
+                        room_id,
+                        transaction_id: transaction_id.clone(),
+                        body: body.clone(),
+                    }]);
+                }
                 self.route_to_actor_or_fail(
                     request_id,
                     &key,
@@ -405,6 +419,7 @@ impl TimelineManagerActor {
             timeline,
             session.clone(),
             request_id,
+            self.action_tx.clone(),
             self.event_tx.clone(),
             self.search_index_tx.clone(),
         )
@@ -453,6 +468,16 @@ impl TimelineManagerActor {
         let _ = self.action_tx.try_send(vec![AppAction::TimelineSubscribed {
             room_id: room_id.clone(),
         }]);
+    }
+}
+
+/// Map a timeline key to the reducer `room_id` for main-room composer actions.
+/// Only room timelines drive the main composer state machine; thread and
+/// focused timelines do not own the main composer's pending/reply state.
+fn reducer_room_id(key: &TimelineKey) -> Option<String> {
+    match &key.kind {
+        TimelineKind::Room { room_id } => Some(room_id.clone()),
+        TimelineKind::Thread { .. } | TimelineKind::Focused { .. } => None,
     }
 }
 
@@ -508,6 +533,7 @@ struct TimelineActor {
     key: TimelineKey,
     timeline: Arc<Timeline>,
     session: Arc<MatrixClientSession>,
+    action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
     generation: TimelineGeneration,
@@ -532,6 +558,7 @@ impl TimelineActor {
         timeline: Arc<Timeline>,
         session: Arc<MatrixClientSession>,
         subscribe_request_id: RequestId,
+        action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
     ) -> TimelineActorHandle {
@@ -576,6 +603,7 @@ impl TimelineActor {
             key: key.clone(),
             timeline,
             session,
+            action_tx,
             event_tx,
             msg_rx: actor_rx,
             generation,
@@ -712,6 +740,7 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
+                self.emit_send_failed_action(&client_txn_id);
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -723,6 +752,7 @@ impl TimelineActor {
         };
         let client = self.session.client();
         let Some(room) = client.get_room(&room_id) else {
+            self.emit_send_failed_action(&client_txn_id);
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -749,6 +779,7 @@ impl TimelineActor {
                     .send_completion
                     .remember_pending_send(sdk_txn_id, client_txn_id, request_id)
                 {
+                    self.emit_send_finished_action(&client_txn_id);
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -758,6 +789,7 @@ impl TimelineActor {
                 }
             }
             Err(err) => {
+                self.emit_send_failed_action(&client_txn_id);
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -786,6 +818,7 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
+                self.emit_send_failed_action(&client_txn_id);
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -799,6 +832,7 @@ impl TimelineActor {
         let reply_event_id = match matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id) {
             Ok(id) => id,
             Err(_) => {
+                self.emit_send_failed_action(&client_txn_id);
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -811,6 +845,7 @@ impl TimelineActor {
 
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
+            self.emit_send_failed_action(&client_txn_id);
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -833,6 +868,7 @@ impl TimelineActor {
         let content = match self.timeline.room().make_reply_event(content, reply).await {
             Ok(content) => content,
             Err(_) => {
+                self.emit_send_failed_action(&client_txn_id);
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -850,6 +886,7 @@ impl TimelineActor {
                     .send_completion
                     .remember_pending_send(sdk_txn_id, client_txn_id, request_id)
                 {
+                    self.emit_send_finished_action(&client_txn_id);
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -859,6 +896,7 @@ impl TimelineActor {
                 }
             }
             Err(_) => {
+                self.emit_send_failed_action(&client_txn_id);
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -1147,6 +1185,7 @@ impl TimelineActor {
                 .send_completion
                 .record_sent_event(sdk_txn_str, event_id.to_string())
             {
+                self.emit_send_finished_action(&client_txn_id);
                 self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                     request_id,
                     key: self.key.clone(),
@@ -1195,6 +1234,31 @@ impl TimelineActor {
             request_id,
             failure,
         });
+    }
+
+    /// Drive the reducer's composer completion transition for the matching
+    /// pending send: clears the pending transaction and returns the composer to
+    /// `Plain` (Rust owns the reply-mode completion, not React).
+    fn emit_send_finished_action(&self, client_txn_id: &str) {
+        if let Some(room_id) = reducer_room_id(&self.key) {
+            let _ = self.action_tx.try_send(vec![AppAction::SendTextFinished {
+                room_id,
+                transaction_id: client_txn_id.to_owned(),
+            }]);
+        }
+    }
+
+    /// Drive the reducer's composer failure transition for the matching pending
+    /// send: clears the pending transaction but preserves reply mode so the user
+    /// can retry or cancel explicitly.
+    fn emit_send_failed_action(&self, client_txn_id: &str) {
+        if let Some(room_id) = reducer_room_id(&self.key) {
+            let _ = self.action_tx.try_send(vec![AppAction::SendTextFailed {
+                room_id,
+                transaction_id: client_txn_id.to_owned(),
+                message: "send failed".to_owned(),
+            }]);
+        }
     }
 }
 

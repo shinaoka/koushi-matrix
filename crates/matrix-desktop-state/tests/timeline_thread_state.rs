@@ -1,6 +1,6 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, ComposerState, NavigationState, RoomSummary, SessionInfo,
-    SessionState, ThreadPaneState, TimelinePaneState, UiEvent, reduce,
+    AppAction, AppEffect, AppState, ComposerMode, ComposerState, NavigationState, RoomSummary,
+    SessionInfo, SessionState, ThreadPaneState, TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -645,4 +645,66 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
         assert_eq!(reduce(&mut state_for_action, action), Vec::new());
         assert_eq!(state_for_action, state);
     }
+}
+
+#[test]
+fn send_text_finished_clears_reply_mode_for_matching_reply_send() {
+    let mut state = selected_room_state("room-a");
+    state.timeline.composer.mode = ComposerMode::Reply {
+        in_reply_to_event_id: "$root:example.invalid".to_owned(),
+    };
+
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmitted {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-reply".to_owned(),
+            body: "reply body".to_owned(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SendTextFinished {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-reply".to_owned(),
+        },
+    );
+
+    assert_eq!(state.timeline.composer.pending_transaction_id, None);
+    assert_eq!(state.timeline.composer.mode, ComposerMode::Plain);
+}
+
+#[test]
+fn send_text_failed_preserves_reply_mode_for_retry() {
+    let mut state = selected_room_state("room-a");
+    state.timeline.composer.mode = ComposerMode::Reply {
+        in_reply_to_event_id: "$root:example.invalid".to_owned(),
+    };
+
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmitted {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-reply".to_owned(),
+            body: "reply body".to_owned(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SendTextFailed {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-reply".to_owned(),
+            message: "send failed".to_owned(),
+        },
+    );
+
+    assert_eq!(state.timeline.composer.pending_transaction_id, None);
+    assert_eq!(
+        state.timeline.composer.mode,
+        ComposerMode::Reply {
+            in_reply_to_event_id: "$root:example.invalid".to_owned()
+        }
+    );
 }

@@ -97,8 +97,8 @@ impl RealQaScenario {
 
     fn from_env_value(value: Option<String>) -> Result<Self, String> {
         match value.as_deref() {
-            None | Some("compat") => Ok(Self::Compat),
-            Some("space_compat") => Ok(Self::SpaceCompat),
+            None | Some("space_compat") => Ok(Self::SpaceCompat),
+            Some("compat") => Ok(Self::Compat),
             Some("all") => Ok(Self::All),
             Some(other) => Err(format!(
                 "unsupported {ENV_REAL_QA_SCENARIO} value '{other}'; expected compat, space_compat, or all"
@@ -289,6 +289,20 @@ enum RecoveryOutcome {
     Failed(RecoveryFailureKind),
 }
 
+/// Tracks the resources the real-homeserver QA run created so the catch-all
+/// wrapper can leave/forget rooms/spaces and log out even when an inner step
+/// fails via `?`. Without this, a `?`-propagated send/edit/restore failure
+/// would leak BOTH the session/device AND the created room/space on the live
+/// homeserver (REPOSITORY_RULES: QA must clean up every resource it creates).
+#[cfg(any(debug_assertions, test))]
+#[derive(Default)]
+struct RealQaCleanupState {
+    account_key: Option<AccountKey>,
+    qa_room_id: Option<String>,
+    qa_space_id: Option<String>,
+    logged_out: bool,
+}
+
 #[cfg(any(debug_assertions, test))]
 struct RealHomeserverQaMessagePlan {
     search_token: String,
@@ -353,10 +367,12 @@ mod scenario_tests {
     }
 
     #[test]
-    fn real_homeserver_qa_scenario_defaults_to_compat_when_missing() {
+    fn real_homeserver_qa_scenario_defaults_to_space_compat_when_missing() {
+        // The default real lane proves space create/link/cleanup, matching the
+        // qa:headless-basic:real package script and docs/qa contract.
         assert_eq!(
             RealQaScenario::from_env_value(None).unwrap(),
-            RealQaScenario::Compat
+            RealQaScenario::SpaceCompat
         );
     }
 }
@@ -383,6 +399,12 @@ fn real_qa_data_dir() -> std::path::PathBuf {
 // Async QA flow
 // ---------------------------------------------------------------------------
 
+/// Catch-all wrapper around the QA flow. Computes the per-run `data_dir` once,
+/// runs the inner flow, and — on ANY failure (including `?`-propagated ones)
+/// that did not already reach the final logout — runs a best-effort cleanup
+/// pass that leaves/forgets every created room/space and logs out. This is the
+/// finally-ish path required by the Secrets/QA canon: no stale device, room, or
+/// space may survive a failed run.
 #[cfg(any(debug_assertions, test))]
 async fn run_async(
     creds: &RealCredentials,
@@ -390,11 +412,26 @@ async fn run_async(
     transcript: &mut Vec<String>,
 ) -> Result<String, String> {
     let data_dir = real_qa_data_dir();
+    let mut cleanup = RealQaCleanupState::default();
+    let result = run_async_inner(creds, scenario, &data_dir, transcript, &mut cleanup).await;
+    if result.is_err() && !cleanup.logged_out {
+        cleanup_real_qa_resources(creds, &data_dir, transcript, &mut cleanup).await;
+    }
+    result
+}
 
+#[cfg(any(debug_assertions, test))]
+async fn run_async_inner(
+    creds: &RealCredentials,
+    scenario: RealQaScenario,
+    data_dir: &std::path::Path,
+    transcript: &mut Vec<String>,
+    cleanup: &mut RealQaCleanupState,
+) -> Result<String, String> {
     // -----------------------------------------------------------------------
     // Step 1: HTTPS login (single login per run - rate limit rule)
     // -----------------------------------------------------------------------
-    let runtime = CoreRuntime::start_with_data_dir(data_dir.clone());
+    let runtime = CoreRuntime::start_with_data_dir(data_dir.to_path_buf());
     let mut conn = runtime.attach();
 
     let login_id = conn.next_request_id();
@@ -411,15 +448,16 @@ async fn run_async(
     .map_err(|e| format!("login command submit failed: {e}"))?;
 
     let account_key = wait_for_logged_in(&mut conn, login_id, "login").await?;
-    // user_id is allowed in QA output (canon Security: visible state)
-    let line = format!("login=ok user_id={}", account_key.0);
+    // Login succeeded: record the account key so the catch-all wrapper can log
+    // out (and leave/forget any rooms/spaces) on a later failure.
+    cleanup.account_key = Some(account_key.clone());
+    // Matrix identifiers (user/room/event/space ids) MUST NOT appear in QA
+    // output (REPOSITORY_RULES Security). Emit private-data-free tokens only.
+    let line = "login=ok".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
-    if let Err(e) = wait_for_post_login_ready_snapshot(&mut conn, "post-login Ready").await {
-        do_logout(&mut conn, &account_key, transcript).await;
-        return Err(e);
-    }
+    wait_for_post_login_ready_snapshot(&mut conn, "post-login Ready").await?;
 
     // -----------------------------------------------------------------------
     // Step 2: Sync lifecycle - Start -> Started{backend} -> Running
@@ -432,13 +470,7 @@ async fn run_async(
     .map_err(|e| format!("sync start command submit failed: {e}"))?;
 
     let sync_backend =
-        match wait_for_sync_started(&mut conn, sync_start_id, "sync start", SYNC_TIMEOUT).await {
-            Ok(b) => b,
-            Err(e) => {
-                do_logout(&mut conn, &account_key, transcript).await;
-                return Err(e);
-            }
-        };
+        wait_for_sync_started(&mut conn, sync_start_id, "sync start", SYNC_TIMEOUT).await?;
 
     let backend_name = match sync_backend {
         SyncBackendKind::SyncService => "SyncService",
@@ -448,10 +480,7 @@ async fn run_async(
     transcript.push(line.clone());
     println!("{line}");
 
-    if let Err(e) = wait_for_sync_running(&mut conn, "sync running", SYNC_TIMEOUT).await {
-        do_logout(&mut conn, &account_key, transcript).await;
-        return Err(e);
-    }
+    wait_for_sync_running(&mut conn, "sync running", SYNC_TIMEOUT).await?;
     let line = "sync=running".to_owned();
     transcript.push(line.clone());
     println!("{line}");
@@ -461,12 +490,7 @@ async fn run_async(
     // -----------------------------------------------------------------------
     // Wait for the post-sync recovery observer to publish the final state.
     // Recovery becomes actionable only once sync/account data has flowed in.
-    if let Err(e) =
-        wait_for_recovery_required_after_sync(&mut conn, "post-sync recovery gate").await
-    {
-        do_logout(&mut conn, &account_key, transcript).await;
-        return Err(e);
-    }
+    wait_for_recovery_required_after_sync(&mut conn, "post-sync recovery gate").await?;
 
     let submit_id = conn.next_request_id();
     conn.command(CoreCommand::Account(AccountCommand::SubmitRecovery {
@@ -485,11 +509,11 @@ async fn run_async(
             println!("{line}");
         }
         RecoveryOutcome::Failed(kind) => {
-            // Recovery failure is a hard QA failure; attempt logout cleanup first.
+            // Recovery failure is a hard QA failure; the catch-all wrapper owns
+            // logout/cleanup after we return Err.
             let line = format!("recovery=failed kind={kind:?}");
             transcript.push(line.clone());
             eprintln!("{line}");
-            do_logout(&mut conn, &account_key, transcript).await;
             return Err(format!("recovery failed with kind {kind:?}"));
         }
     }
@@ -530,8 +554,11 @@ async fn run_async(
     .map_err(|e| format!("create QA room command submit failed: {e}"))?;
 
     let qa_room_id = wait_for_room_created(&mut conn, create_room_id, "create QA room").await?;
+    // Record the created room so the catch-all wrapper can leave/forget it if a
+    // later step fails before the happy-path cleanup runs.
+    cleanup.qa_room_id = Some(qa_room_id.clone());
     // QA-created room name and room_id are synthetic - allowed in output.
-    let line = format!("qa_room=created room_id={qa_room_id}");
+    let line = "qa_room=created".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
@@ -553,7 +580,10 @@ async fn run_async(
 
         let qa_space_id =
             wait_for_space_created(&mut conn, create_space_id, "create QA space").await?;
-        let line = format!("real_space_create=ok space_id={qa_space_id}");
+        // Record the created space so the catch-all wrapper can leave/forget it
+        // if a later step fails before the happy-path cleanup runs.
+        cleanup.qa_space_id = Some(qa_space_id.clone());
+        let line = "real_space_create=ok".to_owned();
         transcript.push(line.clone());
         println!("{line}");
 
@@ -648,7 +678,7 @@ async fn run_async(
 
     let (_, event1_id) =
         wait_for_send_completed(&mut conn, send1_id, &timeline_key, "send msg1").await?;
-    let line = format!("send_msg1=ok event_id={event1_id}");
+    let line = "send_msg1=ok".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
@@ -671,7 +701,7 @@ async fn run_async(
         "send search probe",
     )
     .await?;
-    let line = format!("send_search=ok event_id={search_event_id}");
+    let line = "send_search=ok".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
@@ -689,7 +719,7 @@ async fn run_async(
 
     let (_, event2_id) =
         wait_for_send_completed(&mut conn, send2_id, &timeline_key, "send msg2").await?;
-    let line = format!("send_msg2=ok event_id={event2_id}");
+    let line = "send_msg2=ok".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
@@ -709,9 +739,8 @@ async fn run_async(
     .await
     .map_err(|e| format!("send reply command submit failed: {e}"))?;
 
-    let (_, reply_event_id) =
-        wait_for_send_completed(&mut conn, reply_id, &timeline_key, "send reply").await?;
-    let line = format!("real_reply=ok event_id={reply_event_id}");
+    wait_for_send_completed(&mut conn, reply_id, &timeline_key, "send reply").await?;
+    let line = "real_reply=ok".to_owned();
     transcript.push(line.clone());
     println!("{line}");
 
@@ -811,10 +840,10 @@ async fn run_async(
     {
         Ok(()) => "ok",
         Err(e) => {
+            // The catch-all wrapper owns logout/cleanup after we return Err.
             let errline = format!("search_smoke=failed reason={e}");
             transcript.push(errline.clone());
             eprintln!("{errline}");
-            do_logout(&mut conn, &account_key, transcript).await;
             return Err(format!("search smoke failed: {e}"));
         }
     };
@@ -855,7 +884,7 @@ async fn run_async(
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Start a fresh runtime over the same data dir.
-    let runtime2 = CoreRuntime::start_with_data_dir(data_dir.clone());
+    let runtime2 = CoreRuntime::start_with_data_dir(data_dir.to_path_buf());
     let mut conn2 = runtime2.attach();
 
     let restore_id = conn2.next_request_id();
@@ -1027,15 +1056,15 @@ async fn run_async(
     }
     .await;
 
-    if let Err(e) = cleanup_result {
-        do_logout(&mut conn2, &account_key, transcript).await;
-        return Err(e);
-    }
+    cleanup_result?;
 
     // -----------------------------------------------------------------------
     // Step 9: Logout -> SignedOut + post-logout RestoreLastSession = SessionNotFound
     // -----------------------------------------------------------------------
     do_logout(&mut conn2, &account_key, transcript).await;
+    // The happy-path logout has run; tell the catch-all wrapper not to clean up
+    // again (the post-logout assertions below are non-resource-leaking checks).
+    cleanup.logged_out = true;
 
     // Post-logout: RestoreLastSession must yield SessionNotFound.
     let restore_gone_id = conn2.next_request_id();
@@ -1066,16 +1095,15 @@ async fn run_async(
     // -----------------------------------------------------------------------
     let mut summary = format!(
         "Real homeserver QA OK. \
-         user={user_id} login=ok recovery={recovery} \
+         login=ok recovery={recovery} \
          sync_backend={backend} sync=ok \
          rooms={rooms} spaces={spaces} dms={dms} \
-         qa_room=created send_msg1=ok send_msg2=ok \
+         qa_room=created send_msg1=ok send_search=ok send_msg2=ok real_reply=ok \
          edit_msg1=ok redact_msg2=ok \
          paginate={paginate} search={search} \
          store_restore=ok restore_body={body_ok} \
          leave_room=ok forget_room=ok \
          logout=ok post_logout_restore=not_found",
-        user_id = account_key.0,
         recovery = "completed",
         backend = backend_name,
         rooms = rooms_count,
@@ -1091,6 +1119,185 @@ async fn run_async(
     }
 
     Ok(summary)
+}
+
+// ---------------------------------------------------------------------------
+// Catch-all cleanup (finally-ish path for `?`-propagated inner failures)
+// ---------------------------------------------------------------------------
+
+/// Best-effort cleanup invoked by `run_async` whenever the inner flow returns
+/// an error before reaching the happy-path logout. It starts a fresh runtime
+/// over the same `data_dir`, restores the session, then leaves/forgets every
+/// recorded room and space and logs out so no stale device, room, or space
+/// survives a failed run.
+///
+/// This function MUST NEVER return Err and MUST NEVER panic — every failure is
+/// swallowed into a concrete `cleanup_warning=...` token. Matrix identifiers
+/// (user/room/event/space ids) are never printed; only token lines are emitted
+/// (REPOSITORY_RULES Security; Task 5).
+#[cfg(any(debug_assertions, test))]
+async fn cleanup_real_qa_resources(
+    creds: &RealCredentials,
+    data_dir: &std::path::Path,
+    transcript: &mut Vec<String>,
+    cleanup: &mut RealQaCleanupState,
+) {
+    // No login succeeded -> there is nothing to clean (no session, and rooms /
+    // spaces cannot have been created without a session).
+    let Some(account_key) = cleanup.account_key.clone() else {
+        return;
+    };
+
+    // Start a fresh runtime over the same data dir and restore the session so
+    // we hold a Matrix-capable connection to leave/forget and log out.
+    let runtime = CoreRuntime::start_with_data_dir(data_dir.to_path_buf());
+    let mut conn = runtime.attach();
+
+    let restore_id = conn.next_request_id();
+    if let Err(e) = conn
+        .command(CoreCommand::Account(AccountCommand::RestoreLastSession {
+            request_id: restore_id,
+        }))
+        .await
+    {
+        let line = format!("cleanup_warning=restore_failed reason={e}");
+        transcript.push(line.clone());
+        eprintln!("{line}");
+        return;
+    }
+
+    if let Err(e) = wait_for_session_restored_with_recovery(
+        &mut conn,
+        restore_id,
+        &account_key,
+        creds,
+        transcript,
+        "cleanup restore",
+    )
+    .await
+    {
+        let line = format!("cleanup_warning=restore_failed reason={e}");
+        transcript.push(line.clone());
+        eprintln!("{line}");
+        return;
+    }
+
+    if let Err(e) = wait_for_ready_snapshot(&mut conn, "cleanup restored Ready").await {
+        let line = format!("cleanup_warning=restore_failed reason={e}");
+        transcript.push(line.clone());
+        eprintln!("{line}");
+        return;
+    }
+
+    // Leave/forget the QA room. Each sub-step records a concrete warning token
+    // on failure and CONTINUES (do not bail) so the space and logout still run.
+    if let Some(room_id) = cleanup.qa_room_id.clone() {
+        let leave_id = conn.next_request_id();
+        match conn
+            .command(CoreCommand::Room(RoomCommand::LeaveRoom {
+                request_id: leave_id,
+                room_id: room_id.clone(),
+            }))
+            .await
+        {
+            Ok(()) => {
+                if let Err(e) =
+                    wait_for_room_left(&mut conn, leave_id, &room_id, "cleanup leave room").await
+                {
+                    let line = format!("cleanup_warning=leave_room_failed reason={e}");
+                    transcript.push(line.clone());
+                    eprintln!("{line}");
+                }
+            }
+            Err(e) => {
+                let line = format!("cleanup_warning=leave_room_failed reason={e}");
+                transcript.push(line.clone());
+                eprintln!("{line}");
+            }
+        }
+
+        let forget_id = conn.next_request_id();
+        match conn
+            .command(CoreCommand::Room(RoomCommand::ForgetRoom {
+                request_id: forget_id,
+                room_id: room_id.clone(),
+            }))
+            .await
+        {
+            Ok(()) => {
+                if let Err(e) =
+                    wait_for_room_forgotten(&mut conn, forget_id, &room_id, "cleanup forget room")
+                        .await
+                {
+                    let line = format!("cleanup_warning=forget_room_failed reason={e}");
+                    transcript.push(line.clone());
+                    eprintln!("{line}");
+                }
+            }
+            Err(e) => {
+                let line = format!("cleanup_warning=forget_room_failed reason={e}");
+                transcript.push(line.clone());
+                eprintln!("{line}");
+            }
+        }
+    }
+
+    // Leave/forget the QA space (spaces are rooms on the homeserver).
+    if let Some(space_id) = cleanup.qa_space_id.clone() {
+        let leave_id = conn.next_request_id();
+        match conn
+            .command(CoreCommand::Room(RoomCommand::LeaveRoom {
+                request_id: leave_id,
+                room_id: space_id.clone(),
+            }))
+            .await
+        {
+            Ok(()) => {
+                if let Err(e) =
+                    wait_for_room_left(&mut conn, leave_id, &space_id, "cleanup leave space").await
+                {
+                    let line = format!("cleanup_warning=leave_space_failed reason={e}");
+                    transcript.push(line.clone());
+                    eprintln!("{line}");
+                }
+            }
+            Err(e) => {
+                let line = format!("cleanup_warning=leave_space_failed reason={e}");
+                transcript.push(line.clone());
+                eprintln!("{line}");
+            }
+        }
+
+        let forget_id = conn.next_request_id();
+        match conn
+            .command(CoreCommand::Room(RoomCommand::ForgetRoom {
+                request_id: forget_id,
+                room_id: space_id.clone(),
+            }))
+            .await
+        {
+            Ok(()) => {
+                if let Err(e) =
+                    wait_for_room_forgotten(&mut conn, forget_id, &space_id, "cleanup forget space")
+                        .await
+                {
+                    let line = format!("cleanup_warning=forget_space_failed reason={e}");
+                    transcript.push(line.clone());
+                    eprintln!("{line}");
+                }
+            }
+            Err(e) => {
+                let line = format!("cleanup_warning=forget_space_failed reason={e}");
+                transcript.push(line.clone());
+                eprintln!("{line}");
+            }
+        }
+    }
+
+    // Finally log out. `do_logout` already prints a `logout_submit=failed` /
+    // `logout_wait=failed` token on failure and never propagates errors.
+    do_logout(&mut conn, &account_key, transcript).await;
+    cleanup.logged_out = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1455,7 +1662,7 @@ async fn wait_for_room_left(
                 if room_id == expected_room_id {
                     return Ok(());
                 }
-                return Err(format!("{label}: unexpected room id {room_id}"));
+                return Err(format!("{label}: unexpected room id (redacted)"));
             }
             CoreEvent::OperationFailed {
                 request_id: ev_id,
@@ -1489,7 +1696,7 @@ async fn wait_for_room_forgotten(
                 if room_id == expected_room_id {
                     return Ok(());
                 }
-                return Err(format!("{label}: unexpected room id {room_id}"));
+                return Err(format!("{label}: unexpected room id (redacted)"));
             }
             CoreEvent::OperationFailed {
                 request_id: ev_id,
@@ -2082,7 +2289,47 @@ async fn poll_search_until_found_or_timeout(
             return Ok(());
         }
 
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        // Wake on the next search index mutation rather than blindly sleeping:
+        // wait (bounded) for a `SearchEvent::IndexUpdated`, then retry the
+        // query. If no index event arrives within the bound, fall through to a
+        // plain retry so a missing event can never deadlock the loop. The
+        // overall `deadline` still bounds the whole poll.
+        wait_for_index_update_or_idle(conn, deadline).await;
+    }
+}
+
+/// Wait until the search index reports an `IndexUpdated`, the per-iteration
+/// idle bound elapses, or the overall `deadline` passes. Other events on the
+/// interleaved stream are ignored. Always returns (never errors): a missing
+/// index event simply means the caller retries its query.
+#[cfg(any(debug_assertions, test))]
+async fn wait_for_index_update_or_idle(
+    conn: &mut CoreConnection,
+    deadline: tokio::time::Instant,
+) {
+    // Bound a single idle wait so the retry cadence matches the prior sleep
+    // when the index is quiet, while still waking immediately on indexing.
+    const IDLE_WAIT: Duration = Duration::from_millis(1000);
+    let now = tokio::time::Instant::now();
+    if now >= deadline {
+        return;
+    }
+    let wait_until = (now + IDLE_WAIT).min(deadline);
+
+    loop {
+        let remaining = wait_until.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        match tokio::time::timeout(remaining, conn.recv_event()).await {
+            // Timed out waiting for an index event — fall through to retry.
+            Err(_) => return,
+            // Stream lagged or closed — let the caller resync via its next query.
+            Ok(Err(_)) => return,
+            Ok(Ok(CoreEvent::Search(SearchEvent::IndexUpdated { .. }))) => return,
+            // Any other event: keep waiting for an index update (or the bound).
+            Ok(Ok(_)) => continue,
+        }
     }
 }
 

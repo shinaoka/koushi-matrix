@@ -43,6 +43,7 @@
 //! (they can appear in `SearchEvent::Results` payloads — those are visible UI
 //! state). `SearchActorMessage::Query` redacts the query in Debug.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
@@ -202,6 +203,11 @@ impl SearchActorHandle {
 pub(crate) struct SearchActor {
     session: Arc<MatrixClientSession>,
     document_store: SearchDocumentStore,
+    /// event_id -> room_id for indexed documents. Lets `IndexUpdated` carry the
+    /// room id for edits, whose `SearchIndexMessage::Edit` payload only names
+    /// the target event id. These are app-owned visible-state identifiers
+    /// (never bodies), so retaining them here does not leak secrets.
+    indexed_rooms: HashMap<String, String>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<SearchActorMessage>,
 }
@@ -218,6 +224,7 @@ impl SearchActor {
         let actor = SearchActor {
             session,
             document_store: SearchDocumentStore::default(),
+            indexed_rooms: HashMap::new(),
             event_tx,
             msg_rx,
         };
@@ -325,6 +332,11 @@ impl SearchActor {
                 body,
                 attachment_filename,
             } => {
+                // Capture the visible-state identifiers before the payload is
+                // consumed by the document store, so `IndexUpdated` can wake
+                // pollers (room/event ids only — never the body).
+                let indexed_room_id = room_id.clone();
+                let indexed_event_id = event_id.clone();
                 let event = SearchableEvent {
                     room_id,
                     event_id,
@@ -334,6 +346,12 @@ impl SearchActor {
                     attachment_filename: attachment_filename.map(SensitiveString::new),
                 };
                 self.document_store.upsert_message(event);
+                self.indexed_rooms
+                    .insert(indexed_event_id.clone(), indexed_room_id.clone());
+                self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
+                    room_id: indexed_room_id,
+                    event_id: indexed_event_id,
+                }));
             }
             SearchIndexMessage::Edit {
                 edit_event_id,
@@ -343,6 +361,12 @@ impl SearchActor {
                 body,
                 attachment_filename,
             } => {
+                // The Edit payload only names the target event id; resolve its
+                // room id from the indexed-document map so `IndexUpdated` stays
+                // honest (no fabricated room id). An edit whose original is not
+                // yet indexed is stored as a pending edit and emits no event.
+                let edited_room_id = self.indexed_rooms.get(&target_event_id).cloned();
+                let edited_event_id = target_event_id.clone();
                 let edit = SearchEdit {
                     edit_event_id,
                     target_event_id,
@@ -352,8 +376,15 @@ impl SearchActor {
                     attachment_filename: attachment_filename.map(SensitiveString::new),
                 };
                 self.document_store.upsert_edit(edit);
+                if let Some(room_id) = edited_room_id {
+                    self.emit(CoreEvent::Search(SearchEvent::IndexUpdated {
+                        room_id,
+                        event_id: edited_event_id,
+                    }));
+                }
             }
             SearchIndexMessage::Redact { event_id } => {
+                self.indexed_rooms.remove(&event_id);
                 self.document_store.redact(&event_id);
             }
         }

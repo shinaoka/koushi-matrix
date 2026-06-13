@@ -1,21 +1,121 @@
 # Repository Rules
 
-These rules apply to first-party code, docs, tests, and integration glue in this
-repository. Vendored upstream code must keep its original license and copyright
-notices; local changes to vendored code must remain easy to upstream or revert.
+Status: normative. This is the root durable rule book for this repository.
+It applies to first-party code, docs, tests, QA automation, and integration
+glue. Vendored upstream code must keep its original license and copyright
+notices; local changes to vendored code must remain easy to upstream or
+revert.
+
+Last amended: 2026-06-14.
+
+## Read Order And Authority
+
+Read these files before changing behavior:
+
+1. `REPOSITORY_RULES.md` - durable repository rules and prohibitions.
+2. `docs/architecture/overview.md` - long-term product architecture, layer
+   ownership, runtime model, security model, and QA model.
+3. `docs/architecture/state-machine.md` - normative reducer state machines,
+   transitions, and guards.
+4. `docs/policies/engineering-rules.md` - detailed policy extension for
+   secrets, logging, GUI automation, async/runtime rules, and build gates.
+5. The relevant dated implementation plan under `docs/superpowers/plans/`.
+
+`AGENTS.md` is the operational entry file. It may contain local setup,
+troubleshooting, and known failure notes, but durable rules discovered there
+must be promoted into this file or `docs/policies/engineering-rules.md`.
+
+When two normative documents appear to disagree, stop and reconcile the canon
+before changing code. The stricter privacy/security rule applies while the
+conflict is being resolved.
+
+## Canon-First Change Protocol
+
+- Do not improvise undocumented Matrix behavior when code contradicts the
+  canon or the canon is silent. Record the assumed behavior and the observed
+  behavior, then amend the relevant canon first.
+- Architecture changes amend `docs/architecture/overview.md` before code.
+  Durable rule changes amend this file and, when the detailed policy changes,
+  `docs/policies/engineering-rules.md` with `Last amended` bumped.
+- Reducer state-machine changes amend
+  `docs/architecture/state-machine.md` in the same change as the reducer and
+  tests.
+- QA scenario, token, artifact, or cleanup contracts amend the relevant
+  `docs/qa/` document and the enforcing script in the same change.
+- Canon amendments must be approved by the user or the strongest available
+  model for the agent family before implementation continues. Code that
+  diverges from canon must not land.
+
+## Architecture And Ownership
+
+- New Matrix behavior is headless-first and local-server-first. It lands in
+  `matrix-desktop-core` / `matrix-desktop-state`, is verified through
+  `CoreCommand` / `CoreEvent` against disposable local Conduit/Tuwunel QA,
+  and only then is wired to Tauri/React. GUI-first Matrix behavior is
+  prohibited.
+- Product logic and state that decide Matrix operation semantics live in Rust:
+  `matrix-desktop-state` for serializable state/reducers and
+  `matrix-desktop-core` for actors, commands, events, and runtime ownership.
+- React may own ephemeral presentation state only: focus, popovers, unsent form
+  text, viewport measurements, virtual-list cache, and scroll anchors. If UI
+  state affects a Matrix command shape, selected target, pending operation,
+  cleanup, retry, or success/failure interpretation, model it first as
+  serializable Rust `AppState` / `CoreEvent` data and prove it headlessly.
+- `apps/desktop/src-tauri` is a transport adapter. It holds `CoreRuntime`,
+  sends commands, forwards events/snapshots, and does not call Matrix SDK
+  wrapper APIs directly.
+- `matrix-desktop-sdk` is the low-level Matrix SDK adapter crate. It owns
+  SDK-facing primitives only; app state, actor lifecycle, QA orchestration,
+  and product opinions stay in `matrix-desktop-core` and
+  `matrix-desktop-state`.
+- UI code must not import SDK types. SDK data is mapped to app-owned Rust DTOs
+  before it crosses the command/event/snapshot boundary.
+- `matrix-desktop-backend` is fixture/demo only. Production Tauri paths must
+  not execute fixture-backend behavior.
+
+## State-Machine Discipline
+
+- Every Matrix-affecting workflow is designed as an explicit guarded state
+  machine: state enum/DTO, event/action enum, start guard, settle guard,
+  stale-input behavior, failure behavior, terminal behavior, and request
+  correlation when applicable.
+- State transitions are driven by events, not by ad-hoc field assignments. An
+  action describes intent or observed outcome; reducers derive the next state.
+- A transition present in code but absent from
+  `docs/architecture/state-machine.md`, or present in the diagram but absent
+  from code, is a defect.
+- Tests for state machines cover the happy path, failure path, cancellation or
+  reset path, stale request IDs, duplicate completions, and invalid state
+  inputs. A headless test must fail before a new transition is implemented.
+- React may display state-machine state, but it must not repair product state
+  after the fact. If completion of a Matrix operation should clear or advance
+  product state, the Rust state machine performs that transition.
 
 ## Security Rules
 
 - Decrypted E2EE event bodies, attachment filenames, snippets, search queries,
-  access tokens, refresh tokens, recovery keys, room keys, local store keys, and
-  search index keys are secrets.
-- Persistable Matrix session JSON contains access tokens and refresh tokens. It
-  is a secret even when wrapped in a redacted Rust type.
+  access tokens, refresh tokens, recovery keys, room keys, local store keys,
+  SDK store keys, search index keys, and local unlock secrets are secrets.
+- Persistable Matrix session JSON contains access tokens and refresh tokens.
+  It is a secret even when wrapped in a redacted Rust type.
 - Secrets MUST NOT be logged, sent to telemetry, written to crash reports,
   printed in test output, checked into fixtures, or copied into screenshots.
+  Credential/key material must not be returned to the webview after entry.
+  Decrypted message bodies and attachment filenames may cross to the webview
+  only as current visible UI state; they must not become logs, diagnostics,
+  fixtures, screenshots, or secondary first-party stores.
+- Real account private data MUST NOT appear in docs, tests, mocks, logs,
+  screenshots, or QA artifacts. This includes real room names, message bodies,
+  attachment names, Matrix IDs, email addresses, institutions, workplaces,
+  meeting titles, and local home-directory paths.
+- Debug output for secret-bearing commands, actions, and errors must redact
+  associated values. Enum/action logging may record the case/kind; it must not
+  record passwords, tokens, recovery material, message bodies, attachment
+  names, raw SDK errors, transaction IDs, event IDs from real accounts, or room
+  IDs from real accounts.
 - `.local-secrets/` is reserved for local, ignored manual-testing notes or
-  scratch files only. It is not an application secret store, must not be required
-  for tests or builds, and must not replace OS secret storage.
+  scratch files only. It is not an application secret store, must not be
+  required for tests or builds, and must not replace OS secret storage.
 - Decrypted event bodies and plaintext-derived data MUST NOT be persisted in
   first-party stores outside an encrypted Matrix SDK store or encrypted search
   index.
@@ -29,8 +129,8 @@ notices; local changes to vendored code must remain easy to upstream or revert.
   candidate event IDs only; snippets and highlights must be generated from the
   resolved visible event content loaded from the SDK store or network.
 - Search result highlights MUST be exact, second-pass verified spans. Ngram
-  candidates without a verified visible span must be dropped or shown only by an
-  explicitly non-exact result mode.
+  candidates without a verified visible span must be dropped or shown only by
+  an explicitly non-exact result mode.
 - Edits, replacements, and redactions MUST be resolved before indexing or
   returning a result. An edit event downloaded before its target event MUST be
   stored as a pending relation, not indexed as an independent message.
@@ -44,8 +144,8 @@ notices; local changes to vendored code must remain easy to upstream or revert.
 ## Key Management
 
 - Generate one random local unlock secret per Matrix account and device.
-- Store the local unlock secret only in the OS secret store:
-  macOS Keychain on macOS, Windows Credential Manager or DPAPI on Windows.
+- Store the local unlock secret only in the OS secret store: macOS Keychain on
+  macOS, Windows Credential Manager or DPAPI on Windows.
 - Do not hardcode, derive from user passwords, reuse access tokens, or commit
   local store secrets.
 - Derive independent keys from the local unlock secret with domain-separated
@@ -54,52 +154,98 @@ notices; local changes to vendored code must remain easy to upstream or revert.
 - Missing, corrupt, or inaccessible OS secrets MUST fail closed. The app may
   offer a local-state reset flow, but it must not silently recreate keys while
   keeping unreadable encrypted data.
-- Key bytes and passphrases should use zeroizing containers where practical and
-  should be kept out of long-lived UI state.
+- Key bytes and passphrases should use zeroizing containers where practical
+  and should be kept out of long-lived UI state.
 
-## Implementation Boundaries
+## QA Gates And Cleanup
 
-- Reducers and frontend state MUST NOT own SDK clients, filesystem handles,
-  network clients, keyring handles, or decrypted long-lived caches.
-- React/Tauri UI state may hold only the current visible snapshot needed to
-  render the UI. It must not become a secondary message database.
-- Backend adapters are responsible for SDK calls, key access, search indexing,
-  late decryption repair, edit resolution, and redaction cleanup.
-- If local search state is incomplete because downloads, decryption, or relation
-  repair are pending, results must be treated as partial rather than displaying
-  stale or non-visible content as authoritative.
+- GUI automation is a smoke layer, not the primary correctness gate. React UI,
+  command shapes, fake `CoreEvent` streams, DOM scroll behavior, and Tauri IPC
+  mock behavior are verified in headless browser tests first.
+- Destructive GUI operation QA during development uses disposable local
+  Conduit/Tuwunel homeservers. Do not use matrix.org or another real
+  homeserver for GUI iteration.
+- Real homeserver QA is reserved for compatibility and release/preflight gates
+  after local headless and Linux virtual-display lanes are green and cleanup
+  behavior is proven.
+- QA scripts must assert scenario-specific success tokens, not only process
+  exit code. If a document promises a token, the script enforces it or the
+  document is wrong.
+- Real-account and real-homeserver QA must use cleanup guards for every
+  resource it creates: sessions/devices, rooms, spaces, memberships, stores,
+  search indexes, and background processes. After the first post-login side
+  effect, early `?` returns are allowed only inside a cleanup guard that still
+  attempts logout and resource cleanup unless `--keep-session` was explicitly
+  requested.
+- QA runners must not pass the parent shell environment wholesale into child
+  processes. Filter secret-like variables before spawning.
+- QA credentials enter processes through FIFO or the debug/test-gated file
+  credential store. They must not appear in argv, fixed-coordinate typing,
+  screenshots, committed scripts, or captured terminal output.
 
 ## Tests And Fixtures
 
-- Tests must use synthetic credentials, synthetic Matrix IDs, and synthetic event
-  content unless a test is explicitly marked as manual and documents the local
-  setup.
-- Manual live-login smoke checks must collect real credentials interactively.
-  Do not pass real usernames, passwords, recovery keys, or access tokens through
-  command-line arguments, environment variables, fixtures, committed scripts, or
-  captured test output.
+- Tests must use synthetic credentials, synthetic Matrix IDs, and synthetic
+  event content unless a test is explicitly marked as manual and documents the
+  local setup.
+- Manual live-login smoke checks must collect real credentials interactively or
+  through an approved secret-minimized QA pipe. Do not pass real usernames,
+  passwords, recovery keys, or access tokens through command-line arguments,
+  environment variables, fixtures, committed scripts, or captured test output.
 - Do not copy real room messages, real access tokens, real recovery keys, real
   attachment filenames, or production search indexes into this repository.
 - Do not use real personal information in tests, fixtures, screenshots, seed
-  data, examples, or docs. This includes real names, handles, email addresses,
-  Matrix IDs, affiliations, institutions, workplaces, lab names, room names,
-  meeting titles, agendas, notes, schedules, attachment names, URLs, and local
-  home-directory paths.
-- Do not transcribe user screenshots or real chats into fixtures. If a UI needs
-  realistic-looking content, use short synthetic labels such as `Member 1`,
+  data, examples, or docs. Use neutral examples such as `Member 1`,
   `Synthetic Workspace`, `fixture_budget.xlsx`, and Matrix IDs under
   `example.invalid`.
+- Do not transcribe user screenshots or real chats into fixtures. If a UI
+  needs realistic-looking content, synthesize it.
 - Real affiliations or institutions are prohibited in synthetic data even when
   the user mentions them in conversation. Use neutral organization labels such
   as `Synthetic Workspace` instead.
 - Security-sensitive behavior needs focused tests when implemented: encrypted
   index opening, missing-key failure, edit-before-target handling, redaction
-  removal, attachment filename search, and verified highlight generation.
+  removal, attachment filename search, verified highlight generation,
+  credential gate rejection, private-data-free QA title generation, and DTO
+  snapshot completeness.
+
+## User-Facing Text And Localization
+
+- User-visible product text must not be embedded directly in React components,
+  Rust core errors, Tauri commands, or tests that model production UI. Use a
+  message catalog keyed by stable IDs, with interpolation for dynamic values.
+- Core and adapters return machine-readable kinds, codes, and structured
+  non-secret data. They do not return English/Japanese prose for the UI to
+  display, except for debug/test-only diagnostics.
+- The UI boundary is responsible for resolving message IDs to localized text.
+  Accessibility labels, button labels, menu labels, empty states, dialogs,
+  toasts, and validation messages are user-facing text and use the same
+  catalog.
+- QA tokens, protocol enum variants, log kinds, CSS class names, data-testid
+  values, and synthetic fixture message bodies are not localized. Tests should
+  prefer roles, stable test IDs, message IDs, or semantic state over localized
+  prose when possible.
+- A new feature that adds user-visible text adds or updates catalog entries,
+  at least one default locale, and a pseudo-locale or missing-translation test
+  before wiring the text into the UI.
+
+## Documentation And Work Records
+
+- Dated implementation plans are subordinate to the normative docs. When an
+  implementation discovery changes architecture or rules, amend the canon
+  first, then sync or supersede the dated plan.
+- Nontrivial agent-driven work should leave a short plan, worklog, review
+  record, or changelog entry that identifies the canon consulted, the files
+  changed, and the verification run. This is required when changing state
+  machines, security behavior, SDK fork surfaces, QA gates, or release gates.
+- Operational setup and failure notes stay in `AGENTS.md` until they become
+  durable prohibitions or design rules.
 
 ## Licensing
 
 - Code or design ported from Element, Seshat, Matrix Rust SDK, FluffyChat, or
   related upstream projects must preserve applicable license and copyright
   notices.
-- Prefer upstreamable changes for `matrix-sdk-search`; keep local patches small,
-  documented, and suitable for later feedback upstream.
+- Prefer upstreamable changes for `matrix-sdk-search` and the vendored Matrix
+  Rust SDK. Keep local patches small, documented, and suitable for later
+  feedback upstream.

@@ -1,15 +1,26 @@
 # Agent Notes
 
-This file is operational troubleshooting for agents and QA automation in this
-environment. The binding rules distilled from these notes (prohibitions,
-secret handling, automation rules, gates) live in
-[docs/policies/engineering-rules.md](docs/policies/engineering-rules.md), and
-the long-term architecture in
-[docs/architecture/overview.md](docs/architecture/overview.md). When a note
-here hardens into a durable rule, promote it to the policies document and keep
-the operational detail here.
+This is the operational entry file for agents and QA automation in this local
+environment. It records setup commands, troubleshooting, and environment
+footguns. Durable repository rules do not live here.
 
-## Implementation Working Rules
+## Read Order
+
+1. [REPOSITORY_RULES.md](REPOSITORY_RULES.md) - root durable rules for this
+   repository.
+2. [docs/architecture/overview.md](docs/architecture/overview.md) - long-term
+   architecture, layer ownership, runtime, security, and QA model.
+3. [docs/architecture/state-machine.md](docs/architecture/state-machine.md) -
+   normative reducer state-machine diagrams and guard notes.
+4. [docs/policies/engineering-rules.md](docs/policies/engineering-rules.md) -
+   detailed policy extension for secrets, logging, QA automation, and gates.
+5. The relevant dated implementation plan under `docs/superpowers/plans/`.
+
+When an operational note here hardens into a durable rule, promote it to
+`REPOSITORY_RULES.md` or `docs/policies/engineering-rules.md` and keep only the
+local how-to detail here.
+
+## Current Implementation Plans
 
 All agents implementing the headless core runtime follow
 [docs/superpowers/plans/2026-06-12-headless-core-runtime-implementation.md](docs/superpowers/plans/2026-06-12-headless-core-runtime-implementation.md).
@@ -18,70 +29,6 @@ follow
 [docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md](docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md).
 All agents implementing local GUI room/space/reply operations follow
 [docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md](docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md).
-
-- **Headless-first, local-server-first.** New Matrix behavior lands in
-  `matrix-desktop-core`, verified via `CoreCommand`/`CoreEvent` against local
-  Conduit/Tuwunel QA, before any Tauri/React wiring. GUI-first implementation
-  is prohibited.
-- **Rust-owned product state.** Product logic and state that decide Matrix
-  operation semantics live in `matrix-desktop-state`/`matrix-desktop-core`.
-  React may own ephemeral presentation state such as focus, open popovers,
-  unsent form text, viewport measurements, and scroll anchors. If UI state
-  affects a Matrix command shape, pending operation, selected target,
-  cleanup, or success/failure interpretation, model it as serializable Rust
-  `AppState`/`CoreEvent` data first and prove it headlessly before wiring
-  Tauri/React controls.
-- **Local-only GUI operation QA until final compatibility.** GUI tests for
-  room creation, space creation, replies, and other destructive Matrix
-  operations must use disposable local Conduit/Tuwunel homeservers during
-  development. Do not use matrix.org for GUI iteration. Real homeserver QA is
-  reserved for the final compatibility gate after local headless and Linux
-  virtual-display lanes are green and cleanup behavior is proven.
-- **SDK fork management.** Upstream SDK deltas live on the
-  `github.com/shinaoka/matrix-rust-sdk-work` submodule branch
-  (`shinaoka/search-ngram`). Local code comments should explain the patch
-  surfaces, and
-  `docs/upstream/matrix-rust-sdk-feedback.md` stays the place for PR
-  candidates. Edit vendored SDK code only inside that submodule branch, then
-  update the superproject submodule pointer intentionally.
-- **SDK adapter naming.** The low-level Matrix SDK adapter crate is
-  `matrix-desktop-sdk`. It owns SDK-facing primitives only; app state,
-  actor lifecycle, and QA orchestration stay in `matrix-desktop-core`.
-- **Canon-first redesign protocol.** Implementation will hit gaps the design
-  did not foresee. When code contradicts the canon or the canon is silent:
-  stop coding on that point — do not improvise an undocumented behavior.
-  Record what was assumed vs. what was observed. Amend
-  `docs/architecture/overview.md` first (and
-  `docs/policies/engineering-rules.md` if a rule changes; bump
-  `Last amended`), sync the dated spec if the public API changes, add a
-  Changelog entry to the implementation plan, and only then implement to the
-  amended design. Code that diverges from the canon must not land.
-- **Canon amendments always escalate.** The implementing model never amends
-  the canon itself. When a design gap requires changing
-  `docs/architecture/overview.md` or `docs/policies/engineering-rules.md`,
-  stop and hand the redesign decision to the strongest available model of
-  the agent's family — for Claude agents Fable 5 or Opus, for Codex agents
-  the highest GPT version (never a mini/lightweight tier) — or to the user.
-  The implementing model resumes only after the canon is amended. See Model
-  Assignment in the implementation plan.
-- **Phase exits include a docs-sync check**: no known contradiction between
-  landed code and the canon documents. This includes state-machine fidelity:
-  every reducer state machine must match its Mermaid diagram in
-  [docs/architecture/state-machine.md](docs/architecture/state-machine.md) — a
-  transition in code but not the diagram (or the reverse) is a defect. New state
-  transitions are designed as explicit guarded state machines, not ad-hoc field
-  assignments. See [engineering-rules.md](docs/policies/engineering-rules.md) →
-  Documentation.
-- **Phase 10+ GUI launch policy.** React UI, DOM scroll behavior, command
-  shapes, fake `CoreEvent` streams, and Tauri IPC mock behavior are verified
-  in headless browser tests. Do not launch the native Tauri app for these.
-  Native GUI smoke is reserved for real IPC, native window, OS menu, WebView,
-  and keychain/system-dialog behavior; on macOS it is attended only.
-- **Phase 13+ Linux handoff.** The remaining Phase 13 transport hardening and
-  all later agent work run primarily on Linux. Phase 13 remains headless but
-  must rerun its standing gates on Linux; Phase 14 adds the Xvfb +
-  `tauri-driver` real-Tauri GUI lane. macOS remains for attended
-  WKWebView/menu/Keychain smoke and release signing/notarization only.
 
 ## Local Gates Setup
 
@@ -97,6 +44,24 @@ All agents implementing local GUI room/space/reply operations follow
   quick structural pass).
 - There is no hosted CI in this repo yet; these gates run locally and in
   `release:preflight`. Wire them into CI when CI infrastructure appears.
+
+## Headless UI (Playwright) Flakes
+
+- `e2e/basic-operations.spec.ts:81` ("submitting the composer in reply mode
+  invokes send_reply, not send_text") is flaky in the FULL `test:ui-headless`
+  run but passes reliably when that spec file is run in isolation
+  (`npx playwright test e2e/basic-operations.spec.ts`). Root cause is a
+  test-layer timing race, not a product bug: the App's snapshot refresh
+  (`get_snapshot`) returns the harness's static Plain `readySnapshot`, which can
+  land after the reply-target click and momentarily reset the composer mode to
+  Plain so the submit dispatches `send_text`. It reproduces on a clean checkout
+  (predates the 2026-06-14 rules-compliance remediation) and is amplified by
+  parallel-file worker contention on the shared Vite harness server. Workaround
+  while it is unfixed: run the reply specs in isolation, or `--workers=1`.
+  A durable fix should make the harness `get_snapshot` response consistent with
+  the reply lifecycle (or have the App refresh from owned state, not a static
+  mock). The `reply send does not repair product state by cancelling reply mode`
+  regression added in that remediation passes deterministically in isolation.
 
 ## Linux GUI QA Container
 

@@ -42,6 +42,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { createDesktopApi } from "./backend/client";
+import { t } from "./i18n/messages";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   TimelineView,
@@ -669,10 +670,6 @@ export function App() {
           ? await api.sendText(roomId, body)
           : await api.sendReply(roomId, composerMode.Reply.in_reply_to_event_id, body);
       setSnapshot(nextSnapshot);
-      // Ensure the semantic reply mode is cleared even if the backend left it.
-      if (nextSnapshot.state.timeline.composer.mode !== "Plain") {
-        setSnapshot(await api.cancelComposerReply());
-      }
       if (!isTauriRuntime()) {
         const completionStatus = qaSendSmokeCompletionStatus(
           nextSnapshot,
@@ -892,12 +889,11 @@ export function App() {
             if (rightPanelOpen) {
               void closeThread();
             } else {
-              const messageWithReplies = snapshot.timeline.find((message) => message.reply_count > 0);
-              if (messageWithReplies) {
-                void openThread(messageWithReplies.room_id, messageWithReplies.event_id);
-              } else {
-                setRightPanelMode("roomInfo");
-              }
+              // Opening a specific thread is driven by a message's "view replies"
+              // action (openThread -> Rust ThreadPaneState), not by scanning the
+              // legacy snapshot.timeline placeholder. The panel toggle opens room
+              // info as the default right-panel surface.
+              setRightPanelMode("roomInfo");
             }
           }}
           onOpenRoomInfo={() => setRightPanelMode("roomInfo")}
@@ -974,7 +970,9 @@ function CreateEntityDialog({
   const isSpace = kind === "space";
   const title = isSpace ? "スペースを作成" : "ルームを作成";
   const inputLabel = isSpace ? "Space name" : "Room name";
-  const submitLabel = isSpace ? "Submit create space" : "Submit create room";
+  const submitLabel = isSpace
+    ? t("dialog.submitCreateSpace")
+    : t("dialog.submitCreateRoom");
   const canSubmit = value.trim().length > 0 && !isBusy;
 
   function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -1015,7 +1013,7 @@ function CreateEntityDialog({
           <button
             className="dialog-button"
             type="button"
-            aria-label="Cancel create"
+            aria-label={t("dialog.cancelCreate")}
             onClick={onCancel}
           >
             キャンセル
@@ -1145,7 +1143,7 @@ function AuthScreen({
           </div>
         </div>
         <label className="auth-field">
-          <span>Homeserver</span>
+          <span>{t("settings.homeserver")}</span>
           <input
             autoComplete="url"
             name="homeserver"
@@ -1354,10 +1352,10 @@ export function TopBar({
         <span className="dot green" />
       </div>
       <div className="history">
-        <button className="icon-button" type="button" aria-label="Back">
+        <button className="icon-button" type="button" aria-label={t("action.back")}>
           ‹
         </button>
-        <button className="icon-button" type="button" aria-label="Forward">
+        <button className="icon-button" type="button" aria-label={t("action.forward")}>
           ›
         </button>
         <button className="icon-button" type="button" aria-label="History">
@@ -1368,7 +1366,7 @@ export function TopBar({
         <Search size={17} />
         <input
           ref={searchInputRef}
-          aria-label="Search"
+          aria-label={t("workspace.search")}
           value={searchQuery}
           placeholder={`${activeSpaceName} 内を検索する`}
           onChange={(event) => onSearchQueryChange(event.target.value)}
@@ -1376,7 +1374,7 @@ export function TopBar({
       </label>
       <select
         className="scope-select"
-        aria-label="Search scope"
+        aria-label={t("workspace.searchScope")}
         value={searchScope}
         onChange={(event) => onSearchScopeChange(event.target.value as SearchScopeKind)}
       >
@@ -1403,7 +1401,7 @@ export function TopBar({
           <button
             className="icon-button"
             type="button"
-            aria-label="Restart sync"
+            aria-label={t("action.restartSync")}
             disabled={isBusy}
             onClick={onRestartSync}
           >
@@ -1437,7 +1435,7 @@ export function WorkspaceRail({
   onSelectSpace: (spaceId: string | null) => void;
 }) {
   return (
-    <nav className="workspace-rail" aria-label="Workspaces">
+    <nav className="workspace-rail" aria-label={t("workspace.workspaces")}>
       <div className="workspace-list">
         <button
           className={`workspace-button ${snapshot.sidebar.account_home.is_active ? "is-active" : ""}`}
@@ -1472,7 +1470,7 @@ export function WorkspaceRail({
         <button
           className="rail-action"
           type="button"
-          aria-label="Create space"
+          aria-label={t("action.createSpace")}
           onClick={onCreateSpace}
         >
           <Plus size={22} />
@@ -1480,7 +1478,7 @@ export function WorkspaceRail({
         <button
           className="user-presence"
           type="button"
-          aria-label="User settings"
+          aria-label={t("workspace.userSettings")}
           onClick={onOpenUserSettings}
           onContextMenu={(event) =>
             onOpenContextMenu(event, { kind: "account" }, contextMenuItems({ kind: "account" }))
@@ -1507,7 +1505,7 @@ function Sidebar({
   onSelectRoom: (roomId: string) => void;
 }) {
   return (
-    <aside className="sidebar" aria-label="Rooms">
+    <aside className="sidebar" aria-label={t("workspace.rooms")}>
       <div className="workspace-header">
         <div className="workspace-name">
           {snapshot.sidebar.space_rail.find((space) => space.is_active)?.display_name ??
@@ -1516,7 +1514,7 @@ function Sidebar({
         <button
           className="icon-button"
           type="button"
-          aria-label="Space info and settings"
+          aria-label={t("workspace.spaceInfoSettings")}
           onClick={onOpenSpaceInfo}
         >
           <Settings size={18} />
@@ -1524,7 +1522,7 @@ function Sidebar({
         <button
           className="icon-button"
           type="button"
-          aria-label="Create room"
+          aria-label={t("action.createRoom")}
           onClick={onCreateRoom}
         >
           <Edit3 size={18} />
@@ -1538,7 +1536,7 @@ function Sidebar({
         />
         <NavButton icon={<MessageCircle size={18} />} label="Threads" />
         <NavButton icon={<Bell size={18} />} label="Invites" />
-        <SectionTitle label="Rooms" />
+        <SectionTitle label={t("workspace.rooms")} />
         {snapshot.sidebar.space_rooms.map((room) => (
           <RoomButton
             activeRoomId={activeRoomId}
@@ -1669,26 +1667,26 @@ function TimelinePane({
   const currentUserId = snapshot.state.session.user_id ?? null;
 
   return (
-    <main className="main-pane" aria-label="Conversation timeline">
+    <main className="main-pane" aria-label={t("timeline.conversation")}>
       <header className="channel-header">
         <div className="channel-title">
           <Hash size={22} />
           <span>{activeRoomName}</span>
         </div>
         <div className="channel-actions">
-          <button className="member-pill" type="button" aria-label="Members">
+          <button className="member-pill" type="button" aria-label={t("room.members")}>
             <Users size={16} />
             <span>8</span>
           </button>
-          <button className="icon-button" type="button" aria-label="Toggle thread" onClick={onToggleThread}>
+          <button className="icon-button" type="button" aria-label={t("room.threadToggle")} onClick={onToggleThread}>
             {snapshot.thread ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}
           </button>
-          <button className="icon-button" type="button" aria-label="Room info" onClick={onOpenRoomInfo}>
+          <button className="icon-button" type="button" aria-label={t("room.roomInfo")} onClick={onOpenRoomInfo}>
             <MoreVertical size={19} />
           </button>
         </div>
       </header>
-      <nav className="tabs" aria-label="Room tabs">
+      <nav className="tabs" aria-label={t("room.tabs")}>
         <button className="tab is-active" type="button">
           Messages
         </button>
@@ -1860,7 +1858,7 @@ function MessageArticle({
               <button
                 className="message-action"
                 type="button"
-                aria-label="Edit message"
+                aria-label={t("timeline.editMessage")}
                 onClick={() => onEditMessage(message)}
               >
                 <Edit3 size={14} />
@@ -1868,7 +1866,7 @@ function MessageArticle({
               <button
                 className="message-action"
                 type="button"
-                aria-label="Redact message"
+                aria-label={t("timeline.redactMessage")}
                 onClick={() => onRedactMessage(message.room_id, message.event_id)}
               >
                 <X size={14} />
@@ -1924,14 +1922,14 @@ export function Composer({
   }
 
   return (
-    <section className="composer" aria-label="Message composer">
+    <section className="composer" aria-label={t("composer.messageComposer")}>
       {composerMode.kind === "reply" ? (
         <div className="composer-reply-banner">
           <span className="composer-reply-label">返信中 (Replying)</span>
           <button
             className="icon-button"
             type="button"
-            aria-label="Cancel reply"
+            aria-label={t("composer.cancelReply")}
             onClick={onCancelReply}
           >
             <X size={16} />
@@ -1939,24 +1937,24 @@ export function Composer({
         </div>
       ) : null}
       <div className="composer-tools">
-        <button className="icon-button" type="button" aria-label="Bold">
+        <button className="icon-button" type="button" aria-label={t("composer.bold")}>
           <Bold size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label="Italic">
+        <button className="icon-button" type="button" aria-label={t("composer.italic")}>
           <Italic size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label="Link">
+        <button className="icon-button" type="button" aria-label={t("composer.link")}>
           <Link2 size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label="List">
+        <button className="icon-button" type="button" aria-label={t("composer.list")}>
           <List size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label="Code">
+        <button className="icon-button" type="button" aria-label={t("composer.code")}>
           <Code2 size={17} />
         </button>
       </div>
       <textarea
-        aria-label="Message composer"
+        aria-label={t("composer.messageComposer")}
         value={value}
         placeholder={`${roomName} へのメッセージ`}
         onKeyDown={onComposerKeyDown}
@@ -1964,20 +1962,20 @@ export function Composer({
       />
       <div className="composer-footer">
         <div>
-          <button className="icon-button" type="button" aria-label="Add">
+          <button className="icon-button" type="button" aria-label={t("action.add")}>
             <Plus size={19} />
           </button>
-          <button className="icon-button" type="button" aria-label="Mention">
+          <button className="icon-button" type="button" aria-label={t("composer.mention")}>
             <AtSign size={18} />
           </button>
-          <button className="icon-button" type="button" aria-label="Emoji">
+          <button className="icon-button" type="button" aria-label={t("composer.emoji")}>
             <Smile size={18} />
           </button>
         </div>
         <button
           className={`send-button ${value.trim() && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
           type="button"
-          aria-label={isSending ? "Sending" : "Send"}
+          aria-label={isSending ? t("action.sending") : t("action.send")}
           disabled={isSending || !value.trim()}
           onClick={onSend}
         >
@@ -2028,13 +2026,13 @@ export function ContextualRightPanel({
   onSwitchAccount: (session: SavedSessionInfo) => void;
 }) {
   if (mode === "closed") {
-    return <aside className="thread-pane" aria-label="Context panel" />;
+    return <aside className="thread-pane" aria-label={t("panel.context")} />;
   }
 
   if (mode === "recovery") {
     return (
-      <aside className="thread-pane" aria-label="Context panel">
-        <PanelHeader title="Recovery" onClose={onClosePanel} showClose={false} />
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={t("panel.recovery")} onClose={onClosePanel} showClose={false} />
         <RecoveryPanel
           isBusy={isRecoveryBusy}
           secretFilled={recoverySecretFilled}
@@ -2049,8 +2047,8 @@ export function ContextualRightPanel({
 
   if (mode === "keyboardSettings") {
     return (
-      <aside className="thread-pane" aria-label="Context panel">
-        <PanelHeader title="Keyboard" onClose={onClosePanel} />
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={t("panel.keyboard")} onClose={onClosePanel} />
         <KeyboardSettingsPanel />
       </aside>
     );
@@ -2058,8 +2056,8 @@ export function ContextualRightPanel({
 
   if (mode === "userSettings") {
     return (
-      <aside className="thread-pane" aria-label="Context panel">
-        <PanelHeader title="User settings" onClose={onClosePanel} />
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={t("panel.userSettings")} onClose={onClosePanel} />
         <UserSettingsPanel
           currentSession={currentSavedSession(snapshot)}
           savedSessions={savedSessions}
@@ -2072,8 +2070,8 @@ export function ContextualRightPanel({
 
   if (mode === "roomInfo") {
     return (
-      <aside className="thread-pane" aria-label="Context panel">
-        <PanelHeader title="Room info" onClose={onClosePanel} />
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={t("panel.roomInfo")} onClose={onClosePanel} />
         <RoomInfoPanel room={activeRoom} spaces={snapshot.state.spaces} />
       </aside>
     );
@@ -2081,8 +2079,8 @@ export function ContextualRightPanel({
 
   if (mode === "spaceInfo") {
     return (
-      <aside className="thread-pane" aria-label="Context panel">
-        <PanelHeader title="Space info" onClose={onClosePanel} />
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={t("panel.spaceInfo")} onClose={onClosePanel} />
         <SpaceInfoPanel fallbackName={activeSpaceName} rooms={snapshot.state.rooms} space={activeSpace} />
       </aside>
     );
@@ -2090,8 +2088,8 @@ export function ContextualRightPanel({
 
   if (mode === "search") {
     return (
-      <aside className="thread-pane" aria-label="Context panel">
-        <PanelHeader title="Search" onClose={onClosePanel} />
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={t("panel.search")} onClose={onClosePanel} />
         <SearchResults
           query={searchQuery}
           results={searchResults}
@@ -2103,14 +2101,14 @@ export function ContextualRightPanel({
   }
 
   if (!snapshot.thread) {
-    return <aside className="thread-pane" aria-label="Context panel" />;
+    return <aside className="thread-pane" aria-label={t("panel.context")} />;
   }
 
   const root = snapshot.timeline.find((message) => message.event_id === snapshot.thread?.root_event_id);
 
   return (
-    <aside className="thread-pane" aria-label="Context panel">
-      <PanelHeader title="Thread" onClose={onCloseThread} />
+    <aside className="thread-pane" aria-label={t("panel.context")}>
+      <PanelHeader title={t("panel.thread")} onClose={onCloseThread} />
       <section className="thread-scroll">
         {root ? (
           <div className="thread-root">
@@ -2162,7 +2160,7 @@ function PanelHeader({
         <MoreHorizontal size={19} />
       </button>
       {showClose ? (
-        <button className="icon-button" type="button" aria-label={`Close ${title}`} onClick={onClose}>
+        <button className="icon-button" type="button" aria-label={t("action.close", { title })} onClick={onClose}>
           <X size={19} />
         </button>
       ) : null}

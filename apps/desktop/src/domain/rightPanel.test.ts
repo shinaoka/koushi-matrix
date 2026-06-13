@@ -108,11 +108,15 @@ function snapshotForPanelMode(
         is_paginating_backwards: false,
         composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
       },
-      thread: { kind: "closed" },
+      thread: hasThread
+        ? { kind: "open", room_id: "!room:example", root_event_id: "$event" }
+        : { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" }
     },
-    thread: hasThread ? { room_id: "!room:example", root_event_id: "$event", replies: [] } : null
+    // Production always sends the legacy top-level thread as null; the open/closed
+    // decision must come from state.thread, never this placeholder.
+    thread: null
   };
 }

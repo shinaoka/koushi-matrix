@@ -31,6 +31,8 @@ import {
   useState
 } from "react";
 
+import { t } from "../i18n/messages";
+
 import type {
   CoreEventPayload,
   TimelineItem,
@@ -43,6 +45,7 @@ import {
   batchContainsPrepend,
   createTimelineStore,
   getItems,
+  getKeyState,
   getPaginationState,
   shouldSuppressAutoBackfill,
   type TimelineStoreState
@@ -196,6 +199,11 @@ export function TimelineView({
   const backwardState = getPaginationState(store, timelineKey, "Backward");
   const isPaginating = backwardState === "Paginating";
   const endReached = backwardState === "EndReached";
+  // Stable, render-visible timeline generation for this key. Bumps when the
+  // store replaces the list for a new generation (InitialItems / resync), so
+  // tests can poll a concrete attribute instead of sleeping. 0 = no
+  // InitialItems received yet.
+  const generation = getKeyState(store, timelineKey)?.generation ?? 0;
 
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
@@ -243,6 +251,7 @@ export function TimelineView({
       className="timeline-view"
       data-testid="timeline-view"
       data-end-reached={endReached || undefined}
+      data-timeline-generation={generation}
       ref={containerRef}
       style={{ overflowY: "auto", height: "100%" }}
       onScroll={maybeAutoBackfill}
@@ -308,7 +317,7 @@ export function TimelineItemRow({
           <button
             className="message-action"
             type="button"
-            aria-label="Reply to message"
+            aria-label={t("timeline.replyToMessage")}
             onClick={() => onReply(roomId, eventId)}
           >
             <MessageCircle size={14} />

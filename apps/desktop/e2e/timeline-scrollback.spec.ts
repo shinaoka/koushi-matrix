@@ -204,11 +204,50 @@ test("scrollback prepend keeps the anchor item visually stable and gates auto-ba
   );
   await expect(page.locator("[data-testid=timeline-start]")).toBeVisible();
 
+  // Capture the timeline generation BEFORE the next store mutation, so the
+  // poll below has a concrete value to wait past instead of a fixed sleep.
+  const previousGeneration = await page
+    .locator("[data-timeline-generation]")
+    .first()
+    .getAttribute("data-timeline-generation");
+
+  // Scroll to the very top under EndReached: the synchronous onScroll handler
+  // must NOT dispatch another auto-backfill (Backward state is EndReached).
   await container.evaluate((node) => {
     node.scrollTop = 0;
   });
-  // Give the scroll handler a beat, then assert the count did not move.
-  await page.waitForTimeout(250);
+
+  // Drive a concrete, observable store mutation (a new generation via
+  // InitialItems) and poll the generation attribute until it changes. This
+  // replaces a fixed wait: once the new generation is rendered, the earlier
+  // scroll event has already been processed. InitialItems preserves the
+  // Backward=EndReached state, so auto-backfill stays suppressed.
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 2, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 40 }, (_, i) =>
+        makeItem(`$gen2-${String(i).padStart(2, "0")}`, `gen2 message ${i}`)
+      )
+    }
+  );
+  await expect
+    .poll(() =>
+      page
+        .locator("[data-timeline-generation]")
+        .first()
+        .getAttribute("data-timeline-generation")
+    )
+    .not.toBe(previousGeneration);
+
   const countAfterEndReached = await page.evaluate(
     () => window.__harness.invocationsOf("paginate_timeline_backwards").length
   );

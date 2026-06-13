@@ -46,6 +46,8 @@ const MIN_RESTORABLE_WINDOW_WIDTH: u32 = 760;
 const MIN_RESTORABLE_WINDOW_HEIGHT: u32 = 620;
 #[cfg(any(debug_assertions, test))]
 const QA_LOGIN_PIPE_ENV: &str = "MATRIX_DESKTOP_QA_LOGIN_PIPE";
+#[cfg(any(debug_assertions, test))]
+const QA_CONTROL_PIPE_ENV: &str = "MATRIX_DESKTOP_QA_CONTROL_PIPE";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ForwardedWebviewEvent {
@@ -230,6 +232,23 @@ fn qa_login_pipe_path_from_env_value(value: Option<&str>) -> Option<PathBuf> {
 #[cfg(any(debug_assertions, test))]
 fn qa_login_pipe_path_from_env() -> Option<PathBuf> {
     qa_login_pipe_path_from_env_value(std::env::var(QA_LOGIN_PIPE_ENV).ok().as_deref())
+}
+
+#[cfg(any(debug_assertions, test))]
+fn qa_control_pipe_path_from_env_value(value: Option<&str>) -> Option<PathBuf> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+// The QA control pipe lets unattended GUI smoke drive a clean logout after a
+// real login. Release builds must NOT honor it — the compile-time gate keeps a
+// release binary from ever reading this env var (engineering-rules: Secrets
+// rule 2; debug/test-only QA control surface).
+#[cfg(any(debug_assertions, test))]
+fn qa_control_pipe_path_from_env() -> Option<PathBuf> {
+    qa_control_pipe_path_from_env_value(std::env::var(QA_CONTROL_PIPE_ENV).ok().as_deref())
 }
 
 /// GUI-smoke toggle: when `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS` is set, the
@@ -666,6 +685,11 @@ pub fn run() {
                 commands::spawn_qa_login_pipe_reader(app.handle().clone(), pipe_path);
             }
 
+            #[cfg(any(debug_assertions, test))]
+            if let Some(pipe_path) = qa_control_pipe_path_from_env() {
+                commands::spawn_qa_control_pipe_reader(app.handle().clone(), pipe_path);
+            }
+
             if restore_session {
                 // Startup restore goes through the canon command boundary:
                 // `AccountCommand::RestoreLastSession` resolves the
@@ -744,9 +768,9 @@ mod tests {
         PersistedWindowState, desktop_menu_items, desktop_standard_menu_items,
         load_window_state_with_base, persist_window_state_with_base,
         persisted_window_state_from_geometry, persisted_window_state_is_restorable,
-        qa_login_pipe_path_from_env_value, restore_session_enabled_from_env_value,
-        saved_sessions_disabled_from_env_value, window_event_should_persist,
-        window_event_should_stop_background_tasks, window_state_path,
+        qa_control_pipe_path_from_env_value, qa_login_pipe_path_from_env_value,
+        restore_session_enabled_from_env_value, saved_sessions_disabled_from_env_value,
+        window_event_should_persist, window_event_should_stop_background_tasks, window_state_path,
     };
     use crate::commands::parse_qa_login_pipe_payload;
 
@@ -776,6 +800,58 @@ mod tests {
         );
         assert_eq!(qa_login_pipe_path_from_env_value(Some("   ")), None);
         assert_eq!(qa_login_pipe_path_from_env_value(None), None);
+    }
+
+    #[test]
+    fn qa_control_pipe_env_uses_path_only() {
+        assert_eq!(
+            qa_control_pipe_path_from_env_value(Some(" /tmp/matrix-desktop-control.pipe ")),
+            Some(Path::new("/tmp/matrix-desktop-control.pipe").to_path_buf())
+        );
+        assert_eq!(qa_control_pipe_path_from_env_value(Some("   ")), None);
+        assert_eq!(qa_control_pipe_path_from_env_value(None), None);
+    }
+
+    /// Release builds must NEVER read the QA control pipe env var. The pipe is a
+    /// debug/test-only logout-cleanup surface, so its const, helpers, and reader
+    /// spawn must all sit behind the same `#[cfg(any(debug_assertions, test))]`
+    /// compile-time gate as the QA login pipe (engineering-rules: Secrets rule
+    /// 2). This source-level assertion is the release gate: a release binary
+    /// cannot compile the env read at all.
+    #[test]
+    fn qa_control_pipe_env_is_debug_or_test_only() {
+        let source = include_str!("lib.rs");
+        let const_decl = concat!("const QA_CONTROL", "_PIPE_ENV");
+        let from_env = concat!("fn qa_control_pipe", "_path_from_env()");
+        let spawn_reader = concat!("spawn_qa_control", "_pipe_reader");
+
+        // Every place that names, reads, or wires the control pipe must sit
+        // directly under the debug/test cfg gate, so a release binary cannot
+        // even compile the env read (engineering-rules: Secrets rule 2).
+        for token in [const_decl, from_env, spawn_reader] {
+            let offset = source
+                .find(token)
+                .unwrap_or_else(|| panic!("expected `{token}` to exist in lib.rs"));
+            let preceding = &source[..offset];
+            let gate_offset = preceding
+                .rfind("#[cfg(any(debug_assertions, test))]")
+                .unwrap_or_else(|| panic!("`{token}` should be preceded by a debug/test cfg gate"));
+            // The cfg gate must be the immediately-preceding attribute (nothing
+            // but whitespace / single-line attributes between it and the item).
+            let between = &preceding[gate_offset..];
+            assert!(
+                !between.contains("\n\n"),
+                "`{token}` must sit directly under the debug/test cfg gate"
+            );
+        }
+
+        // The env var is read exactly once, inside the gated `from_env` helper.
+        let read_token = concat!("std::env::var(QA_CONTROL", "_PIPE_ENV)");
+        assert_eq!(
+            source.matches(read_token).count(),
+            1,
+            "control pipe env should be read once, only inside the gated from_env helper"
+        );
     }
 
     #[test]

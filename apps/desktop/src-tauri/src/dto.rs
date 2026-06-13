@@ -428,8 +428,11 @@ mod tests {
         assert_eq!(value["state"]["sync"], json!("running"));
         // Phase 7: timeline is always [] (items flow as diffs)
         assert_eq!(value["timeline"], json!([]));
-        // Phase 7: thread is always null
+        // Phase 7: the legacy top-level thread is always null...
         assert_eq!(value["thread"], json!(null));
+        // ...product thread state lives in state.thread (default Closed). The UI
+        // reads the open/closed decision from here, not the legacy placeholder.
+        assert_eq!(value["state"]["thread"]["kind"], json!("closed"));
         // basic_operation must be present (default Idle) so the UI can read
         // snapshot.state.basic_operation.kind without crashing.
         assert_eq!(value["state"]["basic_operation"]["kind"], json!("idle"));

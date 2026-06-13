@@ -283,6 +283,26 @@ impl AppActor {
                     let _ = effects;
                     true
                 }
+                AppCommand::OpenThread {
+                    room_id,
+                    root_event_id,
+                    ..
+                } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::OpenThread {
+                            room_id,
+                            root_event_id,
+                        },
+                    );
+                    let _ = effects;
+                    true
+                }
+                AppCommand::CloseThread { .. } => {
+                    let effects = reduce(&mut self.state, AppAction::CloseThread);
+                    let _ = effects;
+                    true
+                }
             },
             CoreCommand::Sync(sync_command) => {
                 // Route to AccountActor (which forwards to SyncActor).
@@ -336,16 +356,40 @@ impl AppActor {
     }
 }
 
-/// Default application data directory.
+/// Resolve the user data directory from a `HOME` value (pure; testable).
+///
+/// Fails closed: there is NO current-working-directory fallback. The encrypted
+/// SDK store, encrypted search index, and persisted session live under this
+/// path, so silently writing them into an arbitrary CWD when `HOME` is missing
+/// would be a privacy/security footgun (REPOSITORY_RULES Key Management:
+/// "Missing, corrupt, or inaccessible OS secrets MUST fail closed").
+fn default_data_dir_from_home(home: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    let home =
+        home.ok_or_else(|| "HOME is required to resolve matrix-desktop data dir".to_owned())?;
+    Ok(PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("matrix-desktop"))
+}
+
+/// Default application data directory (`$HOME/.local/share/matrix-desktop`).
 fn default_data_dir() -> PathBuf {
-    // On macOS / Linux: $HOME/.local/share/matrix-desktop
-    // Fallback to current directory if HOME is not set.
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("matrix-desktop")
-    } else {
-        PathBuf::from("matrix-desktop-data")
+    default_data_dir_from_home(std::env::var_os("HOME"))
+        .expect("HOME is required to resolve matrix-desktop data dir")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_data_dir_requires_home() {
+        assert!(default_data_dir_from_home(None).is_err());
+    }
+
+    #[test]
+    fn default_data_dir_uses_xdg_like_user_data_path() {
+        let dir = default_data_dir_from_home(Some("/tmp/synthetic-home".into())).unwrap();
+        assert!(dir.ends_with(".local/share/matrix-desktop"));
     }
 }

@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-06-13.
+Last amended: 2026-06-14.
 
 ## Product Scope
 
@@ -439,6 +439,8 @@ history stops further automatic pagination.
 ## Security Model
 
 Full prohibitions live in
+[REPOSITORY_RULES.md](../../REPOSITORY_RULES.md) and the detailed policy
+extension in
 [docs/policies/engineering-rules.md](../policies/engineering-rules.md). The
 architectural invariants:
 

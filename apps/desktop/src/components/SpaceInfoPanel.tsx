@@ -1,6 +1,7 @@
 import { Bell, ChevronRight, Home, MailPlus, Settings, SlidersHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { t } from "../i18n/messages";
 import type { RoomSummary, SpaceSummary } from "../domain/types";
 
 export function SpaceInfoPanel({
@@ -30,12 +31,12 @@ export function SpaceInfoPanel({
       </header>
 
       <div className="settings-summary-grid" aria-label="Space summary">
-        <SummaryTile label="Rooms" value={String(childRooms.length)} />
+        <SummaryTile label={t("workspace.rooms")} value={String(childRooms.length)} />
         <SummaryTile label="Unread" value={String(unreadTotal)} />
       </div>
 
-      <section className="settings-section" aria-label="Rooms">
-        <h3>Rooms</h3>
+      <section className="settings-section" aria-label={t("workspace.rooms")}>
+        <h3>{t("workspace.rooms")}</h3>
         <div className="settings-detail-list">
           {childRooms.map((room) => (
             <div className="settings-detail-row" key={room.room_id}>

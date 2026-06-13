@@ -1,3 +1,4 @@
+import { t } from "../i18n/messages";
 import { keyboardShortcutGroups, type KeyboardShortcut } from "../domain/shortcuts";
 
 export function KeyboardSettingsPanel() {
@@ -5,7 +6,7 @@ export function KeyboardSettingsPanel() {
     <section className="settings-panel keyboard-settings" aria-labelledby="keyboard-settings-title">
       <header className="settings-panel-header">
         <div>
-          <h2 id="keyboard-settings-title">Keyboard</h2>
+          <h2 id="keyboard-settings-title">{t("panel.keyboard")}</h2>
           <p>Element-compatible shortcuts for implemented desktop actions.</p>
         </div>
       </header>

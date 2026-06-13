@@ -24,8 +24,17 @@ used by older shell layers and tests. The reducer does not call Matrix SDK,
 Tauri, filesystem, keyring, or network APIs. Current production runtime work
 uses `CoreCommand` / `CoreEvent` in `docs/architecture/overview.md`.
 
-Actions that touch room, timeline, thread, or search state are accepted only when
-the session is `Ready`. Late backend signals after logout or lock are ignored.
+Actions that touch room, timeline, thread, search, or composer state are accepted
+only for a *Ready session* (defined below). Late backend signals after logout or
+lock are ignored.
+
+Reducer guard phrase: "Ready session" means a Matrix-capable authenticated
+session whose runtime may accept room, timeline, thread, search, and composer
+actions: `SessionState::Ready(_)`, `SessionState::NeedsRecovery { .. }`, or
+`SessionState::Recovering { .. }`. It does not include `SignedOut`, `Restoring`,
+`SwitchingAccount`, `Authenticating`, `Locked`, or `LoggingOut`. Recovery states
+may show degraded encrypted-content behavior, but product state still remains
+Rust-owned and guarded.
 
 ## Maintenance Contract
 
@@ -36,7 +45,8 @@ here as a Mermaid `stateDiagram-v2`. When the reducer changes (a new state,
 transition, or guard), the matching diagram and its guard notes are updated in
 the same change. A transition that exists in the reducer but not in the diagram,
 or vice versa, is a defect; phase-exit docs-sync checks for it (see
-[engineering-rules.md](../policies/engineering-rules.md) → Documentation).
+[REPOSITORY_RULES.md](../../REPOSITORY_RULES.md) -> State-Machine Discipline and
+[engineering-rules.md](../policies/engineering-rules.md) -> Documentation).
 
 Convention: each transition is labeled with the `AppAction` that causes it, and
 guards are stated as prose under the diagram. Unless noted, every transition
@@ -108,14 +118,20 @@ stateDiagram-v2
     Plain --> Reply: ComposerReplyTargetSelected
     Reply --> Reply: ComposerReplyTargetSelected
     Reply --> Plain: ComposerReplyCancelled
+    Reply --> Plain: SendTextFinished [matching pending reply send]
 ```
 
 - `ComposerReplyTargetSelected { room_id, event_id }` enters `Reply` only when the
   session is `Ready` and `room_id` is the selected timeline room; otherwise it is
   ignored. Re-selecting while already in `Reply` replaces the target (idempotent).
 - `ComposerReplyCancelled` returns to `Plain`; it is a no-op when already `Plain`
-  or when no room is selected. The send path also returns the composer to `Plain`
-  after a reply is sent.
+  or when no room is selected.
+- `SendTextFinished { room_id, transaction_id }` clears the matching pending
+  transaction and returns the composer to `Plain`, completing any active reply
+  draft. When the composer is already `Plain`, the mode is unchanged.
+- `SendTextFailed { room_id, transaction_id, message }` clears the pending
+  transaction and records a recoverable error. It preserves `Reply` mode so the
+  user can retry or cancel explicitly.
 - The reply target is Rust-owned `AppState`, not React-local, so the send path,
   snapshots, and QA can read which event a draft replies to.
 

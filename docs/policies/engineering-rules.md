@@ -1,12 +1,13 @@
 # Engineering Rules
 
-Status: normative. These rules apply to all code, tests, QA automation,
-documentation, and agent-driven work in this repository. They consolidate the
-security policy of the runtime design and the durable lessons recorded in
-`AGENTS.md`. AGENTS.md remains the operational how-to (permissions, install
-caveats, recovery steps); the rules themselves live here.
+Status: normative detailed policy. This document extends the root durable rules
+in [REPOSITORY_RULES.md](../../REPOSITORY_RULES.md) with concrete policy for
+secrets, logging, QA automation, async/runtime behavior, GUI automation, and
+build gates. AGENTS.md remains the operational how-to (permissions, install
+caveats, recovery steps); durable rules discovered there are promoted to
+REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-06-13.
+Last amended: 2026-06-14.
 
 ## Secrets and Private Data
 
@@ -176,13 +177,16 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
 
 ## Documentation
 
-1. `docs/architecture/overview.md` is the long-term blueprint. Dated specs
+1. `REPOSITORY_RULES.md` is the root durable rule book for this repository.
+   This document is the detailed policy extension for the domains it covers.
+2. `docs/architecture/overview.md` is the long-term blueprint. Dated specs
    and plans implement it; when implementation reveals a design problem,
    amend the overview first.
-2. Durable rules discovered during operations are promoted from `AGENTS.md`
-   into this document; AGENTS.md keeps the troubleshooting detail.
-3. Docs, examples, and fixtures use synthetic data only (see Secrets rules).
-4. State-machine diagrams are normative. Every reducer state machine in
+3. Durable rules discovered during operations are promoted from `AGENTS.md`
+   into `REPOSITORY_RULES.md` or this document; AGENTS.md keeps the
+   troubleshooting detail.
+4. Docs, examples, and fixtures use synthetic data only (see Secrets rules).
+5. State-machine diagrams are normative. Every reducer state machine in
    `reduce(AppState, AppAction)` — its states, transitions, and guards — is
    documented as a Mermaid `stateDiagram-v2` in
    `docs/architecture/state-machine.md`. A change to a reducer state machine

@@ -379,6 +379,9 @@ async fn cleanup_after_login_sync(
 
     drop(conn_a);
     drop(runtime_a);
+    // Store-lock release after dropping the runtime is a filesystem event with
+    // no observable Core signal to wait on; this brief bounded wait avoids
+    // store-lock contention when the same data dir is reopened below.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
@@ -456,6 +459,9 @@ async fn cleanup_after_full_flow(
 
     drop(conn_a);
     drop(runtime_a);
+    // Store-lock release after dropping the runtime is a filesystem event with
+    // no observable Core signal to wait on; this brief bounded wait avoids
+    // store-lock contention when the same data dir is reopened below.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
@@ -1158,9 +1164,12 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit unsubscribe B: {e}"))?;
 
-    // Brief wait so the unsubscribe commands are processed before search QA.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
+    // Unsubscribe has no completion event (it just drops the timeline actor,
+    // per the timeline spec). No blind sleep is needed: the next step that
+    // depends on this connection — a re-subscribe awaiting InitialItems, or a
+    // sync stop awaiting SyncStopped — is dispatched after these unsubscribes
+    // on the same FIFO-ordered connection, so the actor is dropped first and
+    // the following request-id-scoped wait provides the real synchronization.
     println!("timeline=ok");
 
     if !scenario.should_run_stage(QaStage::EditRedactSearch) {
@@ -1311,7 +1320,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit unsubscribe search timeline: {e}"))?;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Unsubscribe has no completion event (it just drops the timeline actor).
+    // The sync stop below is dispatched after it on the same FIFO-ordered
+    // connection, so the actor is dropped before sync stop runs and
+    // `wait_for_sync_stopped` (request-id-scoped) is the concrete wait.
 
     // -----------------------------------------------------------------------
     // --- Sync stop A + store-backed restore A + logout A ---
@@ -1329,7 +1341,9 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     drop(conn_a);
     drop(runtime_a);
-    // Brief wait to avoid store-lock contention on restore.
+    // Store-lock release after dropping the runtime is a filesystem event with
+    // no observable Core signal to wait on; this brief bounded wait avoids
+    // store-lock contention when the same data dir is reopened on restore.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
