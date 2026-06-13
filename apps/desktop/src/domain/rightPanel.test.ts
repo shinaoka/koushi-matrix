@@ -106,11 +106,12 @@ function snapshotForPanelMode(
         room_id: null,
         is_subscribed: false,
         is_paginating_backwards: false,
-        composer: { pending_transaction_id: null, draft: "" }
+        composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
       },
       thread: { kind: "closed" },
       search: { kind: "closed" },
-      errors: []
+      errors: [],
+      basic_operation: { kind: "idle" }
     },
     thread: hasThread ? { room_id: "!room:example", root_event_id: "$event", replies: [] } : null
   };

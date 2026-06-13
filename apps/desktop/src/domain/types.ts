@@ -24,6 +24,7 @@ export interface AppState {
   thread: ThreadPaneState;
   search: SearchState;
   errors: AppError[];
+  basic_operation: BasicOperationState;
 }
 
 export type AuthDiscoveryState =
@@ -94,7 +95,21 @@ export interface TimelinePaneState {
 export interface ComposerState {
   pending_transaction_id: string | null;
   draft: string;
+  mode: ComposerMode;
 }
+
+// Rust ComposerMode has NO serde tag → externally tagged (like SyncState in this file)
+export type ComposerMode =
+  | "Plain"
+  | { Reply: { in_reply_to_event_id: string } };
+
+// Rust BasicOperationState is #[serde(tag = "kind", rename_all = "camelCase")]
+// → internally tagged, camelCase VARIANT names, snake_case fields
+export type BasicOperationState =
+  | { kind: "idle" }
+  | { kind: "creatingRoom"; name: string }
+  | { kind: "creatingSpace"; name: string }
+  | { kind: "linkingSpaceChild"; space_id: string; child_room_id: string };
 
 export interface ThreadPaneState {
   kind: "closed" | "opening" | "open";

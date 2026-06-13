@@ -97,6 +97,30 @@ class TauriDesktopApi implements DesktopApi {
   async submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("submit_search", { query, scope });
   }
+
+  async createRoom(name: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("create_room", { name });
+  }
+
+  async createSpace(name: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("create_space", { name });
+  }
+
+  async setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_space_child", { spaceId, childRoomId, viaServer });
+  }
+
+  async setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_composer_reply_target", { roomId, eventId });
+  }
+
+  async cancelComposerReply(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("cancel_composer_reply");
+  }
+
+  async sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("send_reply", { roomId, inReplyToEventId, body });
+  }
 }
 
 function isTauriRuntime(): boolean {

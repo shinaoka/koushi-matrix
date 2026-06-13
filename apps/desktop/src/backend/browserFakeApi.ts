@@ -33,6 +33,12 @@ export interface DesktopApi {
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
+  createRoom(name: string): Promise<DesktopSnapshot>;
+  createSpace(name: string): Promise<DesktopSnapshot>;
+  setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<DesktopSnapshot>;
+  setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  cancelComposerReply(): Promise<DesktopSnapshot>;
+  sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<DesktopSnapshot>;
 }
 
 export interface BrowserFakeApiOptions {
@@ -282,7 +288,7 @@ class BrowserFakeApi implements DesktopApi {
       room_id: roomId,
       root_event_id: rootEventId,
       is_subscribed: true,
-      composer: { pending_transaction_id: null, draft: "" }
+      composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
     };
     this.snapshot.thread = {
       room_id: roomId,
@@ -317,6 +323,136 @@ class BrowserFakeApi implements DesktopApi {
       scope,
       results
     };
+    return this.getSnapshot();
+  }
+
+  async createRoom(name: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    const count = this.snapshot.state.rooms.length + 1;
+    const newRoomId = `!local-room-${count}:fake.local`;
+    const newRoom: RoomSummary = {
+      room_id: newRoomId,
+      display_name: name,
+      is_dm: false,
+      unread_count: 0,
+      parent_space_ids: []
+    };
+    this.snapshot.state.rooms = [...this.snapshot.state.rooms, newRoom];
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
+    await this.selectRoom(newRoomId);
+    return this.getSnapshot();
+  }
+
+  async createSpace(name: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    const count = this.snapshot.state.spaces.length + 1;
+    const newSpaceId = `!local-space-${count}:fake.local`;
+    const newSpace: SpaceSummary = {
+      space_id: newSpaceId,
+      display_name: name,
+      child_room_ids: []
+    };
+    this.snapshot.state.spaces = [...this.snapshot.state.spaces, newSpace];
+    await this.selectSpace(newSpaceId);
+    return this.getSnapshot();
+  }
+
+  async setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    void viaServer;
+
+    this.snapshot.state.spaces = this.snapshot.state.spaces.map((space) =>
+      space.space_id === spaceId
+        ? {
+            ...space,
+            child_room_ids: space.child_room_ids.includes(childRoomId)
+              ? space.child_room_ids
+              : [...space.child_room_ids, childRoomId]
+          }
+        : space
+    );
+    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+      room.room_id === childRoomId
+        ? {
+            ...room,
+            parent_space_ids: room.parent_space_ids.includes(spaceId)
+              ? room.parent_space_ids
+              : [...room.parent_space_ids, spaceId]
+          }
+        : room
+    );
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
+    return this.getSnapshot();
+  }
+
+  async setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    if (this.snapshot.state.timeline.room_id === roomId) {
+      this.snapshot.state.timeline.composer.mode = { Reply: { in_reply_to_event_id: eventId } };
+    }
+    return this.getSnapshot();
+  }
+
+  async cancelComposerReply(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.timeline.composer.mode = "Plain";
+    return this.getSnapshot();
+  }
+
+  async sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<DesktopSnapshot> {
+    const session = this.snapshot.state.session;
+    if (
+      session.kind !== "ready" ||
+      !session.user_id ||
+      this.snapshot.state.timeline.room_id !== roomId ||
+      body.trim().length === 0
+    ) {
+      return this.getSnapshot();
+    }
+    const sender = session.user_id;
+
+    this.snapshot.timeline = [
+      ...this.snapshot.timeline,
+      {
+        room_id: roomId,
+        event_id: `$local-browser-${this.snapshot.timeline.length + 1}`,
+        sender,
+        timestamp_ms: 1_820_000_000_000 + this.snapshot.timeline.length,
+        body,
+        attachment_filename: null,
+        reply_count: 0
+      }
+    ];
+    this.snapshot.timeline = this.snapshot.timeline.map((message) =>
+      message.event_id === inReplyToEventId
+        ? { ...message, reply_count: message.reply_count + 1 }
+        : message
+    );
+    this.snapshot.state.timeline.composer.pending_transaction_id = null;
+    this.snapshot.state.timeline.composer.draft = "";
+    this.snapshot.state.timeline.composer.mode = "Plain";
     return this.getSnapshot();
   }
 
@@ -356,11 +492,13 @@ class BrowserFakeApi implements DesktopApi {
       is_paginating_backwards: false,
       composer: {
         pending_transaction_id: null,
-        draft: ""
+        draft: "",
+        mode: "Plain"
       }
     };
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.state.search = { kind: "closed" };
+    this.snapshot.state.basic_operation = { kind: "idle" };
     this.snapshot.sidebar = emptySidebar();
     this.snapshot.timeline = [];
     this.snapshot.thread = null;
@@ -429,7 +567,8 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         is_paginating_backwards: false,
         composer: {
           pending_transaction_id: null,
-          draft: ""
+          draft: "",
+          mode: "Plain"
         }
       },
       thread: {
@@ -439,11 +578,13 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         is_subscribed: true,
         composer: {
           pending_transaction_id: null,
-          draft: ""
+          draft: "",
+          mode: "Plain"
         }
       },
       search: { kind: "closed" },
-      errors: []
+      errors: [],
+      basic_operation: { kind: "idle" }
     },
     sidebar,
     timeline: timelineMessages.filter((message) => message.room_id === active_room_id),
@@ -500,12 +641,14 @@ function createSignedOutSnapshot(): DesktopSnapshot {
         is_paginating_backwards: false,
         composer: {
           pending_transaction_id: null,
-          draft: ""
+          draft: "",
+          mode: "Plain"
         }
       },
       thread: { kind: "closed" },
       search: { kind: "closed" },
-      errors: []
+      errors: [],
+      basic_operation: { kind: "idle" }
     },
     sidebar: emptySidebar(),
     timeline: [],

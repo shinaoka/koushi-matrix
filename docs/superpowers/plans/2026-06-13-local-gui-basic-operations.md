@@ -601,7 +601,7 @@ existing `select_room` event-wait pattern.
 Add the new commands to `tauri::generate_handler!` in
 `apps/desktop/src-tauri/src/lib.rs`.
 
-- [ ] **Step 4: Add TS API methods**
+- [x] **Step 4: Add TS API methods**
 
 Extend `DesktopApi` and `TauriDesktopApi`:
 
@@ -614,7 +614,7 @@ cancelComposerReply(): Promise<DesktopSnapshot>;
 sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<DesktopSnapshot>;
 ```
 
-- [ ] **Step 5: Update browser fake**
+- [x] **Step 5: Update browser fake**
 
 `createRoom` appends a non-DM room, selects it, and composes the sidebar.
 `createSpace` appends a space and selects it. `setSpaceChild` adds the room ID

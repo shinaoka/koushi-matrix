@@ -253,4 +253,86 @@ describe("desktop model", () => {
     expect(snapshot.state.session.device_id).toBe("SECONDDEVICE");
     expect(snapshot.state.sync).toBe("running");
   });
+
+  test("createRoom appends a non-DM room and makes it active", async () => {
+    const api = createBrowserFakeApi();
+    const before = await api.getSnapshot();
+    const beforeRoomCount = before.state.rooms.length;
+
+    const snapshot = await api.createRoom("New Test Room");
+
+    expect(snapshot.state.rooms).toHaveLength(beforeRoomCount + 1);
+    const newRoom = snapshot.state.rooms[snapshot.state.rooms.length - 1];
+    expect(newRoom?.display_name).toBe("New Test Room");
+    expect(newRoom?.is_dm).toBe(false);
+    expect(snapshot.state.navigation.active_room_id).toBe(newRoom?.room_id);
+  });
+
+  test("createSpace appends a space and makes it active", async () => {
+    const api = createBrowserFakeApi();
+    const before = await api.getSnapshot();
+    const beforeSpaceCount = before.state.spaces.length;
+
+    const snapshot = await api.createSpace("New Test Space");
+
+    expect(snapshot.state.spaces).toHaveLength(beforeSpaceCount + 1);
+    const newSpace = snapshot.state.spaces[snapshot.state.spaces.length - 1];
+    expect(newSpace?.display_name).toBe("New Test Space");
+    expect(snapshot.state.navigation.active_space_id).toBe(newSpace?.space_id);
+  });
+
+  test("setSpaceChild links both directions", async () => {
+    const api = createBrowserFakeApi();
+    const before = await api.getSnapshot();
+
+    // Use the first space and a room not already in it
+    const spaceId = before.state.spaces[0]?.space_id;
+    if (!spaceId) {
+      throw new Error("expected at least one space");
+    }
+
+    // Find a room not in that space
+    const spaceChildIds = before.state.spaces[0]?.child_room_ids ?? [];
+    const unlinkedRoom = before.state.rooms.find(
+      (room) => !spaceChildIds.includes(room.room_id) && !room.is_dm
+    );
+    if (!unlinkedRoom) {
+      throw new Error("expected an unlinked non-DM room");
+    }
+    const childRoomId = unlinkedRoom.room_id;
+
+    const snapshot = await api.setSpaceChild(spaceId, childRoomId, "fake.local");
+
+    const updatedSpace = snapshot.state.spaces.find((s) => s.space_id === spaceId);
+    expect(updatedSpace?.child_room_ids).toContain(childRoomId);
+
+    const updatedRoom = snapshot.state.rooms.find((r) => r.room_id === childRoomId);
+    expect(updatedRoom?.parent_space_ids).toContain(spaceId);
+  });
+
+  test("sendReply appends a reply message and increments the root reply_count", async () => {
+    const api = createBrowserFakeApi();
+    const initial = await api.getSnapshot();
+
+    // Find an existing message to reply to in the active room
+    const rootMessage = initial.timeline.find((m) => m.room_id === initial.state.navigation.active_room_id);
+    if (!rootMessage) {
+      throw new Error("expected at least one timeline message in active room");
+    }
+    const rootEventId = rootMessage.event_id;
+    const rootReplyCountBefore = rootMessage.reply_count;
+    const roomId = rootMessage.room_id;
+
+    const snapshot = await api.sendReply(roomId, rootEventId, "Synthetic reply message");
+
+    // New reply appended at end with reply_count: 0
+    const lastMessage = snapshot.timeline[snapshot.timeline.length - 1];
+    expect(lastMessage?.body).toBe("Synthetic reply message");
+    expect(lastMessage?.reply_count).toBe(0);
+    expect(lastMessage?.room_id).toBe(roomId);
+
+    // Root message reply_count incremented
+    const updatedRoot = snapshot.timeline.find((m) => m.event_id === rootEventId);
+    expect(updatedRoot?.reply_count).toBe(rootReplyCountBefore + 1);
+  });
 });
