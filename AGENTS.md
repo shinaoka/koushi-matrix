@@ -16,11 +16,27 @@ All agents implementing the headless core runtime follow
 All agents implementing the Phase 10+ product surface and release roadmap
 follow
 [docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md](docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md).
+All agents implementing local GUI room/space/reply operations follow
+[docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md](docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md).
 
 - **Headless-first, local-server-first.** New Matrix behavior lands in
   `matrix-desktop-core`, verified via `CoreCommand`/`CoreEvent` against local
   Conduit/Tuwunel QA, before any Tauri/React wiring. GUI-first implementation
   is prohibited.
+- **Rust-owned product state.** Product logic and state that decide Matrix
+  operation semantics live in `matrix-desktop-state`/`matrix-desktop-core`.
+  React may own ephemeral presentation state such as focus, open popovers,
+  unsent form text, viewport measurements, and scroll anchors. If UI state
+  affects a Matrix command shape, pending operation, selected target,
+  cleanup, or success/failure interpretation, model it as serializable Rust
+  `AppState`/`CoreEvent` data first and prove it headlessly before wiring
+  Tauri/React controls.
+- **Local-only GUI operation QA until final compatibility.** GUI tests for
+  room creation, space creation, replies, and other destructive Matrix
+  operations must use disposable local Conduit/Tuwunel homeservers during
+  development. Do not use matrix.org for GUI iteration. Real homeserver QA is
+  reserved for the final compatibility gate after local headless and Linux
+  virtual-display lanes are green and cleanup behavior is proven.
 - **SDK fork management.** Upstream SDK deltas live on the
   `github.com/shinaoka/matrix-rust-sdk-work` submodule branch
   (`shinaoka/search-ngram`). Local code comments should explain the patch

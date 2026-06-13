@@ -7,6 +7,11 @@ This contract covers three lanes:
   token set and one login per run.
 - Linux virtual-display client QA, using the real Tauri client under Xvfb.
 
+Current GUI-operation policy: room creation, space creation, replies, and other
+destructive Matrix operations are iterated only against disposable local
+Conduit/Tuwunel homeservers. matrix.org is a final compatibility gate, not a
+GUI development or retry loop.
+
 ## Local headless lane
 
 Run:
@@ -32,6 +37,10 @@ restore_cleanup=ok
 ```
 
 ## matrix.org compatibility lane
+
+This lane is reserved for the last compatibility pass after local headless and
+Linux virtual-display lanes are green. Do not use it while iterating on GUI
+controls or UI state models.
 
 Run:
 
