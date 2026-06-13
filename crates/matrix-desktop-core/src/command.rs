@@ -21,7 +21,11 @@ impl CoreCommand {
     /// The correlation id carried by every command.
     pub fn request_id(&self) -> RequestId {
         match self {
-            Self::App(AppCommand::Shutdown { request_id }) => *request_id,
+            Self::App(
+                AppCommand::Shutdown { request_id }
+                | AppCommand::SetComposerReplyTarget { request_id, .. }
+                | AppCommand::CancelComposerReply { request_id },
+            ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
                 | AccountCommand::RestoreSession { request_id, .. }
@@ -75,6 +79,12 @@ impl CoreCommand {
 #[derive(Debug)]
 pub enum AppCommand {
     Shutdown { request_id: RequestId },
+    SetComposerReplyTarget {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    },
+    CancelComposerReply { request_id: RequestId },
 }
 
 // LoginRequest and RecoveryRequest redact their own Debug in

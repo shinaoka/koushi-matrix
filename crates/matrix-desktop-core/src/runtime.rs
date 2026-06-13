@@ -14,7 +14,7 @@ use matrix_desktop_state::{AppAction, AppState, reduce};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::account::{AccountActorHandle, AccountMessage};
-use crate::command::CoreCommand;
+use crate::command::{AppCommand, CoreCommand};
 use crate::event::{AppStateSnapshot, CoreEvent};
 use crate::executor;
 use crate::failure::CoreFailure;
@@ -264,10 +264,26 @@ impl AppActor {
                     .await;
                 false
             }
-            CoreCommand::App(_) => {
-                // App commands (Shutdown) handled here in later phases.
-                false
-            }
+            CoreCommand::App(app_command) => match app_command {
+                AppCommand::Shutdown { .. } => false,
+                AppCommand::SetComposerReplyTarget {
+                    room_id,
+                    event_id,
+                    ..
+                } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::ComposerReplyTargetSelected { room_id, event_id },
+                    );
+                    let _ = effects;
+                    true
+                }
+                AppCommand::CancelComposerReply { .. } => {
+                    let effects = reduce(&mut self.state, AppAction::ComposerReplyCancelled);
+                    let _ = effects;
+                    true
+                }
+            },
             CoreCommand::Sync(sync_command) => {
                 // Route to AccountActor (which forwards to SyncActor).
                 let _ = self

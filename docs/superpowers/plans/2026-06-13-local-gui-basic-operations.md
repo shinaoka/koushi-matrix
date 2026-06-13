@@ -330,7 +330,7 @@ Expected: both pass.
 - Modify: `crates/matrix-desktop-core/src/runtime.rs`
 - Test: `crates/matrix-desktop-core/src/tests.rs`
 
-- [ ] **Step 1: Write failing core command tests**
+- [x] **Step 1: Write failing core command tests**
 
 Add tests to `crates/matrix-desktop-core/src/tests.rs` proving that
 `AppCommand` updates composer reply state through the reducer:
@@ -440,7 +440,7 @@ cargo test -p matrix-desktop-core app_command_sets_and_clears_reply_target
 
 Expected: fails because the commands are missing.
 
-- [ ] **Step 2: Add `AppCommand` variants**
+- [x] **Step 2: Add `AppCommand` variants**
 
 In `crates/matrix-desktop-core/src/command.rs`:
 
@@ -459,7 +459,7 @@ pub enum AppCommand {
 
 Update `CoreCommand::request_id()` for the new variants.
 
-- [ ] **Step 3: Reduce app commands in `AppActor`**
+- [x] **Step 3: Reduce app commands in `AppActor`**
 
 In `crates/matrix-desktop-core/src/runtime.rs`, replace the current
 `CoreCommand::App(_)` branch with:

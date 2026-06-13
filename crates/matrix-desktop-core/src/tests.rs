@@ -4,14 +4,15 @@
 use std::time::Duration;
 
 use matrix_desktop_state::{
-    AppAction, AuthSecret, LoginRequest, RecoveryRequest, SessionInfo, SessionState,
+    AppAction, AuthSecret, ComposerMode, LoginRequest, RecoveryRequest, RoomSummary, SessionInfo,
+    SessionState,
 };
 
-use crate::command::{AccountCommand, CoreCommand, RoomCommand, SearchCommand, TimelineCommand};
+use crate::command::{AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, TimelineCommand};
 use crate::event::{CoreEvent, PaginationDirection};
 use crate::failure::CoreFailure;
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey};
-use crate::runtime::{CommandSubmitError, CoreRuntime};
+use crate::runtime::{CommandSubmitError, CoreConnection, CoreRuntime};
 use crate::executor;
 
 const PASSWORD: &str = "p4ssw0rd-very-secret";
@@ -298,4 +299,89 @@ async fn slow_consumer_observes_lag_and_recovers_via_snapshot() {
         slow.snapshot().session,
         SessionState::Restoring | SessionState::SignedOut
     ));
+}
+
+fn room_summary(room_id: &str) -> RoomSummary {
+    RoomSummary {
+        room_id: room_id.to_owned(),
+        display_name: "QA Room".to_owned(),
+        is_dm: false,
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        parent_space_ids: vec![],
+    }
+}
+
+async fn wait_for_state<F>(
+    connection: &mut CoreConnection,
+    predicate: F,
+) -> matrix_desktop_state::AppState
+where
+    F: Fn(&matrix_desktop_state::AppState) -> bool,
+{
+    for _ in 0..200 {
+        let snapshot = connection.snapshot();
+        if predicate(&snapshot) {
+            return snapshot;
+        }
+        executor::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("state predicate was not satisfied");
+}
+
+#[tokio::test]
+async fn app_command_sets_and_clears_reply_target() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime.inject_actions(vec![
+        AppAction::RestoreSessionSucceeded(session_info()),
+        AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary("!room:example.test")],
+        },
+        AppAction::SelectRoom {
+            room_id: "!room:example.test".to_owned(),
+        },
+        AppAction::TimelineSubscribed {
+            room_id: "!room:example.test".to_owned(),
+        },
+    ]).await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.timeline.room_id.as_deref() == Some("!room:example.test")
+    })
+    .await;
+
+    let set_request = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::SetComposerReplyTarget {
+        request_id: set_request,
+        room_id: "!room:example.test".to_owned(),
+        event_id: "$root:example.test".to_owned(),
+    }))
+    .await
+    .expect("set reply target command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(
+            state.timeline.composer.mode,
+            ComposerMode::Reply { ref in_reply_to_event_id }
+                if in_reply_to_event_id == "$root:example.test"
+        )
+    })
+    .await;
+    assert!(matches!(snapshot.timeline.composer.mode, ComposerMode::Reply { .. }));
+
+    let cancel_request = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::CancelComposerReply {
+        request_id: cancel_request,
+    }))
+    .await
+    .expect("cancel reply target command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        state.timeline.composer.mode == ComposerMode::Plain
+    })
+    .await;
+    assert_eq!(snapshot.timeline.composer.mode, ComposerMode::Plain);
 }
