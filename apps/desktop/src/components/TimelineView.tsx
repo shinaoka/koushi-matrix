@@ -301,7 +301,10 @@ export function TimelineItemRow({
         <div className="message-body">{item.body ?? ""}</div>
       </div>
       <div className="message-actions">
-        {eventId ? (
+        {/* Only message events (with a body) are replyable. State events
+            (room create, membership, ...) carry no body and the SDK's
+            make_reply_event rejects them, so they get no reply affordance. */}
+        {eventId && item.body !== null ? (
           <button
             className="message-action"
             type="button"

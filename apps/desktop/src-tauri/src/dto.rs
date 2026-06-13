@@ -10,9 +10,10 @@
 //! References: overview.md "Async rule 4" — timeline items never in AppState.
 
 use matrix_desktop_state::{
-    AppError, AppState, AuthDiscoveryState, ComposerState, NavigationState, RecoveryMethod,
-    RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
-    SessionState, SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
+    AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState, NavigationState,
+    RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope,
+    SearchState, SessionState, SidebarModel, SpaceSummary, SyncState, ThreadPaneState,
+    TimelinePaneState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +58,7 @@ pub struct FrontendAppState {
     pub timeline: TimelinePaneState,
     pub thread: FrontendThreadPaneState,
     pub search: FrontendSearchState,
+    pub basic_operation: BasicOperationState,
     pub errors: Vec<AppError>,
 }
 
@@ -72,6 +74,7 @@ impl From<AppState> for FrontendAppState {
             timeline: state.timeline,
             thread: state.thread.into(),
             search: state.search.into(),
+            basic_operation: state.basic_operation,
             errors: state.errors,
         }
     }
@@ -427,6 +430,11 @@ mod tests {
         assert_eq!(value["timeline"], json!([]));
         // Phase 7: thread is always null
         assert_eq!(value["thread"], json!(null));
+        // basic_operation must be present (default Idle) so the UI can read
+        // snapshot.state.basic_operation.kind without crashing.
+        assert_eq!(value["state"]["basic_operation"]["kind"], json!("idle"));
+        // composer.mode must be present (default Plain) for the same reason.
+        assert_eq!(value["state"]["timeline"]["composer"]["mode"], json!("Plain"));
     }
 
     #[test]
