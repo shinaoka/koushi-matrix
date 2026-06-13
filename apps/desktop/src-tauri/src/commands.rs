@@ -897,6 +897,8 @@ mod tests {
                 display_name: "Room 1".to_owned(),
                 is_dm: false,
                 unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
                 parent_space_ids: vec![],
             },
             RoomSummary {
@@ -904,6 +906,8 @@ mod tests {
                 display_name: "Room 2".to_owned(),
                 is_dm: false,
                 unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
                 parent_space_ids: vec![],
             },
         ];

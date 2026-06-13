@@ -616,6 +616,7 @@ pub fn run() {
     );
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             // Build the CoreRuntime inside setup() so Tauri's async runtime is
             // already active. `CoreRuntime::start_with_data_dir` calls

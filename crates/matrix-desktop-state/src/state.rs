@@ -136,7 +136,65 @@ pub struct RoomSummary {
     pub display_name: String,
     pub is_dm: bool,
     pub unread_count: u64,
+    pub notification_count: u64,
+    pub highlight_count: u64,
     pub parent_space_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoomAttentionKind {
+    Mention,
+    Dm,
+    Message,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomAttentionSummary {
+    pub room_display_name: String,
+    pub kind: RoomAttentionKind,
+    pub notification_count: u64,
+    pub highlight_count: u64,
+    pub unread_count: u64,
+}
+
+pub fn room_attention_kind(
+    is_dm: bool,
+    notification_count: u64,
+    highlight_count: u64,
+    unread_count: u64,
+) -> Option<RoomAttentionKind> {
+    if highlight_count > 0 {
+        return Some(RoomAttentionKind::Mention);
+    }
+
+    if notification_count == 0 && unread_count == 0 {
+        return None;
+    }
+
+    if is_dm {
+        Some(RoomAttentionKind::Dm)
+    } else {
+        Some(RoomAttentionKind::Message)
+    }
+}
+
+pub fn room_attention_summary(
+    room_display_name: String,
+    is_dm: bool,
+    notification_count: u64,
+    highlight_count: u64,
+    unread_count: u64,
+) -> Option<RoomAttentionSummary> {
+    let kind = room_attention_kind(is_dm, notification_count, highlight_count, unread_count)?;
+
+    Some(RoomAttentionSummary {
+        room_display_name,
+        kind,
+        notification_count,
+        highlight_count,
+        unread_count,
+    })
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

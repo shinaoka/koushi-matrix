@@ -1,6 +1,9 @@
 use futures_util::{Stream, StreamExt};
 pub use matrix_desktop_state::E2eeRecoveryState;
-use matrix_desktop_state::{LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, SessionInfo};
+use matrix_desktop_state::{
+    LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, RoomAttentionSummary, SessionInfo,
+    room_attention_summary,
+};
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::room::ParentSpace;
 use serde::{Deserialize, Serialize};
@@ -546,6 +549,8 @@ pub struct MatrixRoomListRoom {
     pub display_name: String,
     pub is_dm: bool,
     pub unread_count: u64,
+    pub notification_count: u64,
+    pub highlight_count: u64,
     pub parent_space_ids: Vec<String>,
 }
 
@@ -1183,6 +1188,27 @@ pub fn room_list_smoke_report(snapshot: &MatrixRoomListSnapshot) -> RoomListSmok
     }
 }
 
+pub fn room_attention_summary_from_counts(
+    room_display_name: Option<String>,
+    is_dm: bool,
+    notification_count: u64,
+    highlight_count: u64,
+    unread_messages: u64,
+    is_marked_unread: bool,
+) -> Option<RoomAttentionSummary> {
+    let unread_count =
+        room_attention_unread_count(notification_count, unread_messages, is_marked_unread);
+    let room_display_name = room_display_name?;
+
+    room_attention_summary(
+        room_display_name,
+        is_dm,
+        notification_count,
+        highlight_count,
+        unread_count,
+    )
+}
+
 pub fn timeline_smoke_report(
     selected_room_present: bool,
     initial_items: &[MatrixTimelineItem],
@@ -1552,26 +1578,75 @@ async fn matrix_room_list_snapshot_from_rooms(
             continue;
         }
 
-        let unread_count = room
-            .num_unread_notifications()
-            .max(room.num_unread_messages());
-        let unread_count = if unread_count == 0 && room.is_marked_unread() {
-            1
-        } else {
-            unread_count
-        };
+        let unread_notifications = room.unread_notification_counts();
+        let notification_count = unread_notifications.notification_count.into();
+        let highlight_count = unread_notifications.highlight_count.into();
+        let unread_count = room_attention_unread_count(
+            notification_count,
+            room.num_unread_messages(),
+            room.is_marked_unread(),
+        );
 
         let parent_space_ids = matrix_parent_space_ids(&room).await;
 
-        snapshot.rooms.push(MatrixRoomListRoom {
+        snapshot.rooms.push(matrix_room_list_room_from_counts(
             room_id,
             display_name,
-            is_dm: room.is_dm(),
+            room.is_dm(),
+            notification_count,
+            highlight_count,
             unread_count,
             parent_space_ids,
-        });
+        ));
     }
     snapshot
+}
+
+fn room_attention_unread_count(
+    notification_count: u64,
+    unread_messages: u64,
+    is_marked_unread: bool,
+) -> u64 {
+    let unread_count = notification_count.max(unread_messages);
+    if unread_count == 0 && is_marked_unread {
+        1
+    } else {
+        unread_count
+    }
+}
+
+fn matrix_room_list_room_from_counts(
+    room_id: String,
+    display_name: String,
+    is_dm: bool,
+    notification_count: u64,
+    highlight_count: u64,
+    unread_count: u64,
+    parent_space_ids: Vec<String>,
+) -> MatrixRoomListRoom {
+    MatrixRoomListRoom {
+        room_id,
+        display_name,
+        is_dm,
+        unread_count,
+        notification_count,
+        highlight_count,
+        parent_space_ids,
+    }
+}
+
+pub fn room_attention_summary_from_room(room: &matrix_sdk::Room) -> Option<RoomAttentionSummary> {
+    let room_display_name = room.cached_display_name().map(|name| name.to_string())?;
+    let unread_notifications = room.unread_notification_counts();
+
+    room_attention_summary_from_counts(
+        Some(room_display_name),
+        room.is_dm(),
+        unread_notifications.notification_count.into(),
+        unread_notifications.highlight_count.into(),
+        room.num_unread_messages(),
+        room.is_marked_unread(),
+    )
 }
 
 async fn matrix_parent_space_ids(room: &matrix_sdk::Room) -> Vec<String> {
@@ -1683,7 +1758,9 @@ fn matrix_error_message(body: &str) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{MatrixSearchIndexKey, MatrixSearchIndexStoreConfig};
+    use super::{
+        MatrixSearchIndexKey, MatrixSearchIndexStoreConfig, matrix_room_list_room_from_counts,
+    };
 
     #[test]
     fn search_index_store_config_uses_encrypted_ngram_index() {
@@ -1698,5 +1775,23 @@ mod tests {
             kind,
             matrix_sdk::search_index::SearchIndexStoreKind::EncryptedDirectoryWithConfig(_, _, _)
         ));
+    }
+
+    #[test]
+    fn room_list_room_from_counts_carries_notification_metadata() {
+        let room = matrix_room_list_room_from_counts(
+            "!room:example.invalid".to_owned(),
+            "Room".to_owned(),
+            true,
+            4,
+            2,
+            4,
+            vec!["!space:example.invalid".to_owned()],
+        );
+
+        assert_eq!(room.notification_count, 4);
+        assert_eq!(room.highlight_count, 2);
+        assert_eq!(room.unread_count, 4);
+        assert!(room.is_dm);
     }
 }

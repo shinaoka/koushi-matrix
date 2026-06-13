@@ -261,22 +261,26 @@ metrics affecting anchor assertions.
 
 Goal: the "desktop app" feel, still agent-verifiable (Linux lane + headless).
 
-- [ ] OS notifications (D4): core emits a notification-worthy event surface
+- [x] OS notifications (D4): core emits a notification-worthy event surface
   (new message in non-focused room, respecting DM/mention precedence —
   canon amendment for the event shape first); adapter maps to OS
   notifications with a redacted-content option; headless tests assert the
   decision logic, Linux lane asserts a notification fires (DBus assert).
-- [ ] Unread/badge wiring: dock/taskbar badge counts from AppState; window
+- [x] Unread/badge wiring: dock/taskbar badge counts from AppState; window
   title unread hint (QA window title rules respected).
-- [ ] Window state persistence (position/size/maximized — code exists in
+- [x] Window state persistence (position/size/maximized — code exists in
   src-tauri; port to the new adapter and test on the Linux lane).
-- [ ] Accessibility pass (minimal): focus order, ARIA roles on the three
+- [x] Accessibility pass (minimal): focus order, ARIA roles on the three
   panes, keyboard-only walkthrough spec in Playwright.
-- [ ] Shortcut parity table completed; deviations documented.
+- [x] Shortcut parity table completed; deviations documented.
+
+Completion evidence: Linux GUI smoke produced
+`auth_screen=ok`, `title_signed_out=ok`, `screenshot=ok`,
+`notification_dbus=ok`, and `window_state_path_contract=ok`.
 
 Exit gate: standing gates + Linux lane suite incl. notification/badge
-assertions. Gap watchlist: notification content redaction policy (exact
-fields allowed — needs a canon line mirroring the UI-state allowances).
+assertions. Gap watchlist: resolved by the canon/policy line for redacted
+attention fields.
 
 ## Phase 16 — Device verification and cross-signing (E2EE trust)
 
@@ -284,6 +288,11 @@ Goal: close the canon's declared open area. PRECONDITION: a dated spec
 authored by the strongest model amending overview.md (AccountActor
 children, commands/events, state surfaces) — implementation starts only
 after that spec lands.
+
+Release-blocking note: this is not a post-release feature. Element's device
+verification rollout was postponed to October 2026, and after that insecure
+devices will no longer be able to send or receive messages; see
+https://docs.element.io/latest/element-support/device-verification/how-to-verify-devices/#verify-your-devices-set-up-recovery.
 
 Spec must cover (minimum):
 - [ ] Verification surfaces: own-device verification after login/restore

@@ -19,6 +19,8 @@ pub struct DesktopRoomListRoom {
     pub display_name: String,
     pub is_dm: bool,
     pub unread_count: u64,
+    pub notification_count: u64,
+    pub highlight_count: u64,
     pub parent_space_ids: Vec<String>,
 }
 
@@ -63,6 +65,8 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
                 display_name: room.display_name,
                 is_dm: room.is_dm,
                 unread_count: room.unread_count,
+                notification_count: room.notification_count,
+                highlight_count: room.highlight_count,
                 parent_space_ids,
             }
         })

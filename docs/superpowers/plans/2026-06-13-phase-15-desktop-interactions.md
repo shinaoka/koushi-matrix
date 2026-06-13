@@ -1,7 +1,7 @@
 # Phase 15 Desktop Interactions Implementation Plan
 
 Date: 2026-06-13
-Status: in progress.
+Status: completed.
 
 Canon/design:
 
@@ -153,3 +153,8 @@ npm --prefix apps/desktop run qa:linux-gui -- --artifact-dir=/work/artifacts/lin
 Update
 [2026-06-13-roadmap-phases-10-18.md](2026-06-13-roadmap-phases-10-18.md)
 only after the reviewer has evidence for each Phase 15 checkbox.
+
+Completion evidence:
+Linux GUI smoke verified `auth_screen=ok`, `title_signed_out=ok`,
+`screenshot=ok`, `notification_dbus=ok`, and
+`window_state_path_contract=ok`.

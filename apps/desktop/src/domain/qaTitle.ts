@@ -1,12 +1,17 @@
 import type { DesktopSnapshot, SyncState } from "./types";
 import type { RightPanelMode } from "./rightPanel";
 import type { QaSendSmokeStatus } from "./qaSendSmoke";
+import { desktopAttentionSummary } from "./desktopAttention";
 
 export function qaWindowTitle(
   snapshot: DesktopSnapshot,
   panelMode?: RightPanelMode,
   sendStatus?: QaSendSmokeStatus
 ): string {
+  const attention = desktopAttentionSummary({
+    activeRoomId: snapshot.state.navigation.active_room_id,
+    rooms: snapshot.state.rooms
+  });
   const title = [
     "matrix-desktop qa",
     `session=${snapshot.state.session.kind}`,
@@ -16,7 +21,8 @@ export function qaWindowTitle(
     `active_room=${Boolean(snapshot.state.navigation.active_room_id)}`,
     `timeline_subscribed=${snapshot.state.timeline.is_subscribed}`,
     `timeline_items=${snapshot.timeline.length}`,
-    `errors=${snapshot.state.errors.length}`
+    `errors=${snapshot.state.errors.length}`,
+    attention.qaTitleToken
   ];
   if (panelMode !== undefined) {
     title.push(`panel=${panelMode}`);

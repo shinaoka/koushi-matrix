@@ -678,6 +678,8 @@ fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec
             display_name: room.display_name.clone(),
             is_dm: room.is_dm,
             unread_count: room.unread_count,
+            notification_count: room.notification_count,
+            highlight_count: room.highlight_count,
             parent_space_ids: room.parent_space_ids.clone(),
         })
         .collect()
@@ -791,6 +793,8 @@ pub mod tests {
                     display_name: "Room 1".to_owned(),
                     is_dm: false,
                     unread_count: 0,
+                    notification_count: 0,
+                    highlight_count: 0,
                     parent_space_ids: vec!["!space1:example.test".to_owned()],
                 },
                 MatrixRoomListRoom {
@@ -798,6 +802,8 @@ pub mod tests {
                     display_name: "Room 2".to_owned(),
                     is_dm: false,
                     unread_count: 0,
+                    notification_count: 0,
+                    highlight_count: 0,
                     parent_space_ids: vec![],
                 },
             ],
@@ -833,6 +839,8 @@ pub mod tests {
                 display_name: "Alice".to_owned(),
                 is_dm: true,
                 unread_count: 3,
+                notification_count: 3,
+                highlight_count: 1,
                 parent_space_ids: vec![],
             }],
         };
@@ -841,6 +849,8 @@ pub mod tests {
         assert_eq!(rooms[0].room_id, "!dm:example.test");
         assert!(rooms[0].is_dm);
         assert_eq!(rooms[0].unread_count, 3);
+        assert_eq!(rooms[0].notification_count, 3);
+        assert_eq!(rooms[0].highlight_count, 1);
     }
 
     #[test]
@@ -852,6 +862,8 @@ pub mod tests {
                 display_name: "General".to_owned(),
                 is_dm: false,
                 unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
                 parent_space_ids: vec!["!space:example.test".to_owned()],
             }],
         };
@@ -859,6 +871,8 @@ pub mod tests {
         assert_eq!(rooms.len(), 1);
         assert!(!rooms[0].is_dm);
         assert_eq!(rooms[0].parent_space_ids, vec!["!space:example.test"]);
+        assert_eq!(rooms[0].notification_count, 0);
+        assert_eq!(rooms[0].highlight_count, 0);
     }
 
     // --- SelectSpace / SelectRoom projection ---

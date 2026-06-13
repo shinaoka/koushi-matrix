@@ -79,6 +79,8 @@ export interface RoomSummary {
   display_name: string;
   is_dm: boolean;
   unread_count: number;
+  notification_count?: number;
+  highlight_count?: number;
   parent_space_ids: string[];
 }
 

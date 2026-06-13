@@ -17,6 +17,9 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("active_room=true");
     expect(title).toContain("timeline_subscribed=true");
     expect(title).toContain("timeline_items=");
+    expect(title).toContain("unread=");
+    expect(title).toContain("badge=");
+    expect(title).toContain("notify=");
     expect(title).not.toContain("Alpha");
     expect(title).not.toContain("@");
     expect(title).not.toContain("!");

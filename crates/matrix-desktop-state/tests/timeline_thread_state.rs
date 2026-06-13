@@ -17,6 +17,8 @@ fn room(room_id: &str) -> RoomSummary {
         display_name: room_id.to_owned(),
         is_dm: false,
         unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
         parent_space_ids: Vec::new(),
     }
 }

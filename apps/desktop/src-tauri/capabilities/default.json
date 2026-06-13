@@ -2,5 +2,10 @@
   "identifier": "main",
   "description": "Default capability for the main desktop window.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-title"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-title",
+    "core:window:allow-set-badge-count",
+    "notification:default"
+  ]
 }

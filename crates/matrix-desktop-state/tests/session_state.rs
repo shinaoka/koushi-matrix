@@ -254,6 +254,8 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
             display_name: "Room A".to_owned(),
             is_dm: false,
             unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         }],
         timeline: TimelinePaneState {
@@ -454,6 +456,8 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
             display_name: "Room A".to_owned(),
             is_dm: false,
             unread_count: 3,
+            notification_count: 3,
+            highlight_count: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         }],
         timeline: TimelinePaneState {
@@ -572,6 +576,8 @@ fn logout_clears_session_views_and_notifies_ui() {
             display_name: "Room A".to_owned(),
             is_dm: false,
             unread_count: 3,
+            notification_count: 3,
+            highlight_count: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         }],
         timeline: TimelinePaneState {

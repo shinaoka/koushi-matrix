@@ -759,6 +759,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             display_name: "synthetic-room".to_owned(),
             is_dm: false,
             unread_count: 8,
+            notification_count: 8,
+            highlight_count: 1,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
         },
         RoomSummary {
@@ -766,6 +768,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             display_name: "planning-room".to_owned(),
             is_dm: false,
             unread_count: 2,
+            notification_count: 2,
+            highlight_count: 0,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
         },
         RoomSummary {
@@ -773,6 +777,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             display_name: "matrix-sdk-search".to_owned(),
             is_dm: false,
             unread_count: 1,
+            notification_count: 1,
+            highlight_count: 0,
             parent_space_ids: vec!["!space-beta:example.invalid".to_owned()],
         },
         RoomSummary {
@@ -780,6 +786,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             display_name: "Member 1".to_owned(),
             is_dm: true,
             unread_count: 1,
+            notification_count: 1,
+            highlight_count: 0,
             parent_space_ids: Vec::new(),
         },
         RoomSummary {
@@ -787,6 +795,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             display_name: "Member 2".to_owned(),
             is_dm: true,
             unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
             parent_space_ids: Vec::new(),
         },
     ]
@@ -808,6 +818,8 @@ fn fixture_room_list_update() -> DesktopRoomListUpdate {
                 display_name: room.display_name,
                 is_dm: room.is_dm,
                 unread_count: room.unread_count,
+                notification_count: room.notification_count,
+                highlight_count: room.highlight_count,
                 parent_space_ids: room.parent_space_ids,
             })
             .collect(),

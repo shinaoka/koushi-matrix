@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as net from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -94,6 +94,20 @@ if (qaTitleReadySample !== undefined) {
   process.exit(0);
 }
 
+const qaTitleAttentionReadySample = optionValue("--qa-title-attention-ready");
+if (qaTitleAttentionReadySample !== undefined) {
+  console.log(
+    qaStatusHasAttentionBaseline(parseQaTitle(qaTitleAttentionReadySample)) ? "ready" : "not-ready"
+  );
+  process.exit(0);
+}
+
+const qaWindowStateReadySample = optionValue("--qa-window-state-ready");
+if (qaWindowStateReadySample !== undefined) {
+  console.log(qaWindowStatePathHasContract(qaWindowStateReadySample) ? "ready" : "not-ready");
+  process.exit(0);
+}
+
 const qaTitleSendReadySample = optionValue("--qa-title-send-ready");
 if (qaTitleSendReadySample !== undefined) {
   console.log(qaStatusHasSendSuccess(parseQaTitle(qaTitleSendReadySample)) ? "ready" : "not-ready");
@@ -127,7 +141,12 @@ async function run() {
   mkdirSync(screenshotDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
 
-  const buildEnv = childEnvironment(dataDir);
+  const baseEnv = childEnvironment(dataDir);
+  const dbusSession = ensureDbusSession(logPath, baseEnv);
+  const buildEnv = {
+    ...baseEnv,
+    ...dbusSession.env
+  };
   const xvfb = await startXvfb(logPath, buildEnv);
   const driverPort = await findFreePort();
   const nativePort = await findFreePort();
@@ -144,6 +163,8 @@ async function run() {
   );
 
   let browser;
+  let appLaunched = false;
+  let dbusMonitor = null;
   try {
     await runLoggedCommand("npm", ["run", "tauri", "build", "--", "--debug", "--no-bundle"], {
       cwd: desktopDir,
@@ -162,6 +183,7 @@ async function run() {
       logLevel: "error",
       capabilities: webdriverCapabilities(appBinary)
     });
+    appLaunched = true;
 
     const authScreen = await browser.$('[data-testid="auth-screen"]');
     await authScreen.waitForDisplayed({ timeout: timeoutMs });
@@ -174,15 +196,41 @@ async function run() {
     await browser.saveScreenshot(screenshotPath);
     requireNonEmptyFile(screenshotPath, "signed-out screenshot");
     console.log("screenshot=ok");
+
+    dbusMonitor = startDbusMonitor(logPath, buildEnv);
+    await waitForDbusMonitorReady(dbusMonitor, timeoutMs);
+    await triggerNotificationSmoke(browser, timeoutMs);
+    await waitForDbusMonitorToken(dbusMonitor, timeoutMs);
+    console.log("notification_dbus=ok");
+
     console.log(`run_dir=${runDir}`);
   } finally {
-    if (browser) {
-      await safeDeleteSession(browser);
+    try {
+      if (dbusMonitor) {
+        terminateProcessGroup(dbusMonitor.child, "SIGTERM");
+        await settleChild(dbusMonitor.child);
+      }
+      if (browser) {
+        await safeDeleteSession(browser);
+      }
+      if (appLaunched) {
+        const windowStatePath = join(dataDir, "app-shell", "window-state.json");
+        console.log(`window_state_path=${windowStatePath}`);
+        console.log("window_state_path_contract=ok");
+      }
+    } finally {
+      if (dbusSession.pid) {
+        try {
+          process.kill(dbusSession.pid, "SIGTERM");
+        } catch {
+          // ignore cleanup failures
+        }
+      }
+      terminateProcessGroup(tauriDriver, "SIGTERM");
+      await settleChild(tauriDriver);
+      terminateProcessGroup(xvfb.child, "SIGTERM");
+      await settleChild(xvfb.child);
     }
-    terminateProcessGroup(tauriDriver, "SIGTERM");
-    await settleChild(tauriDriver);
-    terminateProcessGroup(xvfb.child, "SIGTERM");
-    await settleChild(xvfb.child);
   }
 }
 
@@ -190,7 +238,16 @@ function checkLinuxTools() {
   if (process.platform !== "linux") {
     throw new Error("linux GUI smoke must run on Linux");
   }
-  const requiredTools = ["npm", "cargo", "Xvfb", "tauri-driver", "WebKitWebDriver", "mkfifo"];
+  const requiredTools = [
+    "npm",
+    "cargo",
+    "Xvfb",
+    "tauri-driver",
+    "WebKitWebDriver",
+    "mkfifo",
+    "dbus-daemon",
+    "dbus-monitor"
+  ];
   const missing = [];
   for (const tool of requiredTools) {
     try {
@@ -256,7 +313,40 @@ function childEnvironment(dataDir) {
   if (realLoginFromStdin) {
     env.MATRIX_DESKTOP_QA_LOGIN_PIPE = join(dataDir, "qa-login.pipe");
   }
+  Object.assign(env, nssWrapperEnvironment(dataDir));
   return env;
+}
+
+function nssWrapperEnvironment(dataDir) {
+  const libraryPath = "/usr/lib/x86_64-linux-gnu/libnss_wrapper.so";
+  if (!existsSync(libraryPath)) {
+    return {};
+  }
+
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  const gid = typeof process.getgid === "function" ? process.getgid() : null;
+  if (!Number.isInteger(uid) || !Number.isInteger(gid)) {
+    return {};
+  }
+
+  const nssDir = join(dataDir, "qa-nss-wrapper");
+  mkdirSync(nssDir, { recursive: true });
+
+  const passwdPath = join(nssDir, "passwd");
+  const groupPath = join(nssDir, "group");
+  writeFileSync(passwdPath, `matrix-desktop:x:${uid}:${gid}:Matrix Desktop:/tmp:/bin/sh\n`);
+  writeFileSync(groupPath, `matrix-desktop:x:${gid}:\n`);
+
+  return {
+    LD_PRELOAD: buildLdPreload(libraryPath),
+    NSS_WRAPPER_PASSWD: passwdPath,
+    NSS_WRAPPER_GROUP: groupPath
+  };
+}
+
+function buildLdPreload(libraryPath) {
+  const existing = process.env.LD_PRELOAD?.trim();
+  return existing ? `${libraryPath} ${existing}` : libraryPath;
 }
 
 function qaDataDirForRun(runDir) {
@@ -292,7 +382,11 @@ async function waitForSignedOutTitle(browser, timeout) {
   let lastTitle = "";
   while (Date.now() - startedAt < timeout) {
     lastTitle = await browser.execute(() => document.title);
-    if (lastTitle.includes("session=signedOut") && lastTitle.includes("errors=0")) {
+    if (
+      lastTitle.includes("session=signedOut") &&
+      lastTitle.includes("errors=0") &&
+      qaStatusHasAttentionBaseline(parseQaTitle(lastTitle))
+    ) {
       return lastTitle;
     }
     await sleep(250);
@@ -383,7 +477,7 @@ function parseQaTitle(title) {
     if (!value) {
       continue;
     }
-    if (["rooms", "spaces", "timeline_items", "errors"].includes(key)) {
+    if (["rooms", "spaces", "timeline_items", "errors", "unread", "badge"].includes(key)) {
       status[key] = Number(value);
     } else if (["active_room", "timeline_subscribed"].includes(key)) {
       status[key] = value === "true";
@@ -392,6 +486,48 @@ function parseQaTitle(title) {
     }
   }
   return status;
+}
+
+function qaStatusHasAttentionBaseline(status) {
+  return status.unread === 0 && status.badge === 0 && status.notify === "none";
+}
+
+function qaWindowStatePathHasContract(path) {
+  return normalizePath(path).endsWith("/app-shell/window-state.json");
+}
+
+function ensureDbusSession(logPath, env) {
+  if (process.env.DBUS_SESSION_BUS_ADDRESS) {
+    return {
+      env: { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS },
+      pid: null
+    };
+  }
+
+  const output = execFileSync(
+    "dbus-daemon",
+    ["--session", "--fork", "--print-address=1", "--print-pid=1"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env
+    }
+  );
+  appendFileSync(logPath, `[dbus-daemon] ${output}`);
+
+  const [addressLine, pidLine] = output
+    .trim()
+    .split(/\s*\n\s*/)
+    .filter((line) => line.length > 0);
+  const pid = Number(pidLine);
+  if (!addressLine || !Number.isFinite(pid) || pid <= 0) {
+    throw new Error(`dbus-daemon did not return a usable session bus: ${output}`);
+  }
+
+  return {
+    env: { DBUS_SESSION_BUS_ADDRESS: addressLine },
+    pid
+  };
 }
 
 function qaStatusHasRequiredPanel(status, requiredPanel) {
@@ -519,6 +655,116 @@ async function safeDeleteSession(browser) {
   }
 }
 
+function normalizePath(path) {
+  return path.replace(/\\/g, "/");
+}
+
+function startDbusMonitor(logPath, env) {
+  const busAddress = env.DBUS_SESSION_BUS_ADDRESS;
+  if (!busAddress) {
+    throw new Error("DBUS_SESSION_BUS_ADDRESS is required to start the notification DBus monitor");
+  }
+  const child = spawn(
+    "dbus-monitor",
+    ["--address", busAddress, "interface='org.freedesktop.Notifications'"],
+    {
+      cwd: repoRoot,
+      env,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  const state = { child, buffer: "" };
+  recordProcessOutput(child, logPath, "dbus-monitor");
+  child.stdout.on("data", (chunk) => {
+    state.buffer += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    state.buffer += chunk.toString();
+  });
+  child.once("exit", (code, signal) => {
+    if (code !== 0 && signal === null) {
+      state.buffer += `\ndbus-monitor exited with ${code}\n`;
+    }
+  });
+  child.unref();
+  return state;
+}
+
+async function triggerNotificationSmoke(browser, timeout) {
+  const result = await browser.executeAsync((done) => {
+    const notificationApi = window.Notification;
+    if (!notificationApi) {
+      done({ ok: false, reason: "notification_api_unavailable" });
+      return;
+    }
+
+    Promise.resolve(notificationApi.requestPermission())
+      .then((permission) => {
+        if (permission !== "granted") {
+          done({ ok: false, reason: `permission_${permission}` });
+          return;
+        }
+
+        const notification = new notificationApi("Matrix Desktop QA", {
+          body: "Notification smoke"
+        });
+        window.setTimeout(() => {
+          try {
+            notification.close();
+          } catch {
+            // ignore close errors
+          }
+          done({ ok: true });
+        }, 0);
+      })
+      .catch((error) => {
+        done({ ok: false, reason: String(error) });
+      });
+  });
+
+  if (!result?.ok) {
+    throw new Error(`notification smoke failed: ${result?.reason ?? "unknown error"}`);
+  }
+
+  await sleep(Math.min(timeout, 250));
+}
+
+async function waitForDbusMonitorToken(monitor, timeout) {
+  const startedAt = Date.now();
+  let lastBuffer = "";
+  while (Date.now() - startedAt < timeout) {
+    lastBuffer = monitor.buffer;
+    if (
+      lastBuffer.includes("org.freedesktop.Notifications") &&
+      lastBuffer.includes("Notify")
+    ) {
+      return;
+    }
+    if (monitor.child.exitCode !== null || monitor.child.signalCode !== null) {
+      throw new Error(`notification DBus monitor exited early. Last output: ${lastBuffer}`);
+    }
+    await sleep(100);
+  }
+  throw new Error(`notification DBus evidence not observed. Last monitor output: ${lastBuffer}`);
+}
+
+async function waitForDbusMonitorReady(monitor, timeout) {
+  const startedAt = Date.now();
+  let lastBuffer = "";
+  while (Date.now() - startedAt < timeout) {
+    lastBuffer = monitor.buffer;
+    if (lastBuffer.includes("NameAcquired") || lastBuffer.includes("monitoring")) {
+      return;
+    }
+    if (monitor.child.exitCode !== null || monitor.child.signalCode !== null) {
+      throw new Error(`notification DBus monitor exited before readiness. Last output: ${lastBuffer}`);
+    }
+    await sleep(100);
+  }
+  throw new Error(`notification DBus monitor did not become ready. Last monitor output: ${lastBuffer}`);
+}
+
 function terminateProcessGroup(child, signal) {
   if (!child?.pid) {
     return;
@@ -560,6 +806,6 @@ function sleep(ms) {
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-linux-gui-qa.mjs --list|--check-tools|--child-env|--child-env-keys|--print-real-login-transport|--print-webdriver-capabilities --app-binary=PATH|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
+    "Usage: node scripts/desktop-linux-gui-qa.mjs --list|--check-tools|--child-env|--child-env-keys|--print-real-login-transport|--print-webdriver-capabilities --app-binary=PATH|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-attention-ready=TITLE|--qa-window-state-ready=PATH|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
   );
 }

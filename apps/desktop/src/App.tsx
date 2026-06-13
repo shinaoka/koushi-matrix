@@ -75,6 +75,16 @@ import {
   rightPanelIntentForContextMenuAction,
   rightPanelModeForSearchQuery
 } from "./domain/rightPanel";
+import {
+  applyDesktopAttentionToWindow,
+  desktopAttentionSummary,
+  desktopAttentionWindowTitle,
+  desktopAttentionNotificationCandidate
+} from "./domain/desktopAttention";
+import {
+  createTauriDesktopNotificationTransport,
+  sendDesktopAttentionNotification
+} from "./domain/desktopNotification";
 import { qaWindowTitle } from "./domain/qaTitle";
 import {
   type QaSendSmokeStatus,
@@ -125,7 +135,10 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       async paginateBackwards(roomId: string) {
         await invoke("paginate_timeline_backwards", { roomId });
       }
-    }
+  }
+  : null;
+const tauriNotificationTransport = isTauriRuntime()
+  ? createTauriDesktopNotificationTransport()
   : null;
 type ContextMenuTarget =
   | { kind: "message"; message: TimelineMessage }
@@ -176,9 +189,27 @@ export function App() {
   const qaSendStarted = useRef(false);
   const qaSendBaselineErrorCount = useRef(0);
   const qaSendBaselineTimelineItems = useRef(0);
+  const previousAttentionInput = useRef<{
+    activeRoomId: string | null;
+    rooms: DesktopSnapshot["state"]["rooms"];
+  } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const loginPasswordRef = useRef<HTMLInputElement>(null);
   const recoverySecretRef = useRef<HTMLInputElement>(null);
+  const attentionSummary = snapshot
+    ? desktopAttentionSummary({
+        activeRoomId: snapshot.state.navigation.active_room_id,
+        rooms: snapshot.state.rooms
+      })
+    : null;
+  const safeAttentionSummary =
+    attentionSummary ?? {
+      unreadTotal: 0,
+      badgeCount: 0,
+      notificationKind: "none" as const,
+      titleHint: null,
+      qaTitleToken: "unread=0 badge=0 notify=none"
+    };
 
   function handleShortcutAction(shortcutId: string): boolean {
     switch (shortcutId) {
@@ -258,17 +289,52 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (!qaTitleEnabled()) {
-      return;
-    }
-    if (!snapshot) {
-      setQaWindowTitle("matrix-desktop qa session=booting");
+    const title = snapshot
+      ? qaTitleEnabled()
+        ? qaWindowTitle(
+            snapshot,
+            effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot),
+            qaSendStatus
+          )
+        : desktopAttentionWindowTitle("matrix-desktop", safeAttentionSummary)
+      : qaTitleEnabled()
+        ? "matrix-desktop qa session=booting"
+        : "matrix-desktop";
+
+    document.title = title;
+    if (!isTauriRuntime()) {
       return;
     }
 
-    const effectivePanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
-    setQaWindowTitle(qaWindowTitle(snapshot, effectivePanelMode, qaSendStatus));
-  }, [snapshot, rightPanelMode, qaSendStatus]);
+    void applyDesktopAttentionToWindow(
+      getCurrentWindow(),
+      title,
+      safeAttentionSummary.badgeCount
+    );
+  }, [snapshot, rightPanelMode, qaSendStatus, safeAttentionSummary.badgeCount, safeAttentionSummary.qaTitleToken]);
+
+  useEffect(() => {
+    if (!snapshot) {
+      previousAttentionInput.current = null;
+      return;
+    }
+
+    const currentAttentionInput = {
+      activeRoomId: snapshot.state.navigation.active_room_id,
+      rooms: snapshot.state.rooms
+    };
+    const candidate = desktopAttentionNotificationCandidate(
+      currentAttentionInput,
+      previousAttentionInput.current
+    );
+    previousAttentionInput.current = currentAttentionInput;
+
+    if (!candidate || !tauriNotificationTransport) {
+      return;
+    }
+
+    void sendDesktopAttentionNotification(candidate, tauriNotificationTransport);
+  }, [snapshot]);
 
   useEffect(() => {
     const message = qaSendSmokeMessage();
@@ -1058,6 +1124,7 @@ export function TopBar({
         <Search size={17} />
         <input
           ref={searchInputRef}
+          aria-label="Search"
           value={searchQuery}
           placeholder={`${activeSpaceName} 内を検索する`}
           onChange={(event) => onSearchQueryChange(event.target.value)}
@@ -1187,7 +1254,7 @@ function Sidebar({
   onSelectRoom: (roomId: string) => void;
 }) {
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" aria-label="Rooms">
       <div className="workspace-header">
         <div className="workspace-name">
           {snapshot.sidebar.space_rail.find((space) => space.is_active)?.display_name ??
@@ -1338,7 +1405,7 @@ function TimelinePane({
   const currentUserId = snapshot.state.session.user_id ?? null;
 
   return (
-    <main className="main-pane">
+    <main className="main-pane" aria-label="Conversation timeline">
       <header className="channel-header">
         <div className="channel-title">
           <Hash size={22} />
@@ -1605,6 +1672,7 @@ export function Composer({
         </button>
       </div>
       <textarea
+        aria-label="Message composer"
         value={value}
         placeholder={`${roomName} へのメッセージ`}
         onKeyDown={onComposerKeyDown}
@@ -1676,12 +1744,12 @@ export function ContextualRightPanel({
   onSwitchAccount: (session: SavedSessionInfo) => void;
 }) {
   if (mode === "closed") {
-    return <aside className="thread-pane" />;
+    return <aside className="thread-pane" aria-label="Context panel" />;
   }
 
   if (mode === "recovery") {
     return (
-      <aside className="thread-pane">
+      <aside className="thread-pane" aria-label="Context panel">
         <PanelHeader title="Recovery" onClose={onClosePanel} showClose={false} />
         <RecoveryPanel
           isBusy={isRecoveryBusy}
@@ -1697,7 +1765,7 @@ export function ContextualRightPanel({
 
   if (mode === "keyboardSettings") {
     return (
-      <aside className="thread-pane">
+      <aside className="thread-pane" aria-label="Context panel">
         <PanelHeader title="Keyboard" onClose={onClosePanel} />
         <KeyboardSettingsPanel />
       </aside>
@@ -1706,7 +1774,7 @@ export function ContextualRightPanel({
 
   if (mode === "userSettings") {
     return (
-      <aside className="thread-pane">
+      <aside className="thread-pane" aria-label="Context panel">
         <PanelHeader title="User settings" onClose={onClosePanel} />
         <UserSettingsPanel
           currentSession={currentSavedSession(snapshot)}
@@ -1720,7 +1788,7 @@ export function ContextualRightPanel({
 
   if (mode === "roomInfo") {
     return (
-      <aside className="thread-pane">
+      <aside className="thread-pane" aria-label="Context panel">
         <PanelHeader title="Room info" onClose={onClosePanel} />
         <RoomInfoPanel room={activeRoom} spaces={snapshot.state.spaces} />
       </aside>
@@ -1729,7 +1797,7 @@ export function ContextualRightPanel({
 
   if (mode === "spaceInfo") {
     return (
-      <aside className="thread-pane">
+      <aside className="thread-pane" aria-label="Context panel">
         <PanelHeader title="Space info" onClose={onClosePanel} />
         <SpaceInfoPanel fallbackName={activeSpaceName} rooms={snapshot.state.rooms} space={activeSpace} />
       </aside>
@@ -1738,7 +1806,7 @@ export function ContextualRightPanel({
 
   if (mode === "search") {
     return (
-      <aside className="thread-pane">
+      <aside className="thread-pane" aria-label="Context panel">
         <PanelHeader title="Search" onClose={onClosePanel} />
         <SearchResults
           query={searchQuery}
@@ -1751,13 +1819,13 @@ export function ContextualRightPanel({
   }
 
   if (!snapshot.thread) {
-    return <aside className="thread-pane" />;
+    return <aside className="thread-pane" aria-label="Context panel" />;
   }
 
   const root = snapshot.timeline.find((message) => message.event_id === snapshot.thread?.root_event_id);
 
   return (
-    <aside className="thread-pane">
+    <aside className="thread-pane" aria-label="Context panel">
       <PanelHeader title="Thread" onClose={onCloseThread} />
       <section className="thread-scroll">
         {root ? (
@@ -1933,13 +2001,4 @@ function qaTitleEnabled(): boolean {
 
 function qaSendSmokeMessage(): string | null {
   return qaSendSmokeMessageFromEnv(import.meta.env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE);
-}
-
-function setQaWindowTitle(title: string): void {
-  document.title = title;
-  if (isTauriRuntime()) {
-    void getCurrentWindow()
-      .setTitle(title)
-      .catch(() => undefined);
-  }
 }

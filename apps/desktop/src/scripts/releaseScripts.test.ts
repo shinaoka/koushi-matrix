@@ -146,6 +146,37 @@ describe("desktop release scripts", () => {
     }
   });
 
+  test("linux GUI smoke parses the attention baseline title token", () => {
+    const output = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-title-attention-ready=matrix-desktop qa session=signedOut sync=stopped rooms=0 spaces=0 active_room=false timeline_subscribed=false timeline_items=0 errors=0 unread=0 badge=0 notify=none"
+    ]);
+
+    expect(output.trim()).toBe("ready");
+  });
+
+  test("linux GUI smoke validates the persisted window-state path contract", () => {
+    const output = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-window-state-ready=/tmp/matrix-desktop/app-shell/window-state.json"
+    ]);
+
+    expect(output.trim()).toBe("ready");
+  });
+
+  test("linux GUI smoke wires dbus notification evidence into the signed-out run path", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("dbus-daemon");
+    expect(source).toContain("--session");
+    expect(source).toContain("--address");
+    expect(source).toContain("dbus-monitor");
+    expect(source).toContain("NSS_WRAPPER_PASSWD");
+    expect(source).toContain("notification_dbus=ok");
+    expect(source).toContain("triggerNotificationSmoke");
+  });
+
   test("linux GUI smoke child environment filters secrets and enables QA file credentials", () => {
     const output = execFileSync(
       process.execPath,

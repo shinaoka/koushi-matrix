@@ -80,6 +80,8 @@ fn room_list_composition_keeps_dms_global_and_preserves_multi_parent_rooms() {
                 display_name: "Shared".to_owned(),
                 is_dm: false,
                 unread_count: 4,
+                notification_count: 4,
+                highlight_count: 0,
                 parent_space_ids: vec![
                     "!space-a:example.invalid".to_owned(),
                     "!space-b:example.invalid".to_owned(),
@@ -90,6 +92,8 @@ fn room_list_composition_keeps_dms_global_and_preserves_multi_parent_rooms() {
                 display_name: "Loose".to_owned(),
                 is_dm: false,
                 unread_count: 2,
+                notification_count: 2,
+                highlight_count: 0,
                 parent_space_ids: Vec::new(),
             },
             DesktopRoomListRoom {
@@ -97,6 +101,8 @@ fn room_list_composition_keeps_dms_global_and_preserves_multi_parent_rooms() {
                 display_name: "Direct".to_owned(),
                 is_dm: true,
                 unread_count: 3,
+                notification_count: 3,
+                highlight_count: 0,
                 parent_space_ids: vec!["!space-a:example.invalid".to_owned()],
             },
         ],
@@ -563,6 +569,8 @@ fn deferred_sync_mode_defers_timeline_subscription_to_sdk_boundary() {
             display_name: "SDK Room".to_owned(),
             is_dm: false,
             unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
             parent_space_ids: vec!["!sdk-space:example.invalid".to_owned()],
         }],
     }));
@@ -603,6 +611,8 @@ fn deferred_sync_mode_defers_timeline_pagination_to_sdk_boundary() {
             display_name: "SDK Room".to_owned(),
             is_dm: false,
             unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
             parent_space_ids: vec!["!sdk-space:example.invalid".to_owned()],
         }],
     }));
@@ -657,6 +667,8 @@ fn deferred_sync_mode_defers_send_text_to_sdk_boundary() {
             display_name: "SDK Room".to_owned(),
             is_dm: false,
             unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
             parent_space_ids: vec!["!sdk-space:example.invalid".to_owned()],
         }],
     }));

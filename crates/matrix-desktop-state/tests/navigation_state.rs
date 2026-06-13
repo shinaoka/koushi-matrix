@@ -33,6 +33,8 @@ fn rooms() -> Vec<RoomSummary> {
             display_name: "Room A".to_owned(),
             is_dm: false,
             unread_count: 5,
+            notification_count: 5,
+            highlight_count: 1,
             parent_space_ids: vec!["space-a".to_owned()],
         },
         RoomSummary {
@@ -40,6 +42,8 @@ fn rooms() -> Vec<RoomSummary> {
             display_name: "Alice".to_owned(),
             is_dm: true,
             unread_count: 3,
+            notification_count: 3,
+            highlight_count: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         },
         RoomSummary {
@@ -47,6 +51,8 @@ fn rooms() -> Vec<RoomSummary> {
             display_name: "Global Room".to_owned(),
             is_dm: false,
             unread_count: 2,
+            notification_count: 2,
+            highlight_count: 0,
             parent_space_ids: vec![],
         },
     ]
@@ -66,6 +72,8 @@ fn room_list_update_replaces_state_and_emits_room_list_event() {
 
     assert_eq!(state.spaces.len(), 1);
     assert_eq!(state.rooms.len(), 3);
+    assert_eq!(state.rooms[0].notification_count, 5);
+    assert_eq!(state.rooms[0].highlight_count, 1);
     assert_eq!(
         effects,
         vec![
@@ -143,6 +151,8 @@ fn room_list_update_clears_missing_active_space_and_room() {
                 display_name: "Global Room".to_owned(),
                 is_dm: false,
                 unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
                 parent_space_ids: vec![],
             }],
         },
@@ -179,6 +189,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 display_name: "Room A".to_owned(),
                 is_dm: false,
                 unread_count: 5,
+                notification_count: 5,
+                highlight_count: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
             },
             RoomSummary {
@@ -186,6 +198,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 display_name: "Room B".to_owned(),
                 is_dm: false,
                 unread_count: 2,
+                notification_count: 2,
+                highlight_count: 0,
                 parent_space_ids: Vec::new(),
             },
         ],
@@ -222,6 +236,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     display_name: "Room A".to_owned(),
                     is_dm: false,
                     unread_count: 5,
+                    notification_count: 5,
+                    highlight_count: 0,
                     parent_space_ids: Vec::new(),
                 },
                 RoomSummary {
@@ -229,6 +245,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     display_name: "Room B".to_owned(),
                     is_dm: false,
                     unread_count: 2,
+                    notification_count: 2,
+                    highlight_count: 0,
                     parent_space_ids: vec!["space-a".to_owned()],
                 },
             ],
@@ -269,6 +287,8 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             display_name: "Room A".to_owned(),
             is_dm: false,
             unread_count: 5,
+            notification_count: 5,
+            highlight_count: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         }],
         navigation: matrix_desktop_state::NavigationState {
@@ -297,6 +317,8 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
                 display_name: "Room B".to_owned(),
                 is_dm: false,
                 unread_count: 2,
+                notification_count: 2,
+                highlight_count: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
             }],
         },

@@ -478,10 +478,13 @@ architectural invariants:
   canonical visible text and indexing the replacement text, a redaction removes
   only the redacted document from the searchable corpus, and an unresolved
   replacement event is not indexed as a standalone message.
-- **Device verification and cross-signing** are not yet designed. They are
-  account-level security features and will live under `AccountActor` with
-  their own commands/events; until then, no design doc may claim E2EE trust
-  UX completeness.
+- **Device verification and cross-signing** remain open and are
+  release-blocking Phase 16 work. They are account-level security features
+  that will live under `AccountActor` with their own commands/events; until
+  then, no design doc may claim E2EE trust UX completeness. Element's device
+  verification rollout was postponed to October 2026, after which insecure
+  devices will no longer be able to send or receive messages, so this work is
+  required before first release rather than post-release.
 
 ## QA Model
 

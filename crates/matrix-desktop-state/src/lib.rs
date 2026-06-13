@@ -10,7 +10,8 @@ pub use reducer::reduce;
 pub use sidebar::{AccountHomeItem, RoomListItem, SidebarModel, SpaceRailItem, compose_sidebar};
 pub use state::{
     AppError, AppState, AuthDiscoveryState, ComposerState, E2eeRecoveryState, LoginFlow,
-    LoginFlowKind, NavigationState, RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind,
-    SearchResult, SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState,
-    TextRange, ThreadPaneState, TimelinePaneState,
+    LoginFlowKind, NavigationState, RecoveryMethod, RoomAttentionKind, RoomAttentionSummary,
+    RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+    SessionInfo, SessionState, SpaceSummary, SyncState, TextRange, ThreadPaneState,
+    TimelinePaneState, room_attention_kind, room_attention_summary,
 };

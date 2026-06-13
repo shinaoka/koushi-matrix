@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-core \
     git \
     libayatana-appindicator3-dev \
+    libnss-wrapper \
     libssl-dev \
     libwebkit2gtk-4.1-dev \
     libxdo-dev \
