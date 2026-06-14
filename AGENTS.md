@@ -60,8 +60,34 @@ All agents implementing the i18n GUI wiring follow
   observer, not by GUI code. Follow-up verification commands must pass the
   Rust-owned `flow_id` from `AppState`; their command `request_id` is separate
   and is used only for command submission/failure correlation.
+- Incoming verification observers may report the same SDK verification flow
+  more than once as sync catches up. `AccountActor` must ignore duplicate
+  incoming requests with the same SDK `flow_id`; only a different active flow
+  should be cancelled/rejected.
+- SAS peer acceptance is driven by SDK SAS state, not by React state or the SDK
+  `we_started` flag. In this wrapper, `Started` is the peer side that must call
+  `accept_sas_verification`; `Created` is the local side after `start_sas` and
+  must not be auto-accepted.
+- In same-user two-device SAS QA, keep the request direction A2 -> A and let
+  the requester A2 start SAS after A accepts. Starting SAS from the accepting
+  device reproduced Tuwunel `m.key_mismatch` cancellation before emoji
+  presentation, while the requester-start sequence is stable across local
+  Conduit and Tuwunel.
+- During the local SAS proof, do not overlap continuous SyncService delivery
+  with manual `SyncOnce` nudges. Start the verification request while sync is
+  running so device data is fresh, then pause both sync loops and drive SAS
+  request/ready/start/key/done with bounded `SyncOnce` polling. Overlap
+  reproduced pre-SAS key-mismatch flakes.
+- Identity-reset auth continuation follows the same separation: GUI commands
+  must use a fresh command `request_id` for submission correlation and pass the
+  Rust-owned identity-reset `flow_id` from
+  `AppState.e2ee_trust.identity_reset`. Do not reuse React-local pending ids or
+  infer the flow from button state.
 - Verification observers and SDK handles must be stopped/cancelled on logout,
   account switch, and actor shutdown before dropping the Matrix session.
+- `BootstrapCrossSigning` may carry a UIAA password `AuthSecret` only inside
+  the `CoreCommand::Account` command boundary. Its reducer action, effect,
+  event, snapshot, logs, and `Debug` output must remain secret-free.
 - `RestoreKeyBackup` is secret-bearing only at the `CoreCommand::Account`
   boundary. Its reducer projection, `AppEffect`, `CoreEvent`, Tauri DTO, and
   React state must never carry the recovery secret.
@@ -74,6 +100,24 @@ All agents implementing the i18n GUI wiring follow
 - Key-backup restore progress in the current public-API slice counts joined-room
   hydration attempts. Do not describe it as exhaustive backup-wide restore until
   a local homeserver QA lane proves the exact all-session behavior.
+- The local core QA `e2ee_trust` scenario logs the same synthetic user into a
+  second data directory/device and proves cross-signing bootstrap, key-backup
+  enable, wrong-secret restore failure, SAS device verification, and identity
+  reset through `CoreCommand`/`CoreEvent` only. Its stdout must stay token-only
+  for these checks; do not print account keys, verification target user/device
+  ids, backup versions, recovery secrets, or raw SDK errors.
+- The local headless runner registers separate synthetic users for the SDK lane
+  and each core backend leg. Keep E2EE trust proofs isolated per core leg so
+  unrelated smoke-test devices do not become part of the account's device graph.
+- Room-list space classification can lag behind room/space create or join on
+  local homeservers, especially Conduit. Headless core QA should perform a
+  bounded `SyncOnce` after A creates/invites and after B joins before asserting
+  `rooms` vs `spaces`; otherwise a valid space can temporarily appear as a plain
+  room and make aggregate lanes flaky.
+- Run the local proof with the SyncService/probed core leg while iterating:
+  `npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000`.
+  The runner supports `--core-backend=legacy|both` for non-E2EE backend
+  coverage, but the Phase A E2EE trust proof is the probed SyncService leg.
 
 ## Rust-Owned Settings Notes
 

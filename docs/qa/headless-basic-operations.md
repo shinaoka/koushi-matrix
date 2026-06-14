@@ -36,12 +36,34 @@ thread_summary=ok
 thread_recv=ok
 thread_paginate=end_reached
 edit_redact_search=ok
+e2ee_trust=ok
 restore_cleanup=ok
 ```
 
 `thread_summary=ok` is a strict Phase 11 signal: local core QA fails if the
 server/SDK path does not surface a root `thread_summary` for the threaded
 reply.
+
+`e2ee_trust=ok` is the Phase A E2EE trust signal. The core lane proves
+cross-signing bootstrap, key-backup enable, wrong-secret restore failure,
+same-user two-device SAS verification, and identity reset through
+`CoreCommand`/`CoreEvent` only. The runner must not print account keys,
+verification target user/device ids, backup versions, recovery secrets, or raw
+SDK errors for this stage. It is a separate Rust-owned trust proof and runs
+after the ordinary room/timeline/search operations in the aggregate local lane.
+The local runner registers separate synthetic users for each core backend leg so
+the trust proof is not affected by devices created by the SDK smoke lane.
+
+For room/space checks, the core lane performs bounded `SyncOnce` refreshes
+before asserting `rooms` vs `spaces`. Local homeservers can briefly report a
+newly created or joined space as a plain room until the create state is folded
+into the room-list projection.
+
+Focused local proof:
+
+```bash
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000
+```
 
 ## matrix.org compatibility lane
 

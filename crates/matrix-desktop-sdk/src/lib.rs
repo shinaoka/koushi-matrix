@@ -1,9 +1,9 @@
 use futures_util::{Stream, StreamExt};
 pub use matrix_desktop_state::E2eeRecoveryState;
 use matrix_desktop_state::{
-    CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType, KeyBackupStatus,
-    LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, RoomAttentionSummary, SasEmoji,
-    SessionInfo, VerificationTarget, room_attention_summary,
+    AuthSecret, CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType,
+    KeyBackupStatus, LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, RoomAttentionSummary,
+    SasEmoji, SessionInfo, VerificationTarget, room_attention_summary,
 };
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::room::ParentSpace;
@@ -429,12 +429,38 @@ pub async fn cross_signing_status(
 
 pub async fn bootstrap_cross_signing(
     session: &MatrixClientSession,
+    auth_secret: Option<&AuthSecret>,
 ) -> Result<CrossSigningStatus, E2eeTrustError> {
-    session
-        .client()
-        .encryption()
-        .bootstrap_cross_signing(None)
-        .await?;
+    let encryption = session.client().encryption();
+    match encryption.bootstrap_cross_signing(None).await {
+        Ok(()) => {}
+        Err(error) => {
+            let Some(auth_secret) = auth_secret else {
+                return Err(error.into());
+            };
+            let Some(uiaa_session) = error
+                .as_uiaa_response()
+                .and_then(|response| response.session.clone())
+            else {
+                return Err(error.into());
+            };
+            let identifier = matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
+                matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(
+                    session.info.user_id.clone(),
+                ),
+            );
+            let mut password_auth = matrix_sdk::ruma::api::client::uiaa::Password::new(
+                identifier,
+                auth_secret.expose_secret().to_owned(),
+            );
+            password_auth.session = Some(uiaa_session);
+            encryption
+                .bootstrap_cross_signing(Some(
+                    matrix_sdk::ruma::api::client::uiaa::AuthData::Password(password_auth),
+                ))
+                .await?;
+        }
+    }
     cross_signing_status(session).await
 }
 
@@ -649,6 +675,13 @@ pub async fn start_sas_verification(
         .map(|inner| MatrixSasVerificationHandle { inner }))
 }
 
+pub async fn accept_sas_verification(
+    handle: &MatrixSasVerificationHandle,
+) -> Result<(), E2eeTrustError> {
+    handle.inner.accept().await?;
+    Ok(())
+}
+
 pub async fn confirm_sas_verification(
     handle: &MatrixSasVerificationHandle,
 ) -> Result<(), E2eeTrustError> {
@@ -710,13 +743,13 @@ mod e2ee_trust_tests {
     use super::{
         E2eeTrustError, MatrixCrossSigningStatus, MatrixIdentityResetAuthType,
         MatrixIncomingVerificationRequest, MatrixIncomingVerificationRequestObserver,
-        accept_verification_request, bootstrap_cross_signing, cancel_sas_verification,
-        cancel_verification_request, complete_identity_reset, confirm_sas_verification,
-        cross_signing_status, enable_key_backup, map_backup_state_to_desktop,
-        map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
-        map_sdk_sas_emojis_to_desktop, mismatch_sas_verification,
-        observe_incoming_verification_requests, request_device_verification, reset_identity,
-        restore_key_backup, start_sas_verification,
+        accept_sas_verification, accept_verification_request, bootstrap_cross_signing,
+        cancel_sas_verification, cancel_verification_request, complete_identity_reset,
+        confirm_sas_verification, cross_signing_status, enable_key_backup,
+        map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
+        map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
+        mismatch_sas_verification, observe_incoming_verification_requests,
+        request_device_verification, reset_identity, restore_key_backup, start_sas_verification,
     };
 
     #[test]
@@ -787,6 +820,7 @@ mod e2ee_trust_tests {
         let _ = request_device_verification;
         let _ = accept_verification_request;
         let _ = start_sas_verification;
+        let _ = accept_sas_verification;
         let _ = confirm_sas_verification;
         let _ = mismatch_sas_verification;
         let _ = cancel_verification_request;

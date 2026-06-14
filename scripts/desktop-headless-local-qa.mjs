@@ -21,6 +21,7 @@ const localSecretsRoot = join(repoRoot, ".local-secrets", "headless-local-qa");
 const checks = [
   "scenario safety",
   "scenario login_sync",
+  "scenario e2ee_trust",
   "scenario room_space",
   "scenario timeline",
   "scenario reply",
@@ -39,6 +40,8 @@ const args = new Set(process.argv.slice(2));
 const serverOption = optionValue("--server") ?? "both";
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "90000");
 const scenarioOption = optionValue("--scenario") ?? "all";
+const coreBackendOption =
+  optionValue("--core-backend") ?? defaultCoreBackendForScenario(scenarioOption);
 // --core: run the headless-core-qa binary in addition to (or instead of) the
 // headless-local-qa binary. When this flag is present, both QA paths run for
 // each server so both layers are exercised.
@@ -116,22 +119,13 @@ async function runForServer(serverKind) {
   try {
     await waitForHomeserver(homeserver, serverProcess, timeoutMs, logPath);
 
-    const userSuffix = safeTimestamp();
-    const userA = `qa_a_${userSuffix}`;
-    const userB = `qa_b_${userSuffix}`;
-    const passwordA = `matrix-desktop-local-a-${userSuffix}`;
-    const passwordB = `matrix-desktop-local-b-${userSuffix}`;
-    await registerUser(homeserver, userA, passwordA);
-    await registerUser(homeserver, userB, passwordB);
+    const sdkUsers = await registerQaUsers(homeserver, "sdk");
 
     const qaResult = runHeadlessQa({
       serverKind,
       homeserver,
       serverName,
-      userA,
-      passwordA,
-      userB,
-      passwordB,
+      ...sdkUsers,
       logPath
     });
     console.log(qaResult.trim());
@@ -139,47 +133,58 @@ async function runForServer(serverKind) {
     if (runCoreQa) {
       // Leg 1: probed backend. Both local servers advertise MSC4186, so the
       // probe must select SyncService; the expectation makes drift fail QA.
-      const coreQaResult = runCoreHeadlessQa({
-        serverKind,
-        homeserver,
-        serverName,
-        userA,
-        passwordA,
-        userB,
-        passwordB,
-        logPath,
-        legLabel: "probed",
-        expectSyncBackend: "SyncService"
-      });
-      console.log(`core QA (probed SyncService): ${coreQaResult.trim()}`);
+      if (shouldRunCoreBackend("probed")) {
+        const coreUsers = await registerQaUsers(homeserver, "core_probed");
+        const coreQaResult = runCoreHeadlessQa({
+          serverKind,
+          homeserver,
+          serverName,
+          ...coreUsers,
+          logPath,
+          legLabel: "probed",
+          expectSyncBackend: "SyncService"
+        });
+        console.log(`core QA (probed SyncService): ${coreQaResult.trim()}`);
+      }
 
       // Leg 2: forced LegacySync (debug/test-only env override). Fresh data
       // dir + cred store dir so no store state leaks across legs. Legacy
       // /sync works against MSC4186-capable servers too, so this leg
       // exercises the LegacySync product path end-to-end.
-      const coreLegacyResult = runCoreHeadlessQa({
-        serverKind,
-        homeserver,
-        serverName,
-        userA,
-        passwordA,
-        userB,
-        passwordB,
-        logPath,
-        legLabel: "legacy",
-        forceLegacyBackend: true,
-        expectSyncBackend: "LegacySync"
-      });
-      console.log(`core QA (forced LegacySync): ${coreLegacyResult.trim()}`);
-      if (!coreLegacyResult.includes("sync_backend_a=LegacySync")) {
-        throw new Error(
-          "forced-legacy core QA leg did not report sync_backend_a=LegacySync"
-        );
+      if (shouldRunCoreBackend("legacy")) {
+        const coreUsers = await registerQaUsers(homeserver, "core_legacy");
+        const coreLegacyResult = runCoreHeadlessQa({
+          serverKind,
+          homeserver,
+          serverName,
+          ...coreUsers,
+          logPath,
+          legLabel: "legacy",
+          forceLegacyBackend: true,
+          expectSyncBackend: "LegacySync"
+        });
+        console.log(`core QA (forced LegacySync): ${coreLegacyResult.trim()}`);
+        if (!coreLegacyResult.includes("sync_backend_a=LegacySync")) {
+          throw new Error(
+            "forced-legacy core QA leg did not report sync_backend_a=LegacySync"
+          );
+        }
       }
     }
   } finally {
     await stopProcess(serverProcess);
   }
+}
+
+async function registerQaUsers(homeserver, label) {
+  const userSuffix = `${label}_${safeTimestamp()}`;
+  const userA = `qa_a_${userSuffix}`;
+  const userB = `qa_b_${userSuffix}`;
+  const passwordA = `matrix-desktop-local-a-${userSuffix}`;
+  const passwordB = `matrix-desktop-local-b-${userSuffix}`;
+  await registerUser(homeserver, userA, passwordA);
+  await registerUser(homeserver, userB, passwordB);
+  return { userA, passwordA, userB, passwordB };
 }
 
 function runHeadlessQa({
@@ -208,10 +213,18 @@ function runHeadlessQa({
         MATRIX_DESKTOP_LOCAL_QA_USER_B: userB,
         MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B: passwordB
       },
-      maxBuffer: 10 * 1024 * 1024
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: timeoutMs
     }
   );
   appendQaOutput(logPath, result.stdout, result.stderr);
+  if (result.error?.code === "ETIMEDOUT") {
+    const stderr = result.stderr.trim();
+    const stdout = result.stdout.trim();
+    throw new Error(
+      `headless SDK QA timed out for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
+    );
+  }
   if (result.status !== 0) {
     const stderr = result.stderr.trim();
     const stdout = result.stdout.trim();
@@ -271,7 +284,8 @@ function runCoreHeadlessQa({
       cwd: repoRoot,
       encoding: "utf8",
       env,
-      maxBuffer: 10 * 1024 * 1024
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: timeoutMs
     }
   );
   appendQaOutput(logPath, result.stdout, result.stderr);
@@ -289,6 +303,11 @@ function runCoreHeadlessQa({
   if (result.status !== 0) {
     const stderr = result.stderr.trim();
     const stdout = result.stdout.trim();
+    if (result.error?.code === "ETIMEDOUT") {
+      throw new Error(
+        `headless core QA (leg=${legLabel}) timed out for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
+      );
+    }
     throw new Error(
       `headless core QA (leg=${legLabel}) failed for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
     );
@@ -319,6 +338,23 @@ function selectedServers(value) {
   throw new Error("--server must be conduit, tuwunel, or both");
 }
 
+function defaultCoreBackendForScenario(value) {
+  if (value === "all" || value === "e2ee_trust") {
+    return "probed";
+  }
+  return "both";
+}
+
+function shouldRunCoreBackend(backend) {
+  if (coreBackendOption === "both") {
+    return true;
+  }
+  if (coreBackendOption === "probed" || coreBackendOption === "legacy") {
+    return coreBackendOption === backend;
+  }
+  throw new Error("--core-backend must be probed, legacy, or both");
+}
+
 function optionValue(name) {
   const prefix = `${name}=`;
   for (const arg of process.argv.slice(2)) {
@@ -339,8 +375,9 @@ function safeTimestamp() {
 
 function printUsage() {
   console.log(
-    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both] [--scenario=all] [--core]"
+    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both] [--scenario=all] [--core] [--core-backend=probed|legacy|both]"
   );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
   console.log("  --core  Also run the headless-core-qa binary (Phase 2+ core runtime QA).");
+  console.log("  --core-backend  Select core backend leg. E2EE scenarios default to probed.");
 }

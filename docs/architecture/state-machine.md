@@ -375,6 +375,23 @@ stateDiagram-v2
   submission/failure correlation. Incoming SDK-originated verification requests
   use a reserved Rust-owned flow-id namespace, so React never synthesizes or
   owns verification discovery state.
+- Incoming SDK-originated verification observations are idempotent by SDK
+  flow id. `AccountActor` ignores duplicate observations for the active flow
+  and only cancels/rejects a different incoming flow while another verification
+  is active.
+- SAS peer acceptance is decided from the SDK SAS state mapped into Rust, not
+  from React state or SDK direction flags. `MatrixSasState::Started` is the
+  peer side that must call the SDK SAS accept path; `Created` is the local side
+  after `start_sas` and must not be auto-accepted.
+- Same-user two-device SAS verification should keep the request direction
+  A2 -> A and start SAS from the requester after the accepting device reaches
+  `Accepted`. The accepting-device-start sequence reproduced Tuwunel
+  `m.key_mismatch` cancellation before SAS presentation in local QA.
+- The local proof starts the verification request while continuous sync is
+  running so device data is fresh, then pauses both sync loops and drives SAS
+  delivery with bounded `SyncOnce` polling. Do not overlap continuous
+  SyncService delivery with manual `SyncOnce` nudges during SAS; that overlap
+  reproduced pre-SAS key-mismatch flakes.
 - Identity reset is a typed Rust-owned state machine
   (`Idle`, `Resetting`, `AwaitingAuth`, `Failed`), not a nullable pending flag.
   `AwaitingAuth` carries only a request id and coarse auth type
@@ -382,7 +399,10 @@ stateDiagram-v2
   to `AccountActor` and is cancelled when the active account runtime is logged
   out, switched, or shut down. Auth continuation submission is also a
   `CoreCommand::Account` path projected through the reducer before actor
-  routing; React must not call SDK/UIAA/OAuth continuation logic directly.
+  routing. It carries a command `request_id` for submission/failure correlation
+  and a Rust-owned identity-reset `flow_id` for stale-flow guards. React must
+  read that `flow_id` from `AppState.e2ee_trust.identity_reset`; it must not
+  call SDK/UIAA/OAuth continuation logic directly or synthesize local flow ids.
 - Failure state carries only `TrustOperationFailureKind` (`cancelled`,
   `mismatch`, `network`, `forbidden`, `timeout`, `sdk`). Raw SDK errors,
   private keys, recovery secrets, room keys, and key-backup secrets never enter
@@ -390,13 +410,17 @@ stateDiagram-v2
 - `CoreCommand::Account` owns the typed command surface:
   `RequestVerification`, `AcceptVerification`, `ConfirmSasVerification`,
   `CancelVerification`, `BootstrapCrossSigning`, `EnableKeyBackup`,
-  `RestoreKeyBackup`, and `ResetIdentity`. These commands are ready-session
-  gated and redact verification targets / backup versions in `Debug`.
+  `RestoreKeyBackup`, `ResetIdentity`, and `SubmitIdentityResetAuth`. These
+  commands are ready-session gated and redact verification targets, backup
+  versions, and auth secrets in `Debug`.
 - `RestoreKeyBackup` carries the secret-bearing recovery request only inside
   `CoreCommand::Account`; the projected `AppAction::RestoreKeyBackupRequested`,
   reducer effects, `CoreEvent`, and snapshots carry only request id, optional
   private-data-free backup version, and progress counters. React never receives
   or interprets the recovery secret.
+- `BootstrapCrossSigning` may carry a UIAA password `AuthSecret` only inside
+  `CoreCommand::Account`; reducer actions, effects, events, snapshots, and
+  logs remain secret-free.
 - Production `CoreCommand::Account` trust commands are projected through the
   reducer before actor routing. This is required even though the SDK work
   happens in `AccountActor`: pending state such as `Bootstrapping`,
@@ -428,6 +452,14 @@ stateDiagram-v2
 - Actor-side unavailable paths must also settle any already-projected pending
   trust state with the matching reducer failure action. `OperationFailed`
   alone is a transport error signal; it is not a state-machine transition.
+- The local core QA `e2ee_trust` scenario is the Phase A proof for this
+  contract on disposable homeservers. It exercises Rust-owned cross-signing
+  bootstrap, key-backup enable, wrong-secret restore failure, same-user
+  two-device SAS verification, and identity reset before any GUI controls are
+  considered complete. Run it on the probed SyncService core leg:
+  `npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000`.
+  The runner registers separate synthetic users for the SDK lane and each core
+  backend leg so the E2EE proof's account/device graph stays isolated.
 - The fixture/demo backend reports E2EE trust effects as unavailable until the
   `AccountActor` SDK implementation lands. It must not silently discard those
   effects.

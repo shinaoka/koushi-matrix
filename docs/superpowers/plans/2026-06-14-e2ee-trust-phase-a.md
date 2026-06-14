@@ -61,8 +61,27 @@ and settles the reducer as kind-only `Mismatch` failure. The incoming request
 discovery slice adds a Rust-owned SDK observer in `AccountActor` and separates
 verification `flow_id` from command `request_id`, so SDK-originated requests can
 be accepted/cancelled later without React owning discovery or handle state.
-Local homeserver verification proof and all GUI surfaces remain later Phase
-A/B work.
+
+The local proof slice adds the core QA `e2ee_trust` scenario. It runs through
+`CoreCommand`/`CoreEvent` only, logs the same synthetic user into a second local
+data directory/device, and proves cross-signing bootstrap, key-backup enable,
+wrong-secret restore failure, same-user SAS device verification, and identity
+reset before any GUI wiring. The slice also separates identity-reset auth
+continuation command `request_id` from the Rust-owned identity-reset `flow_id`,
+matching the verification follow-up model so React never owns pending trust
+state. The proof uses the probed SyncService core backend; `AccountActor`
+auto-accepts peer SAS only when the SDK SAS state is `Started`, while `Created`
+remains the local post-`start_sas` side. The same-user local proof keeps the
+request direction A2 -> A and starts SAS from requester A2; starting from the
+accepting device reproduced Tuwunel `m.key_mismatch` cancellation before SAS
+emoji presentation. It starts the request while continuous sync is running,
+then pauses both sync loops and drives SAS delivery with bounded `SyncOnce`
+polling; overlapping continuous SyncService delivery with manual `SyncOnce`
+nudges reproduced pre-SAS key-mismatch flakes. The headless runner registers
+separate synthetic users for the SDK lane and each core backend leg so the E2EE
+proof's device graph is isolated. GUI surfaces remain Phase B work, and
+backup-wide all-session restore semantics still require a public SDK API or
+reviewed vendored patch before the product can claim exhaustive restore.
 
 ## Verification
 
@@ -72,6 +91,8 @@ Run at minimum:
 cargo test -p matrix-desktop-state --test e2ee_trust_state
 cargo test -p matrix-desktop-sdk e2ee_trust_tests
 cargo test -p matrix-desktop-core
+cargo test -p matrix-desktop-core --features qa-bin --bin headless-core-qa
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --core --core-backend=probed --scenario=e2ee_trust --timeout-ms=240000
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml dto::tests
 ```
 

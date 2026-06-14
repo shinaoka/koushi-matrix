@@ -555,8 +555,8 @@ impl AccountActor {
             } => {
                 self.handle_submit_recovery(request_id, request).await;
             }
-            AccountCommand::BootstrapCrossSigning { request_id } => {
-                self.handle_bootstrap_cross_signing(request_id).await;
+            AccountCommand::BootstrapCrossSigning { request_id, auth } => {
+                self.handle_bootstrap_cross_signing(request_id, auth).await;
             }
             AccountCommand::EnableKeyBackup { request_id } => {
                 self.handle_enable_key_backup(request_id).await;
@@ -574,9 +574,10 @@ impl AccountActor {
             }
             AccountCommand::SubmitIdentityResetAuth {
                 request_id,
+                flow_id,
                 request,
             } => {
-                self.handle_submit_identity_reset_auth(request_id, request)
+                self.handle_submit_identity_reset_auth(request_id, flow_id, request)
                     .await;
             }
             AccountCommand::RequestVerification { request_id, target } => {
@@ -660,6 +661,14 @@ impl AccountActor {
         target: VerificationTarget,
         handle: matrix_desktop_sdk::MatrixVerificationRequestHandle,
     ) {
+        if self
+            .verification_request
+            .as_ref()
+            .is_some_and(|pending| pending.handle.flow_id() == handle.flow_id())
+        {
+            return;
+        }
+
         if self.verification_request.is_some() || self.sas_verification.is_some() {
             let _ = matrix_desktop_sdk::cancel_verification_request(&handle).await;
             return;
@@ -717,7 +726,14 @@ impl AccountActor {
                         self.store_sas_verification(pending_request_id, target, sas)
                             .await;
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        self.project_verification_failure(
+                            flow_id,
+                            target,
+                            TrustOperationFailureKind::Sdk,
+                        )
+                        .await;
+                    }
                     Err(error) => {
                         self.project_verification_failure(
                             flow_id,
@@ -997,8 +1013,15 @@ impl AccountActor {
             matrix_desktop_sdk::MatrixVerificationRequestState::Done => {
                 self.project_verification_completed(request_id).await;
             }
-            matrix_desktop_sdk::MatrixVerificationRequestState::Cancelled
-            | matrix_desktop_sdk::MatrixVerificationRequestState::UnsupportedMethod => {
+            matrix_desktop_sdk::MatrixVerificationRequestState::Cancelled => {
+                self.project_active_or_missing_verification_failure_with_kind(
+                    request_id,
+                    request_id.sequence,
+                    TrustOperationFailureKind::Cancelled,
+                )
+                .await;
+            }
+            matrix_desktop_sdk::MatrixVerificationRequestState::UnsupportedMethod => {
                 self.project_active_or_missing_verification_failure(
                     request_id,
                     request_id.sequence,
@@ -1021,6 +1044,17 @@ impl AccountActor {
             handle: handle.clone(),
         });
         self.observe_sas_verification(request_id, target.clone(), handle.clone());
+        if matches!(handle.state(), matrix_desktop_sdk::MatrixSasState::Started)
+            && let Err(error) = matrix_desktop_sdk::accept_sas_verification(&handle).await
+        {
+            self.project_verification_failure(
+                request_id.sequence,
+                target,
+                classify_e2ee_trust_error(&error),
+            )
+            .await;
+            return;
+        }
         self.project_sas_state(request_id, target, handle.state())
             .await;
     }
@@ -1050,8 +1084,15 @@ impl AccountActor {
             matrix_desktop_sdk::MatrixSasState::Done => {
                 self.project_verification_completed(request_id).await;
             }
-            matrix_desktop_sdk::MatrixSasState::Cancelled
-            | matrix_desktop_sdk::MatrixSasState::UnsupportedShortAuth => {
+            matrix_desktop_sdk::MatrixSasState::Cancelled => {
+                self.project_verification_failure(
+                    request_id.sequence,
+                    target,
+                    TrustOperationFailureKind::Cancelled,
+                )
+                .await;
+            }
+            matrix_desktop_sdk::MatrixSasState::UnsupportedShortAuth => {
                 self.project_verification_failure(
                     request_id.sequence,
                     target,
@@ -1096,6 +1137,20 @@ impl AccountActor {
         request_id: RequestId,
         flow_id: u64,
     ) {
+        self.project_active_or_missing_verification_failure_with_kind(
+            request_id,
+            flow_id,
+            TrustOperationFailureKind::Sdk,
+        )
+        .await;
+    }
+
+    async fn project_active_or_missing_verification_failure_with_kind(
+        &mut self,
+        request_id: RequestId,
+        flow_id: u64,
+        kind: TrustOperationFailureKind,
+    ) {
         let target = self
             .sas_verification
             .as_ref()
@@ -1109,13 +1164,13 @@ impl AccountActor {
             });
         match target {
             Some(target) => {
-                self.project_verification_failure(flow_id, target, TrustOperationFailureKind::Sdk)
+                self.project_verification_failure(flow_id, target, kind)
                     .await
             }
             None => {
                 self.reduce(vec![AppAction::VerificationFailed {
                     request_id: flow_id,
-                    kind: TrustOperationFailureKind::Sdk,
+                    kind,
                 }]);
                 let failure = if self.session.is_some() {
                     CoreFailure::LocalEncryptionUnavailable
@@ -1160,14 +1215,19 @@ impl AccountActor {
     async fn handle_submit_identity_reset_auth(
         &mut self,
         request_id: RequestId,
+        flow_id: u64,
         request: matrix_desktop_state::IdentityResetAuthRequest,
     ) {
+        let flow_request_id = RequestId {
+            connection_id: request_id.connection_id,
+            sequence: flow_id,
+        };
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
                 self.cancel_identity_reset_handle().await;
                 self.reduce(vec![AppAction::ResetIdentityFailed {
-                    request_id: request_id.sequence,
+                    request_id: flow_id,
                     kind: TrustOperationFailureKind::Sdk,
                 }]);
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
@@ -1189,7 +1249,8 @@ impl AccountActor {
         match result {
             Ok(()) => {
                 self.identity_reset_handle = None;
-                let (actions, events) = project_reset_identity_completed(request_id, account_key);
+                let (actions, events) =
+                    project_reset_identity_completed(flow_request_id, account_key);
                 self.reduce(actions);
                 for event in events {
                     self.emit(event);
@@ -1198,7 +1259,7 @@ impl AccountActor {
             Err(error) => {
                 self.cancel_identity_reset_handle().await;
                 let (actions, events) =
-                    project_reset_identity_error(request_id, account_key, error);
+                    project_reset_identity_error(flow_request_id, account_key, error);
                 self.reduce(actions);
                 for event in events {
                     self.emit(event);
@@ -1207,7 +1268,11 @@ impl AccountActor {
         }
     }
 
-    async fn handle_bootstrap_cross_signing(&self, request_id: RequestId) {
+    async fn handle_bootstrap_cross_signing(
+        &self,
+        request_id: RequestId,
+        auth: Option<matrix_desktop_state::AuthSecret>,
+    ) {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
@@ -1220,7 +1285,7 @@ impl AccountActor {
             }
         };
         let account_key = AccountKey(session.info.user_id.clone());
-        let result = matrix_desktop_sdk::bootstrap_cross_signing(&session).await;
+        let result = matrix_desktop_sdk::bootstrap_cross_signing(&session, auth.as_ref()).await;
         let (actions, events) =
             project_bootstrap_cross_signing_result(request_id, account_key, result);
         self.reduce(actions);
@@ -2630,7 +2695,10 @@ mod tests {
         assert!(
             handle
                 .send(AccountMessage::Command(
-                    AccountCommand::BootstrapCrossSigning { request_id }
+                    AccountCommand::BootstrapCrossSigning {
+                        request_id,
+                        auth: None,
+                    }
                 ))
                 .await
         );
@@ -2664,11 +2732,13 @@ mod tests {
             spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
 
         let request_id = test_request_id();
+        let flow_id = 99;
         assert!(
             handle
                 .send(AccountMessage::Command(
                     AccountCommand::SubmitIdentityResetAuth {
                         request_id,
+                        flow_id,
                         request: matrix_desktop_state::IdentityResetAuthRequest::OAuthApproved,
                     }
                 ))
@@ -2679,7 +2749,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![AppAction::ResetIdentityFailed {
-                request_id: request_id.sequence,
+                request_id: flow_id,
                 kind: matrix_desktop_state::TrustOperationFailureKind::Sdk,
             }]
         );

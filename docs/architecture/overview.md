@@ -524,12 +524,15 @@ architectural invariants:
   private-data-free wrappers. Identity reset and verification continuation
   handles are held only by `AccountActor`; SDK request/SAS streams settle the
   reducer with typed actions and expose only private-data-free DTOs such as SAS
-  emojis. Local homeserver proof, incoming verification request discovery, and
-  GUI rendering remain incomplete until the follow-up phases land. No design
-  doc may claim
-  E2EE trust UX completeness until those phases prove device verification,
-  cross-signing trust, backed-up room-key restore, and identity reset
-  headlessly before GUI wiring.
+  emojis. Incoming verification request discovery is Rust-owned in
+  `AccountActor`. The local core `e2ee_trust` proof exercises same-user
+  two-device SAS verification, cross-signing bootstrap, key-backup enable,
+  wrong-secret restore failure, and identity reset on disposable local
+  homeservers through the probed SyncService core leg before GUI wiring. GUI
+  rendering remains incomplete until the follow-up phases land. No design doc
+  may claim E2EE trust UX completeness until GUI controls consume this
+  Rust-owned state and backup restore semantics
+  are proven for the exact supported restore scope.
 
 ## QA Model
 

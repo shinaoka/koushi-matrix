@@ -726,7 +726,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
             request_id: *flow_id,
             reason: *reason,
         }),
-        AccountCommand::BootstrapCrossSigning { request_id } => {
+        AccountCommand::BootstrapCrossSigning { request_id, .. } => {
             Some(AppAction::BootstrapCrossSigningRequested {
                 request_id: request_id.sequence,
             })
@@ -747,9 +747,9 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
             request_id: request_id.sequence,
         }),
-        AccountCommand::SubmitIdentityResetAuth { request_id, .. } => {
+        AccountCommand::SubmitIdentityResetAuth { flow_id, .. } => {
             Some(AppAction::ResetIdentityAuthSubmitted {
-                request_id: request_id.sequence,
+                request_id: *flow_id,
             })
         }
         AccountCommand::LoginPassword { .. }
@@ -955,13 +955,17 @@ mod tests {
             connection_id: RuntimeConnectionId(1),
             sequence: 7,
         };
+        let flow_id = 99;
 
         assert_eq!(
             account_command_projected_action(&AccountCommand::SubmitIdentityResetAuth {
                 request_id,
+                flow_id,
                 request: matrix_desktop_state::IdentityResetAuthRequest::OAuthApproved,
             }),
-            Some(AppAction::ResetIdentityAuthSubmitted { request_id: 7 })
+            Some(AppAction::ResetIdentityAuthSubmitted {
+                request_id: flow_id
+            })
         );
     }
 

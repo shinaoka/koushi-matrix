@@ -40,13 +40,18 @@ use matrix_desktop_core::command::{
     TimelineCommand,
 };
 use matrix_desktop_core::event::{
-    AccountEvent, CoreEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
-    SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
+    AccountEvent, CoreEvent, E2eeTrustEvent, PaginationDirection, PaginationState, RoomEvent,
+    SearchEvent, SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem,
+    TimelineItemId,
 };
 use matrix_desktop_core::failure::CoreFailure;
-use matrix_desktop_core::ids::{AccountKey, TimelineKey, TimelineKind};
+use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
-use matrix_desktop_state::{AppState, AuthSecret, SessionState};
+use matrix_desktop_state::{
+    AppState, AuthSecret, CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType,
+    IdentityResetState, KeyBackupStatus, RecoveryRequest, SasEmoji, SessionInfo, SessionState,
+    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
+};
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
 const ENV_SERVER_NAME: &str = "MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME";
@@ -68,13 +73,17 @@ const DEVICE_B: &str = "Matrix Desktop Core QA B";
 
 /// Maximum time to wait for a single event.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+const ROOM_LIST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
+const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
+const QA_WRONG_RECOVERY_SECRET: &str = "matrix-desktop-headless-qa-wrong-recovery-secret";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QaScenario {
     All,
     Safety,
     LoginSync,
+    E2eeTrust,
     RoomSpace,
     Timeline,
     Reply,
@@ -87,6 +96,7 @@ enum QaScenario {
 enum QaStage {
     Safety,
     LoginSync,
+    E2eeTrust,
     RoomSpace,
     Timeline,
     Reply,
@@ -171,6 +181,7 @@ impl QaScenario {
             "all" => Ok(Self::All),
             "safety" => Ok(Self::Safety),
             "login_sync" => Ok(Self::LoginSync),
+            "e2ee_trust" => Ok(Self::E2eeTrust),
             "room_space" => Ok(Self::RoomSpace),
             "timeline" => Ok(Self::Timeline),
             "reply" => Ok(Self::Reply),
@@ -178,7 +189,7 @@ impl QaScenario {
             "edit_redact_search" => Ok(Self::EditRedactSearch),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, room_space, timeline, reply, thread, edit_redact_search, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, room_space, timeline, reply, thread, edit_redact_search, restore_cleanup; got {other}"
             )),
         }
     }
@@ -188,6 +199,12 @@ impl QaScenario {
             Self::All => true,
             Self::Safety => matches!(stage, QaStage::Safety),
             Self::LoginSync => matches!(stage, QaStage::Safety | QaStage::LoginSync),
+            Self::E2eeTrust => {
+                matches!(
+                    stage,
+                    QaStage::Safety | QaStage::LoginSync | QaStage::E2eeTrust
+                )
+            }
             Self::RoomSpace => matches!(
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace
@@ -243,6 +260,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
     match stage {
         QaStage::Safety => &["safety=ok"],
         QaStage::LoginSync => &["login_sync=ok"],
+        QaStage::E2eeTrust => &["e2ee_trust=ok"],
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Timeline => &["timeline=ok"],
         QaStage::Reply => &["reply=ok"],
@@ -269,6 +287,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "thread_recv=ok",
         "thread_paginate=end_reached",
         "edit_redact_search=ok",
+        "e2ee_trust=ok",
         "restore_cleanup=ok",
     ]
 }
@@ -277,6 +296,9 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
     match scenario {
         QaScenario::Safety => vec![QaStage::Safety],
         QaScenario::LoginSync => vec![QaStage::Safety, QaStage::LoginSync],
+        QaScenario::E2eeTrust => {
+            vec![QaStage::Safety, QaStage::LoginSync, QaStage::E2eeTrust]
+        }
         QaScenario::RoomSpace => vec![QaStage::Safety, QaStage::LoginSync, QaStage::RoomSpace],
         QaScenario::Timeline => vec![
             QaStage::Safety,
@@ -322,6 +344,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Reply,
             QaStage::Thread,
             QaStage::EditRedactSearch,
+            QaStage::E2eeTrust,
             QaStage::RestoreCleanup,
         ],
     }
@@ -340,6 +363,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
             tokens
         }
         QaScenario::RoomSpace
+        | QaScenario::E2eeTrust
         | QaScenario::Timeline
         | QaScenario::Reply
         | QaScenario::Thread
@@ -439,6 +463,116 @@ async fn cleanup_after_login_sync(
 
     println!("restore_cleanup=ok");
     Ok("restore_cleanup=ok".to_owned())
+}
+
+async fn run_e2ee_trust_stage(
+    config: &QaConfig,
+    conn_a: &mut CoreConnection,
+    account_key_a: &AccountKey,
+) -> Result<(), String> {
+    let session_a = ready_session_info(conn_a, "session A info for E2EE trust")?;
+
+    bootstrap_cross_signing_for_qa(
+        conn_a,
+        account_key_a,
+        Some(AuthSecret::new(config.password_a.clone())),
+        "bootstrap cross-signing A",
+    )
+    .await?;
+    println!("e2ee_cross_signing=ok");
+
+    let key_backup_version =
+        enable_key_backup_for_qa(conn_a, account_key_a, "enable key backup A").await?;
+    println!("e2ee_key_backup_enable=ok");
+
+    restore_key_backup_failure_for_qa(
+        conn_a,
+        account_key_a,
+        Some(key_backup_version),
+        "restore key backup failure A",
+    )
+    .await?;
+    println!("e2ee_key_backup_restore_failure=ok");
+
+    let runtime_a2 = CoreRuntime::start_with_data_dir(qa_data_dir("a2"));
+    let mut conn_a2 = runtime_a2.attach();
+
+    let login_a2_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id: login_a2_id,
+            request: matrix_desktop_state::LoginRequest {
+                homeserver: config.homeserver.clone(),
+                username: config.user_a.clone(),
+                password: AuthSecret::new(config.password_a.clone()),
+                device_display_name: Some("Matrix Desktop Core QA A2".to_owned()),
+            },
+        }))
+        .await
+        .map_err(|e| format!("submit login A2: {e}"))?;
+
+    let account_key_a2 = wait_for_logged_in(&mut conn_a2, login_a2_id, "login A2").await?;
+    wait_for_ready_snapshot(&mut conn_a2, "session A2 Ready").await?;
+    let session_a2 = ready_session_info(&mut conn_a2, "session A2 info for E2EE trust")?;
+
+    let sync_start_a2_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Sync(SyncCommand::Start {
+            request_id: sync_start_a2_id,
+        }))
+        .await
+        .map_err(|e| format!("submit sync start A2: {e}"))?;
+    let sync_backend_a2 =
+        wait_for_sync_started(&mut conn_a2, sync_start_a2_id, "sync start A2").await?;
+    assert_expected_backend(
+        config.expect_sync_backend.as_deref(),
+        sync_backend_a2,
+        "sync start A2",
+    )?;
+    wait_for_sync_running(&mut conn_a2, "sync A2 running").await?;
+
+    verify_second_device_for_qa(conn_a, &mut conn_a2, &session_a, &session_a2).await?;
+    println!("e2ee_verification=ok");
+
+    cleanup_e2ee_secondary_device(conn_a2, runtime_a2, account_key_a2).await?;
+
+    reset_identity_for_qa(
+        conn_a,
+        account_key_a,
+        config.password_a.clone(),
+        "reset identity A",
+    )
+    .await?;
+    println!("e2ee_identity_reset=ok");
+    println!("e2ee_trust=ok");
+
+    Ok(())
+}
+
+async fn cleanup_e2ee_secondary_device(
+    mut conn: CoreConnection,
+    runtime: CoreRuntime,
+    account_key: AccountKey,
+) -> Result<(), String> {
+    let sync_stop_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::Stop {
+        request_id: sync_stop_id,
+    }))
+    .await
+    .map_err(|e| format!("submit sync stop A2: {e}"))?;
+    wait_for_sync_stopped(&mut conn, sync_stop_id, "sync stop A2").await?;
+
+    let logout_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::Logout {
+        request_id: logout_id,
+    }))
+    .await
+    .map_err(|e| format!("submit logout A2: {e}"))?;
+    wait_for_logged_out(&mut conn, logout_id, &account_key, "logout A2").await?;
+
+    drop(conn);
+    drop(runtime);
+    Ok(())
 }
 
 async fn cleanup_after_full_flow(
@@ -613,6 +747,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     println!("sync_a=running");
     println!("login_sync=ok");
 
+    if scenario == QaScenario::E2eeTrust {
+        run_e2ee_trust_stage(&config, &mut conn_a, &account_key_a).await?;
+    }
+
     if !scenario.should_run_stage(QaStage::RoomSpace) {
         cleanup_after_login_sync(conn_a, runtime_a, data_dir_a, account_key_a).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
@@ -716,6 +854,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     .await?;
     println!("invite_b_to_space=ok");
 
+    // Ensure the space create state has been folded into A's room-list
+    // classification before asserting rooms vs spaces.
+    sync_once_for_qa(&mut conn_a, "sync A after room and space creates").await?;
+
     // Wait (event-driven, bounded) until A's room list contains the created
     // room AND the created space; the wait itself is the assertion.
     let snapshot_a = wait_for_room_list_containing(
@@ -797,6 +939,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     wait_for_room_joined(&mut conn_b, join_space_id, &space_id, "B joins space").await?;
     println!("b_joined_space=ok");
+
+    // Ensure the joined space has been folded into B's room-list
+    // classification before asserting rooms vs spaces.
+    sync_once_for_qa(&mut conn_b, "sync B after room and space joins").await?;
 
     // Wait (event-driven, bounded) until B's room list contains the joined
     // room AND the joined space; the wait itself is the assertion.
@@ -1371,6 +1517,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     // connection, so the actor is dropped before sync stop runs and
     // `wait_for_sync_stopped` (request-id-scoped) is the concrete wait.
 
+    if scenario == QaScenario::All {
+        run_e2ee_trust_stage(&config, &mut conn_a, &account_key_a).await?;
+    }
+
     // -----------------------------------------------------------------------
     // --- Sync stop A + store-backed restore A + logout A ---
     // -----------------------------------------------------------------------
@@ -1677,8 +1827,8 @@ async fn wait_for_room_joined(
 }
 
 /// Wait (event-driven on `RoomListUpdated`/`StateChanged`, bounded by
-/// `EVENT_TIMEOUT`) until the snapshot's room list contains the expected room
-/// in `rooms` AND the expected space in `spaces`. Returns the matching
+/// `ROOM_LIST_EVENT_TIMEOUT`) until the snapshot's room list contains the
+/// expected room in `rooms` AND the expected space in `spaces`. Returns the matching
 /// snapshot. Waiting for "any non-empty list" is not enough: spaces only
 /// classify as spaces after the create reaches the client via sync, so the
 /// list can be momentarily rooms-only.
@@ -1703,7 +1853,7 @@ async fn wait_for_room_list_containing(
     }
 
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
             .await
             .map_err(|_| {
                 let snapshot = conn.snapshot();
@@ -1824,6 +1974,57 @@ async fn wait_for_sync_stopped(
             if ev_id == request_id {
                 return Err(format!("{label} failed: {failure:?}"));
             }
+        }
+    }
+}
+
+async fn sync_once_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::SyncOnce { request_id }))
+        .await
+        .map_err(|e| format!("{label}: submit SyncOnce failed: {e}"))?;
+    wait_for_sync_once(conn, request_id, label).await
+}
+
+async fn stop_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::Stop { request_id }))
+        .await
+        .map_err(|e| format!("{label}: submit Sync stop failed: {e}"))?;
+    wait_for_sync_stopped(conn, request_id, label).await
+}
+
+async fn start_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::Start { request_id }))
+        .await
+        .map_err(|e| format!("{label}: submit Sync start failed: {e}"))?;
+    wait_for_sync_started(conn, request_id, label).await?;
+    wait_for_sync_running(conn, label).await
+}
+
+async fn wait_for_sync_once(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for SyncOnce"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Sync(SyncEvent::Stopped {
+                request_id: Some(ev_id),
+            }) if ev_id == request_id => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: SyncOnce failed: {failure:?}"));
+            }
+            _ => {}
         }
     }
 }
@@ -1990,6 +2191,910 @@ async fn wait_for_operation_failed(
             _ => continue,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase A E2EE trust helpers
+// ---------------------------------------------------------------------------
+
+fn ready_session_info(conn: &mut CoreConnection, label: &str) -> Result<SessionInfo, String> {
+    match &conn.snapshot().session {
+        SessionState::Ready(info) => Ok(info.clone()),
+        _ => Err(format!("{label}: session is not Ready")),
+    }
+}
+
+async fn bootstrap_cross_signing_for_qa(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    auth: Option<AuthSecret>,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(
+        AccountCommand::BootstrapCrossSigning { request_id, auth },
+    ))
+    .await
+    .map_err(|e| format!("{label}: submit bootstrap cross-signing failed: {e}"))?;
+
+    wait_for_cross_signing_trusted(conn, account_key, request_id, label).await
+}
+
+async fn wait_for_cross_signing_trusted(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    request_id: RequestId,
+    label: &str,
+) -> Result<(), String> {
+    if matches!(
+        conn.snapshot().e2ee_trust.cross_signing,
+        CrossSigningStatus::Trusted
+    ) {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for cross-signing Trusted"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::CrossSigningChanged {
+                account_key: ev_account_key,
+                status,
+            }) if &ev_account_key == account_key => {
+                handle_cross_signing_status(&status, request_id.sequence, label)?;
+                if matches!(status, CrossSigningStatus::Trusted) {
+                    return Ok(());
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                let status = snapshot.e2ee_trust.cross_signing;
+                handle_cross_signing_status(&status, request_id.sequence, label)?;
+                if matches!(status, CrossSigningStatus::Trusted) {
+                    return Ok(());
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn handle_cross_signing_status(
+    status: &CrossSigningStatus,
+    request_sequence: u64,
+    label: &str,
+) -> Result<(), String> {
+    if let CrossSigningStatus::Failed { request_id, kind } = status
+        && *request_id == request_sequence
+    {
+        return Err(format!("{label}: cross-signing failed: {kind:?}"));
+    }
+    Ok(())
+}
+
+async fn enable_key_backup_for_qa(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    label: &str,
+) -> Result<String, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::EnableKeyBackup {
+        request_id,
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit enable key backup failed: {e}"))?;
+
+    wait_for_key_backup_enabled(conn, account_key, request_id, label).await
+}
+
+async fn wait_for_key_backup_enabled(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    request_id: RequestId,
+    label: &str,
+) -> Result<String, String> {
+    if let KeyBackupStatus::Enabled { version } = &conn.snapshot().e2ee_trust.key_backup {
+        return Ok(version.clone());
+    }
+
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for key backup Enabled"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                account_key: ev_account_key,
+                status,
+            }) if &ev_account_key == account_key => match status {
+                KeyBackupStatus::Enabled { version } => return Ok(version),
+                KeyBackupStatus::Failed {
+                    request_id: failed_id,
+                    kind,
+                } if failed_id == request_id.sequence => {
+                    return Err(format!("{label}: key backup enable failed: {kind:?}"));
+                }
+                _ => {}
+            },
+            CoreEvent::StateChanged(snapshot) => match snapshot.e2ee_trust.key_backup {
+                KeyBackupStatus::Enabled { version } => return Ok(version),
+                KeyBackupStatus::Failed {
+                    request_id: failed_id,
+                    kind,
+                } if failed_id == request_id.sequence => {
+                    return Err(format!("{label}: key backup enable failed: {kind:?}"));
+                }
+                _ => {}
+            },
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn restore_key_backup_failure_for_qa(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    version: Option<String>,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::RestoreKeyBackup {
+        request_id,
+        version,
+        request: RecoveryRequest {
+            secret: AuthSecret::new(QA_WRONG_RECOVERY_SECRET),
+        },
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit restore key backup failed: {e}"))?;
+
+    wait_for_key_backup_failed(conn, account_key, request_id, label).await
+}
+
+async fn wait_for_key_backup_failed(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    request_id: RequestId,
+    label: &str,
+) -> Result<(), String> {
+    let mut saw_request_state = matches!(
+        conn.snapshot().e2ee_trust.key_backup,
+        KeyBackupStatus::Restoring {
+            request_id: current,
+            ..
+        } if current == request_id.sequence
+    );
+
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for key backup failure"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                account_key: ev_account_key,
+                status,
+            }) if &ev_account_key == account_key => match status {
+                KeyBackupStatus::Failed {
+                    request_id: failed_id,
+                    ..
+                } if failed_id == request_id.sequence => return Ok(()),
+                KeyBackupStatus::Restoring {
+                    request_id: current,
+                    ..
+                } if current == request_id.sequence => {
+                    saw_request_state = true;
+                }
+                KeyBackupStatus::Enabled { .. } if saw_request_state => {
+                    return Err(format!("{label}: restore unexpectedly succeeded"));
+                }
+                _ => {}
+            },
+            CoreEvent::StateChanged(snapshot) => match snapshot.e2ee_trust.key_backup {
+                KeyBackupStatus::Failed {
+                    request_id: failed_id,
+                    ..
+                } if failed_id == request_id.sequence => return Ok(()),
+                KeyBackupStatus::Restoring {
+                    request_id: current,
+                    ..
+                } if current == request_id.sequence => {
+                    saw_request_state = true;
+                }
+                KeyBackupStatus::Enabled { .. } if saw_request_state => {
+                    return Err(format!("{label}: restore unexpectedly succeeded"));
+                }
+                _ => {}
+            },
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn reset_identity_for_qa(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    password: String,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    let flow_id = request_id.sequence;
+    conn.command(CoreCommand::Account(AccountCommand::ResetIdentity {
+        request_id,
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit reset identity failed: {e}"))?;
+
+    match wait_for_identity_reset_auth_or_done(conn, account_key, flow_id, request_id, label)
+        .await?
+    {
+        IdentityResetWait::Completed => Ok(()),
+        IdentityResetWait::AuthRequired(IdentityResetAuthType::Uiaa) => {
+            let submit_request_id = conn.next_request_id();
+            conn.command(CoreCommand::Account(
+                AccountCommand::SubmitIdentityResetAuth {
+                    request_id: submit_request_id,
+                    flow_id,
+                    request: IdentityResetAuthRequest::UiaaPassword {
+                        password: AuthSecret::new(password),
+                    },
+                },
+            ))
+            .await
+            .map_err(|e| format!("{label}: submit reset identity UIAA failed: {e}"))?;
+            wait_for_identity_reset_done(conn, account_key, flow_id, submit_request_id, label).await
+        }
+        IdentityResetWait::AuthRequired(IdentityResetAuthType::OAuth) => Err(format!(
+            "{label}: OAuth identity reset cannot run headlessly"
+        )),
+        IdentityResetWait::AuthRequired(IdentityResetAuthType::Unknown) => Err(format!(
+            "{label}: unknown identity reset auth type cannot run headlessly"
+        )),
+    }
+}
+
+enum IdentityResetWait {
+    Completed,
+    AuthRequired(IdentityResetAuthType),
+}
+
+async fn wait_for_identity_reset_auth_or_done(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    flow_id: u64,
+    command_request_id: RequestId,
+    label: &str,
+) -> Result<IdentityResetWait, String> {
+    let mut saw_request_state = false;
+
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for identity reset auth/done"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged {
+                account_key: ev_account_key,
+                state,
+            }) if &ev_account_key == account_key => {
+                if matches!(state, IdentityResetState::Idle) {
+                    return Ok(IdentityResetWait::Completed);
+                }
+                if let Some(result) = identity_reset_observation(&state, flow_id, label)? {
+                    return Ok(result);
+                }
+                if matches!(
+                    state,
+                    IdentityResetState::Resetting { request_id: current }
+                        if current == flow_id
+                ) {
+                    saw_request_state = true;
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                let state = snapshot.e2ee_trust.identity_reset;
+                if !matches!(state, IdentityResetState::Idle) {
+                    if let Some(result) = identity_reset_observation(&state, flow_id, label)? {
+                        return Ok(result);
+                    }
+                }
+                if matches!(
+                    state,
+                    IdentityResetState::Resetting { request_id: current }
+                        if current == flow_id
+                ) {
+                    saw_request_state = true;
+                }
+                if saw_request_state && matches!(state, IdentityResetState::Idle) {
+                    return Ok(IdentityResetWait::Completed);
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == command_request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_identity_reset_done(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    flow_id: u64,
+    command_request_id: RequestId,
+    label: &str,
+) -> Result<(), String> {
+    let mut saw_request_state = matches!(
+        conn.snapshot().e2ee_trust.identity_reset,
+        IdentityResetState::Resetting {
+            request_id: current
+        } if current == flow_id
+    );
+
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for identity reset completion"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged {
+                account_key: ev_account_key,
+                state,
+            }) if &ev_account_key == account_key => match state {
+                IdentityResetState::Idle => return Ok(()),
+                IdentityResetState::Resetting {
+                    request_id: current,
+                } if current == flow_id => {
+                    saw_request_state = true;
+                }
+                IdentityResetState::Failed {
+                    request_id: failed_id,
+                    kind,
+                } if failed_id == flow_id => {
+                    return Err(format!("{label}: identity reset failed: {kind:?}"));
+                }
+                _ => {}
+            },
+            CoreEvent::StateChanged(snapshot) => match snapshot.e2ee_trust.identity_reset {
+                IdentityResetState::Idle if saw_request_state => return Ok(()),
+                IdentityResetState::Resetting {
+                    request_id: current,
+                } if current == flow_id => {
+                    saw_request_state = true;
+                }
+                IdentityResetState::Failed {
+                    request_id: failed_id,
+                    kind,
+                } if failed_id == flow_id => {
+                    return Err(format!("{label}: identity reset failed: {kind:?}"));
+                }
+                _ => {}
+            },
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == command_request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn identity_reset_observation(
+    state: &IdentityResetState,
+    request_sequence: u64,
+    label: &str,
+) -> Result<Option<IdentityResetWait>, String> {
+    match state {
+        IdentityResetState::AwaitingAuth {
+            request_id,
+            auth_type,
+        } if *request_id == request_sequence => {
+            Ok(Some(IdentityResetWait::AuthRequired(*auth_type)))
+        }
+        IdentityResetState::Failed { request_id, kind } if *request_id == request_sequence => {
+            Err(format!("{label}: identity reset failed: {kind:?}"))
+        }
+        _ => Ok(None),
+    }
+}
+
+async fn verify_second_device_for_qa(
+    conn_a: &mut CoreConnection,
+    conn_a2: &mut CoreConnection,
+    session_a: &SessionInfo,
+    session_a2: &SessionInfo,
+) -> Result<(), String> {
+    if session_a.user_id != session_a2.user_id {
+        return Err("E2EE verification proof requires two devices for one user".to_owned());
+    }
+    if session_a.device_id == session_a2.device_id {
+        return Err("E2EE verification proof requires distinct device ids".to_owned());
+    }
+
+    let target_a = VerificationTarget {
+        user_id: session_a.user_id.clone(),
+        device_id: session_a.device_id.clone(),
+    };
+    let target_a2 = VerificationTarget {
+        user_id: session_a2.user_id.clone(),
+        device_id: session_a2.device_id.clone(),
+    };
+
+    let flow_id_a2 =
+        request_device_verification_for_qa(conn_a2, target_a, "request verification A2 to A")
+            .await?;
+    // Avoid overlapping continuous SyncService with manual SyncOnce delivery
+    // during SAS; overlapping paths reproduced pre-SAS key-mismatch flakes.
+    stop_sync_for_qa(conn_a, "pause sync A for verification").await?;
+    stop_sync_for_qa(conn_a2, "pause sync A2 for verification").await?;
+    sync_once_for_qa(conn_a, "sync A for verification request").await?;
+    let flow_id_a =
+        wait_for_verification_requested(conn_a, Some(&target_a2), "incoming verification A")
+            .await?;
+
+    let accept_a_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Account(AccountCommand::AcceptVerification {
+            request_id: accept_a_id,
+            flow_id: flow_id_a,
+        }))
+        .await
+        .map_err(|e| format!("accept verification A failed to submit: {e}"))?;
+
+    wait_for_verification_accepted(
+        conn_a,
+        flow_id_a,
+        Some(accept_a_id),
+        "A accepts verification",
+    )
+    .await?;
+    sync_once_for_qa(conn_a2, "sync A2 for verification ready").await?;
+    wait_for_verification_accepted(conn_a2, flow_id_a2, None, "A2 observes A acceptance").await?;
+
+    // Let the requester start SAS. Starting from the accepting device has
+    // triggered m.key_mismatch on Tuwunel self-verification in local QA.
+    let start_sas_a2_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Account(AccountCommand::AcceptVerification {
+            request_id: start_sas_a2_id,
+            flow_id: flow_id_a2,
+        }))
+        .await
+        .map_err(|e| format!("start SAS from A2 failed to submit: {e}"))?;
+
+    let (emojis_a, emojis_a2) =
+        drive_until_both_verification_sas(conn_a, flow_id_a, conn_a2, flow_id_a2).await?;
+    if emojis_a != emojis_a2 {
+        return Err("SAS emoji mismatch between devices".to_owned());
+    }
+
+    let confirm_a_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Account(
+            AccountCommand::ConfirmSasVerification {
+                request_id: confirm_a_id,
+                flow_id: flow_id_a,
+            },
+        ))
+        .await
+        .map_err(|e| format!("confirm SAS A failed to submit: {e}"))?;
+
+    let confirm_a2_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Account(
+            AccountCommand::ConfirmSasVerification {
+                request_id: confirm_a2_id,
+                flow_id: flow_id_a2,
+            },
+        ))
+        .await
+        .map_err(|e| format!("confirm SAS A2 failed to submit: {e}"))?;
+
+    sync_once_for_qa(conn_a2, "sync A2 after SAS confirm").await?;
+    sync_once_for_qa(conn_a, "sync A after A2 SAS confirm").await?;
+    sync_once_for_qa(conn_a2, "sync A2 after SAS done").await?;
+
+    wait_for_verification_done(conn_a, flow_id_a, Some(confirm_a_id), "A verification done")
+        .await?;
+    wait_for_verification_done(
+        conn_a2,
+        flow_id_a2,
+        Some(confirm_a2_id),
+        "A2 verification done",
+    )
+    .await?;
+
+    start_sync_for_qa(conn_a, "resume sync A after verification").await?;
+    start_sync_for_qa(conn_a2, "resume sync A2 after verification").await?;
+
+    Ok(())
+}
+
+enum VerificationRequestAttempt {
+    Requested(u64),
+    Failed(TrustOperationFailureKind),
+}
+
+async fn request_device_verification_for_qa(
+    conn: &mut CoreConnection,
+    target: VerificationTarget,
+    label: &str,
+) -> Result<u64, String> {
+    let mut last_failure = None;
+    for attempt in 1..=3 {
+        let request_id = conn.next_request_id();
+        conn.command(CoreCommand::Account(AccountCommand::RequestVerification {
+            request_id,
+            target: target.clone(),
+        }))
+        .await
+        .map_err(|e| format!("{label}: submit request verification failed: {e}"))?;
+
+        match wait_for_verification_requested_or_failed(conn, request_id, Some(&target), label)
+            .await?
+        {
+            VerificationRequestAttempt::Requested(flow_id) => return Ok(flow_id),
+            VerificationRequestAttempt::Failed(kind) => {
+                last_failure = Some(kind);
+                if attempt < 3 {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "{label}: verification request did not start after retries; last failure={last_failure:?}"
+    ))
+}
+
+async fn wait_for_verification_requested_or_failed(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    expected_target: Option<&VerificationTarget>,
+    label: &str,
+) -> Result<VerificationRequestAttempt, String> {
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for verification request"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. }) => {
+                if verification_state_flow_id(&state) != Some(request_id.sequence)
+                    || !verification_state_matches_target(&state, expected_target)
+                {
+                    continue;
+                }
+                match state {
+                    VerificationFlowState::Failed { kind, .. } => {
+                        return Ok(VerificationRequestAttempt::Failed(kind));
+                    }
+                    VerificationFlowState::Requested { request_id, .. }
+                    | VerificationFlowState::Accepted { request_id, .. }
+                    | VerificationFlowState::SasPresented { request_id, .. }
+                    | VerificationFlowState::Confirming { request_id, .. }
+                    | VerificationFlowState::Done { request_id, .. } => {
+                        return Ok(VerificationRequestAttempt::Requested(request_id));
+                    }
+                    VerificationFlowState::Idle => {}
+                }
+            }
+            CoreEvent::StateChanged(AppState {
+                e2ee_trust:
+                    matrix_desktop_state::E2eeTrustState {
+                        verification:
+                            VerificationFlowState::Failed {
+                                request_id: failed_id,
+                                kind,
+                                ..
+                            },
+                        ..
+                    },
+                ..
+            }) if failed_id == request_id.sequence => {
+                return Ok(VerificationRequestAttempt::Failed(kind));
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_verification_requested(
+    conn: &mut CoreConnection,
+    expected_target: Option<&VerificationTarget>,
+    label: &str,
+) -> Result<u64, String> {
+    if let Some(flow_id) =
+        requested_verification_flow_id(&conn.snapshot().e2ee_trust.verification, expected_target)?
+    {
+        return Ok(flow_id);
+    }
+
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for incoming verification request"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. })
+            | CoreEvent::StateChanged(AppState {
+                e2ee_trust:
+                    matrix_desktop_state::E2eeTrustState {
+                        verification: state,
+                        ..
+                    },
+                ..
+            }) => {
+                if let Some(flow_id) = requested_verification_flow_id(&state, expected_target)? {
+                    return Ok(flow_id);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn requested_verification_flow_id(
+    state: &VerificationFlowState,
+    expected_target: Option<&VerificationTarget>,
+) -> Result<Option<u64>, String> {
+    if !verification_state_matches_target(state, expected_target) {
+        return Ok(None);
+    }
+
+    match state {
+        VerificationFlowState::Requested { request_id, .. }
+        | VerificationFlowState::Accepted { request_id, .. }
+        | VerificationFlowState::SasPresented { request_id, .. }
+        | VerificationFlowState::Confirming { request_id, .. }
+        | VerificationFlowState::Done { request_id, .. } => Ok(Some(*request_id)),
+        VerificationFlowState::Failed { kind, .. } => Err(format!(
+            "verification request failed before acceptance: {kind:?}"
+        )),
+        VerificationFlowState::Idle => Ok(None),
+    }
+}
+
+async fn wait_for_verification_accepted(
+    conn: &mut CoreConnection,
+    flow_id: u64,
+    command_request_id: Option<RequestId>,
+    label: &str,
+) -> Result<(), String> {
+    if verification_state_is_at_least_accepted(&conn.snapshot().e2ee_trust.verification, flow_id)? {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for verification acceptance"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. })
+            | CoreEvent::StateChanged(AppState {
+                e2ee_trust:
+                    matrix_desktop_state::E2eeTrustState {
+                        verification: state,
+                        ..
+                    },
+                ..
+            }) => {
+                if verification_state_is_at_least_accepted(&state, flow_id)? {
+                    return Ok(());
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if command_request_id == Some(ev_id) => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn verification_state_is_at_least_accepted(
+    state: &VerificationFlowState,
+    flow_id: u64,
+) -> Result<bool, String> {
+    if verification_state_flow_id(state) != Some(flow_id) {
+        return Ok(false);
+    }
+    match state {
+        VerificationFlowState::Accepted { .. }
+        | VerificationFlowState::SasPresented { .. }
+        | VerificationFlowState::Confirming { .. }
+        | VerificationFlowState::Done { .. } => Ok(true),
+        VerificationFlowState::Failed { kind, .. } => {
+            Err(format!("verification failed before acceptance: {kind:?}"))
+        }
+        VerificationFlowState::Idle | VerificationFlowState::Requested { .. } => Ok(false),
+    }
+}
+
+async fn drive_until_both_verification_sas(
+    conn_a: &mut CoreConnection,
+    flow_id_a: u64,
+    conn_a2: &mut CoreConnection,
+    flow_id_a2: u64,
+) -> Result<(Vec<SasEmoji>, Vec<SasEmoji>), String> {
+    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+
+    loop {
+        let emojis_a = verification_state_sas(
+            &conn_a.snapshot().e2ee_trust.verification,
+            flow_id_a,
+            "A SAS presented",
+        )?;
+        let emojis_a2 = verification_state_sas(
+            &conn_a2.snapshot().e2ee_trust.verification,
+            flow_id_a2,
+            "A2 SAS presented",
+        )?;
+        if let (Some(emojis_a), Some(emojis_a2)) = (emojis_a, emojis_a2) {
+            return Ok((emojis_a, emojis_a2));
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err("timed out driving SAS presentation with SyncOnce".to_owned());
+        }
+
+        sync_once_for_qa(conn_a, "sync A while waiting for SAS").await?;
+        sync_once_for_qa(conn_a2, "sync A2 while waiting for SAS").await?;
+    }
+}
+
+fn verification_state_sas(
+    state: &VerificationFlowState,
+    flow_id: u64,
+    label: &str,
+) -> Result<Option<Vec<SasEmoji>>, String> {
+    if verification_state_flow_id(state) != Some(flow_id) {
+        return Ok(None);
+    }
+    match state {
+        VerificationFlowState::SasPresented { emojis, .. }
+        | VerificationFlowState::Confirming { emojis, .. } => Ok(Some(emojis.clone())),
+        VerificationFlowState::Done { .. } => Err(format!(
+            "{label}: verification completed before SAS was observed"
+        )),
+        VerificationFlowState::Failed { kind, .. } => {
+            Err(format!("{label}: verification failed before SAS: {kind:?}"))
+        }
+        VerificationFlowState::Idle
+        | VerificationFlowState::Requested { .. }
+        | VerificationFlowState::Accepted { .. } => Ok(None),
+    }
+}
+
+async fn wait_for_verification_done(
+    conn: &mut CoreConnection,
+    flow_id: u64,
+    command_request_id: Option<RequestId>,
+    label: &str,
+) -> Result<(), String> {
+    if verification_state_done(&conn.snapshot().e2ee_trust.verification, flow_id, label)? {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for verification completion"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. })
+            | CoreEvent::StateChanged(AppState {
+                e2ee_trust:
+                    matrix_desktop_state::E2eeTrustState {
+                        verification: state,
+                        ..
+                    },
+                ..
+            }) => {
+                if verification_state_done(&state, flow_id, label)? {
+                    return Ok(());
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if command_request_id == Some(ev_id) => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn verification_state_done(
+    state: &VerificationFlowState,
+    flow_id: u64,
+    label: &str,
+) -> Result<bool, String> {
+    if verification_state_flow_id(state) != Some(flow_id) {
+        return Ok(false);
+    }
+    match state {
+        VerificationFlowState::Done { .. } => Ok(true),
+        VerificationFlowState::Failed { kind, .. } => Err(format!(
+            "{label}: verification failed before completion: {kind:?}"
+        )),
+        _ => Ok(false),
+    }
+}
+
+fn verification_state_flow_id(state: &VerificationFlowState) -> Option<u64> {
+    match state {
+        VerificationFlowState::Idle => None,
+        VerificationFlowState::Requested { request_id, .. }
+        | VerificationFlowState::Accepted { request_id, .. }
+        | VerificationFlowState::SasPresented { request_id, .. }
+        | VerificationFlowState::Confirming { request_id, .. }
+        | VerificationFlowState::Done { request_id, .. }
+        | VerificationFlowState::Failed { request_id, .. } => Some(*request_id),
+    }
+}
+
+fn verification_state_target(state: &VerificationFlowState) -> Option<&VerificationTarget> {
+    match state {
+        VerificationFlowState::Idle => None,
+        VerificationFlowState::Requested { target, .. }
+        | VerificationFlowState::Accepted { target, .. }
+        | VerificationFlowState::SasPresented { target, .. }
+        | VerificationFlowState::Confirming { target, .. }
+        | VerificationFlowState::Done { target, .. }
+        | VerificationFlowState::Failed { target, .. } => Some(target),
+    }
+}
+
+fn verification_state_matches_target(
+    state: &VerificationFlowState,
+    expected_target: Option<&VerificationTarget>,
+) -> bool {
+    expected_target.is_none_or(|target| verification_state_target(state) == Some(target))
 }
 
 // ---------------------------------------------------------------------------
@@ -3073,6 +4178,10 @@ mod tests {
             QaScenario::from_env_value("restore_cleanup").unwrap(),
             QaScenario::RestoreCleanup
         );
+        assert_eq!(
+            QaScenario::from_env_value("e2ee_trust").unwrap(),
+            QaScenario::E2eeTrust
+        );
     }
 
     #[test]
@@ -3094,6 +4203,7 @@ mod tests {
             QaScenario::Thread,
             QaScenario::EditRedactSearch,
             QaScenario::RestoreCleanup,
+            QaScenario::E2eeTrust,
         ] {
             scenario_preflight_error(scenario).unwrap();
         }
@@ -3549,11 +4659,13 @@ mod tests {
 
         assert!(QaScenario::RoomSpace.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::RoomSpace.should_run_stage(QaStage::RoomSpace));
+        assert!(!QaScenario::RoomSpace.should_run_stage(QaStage::E2eeTrust));
         assert!(!QaScenario::RoomSpace.should_run_stage(QaStage::Timeline));
 
         assert!(QaScenario::Timeline.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::Timeline.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::Timeline.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::Timeline.should_run_stage(QaStage::E2eeTrust));
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::Reply));
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::EditRedactSearch));
 
@@ -3573,6 +4685,7 @@ mod tests {
 
         assert!(QaScenario::All.should_run_stage(QaStage::Safety));
         assert!(QaScenario::All.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::All.should_run_stage(QaStage::E2eeTrust));
         assert!(QaScenario::All.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
@@ -3596,6 +4709,7 @@ mod tests {
                 "thread_recv=ok",
                 "thread_paginate=end_reached",
                 "edit_redact_search=ok",
+                "e2ee_trust=ok",
                 "restore_cleanup=ok",
             ][..]
         );
@@ -3668,6 +4782,15 @@ mod tests {
             final_tokens_for_scenario(QaScenario::All),
             implemented_final_tokens()
         );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::E2eeTrust),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "e2ee_trust=ok",
+                "restore_cleanup=ok",
+            ]
+        );
     }
 
     #[test]
@@ -3685,6 +4808,7 @@ mod tests {
                 "thread_recv=ok",
                 "thread_paginate=end_reached",
                 "edit_redact_search=ok",
+                "e2ee_trust=ok",
                 "restore_cleanup=ok",
             ][..]
         );

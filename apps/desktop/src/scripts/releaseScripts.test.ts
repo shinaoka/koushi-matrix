@@ -215,7 +215,7 @@ describe("desktop release scripts", () => {
     );
 
     expect(packageJson.scripts?.["qa:headless-basic:local"]).toBe(
-      "node ../../scripts/desktop-headless-local-qa.mjs --run --server=both --core --scenario=all"
+      "node ../../scripts/desktop-headless-local-qa.mjs --run --server=both --core --scenario=all --timeout-ms=240000"
     );
     expect(packageJson.scripts?.["qa:headless-basic:real"]).toBe(
       "node ../../scripts/desktop-real-homeserver-qa.mjs --run --scenario=space_compat"

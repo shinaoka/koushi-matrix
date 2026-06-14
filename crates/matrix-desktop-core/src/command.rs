@@ -45,7 +45,7 @@ impl CoreCommand {
                 | AccountCommand::AcceptVerification { request_id, .. }
                 | AccountCommand::ConfirmSasVerification { request_id, .. }
                 | AccountCommand::CancelVerification { request_id, .. }
-                | AccountCommand::BootstrapCrossSigning { request_id }
+                | AccountCommand::BootstrapCrossSigning { request_id, .. }
                 | AccountCommand::EnableKeyBackup { request_id }
                 | AccountCommand::RestoreKeyBackup { request_id, .. }
                 | AccountCommand::ResetIdentity { request_id }
@@ -271,6 +271,7 @@ pub enum AccountCommand {
     },
     BootstrapCrossSigning {
         request_id: RequestId,
+        auth: Option<matrix_desktop_state::AuthSecret>,
     },
     EnableKeyBackup {
         request_id: RequestId,
@@ -285,6 +286,7 @@ pub enum AccountCommand {
     },
     SubmitIdentityResetAuth {
         request_id: RequestId,
+        flow_id: u64,
         request: IdentityResetAuthRequest,
     },
     Logout {
@@ -379,9 +381,10 @@ impl fmt::Debug for AccountCommand {
                 .field("flow_id", flow_id)
                 .field("reason", reason)
                 .finish(),
-            Self::BootstrapCrossSigning { request_id } => formatter
+            Self::BootstrapCrossSigning { request_id, auth } => formatter
                 .debug_struct("BootstrapCrossSigning")
                 .field("request_id", request_id)
+                .field("auth", auth)
                 .finish(),
             Self::EnableKeyBackup { request_id } => formatter
                 .debug_struct("EnableKeyBackup")
@@ -403,10 +406,12 @@ impl fmt::Debug for AccountCommand {
                 .finish(),
             Self::SubmitIdentityResetAuth {
                 request_id,
+                flow_id,
                 request,
             } => formatter
                 .debug_struct("SubmitIdentityResetAuth")
                 .field("request_id", request_id)
+                .field("flow_id", flow_id)
                 .field("request", request)
                 .finish(),
             Self::Logout { request_id } => formatter

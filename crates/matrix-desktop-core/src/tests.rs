@@ -67,9 +67,14 @@ fn secret_bearing_commands_redact_debug() {
     });
     let identity_reset_auth = CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
         request_id: fake_request_id(),
+        flow_id: 42,
         request: IdentityResetAuthRequest::UiaaPassword {
             password: AuthSecret::new(PASSWORD),
         },
+    });
+    let bootstrap_cross_signing = CoreCommand::Account(AccountCommand::BootstrapCrossSigning {
+        request_id: fake_request_id(),
+        auth: Some(AuthSecret::new(PASSWORD)),
     });
     let restore_key_backup = CoreCommand::Account(AccountCommand::RestoreKeyBackup {
         request_id: fake_request_id(),
@@ -113,6 +118,7 @@ fn secret_bearing_commands_redact_debug() {
         (&login, vec![PASSWORD, "alice-login-name", "Alice Laptop"]),
         (&recovery, vec![RECOVERY]),
         (&identity_reset_auth, vec![PASSWORD]),
+        (&bootstrap_cross_signing, vec![PASSWORD]),
         (&restore_key_backup, vec![RECOVERY, "backup-version-1"]),
         (&send, vec![BODY]),
         (&toggle_reaction, vec!["👍", "$evt"]),
@@ -158,7 +164,10 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
             flow_id,
             reason: VerificationCancelReason::Mismatch,
         }),
-        CoreCommand::Account(AccountCommand::BootstrapCrossSigning { request_id }),
+        CoreCommand::Account(AccountCommand::BootstrapCrossSigning {
+            request_id,
+            auth: None,
+        }),
         CoreCommand::Account(AccountCommand::EnableKeyBackup { request_id }),
         CoreCommand::Account(AccountCommand::RestoreKeyBackup {
             request_id,
@@ -170,6 +179,7 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
         CoreCommand::Account(AccountCommand::ResetIdentity { request_id }),
         CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
             request_id,
+            flow_id,
             request: IdentityResetAuthRequest::OAuthApproved,
         }),
     ];
@@ -375,7 +385,10 @@ async fn e2ee_trust_account_command_projects_pending_state_before_routing() {
     let request_id = connection.next_request_id();
     connection
         .command(CoreCommand::Account(
-            AccountCommand::BootstrapCrossSigning { request_id },
+            AccountCommand::BootstrapCrossSigning {
+                request_id,
+                auth: None,
+            },
         ))
         .await
         .expect("submit bootstrap cross-signing");
