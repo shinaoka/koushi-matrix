@@ -4,6 +4,14 @@ Desktop Matrix client prototype built toward Tauri, React, and matrix-rust-sdk.
 
 Current status: pre-login desktop shell. The repository has pure Rust state/search/key crates, a no-network fake backend, a Tauri v2 + React app shell, and a static Slack-like reference shell.
 
+## Prerequisites
+
+Initialize the vendored Matrix SDK submodule before running Cargo commands:
+
+```bash
+git submodule update --init --recursive
+```
+
 ## Verify
 
 ```bash
