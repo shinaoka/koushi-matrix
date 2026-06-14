@@ -37,6 +37,15 @@ npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+`npm run build` validates and builds the React/Vite web shell into `dist/`;
+it does not produce a native Tauri desktop binary. Building the native app
+requires the Rust, Cargo, and Tauri platform toolchain for your OS:
+
+```bash
+cd apps/desktop
+npm run tauri build
+```
+
 ## Open The Desktop Shell
 
 React/Tauri app in browser fallback mode:
