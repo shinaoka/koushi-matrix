@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" font-family="Inter, system-ui, sans-serif">
+  <rect width="1440" height="900" fill="#0E1726"/>
+
+  <!-- ============ COL 1: SPACE RAIL (72px, #0A111F) ============ -->
+  <rect x="0" y="0" width="72" height="900" fill="#0A111F"/>
+  <rect x="14" y="16" width="44" height="44" rx="12" fill="#5C8DF6"/>
+  <text x="36" y="44" font-size="16" font-weight="800" fill="#0A111F" text-anchor="middle">⌂</text>
+  <rect x="14" y="72" width="44" height="44" rx="14" fill="#1B2942"/>
+  <text x="36" y="100" font-size="13" font-weight="800" fill="#A9B6CC" text-anchor="middle">SW</text>
+  <circle cx="58" cy="74" r="9" fill="#F2575C"/><text x="58" y="78" font-size="10" font-weight="800" fill="#0A111F" text-anchor="middle">3</text>
+  <rect x="14" y="128" width="44" height="44" rx="14" fill="#1B2942"/>
+  <text x="36" y="156" font-size="13" font-weight="800" fill="#A9B6CC" text-anchor="middle">T</text>
+  <rect x="14" y="184" width="44" height="44" rx="14" fill="none" stroke="#2A3650" stroke-dasharray="4 4"/>
+  <text x="36" y="213" font-size="22" font-weight="400" fill="#6B7B96" text-anchor="middle">+</text>
+  <circle cx="36" cy="824" r="18" fill="#5C8DF6"/><text x="36" y="829" font-size="12" font-weight="800" fill="#0A111F" text-anchor="middle">HA</text>
+  <circle cx="48" cy="836" r="5.5" fill="#34B988" stroke="#0A111F" stroke-width="2"/>
+  <text x="36" y="872" font-size="16" fill="#6B7B96" text-anchor="middle">⚙</text>
+
+  <!-- ============ COL 2: ROOM LIST (318px, #111A2B) ============ -->
+  <rect x="72" y="0" width="318" height="900" fill="#111A2B"/>
+  <line x1="390" y1="0" x2="390" y2="900" stroke="#1E2A40"/>
+  <text x="90" y="40" font-size="19" font-weight="800" fill="#E6ECF5">Synthetic Workspace</text>
+  <circle cx="368" cy="34" r="14" fill="#5C8DF6"/><text x="368" y="39" font-size="10" font-weight="800" fill="#0A111F" text-anchor="middle">HA</text>
+  <line x1="72" y1="62" x2="390" y2="62" stroke="#1E2A40"/>
+  <rect x="90" y="76" width="284" height="34" rx="8" fill="#0E1726" stroke="#1E2A40"/>
+  <text x="106" y="98" font-size="13" fill="#5B6B82">🔍  Search people and rooms</text>
+
+  <text x="92" y="142" font-size="11" font-weight="800" fill="#6B7B96" letter-spacing="0.6">FAVOURITES</text>
+  <text x="374" y="142" font-size="14" fill="#5B6B82" text-anchor="end">+</text>
+  <circle cx="106" cy="166" r="13" fill="#2A3650"/>
+  <text x="130" y="164" font-size="13.5" font-weight="650" fill="#E6ECF5">Design</text>
+  <text x="130" y="180" font-size="11.5" fill="#5B6B82">Member 1: shipping the blue theme…</text>
+  <text x="374" y="162" font-size="10.5" fill="#5B6B82" text-anchor="end">12:40</text>
+
+  <text x="92" y="214" font-size="11" font-weight="800" fill="#6B7B96" letter-spacing="0.6">PEOPLE</text>
+  <text x="374" y="214" font-size="14" fill="#5B6B82" text-anchor="end">+</text>
+  <circle cx="106" cy="238" r="13" fill="#2A3650"/><circle cx="116" cy="246" r="4.5" fill="#34B988" stroke="#111A2B" stroke-width="2"/>
+  <text x="130" y="242" font-size="13.5" font-weight="650" fill="#E6ECF5">Member 1</text>
+
+  <text x="92" y="288" font-size="11" font-weight="800" fill="#6B7B96" letter-spacing="0.6">ROOMS</text>
+  <text x="374" y="288" font-size="14" fill="#5B6B82" text-anchor="end">+</text>
+  <rect x="80" y="300" width="302" height="34" rx="8" fill="#1B2942"/>
+  <rect x="80" y="302" width="3" height="30" rx="2" fill="#5C8DF6"/>
+  <text x="100" y="322" font-size="14" font-weight="750" fill="#9CC0FB"># general</text>
+  <text x="100" y="360" font-size="14" font-weight="650" fill="#E6ECF5"># random</text>
+  <rect x="352" y="348" width="24" height="18" rx="9" fill="#5C8DF6"/><text x="364" y="361" font-size="11" font-weight="800" fill="#0A111F" text-anchor="middle">3</text>
+  <text x="100" y="396" font-size="14" font-weight="650" fill="#E6ECF5"># alerts</text>
+  <circle cx="366" cy="390" r="6" fill="#F2575C"/>
+
+  <text x="92" y="446" font-size="11" font-weight="800" fill="#6B7B96" letter-spacing="0.6">▸ LOW PRIORITY</text>
+
+  <line x1="72" y1="852" x2="390" y2="852" stroke="#1E2A40"/>
+  <text x="100" y="880" font-size="13" fill="#93A0B4">🧭  Explore rooms</text>
+  <text x="300" y="880" font-size="13" fill="#93A0B4">⚙  Settings</text>
+
+  <!-- ============ COL 3: TIMELINE (#0E1726) ============ -->
+  <text x="412" y="32" font-size="18" font-weight="800" fill="#E6ECF5"># general</text>
+  <text x="412" y="50" font-size="12" fill="#5B6B82">Synthetic room topic · 8 members</text>
+  <text x="930" y="40" font-size="15" fill="#93A0B4">👥</text>
+  <text x="970" y="40" font-size="15" fill="#93A0B4">🔍</text>
+  <text x="1012" y="40" font-size="15" fill="#93A0B4">⧉</text>
+  <line x1="390" y1="62" x2="1050" y2="62" stroke="#1E2A40"/>
+
+  <circle cx="430" cy="110" r="18" fill="#2A3650"/>
+  <text x="462" y="106" font-size="13.5" font-weight="800" fill="#E6ECF5">Member 1 <tspan font-size="11" font-weight="400" fill="#5B6B82">12:38</tspan></text>
+  <text x="462" y="128" font-size="13.5" fill="#C7D2E6">Started the blue theme + dark mode pass.</text>
+  <circle cx="430" cy="176" r="18" fill="#2A3650"/>
+  <text x="462" y="172" font-size="13.5" font-weight="800" fill="#E6ECF5">Member 2 <tspan font-size="11" font-weight="400" fill="#5B6B82">12:40</tspan></text>
+  <text x="462" y="194" font-size="13.5" fill="#C7D2E6">Menus now follow Element: Favourites / People / Rooms.</text>
+  <rect x="462" y="206" width="52" height="24" rx="12" fill="#1B2942" stroke="#2A3F66"/><text x="488" y="222" font-size="12" fill="#9CC0FB" text-anchor="middle">👍 2</text>
+
+  <rect x="410" y="772" width="620" height="104" rx="12" fill="#0B1422" stroke="#1E2A40"/>
+  <g font-size="13" fill="#93A0B4" font-weight="700">
+    <text x="428" y="798">B</text><text x="452" y="798" font-style="italic">I</text><text x="476" y="798">🔗</text><text x="504" y="798">≣</text><text x="528" y="798">&lt;/&gt;</text>
+  </g>
+  <text x="428" y="832" font-size="13.5" fill="#5B6B82">Message #general</text>
+  <g font-size="14" fill="#93A0B4"><text x="428" y="862">＋</text><text x="456" y="862">@</text><text x="484" y="862">☺</text></g>
+  <rect x="966" y="844" width="48" height="24" rx="8" fill="#5C8DF6"/><text x="990" y="860" font-size="12" font-weight="800" fill="#0A111F" text-anchor="middle">Send</text>
+
+  <!-- ============ COL 4: RIGHT PANEL (#111A2B) ============ -->
+  <rect x="1050" y="0" width="390" height="900" fill="#111A2B"/>
+  <line x1="1050" y1="0" x2="1050" y2="900" stroke="#1E2A40"/>
+  <text x="1070" y="40" font-size="16" font-weight="800" fill="#E6ECF5">Room info</text>
+  <text x="1416" y="40" font-size="16" fill="#5B6B82" text-anchor="end">✕</text>
+  <line x1="1050" y1="62" x2="1440" y2="62" stroke="#1E2A40"/>
+  <circle cx="1245" cy="130" r="34" fill="#2A3650"/>
+  <text x="1245" y="190" font-size="16" font-weight="800" fill="#E6ECF5" text-anchor="middle"># general</text>
+  <text x="1245" y="212" font-size="12" fill="#5B6B82" text-anchor="middle">8 members · synthetic room</text>
+  <rect x="1070" y="244" width="160" height="30" rx="8" fill="#1B2942"/><text x="1150" y="264" font-size="12.5" font-weight="700" fill="#9CC0FB" text-anchor="middle">Info</text>
+  <text x="1300" y="264" font-size="12.5" fill="#5B6B82" text-anchor="middle">Members</text>
+  <rect x="1070" y="292" width="350" height="1" fill="#1E2A40"/>
+  <text x="1070" y="320" font-size="12" fill="#93A0B4">Topic, files, threads, and search land here</text>
+  <text x="1070" y="338" font-size="12" fill="#93A0B4">(also hosts Thread / Search / Settings panes).</text>
+
+  <g font-size="10.5" fill="#5B6B82">
+    <text x="6" y="894">rail 72</text>
+    <text x="200" y="894" text-anchor="middle">room list 318 (Element sections)</text>
+    <text x="700" y="894" text-anchor="middle">timeline 1fr</text>
+    <text x="1245" y="894" text-anchor="middle">right panel 390 (collapsible)</text>
+  </g>
+</svg>
