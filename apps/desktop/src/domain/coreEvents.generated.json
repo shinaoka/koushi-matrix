@@ -1,4 +1,16 @@
 {
+  "accountProfileUpdated": {
+    "event": {
+      "ProfileUpdated": {
+        "account_key": "@u:example.test",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Account"
+  },
   "accountSavedSessionsListed": {
     "event": {
       "SavedSessionsListed": {

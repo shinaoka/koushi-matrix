@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
 import { UserSettingsPanel } from "./UserSettingsPanel";
-import type { E2eeTrustState } from "../domain/types";
+import type { E2eeTrustState, ProfileState } from "../domain/types";
 
 describe("UserSettingsPanel", () => {
   const settings = {
@@ -50,6 +50,23 @@ describe("UserSettingsPanel", () => {
     identity_reset: { kind: "idle" },
     devices: []
   };
+  const profile: ProfileState = {
+    own: {
+      display_name: "Demo User",
+      avatar: {
+        mxc_uri: "mxc://matrix.org/avatar",
+        thumbnail: {
+          kind: "ready",
+          source_url: "asset://profile-avatar",
+          width: 64,
+          height: 64,
+          mime_type: "image/png"
+        }
+      }
+    },
+    users: {},
+    update: { kind: "idle" }
+  };
   const handlers = {
     onAcceptVerification: () => undefined,
     onBootstrapCrossSigning: () => undefined,
@@ -58,6 +75,8 @@ describe("UserSettingsPanel", () => {
     onEnableKeyBackup: () => undefined,
     onOpenKeyboardSettings: () => undefined,
     onResetIdentity: () => undefined,
+    onSetAvatar: () => undefined,
+    onSetDisplayName: () => undefined,
     onSubmitIdentityResetOAuth: () => undefined,
     onSubmitIdentityResetPassword: () => undefined,
     onSwitchAccount: () => undefined,
@@ -85,6 +104,7 @@ describe("UserSettingsPanel", () => {
             device_id: "SECONDDEVICE"
           }
         ]}
+        profile={profile}
         settings={settings}
         {...handlers}
       />
@@ -97,6 +117,10 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Switch");
     expect(markup).toContain("Keyboard");
     expect(markup).toContain("Session");
+    expect(markup).toContain("Profile");
+    expect(markup).toContain("Demo User");
+    expect(markup).toContain("asset://profile-avatar");
+    expect(markup).toContain("Upload");
     expect(markup).toContain("Homeserver");
     expect(markup).toContain("Device");
     expect(markup).toContain("Local store");
@@ -133,6 +157,7 @@ describe("UserSettingsPanel", () => {
             device_id: "SECONDDEVICE"
           }
         ]}
+        profile={{ own: { display_name: null, avatar: null }, users: {}, update: { kind: "idle" } }}
         settings={settings}
         {...handlers}
       />

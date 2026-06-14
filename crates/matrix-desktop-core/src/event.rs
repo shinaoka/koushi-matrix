@@ -147,6 +147,10 @@ pub enum AccountEvent {
         request_id: RequestId,
         account_key: AccountKey,
     },
+    ProfileUpdated {
+        request_id: RequestId,
+        account_key: AccountKey,
+    },
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

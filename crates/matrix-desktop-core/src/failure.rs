@@ -24,6 +24,9 @@ pub enum CoreFailure {
     TimelineOperationFailed {
         kind: TimelineFailureKind,
     },
+    ProfileOperationFailed {
+        kind: ProfileFailureKind,
+    },
     SearchFailed {
         kind: SearchFailureKind,
     },
@@ -73,6 +76,14 @@ pub enum TimelineFailureKind {
     Timeout,
     Sdk,
     QueueOverflow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ProfileFailureKind {
+    Forbidden,
+    Network,
+    InvalidMimeType,
+    Sdk,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

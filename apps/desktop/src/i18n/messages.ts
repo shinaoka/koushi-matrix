@@ -139,6 +139,14 @@ export type MessageId =
   | "settings.matrixAccount"
   | "settings.notRestored"
   | "settings.preferences"
+  | "settings.profile"
+  | "settings.profileAvatar"
+  | "settings.profileDisplayName"
+  | "settings.profileDisplayNamePlaceholder"
+  | "settings.profileSavingAvatar"
+  | "settings.profileSavingDisplayName"
+  | "settings.profileUpdate"
+  | "settings.profileUploadAvatar"
   | "settings.searchIndex"
   | "settings.security"
   | "settings.securityPrivacy"
@@ -565,6 +573,14 @@ const en: Catalog = {
   "settings.matrixAccount": "Matrix account",
   "settings.notRestored": "Not restored",
   "settings.preferences": "Preferences",
+  "settings.profile": "Profile",
+  "settings.profileAvatar": "Avatar",
+  "settings.profileDisplayName": "Display name",
+  "settings.profileDisplayNamePlaceholder": "Display name",
+  "settings.profileSavingAvatar": "Uploading",
+  "settings.profileSavingDisplayName": "Saving",
+  "settings.profileUpdate": "Update",
+  "settings.profileUploadAvatar": "Upload",
   "settings.searchIndex": "Encrypted local index",
   "settings.security": "Security",
   "settings.securityPrivacy": "Security & Privacy",

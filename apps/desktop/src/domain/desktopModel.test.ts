@@ -27,6 +27,7 @@ describe("desktop model", () => {
       {
         space_id: "!space-a:example.invalid",
         display_name: "Alpha",
+        avatar: null,
         child_room_ids: ["!room-a:example.invalid", "!dm-a:example.invalid"]
       }
     ];
@@ -34,6 +35,7 @@ describe("desktop model", () => {
       {
         room_id: "!room-a:example.invalid",
         display_name: "Alpha room",
+        avatar: null,
         is_dm: false,
         parent_space_ids: ["!space-a:example.invalid"],
         unread_count: 5
@@ -41,6 +43,7 @@ describe("desktop model", () => {
       {
         room_id: "!global-room:example.invalid",
         display_name: "Global room",
+        avatar: null,
         is_dm: false,
         parent_space_ids: [],
         unread_count: 2
@@ -48,6 +51,7 @@ describe("desktop model", () => {
       {
         room_id: "!dm-a:example.invalid",
         display_name: "Direct chat",
+        avatar: null,
         is_dm: true,
         parent_space_ids: ["!space-a:example.invalid"],
         unread_count: 3

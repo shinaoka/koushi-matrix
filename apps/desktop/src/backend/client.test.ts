@@ -76,6 +76,20 @@ describe("TauriDesktopApi", () => {
     expect(invoke).toHaveBeenCalledWith("submit_identity_reset_oauth", { flowId: 45 });
   });
 
+  test("passes profile actions to Rust-owned account commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.setDisplayName("Alice");
+    await api.setAvatar("image/png", [1, 2, 3, 4]);
+
+    expect(invoke).toHaveBeenCalledWith("set_display_name", { displayName: "Alice" });
+    expect(invoke).toHaveBeenCalledWith("set_avatar", {
+      mimeType: "image/png",
+      bytes: [1, 2, 3, 4]
+    });
+  });
+
   test("passes invite and DM actions to Rust-owned room commands", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

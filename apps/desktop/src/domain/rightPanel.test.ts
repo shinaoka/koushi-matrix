@@ -122,6 +122,11 @@ function snapshotForPanelMode(
         font_asset: "systemFallback",
         emoji_asset: "systemFallback"
       },
+      profile: {
+        own: { display_name: null, avatar: null },
+        users: {},
+        update: { kind: "idle" }
+      },
       sync: "stopped",
       navigation: { active_space_id: null, active_room_id: null },
       spaces: [],

@@ -32,15 +32,16 @@ use futures_util::StreamExt;
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
-    AppAction, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType, IdentityResetState,
-    LoginRequest, PresenceKind, RecoveryMethod, RecoveryRequest, SessionInfo,
-    TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    AppAction, AvatarImage, AvatarThumbnailState, CrossSigningStatus, E2eeRecoveryState,
+    IdentityResetAuthType, IdentityResetState, LoginRequest, OwnProfile, PresenceKind,
+    RecoveryMethod, RecoveryRequest, SessionInfo, TrustOperationFailureKind,
+    VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
 use crate::event::{AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent};
-use crate::failure::{CoreFailure, LoginFailureKind};
+use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId};
 use crate::room::{RoomActorHandle, RoomMessage};
 use crate::search::SearchActorHandle;
@@ -589,6 +590,18 @@ impl AccountActor {
             } => {
                 self.handle_set_presence(request_id, presence).await;
             }
+            AccountCommand::SetDisplayName {
+                request_id,
+                display_name,
+            } => {
+                self.handle_set_display_name(request_id, display_name).await;
+            }
+            AccountCommand::SetAvatar {
+                request_id,
+                request,
+            } => {
+                self.handle_set_avatar(request_id, request).await;
+            }
             AccountCommand::RequestVerification { request_id, target } => {
                 self.handle_request_verification(request_id, target).await;
             }
@@ -723,6 +736,90 @@ impl AccountActor {
             user_id,
             presence,
         }));
+    }
+
+    async fn handle_set_display_name(&self, request_id: RequestId, display_name: Option<String>) {
+        let Some(session) = &self.session else {
+            self.send_actions(vec![AppAction::ProfileUpdateFailed {
+                request_id: request_id.sequence,
+                message: "profile update failed".to_owned(),
+            }])
+            .await;
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match matrix_desktop_sdk::set_display_name(session, display_name.as_deref()).await {
+            Ok(profile) => {
+                let profile = map_matrix_own_profile(profile);
+                self.send_actions(vec![AppAction::ProfileUpdateSucceeded {
+                    request_id: request_id.sequence,
+                    profile,
+                }])
+                .await;
+                self.emit(CoreEvent::Account(AccountEvent::ProfileUpdated {
+                    request_id,
+                    account_key: AccountKey(session.info.user_id.clone()),
+                }));
+            }
+            Err(error) => {
+                self.send_actions(vec![AppAction::ProfileUpdateFailed {
+                    request_id: request_id.sequence,
+                    message: "profile update failed".to_owned(),
+                }])
+                .await;
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::ProfileOperationFailed {
+                        kind: classify_profile_error(&error),
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_set_avatar(
+        &self,
+        request_id: RequestId,
+        request: crate::command::SetAvatarRequest,
+    ) {
+        let Some(session) = &self.session else {
+            self.send_actions(vec![AppAction::ProfileUpdateFailed {
+                request_id: request_id.sequence,
+                message: "profile update failed".to_owned(),
+            }])
+            .await;
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match matrix_desktop_sdk::set_avatar(session, &request.mime_type, request.bytes).await {
+            Ok(profile) => {
+                let profile = map_matrix_own_profile(profile);
+                self.send_actions(vec![AppAction::ProfileUpdateSucceeded {
+                    request_id: request_id.sequence,
+                    profile,
+                }])
+                .await;
+                self.emit(CoreEvent::Account(AccountEvent::ProfileUpdated {
+                    request_id,
+                    account_key: AccountKey(session.info.user_id.clone()),
+                }));
+            }
+            Err(error) => {
+                self.send_actions(vec![AppAction::ProfileUpdateFailed {
+                    request_id: request_id.sequence,
+                    message: "profile update failed".to_owned(),
+                }])
+                .await;
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::ProfileOperationFailed {
+                        kind: classify_profile_error(&error),
+                    },
+                );
+            }
+        }
     }
 
     async fn handle_accept_verification(&mut self, request_id: RequestId, flow_id: u64) {
@@ -1493,8 +1590,14 @@ impl AccountActor {
         // (store bootstrap invariant: sync only on the store-backed session).
         self.spawn_sync_actor(session_arc.clone());
 
-        // Project login success through the reducer (session → Ready).
-        self.reduce(vec![AppAction::LoginSucceeded(info)]);
+        // Project login success through the reducer (session → Ready), then
+        // populate the Rust-owned own-profile state if the homeserver returns
+        // it. Profile fetch failure is non-fatal to login.
+        let mut actions = vec![AppAction::LoginSucceeded(info)];
+        if let Some(profile_action) = own_profile_action_from_session(&session_arc).await {
+            actions.push(profile_action);
+        }
+        self.reduce(actions);
 
         // Emit domain event carrying the request_id for command correlation.
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
@@ -1676,7 +1779,11 @@ impl AccountActor {
 
                 // Spawn the SyncActor for the newly restored store-backed session.
                 self.spawn_sync_actor(session_arc.clone());
-                self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
+                let mut actions = vec![AppAction::RestoreSessionSucceeded(info)];
+                if let Some(profile_action) = own_profile_action_from_session(&session_arc).await {
+                    actions.push(profile_action);
+                }
+                self.reduce(actions);
 
                 self.emit(CoreEvent::Account(match outcome {
                     RestoreOutcome::Restored => AccountEvent::SessionRestored {
@@ -1912,6 +2019,10 @@ impl AccountActor {
     fn reduce(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.try_send(actions);
     }
+
+    async fn send_actions(&self, actions: Vec<AppAction>) {
+        let _ = self.action_tx.send(actions).await;
+    }
 }
 
 fn session_info_from_key_id(key_id: &SessionKeyId) -> SessionInfo {
@@ -1973,6 +2084,35 @@ async fn run_recovery_state_observation<S>(
                 }
             }
         }
+    }
+}
+
+async fn own_profile_action_from_session(session: &MatrixClientSession) -> Option<AppAction> {
+    matrix_desktop_sdk::get_own_profile(session)
+        .await
+        .ok()
+        .map(map_matrix_own_profile)
+        .map(|profile| AppAction::OwnProfileUpdated { profile })
+}
+
+fn map_matrix_own_profile(profile: matrix_desktop_sdk::MatrixOwnProfile) -> OwnProfile {
+    OwnProfile {
+        display_name: profile.display_name,
+        avatar: profile.avatar_mxc_uri.map(|mxc_uri| AvatarImage {
+            mxc_uri,
+            thumbnail: AvatarThumbnailState::NotRequested,
+        }),
+    }
+}
+
+fn classify_profile_error(error: &matrix_desktop_sdk::MatrixProfileError) -> ProfileFailureKind {
+    match error.failure_kind() {
+        matrix_desktop_sdk::MatrixProfileFailureKind::Forbidden => ProfileFailureKind::Forbidden,
+        matrix_desktop_sdk::MatrixProfileFailureKind::Network => ProfileFailureKind::Network,
+        matrix_desktop_sdk::MatrixProfileFailureKind::InvalidMimeType => {
+            ProfileFailureKind::InvalidMimeType
+        }
+        matrix_desktop_sdk::MatrixProfileFailureKind::Sdk => ProfileFailureKind::Sdk,
     }
 }
 

@@ -795,6 +795,7 @@ fn room_summary(room_id: &str) -> RoomSummary {
     RoomSummary {
         room_id: room_id.to_owned(),
         display_name: "QA Room".to_owned(),
+        avatar: None,
         is_dm: false,
         unread_count: 0,
         notification_count: 0,

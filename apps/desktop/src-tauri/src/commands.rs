@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use matrix_desktop_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
     MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand,
-    SearchScope, SyncCommand, TimelineCommand, TimelineKey, TimelineKind, UploadMediaKind,
-    UploadMediaRequest,
+    SearchScope, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
+    UploadMediaKind, UploadMediaRequest,
 };
 use matrix_desktop_state::{
     AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
@@ -956,6 +956,43 @@ pub async fn set_presence(
 }
 
 #[tauri::command]
+pub async fn set_display_name(
+    display_name: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_display_name_command(request_id, display_name),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_avatar(
+    mime_type: String,
+    bytes: Vec<u8>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if bytes.is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_avatar_command(request_id, mime_type, bytes),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn leave_room(
     room_id: String,
     app: AppHandle,
@@ -1817,6 +1854,27 @@ pub(crate) fn build_set_presence_command(
     })
 }
 
+pub(crate) fn build_set_display_name_command(
+    request_id: matrix_desktop_core::RequestId,
+    display_name: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SetDisplayName {
+        request_id,
+        display_name,
+    })
+}
+
+pub(crate) fn build_set_avatar_command(
+    request_id: matrix_desktop_core::RequestId,
+    mime_type: String,
+    bytes: Vec<u8>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SetAvatar {
+        request_id,
+        request: SetAvatarRequest { mime_type, bytes },
+    })
+}
+
 pub(crate) fn build_leave_room_command(
     request_id: matrix_desktop_core::RequestId,
     room_id: String,
@@ -2269,12 +2327,12 @@ mod tests {
         build_paginate_timeline_backwards_command, build_redact_message_command,
         build_reset_identity_command, build_restart_sync_command, build_select_room_command,
         build_select_space_command, build_send_read_receipt_command, build_send_reply_command,
-        build_send_text_command, build_send_thread_reply_command, build_set_fully_read_command,
-        build_set_presence_command, build_set_space_child_command,
-        build_set_thread_composer_draft_command, build_set_typing_command,
-        build_start_direct_message_command, build_submit_identity_reset_oauth_command,
-        build_submit_identity_reset_password_command, build_submit_login_command,
-        build_submit_recovery_command, build_submit_search_command,
+        build_send_text_command, build_send_thread_reply_command, build_set_avatar_command,
+        build_set_display_name_command, build_set_fully_read_command, build_set_presence_command,
+        build_set_space_child_command, build_set_thread_composer_draft_command,
+        build_set_typing_command, build_start_direct_message_command,
+        build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
+        build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
         build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
@@ -2356,6 +2414,7 @@ mod tests {
             RoomSummary {
                 room_id: "!room1:example.org".to_owned(),
                 display_name: "Room 1".to_owned(),
+                avatar: None,
                 is_dm: false,
                 unread_count: 0,
                 notification_count: 0,
@@ -2365,6 +2424,7 @@ mod tests {
             RoomSummary {
                 room_id: "!room2:example.org".to_owned(),
                 display_name: "Room 2".to_owned(),
+                avatar: None,
                 is_dm: false,
                 unread_count: 0,
                 notification_count: 0,
@@ -2815,6 +2875,53 @@ mod tests {
             }) => {
                 assert_eq!(request_id, fake_request_id(31));
                 assert_eq!(presence, PresenceKind::Away);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_display_name_command(
+            fake_request_id(32),
+            Some("Private Display".to_owned()),
+        ) {
+            CoreCommand::Account(AccountCommand::SetDisplayName {
+                request_id,
+                display_name,
+            }) => {
+                assert_eq!(request_id, fake_request_id(32));
+                assert_eq!(display_name.as_deref(), Some("Private Display"));
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Account(AccountCommand::SetDisplayName {
+                        request_id,
+                        display_name,
+                    })
+                );
+                assert!(!debug.contains("Private Display"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_avatar_command(
+            fake_request_id(33),
+            "image/png".to_owned(),
+            vec![9, 8, 7, 6],
+        ) {
+            CoreCommand::Account(AccountCommand::SetAvatar {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(33));
+                assert_eq!(request.mime_type, "image/png");
+                assert_eq!(request.bytes, vec![9, 8, 7, 6]);
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Account(AccountCommand::SetAvatar {
+                        request_id,
+                        request,
+                    })
+                );
+                assert!(debug.contains("image/png"), "{debug}");
+                assert!(!debug.contains("9, 8, 7, 6"), "{debug}");
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -3400,6 +3507,37 @@ mod tests {
                 "pub async fn submit_identity_reset_oauth",
                 "build_submit_identity_reset_oauth_command",
                 "commands::submit_identity_reset_oauth",
+            ),
+        ] {
+            assert!(
+                commands_source.contains(command_name),
+                "Tauri command should expose {command_name}"
+            );
+            assert!(
+                commands_source.contains(route_name),
+                "Tauri command should route through {route_name}"
+            );
+            assert!(
+                lib_source.contains(registration_name),
+                "Tauri command should register {registration_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_tauri_command_contracts_are_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        for (command_name, route_name, registration_name) in [
+            (
+                "pub async fn set_display_name",
+                "build_set_display_name_command",
+                "commands::set_display_name",
+            ),
+            (
+                "pub async fn set_avatar",
+                "build_set_avatar_command",
+                "commands::set_avatar",
             ),
         ] {
             assert!(

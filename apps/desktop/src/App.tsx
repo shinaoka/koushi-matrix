@@ -722,6 +722,18 @@ export function App() {
     setSnapshot(await api.updateSettings(patch));
   }
 
+  async function setDisplayName(displayName: string | null) {
+    setSnapshot(await api.setDisplayName(displayName));
+  }
+
+  async function setAvatar(file: File) {
+    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    if (bytes.length === 0) {
+      return;
+    }
+    setSnapshot(await api.setAvatar(file.type || "application/octet-stream", bytes));
+  }
+
   async function bootstrapCrossSigning() {
     setSnapshot(await api.bootstrapCrossSigning());
   }
@@ -1315,6 +1327,12 @@ export function App() {
           }}
           onSubmitIdentityResetPassword={(flowId, password) => {
             void submitIdentityResetPassword(flowId, password);
+          }}
+          onSetAvatar={(file) => {
+            void setAvatar(file);
+          }}
+          onSetDisplayName={(displayName) => {
+            void setDisplayName(displayName);
           }}
           onUpdateSettings={(patch) => {
             void updateSettings(patch);
@@ -1969,8 +1987,12 @@ export function WorkspaceRail({
                 contextMenuItems({ kind: "space" })
               )
             }
-          >
-            <span dir="auto">{initials(space.display_name)}</span>
+        >
+            <EntityAvatar
+              avatar={space.avatar}
+              className="workspace-button-avatar is-space"
+              fallback={initials(space.display_name)}
+            />
           </button>
         ))}
       </div>
@@ -2068,7 +2090,6 @@ function Sidebar({
         {snapshot.sidebar.space_rooms.map((room) => (
           <RoomButton
             activeRoomId={activeRoomId}
-            icon={<Hash size={16} />}
             kind="room"
             key={room.room_id}
             room={room}
@@ -2080,7 +2101,6 @@ function Sidebar({
         {snapshot.sidebar.global_dms.map((room) => (
           <RoomButton
             activeRoomId={activeRoomId}
-            icon={<span className="presence-dot" />}
             kind="dm"
             key={room.room_id}
             room={room}
@@ -2131,14 +2151,12 @@ function SectionTitle({ label }: { label: string }) {
 
 function RoomButton({
   activeRoomId,
-  icon,
   kind,
   room,
   onOpenContextMenu,
   onSelectRoom
 }: {
   activeRoomId: string | null;
-  icon: ReactNode;
   kind: "room" | "dm";
   room: RoomListItem;
   onOpenContextMenu: OpenContextMenu;
@@ -2159,10 +2177,31 @@ function RoomButton({
         )
       }
     >
-      {icon}
+      <EntityAvatar
+        avatar={room.avatar}
+        className={`room-avatar ${kind === "dm" ? "is-user" : "is-room"}`}
+        fallback={initials(room.display_name)}
+      />
       <span className="room-name" dir="auto">{room.display_name}</span>
       <span className="room-count">{room.unread_count || ""}</span>
     </button>
+  );
+}
+
+function EntityAvatar({
+  avatar,
+  className,
+  fallback
+}: {
+  avatar: RoomListItem["avatar"];
+  className: string;
+  fallback: string;
+}) {
+  const sourceUrl = avatar?.thumbnail.kind === "ready" ? avatar.thumbnail.source_url : null;
+  return (
+    <span className={className} aria-hidden="true">
+      {sourceUrl ? <img src={sourceUrl} /> : <span dir="auto">{fallback}</span>}
+    </span>
   );
 }
 
@@ -2219,9 +2258,11 @@ function InvitesPane({
                 aria-label={invite.display_name}
                 onClick={() => setSelectedInviteId(invite.room_id)}
               >
-                <span className="invite-row-icon" aria-hidden="true">
-                  {invite.is_dm ? <MessageCircle size={17} /> : <Hash size={17} />}
-                </span>
+                <EntityAvatar
+                  avatar={invite.avatar}
+                  className={`invite-row-icon ${invite.is_dm ? "is-user" : "is-room"}`}
+                  fallback={initials(invite.display_name)}
+                />
                 <span className="invite-row-main">
                   <strong dir="auto">{invite.display_name}</strong>
                   <small dir="auto">
@@ -2240,9 +2281,11 @@ function InvitesPane({
           {selectedInvite ? (
             <>
               <div className="invite-preview-heading">
-                <span className="invite-preview-icon" aria-hidden="true">
-                  {selectedInvite.is_dm ? <MessageCircle size={22} /> : <Hash size={22} />}
-                </span>
+                <EntityAvatar
+                  avatar={selectedInvite.avatar}
+                  className={`invite-preview-icon ${selectedInvite.is_dm ? "is-user" : "is-room"}`}
+                  fallback={initials(selectedInvite.display_name)}
+                />
                 <div>
                   <h2 dir="auto">{selectedInvite.display_name}</h2>
                   <p dir="auto">
@@ -2359,12 +2402,19 @@ function TimelinePane({
 }) {
   const timelineRoomId = snapshot.state.timeline.room_id;
   const currentUserId = snapshot.state.session.user_id ?? null;
+  const activeRoom = timelineRoomId
+    ? snapshot.state.rooms.find((room) => room.room_id === timelineRoomId) ?? null
+    : null;
 
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
       <header className="channel-header">
         <div className="channel-title">
-          <Hash size={22} />
+          <EntityAvatar
+            avatar={activeRoom?.avatar ?? null}
+            className="channel-avatar is-room"
+            fallback={initials(activeRoomName)}
+          />
           <span>{activeRoomName}</span>
         </div>
         <div className="channel-actions">
@@ -2426,6 +2476,7 @@ function TimelinePane({
               onOpenThread={onOpenThread}
               resolveComposerKeyAction={resolveComposerKeyAction}
               liveSignals={snapshot.state.live_signals}
+              profileUsers={snapshot.state.profile.users}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -2778,6 +2829,8 @@ export function ContextualRightPanel({
   onEnableKeyBackup,
   onResetIdentity,
   onResolveComposerKeyAction = ignoreComposerKeyAction,
+  onSetAvatar = () => undefined,
+  onSetDisplayName = () => undefined,
   onSubmitIdentityResetOAuth,
   onSubmitIdentityResetPassword,
   onUpdateSettings = () => undefined,
@@ -2812,6 +2865,8 @@ export function ContextualRightPanel({
   onEnableKeyBackup: () => void;
   onResetIdentity: () => void;
   onResolveComposerKeyAction?: ResolveComposerKeyAction;
+  onSetAvatar?: (file: File) => void;
+  onSetDisplayName?: (displayName: string | null) => void;
   onSubmitIdentityResetOAuth: (flowId: number) => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onUpdateSettings?: (patch: SettingsPatch) => void;
@@ -2858,6 +2913,7 @@ export function ContextualRightPanel({
         <UserSettingsPanel
           currentSession={currentSavedSession(snapshot)}
           e2eeTrust={snapshot.state.e2ee_trust}
+          profile={snapshot.state.profile}
           savedSessions={savedSessions}
           settings={snapshot.state.settings}
           onAcceptVerification={onAcceptVerification}
@@ -2867,6 +2923,8 @@ export function ContextualRightPanel({
           onEnableKeyBackup={onEnableKeyBackup}
           onOpenKeyboardSettings={onOpenKeyboardSettings}
           onResetIdentity={onResetIdentity}
+          onSetAvatar={onSetAvatar}
+          onSetDisplayName={onSetDisplayName}
           onSubmitIdentityResetOAuth={onSubmitIdentityResetOAuth}
           onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
           onUpdateSettings={onUpdateSettings}
@@ -2955,6 +3013,7 @@ export function ContextualRightPanel({
               onReply={onReply}
               resolveComposerKeyAction={onResolveComposerKeyAction}
               liveSignals={snapshot.state.live_signals}
+              profileUsers={snapshot.state.profile.users}
             />
           </section>
         ) : null}
@@ -3000,6 +3059,7 @@ export function ContextualRightPanel({
             onOpenThread={() => undefined}
             resolveComposerKeyAction={onResolveComposerKeyAction}
             liveSignals={snapshot.state.live_signals}
+            profileUsers={snapshot.state.profile.users}
           />
         ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>

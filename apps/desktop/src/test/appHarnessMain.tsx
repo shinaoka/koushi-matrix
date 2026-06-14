@@ -95,6 +95,7 @@ function readySnapshot(
     {
       space_id: SPACE_ID,
       display_name: SPACE_NAME,
+      avatar: null,
       child_room_ids: [ROOM_ID]
     },
     ...(overrides.extraSpaces ?? [])
@@ -103,6 +104,7 @@ function readySnapshot(
     {
       space_id: SPACE_ID,
       display_name: SPACE_NAME,
+      avatar: null,
       unread_count: 0,
       is_active: false
     },
@@ -120,6 +122,11 @@ function readySnapshot(
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),
       typography_profile: defaultTypographyDisplayProfile(),
+      profile: {
+        own: { display_name: "Harness User", avatar: null },
+        users: {},
+        update: { kind: "idle" }
+      },
       sync: "running",
       navigation: { active_space_id: null, active_room_id: ROOM_ID },
       spaces,
@@ -127,6 +134,7 @@ function readySnapshot(
         {
           room_id: ROOM_ID,
           display_name: ROOM_NAME,
+          avatar: null,
           is_dm: false,
           unread_count: 0,
           parent_space_ids: []
@@ -156,7 +164,7 @@ function readySnapshot(
       account_home: { display_name: "Home", unread_count: 0, is_active: true },
       space_rail: railItems,
       space_rooms: [
-        { room_id: ROOM_ID, display_name: ROOM_NAME, unread_count: 0 }
+        { room_id: ROOM_ID, display_name: ROOM_NAME, avatar: null, unread_count: 0 }
       ],
       global_dms: [],
       space_unread_count: 0,
@@ -383,6 +391,7 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
   snapshot.state.rooms.push({
     room_id: newRoomId,
     display_name: "Created Room",
+    avatar: null,
     is_dm: false,
     unread_count: 0,
     parent_space_ids: []
@@ -392,6 +401,7 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
   snapshot.sidebar.space_rooms.push({
     room_id: newRoomId,
     display_name: "Created Room",
+    avatar: null,
     unread_count: 0
   });
   return snapshot;
@@ -403,6 +413,7 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
   snapshot.state.spaces.push({
     space_id: newSpaceId,
     display_name: "Created Space",
+    avatar: null,
     child_room_ids: []
   });
   snapshot.state.navigation.active_space_id = newSpaceId;
@@ -410,6 +421,7 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
   snapshot.sidebar.space_rail.push({
     space_id: newSpaceId,
     display_name: "Created Space",
+    avatar: null,
     unread_count: 0,
     is_active: true
   });
@@ -795,6 +807,42 @@ mock.setCommandResponse("send_read_receipt", () => currentSnapshot);
 mock.setCommandResponse("set_fully_read", () => currentSnapshot);
 mock.setCommandResponse("set_typing", () => currentSnapshot);
 mock.setCommandResponse("set_presence", () => currentSnapshot);
+mock.setCommandResponse("set_display_name", ({ displayName }: { displayName: string | null }) => {
+  const normalized = displayName?.trim() ? displayName.trim() : null;
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      profile: {
+        ...currentSnapshot.state.profile,
+        own: {
+          ...currentSnapshot.state.profile.own,
+          display_name: normalized
+        },
+        update: { kind: "idle" }
+      }
+    }
+  });
+});
+mock.setCommandResponse("set_avatar", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      profile: {
+        ...currentSnapshot.state.profile,
+        own: {
+          ...currentSnapshot.state.profile.own,
+          avatar: {
+            mxc_uri: "mxc://harness/avatar",
+            thumbnail: { kind: "notRequested" }
+          }
+        },
+        update: { kind: "idle" }
+      }
+    }
+  })
+);
 mock.setCommandResponse("paginate_timeline_backwards", () => currentSnapshot);
 mock.setCommandResponse("paginate_thread_timeline_backwards", () => currentSnapshot);
 

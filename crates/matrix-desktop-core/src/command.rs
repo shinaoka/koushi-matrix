@@ -51,6 +51,8 @@ impl CoreCommand {
                 | AccountCommand::ResetIdentity { request_id }
                 | AccountCommand::SubmitIdentityResetAuth { request_id, .. }
                 | AccountCommand::SetPresence { request_id, .. }
+                | AccountCommand::SetDisplayName { request_id, .. }
+                | AccountCommand::SetAvatar { request_id, .. }
                 | AccountCommand::Logout { request_id }
                 | AccountCommand::SwitchAccount { request_id, .. } => *request_id,
             },
@@ -303,6 +305,14 @@ pub enum AccountCommand {
         request_id: RequestId,
         presence: PresenceKind,
     },
+    SetDisplayName {
+        request_id: RequestId,
+        display_name: Option<String>,
+    },
+    SetAvatar {
+        request_id: RequestId,
+        request: SetAvatarRequest,
+    },
     Logout {
         request_id: RequestId,
     },
@@ -325,7 +335,26 @@ impl AccountCommand {
                 | Self::ResetIdentity { .. }
                 | Self::SubmitIdentityResetAuth { .. }
                 | Self::SetPresence { .. }
+                | Self::SetDisplayName { .. }
+                | Self::SetAvatar { .. }
         )
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct SetAvatarRequest {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+}
+
+impl fmt::Debug for SetAvatarRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SetAvatarRequest")
+            .field("mime_type", &self.mime_type)
+            .field("bytes", &"AvatarBytes(..)")
+            .field("bytes_len", &self.bytes.len())
+            .finish()
     }
 }
 
@@ -439,6 +468,21 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("SetPresence")
                 .field("request_id", request_id)
                 .field("presence", presence)
+                .finish(),
+            Self::SetDisplayName { request_id, .. } => formatter
+                .debug_struct("SetDisplayName")
+                .field("request_id", request_id)
+                .field("display_name", &"ProfileDisplayName(..)")
+                .finish(),
+            Self::SetAvatar {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("SetAvatar")
+                .field("request_id", request_id)
+                .field("mime_type", &request.mime_type)
+                .field("bytes", &"AvatarBytes(..)")
+                .field("bytes_len", &request.bytes.len())
                 .finish(),
             Self::Logout { request_id } => formatter
                 .debug_struct("Logout")
@@ -857,5 +901,33 @@ mod tests {
         assert!(!debug.contains("private-fixture-name.png"), "{debug}");
         assert!(!debug.contains("private caption"), "{debug}");
         assert!(!debug.contains("1, 2, 3, 4"), "{debug}");
+    }
+
+    #[test]
+    fn profile_command_debug_redacts_display_name_and_avatar_bytes() {
+        let display_name = AccountCommand::SetDisplayName {
+            request_id: fake_rid(9),
+            display_name: Some("Private Display".to_owned()),
+        };
+        let avatar = AccountCommand::SetAvatar {
+            request_id: fake_rid(10),
+            request: SetAvatarRequest {
+                mime_type: "image/png".to_owned(),
+                bytes: vec![9, 8, 7, 6],
+            },
+        };
+
+        let display_debug = format!("{display_name:?}");
+        assert!(display_debug.contains("SetDisplayName"), "{display_debug}");
+        assert!(
+            !display_debug.contains("Private Display"),
+            "{display_debug}"
+        );
+
+        let avatar_debug = format!("{avatar:?}");
+        assert!(avatar_debug.contains("SetAvatar"), "{avatar_debug}");
+        assert!(avatar_debug.contains("image/png"), "{avatar_debug}");
+        assert!(avatar_debug.contains("bytes_len"), "{avatar_debug}");
+        assert!(!avatar_debug.contains("9, 8, 7, 6"), "{avatar_debug}");
     }
 }

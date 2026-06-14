@@ -222,6 +222,59 @@ stateDiagram-v2
 - The local core `media` QA scenario is the Phase A proof:
   `send_media=ok recv_media=ok`. Its output must remain private-data-free.
 
+## Profiles And Avatars
+
+Profiles and avatars are Rust-owned account and room projections.
+`AppState.profile.own` holds the current account display name and avatar,
+`AppState.profile.users` holds the per-user profile cache used by timeline and
+member surfaces, and room/space/invite summaries carry their own avatar DTOs.
+React renders these DTOs and dispatches typed profile commands only; it must not
+query Matrix profiles, parse MXC URIs, upload avatar bytes outside the command
+boundary, or infer profile operation success from component state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Empty
+    Empty --> Loaded: OwnProfileUpdated/UserProfilesUpdated
+    Loaded --> Loaded: OwnProfileUpdated/UserProfilesUpdated
+    Empty --> Updating: ProfileUpdateRequested
+    Loaded --> Updating: ProfileUpdateRequested
+    Updating --> Loaded: ProfileUpdateSucceeded [matching request_id]
+    Updating --> Loaded: ProfileUpdateFailed [matching request_id]
+    Empty --> Empty: LogoutRequested/LogoutFinished/SessionCleared
+    Loaded --> Empty: LogoutRequested/LogoutFinished/SessionCleared
+    Updating --> Empty: LogoutRequested/LogoutFinished/SessionCleared
+```
+
+- Profile actions are accepted only for a Ready session. Late profile snapshots
+  after logout, lock, or account switch are ignored.
+- `ProfileUpdateRequested { request_id, request }` is accepted only when no
+  profile update is in flight. It records either `SettingDisplayName` or
+  `SettingAvatar` and emits `ProfileChanged`.
+- `ProfileUpdateSucceeded` and `ProfileUpdateFailed` settle only the matching
+  in-flight request id. Stale or duplicate completions are ignored. Failures
+  also emit `ErrorChanged`.
+- `SetDisplayName` carries the submitted display name only across the typed
+  command and reducer pending-state boundary. Normal logs, Debug output, QA
+  tokens, and issue evidence must not expose real account display names.
+- `SetAvatar` may carry mimetype and bytes only across the typed command
+  boundary. Debug output redacts the bytes. The reducer pending state records
+  mimetype and byte count, never bytes.
+- Avatar images store the MXC URI as Rust-owned metadata. React must not render
+  an MXC URI directly; it renders an image only when Rust/platform-owned media
+  handling has settled `AvatarThumbnailState::Ready { source_url, .. }`.
+  `NotRequested`, `Loading`, and `Failed` render the colored-initial fallback.
+- In the #17 reducer slice, avatar thumbnail fields are replaced through the
+  Rust-owned snapshot actions (`OwnProfileUpdated`, `UserProfilesUpdated`, room
+  list updates, and invite updates). A future explicit avatar-thumbnail download
+  workflow must add its own `AppAction` transitions and update this document in
+  the same change.
+- The existing timeline media download contract emits byte counts only and does
+  not put downloaded bytes in React state. Avatar thumbnail source URLs must
+  remain app-owned handles or source URLs produced by Rust/platform media
+  handling; decrypted bytes, encrypted media keys, local filesystem paths, and
+  raw SDK errors stay outside snapshots and QA output.
+
 ## Live Signals
 
 Live signals are Rust-owned room/account projections in

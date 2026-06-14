@@ -774,6 +774,7 @@ fn fixture_spaces() -> Vec<SpaceSummary> {
         SpaceSummary {
             space_id: DEFAULT_SPACE_ID.to_owned(),
             display_name: "Synthetic Workspace".to_owned(),
+            avatar: None,
             child_room_ids: vec![
                 DEFAULT_ROOM_ID.to_owned(),
                 "!room-planning:example.invalid".to_owned(),
@@ -782,6 +783,7 @@ fn fixture_spaces() -> Vec<SpaceSummary> {
         SpaceSummary {
             space_id: "!space-beta:example.invalid".to_owned(),
             display_name: "Synthetic Lab".to_owned(),
+            avatar: None,
             child_room_ids: vec!["!room-search:example.invalid".to_owned()],
         },
     ]
@@ -792,6 +794,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: DEFAULT_ROOM_ID.to_owned(),
             display_name: "synthetic-room".to_owned(),
+            avatar: None,
             is_dm: false,
             unread_count: 8,
             notification_count: 8,
@@ -801,6 +804,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "!room-planning:example.invalid".to_owned(),
             display_name: "planning-room".to_owned(),
+            avatar: None,
             is_dm: false,
             unread_count: 2,
             notification_count: 2,
@@ -810,6 +814,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "!room-search:example.invalid".to_owned(),
             display_name: "matrix-sdk-search".to_owned(),
+            avatar: None,
             is_dm: false,
             unread_count: 1,
             notification_count: 1,
@@ -819,6 +824,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "!dm-member-1:example.invalid".to_owned(),
             display_name: "Member 1".to_owned(),
+            avatar: None,
             is_dm: true,
             unread_count: 1,
             notification_count: 1,
@@ -828,6 +834,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "!dm-member-2:example.invalid".to_owned(),
             display_name: "Member 2".to_owned(),
+            avatar: None,
             is_dm: true,
             unread_count: 0,
             notification_count: 0,

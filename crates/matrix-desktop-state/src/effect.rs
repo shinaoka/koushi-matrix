@@ -81,6 +81,7 @@ pub enum UiEvent {
     SessionChanged,
     AuthChanged,
     SettingsChanged,
+    ProfileChanged,
     RoomListChanged,
     TimelineChanged { room_id: String },
     ThreadChanged,

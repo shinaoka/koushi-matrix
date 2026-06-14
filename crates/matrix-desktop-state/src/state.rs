@@ -7,6 +7,7 @@ pub struct AppState {
     pub session: SessionState,
     pub auth: AuthDiscoveryState,
     pub settings: SettingsState,
+    pub profile: ProfileState,
     pub sync: SyncState,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
@@ -28,6 +29,7 @@ impl Default for AppState {
             session: SessionState::SignedOut,
             auth: AuthDiscoveryState::Unknown,
             settings: SettingsState::default(),
+            profile: ProfileState::default(),
             sync: SyncState::Stopped,
             navigation: NavigationState::default(),
             spaces: Vec::new(),
@@ -442,6 +444,99 @@ pub struct SessionInfo {
     pub device_id: String,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProfileState {
+    pub own: OwnProfile,
+    pub users: BTreeMap<String, UserProfile>,
+    pub update: ProfileUpdateState,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OwnProfile {
+    pub display_name: Option<String>,
+    pub avatar: Option<AvatarImage>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar: Option<AvatarImage>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AvatarImage {
+    pub mxc_uri: String,
+    pub thumbnail: AvatarThumbnailState,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AvatarThumbnailState {
+    #[default]
+    NotRequested,
+    Loading {
+        request_id: u64,
+    },
+    Ready {
+        source_url: String,
+        width: Option<u64>,
+        height: Option<u64>,
+        mime_type: Option<String>,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: AvatarThumbnailFailureKind,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AvatarThumbnailFailureKind {
+    Network,
+    Forbidden,
+    Unsupported,
+    Sdk,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ProfileUpdateState {
+    #[default]
+    Idle,
+    SettingDisplayName {
+        request_id: u64,
+        display_name: Option<String>,
+    },
+    SettingAvatar {
+        request_id: u64,
+        mime_type: String,
+        byte_count: u64,
+    },
+}
+
+impl ProfileUpdateState {
+    pub fn request_id(&self) -> Option<u64> {
+        match self {
+            Self::Idle => None,
+            Self::SettingDisplayName { request_id, .. }
+            | Self::SettingAvatar { request_id, .. } => Some(*request_id),
+        }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ProfileUpdateRequest {
+    SetDisplayName { display_name: Option<String> },
+    SetAvatar { mime_type: String, byte_count: u64 },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SyncState {
     Stopped,
@@ -461,6 +556,8 @@ pub struct NavigationState {
 pub struct SpaceSummary {
     pub space_id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub avatar: Option<AvatarImage>,
     pub child_room_ids: Vec<String>,
 }
 
@@ -468,6 +565,8 @@ pub struct SpaceSummary {
 pub struct RoomSummary {
     pub room_id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub avatar: Option<AvatarImage>,
     pub is_dm: bool,
     pub unread_count: u64,
     pub notification_count: u64,
@@ -479,6 +578,8 @@ pub struct RoomSummary {
 pub struct InvitePreview {
     pub room_id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub avatar: Option<AvatarImage>,
     pub topic: Option<String>,
     pub inviter_display_name: Option<String>,
     pub is_dm: bool,

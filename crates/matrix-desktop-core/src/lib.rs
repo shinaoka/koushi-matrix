@@ -23,7 +23,8 @@ pub mod timeline;
 
 pub use command::{
     AccountCommand, AppCommand, CoreCommand, MediaDownloadSelection, RoomCommand, SearchCommand,
-    SearchScope, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
+    SearchScope, SetAvatarRequest, SyncCommand, TimelineCommand, UploadMediaKind,
+    UploadMediaRequest,
 };
 pub use event::{
     AccountEvent, AppStateSnapshot, CoreEvent, E2eeTrustEvent, MediaTransferProgress,
@@ -33,8 +34,8 @@ pub use event::{
     TimelineResyncReason,
 };
 pub use failure::{
-    CoreFailure, LoginFailureKind, RecoveryFailureKind, RoomFailureKind, SearchFailureKind,
-    SyncFailureKind, TimelineFailureKind,
+    CoreFailure, LoginFailureKind, ProfileFailureKind, RecoveryFailureKind, RoomFailureKind,
+    SearchFailureKind, SyncFailureKind, TimelineFailureKind,
 };
 pub use ids::{
     AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey,

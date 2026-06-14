@@ -56,7 +56,8 @@ use std::sync::Arc;
 
 use matrix_desktop_sdk::{MatrixClientSession, MatrixRoomOperationError};
 use matrix_desktop_state::{
-    AppAction, BasicOperationRequest, InvitePreview, RoomSummary, SpaceSummary,
+    AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, InvitePreview,
+    RoomSummary, SpaceSummary,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -807,6 +808,7 @@ fn normalize_spaces(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Ve
             SpaceSummary {
                 space_id: space.space_id.clone(),
                 display_name: space.display_name.clone(),
+                avatar: avatar_from_mxc_uri(space.avatar_mxc_uri.as_deref()),
                 child_room_ids,
             }
         })
@@ -821,6 +823,7 @@ fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec
         .map(|room| RoomSummary {
             room_id: room.room_id.clone(),
             display_name: room.display_name.clone(),
+            avatar: avatar_from_mxc_uri(room.avatar_mxc_uri.as_deref()),
             is_dm: room.is_dm,
             unread_count: room.unread_count,
             notification_count: room.notification_count,
@@ -838,11 +841,19 @@ fn normalize_invites(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> V
         .map(|invite| InvitePreview {
             room_id: invite.room_id.clone(),
             display_name: invite.display_name.clone(),
+            avatar: avatar_from_mxc_uri(invite.avatar_mxc_uri.as_deref()),
             topic: invite.topic.clone(),
             inviter_display_name: invite.inviter_display_name.clone(),
             is_dm: invite.is_dm,
         })
         .collect()
+}
+
+fn avatar_from_mxc_uri(mxc_uri: Option<&str>) -> Option<AvatarImage> {
+    mxc_uri.map(|mxc_uri| AvatarImage {
+        mxc_uri: mxc_uri.to_owned(),
+        thumbnail: AvatarThumbnailState::NotRequested,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -948,11 +959,13 @@ pub mod tests {
             spaces: vec![MatrixRoomListSpace {
                 space_id: "!space1:example.test".to_owned(),
                 display_name: "My Space".to_owned(),
+                avatar_mxc_uri: None,
             }],
             rooms: vec![
                 MatrixRoomListRoom {
                     room_id: "!room1:example.test".to_owned(),
                     display_name: "Room 1".to_owned(),
+                    avatar_mxc_uri: None,
                     is_dm: false,
                     unread_count: 0,
                     notification_count: 0,
@@ -962,6 +975,7 @@ pub mod tests {
                 MatrixRoomListRoom {
                     room_id: "!room2:example.test".to_owned(),
                     display_name: "Room 2".to_owned(),
+                    avatar_mxc_uri: None,
                     is_dm: false,
                     unread_count: 0,
                     notification_count: 0,
@@ -983,6 +997,7 @@ pub mod tests {
             spaces: vec![MatrixRoomListSpace {
                 space_id: "!space:example.test".to_owned(),
                 display_name: "Empty Space".to_owned(),
+                avatar_mxc_uri: None,
             }],
             rooms: vec![],
             ..MatrixRoomListSnapshot::default()
@@ -990,6 +1005,23 @@ pub mod tests {
         let spaces = normalize_spaces(&snapshot);
         assert_eq!(spaces.len(), 1);
         assert_eq!(spaces[0].child_room_ids, Vec::<String>::new());
+    }
+
+    #[test]
+    fn normalize_spaces_preserves_avatar_mxc_as_unrequested_thumbnail() {
+        let snapshot = MatrixRoomListSnapshot {
+            spaces: vec![MatrixRoomListSpace {
+                space_id: "!space:example.test".to_owned(),
+                display_name: "Space".to_owned(),
+                avatar_mxc_uri: Some("mxc://example.test/space-avatar".to_owned()),
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+        let spaces = normalize_spaces(&snapshot);
+
+        let avatar = spaces[0].avatar.as_ref().expect("space avatar");
+        assert_eq!(avatar.mxc_uri, "mxc://example.test/space-avatar");
+        assert_eq!(avatar.thumbnail, AvatarThumbnailState::NotRequested);
     }
 
     // --- Room list normalization: rooms ---
@@ -1001,6 +1033,7 @@ pub mod tests {
             rooms: vec![MatrixRoomListRoom {
                 room_id: "!dm:example.test".to_owned(),
                 display_name: "Alice".to_owned(),
+                avatar_mxc_uri: None,
                 is_dm: true,
                 unread_count: 3,
                 notification_count: 3,
@@ -1025,6 +1058,7 @@ pub mod tests {
             rooms: vec![MatrixRoomListRoom {
                 room_id: "!room:example.test".to_owned(),
                 display_name: "General".to_owned(),
+                avatar_mxc_uri: None,
                 is_dm: false,
                 unread_count: 0,
                 notification_count: 0,
@@ -1042,11 +1076,34 @@ pub mod tests {
     }
 
     #[test]
+    fn normalize_rooms_preserves_avatar_mxc_as_unrequested_thumbnail() {
+        let snapshot = MatrixRoomListSnapshot {
+            rooms: vec![MatrixRoomListRoom {
+                room_id: "!room:example.test".to_owned(),
+                display_name: "General".to_owned(),
+                avatar_mxc_uri: Some("mxc://example.test/room-avatar".to_owned()),
+                is_dm: false,
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                parent_space_ids: vec![],
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+        let rooms = normalize_rooms(&snapshot);
+
+        let avatar = rooms[0].avatar.as_ref().expect("room avatar");
+        assert_eq!(avatar.mxc_uri, "mxc://example.test/room-avatar");
+        assert_eq!(avatar.thumbnail, AvatarThumbnailState::NotRequested);
+    }
+
+    #[test]
     fn normalize_invites_preserves_preview_fields() {
         let snapshot = MatrixRoomListSnapshot {
             invites: vec![MatrixInvitePreview {
                 room_id: "!invite:example.test".to_owned(),
                 display_name: "Project invite".to_owned(),
+                avatar_mxc_uri: None,
                 topic: Some("Project topic".to_owned()),
                 inviter_display_name: Some("Inviter".to_owned()),
                 is_dm: true,
@@ -1061,6 +1118,26 @@ pub mod tests {
         assert_eq!(invites[0].topic.as_deref(), Some("Project topic"));
         assert_eq!(invites[0].inviter_display_name.as_deref(), Some("Inviter"));
         assert!(invites[0].is_dm);
+    }
+
+    #[test]
+    fn normalize_invites_preserves_avatar_mxc_as_unrequested_thumbnail() {
+        let snapshot = MatrixRoomListSnapshot {
+            invites: vec![MatrixInvitePreview {
+                room_id: "!invite:example.test".to_owned(),
+                display_name: "Invite".to_owned(),
+                avatar_mxc_uri: Some("mxc://example.test/invite-avatar".to_owned()),
+                topic: None,
+                inviter_display_name: None,
+                is_dm: false,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+        let invites = normalize_invites(&snapshot);
+
+        let avatar = invites[0].avatar.as_ref().expect("invite avatar");
+        assert_eq!(avatar.mxc_uri, "mxc://example.test/invite-avatar");
+        assert_eq!(avatar.thumbnail, AvatarThumbnailState::NotRequested);
     }
 
     // --- SelectSpace / SelectRoom projection ---

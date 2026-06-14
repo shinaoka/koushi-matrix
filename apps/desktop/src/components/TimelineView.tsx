@@ -59,7 +59,13 @@ import {
   insertNewlineAtSelection,
   shouldResolveComposerKeyEvent
 } from "../domain/composerKeyEvents";
-import type { LiveReadReceipt, LiveSignalsState, PresenceKind, ResolveComposerKeyAction } from "../domain/types";
+import type {
+  LiveReadReceipt,
+  LiveSignalsState,
+  PresenceKind,
+  ResolveComposerKeyAction,
+  UserProfile
+} from "../domain/types";
 
 // ---------------------------------------------------------------------------
 // Transport interface (Tauri IPC, browser fake, or test mock)
@@ -165,6 +171,7 @@ export function TimelineView({
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   liveSignals,
+  profileUsers = {},
   suppressPaginationUi = false
 }: {
   timelineKey: TimelineKey;
@@ -174,6 +181,7 @@ export function TimelineView({
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   liveSignals?: LiveSignalsState;
+  profileUsers?: Record<string, UserProfile>;
   suppressPaginationUi?: boolean;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -380,6 +388,7 @@ export function TimelineView({
               onRedact={onRedact}
               onDownloadMedia={onDownloadMedia}
               presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
+              profile={item.sender ? profileUsers[item.sender] : undefined}
               receipts={eventId ? roomSignals?.receipts_by_event[eventId] ?? [] : []}
             />
           </div>
@@ -406,6 +415,7 @@ export function TimelineItemRow({
   onRedact,
   onDownloadMedia = () => undefined,
   presence,
+  profile,
   receipts = []
 }: {
   item: TimelineItem;
@@ -419,6 +429,7 @@ export function TimelineItemRow({
   onRedact: TimelineRowActionHandlers["onRedact"];
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
   presence?: PresenceKind;
+  profile?: UserProfile;
   receipts?: LiveReadReceipt[];
 }) {
   const domId = timelineItemDomId(item.id);
@@ -584,6 +595,8 @@ export function TimelineItemRow({
   const canShowReply = canShowActionButtons && item.body !== null;
   const canShowThreadSummary = Boolean(eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
+  const avatarUrl =
+    profile?.avatar?.thumbnail.kind === "ready" ? profile.avatar.thumbnail.source_url : null;
   const threadSummaryText = item.thread_summary
     ? formatThreadSummary(
         item.thread_summary.reply_count,
@@ -642,7 +655,7 @@ export function TimelineItemRow({
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
     >
       <div className="avatar" aria-hidden="true">
-        {senderInitials(item.sender)}
+        {avatarUrl ? <img src={avatarUrl} /> : senderInitials(item.sender)}
       </div>
       <div className="message-main">
         <div className="message-heading">

@@ -77,6 +77,21 @@ describe("BrowserFakeApi settings preview", () => {
     });
   });
 
+  test("updates the Rust-shaped profile snapshot for preview controls", async () => {
+    const api = createBrowserFakeApi();
+
+    const named = await api.setDisplayName("Alice");
+    expect(named.state.profile.own.display_name).toBe("Alice");
+    expect(named.state.profile.update).toEqual({ kind: "idle" });
+
+    const avatar = await api.setAvatar("image/png", [1, 2, 3, 4]);
+    expect(avatar.state.profile.own.avatar).toEqual({
+      mxc_uri: "mxc://browser.fake/profile-avatar",
+      thumbnail: { kind: "notRequested" }
+    });
+    expect(avatar.state.profile.update).toEqual({ kind: "idle" });
+  });
+
   test("updates the Rust-shaped E2EE trust snapshot for preview controls", async () => {
     const api = createBrowserFakeApi();
 

@@ -2115,6 +2115,7 @@ dependencies = [
  "matrix-desktop-state",
  "matrix-sdk",
  "matrix-sdk-ui",
+ "mime",
  "reqwest",
  "rpassword",
  "serde",

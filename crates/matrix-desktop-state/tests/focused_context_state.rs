@@ -14,6 +14,7 @@ fn ready_selected_room_state() -> AppState {
         rooms: vec![RoomSummary {
             room_id: "!room:example.invalid".to_owned(),
             display_name: "Synthetic Room".to_owned(),
+            avatar: None,
             is_dm: false,
             unread_count: 0,
             notification_count: 0,
