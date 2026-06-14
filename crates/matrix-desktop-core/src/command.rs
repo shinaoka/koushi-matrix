@@ -4,7 +4,7 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    IdentityResetAuthRequest, LoginRequest, RecoveryRequest, SettingsPatch,
+    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, SettingsPatch,
     VerificationCancelReason, VerificationTarget,
 };
 
@@ -50,6 +50,7 @@ impl CoreCommand {
                 | AccountCommand::RestoreKeyBackup { request_id, .. }
                 | AccountCommand::ResetIdentity { request_id }
                 | AccountCommand::SubmitIdentityResetAuth { request_id, .. }
+                | AccountCommand::SetPresence { request_id, .. }
                 | AccountCommand::Logout { request_id }
                 | AccountCommand::SwitchAccount { request_id, .. } => *request_id,
             },
@@ -83,6 +84,9 @@ impl CoreCommand {
                 | TimelineCommand::DownloadMedia { request_id, .. }
                 | TimelineCommand::EditText { request_id, .. }
                 | TimelineCommand::Redact { request_id, .. }
+                | TimelineCommand::SendReadReceipt { request_id, .. }
+                | TimelineCommand::SetFullyRead { request_id, .. }
+                | TimelineCommand::SetTyping { request_id, .. }
                 | TimelineCommand::ToggleReaction { request_id, .. } => *request_id,
             },
             Self::Search(command) => match command {
@@ -295,6 +299,10 @@ pub enum AccountCommand {
         flow_id: u64,
         request: IdentityResetAuthRequest,
     },
+    SetPresence {
+        request_id: RequestId,
+        presence: PresenceKind,
+    },
     Logout {
         request_id: RequestId,
     },
@@ -316,6 +324,7 @@ impl AccountCommand {
                 | Self::EnableKeyBackup { .. }
                 | Self::ResetIdentity { .. }
                 | Self::SubmitIdentityResetAuth { .. }
+                | Self::SetPresence { .. }
         )
     }
 }
@@ -422,6 +431,14 @@ impl fmt::Debug for AccountCommand {
                 .field("request_id", request_id)
                 .field("flow_id", flow_id)
                 .field("request", request)
+                .finish(),
+            Self::SetPresence {
+                request_id,
+                presence,
+            } => formatter
+                .debug_struct("SetPresence")
+                .field("request_id", request_id)
+                .field("presence", presence)
                 .finish(),
             Self::Logout { request_id } => formatter
                 .debug_struct("Logout")
@@ -601,6 +618,21 @@ pub enum TimelineCommand {
         event_id: String,
         reaction_key: String,
     },
+    SendReadReceipt {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
+    SetFullyRead {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
+    SetTyping {
+        request_id: RequestId,
+        key: TimelineKey,
+        is_typing: bool,
+    },
 }
 
 // Message bodies and reaction keys are visible UI state but must not reach
@@ -715,6 +747,28 @@ impl fmt::Debug for TimelineCommand {
                 .field("key", key)
                 .field("event_id", &"EventId(..)")
                 .field("reaction_key", &"ReactionKey(..)")
+                .finish(),
+            Self::SendReadReceipt { request_id, .. } => formatter
+                .debug_struct("SendReadReceipt")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::SetFullyRead { request_id, .. } => formatter
+                .debug_struct("SetFullyRead")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::SetTyping {
+                request_id,
+                is_typing,
+                ..
+            } => formatter
+                .debug_struct("SetTyping")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("is_typing", is_typing)
                 .finish(),
         }
     }

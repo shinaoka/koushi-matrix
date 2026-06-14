@@ -1309,6 +1309,77 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
         }
+        AppAction::LiveRoomSignalsUpdated { room_id, update } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state
+                .live_signals
+                .rooms
+                .insert(room_id, update.into_room_signals());
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        }
+        AppAction::LiveRoomReceiptsUpdated {
+            room_id,
+            receipts_by_event,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let room = state.live_signals.rooms.entry(room_id).or_default();
+            let normalized = crate::state::LiveRoomSignalUpdate {
+                receipts_by_event,
+                fully_read_event_id: None,
+                typing_user_ids: Vec::new(),
+            }
+            .into_room_signals();
+            for (event_id, receipts) in normalized.receipts_by_event {
+                room.receipts_by_event.insert(event_id, receipts);
+            }
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        }
+        AppAction::FullyReadMarkerUpdated { room_id, event_id } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state
+                .live_signals
+                .rooms
+                .entry(room_id)
+                .or_default()
+                .fully_read_event_id = event_id;
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        }
+        AppAction::TypingUsersUpdated { room_id, user_ids } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let normalized = crate::state::LiveRoomSignalUpdate {
+                receipts_by_event: Vec::new(),
+                fully_read_event_id: None,
+                typing_user_ids: user_ids,
+            }
+            .into_room_signals();
+            state
+                .live_signals
+                .rooms
+                .entry(room_id)
+                .or_default()
+                .typing_user_ids = normalized.typing_user_ids;
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        }
+        AppAction::PresenceUpdated { user_id, presence } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.live_signals.presence.insert(user_id, presence);
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        }
         AppAction::ComposerReplyTargetSelected { room_id, event_id } => {
             if !is_session_ready(state)
                 || state.timeline.room_id.as_deref() != Some(room_id.as_str())
@@ -1548,6 +1619,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_thread = state.thread != ThreadPaneState::Closed;
     let had_search = state.search != SearchState::Closed;
     let had_e2ee_trust = state.e2ee_trust != E2eeTrustState::default();
+    let had_live_signals = state.live_signals != Default::default();
 
     state.navigation = NavigationState::default();
     state.spaces.clear();
@@ -1558,6 +1630,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.focused_context = FocusedContextState::Closed;
     state.search = SearchState::Closed;
     state.e2ee_trust = E2eeTrustState::default();
+    state.live_signals = Default::default();
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
     if let Some(room_id) = previous_room_id {
@@ -1572,5 +1645,120 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     if had_e2ee_trust {
         effects.push(AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged));
     }
+    if had_live_signals {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged));
+    }
     effects
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{
+        LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate, PresenceKind, RoomLiveSignals,
+    };
+
+    fn ready_state() -> AppState {
+        let mut state = AppState::default();
+        state.session = SessionState::Ready(crate::state::SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@alice:example.invalid".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        });
+        state
+    }
+
+    #[test]
+    fn live_signal_actions_update_rust_owned_state() {
+        let mut state = ready_state();
+
+        let effects = reduce(
+            &mut state,
+            AppAction::LiveRoomSignalsUpdated {
+                room_id: "!room:example.invalid".to_owned(),
+                update: LiveRoomSignalUpdate {
+                    receipts_by_event: vec![LiveEventReceipts {
+                        event_id: "$event:example.invalid".to_owned(),
+                        receipts: vec![LiveReadReceipt {
+                            user_id: "@bob:example.invalid".to_owned(),
+                            timestamp_ms: Some(1_234),
+                        }],
+                    }],
+                    fully_read_event_id: Some("$event:example.invalid".to_owned()),
+                    typing_user_ids: vec![
+                        "@carol:example.invalid".to_owned(),
+                        "@bob:example.invalid".to_owned(),
+                        "@bob:example.invalid".to_owned(),
+                    ],
+                },
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        );
+        assert_eq!(
+            state.live_signals.rooms.get("!room:example.invalid"),
+            Some(&RoomLiveSignals {
+                receipts_by_event: [(
+                    "$event:example.invalid".to_owned(),
+                    vec![LiveReadReceipt {
+                        user_id: "@bob:example.invalid".to_owned(),
+                        timestamp_ms: Some(1_234),
+                    }],
+                )]
+                .into(),
+                fully_read_event_id: Some("$event:example.invalid".to_owned()),
+                typing_user_ids: vec![
+                    "@bob:example.invalid".to_owned(),
+                    "@carol:example.invalid".to_owned(),
+                ],
+            })
+        );
+
+        let effects = reduce(
+            &mut state,
+            AppAction::PresenceUpdated {
+                user_id: "@bob:example.invalid".to_owned(),
+                presence: PresenceKind::Away,
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        );
+        assert_eq!(
+            state.live_signals.presence.get("@bob:example.invalid"),
+            Some(&PresenceKind::Away)
+        );
+    }
+
+    #[test]
+    fn live_signals_clear_with_session_views() {
+        let mut state = ready_state();
+        state.live_signals.rooms.insert(
+            "!room:example.invalid".to_owned(),
+            RoomLiveSignals {
+                fully_read_event_id: Some("$event:example.invalid".to_owned()),
+                ..RoomLiveSignals::default()
+            },
+        );
+        state
+            .live_signals
+            .presence
+            .insert("@bob:example.invalid".to_owned(), PresenceKind::Online);
+
+        let effects = reduce(&mut state, AppAction::LogoutRequested);
+
+        assert!(state.live_signals.rooms.is_empty());
+        assert!(state.live_signals.presence.is_empty());
+        assert!(
+            effects.iter().any(|effect| matches!(
+                effect,
+                AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)
+            ))
+        );
+    }
 }

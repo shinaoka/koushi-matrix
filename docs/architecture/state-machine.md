@@ -222,6 +222,75 @@ stateDiagram-v2
 - The local core `media` QA scenario is the Phase A proof:
   `send_media=ok recv_media=ok`. Its output must remain private-data-free.
 
+## Live Signals
+
+Live signals are Rust-owned room/account projections in
+`AppState.live_signals`. They cover per-room read receipts, fully-read markers,
+typing users, and account/user presence. React renders this state and dispatches
+typed commands; it does not infer Matrix signal semantics from timeline rows,
+DOM hover state, timers, or local component state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Empty
+    Empty --> RoomSignals: LiveRoomSignalsUpdated
+    Empty --> RoomSignals: LiveRoomReceiptsUpdated
+    Empty --> RoomSignals: FullyReadMarkerUpdated
+    Empty --> RoomSignals: TypingUsersUpdated
+    Empty --> PresenceSignals: PresenceUpdated
+    RoomSignals --> RoomSignals: LiveRoomSignalsUpdated
+    RoomSignals --> RoomSignals: LiveRoomReceiptsUpdated
+    RoomSignals --> RoomSignals: FullyReadMarkerUpdated
+    RoomSignals --> RoomSignals: TypingUsersUpdated
+    RoomSignals --> RoomAndPresence: PresenceUpdated
+    PresenceSignals --> PresenceSignals: PresenceUpdated
+    PresenceSignals --> RoomAndPresence: LiveRoomSignalsUpdated
+    PresenceSignals --> RoomAndPresence: LiveRoomReceiptsUpdated
+    PresenceSignals --> RoomAndPresence: FullyReadMarkerUpdated
+    PresenceSignals --> RoomAndPresence: TypingUsersUpdated
+    RoomAndPresence --> RoomAndPresence: LiveRoomSignalsUpdated
+    RoomAndPresence --> RoomAndPresence: LiveRoomReceiptsUpdated
+    RoomAndPresence --> RoomAndPresence: FullyReadMarkerUpdated
+    RoomAndPresence --> RoomAndPresence: TypingUsersUpdated
+    RoomAndPresence --> RoomAndPresence: PresenceUpdated
+    RoomSignals --> Empty: LogoutRequested/LogoutFinished/SessionCleared
+    PresenceSignals --> Empty: LogoutRequested/LogoutFinished/SessionCleared
+    RoomAndPresence --> Empty: LogoutRequested/LogoutFinished/SessionCleared
+```
+
+- Every live-signal update is accepted only for a Ready session. Late SDK
+  deliveries after logout, lock, account switch, or session clear are ignored.
+- `LiveRoomSignalsUpdated { room_id, update }` replaces the room's full
+  live-signal snapshot. The reducer normalizes duplicate receipts by user,
+  sorts receipt event entries, and sorts/deduplicates typing user ids.
+- `LiveRoomReceiptsUpdated { room_id, receipts_by_event }` is a partial merge
+  into the room receipt map. It does not clear typing users or the fully-read
+  marker.
+- `FullyReadMarkerUpdated { room_id, event_id }` replaces only that room's
+  fully-read marker; `event_id: None` clears it.
+- `TypingUsersUpdated { room_id, user_ids }` replaces only that room's typing
+  user list with the normalized list from Rust. GUI timers or focus state must
+  not repair typing state after the fact.
+- `PresenceUpdated { user_id, presence }` updates the Rust-owned presence map.
+  Current Phase A presence proves command/event/state ownership. Full network
+  propagation remains tied to the sync backend's presence-setting API and must
+  stay in Rust when implemented.
+- Session-view clears reset all live signals and emit `LiveSignalsChanged` when
+  anything was present.
+- `TimelineCommand::SendReadReceipt`, `SetFullyRead`, and `SetTyping` are
+  routed to the subscribed `TimelineActor`. Success events carry request ids;
+  failures are redacted `OperationFailed` events. Event ids, room ids, and user
+  ids may exist in app snapshots as visible Matrix UI data but must not appear
+  in ordinary logs, Debug output, QA stdout, screenshots, or issue evidence.
+- The local core `live_signals` QA scenario is the Phase A proof:
+  `read_receipt=ok fully_read=ok typing=ok presence=ok live_signals=ok`. Its
+  output must remain private-data-free and must not print Matrix room IDs, user
+  IDs, event IDs, raw SDK errors, or message bodies. On local SyncService
+  homeserver legs, the typing assertion may perform one bounded debug/test
+  `SyncOnce` on the observer account after the sender's typing command is
+  acknowledged; this is a QA delivery nudge, not React-owned or product
+  polling logic.
+
 ## Focused Context
 
 A focused context is the Rust-owned result-context timeline used when the

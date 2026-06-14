@@ -4,7 +4,8 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    CrossSigningStatus, IdentityResetState, KeyBackupStatus, VerificationFlowState,
+    CrossSigningStatus, IdentityResetState, KeyBackupStatus, LiveRoomSignalUpdate, PresenceKind,
+    VerificationFlowState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,12 +23,97 @@ pub enum CoreEvent {
     Sync(SyncEvent),
     Room(RoomEvent),
     Timeline(TimelineEvent),
+    LiveSignals(LiveSignalsEvent),
     Search(SearchEvent),
     E2eeTrust(E2eeTrustEvent),
     OperationFailed {
         request_id: RequestId,
         failure: CoreFailure,
     },
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LiveSignalsEvent {
+    RoomSignalsUpdated {
+        room_id: String,
+        update: LiveRoomSignalUpdate,
+    },
+    PresenceUpdated {
+        user_id: String,
+        presence: PresenceKind,
+    },
+    ReadReceiptSent {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
+    FullyReadSet {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
+    TypingSet {
+        request_id: RequestId,
+        key: TimelineKey,
+        is_typing: bool,
+    },
+    PresenceSet {
+        request_id: RequestId,
+        presence: PresenceKind,
+    },
+}
+
+impl fmt::Debug for LiveSignalsEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RoomSignalsUpdated { update, .. } => formatter
+                .debug_struct("RoomSignalsUpdated")
+                .field("room_id", &"RoomId(..)")
+                .field("receipt_events", &update.receipts_by_event.len())
+                .field(
+                    "fully_read_event_id",
+                    &update.fully_read_event_id.as_ref().map(|_| "EventId(..)"),
+                )
+                .field("typing_users", &update.typing_user_ids.len())
+                .finish(),
+            Self::PresenceUpdated { presence, .. } => formatter
+                .debug_struct("PresenceUpdated")
+                .field("user_id", &"UserId(..)")
+                .field("presence", presence)
+                .finish(),
+            Self::ReadReceiptSent { request_id, .. } => formatter
+                .debug_struct("ReadReceiptSent")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::FullyReadSet { request_id, .. } => formatter
+                .debug_struct("FullyReadSet")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::TypingSet {
+                request_id,
+                is_typing,
+                ..
+            } => formatter
+                .debug_struct("TypingSet")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("is_typing", is_typing)
+                .finish(),
+            Self::PresenceSet {
+                request_id,
+                presence,
+            } => formatter
+                .debug_struct("PresenceSet")
+                .field("request_id", request_id)
+                .field("presence", presence)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

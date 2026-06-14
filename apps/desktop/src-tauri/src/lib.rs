@@ -613,6 +613,7 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
         CoreEvent::Sync(e) => serde_json::json!({ "kind": "Sync", "event": e }),
         CoreEvent::Room(e) => serde_json::json!({ "kind": "Room", "event": e }),
         CoreEvent::Timeline(e) => serde_json::json!({ "kind": "Timeline", "event": e }),
+        CoreEvent::LiveSignals(e) => serde_json::json!({ "kind": "LiveSignals", "event": e }),
         CoreEvent::Search(e) => serde_json::json!({ "kind": "Search", "event": e }),
         CoreEvent::E2eeTrust(e) => serde_json::json!({ "kind": "E2eeTrust", "event": e }),
         CoreEvent::OperationFailed {
@@ -1149,16 +1150,17 @@ mod tests {
         use matrix_desktop_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
-                AccountEvent, E2eeTrustEvent, MediaTransferProgress, PaginationDirection,
-                PaginationState, ReactionGroup, RoomEvent, TimelineEvent, TimelineItem,
-                TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
-                TimelineMediaThumbnail, TimelineResyncReason,
+                AccountEvent, E2eeTrustEvent, LiveSignalsEvent, MediaTransferProgress,
+                PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineEvent,
+                TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
+                TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
-            IdentityResetAuthType, IdentityResetState, SasEmoji, VerificationFlowState,
+            IdentityResetAuthType, IdentityResetState, LiveEventReceipts, LiveReadReceipt,
+            LiveRoomSignalUpdate, PresenceKind, SasEmoji, VerificationFlowState,
             VerificationTarget,
         };
         use serde_json::json;
@@ -1487,10 +1489,41 @@ mod tests {
             json!("awaitingAuth")
         );
 
+        let live_signals = serialize_core_event(&CoreEvent::LiveSignals(
+            LiveSignalsEvent::RoomSignalsUpdated {
+                room_id: "!r:example.test".to_owned(),
+                update: LiveRoomSignalUpdate {
+                    receipts_by_event: vec![LiveEventReceipts {
+                        event_id: "$e1".to_owned(),
+                        receipts: vec![LiveReadReceipt {
+                            user_id: "@other:example.test".to_owned(),
+                            timestamp_ms: Some(123),
+                        }],
+                    }],
+                    fully_read_event_id: Some("$e1".to_owned()),
+                    typing_user_ids: vec!["@other:example.test".to_owned()],
+                },
+            },
+        ))
+        .expect("serialize live signals event");
+        assert_eq!(live_signals["kind"], json!("LiveSignals"));
+        assert_eq!(live_signals["event"]["kind"], json!("roomSignalsUpdated"));
+
+        let live_presence = serialize_core_event(&CoreEvent::LiveSignals(
+            LiveSignalsEvent::PresenceSet {
+                request_id,
+                presence: PresenceKind::Away,
+            },
+        ))
+        .expect("serialize live presence event");
+        assert_eq!(live_presence["event"]["kind"], json!("presenceSet"));
+
         let actual_contract = json!({
             "e2eeTrustIdentityResetChanged": e2ee_identity_reset,
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
+            "liveSignalsPresenceSet": live_presence,
+            "liveSignalsRoomSignalsUpdated": live_signals,
             "operationFailedSessionNotFound": failed,
             "roomDirectMessageStarted": room_direct_message_started,
             "roomInviteAccepted": room_invite_accepted,

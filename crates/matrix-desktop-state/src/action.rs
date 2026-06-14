@@ -1,10 +1,10 @@
 use std::fmt;
 
 use crate::state::{
-    BasicOperationRequest, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType, LoginFlow,
-    RecoveryMethod, RoomSummary, SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch,
-    SettingsValues, SpaceSummary, TrustOperationFailureKind, VerificationCancelReason,
-    VerificationTarget,
+    BasicOperationRequest, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType,
+    LiveEventReceipts, LiveRoomSignalUpdate, LoginFlow, PresenceKind, RecoveryMethod, RoomSummary,
+    SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
+    TrustOperationFailureKind, VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -269,6 +269,26 @@ pub enum AppAction {
     BasicOperationFailed {
         request_id: u64,
         message: String,
+    },
+    LiveRoomSignalsUpdated {
+        room_id: String,
+        update: LiveRoomSignalUpdate,
+    },
+    LiveRoomReceiptsUpdated {
+        room_id: String,
+        receipts_by_event: Vec<LiveEventReceipts>,
+    },
+    FullyReadMarkerUpdated {
+        room_id: String,
+        event_id: Option<String>,
+    },
+    TypingUsersUpdated {
+        room_id: String,
+        user_ids: Vec<String>,
+    },
+    PresenceUpdated {
+        user_id: String,
+        presence: PresenceKind,
     },
     ComposerReplyTargetSelected {
         room_id: String,

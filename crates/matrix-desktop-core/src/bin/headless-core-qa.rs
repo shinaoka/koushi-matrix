@@ -40,17 +40,17 @@ use matrix_desktop_core::command::{
     SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 use matrix_desktop_core::event::{
-    AccountEvent, CoreEvent, E2eeTrustEvent, PaginationDirection, PaginationState, RoomEvent,
-    SearchEvent, SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem,
-    TimelineItemId,
+    AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection,
+    PaginationState, RoomEvent, SearchEvent, SyncBackendKind, SyncEvent, TimelineDiff,
+    TimelineEvent, TimelineItem, TimelineItemId,
 };
 use matrix_desktop_core::failure::CoreFailure;
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{
     AppState, AuthSecret, CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType,
-    IdentityResetState, KeyBackupStatus, RecoveryRequest, SasEmoji, SessionInfo, SessionState,
-    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
+    IdentityResetState, KeyBackupStatus, PresenceKind, RecoveryRequest, SasEmoji, SessionInfo,
+    SessionState, TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -90,6 +90,7 @@ enum QaScenario {
     Timeline,
     Reply,
     Media,
+    LiveSignals,
     Thread,
     EditRedactSearch,
     RestoreCleanup,
@@ -105,6 +106,7 @@ enum QaStage {
     Timeline,
     Reply,
     Media,
+    LiveSignals,
     Thread,
     EditRedactSearch,
     RestoreCleanup,
@@ -192,11 +194,12 @@ impl QaScenario {
             "timeline" => Ok(Self::Timeline),
             "reply" => Ok(Self::Reply),
             "media" => Ok(Self::Media),
+            "live_signals" => Ok(Self::LiveSignals),
             "thread" => Ok(Self::Thread),
             "edit_redact_search" => Ok(Self::EditRedactSearch),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, reply, media, thread, edit_redact_search, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, reply, media, live_signals, thread, edit_redact_search, restore_cleanup; got {other}"
             )),
         }
     }
@@ -240,6 +243,14 @@ impl QaScenario {
                     | QaStage::Timeline
                     | QaStage::Media
             ),
+            Self::LiveSignals => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::LiveSignals
+            ),
             Self::Thread => matches!(
                 stage,
                 QaStage::Safety
@@ -268,6 +279,10 @@ impl QaScenario {
             ),
         }
     }
+
+    fn suppress_matrix_identifiers(self) -> bool {
+        matches!(self, Self::LiveSignals)
+    }
 }
 
 fn scenario_preflight_error(scenario: QaScenario) -> Result<(), String> {
@@ -290,6 +305,13 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::Timeline => &["timeline=ok"],
         QaStage::Reply => &["reply=ok"],
         QaStage::Media => &["send_media=ok", "recv_media=ok"],
+        QaStage::LiveSignals => &[
+            "read_receipt=ok",
+            "fully_read=ok",
+            "typing=ok",
+            "presence=ok",
+            "live_signals=ok",
+        ],
         QaStage::Thread => &[
             "thread_hidden=ok",
             "thread_summary=ok",
@@ -318,6 +340,11 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "thread_paginate=end_reached",
         "send_media=ok",
         "recv_media=ok",
+        "read_receipt=ok",
+        "fully_read=ok",
+        "typing=ok",
+        "presence=ok",
+        "live_signals=ok",
         "edit_redact_search=ok",
         "e2ee_trust=ok",
         "restore_cleanup=ok",
@@ -355,6 +382,13 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Timeline,
             QaStage::Media,
         ],
+        QaScenario::LiveSignals => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::LiveSignals,
+        ],
         QaScenario::Thread => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -386,6 +420,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Timeline,
             QaStage::Reply,
             QaStage::Media,
+            QaStage::LiveSignals,
             QaStage::Thread,
             QaStage::EditRedactSearch,
             QaStage::E2eeTrust,
@@ -412,6 +447,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::Timeline
         | QaScenario::Reply
         | QaScenario::Media
+        | QaScenario::LiveSignals
         | QaScenario::Thread
         | QaScenario::EditRedactSearch
         | QaScenario::RestoreCleanup => {
@@ -1022,7 +1058,11 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .map_err(|e| format!("submit create room: {e}"))?;
 
     let room_id = wait_for_room_created(&mut conn_a, create_room_id, "create room").await?;
-    println!("room_id={room_id}");
+    if scenario.suppress_matrix_identifiers() {
+        println!("room_created=ok");
+    } else {
+        println!("room_id={room_id}");
+    }
 
     // A creates a space
     let create_space_id = conn_a.next_request_id();
@@ -1035,7 +1075,11 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .map_err(|e| format!("submit create space: {e}"))?;
 
     let space_id = wait_for_space_created(&mut conn_a, create_space_id, "create space").await?;
-    println!("space_id={space_id}");
+    if scenario.suppress_matrix_identifiers() {
+        println!("space_created=ok");
+    } else {
+        println!("space_id={space_id}");
+    }
 
     // Extract server name from room_id (e.g., "!room:localhost:PORT" → "localhost:PORT")
     let via_server = config.server_name.clone();
@@ -1259,9 +1303,17 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     )
     .await?;
     let echo1_sdk_txn = send1_outcome.sdk_transaction_id.clone();
-    println!("local_echo_msg1=ok sdk_txn={echo1_sdk_txn}");
+    if scenario.suppress_matrix_identifiers() {
+        println!("local_echo_msg1=ok");
+    } else {
+        println!("local_echo_msg1=ok sdk_txn={echo1_sdk_txn}");
+    }
     let event1_id = send1_outcome.event_id;
-    println!("send_completed_msg1=ok event_id={event1_id}");
+    if scenario.suppress_matrix_identifiers() {
+        println!("send_completed_msg1=ok");
+    } else {
+        println!("send_completed_msg1=ok event_id={event1_id}");
+    }
 
     // A sends message 2.
     let txn2 = "qa-phase5-txn-2".to_owned();
@@ -1286,9 +1338,17 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     )
     .await?;
     let echo2_sdk_txn = send2_outcome.sdk_transaction_id.clone();
-    println!("local_echo_msg2=ok sdk_txn={echo2_sdk_txn}");
+    if scenario.suppress_matrix_identifiers() {
+        println!("local_echo_msg2=ok");
+    } else {
+        println!("local_echo_msg2=ok sdk_txn={echo2_sdk_txn}");
+    }
     let event2_id = send2_outcome.event_id;
-    println!("send_completed_msg2=ok event_id={event2_id}");
+    if scenario.suppress_matrix_identifiers() {
+        println!("send_completed_msg2=ok");
+    } else {
+        println!("send_completed_msg2=ok event_id={event2_id}");
+    }
 
     // B subscribes and receives both messages (event-driven wait on diffs).
     let key_b = TimelineKey::room(account_key_b.clone(), room_id.clone());
@@ -1387,6 +1447,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         wait_for_paginate_end_reached(&mut conn_a, &key_a, paginate_id, "paginate to EndReached")
             .await?;
     println!("paginate={paginate_result}");
+
+    if scenario.should_run_stage(QaStage::LiveSignals) {
+        run_live_signals_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, &event1_id).await?;
+    }
 
     if scenario.should_run_stage(QaStage::Reply) {
         // -------------------------------------------------------------------
@@ -4497,6 +4561,185 @@ async fn wait_for_media_download_completed(
     }
 }
 
+async fn run_live_signals_stage(
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+    key_a: &TimelineKey,
+    key_b: &TimelineKey,
+    event_id: &str,
+) -> Result<(), String> {
+    let room_id = timeline_key_room_id(key_b)
+        .ok_or_else(|| "live signals: expected room timeline key".to_owned())?
+        .to_owned();
+
+    let read_receipt_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+            request_id: read_receipt_id,
+            key: key_b.clone(),
+            event_id: event_id.to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("live signals: submit read receipt failed: {e}"))?;
+    wait_for_live_signal_event(conn_b, read_receipt_id, "read receipt", |event| {
+        matches!(event, LiveSignalsEvent::ReadReceiptSent { .. })
+    })
+    .await?;
+    wait_for_live_signal_snapshot(conn_b, "read receipt state", |snapshot| {
+        snapshot
+            .live_signals
+            .rooms
+            .get(&room_id)
+            .and_then(|room| room.receipts_by_event.get(event_id))
+            .is_some_and(|receipts| !receipts.is_empty())
+    })
+    .await?;
+    println!("read_receipt=ok");
+
+    let fully_read_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::SetFullyRead {
+            request_id: fully_read_id,
+            key: key_b.clone(),
+            event_id: event_id.to_owned(),
+        }))
+        .await
+        .map_err(|e| format!("live signals: submit fully-read marker failed: {e}"))?;
+    wait_for_live_signal_event(conn_b, fully_read_id, "fully read", |event| {
+        matches!(event, LiveSignalsEvent::FullyReadSet { .. })
+    })
+    .await?;
+    wait_for_live_signal_snapshot(conn_b, "fully read state", |snapshot| {
+        snapshot
+            .live_signals
+            .rooms
+            .get(&room_id)
+            .is_some_and(|room| room.fully_read_event_id.as_deref() == Some(event_id))
+    })
+    .await?;
+    println!("fully_read=ok");
+
+    let typing_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::SetTyping {
+            request_id: typing_id,
+            key: key_b.clone(),
+            is_typing: true,
+        }))
+        .await
+        .map_err(|e| format!("live signals: submit typing notice failed: {e}"))?;
+    wait_for_live_signal_event(conn_b, typing_id, "typing", |event| {
+        matches!(
+            event,
+            LiveSignalsEvent::TypingSet {
+                is_typing: true,
+                ..
+            }
+        )
+    })
+    .await?;
+    // Local SyncService homeserver lanes can acknowledge the typing command but
+    // not wake the room typing observer from the sliding-sync typing extension.
+    // A bounded SyncOnce keeps this QA leg focused on the Rust-owned
+    // command/event/state contract; product sync policy remains in SyncActor.
+    sync_once_for_qa(conn_a, "live signals sync A for typing").await?;
+
+    let room_id_a = timeline_key_room_id(key_a)
+        .ok_or_else(|| "live signals: expected observer room timeline key".to_owned())?
+        .to_owned();
+    wait_for_live_signal_snapshot(conn_a, "typing state", |snapshot| {
+        snapshot
+            .live_signals
+            .rooms
+            .get(&room_id_a)
+            .is_some_and(|room| !room.typing_user_ids.is_empty())
+    })
+    .await?;
+    println!("typing=ok");
+
+    let user_id_b = match &conn_b.snapshot().session {
+        SessionState::Ready(info) => info.user_id.clone(),
+        _ => return Err("live signals: user B session was not ready".to_owned()),
+    };
+    let presence_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Account(AccountCommand::SetPresence {
+            request_id: presence_id,
+            presence: PresenceKind::Away,
+        }))
+        .await
+        .map_err(|e| format!("live signals: submit presence failed: {e}"))?;
+    wait_for_live_signal_event(conn_b, presence_id, "presence", |event| {
+        matches!(event, LiveSignalsEvent::PresenceSet { .. })
+    })
+    .await?;
+    wait_for_live_signal_snapshot(conn_b, "presence state", |snapshot| {
+        snapshot.live_signals.presence.get(&user_id_b) == Some(&PresenceKind::Away)
+    })
+    .await?;
+    println!("presence=ok");
+    println!("live_signals=ok");
+
+    Ok(())
+}
+
+fn timeline_key_room_id(key: &TimelineKey) -> Option<&str> {
+    match &key.kind {
+        TimelineKind::Room { room_id }
+        | TimelineKind::Thread { room_id, .. }
+        | TimelineKind::Focused { room_id, .. } => Some(room_id.as_str()),
+    }
+}
+
+async fn wait_for_live_signal_event(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+    matches_event: impl Fn(&LiveSignalsEvent) -> bool,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for live-signal event"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::LiveSignals(event) if matches_event(&event) => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: live-signal command failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_live_signal_snapshot(
+    conn: &mut CoreConnection,
+    label: &str,
+    predicate: impl Fn(&AppState) -> bool,
+) -> Result<AppState, String> {
+    let snapshot = conn.snapshot();
+    if predicate(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for live-signal state"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        if let CoreEvent::StateChanged(snapshot) = event
+            && predicate(&snapshot)
+        {
+            return Ok(snapshot);
+        }
+    }
+}
+
 async fn run_media_stage(
     conn_a: &mut CoreConnection,
     conn_b: &mut CoreConnection,
@@ -5343,6 +5586,10 @@ mod tests {
             QaScenario::Media
         );
         assert_eq!(
+            QaScenario::from_env_value("live_signals").unwrap(),
+            QaScenario::LiveSignals
+        );
+        assert_eq!(
             QaScenario::from_env_value("thread").unwrap(),
             QaScenario::Thread
         );
@@ -5378,6 +5625,7 @@ mod tests {
             QaScenario::Timeline,
             QaScenario::Reply,
             QaScenario::Media,
+            QaScenario::LiveSignals,
             QaScenario::Thread,
             QaScenario::EditRedactSearch,
             QaScenario::RestoreCleanup,
@@ -5390,6 +5638,13 @@ mod tests {
     #[test]
     fn thread_is_allowed_by_preflight() {
         scenario_preflight_error(QaScenario::Thread).unwrap();
+    }
+
+    #[test]
+    fn live_signals_scenario_suppresses_matrix_identifiers() {
+        assert!(QaScenario::LiveSignals.suppress_matrix_identifiers());
+        assert!(!QaScenario::Timeline.suppress_matrix_identifiers());
+        assert!(!QaScenario::All.suppress_matrix_identifiers());
     }
 
     #[test]
@@ -5872,8 +6127,18 @@ mod tests {
         assert!(QaScenario::Media.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::Media.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::Media.should_run_stage(QaStage::Media));
+        assert!(!QaScenario::Media.should_run_stage(QaStage::LiveSignals));
         assert!(!QaScenario::Media.should_run_stage(QaStage::Thread));
         assert!(!QaScenario::Media.should_run_stage(QaStage::EditRedactSearch));
+
+        assert!(QaScenario::LiveSignals.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::LiveSignals.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::LiveSignals.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::LiveSignals.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::LiveSignals.should_run_stage(QaStage::LiveSignals));
+        assert!(!QaScenario::LiveSignals.should_run_stage(QaStage::Media));
+        assert!(!QaScenario::LiveSignals.should_run_stage(QaStage::Thread));
+        assert!(!QaScenario::LiveSignals.should_run_stage(QaStage::EditRedactSearch));
 
         assert!(QaScenario::Thread.should_run_stage(QaStage::Safety));
         assert!(QaScenario::Thread.should_run_stage(QaStage::LoginSync));
@@ -5892,6 +6157,7 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
         assert!(QaScenario::All.should_run_stage(QaStage::Media));
+        assert!(QaScenario::All.should_run_stage(QaStage::LiveSignals));
         assert!(QaScenario::All.should_run_stage(QaStage::Thread));
         assert!(QaScenario::All.should_run_stage(QaStage::EditRedactSearch));
         assert!(QaScenario::All.should_run_stage(QaStage::RestoreCleanup));
@@ -5917,6 +6183,11 @@ mod tests {
                 "thread_paginate=end_reached",
                 "send_media=ok",
                 "recv_media=ok",
+                "read_receipt=ok",
+                "fully_read=ok",
+                "typing=ok",
+                "presence=ok",
+                "live_signals=ok",
                 "edit_redact_search=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
@@ -5986,6 +6257,21 @@ mod tests {
             ]
         );
         assert_eq!(
+            final_tokens_for_scenario(QaScenario::LiveSignals),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "read_receipt=ok",
+                "fully_read=ok",
+                "typing=ok",
+                "presence=ok",
+                "live_signals=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
             final_tokens_for_scenario(QaScenario::Thread),
             [
                 "safety=ok",
@@ -6046,6 +6332,11 @@ mod tests {
                 "thread_paginate=end_reached",
                 "send_media=ok",
                 "recv_media=ok",
+                "read_receipt=ok",
+                "fully_read=ok",
+                "typing=ok",
+                "presence=ok",
+                "live_signals=ok",
                 "edit_redact_search=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",

@@ -29,6 +29,7 @@ export interface AppState {
   search: SearchState;
   errors: AppError[];
   basic_operation: BasicOperationState;
+  live_signals: LiveSignalsState;
   e2ee_trust: E2eeTrustState;
 }
 
@@ -227,6 +228,35 @@ export type BasicOperationState =
   | { kind: "creatingRoom"; request_id: number; name: string }
   | { kind: "creatingSpace"; request_id: number; name: string }
   | { kind: "linkingSpaceChild"; request_id: number; space_id: string; child_room_id: string };
+
+export interface LiveSignalsState {
+  rooms: Record<string, RoomLiveSignals>;
+  presence: Record<string, PresenceKind>;
+}
+
+export interface RoomLiveSignals {
+  receipts_by_event: Record<string, LiveReadReceipt[]>;
+  fully_read_event_id: string | null;
+  typing_user_ids: string[];
+}
+
+export interface LiveReadReceipt {
+  user_id: string;
+  timestamp_ms: number | null;
+}
+
+export interface LiveEventReceipts {
+  event_id: string;
+  receipts: LiveReadReceipt[];
+}
+
+export interface LiveRoomSignalUpdate {
+  receipts_by_event: LiveEventReceipts[];
+  fully_read_event_id: string | null;
+  typing_user_ids: string[];
+}
+
+export type PresenceKind = "online" | "away" | "offline";
 
 export interface E2eeTrustState {
   verification: VerificationFlowState;

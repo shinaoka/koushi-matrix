@@ -757,6 +757,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         | AccountCommand::RestoreLastSession { .. }
         | AccountCommand::QuerySavedSessions { .. }
         | AccountCommand::SubmitRecovery { .. }
+        | AccountCommand::SetPresence { .. }
         | AccountCommand::Logout { .. }
         | AccountCommand::SwitchAccount { .. } => None,
     }

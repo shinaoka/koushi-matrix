@@ -51,11 +51,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
-use matrix_desktop_state::AppAction;
+use matrix_desktop_state::{AppAction, LiveEventReceipts, LiveReadReceipt};
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
+use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::events::room::message::{
     AddMentions, MessageType, ReplyWithinThread, RoomMessageEventContentWithoutRelation,
     TextMessageEventContent,
@@ -72,9 +73,9 @@ use crate::command::{
     MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 use crate::event::{
-    CoreEvent, MediaTransferProgress, PaginationDirection, PaginationState, ThreadSummaryDto,
-    TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
-    TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
+    CoreEvent, LiveSignalsEvent, MediaTransferProgress, PaginationDirection, PaginationState,
+    ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
+    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -338,6 +339,51 @@ impl TimelineManagerActor {
                         request_id,
                         event_id,
                         reaction_key,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::SendReadReceipt {
+                request_id,
+                key,
+                event_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::SendReadReceipt {
+                        request_id,
+                        event_id,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::SetFullyRead {
+                request_id,
+                key,
+                event_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::SetFullyRead {
+                        request_id,
+                        event_id,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::SetTyping {
+                request_id,
+                key,
+                is_typing,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::SetTyping {
+                        request_id,
+                        is_typing,
                     },
                 )
                 .await;
@@ -729,6 +775,19 @@ enum TimelineActorMessage {
         event_id: String,
         reaction_key: String,
     },
+    SendReadReceipt {
+        request_id: RequestId,
+        event_id: String,
+    },
+    SetFullyRead {
+        request_id: RequestId,
+        event_id: String,
+    },
+    SetTyping {
+        request_id: RequestId,
+        is_typing: bool,
+    },
+    TypingUsersUpdated(Vec<String>),
     /// Internal: diff batch from the relay task.
     DiffBatch(Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>),
     /// Internal: send completed (from send queue monitor task).
@@ -805,6 +864,7 @@ impl TimelineActor {
             .iter()
             .map(|item| sdk_item_to_timeline_item(item, own_user_id.as_deref()))
             .collect();
+        let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
 
@@ -831,7 +891,27 @@ impl TimelineActor {
         if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             if let Some(room) = session.client().get_room(&room_id) {
                 let sq_tx = actor_tx.clone();
-                executor::spawn(run_send_queue_monitor(sq_tx, room));
+                executor::spawn(run_send_queue_monitor(sq_tx, room.clone()));
+
+                let (typing_guard, typing_rx) = room.subscribe_to_typing_notifications();
+                let typing_tx = actor_tx.clone();
+                executor::spawn(run_typing_notifications(typing_tx, typing_guard, typing_rx));
+
+                let mut actions = Vec::new();
+                let room_id = room_id_str.clone();
+                if !initial_receipts.is_empty() {
+                    actions.push(AppAction::LiveRoomReceiptsUpdated {
+                        room_id: room_id.clone(),
+                        receipts_by_event: initial_receipts,
+                    });
+                }
+                actions.push(AppAction::FullyReadMarkerUpdated {
+                    room_id,
+                    event_id: room
+                        .fully_read_event_id()
+                        .map(|event_id| event_id.to_string()),
+                });
+                let _ = action_tx.try_send(actions);
             }
         }
 
@@ -925,6 +1005,27 @@ impl TimelineActor {
             } => {
                 self.handle_toggle_reaction(request_id, event_id, reaction_key)
                     .await;
+            }
+            TimelineActorMessage::SendReadReceipt {
+                request_id,
+                event_id,
+            } => {
+                self.handle_send_read_receipt(request_id, event_id).await;
+            }
+            TimelineActorMessage::SetFullyRead {
+                request_id,
+                event_id,
+            } => {
+                self.handle_set_fully_read(request_id, event_id).await;
+            }
+            TimelineActorMessage::SetTyping {
+                request_id,
+                is_typing,
+            } => {
+                self.handle_set_typing(request_id, is_typing).await;
+            }
+            TimelineActorMessage::TypingUsersUpdated(user_ids) => {
+                self.emit_typing_users_action(user_ids);
             }
             TimelineActorMessage::DiffBatch(diffs) => {
                 self.handle_diff_batch(diffs);
@@ -1430,6 +1531,109 @@ impl TimelineActor {
         }
     }
 
+    async fn handle_send_read_receipt(&mut self, request_id: RequestId, event_id: String) {
+        let parsed_event_id = match matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
+            Ok(event_id) => event_id,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+
+        match self
+            .timeline
+            .send_single_receipt(ReceiptType::Read, parsed_event_id)
+            .await
+        {
+            Ok(_) => {
+                self.emit_own_receipt_action(&event_id);
+                self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::ReadReceiptSent {
+                    request_id,
+                    key: self.key.clone(),
+                    event_id,
+                }));
+            }
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_set_fully_read(&mut self, request_id: RequestId, event_id: String) {
+        let parsed_event_id = match matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
+            Ok(event_id) => event_id,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+
+        match self
+            .timeline
+            .send_single_receipt(ReceiptType::FullyRead, parsed_event_id)
+            .await
+        {
+            Ok(_) => {
+                if let Some(room_id) = timeline_room_id(&self.key) {
+                    let _ = self
+                        .action_tx
+                        .try_send(vec![AppAction::FullyReadMarkerUpdated {
+                            room_id,
+                            event_id: Some(event_id.clone()),
+                        }]);
+                }
+                self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::FullyReadSet {
+                    request_id,
+                    key: self.key.clone(),
+                    event_id,
+                }));
+            }
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_set_typing(&mut self, request_id: RequestId, is_typing: bool) {
+        match self.timeline.room().typing_notice(is_typing).await {
+            Ok(()) => {
+                self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::TypingSet {
+                    request_id,
+                    key: self.key.clone(),
+                    is_typing,
+                }));
+            }
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
     fn handle_diff_batch(&mut self, diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>) {
         if diffs.is_empty() {
             return;
@@ -1438,6 +1642,7 @@ impl TimelineActor {
         for diff in &diffs {
             self.apply_media_cache_diff(diff);
         }
+        self.emit_receipts_from_sdk_diffs(&diffs);
 
         // Phase 6: forward search index mutations before converting diffs.
         if self.search_index_tx.is_some() {
@@ -1773,6 +1978,55 @@ impl TimelineActor {
             let _ = self.action_tx.try_send(vec![action]);
         }
     }
+
+    fn emit_own_receipt_action(&self, event_id: &str) {
+        let Some(room_id) = timeline_room_id(&self.key) else {
+            return;
+        };
+        let Some(user_id) = self.own_user_id.as_ref() else {
+            return;
+        };
+        let _ = self
+            .action_tx
+            .try_send(vec![AppAction::LiveRoomReceiptsUpdated {
+                room_id,
+                receipts_by_event: vec![LiveEventReceipts {
+                    event_id: event_id.to_owned(),
+                    receipts: vec![LiveReadReceipt {
+                        user_id: user_id.to_string(),
+                        timestamp_ms: None,
+                    }],
+                }],
+            }]);
+    }
+
+    fn emit_typing_users_action(&self, user_ids: Vec<String>) {
+        let Some(room_id) = timeline_room_id(&self.key) else {
+            return;
+        };
+        let _ = self
+            .action_tx
+            .try_send(vec![AppAction::TypingUsersUpdated { room_id, user_ids }]);
+    }
+
+    fn emit_receipts_from_sdk_diffs(&self, diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>]) {
+        let Some(room_id) = timeline_room_id(&self.key) else {
+            return;
+        };
+        let mut receipts_by_event = Vec::new();
+        for diff in diffs {
+            collect_live_event_receipts_from_diff(diff, &mut receipts_by_event);
+        }
+        if receipts_by_event.is_empty() {
+            return;
+        }
+        let _ = self
+            .action_tx
+            .try_send(vec![AppAction::LiveRoomReceiptsUpdated {
+                room_id,
+                receipts_by_event,
+            }]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1848,9 +2102,109 @@ async fn run_send_queue_monitor(
     }
 }
 
+async fn run_typing_notifications(
+    actor_tx: mpsc::Sender<TimelineActorMessage>,
+    _guard: matrix_sdk::event_handler::EventHandlerDropGuard,
+    mut typing_rx: tokio::sync::broadcast::Receiver<Vec<matrix_sdk::ruma::OwnedUserId>>,
+) {
+    loop {
+        match typing_rx.recv().await {
+            Ok(user_ids) => {
+                let user_ids = user_ids
+                    .into_iter()
+                    .map(|user_id| user_id.to_string())
+                    .collect();
+                if actor_tx
+                    .send(TimelineActorMessage::TypingUsersUpdated(user_ids))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SDK → core type conversions
 // ---------------------------------------------------------------------------
+
+fn timeline_room_id(key: &TimelineKey) -> Option<String> {
+    match &key.kind {
+        TimelineKind::Room { room_id }
+        | TimelineKind::Thread { room_id, .. }
+        | TimelineKind::Focused { room_id, .. } => Some(room_id.clone()),
+    }
+}
+
+fn live_event_receipts_from_sdk_items<'a>(
+    items: impl IntoIterator<Item = &'a Arc<SdkTimelineItem>>,
+) -> Vec<LiveEventReceipts> {
+    items
+        .into_iter()
+        .filter_map(|item| live_event_receipts_from_sdk_item(item, false))
+        .collect()
+}
+
+fn collect_live_event_receipts_from_diff(
+    diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+    out: &mut Vec<LiveEventReceipts>,
+) {
+    use eyeball_im::VectorDiff;
+
+    match diff {
+        VectorDiff::PushFront { value }
+        | VectorDiff::PushBack { value }
+        | VectorDiff::Insert { value, .. } => {
+            if let Some(receipts) = live_event_receipts_from_sdk_item(value, false) {
+                out.push(receipts);
+            }
+        }
+        VectorDiff::Set { value, .. } => {
+            if let Some(receipts) = live_event_receipts_from_sdk_item(value, true) {
+                out.push(receipts);
+            }
+        }
+        VectorDiff::Append { values } | VectorDiff::Reset { values } => {
+            out.extend(live_event_receipts_from_sdk_items(values.iter()));
+        }
+        VectorDiff::Remove { .. }
+        | VectorDiff::Truncate { .. }
+        | VectorDiff::Clear
+        | VectorDiff::PopFront
+        | VectorDiff::PopBack => {}
+    }
+}
+
+fn live_event_receipts_from_sdk_item(
+    item: &Arc<SdkTimelineItem>,
+    include_empty: bool,
+) -> Option<LiveEventReceipts> {
+    use matrix_sdk_ui::timeline::TimelineItemKind;
+
+    let event_item = match item.kind() {
+        TimelineItemKind::Event(event_item) => event_item,
+        TimelineItemKind::Virtual(_) => return None,
+    };
+    let event_id = event_item.event_id()?.to_string();
+    let receipts = event_item
+        .read_receipts()
+        .iter()
+        .map(|(user_id, receipt)| LiveReadReceipt {
+            user_id: user_id.to_string(),
+            timestamp_ms: receipt.ts.map(|timestamp| timestamp.0.into()),
+        })
+        .collect::<Vec<_>>();
+
+    if receipts.is_empty() && !include_empty {
+        return None;
+    }
+
+    Some(LiveEventReceipts { event_id, receipts })
+}
 
 /// Convert a single SDK `TimelineItem` to our `TimelineItem` DTO.
 pub fn sdk_item_to_timeline_item(

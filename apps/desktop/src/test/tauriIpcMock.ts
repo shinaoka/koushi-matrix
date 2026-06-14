@@ -179,6 +179,7 @@ function defaultSnapshotResponse() {
       search: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" },
+      live_signals: { rooms: {}, presence: {} },
       e2ee_trust: {
         verification: { kind: "idle" },
         cross_signing: { kind: "unknown" },

@@ -33,13 +33,13 @@ use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
     AppAction, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType, IdentityResetState,
-    LoginRequest, RecoveryMethod, RecoveryRequest, SessionInfo, TrustOperationFailureKind,
-    VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    LoginRequest, PresenceKind, RecoveryMethod, RecoveryRequest, SessionInfo,
+    TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
-use crate::event::{AccountEvent, CoreEvent, E2eeTrustEvent};
+use crate::event::{AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent};
 use crate::failure::{CoreFailure, LoginFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId};
 use crate::room::{RoomActorHandle, RoomMessage};
@@ -583,6 +583,12 @@ impl AccountActor {
                 self.handle_submit_identity_reset_auth(request_id, flow_id, request)
                     .await;
             }
+            AccountCommand::SetPresence {
+                request_id,
+                presence,
+            } => {
+                self.handle_set_presence(request_id, presence).await;
+            }
             AccountCommand::RequestVerification { request_id, target } => {
                 self.handle_request_verification(request_id, target).await;
             }
@@ -693,6 +699,30 @@ impl AccountActor {
         });
         self.project_verification_request_state(request_id, handle.state())
             .await;
+    }
+
+    async fn handle_set_presence(&self, request_id: RequestId, presence: PresenceKind) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        let user_id = session.info.user_id.clone();
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::PresenceUpdated {
+                user_id: user_id.clone(),
+                presence,
+            }])
+            .await;
+        self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::PresenceSet {
+            request_id,
+            presence,
+        }));
+        self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::PresenceUpdated {
+            user_id,
+            presence,
+        }));
     }
 
     async fn handle_accept_verification(&mut self, request_id: RequestId, flow_id: u64) {

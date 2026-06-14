@@ -157,7 +157,8 @@ An in-process actor system in `matrix-desktop-core`:
   `AppState.invites` stale.
 - `TimelineActor` (per room/thread/focused timeline) — subscription, diffs,
   pagination, send/edit/redaction relay, media/file projection, upload
-  progress, and Rust-only media download effects. Room live timelines use
+  progress, room-scoped live signals, and Rust-only media download effects.
+  Room live timelines use
   `TimelineFocus::Live { hide_threaded_events: true }` so threaded replies
   are hidden from the main room timeline. Expanded threads use
   `TimelineKind::Thread`. On the sliding-sync backend,
@@ -175,6 +176,18 @@ An in-process actor system in `matrix-desktop-core`:
   it does not infer Matrix media semantics, upload state, encrypted media
   metadata, or download behavior. Downloaded bytes and encrypted media keys or
   hashes stay inside Rust actor effects and are never sent through CoreEvents.
+  Read receipts, fully-read markers, and typing notifications are projected
+  from SDK timeline/room signals into `AppState.live_signals`; React may render
+  that snapshot and dispatch typed commands, but it must not synthesize receipt,
+  marker, or typing lifecycle locally.
+- Account-level live signals such as presence are Rust-owned state in
+  `AppState.live_signals.presence`. In the current Phase A contract,
+  `AccountCommand::SetPresence` records the requested presence and emits typed
+  `LiveSignalsEvent` updates. Network presence propagation is sync-backend
+  policy: the legacy SDK path uses `SyncSettings::set_presence`, while the
+  current `SyncService` builder in the vendored SDK has no direct presence
+  setter. Do not move presence semantics into React while that SDK/API decision
+  remains open.
 - `SearchActor` — ngram candidates, canonical-text verification,
   document-level index mutations for edits/redactions/late decryptions.
 - `StoreActor` — credential store access, store/search keys, per-account

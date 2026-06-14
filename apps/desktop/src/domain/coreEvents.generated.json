@@ -50,6 +50,41 @@
     },
     "kind": "E2eeTrust"
   },
+  "liveSignalsPresenceSet": {
+    "event": {
+      "kind": "presenceSet",
+      "presence": "away",
+      "request_id": {
+        "connection_id": 3,
+        "sequence": 7
+      }
+    },
+    "kind": "LiveSignals"
+  },
+  "liveSignalsRoomSignalsUpdated": {
+    "event": {
+      "kind": "roomSignalsUpdated",
+      "room_id": "!r:example.test",
+      "update": {
+        "fully_read_event_id": "$e1",
+        "receipts_by_event": [
+          {
+            "event_id": "$e1",
+            "receipts": [
+              {
+                "timestamp_ms": 123,
+                "user_id": "@other:example.test"
+              }
+            ]
+          }
+        ],
+        "typing_user_ids": [
+          "@other:example.test"
+        ]
+      }
+    },
+    "kind": "LiveSignals"
+  },
   "operationFailedSessionNotFound": {
     "failure": "SessionNotFound",
     "kind": "OperationFailed",

@@ -5,15 +5,16 @@ use std::time::Duration;
 
 use matrix_desktop_state::{
     AppAction, AppearanceSettings, AuthSecret, ComposerMode, CrossSigningStatus,
-    IdentityResetAuthRequest, LoginRequest, RecoveryRequest, RoomSummary, SasEmoji, SearchState,
-    SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState, ThemePreference,
+    IdentityResetAuthRequest, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
+    LoginRequest, PresenceKind, RecoveryRequest, RoomSummary, SasEmoji, SearchState, SessionInfo,
+    SessionState, SettingsPatch, SettingsPersistenceState, ThemePreference,
     VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 
 use crate::command::{
     AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, TimelineCommand,
 };
-use crate::event::{CoreEvent, E2eeTrustEvent, PaginationDirection};
+use crate::event::{CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection};
 use crate::executor;
 use crate::failure::CoreFailure;
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey};
@@ -261,6 +262,88 @@ fn e2ee_trust_events_are_typed_and_debug_redacts_identifiers() {
     assert!(!debug.contains("@alice:example.test"));
     assert!(!debug.contains("@bob:example.test"));
     assert!(!debug.contains("BOBDEVICE"));
+}
+
+#[test]
+fn live_signal_commands_are_correlated_ready_gated_and_redacted() {
+    let request_id = fake_request_id();
+    let key = TimelineKey::room(
+        AccountKey("@alice:example.test".to_owned()),
+        "!room:example.test",
+    );
+    let commands = vec![
+        CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+            request_id,
+            key: key.clone(),
+            event_id: "$receipt-target:example.test".to_owned(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::SetFullyRead {
+            request_id,
+            key: key.clone(),
+            event_id: "$fully-read-target:example.test".to_owned(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::SetTyping {
+            request_id,
+            key,
+            is_typing: true,
+        }),
+        CoreCommand::Account(AccountCommand::SetPresence {
+            request_id,
+            presence: PresenceKind::Away,
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(!debug.contains("@alice:example.test"), "{debug}");
+        assert!(!debug.contains("!room:example.test"), "{debug}");
+        assert!(!debug.contains("$receipt-target:example.test"), "{debug}");
+        assert!(
+            !debug.contains("$fully-read-target:example.test"),
+            "{debug}"
+        );
+    }
+}
+
+#[test]
+fn live_signal_events_are_typed_and_debug_redacts_identifiers() {
+    let request_id = fake_request_id();
+    let key = TimelineKey::room(
+        AccountKey("@alice:example.test".to_owned()),
+        "!room:example.test",
+    );
+    let update = LiveRoomSignalUpdate {
+        receipts_by_event: vec![LiveEventReceipts {
+            event_id: "$event:example.test".to_owned(),
+            receipts: vec![LiveReadReceipt {
+                user_id: "@bob:example.test".to_owned(),
+                timestamp_ms: Some(123),
+            }],
+        }],
+        fully_read_event_id: Some("$event:example.test".to_owned()),
+        typing_user_ids: vec!["@bob:example.test".to_owned()],
+    };
+
+    let event = LiveSignalsEvent::RoomSignalsUpdated {
+        room_id: "!room:example.test".to_owned(),
+        update,
+    };
+    let value = serde_json::to_value(&event).expect("live signal event serializes");
+    assert_eq!(value["kind"], "roomSignalsUpdated");
+    assert_eq!(value["room_id"], "!room:example.test");
+
+    let completion = LiveSignalsEvent::ReadReceiptSent {
+        request_id,
+        key,
+        event_id: "$event:example.test".to_owned(),
+    };
+    let debug = format!("{:?}", CoreEvent::LiveSignals(completion));
+    assert!(debug.contains("ReadReceiptSent"));
+    assert!(!debug.contains("@alice:example.test"), "{debug}");
+    assert!(!debug.contains("!room:example.test"), "{debug}");
+    assert!(!debug.contains("$event:example.test"), "{debug}");
 }
 
 #[tokio::test]

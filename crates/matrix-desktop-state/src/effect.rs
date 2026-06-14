@@ -85,6 +85,7 @@ pub enum UiEvent {
     TimelineChanged { room_id: String },
     ThreadChanged,
     SearchChanged,
+    LiveSignalsChanged,
     E2eeTrustChanged,
     ErrorChanged,
 }

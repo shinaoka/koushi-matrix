@@ -275,6 +275,59 @@ export type RoomEvent =
   | { RoomForgotten: { request_id: RequestId; room_id: string } }
   | "RoomListUpdated";
 
+export type PresenceKind = "online" | "away" | "offline";
+
+export interface LiveReadReceipt {
+  user_id: string;
+  timestamp_ms: number | null;
+}
+
+export interface LiveEventReceipts {
+  event_id: string;
+  receipts: LiveReadReceipt[];
+}
+
+export interface LiveRoomSignalUpdate {
+  receipts_by_event: LiveEventReceipts[];
+  fully_read_event_id: string | null;
+  typing_user_ids: string[];
+}
+
+export type LiveSignalsEvent =
+  | {
+      kind: "roomSignalsUpdated";
+      room_id: string;
+      update: LiveRoomSignalUpdate;
+    }
+  | {
+      kind: "presenceUpdated";
+      user_id: string;
+      presence: PresenceKind;
+    }
+  | {
+      kind: "readReceiptSent";
+      request_id: RequestId;
+      key: TimelineKey;
+      event_id: string;
+    }
+  | {
+      kind: "fullyReadSet";
+      request_id: RequestId;
+      key: TimelineKey;
+      event_id: string;
+    }
+  | {
+      kind: "typingSet";
+      request_id: RequestId;
+      key: TimelineKey;
+      is_typing: boolean;
+    }
+  | {
+      kind: "presenceSet";
+      request_id: RequestId;
+      presence: PresenceKind;
+    };
+
 export interface SearchResultItem {
   room_id: string;
   event_id: string;
@@ -410,6 +463,7 @@ export type CoreEventPayload =
   | { kind: "Sync"; event: SyncEvent }
   | { kind: "Room"; event: RoomEvent }
   | { kind: "Timeline"; event: TimelineEvent }
+  | { kind: "LiveSignals"; event: LiveSignalsEvent }
   | { kind: "Search"; event: SearchEvent }
   | { kind: "E2eeTrust"; event: E2eeTrustEvent }
   | {

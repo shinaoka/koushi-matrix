@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -15,6 +17,7 @@ pub struct AppState {
     pub focused_context: FocusedContextState,
     pub search: SearchState,
     pub basic_operation: BasicOperationState,
+    pub live_signals: LiveSignalsState,
     pub e2ee_trust: E2eeTrustState,
     pub errors: Vec<AppError>,
 }
@@ -35,6 +38,7 @@ impl Default for AppState {
             focused_context: FocusedContextState::Closed,
             search: SearchState::Closed,
             basic_operation: BasicOperationState::Idle,
+            live_signals: LiveSignalsState::default(),
             e2ee_trust: E2eeTrustState::default(),
             errors: Vec::new(),
         }
@@ -721,6 +725,79 @@ pub enum BasicOperationRequest {
         space_id: String,
         child_room_id: String,
     },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LiveSignalsState {
+    pub rooms: BTreeMap<String, RoomLiveSignals>,
+    pub presence: BTreeMap<String, PresenceKind>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomLiveSignals {
+    pub receipts_by_event: BTreeMap<String, Vec<LiveReadReceipt>>,
+    pub fully_read_event_id: Option<String>,
+    pub typing_user_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LiveReadReceipt {
+    pub user_id: String,
+    pub timestamp_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LiveEventReceipts {
+    pub event_id: String,
+    pub receipts: Vec<LiveReadReceipt>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LiveRoomSignalUpdate {
+    pub receipts_by_event: Vec<LiveEventReceipts>,
+    pub fully_read_event_id: Option<String>,
+    pub typing_user_ids: Vec<String>,
+}
+
+impl LiveRoomSignalUpdate {
+    pub fn into_room_signals(self) -> RoomLiveSignals {
+        let receipts_by_event = self
+            .receipts_by_event
+            .into_iter()
+            .map(|entry| {
+                let receipts = normalize_receipts(entry.receipts);
+                (entry.event_id, receipts)
+            })
+            .collect();
+
+        RoomLiveSignals {
+            receipts_by_event,
+            fully_read_event_id: self.fully_read_event_id,
+            typing_user_ids: sorted_unique(self.typing_user_ids),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PresenceKind {
+    Online,
+    Away,
+    Offline,
+}
+
+fn normalize_receipts(receipts: Vec<LiveReadReceipt>) -> Vec<LiveReadReceipt> {
+    let mut by_user = BTreeMap::new();
+    for receipt in receipts {
+        by_user.insert(receipt.user_id.clone(), receipt);
+    }
+    by_user.into_values().collect()
+}
+
+fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values.dedup();
+    values
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

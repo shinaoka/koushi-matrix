@@ -34,6 +34,10 @@ All agents implementing local GUI room/space/reply operations follow
 All agents implementing media/file timeline support follow
 [docs/superpowers/plans/2026-06-15-media-phase-a.md](docs/superpowers/plans/2026-06-15-media-phase-a.md)
 for Phase A Rust/headless work before Phase B GUI wiring.
+All agents implementing read receipts, read markers, typing, and presence
+follow
+[docs/superpowers/plans/2026-06-15-live-signals-phase-a.md](docs/superpowers/plans/2026-06-15-live-signals-phase-a.md)
+for Phase A Rust/headless work before Phase B GUI wiring.
 All agents implementing E2EE trust Phase A state-machine contracts follow
 [docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md](docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md).
 All agents implementing Rust-owned settings Phase A follow
@@ -42,6 +46,41 @@ All agents implementing the headless i18n substrate follow
 [docs/superpowers/plans/2026-06-14-i18n-substrate-phase-a.md](docs/superpowers/plans/2026-06-14-i18n-substrate-phase-a.md).
 All agents implementing the i18n GUI wiring follow
 [docs/superpowers/plans/2026-06-14-i18n-substrate-phase-b.md](docs/superpowers/plans/2026-06-14-i18n-substrate-phase-b.md).
+
+## Live Signals Phase A Notes
+
+- `AppState.live_signals` is the Rust-owned source of truth for read receipts,
+  fully-read markers, typing users, and presence. React may render it and
+  dispatch typed commands only; do not add React-local receipt, marker, typing,
+  or presence semantics.
+- Timeline live-signal commands route through `TimelineCommand` and the
+  subscribed `TimelineActor`: `SendReadReceipt`, `SetFullyRead`, and
+  `SetTyping`. Account presence routes through `AccountCommand::SetPresence`.
+  Keep SDK handles and sync policy in Rust actors.
+- The current Phase A presence implementation records and emits the requested
+  Rust-owned presence state. Full network presence propagation remains a sync
+  backend decision because the legacy SDK path exposes `SyncSettings` presence
+  while the current `SyncService` builder does not expose a direct setter.
+- The Tauri snapshot is a hand-maintained DTO. When `AppState.live_signals` or
+  another `AppState` field is added, update `apps/desktop/src-tauri/src/dto.rs`,
+  `apps/desktop/src/domain/types.ts`, `browserFakeApi`, `tauriIpcMock`, app
+  harness snapshots, and DTO serialization-contract tests in the same change.
+  Headless browser mocks do not inherit Rust fields automatically.
+- New `CoreEvent` variants need the Rust wire-contract test, generated
+  `apps/desktop/src/domain/coreEvents.generated.json`, and
+  `apps/desktop/src/domain/coreEvents.ts` updated together. Do not hand-write
+  a TypeScript shape that is not proven by the Rust contract artifact.
+- The local core QA `live_signals` scenario is token-only:
+  `read_receipt=ok`, `fully_read=ok`, `typing=ok`, `presence=ok`,
+  `live_signals=ok`. Do not print Matrix room IDs, event IDs, user IDs, message
+  bodies, or raw SDK errors for this stage.
+- If the `live_signals` scenario reaches `fully_read=ok` and then times out at
+  typing on a probed SyncService local homeserver leg, first verify the legacy
+  backend. In this environment, legacy receives the typing notification
+  continuously, while the SyncService local leg needs a bounded debug/test
+  `SyncOnce` on the observer account after `SetTyping` is acknowledged to wake
+  the same Rust-owned typing observer. Do not replace this with React polling or
+  local UI timers.
 
 ## E2EE Trust Phase A Notes
 

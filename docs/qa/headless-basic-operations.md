@@ -41,6 +41,11 @@ thread_recv=ok
 thread_paginate=end_reached
 send_media=ok
 recv_media=ok
+read_receipt=ok
+fully_read=ok
+typing=ok
+presence=ok
+live_signals=ok
 edit_redact_search=ok
 e2ee_trust=ok
 restore_cleanup=ok
@@ -57,6 +62,20 @@ local-echo media metadata, receives the event on the second account timeline,
 and downloads it through a Rust-only effect that emits only byte-count
 completion. The lane must not print filenames, MXC URIs, room IDs, event IDs,
 media bytes, encrypted media keys/hashes, or raw SDK errors.
+
+`read_receipt=ok`, `fully_read=ok`, `typing=ok`, `presence=ok`, and
+`live_signals=ok` are the Phase A live-signal state-machine proof. The core
+lane sends a read receipt, sets the fully-read marker, sends a typing notice,
+and records a Rust-owned presence value through `CoreCommand`/`CoreEvent` and
+`AppState.live_signals`. The current presence proof is a Rust-owned command and
+snapshot contract; full network presence propagation stays in the Rust sync
+backend policy when the SDK API path is finalized. This stage must not print
+Matrix room IDs, event IDs, user IDs, message bodies, or raw SDK errors. On
+local SyncService homeserver legs, the typing check may use one bounded
+debug/test `SyncOnce` on the observer account after `SetTyping` is acknowledged
+because local sliding-sync typing delivery does not reliably wake the SDK room
+typing observer. That nudge is part of the headless QA harness only; product
+sync policy remains Rust-owned.
 
 `invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, and `dm_start=ok`
 are the Phase A invite/DM state-machine proof. The core lane proves incoming
@@ -90,6 +109,7 @@ Focused local proof:
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=invites_dm --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=media --core --core-backend=probed --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=live_signals --core --core-backend=probed --timeout-ms=240000
 ```
 
 ## Headless browser IPC-contract lane

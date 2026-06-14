@@ -11,9 +11,9 @@
 
 use matrix_desktop_state::{
     AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState, DisplayPlatform,
-    E2eeTrustState, FocusedContextState, InvitePreview, LocaleDisplayProfile, NavigationState,
-    RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope,
-    SearchState, SessionState, SettingsState, SidebarModel, SpaceSummary, SyncState,
+    E2eeTrustState, FocusedContextState, InvitePreview, LiveSignalsState, LocaleDisplayProfile,
+    NavigationState, RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult,
+    SearchScope, SearchState, SessionState, SettingsState, SidebarModel, SpaceSummary, SyncState,
     ThreadPaneState, TimelinePaneState, resolve_locale_display_profile,
 };
 use serde::{Deserialize, Serialize};
@@ -64,6 +64,7 @@ pub struct FrontendAppState {
     pub focused_context: FocusedContextState,
     pub search: FrontendSearchState,
     pub basic_operation: BasicOperationState,
+    pub live_signals: LiveSignalsState,
     pub e2ee_trust: E2eeTrustState,
     pub errors: Vec<AppError>,
 }
@@ -89,6 +90,7 @@ impl From<AppState> for FrontendAppState {
             focused_context: state.focused_context,
             search: state.search.into(),
             basic_operation: state.basic_operation,
+            live_signals: state.live_signals,
             e2ee_trust: state.e2ee_trust,
             errors: state.errors,
         }
@@ -475,6 +477,10 @@ mod tests {
         // basic_operation must be present (default Idle) so the UI can read
         // snapshot.state.basic_operation.kind without crashing.
         assert_eq!(value["state"]["basic_operation"]["kind"], json!("idle"));
+        // live_signals must be present so Phase B GUI renders Rust-owned live
+        // signal state without inventing receipts, typing, or presence locally.
+        assert_eq!(value["state"]["live_signals"]["rooms"], json!({}));
+        assert_eq!(value["state"]["live_signals"]["presence"], json!({}));
         // e2ee_trust must be present (default private-data-free unknowns) so
         // later GUI work consumes the Rust-owned trust state machine.
         assert_eq!(value["state"]["e2ee_trust"]["verification"]["kind"], json!("idle"));

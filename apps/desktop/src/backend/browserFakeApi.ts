@@ -919,6 +919,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       search: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" },
+      live_signals: defaultLiveSignalsState(),
       e2ee_trust: defaultE2eeTrustState()
     },
     sidebar,
@@ -988,6 +989,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       search: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" },
+      live_signals: defaultLiveSignalsState(),
       e2ee_trust: defaultE2eeTrustState()
     },
     sidebar: emptySidebar(),
@@ -1015,6 +1017,13 @@ function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
     key_backup: { kind: "unknown" },
     identity_reset: { kind: "idle" },
     devices: []
+  };
+}
+
+function defaultLiveSignalsState(): DesktopSnapshot["state"]["live_signals"] {
+  return {
+    rooms: {},
+    presence: {}
   };
 }
 
