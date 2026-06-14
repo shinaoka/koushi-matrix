@@ -7,11 +7,13 @@ import type { RoomSummary, SpaceSummary } from "../domain/types";
 export function SpaceInfoPanel({
   fallbackName,
   rooms,
-  space
+  space,
+  onInvitePeople
 }: {
   fallbackName: string;
   rooms: RoomSummary[];
   space: SpaceSummary | null;
+  onInvitePeople?: () => void;
 }) {
   const childRooms = space
     ? space.child_room_ids
@@ -61,7 +63,7 @@ export function SpaceInfoPanel({
           { icon: <Home size={16} />, label: t("space.home") },
           { icon: <SlidersHorizontal size={16} />, label: t("space.preferences") },
           { icon: <Settings size={16} />, label: t("space.spaceSettings") },
-          { icon: <MailPlus size={16} />, label: t("space.invite") },
+          { icon: <MailPlus size={16} />, label: t("space.invite"), onClick: onInvitePeople },
           { icon: <Bell size={16} />, label: t("room.notifications") }
         ]}
       />
@@ -90,12 +92,17 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
 function SettingsEntryList({
   entries
 }: {
-  entries: Array<{ icon: ReactNode; label: string }>;
+  entries: Array<{ icon: ReactNode; label: string; onClick?: () => void }>;
 }) {
   return (
     <div className="settings-list">
       {entries.map((entry) => (
-        <button className="settings-list-item" key={entry.label} type="button">
+        <button
+          className="settings-list-item"
+          key={entry.label}
+          type="button"
+          onClick={entry.onClick}
+        >
           <span className="settings-list-label">
             <span className="settings-list-icon" aria-hidden="true">
               {entry.icon}

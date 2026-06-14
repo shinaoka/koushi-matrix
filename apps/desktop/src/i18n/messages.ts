@@ -58,10 +58,26 @@ export type MessageId =
   | "dialog.cancelCreate"
   | "dialog.createRoomTitle"
   | "dialog.createSpaceTitle"
+  | "dialog.invitePeopleTitle"
+  | "dialog.matrixUserId"
+  | "dialog.newDmTitle"
+  | "dialog.sendInvite"
   | "dialog.roomName"
   | "dialog.spaceName"
+  | "dialog.startDm"
   | "dialog.submitCreateRoom"
   | "dialog.submitCreateSpace"
+  | "invite.accept"
+  | "invite.decline"
+  | "invite.fromInviter"
+  | "invite.noPending"
+  | "invite.noTopic"
+  | "invite.pendingInvites"
+  | "invite.preview"
+  | "invite.summary"
+  | "invite.tabs"
+  | "invite.topic"
+  | "invite.unknownInviter"
   | "panel.context"
   | "panel.keyboard"
   | "panel.focusedContext"
@@ -77,6 +93,7 @@ export type MessageId =
   | "room.exactVerifiedResults"
   | "room.files"
   | "room.globalDmList"
+  | "room.invitePeople"
   | "room.noRoomSelected"
   | "room.noSpaces"
   | "room.notifications"
@@ -289,6 +306,7 @@ export type MessageId =
   | "workspace.createSpace"
   | "workspace.home"
   | "workspace.invites"
+  | "workspace.newDm"
   | "workspace.people"
   | "workspace.rooms"
   | "workspace.search"
@@ -448,10 +466,26 @@ const en: Catalog = {
   "dialog.cancelCreate": "Cancel create",
   "dialog.createRoomTitle": "Create room",
   "dialog.createSpaceTitle": "Create space",
+  "dialog.invitePeopleTitle": "Invite people to {name}",
+  "dialog.matrixUserId": "Matrix user ID",
+  "dialog.newDmTitle": "New DM",
+  "dialog.sendInvite": "Send invite",
   "dialog.roomName": "Room name",
   "dialog.spaceName": "Space name",
+  "dialog.startDm": "Start DM",
   "dialog.submitCreateRoom": "Submit create room",
   "dialog.submitCreateSpace": "Submit create space",
+  "invite.accept": "Accept invite",
+  "invite.decline": "Decline invite",
+  "invite.fromInviter": "From {inviter}",
+  "invite.noPending": "No pending invites",
+  "invite.noTopic": "No topic",
+  "invite.pendingInvites": "Pending invites",
+  "invite.preview": "Invite preview",
+  "invite.summary": "Invite summary",
+  "invite.tabs": "Invite views",
+  "invite.topic": "Topic",
+  "invite.unknownInviter": "Unknown inviter",
   "panel.context": "Context panel",
   "panel.keyboard": "Keyboard",
   "panel.focusedContext": "Focused context",
@@ -467,6 +501,7 @@ const en: Catalog = {
   "room.exactVerifiedResults": "Exact verified results",
   "room.files": "Files",
   "room.globalDmList": "Global DM list",
+  "room.invitePeople": "Invite people",
   "room.noRoomSelected": "No room selected",
   "room.noSpaces": "No Spaces",
   "room.notifications": "Notifications",
@@ -679,6 +714,7 @@ const en: Catalog = {
   "workspace.createSpace": "Create space",
   "workspace.home": "Home",
   "workspace.invites": "Invites",
+  "workspace.newDm": "New DM",
   "workspace.people": "People",
   "workspace.rooms": "Rooms",
   "workspace.search": "Search",

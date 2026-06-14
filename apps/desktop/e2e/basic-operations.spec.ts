@@ -21,6 +21,8 @@
  *      snapshot), then the composer is submitted.
  *   8. Drive E2EE trust controls from User settings → invokes Rust-owned trust
  *      commands and renders the returned `e2ee_trust` snapshot.
+ *   9. Drive invite acceptance and New DM from Rust-owned snapshots → invokes
+ *      room commands and renders joined/DM rooms from the returned snapshot.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -89,6 +91,184 @@ test("create-space dialog submits create_space and closes on success", async ({ 
 
   await expect.poll(() => invocationCount(page, "create_space")).toBeGreaterThanOrEqual(1);
   await expect(spaceNameInput).toBeHidden();
+});
+
+test("invites view accepts a seeded invite and New DM renders the returned direct room", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const base = window.__harness.currentSnapshot();
+    const invite = {
+      room_id: "!invite-seed:example.invalid",
+      display_name: "Seeded Invite",
+      topic: "Synthetic invite topic",
+      inviter_display_name: "Synthetic Inviter",
+      is_dm: false
+    };
+    window.__harness.setSnapshot({
+      ...base,
+      state: {
+        ...base.state,
+        invites: [invite]
+      }
+    });
+    window.__harness.setCommandResponse("accept_invite", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      const joinedRoom = {
+        room_id: "!joined-from-invite:example.invalid",
+        display_name: "Seeded Invite",
+        is_dm: false,
+        unread_count: 0,
+        parent_space_ids: []
+      };
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          rooms: [...snapshot.state.rooms, joinedRoom],
+          invites: [],
+          navigation: {
+            ...snapshot.state.navigation,
+            active_room_id: joinedRoom.room_id
+          },
+          timeline: {
+            ...snapshot.state.timeline,
+            room_id: joinedRoom.room_id,
+            is_subscribed: true
+          }
+        },
+        sidebar: {
+          ...snapshot.sidebar,
+          space_rooms: [
+            ...snapshot.sidebar.space_rooms,
+            {
+              room_id: joinedRoom.room_id,
+              display_name: joinedRoom.display_name,
+              unread_count: 0
+            }
+          ]
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("start_direct_message", ({ userId }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const dmRoom = {
+        room_id: "!dm-started:example.invalid",
+        display_name: String(userId),
+        is_dm: true,
+        unread_count: 0,
+        parent_space_ids: []
+      };
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          rooms: [...snapshot.state.rooms, dmRoom],
+          navigation: {
+            ...snapshot.state.navigation,
+            active_room_id: dmRoom.room_id
+          },
+          timeline: {
+            ...snapshot.state.timeline,
+            room_id: dmRoom.room_id,
+            is_subscribed: true
+          }
+        },
+        sidebar: {
+          ...snapshot.sidebar,
+          global_dms: [
+            ...snapshot.sidebar.global_dms,
+            {
+              room_id: dmRoom.room_id,
+              display_name: dmRoom.display_name,
+              unread_count: 0
+            }
+          ]
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("select_room", ({ roomId }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          navigation: {
+            ...snapshot.state.navigation,
+            active_room_id: String(roomId)
+          },
+          timeline: {
+            ...snapshot.state.timeline,
+            room_id: String(roomId),
+            is_subscribed: true
+          },
+          thread: { kind: "closed" }
+        },
+        thread: null
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("invite_user", () => window.__harness.currentSnapshot());
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "Invites" }).click();
+  await expect(page.getByRole("heading", { name: "Invites" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Seeded Invite" })).toBeVisible();
+  await expect(page.getByText("Synthetic Inviter", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Accept invite" }).click();
+
+  await expect.poll(() => invocationCount(page, "accept_invite")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("accept_invite")[0]?.args)
+    )
+    .toEqual({ roomId: "!invite-seed:example.invalid" });
+  await expect(page.getByRole("button", { name: "Seeded Invite" })).toBeVisible();
+  await expect(
+    page.getByRole("main", { name: "Invites" }).getByText("No pending invites").first()
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Seeded Invite" }).click();
+  await page.getByRole("button", { name: "Room info" }).click();
+  await page.getByRole("button", { name: "Invite people" }).click();
+  const inviteUserInput = page.getByRole("textbox", { name: "Matrix user ID" });
+  await inviteUserInput.fill("@invitee:example.invalid");
+  await page.getByRole("button", { name: "Send invite" }).click();
+
+  await expect.poll(() => invocationCount(page, "invite_user")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("invite_user")[0]?.args)
+    )
+    .toEqual({
+      roomId: "!joined-from-invite:example.invalid",
+      userId: "@invitee:example.invalid"
+    });
+
+  await page.getByRole("button", { name: "Invites" }).click();
+  await page.getByRole("main", { name: "Invites" }).getByRole("button", { name: "New DM" }).click();
+  const userIdInput = page.getByRole("textbox", { name: "Matrix user ID" });
+  await expect(userIdInput).toBeVisible();
+  await userIdInput.fill("@target:example.invalid");
+  await page.getByRole("button", { name: "Start DM" }).click();
+
+  await expect.poll(() => invocationCount(page, "start_direct_message")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("start_direct_message")[0]?.args)
+    )
+    .toEqual({ userId: "@target:example.invalid" });
+  await expect(page.getByRole("button", { name: "@target:example.invalid" })).toBeVisible();
 });
 
 test("timeline reply action invokes set_composer_reply_target", async ({ page }) => {
@@ -673,39 +853,41 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
     window.__harness.pushStateChanged();
   }, longRoomName);
 
+  await expect(page.locator("main.main-pane").getByText(longRoomName)).toBeVisible();
+  await expect(page.getByText("Seed message for reply target")).toBeVisible();
+
   await page.evaluate(async ({ key, body }) => {
+    const item = {
+      id: { Event: { event_id: "$seed-event:example.invalid" } },
+      sender: "@rtl-user:example.invalid",
+      body,
+      timestamp_ms: 1_800_000_000_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      can_react: true,
+      is_redacted: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: true,
+      reactions: [
+        {
+          key: "日本語",
+          count: 1,
+          reacted_by_me: false,
+          my_reaction_event_id: null,
+          sender_preview: ["@rtl-user:example.invalid"]
+        }
+      ]
+    };
     const payload = {
       kind: "Timeline",
       event: {
-        InitialItems: {
-          request_id: null,
+        ItemsUpdated: {
           key,
           generation: 1,
-          items: [
-            {
-              id: { Event: { event_id: "$seed-event:example.invalid" } },
-              sender: "@rtl-user:example.invalid",
-              body,
-              timestamp_ms: 1_800_000_000_000,
-              in_reply_to_event_id: null,
-              thread_root: null,
-              thread_summary: null,
-              can_react: true,
-              is_redacted: false,
-              can_redact: false,
-              is_edited: false,
-              can_edit: true,
-              reactions: [
-                {
-                  key: "日本語",
-                  count: 1,
-                  reacted_by_me: false,
-                  my_reaction_event_id: null,
-                  sender_preview: ["@rtl-user:example.invalid"]
-                }
-              ]
-            }
-          ]
+          batch_id: 2,
+          diffs: [{ Set: { index: 0, item } }]
         }
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

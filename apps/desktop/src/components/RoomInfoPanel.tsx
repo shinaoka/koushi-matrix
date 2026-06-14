@@ -6,10 +6,12 @@ import type { RoomSummary, SpaceSummary } from "../domain/types";
 
 export function RoomInfoPanel({
   room,
-  spaces
+  spaces,
+  onInvitePeople
 }: {
   room: RoomSummary | null;
   spaces: SpaceSummary[];
+  onInvitePeople?: () => void;
 }) {
   if (!room) {
     return (
@@ -70,6 +72,7 @@ export function RoomInfoPanel({
 
       <SettingsEntryList
         entries={[
+          { icon: <Users size={16} />, label: t("room.invitePeople"), onClick: onInvitePeople },
           { icon: <Users size={16} />, label: t("room.people") },
           { icon: <FileText size={16} />, label: t("room.files") },
           { icon: <Bell size={16} />, label: t("room.notifications") },
@@ -101,12 +104,17 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
 function SettingsEntryList({
   entries
 }: {
-  entries: Array<{ icon: ReactNode; label: string }>;
+  entries: Array<{ icon: ReactNode; label: string; onClick?: () => void }>;
 }) {
   return (
     <div className="settings-list">
       {entries.map((entry) => (
-        <button className="settings-list-item" key={entry.label} type="button">
+        <button
+          className="settings-list-item"
+          key={entry.label}
+          type="button"
+          onClick={entry.onClick}
+        >
           <span className="settings-list-label">
             <span className="settings-list-icon" aria-hidden="true">
               {entry.icon}

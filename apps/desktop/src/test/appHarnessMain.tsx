@@ -3,6 +3,7 @@
  * Tauri IPC transport, so the headless-Chromium spec
  * (e2e/basic-operations.spec.ts) can prove that the Task 5 UI drives the
  * right Tauri COMMAND NAMES (create_room, create_space,
+ * accept_invite, invite_user, start_direct_message,
  * set_composer_reply_target, send_reply, edit_message).
  *
  * Loaded only by appHarness.html (never part of the production index.html
@@ -591,6 +592,10 @@ mock.setCommandResponse(
 );
 mock.setCommandResponse("create_room", () => setCurrentSnapshot(afterCreateRoomSnapshot()));
 mock.setCommandResponse("create_space", () => setCurrentSnapshot(afterCreateSpaceSnapshot()));
+mock.setCommandResponse("accept_invite", () => currentSnapshot);
+mock.setCommandResponse("decline_invite", () => currentSnapshot);
+mock.setCommandResponse("start_direct_message", () => currentSnapshot);
+mock.setCommandResponse("invite_user", () => currentSnapshot);
 // Clicking reply records set_composer_reply_target AND returns a reply-mode
 // snapshot, so the subsequent composer submit dispatches send_reply.
 mock.setCommandResponse("set_composer_reply_target", () =>
@@ -859,7 +864,7 @@ async function boot() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     await emit(CORE_EVENT_NAME, payload);
     await new Promise((resolve) => setTimeout(resolve, 25));
-    if (document.querySelector('[aria-label="Reply to message"]')) {
+    if (document.querySelector(`[data-event-id="${SEED_EVENT_ID}"]`)) {
       break;
     }
   }

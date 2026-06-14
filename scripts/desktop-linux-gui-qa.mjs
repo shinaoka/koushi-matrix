@@ -12,6 +12,7 @@ import {
   conduitConfig,
   createRoom,
   freePort,
+  inviteUser as inviteUserToRoom,
   registerUser,
   startHomeserver,
   stopProcess,
@@ -28,6 +29,7 @@ const checks = [
   "scenario local-send",
   "scenario local-create-room",
   "scenario local-create-space",
+  "scenario local-invites-dm",
   "scenario local-reply",
   "scenario local-settings",
   "verify local-settings trust section",
@@ -178,6 +180,10 @@ async function run() {
   }
   if (guiScenario === "local-create-space") {
     await runLocalCreateSpaceScenario();
+    return;
+  }
+  if (guiScenario === "local-invites-dm") {
+    await runLocalInvitesDmScenario();
     return;
   }
   if (guiScenario === "local-reply") {
@@ -387,6 +393,72 @@ async function runLocalCreateSpaceScenario() {
   }
 }
 
+async function runLocalInvitesDmScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const inviteRoom = await createRoom(session.credentials.homeserver, session.helperAccessToken, {
+      name: session.seedInviteRoomName
+    });
+    if (!inviteRoom.room_id) {
+      throw new Error("local GUI invite setup did not return a room id");
+    }
+    await inviteUserToRoom(
+      session.credentials.homeserver,
+      session.helperAccessToken,
+      inviteRoom.room_id,
+      session.primaryUserId
+    );
+
+    const invitesButton = await session.browser.$('button[aria-label="Invites"]');
+    await invitesButton.waitForDisplayed({ timeout: timeoutMs });
+    await invitesButton.click();
+
+    const baselineRooms = parseQaTitle(await session.browser.execute(() => document.title)).rooms;
+    const acceptButton = await session.browser.$('button[aria-label="Accept invite"]');
+    await acceptButton.waitForDisplayed({ timeout: timeoutMs });
+    await acceptButton.click();
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.rooms > baselineRooms,
+      timeoutMs,
+      "local GUI invite accept"
+    );
+    await waitForDocumentText(
+      session.browser,
+      ["No pending invites"],
+      timeoutMs,
+      "local GUI invite accept"
+    );
+
+    const baselineDmCount = await elementCount(session.browser, '.room-item[data-room-kind="dm"]');
+    const newDmButton = await session.browser.$('main[aria-labelledby="invites-title"] button[aria-label="New DM"]');
+    await newDmButton.waitForDisplayed({ timeout: timeoutMs });
+    await newDmButton.click();
+    const userIdInput = await session.browser.$('input[aria-label="Matrix user ID"]');
+    await userIdInput.waitForDisplayed({ timeout: timeoutMs });
+    await userIdInput.setValue(session.dmTargetUserId);
+    const startDmButton = await session.browser.$('button[aria-label="Start DM"]');
+    await startDmButton.click();
+    await waitForElementCountGreaterThan(
+      session.browser,
+      '.room-item[data-room-kind="dm"]',
+      baselineDmCount,
+      timeoutMs,
+      "local GUI start DM"
+    );
+
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_invite_accept=ok");
+    console.log("gui_local_dm_start=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalReplyScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -550,6 +622,25 @@ async function waitForDocumentText(browser, expectedTexts, timeout, description)
   throw new Error(`${description} missing expected text: ${missing.join(", ")}`);
 }
 
+async function elementCount(browser, selector) {
+  return browser.execute((cssSelector) => document.querySelectorAll(cssSelector).length, selector);
+}
+
+async function waitForElementCountGreaterThan(browser, selector, baseline, timeout, description) {
+  const startedAt = Date.now();
+  let lastCount = baseline;
+  while (Date.now() - startedAt < timeout) {
+    lastCount = await elementCount(browser, selector);
+    if (lastCount > baseline) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not increase ${selector}. Baseline: ${baseline}; last count: ${lastCount}`
+  );
+}
+
 async function waitForReplyLanded(browser, baselineMessages, timeout) {
   const startedAt = Date.now();
   let lastTitle = "";
@@ -597,7 +688,11 @@ async function startLocalGuiScenario() {
     serverProcess: null,
     tauriDriver: null,
     xvfb: null,
-    credentials: null
+    credentials: null,
+    dmTargetUserId: null,
+    helperAccessToken: null,
+    primaryUserId: null,
+    seedInviteRoomName: null
   };
 
   try {
@@ -622,10 +717,29 @@ async function startLocalGuiScenario() {
     const password = `matrix-desktop-local-${userSuffix}`;
     const registration = await registerUser(homeserver, username, password);
     const accessToken = registration.access_token;
+    const userId = registration.user_id;
     if (!accessToken) {
       throw new Error("local GUI setup did not return an access token");
     }
+    if (!userId) {
+      throw new Error("local GUI setup did not return a user id");
+    }
     await createRoom(homeserver, accessToken, { name: "QA Seed Room" });
+    session.primaryUserId = userId;
+
+    if (guiScenario === "local-invites-dm") {
+      const helperUsername = `qa_inviter_${userSuffix}`;
+      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
+      const helperAccessToken = helperRegistration.access_token;
+      const helperUserId = helperRegistration.user_id;
+      if (!helperAccessToken || !helperUserId) {
+        throw new Error("local GUI invite setup did not return helper credentials");
+      }
+      session.seedInviteRoomName = "QA Invite Room";
+      session.dmTargetUserId = helperUserId;
+      session.helperAccessToken = helperAccessToken;
+    }
 
     session.qaLoginPipePath = join(appDataDir, "qa-login.pipe");
     createNamedPipe(session.qaLoginPipePath);
@@ -906,6 +1020,9 @@ function childEnvironment(dataDir, qaLoginPipePath = null) {
   env.MATRIX_DESKTOP_QA_TITLE = "1";
   env.VITE_MATRIX_DESKTOP_QA_TITLE = "1";
   env.MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR = join(dataDir, "qa-credential-store");
+  if (guiScenario === "local-invites-dm") {
+    env.MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND = "legacy";
+  }
   env.NO_COLOR = "1";
   if (qaProfile !== undefined) {
     env.MATRIX_DESKTOP_RESTORE_SESSION = "1";

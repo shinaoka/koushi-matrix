@@ -538,7 +538,7 @@ button {
 
 .workspace-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 8px;
   align-items: center;
   height: 62px;
@@ -607,6 +607,23 @@ button {
   background: var(--brand-weak);
 }
 
+.nav-item[data-count] {
+  position: relative;
+}
+
+.nav-item[data-count]::after {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  content: attr(data-count);
+  color: var(--brand-contrast);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  background: var(--danger);
+}
+
 .nav-label,
 .room-name {
   overflow: hidden;
@@ -665,10 +682,13 @@ button {
   font-weight: 850;
 }
 
+.channel-title h1,
 .channel-title span:last-child {
+  margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font: inherit;
 }
 
 .member-pill {
@@ -754,6 +774,123 @@ button {
 
 .empty-results {
   padding: 12px;
+  color: var(--text-muted);
+}
+
+.invites-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 34%) minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.invite-list {
+  min-width: 0;
+  overflow: auto;
+  padding: 12px;
+  border-inline-end: 1px solid var(--line);
+}
+
+.invite-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 58px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  color: var(--text);
+  text-align: start;
+  background: transparent;
+}
+
+.invite-row:hover {
+  background: var(--surface-hover);
+}
+
+.invite-row.is-active {
+  border-color: var(--brand);
+  background: var(--brand-weak);
+}
+
+.invite-row-icon,
+.invite-preview-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-sm);
+  color: var(--brand-hover);
+  background: var(--brand-weak);
+}
+
+.invite-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.invite-row-main strong,
+.invite-row-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.invite-row-main small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.invite-preview {
+  min-width: 0;
+  overflow: auto;
+  padding: 22px;
+}
+
+.invite-preview-heading {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.invite-preview-heading h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.invite-preview-heading p {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.invite-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+}
+
+.invite-actions .dialog-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.invite-empty-preview {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 180px;
   color: var(--text-muted);
 }
 

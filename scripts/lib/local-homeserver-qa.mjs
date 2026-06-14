@@ -158,6 +158,23 @@ export async function createRoom(homeserver, accessToken, body = {}) {
   return json ?? {};
 }
 
+export async function inviteUser(homeserver, accessToken, roomId, userId) {
+  const response = await fetch(
+    `${homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/invite`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ user_id: userId })
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`inviteUser failed with HTTP ${response.status}`);
+  }
+}
+
 export function freePort() {
   return new Promise((resolvePromise, rejectPromise) => {
     const server = net.createServer();

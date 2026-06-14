@@ -2,6 +2,7 @@ import {
   AtSign,
   Bell,
   Bold,
+  Check,
   Clock3,
   Code2,
   Edit3,
@@ -32,6 +33,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
+  type ReactNode,
   type RefObject,
   useEffect,
   useRef,
@@ -192,6 +194,11 @@ type ActiveContextMenu = {
   target: ContextMenuTarget;
   items: ContextMenuItem[];
 };
+type PrimaryView = "timeline" | "invites";
+type InviteUserDialogState = {
+  roomId: string;
+  title: string;
+} | null;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "ignore";
 
@@ -238,6 +245,11 @@ export function App() {
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
+  const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
+  const [newDmDraftUserId, setNewDmDraftUserId] = useState("");
+  const [inviteUserDialog, setInviteUserDialog] = useState<InviteUserDialogState>(null);
+  const [inviteUserDraftUserId, setInviteUserDraftUserId] = useState("");
   // React-local ephemeral state only: which create dialog is open and the
   // unsent name draft. The pending op status comes from the snapshot
   // (basic_operation); the created room/space identity comes from the API.
@@ -696,11 +708,18 @@ export function App() {
   ) => api.resolveComposerKeyAction(surface, keyEvent, options);
 
   async function selectSpace(spaceId: string | null) {
+    setPrimaryView("timeline");
     setSnapshot(await api.selectSpace(spaceId));
   }
 
   async function selectRoom(roomId: string) {
+    setPrimaryView("timeline");
     setSnapshot(await api.selectRoom(roomId));
+  }
+
+  async function openInvitesView() {
+    setSnapshot(await api.getSnapshot());
+    setPrimaryView("invites");
   }
 
   function openCreateDialog(kind: "room" | "space") {
@@ -711,6 +730,80 @@ export function App() {
   function closeCreateDialog() {
     setCreateDialog(null);
     setCreateDraftName("");
+  }
+
+  function openNewDmDialog() {
+    setNewDmDraftUserId("");
+    setNewDmDialogOpen(true);
+  }
+
+  function closeNewDmDialog() {
+    setNewDmDialogOpen(false);
+    setNewDmDraftUserId("");
+  }
+
+  function openInviteUserDialog(roomId: string, title: string) {
+    setInviteUserDraftUserId("");
+    setInviteUserDialog({ roomId, title });
+  }
+
+  function closeInviteUserDialog() {
+    setInviteUserDialog(null);
+    setInviteUserDraftUserId("");
+  }
+
+  async function acceptInvite(roomId: string) {
+    if (isBusy) {
+      return;
+    }
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.acceptInvite(roomId));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function declineInvite(roomId: string) {
+    if (isBusy) {
+      return;
+    }
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.declineInvite(roomId));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function submitNewDmDialog() {
+    const userId = newDmDraftUserId.trim();
+    if (!userId || isBusy) {
+      return;
+    }
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.startDirectMessage(userId));
+      closeNewDmDialog();
+      setPrimaryView("timeline");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function submitInviteUserDialog() {
+    const dialog = inviteUserDialog;
+    const userId = inviteUserDraftUserId.trim();
+    if (!dialog || !userId || isBusy) {
+      return;
+    }
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.inviteUser(dialog.roomId, userId));
+      closeInviteUserDialog();
+    } finally {
+      setIsBusy(false);
+    }
   }
 
   async function submitCreateDialog() {
@@ -861,6 +954,7 @@ export function App() {
   function selectSearchResult(roomId: string, eventId: string) {
     void api.selectSearchResult(roomId, eventId).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
+      setPrimaryView("timeline");
       setRightPanelMode("search");
     });
   }
@@ -1016,56 +1110,75 @@ export function App() {
         />
         <Sidebar
           activeRoomId={snapshot.state.navigation.active_room_id}
+          activeView={primaryView}
           snapshot={snapshot}
           onCreateRoom={() => openCreateDialog("room")}
+          onNewDm={openNewDmDialog}
           onOpenContextMenu={openContextMenu}
+          onOpenInvites={() => {
+            void openInvitesView();
+          }}
           onOpenSpaceInfo={() => {
             void setRightPanelModeClosingFocusedContext("spaceInfo");
           }}
           onSelectRoom={selectRoom}
         />
-        <TimelinePane
-          activeRoomName={activeRoom?.display_name ?? t("room.noRoomSelected")}
-          composerDraft={composerDraft}
-          composerMode={composerModeProp(snapshot.state.timeline.composer.mode)}
-          resolveComposerKeyAction={resolveComposerKeyAction}
-          searchQuery={searchQuery}
-          searchResults={searchResults}
-          showSearchResults={effectiveRightPanelMode !== "search"}
-          snapshot={snapshot}
-          onCancelReply={() => {
-            void cancelComposerReply();
-          }}
-          onComposerDraftChange={setComposerDraft}
-          onOpenThread={openThread}
-          onPaginateBackwards={paginateTimelineBackwards}
-          onReply={(roomId, eventId) => {
-            void setComposerReplyTarget(roomId, eventId);
-          }}
-          onSendText={sendText}
-          onEditMessage={editMessage}
-          onOpenContextMenu={openContextMenu}
-          onRedactMessage={redactMessage}
-          onResultSelect={selectSearchResult}
-          onToggleThread={() => {
-            if (rightPanelOpen) {
-              if (effectiveRightPanelMode === "thread") {
-                void closeThread();
+        {primaryView === "invites" ? (
+          <InvitesPane
+            isBusy={isBusy}
+            snapshot={snapshot}
+            onAcceptInvite={(roomId) => {
+              void acceptInvite(roomId);
+            }}
+            onDeclineInvite={(roomId) => {
+              void declineInvite(roomId);
+            }}
+            onNewDm={openNewDmDialog}
+          />
+        ) : (
+          <TimelinePane
+            activeRoomName={activeRoom?.display_name ?? t("room.noRoomSelected")}
+            composerDraft={composerDraft}
+            composerMode={composerModeProp(snapshot.state.timeline.composer.mode)}
+            resolveComposerKeyAction={resolveComposerKeyAction}
+            searchQuery={searchQuery}
+            searchResults={searchResults}
+            showSearchResults={effectiveRightPanelMode !== "search"}
+            snapshot={snapshot}
+            onCancelReply={() => {
+              void cancelComposerReply();
+            }}
+            onComposerDraftChange={setComposerDraft}
+            onOpenThread={openThread}
+            onPaginateBackwards={paginateTimelineBackwards}
+            onReply={(roomId, eventId) => {
+              void setComposerReplyTarget(roomId, eventId);
+            }}
+            onSendText={sendText}
+            onEditMessage={editMessage}
+            onOpenContextMenu={openContextMenu}
+            onRedactMessage={redactMessage}
+            onResultSelect={selectSearchResult}
+            onToggleThread={() => {
+              if (rightPanelOpen) {
+                if (effectiveRightPanelMode === "thread") {
+                  void closeThread();
+                } else {
+                  void setRightPanelModeClosingFocusedContext("closed");
+                }
               } else {
-                void setRightPanelModeClosingFocusedContext("closed");
+                // Opening a specific thread is driven by a message's "view replies"
+                // action (openThread -> Rust ThreadPaneState), not by scanning the
+                // legacy snapshot.timeline placeholder. The panel toggle opens room
+                // info as the default right-panel surface.
+                void setRightPanelModeClosingFocusedContext("roomInfo");
               }
-            } else {
-              // Opening a specific thread is driven by a message's "view replies"
-              // action (openThread -> Rust ThreadPaneState), not by scanning the
-              // legacy snapshot.timeline placeholder. The panel toggle opens room
-              // info as the default right-panel surface.
+            }}
+            onOpenRoomInfo={() => {
               void setRightPanelModeClosingFocusedContext("roomInfo");
-            }
-          }}
-          onOpenRoomInfo={() => {
-            void setRightPanelModeClosingFocusedContext("roomInfo");
-          }}
-        />
+            }}
+          />
+        )}
         <ContextualRightPanel
           activeRoom={activeRoom ?? null}
           activeSpace={activeSpace ?? null}
@@ -1088,6 +1201,7 @@ export function App() {
           onOpenKeyboardSettings={() => {
             void setRightPanelModeClosingFocusedContext("keyboardSettings");
           }}
+          onInviteUser={openInviteUserDialog}
           onRecoverySecretPresenceChange={setRecoverySecretFilled}
           onReply={(roomId, eventId) => {
             void setComposerReplyTarget(roomId, eventId);
@@ -1152,6 +1266,34 @@ export function App() {
             void submitCreateDialog();
           }}
           onValueChange={setCreateDraftName}
+        />
+      ) : null}
+      {newDmDialogOpen ? (
+        <UserIdDialog
+          isBusy={isBusy}
+          inputLabel={t("dialog.matrixUserId")}
+          submitLabel={t("dialog.startDm")}
+          title={t("dialog.newDmTitle")}
+          value={newDmDraftUserId}
+          onCancel={closeNewDmDialog}
+          onSubmit={() => {
+            void submitNewDmDialog();
+          }}
+          onValueChange={setNewDmDraftUserId}
+        />
+      ) : null}
+      {inviteUserDialog ? (
+        <UserIdDialog
+          isBusy={isBusy}
+          inputLabel={t("dialog.matrixUserId")}
+          submitLabel={t("dialog.sendInvite")}
+          title={inviteUserDialog.title}
+          value={inviteUserDraftUserId}
+          onCancel={closeInviteUserDialog}
+          onSubmit={() => {
+            void submitInviteUserDialog();
+          }}
+          onValueChange={setInviteUserDraftUserId}
         />
       ) : null}
     </div>
@@ -1235,6 +1377,85 @@ function CreateEntityDialog({
             disabled={!canSubmit}
           >
             {isSpace ? t("action.createSpace") : t("action.createRoom")}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function UserIdDialog({
+  inputLabel,
+  isBusy,
+  submitLabel,
+  title,
+  value,
+  onCancel,
+  onSubmit,
+  onValueChange
+}: {
+  inputLabel: string;
+  isBusy: boolean;
+  submitLabel: string;
+  title: string;
+  value: string;
+  onCancel: () => void;
+  onSubmit: () => void;
+  onValueChange: (value: string) => void;
+}) {
+  const canSubmit = value.trim().length > 0 && !isBusy;
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={onDialogKeyDown}
+    >
+      <form
+        className="dialog-box"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) {
+            onSubmit();
+          }
+        }}
+      >
+        <div className="dialog-title">{title}</div>
+        <input
+          className="dialog-input"
+          type="text"
+          autoFocus
+          aria-label={inputLabel}
+          placeholder={inputLabel}
+          spellCheck={false}
+          value={value}
+          onChange={(event) => onValueChange(event.target.value)}
+        />
+        <div className="dialog-actions">
+          <button
+            className="dialog-button"
+            type="button"
+            aria-label={t("action.cancel")}
+            onClick={onCancel}
+          >
+            {t("action.cancel")}
+          </button>
+          <button
+            className="dialog-button is-primary"
+            type="submit"
+            aria-label={submitLabel}
+            disabled={!canSubmit}
+          >
+            {submitLabel}
           </button>
         </div>
       </form>
@@ -1704,16 +1925,22 @@ export function WorkspaceRail({
 
 function Sidebar({
   activeRoomId,
+  activeView,
   snapshot,
   onCreateRoom,
+  onNewDm,
   onOpenContextMenu,
+  onOpenInvites,
   onOpenSpaceInfo,
   onSelectRoom
 }: {
   activeRoomId: string | null;
+  activeView: PrimaryView;
   snapshot: DesktopSnapshot;
   onCreateRoom: () => void;
+  onNewDm: () => void;
   onOpenContextMenu: OpenContextMenu;
+  onOpenInvites: () => void;
   onOpenSpaceInfo: () => void;
   onSelectRoom: (roomId: string) => void;
 }) {
@@ -1724,6 +1951,14 @@ function Sidebar({
           {snapshot.sidebar.space_rail.find((space) => space.is_active)?.display_name ??
             snapshot.sidebar.account_home.display_name}
         </div>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("workspace.newDm")}
+          onClick={onNewDm}
+        >
+          <MessageCircle size={18} />
+        </button>
         <button
           className="icon-button"
           type="button"
@@ -1748,12 +1983,19 @@ function Sidebar({
           label={t("workspace.home")}
         />
         <NavButton icon={<MessageCircle size={18} />} label={t("workspace.threads")} />
-        <NavButton icon={<Bell size={18} />} label={t("workspace.invites")} />
+        <NavButton
+          active={activeView === "invites"}
+          count={snapshot.state.invites.length}
+          icon={<Bell size={18} />}
+          label={t("workspace.invites")}
+          onClick={onOpenInvites}
+        />
         <SectionTitle label={t("workspace.rooms")} />
         {snapshot.sidebar.space_rooms.map((room) => (
           <RoomButton
             activeRoomId={activeRoomId}
             icon={<Hash size={16} />}
+            kind="room"
             key={room.room_id}
             room={room}
             onOpenContextMenu={onOpenContextMenu}
@@ -1765,6 +2007,7 @@ function Sidebar({
           <RoomButton
             activeRoomId={activeRoomId}
             icon={<span className="presence-dot" />}
+            kind="dm"
             key={room.room_id}
             room={room}
             onOpenContextMenu={onOpenContextMenu}
@@ -1778,15 +2021,25 @@ function Sidebar({
 
 function NavButton({
   active = false,
+  count = 0,
   icon,
-  label
+  label,
+  onClick
 }: {
   active?: boolean;
-  icon: React.ReactNode;
+  count?: number;
+  icon: ReactNode;
   label: string;
+  onClick?: () => void;
 }) {
   return (
-    <button className={`nav-item ${active ? "is-active" : ""}`} type="button">
+    <button
+      className={`nav-item ${active ? "is-active" : ""}`}
+      data-count={count || undefined}
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+    >
       {icon}
       <span className="nav-label">{label}</span>
     </button>
@@ -1805,12 +2058,14 @@ function SectionTitle({ label }: { label: string }) {
 function RoomButton({
   activeRoomId,
   icon,
+  kind,
   room,
   onOpenContextMenu,
   onSelectRoom
 }: {
   activeRoomId: string | null;
-  icon: React.ReactNode;
+  icon: ReactNode;
+  kind: "room" | "dm";
   room: RoomListItem;
   onOpenContextMenu: OpenContextMenu;
   onSelectRoom: (roomId: string) => void;
@@ -1818,6 +2073,8 @@ function RoomButton({
   return (
     <button
       className={`room-item ${room.room_id === activeRoomId ? "is-active" : ""}`}
+      data-room-kind={kind}
+      data-testid="room-item"
       type="button"
       onClick={() => onSelectRoom(room.room_id)}
       onContextMenu={(event) =>
@@ -1832,6 +2089,152 @@ function RoomButton({
       <span className="room-name" dir="auto">{room.display_name}</span>
       <span className="room-count">{room.unread_count || ""}</span>
     </button>
+  );
+}
+
+function InvitesPane({
+  isBusy,
+  snapshot,
+  onAcceptInvite,
+  onDeclineInvite,
+  onNewDm
+}: {
+  isBusy: boolean;
+  snapshot: DesktopSnapshot;
+  onAcceptInvite: (roomId: string) => void;
+  onDeclineInvite: (roomId: string) => void;
+  onNewDm: () => void;
+}) {
+  const invites = snapshot.state.invites;
+  const [selectedInviteId, setSelectedInviteId] = useState<string | null>(null);
+  const selectedInvite =
+    invites.find((invite) => invite.room_id === selectedInviteId) ?? invites[0] ?? null;
+
+  return (
+    <main className="main-pane invites-pane" aria-labelledby="invites-title">
+      <header className="channel-header">
+        <div className="channel-title">
+          <Bell size={22} />
+          <h1 id="invites-title">{t("workspace.invites")}</h1>
+        </div>
+        <div className="channel-actions">
+          <button
+            className="member-pill"
+            type="button"
+            aria-label={t("workspace.newDm")}
+            onClick={onNewDm}
+          >
+            <MessageCircle size={16} />
+            <span>{t("workspace.newDm")}</span>
+          </button>
+        </div>
+      </header>
+      <nav className="tabs" aria-label={t("invite.tabs")}>
+        <button className="tab is-active" type="button">
+          {t("invite.pendingInvites")}
+        </button>
+      </nav>
+      <section className="invites-layout" aria-label={t("invite.pendingInvites")}>
+        <div className="invite-list">
+          {invites.length ? (
+            invites.map((invite) => (
+              <button
+                className={`invite-row ${invite.room_id === selectedInvite?.room_id ? "is-active" : ""}`}
+                key={invite.room_id}
+                type="button"
+                aria-label={invite.display_name}
+                onClick={() => setSelectedInviteId(invite.room_id)}
+              >
+                <span className="invite-row-icon" aria-hidden="true">
+                  {invite.is_dm ? <MessageCircle size={17} /> : <Hash size={17} />}
+                </span>
+                <span className="invite-row-main">
+                  <strong dir="auto">{invite.display_name}</strong>
+                  <small dir="auto">
+                    {invite.inviter_display_name ?? t("invite.unknownInviter")}
+                  </small>
+                </span>
+              </button>
+            ))
+          ) : (
+            <div className="empty-results" role="status">
+              {t("invite.noPending")}
+            </div>
+          )}
+        </div>
+        <section className="invite-preview" aria-label={t("invite.preview")}>
+          {selectedInvite ? (
+            <>
+              <div className="invite-preview-heading">
+                <span className="invite-preview-icon" aria-hidden="true">
+                  {selectedInvite.is_dm ? <MessageCircle size={22} /> : <Hash size={22} />}
+                </span>
+                <div>
+                  <h2 dir="auto">{selectedInvite.display_name}</h2>
+                  <p dir="auto">
+                    {selectedInvite.inviter_display_name
+                      ? t("invite.fromInviter", {
+                          inviter: selectedInvite.inviter_display_name
+                        })
+                      : t("invite.unknownInviter")}
+                  </p>
+                </div>
+              </div>
+              <div className="settings-summary-grid" aria-label={t("invite.summary")}>
+                <SummaryTile
+                  label={t("room.type")}
+                  value={
+                    selectedInvite.is_dm
+                      ? t("room.directMessage")
+                      : t("search.scopeRoom")
+                  }
+                />
+                <SummaryTile
+                  label={t("invite.topic")}
+                  value={selectedInvite.topic ?? t("invite.noTopic")}
+                />
+              </div>
+              <div className="invite-actions">
+                <button
+                  className="dialog-button"
+                  type="button"
+                  aria-label={t("invite.decline")}
+                  disabled={isBusy}
+                  onClick={() => onDeclineInvite(selectedInvite.room_id)}
+                >
+                  <X size={16} />
+                  <span>{t("invite.decline")}</span>
+                </button>
+                <button
+                  className="dialog-button is-primary"
+                  type="button"
+                  aria-label={t("invite.accept")}
+                  disabled={isBusy}
+                  onClick={() => onAcceptInvite(selectedInvite.room_id)}
+                >
+                  <Check size={16} />
+                  <span>{t("invite.accept")}</span>
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="invite-empty-preview">
+              <Bell size={24} />
+              <span>{t("invite.noPending")}</span>
+            </div>
+          )}
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function SummaryTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="settings-summary-tile">
+      <span>{label}</span>
+      <strong dir="auto">{value}</strong>
+    </div>
   );
 }
 
@@ -2253,6 +2656,7 @@ export function ContextualRightPanel({
   onCloseThread,
   onClosePanel,
   onOpenKeyboardSettings,
+  onInviteUser = () => undefined,
   onRecoverySecretPresenceChange,
   onReply,
   onResultSelect,
@@ -2286,6 +2690,7 @@ export function ContextualRightPanel({
   onCloseThread: () => void;
   onClosePanel: () => void;
   onOpenKeyboardSettings: () => void;
+  onInviteUser?: (roomId: string, title: string) => void;
   onRecoverySecretPresenceChange: (value: boolean) => void;
   onReply: TimelineRowActionHandlers["onReply"];
   onResultSelect: (roomId: string, eventId: string) => void;
@@ -2366,7 +2771,19 @@ export function ContextualRightPanel({
     return (
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("panel.roomInfo")} onClose={onClosePanel} />
-        <RoomInfoPanel room={activeRoom} spaces={snapshot.state.spaces} />
+        <RoomInfoPanel
+          room={activeRoom}
+          spaces={snapshot.state.spaces}
+          onInvitePeople={
+            activeRoom
+              ? () =>
+                  onInviteUser(
+                    activeRoom.room_id,
+                    t("dialog.invitePeopleTitle", { name: activeRoom.display_name })
+                  )
+              : undefined
+          }
+        />
       </aside>
     );
   }
@@ -2375,7 +2792,20 @@ export function ContextualRightPanel({
     return (
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("panel.spaceInfo")} onClose={onClosePanel} />
-        <SpaceInfoPanel fallbackName={activeSpaceName} rooms={snapshot.state.rooms} space={activeSpace} />
+        <SpaceInfoPanel
+          fallbackName={activeSpaceName}
+          rooms={snapshot.state.rooms}
+          space={activeSpace}
+          onInvitePeople={
+            activeSpace
+              ? () =>
+                  onInviteUser(
+                    activeSpace.space_id,
+                    t("dialog.invitePeopleTitle", { name: activeSpace.display_name })
+                  )
+              : undefined
+          }
+        />
       </aside>
     );
   }

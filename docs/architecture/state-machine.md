@@ -133,6 +133,16 @@ stateDiagram-v2
   `invite_recv=ok invite_accept=ok invite_decline=ok dm_start=ok`. Its output
   must remain private-data-free; do not print Matrix room IDs, user IDs, invite
   names, or raw SDK errors for this stage.
+- The Phase B GUI is a view over the same Rust state. React may keep only
+  presentation state for the currently visible pane, the selected invite
+  preview, and unsent user-id drafts. Accept/decline/start-DM/invite-user
+  actions cross the Tauri adapter as typed commands and must render their
+  result from the returned Rust snapshot or subsequent state event. The browser
+  headless IPC-contract test covers `accept_invite`, `invite_user`, and
+  `start_direct_message`; the Linux virtual-display lane covers real WebView
+  invite acceptance and DM start against a disposable local homeserver with the
+  legacy sync backend forced for smoke determinism. SyncService invite
+  projection remains covered by the Phase A core `invites_dm` local QA.
 
 ## Timeline And Thread
 

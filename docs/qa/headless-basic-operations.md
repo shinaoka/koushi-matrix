@@ -170,6 +170,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-login --server=co
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-send --server=conduit --artifact-dir=artifacts/linux-gui-local-send --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --artifact-dir=artifacts/linux-gui-local-create-room --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-space --server=conduit --artifact-dir=artifacts/linux-gui-local-create-space --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-invites-dm --server=conduit --artifact-dir=artifacts/linux-gui-local-invites-dm --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
 ```
@@ -187,6 +188,16 @@ replying to a real timeline event. They assert the Rust-owned snapshot reacts
 (`rooms`/`spaces` counts grow; a `data-reply="true"` row renders) rather than
 relying on React-only state. These destructive operations stay local-only;
 matrix.org is reserved for the final compatibility gate.
+
+`local-invites-dm` registers a synthetic helper account on the same disposable
+homeserver, has that helper create and invite the QA user to a synthetic room,
+then drives the real Invites pane through WebDriver. It accepts the invite and
+waits for the pending invite list to clear, then submits New DM to the helper
+user and waits for a `data-room-kind="dm"` room-list row to appear. The lane
+prints only `gui_local_invite_accept=ok` and `gui_local_dm_start=ok`; it must not
+print Matrix IDs, room IDs, or raw SDK errors. This virtual-display smoke forces
+the legacy sync backend for determinism; the local core `invites_dm` QA remains
+the SyncService/legacy correctness gate for invite projection semantics.
 
 `local-settings` opens the real Settings UI, changes the composer send shortcut,
 switches the theme to dark, and verifies the E2EE trust settings section renders
@@ -216,6 +227,8 @@ gui_local_login=ok
 gui_local_send=ok
 gui_local_create_room=ok
 gui_local_create_space=ok
+gui_local_invite_accept=ok
+gui_local_dm_start=ok
 gui_local_reply=ok
 gui_local_settings=ok
 gui_local_trust_settings=ok

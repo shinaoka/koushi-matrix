@@ -307,6 +307,14 @@ All agents implementing the i18n GUI wiring follow
       --artifact-dir=artifacts/linux-gui-local-send-host \
       --timeout-ms=180000
   ```
+- Invite/DM GUI iteration has a focused virtual-display lane:
+  `--scenario=local-invites-dm`. It seeds a second synthetic local user, accepts
+  a real invite through the Invites pane, and starts a DM through the New DM
+  dialog. The lane waits for `data-room-kind="dm"` in the real room list, so
+  keep `RoomButton`'s data attributes in sync with the Rust-owned sidebar
+  snapshot if the room list markup changes. This lane intentionally forces the
+  legacy sync backend for deterministic WebDriver smoke; keep using the core
+  `invites_dm` QA for SyncService/legacy invite-projection correctness.
 - Reuse the existing Cargo, npm, and GUI target caches during the inner loop;
   do not rebuild the Docker image for every trial.
 - Run Docker only when you need the committed reproducible lane or want to

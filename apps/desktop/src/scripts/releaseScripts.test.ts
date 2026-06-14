@@ -299,6 +299,7 @@ describe("desktop release scripts", () => {
     for (const token of [
       "scenario local-create-room",
       "scenario local-create-space",
+      "scenario local-invites-dm",
       "scenario local-reply",
       "scenario local-settings",
       "verify local-settings trust section"
@@ -326,6 +327,8 @@ describe("desktop release scripts", () => {
 
     expect(source).toContain("gui_local_create_room=ok");
     expect(source).toContain("gui_local_create_space=ok");
+    expect(source).toContain("gui_local_invite_accept=ok");
+    expect(source).toContain("gui_local_dm_start=ok");
     expect(source).toContain("gui_local_reply=ok");
     expect(source).toContain("gui_local_settings=ok");
     expect(source).toContain("gui_local_trust_settings=ok");
@@ -339,9 +342,12 @@ describe("desktop release scripts", () => {
 
     expect(docs).toContain("--scenario=local-create-room");
     expect(docs).toContain("--scenario=local-create-space");
+    expect(docs).toContain("--scenario=local-invites-dm");
     expect(docs).toContain("--scenario=local-reply");
     expect(docs).toContain("--scenario=local-settings");
     expect(docs).toContain("gui_local_create_room=ok");
+    expect(docs).toContain("gui_local_invite_accept=ok");
+    expect(docs).toContain("gui_local_dm_start=ok");
     expect(docs).toContain("gui_local_reply=ok");
     expect(docs).toContain("gui_local_settings=ok");
     expect(docs).toContain("gui_local_trust_settings=ok");

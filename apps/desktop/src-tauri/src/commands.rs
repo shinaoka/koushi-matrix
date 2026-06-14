@@ -201,6 +201,7 @@ pub(crate) async fn submit_login_request(
 
 const LOGIN_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const SELECT_ROOM_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const ROOM_OPERATION_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 async fn submit_login_and_start_sync(
     app: AppHandle,
@@ -974,6 +975,39 @@ async fn wait_for_space_created(
     }
 }
 
+async fn wait_for_room_operation<F>(
+    event_conn: &mut CoreConnection,
+    operation_request_id: RequestId,
+    timeout: std::time::Duration,
+    is_success: F,
+    timeout_message: &'static str,
+    failure_message: &'static str,
+) -> Result<(), String>
+where
+    F: Fn(&RoomEvent, RequestId) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| timeout_message.to_owned())?;
+        match event {
+            Ok(CoreEvent::Room(room_event))
+                if is_success(&room_event, operation_request_id) =>
+            {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed { request_id, .. })
+                if request_id == operation_request_id =>
+            {
+                return Err(failure_message.to_owned());
+            }
+            Ok(_) => {}
+            Err(_) => return Err("room operation event stream lagged".to_owned()),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn create_room(
     name: String,
@@ -1020,6 +1054,127 @@ pub async fn set_space_child(
     submit_core_command(
         state.inner(),
         build_set_space_child_command(request_id, space_id, child_room_id, via_server),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn accept_invite(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_accept_invite_command(request_id, room_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::InviteAccepted { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "invite acceptance did not complete",
+        "invite acceptance failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn decline_invite(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_decline_invite_command(request_id, room_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::InviteDeclined { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "invite decline did not complete",
+        "invite decline failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn start_direct_message(
+    user_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_start_direct_message_command(request_id, user_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::DirectMessageStarted { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "direct message start did not complete",
+        "direct message start failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn invite_user(
+    room_id: String,
+    user_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_invite_user_command(request_id, room_id, user_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::UserInvited { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "user invite did not complete",
+        "user invite failed",
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -1492,6 +1647,48 @@ pub(crate) fn build_set_space_child_command(
     })
 }
 
+pub(crate) fn build_accept_invite_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::AcceptInvite {
+        request_id,
+        room_id,
+    })
+}
+
+pub(crate) fn build_decline_invite_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::DeclineInvite {
+        request_id,
+        room_id,
+    })
+}
+
+pub(crate) fn build_start_direct_message_command(
+    request_id: matrix_desktop_core::RequestId,
+    user_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::StartDirectMessage {
+        request_id,
+        user_id,
+    })
+}
+
+pub(crate) fn build_invite_user_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    user_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::InviteUser {
+        request_id,
+        room_id,
+        user_id,
+    })
+}
+
 pub(crate) fn build_send_reply_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -1830,20 +2027,21 @@ mod tests {
     use super::{
         build_accept_verification_command, build_bootstrap_cross_signing_command,
         build_cancel_verification_command, build_confirm_sas_verification_command,
-        build_create_room_command, build_create_space_command, build_edit_message_command,
-        build_enable_key_backup_command, build_forget_room_command, build_leave_room_command,
-        build_logout_command, build_paginate_thread_timeline_backwards_command,
-        build_paginate_timeline_backwards_command, build_redact_message_command,
-        build_reset_identity_command, build_restart_sync_command, build_select_room_command,
-        build_select_space_command, build_send_reply_command, build_send_text_command,
-        build_send_thread_reply_command, build_set_space_child_command,
+        build_create_room_command, build_create_space_command, build_decline_invite_command,
+        build_edit_message_command, build_enable_key_backup_command, build_forget_room_command,
+        build_invite_user_command, build_leave_room_command, build_logout_command,
+        build_paginate_thread_timeline_backwards_command, build_paginate_timeline_backwards_command,
+        build_redact_message_command, build_reset_identity_command, build_restart_sync_command,
+        build_select_room_command, build_select_space_command, build_send_reply_command,
+        build_send_text_command, build_send_thread_reply_command, build_set_space_child_command,
         build_set_thread_composer_draft_command, build_submit_identity_reset_oauth_command,
         build_submit_identity_reset_password_command, build_submit_login_command,
         build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
-        parse_qa_control_pipe_line, parse_qa_login_pipe_payload, qa_recovery_prompt_is_available,
-        qa_window_title_string, resolve_search_scope_from_active_room,
+        build_accept_invite_command, build_start_direct_message_command, parse_qa_control_pipe_line,
+        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
+        resolve_search_scope_from_active_room,
     };
     use matrix_desktop_state::RoomSummary;
 
@@ -2303,8 +2501,62 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_accept_invite_command(fake_request_id(19), "!invite:example.org".to_owned()) {
+            CoreCommand::Room(RoomCommand::AcceptInvite {
+                request_id,
+                room_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(19));
+                assert_eq!(room_id, "!invite:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_decline_invite_command(fake_request_id(20), "!decline:example.org".to_owned())
+        {
+            CoreCommand::Room(RoomCommand::DeclineInvite {
+                request_id,
+                room_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(20));
+                assert_eq!(room_id, "!decline:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_start_direct_message_command(
+            fake_request_id(21),
+            "@target:example.org".to_owned(),
+        ) {
+            CoreCommand::Room(RoomCommand::StartDirectMessage {
+                request_id,
+                user_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(21));
+                assert_eq!(user_id, "@target:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_invite_user_command(
+            fake_request_id(22),
+            "!room:example.org".to_owned(),
+            "@target:example.org".to_owned(),
+        ) {
+            CoreCommand::Room(RoomCommand::InviteUser {
+                request_id,
+                room_id,
+                user_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(22));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(user_id, "@target:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_send_reply_command(
-            fake_request_id(19),
+            fake_request_id(23),
             active_account_key.clone(),
             room_id.clone(),
             "desktop-reply-1".to_owned(),
@@ -2320,7 +2572,7 @@ mod tests {
                 in_reply_to_event_id,
                 body,
             }) => {
-                assert_eq!(request_id, fake_request_id(19));
+                assert_eq!(request_id, fake_request_id(23));
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -2336,7 +2588,7 @@ mod tests {
         }
 
         match build_send_thread_reply_command(
-            fake_request_id(20),
+            fake_request_id(24),
             active_account_key.clone(),
             room_id.clone(),
             "$root".to_owned(),
@@ -2352,7 +2604,7 @@ mod tests {
                 in_reply_to_event_id,
                 body,
             }) => {
-                assert_eq!(request_id, fake_request_id(20));
+                assert_eq!(request_id, fake_request_id(24));
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,

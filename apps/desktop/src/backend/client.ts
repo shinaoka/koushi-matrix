@@ -195,6 +195,22 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("set_space_child", { spaceId, childRoomId, viaServer });
   }
 
+  async acceptInvite(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("accept_invite", { roomId });
+  }
+
+  async declineInvite(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("decline_invite", { roomId });
+  }
+
+  async startDirectMessage(userId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("start_direct_message", { userId });
+  }
+
+  async inviteUser(roomId: string, userId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("invite_user", { roomId, userId });
+  }
+
   async setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("set_composer_reply_target", { roomId, eventId });
   }

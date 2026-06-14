@@ -75,4 +75,28 @@ describe("TauriDesktopApi", () => {
     });
     expect(invoke).toHaveBeenCalledWith("submit_identity_reset_oauth", { flowId: 45 });
   });
+
+  test("passes invite and DM actions to Rust-owned room commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.acceptInvite("!invite:example.invalid");
+    await api.declineInvite("!decline:example.invalid");
+    await api.startDirectMessage("@target:example.invalid");
+    await api.inviteUser("!room:example.invalid", "@target:example.invalid");
+
+    expect(invoke).toHaveBeenCalledWith("accept_invite", {
+      roomId: "!invite:example.invalid"
+    });
+    expect(invoke).toHaveBeenCalledWith("decline_invite", {
+      roomId: "!decline:example.invalid"
+    });
+    expect(invoke).toHaveBeenCalledWith("start_direct_message", {
+      userId: "@target:example.invalid"
+    });
+    expect(invoke).toHaveBeenCalledWith("invite_user", {
+      roomId: "!room:example.invalid",
+      userId: "@target:example.invalid"
+    });
+  });
 });

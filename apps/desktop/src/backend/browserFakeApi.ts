@@ -61,6 +61,10 @@ export interface DesktopApi {
   createRoom(name: string): Promise<DesktopSnapshot>;
   createSpace(name: string): Promise<DesktopSnapshot>;
   setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<DesktopSnapshot>;
+  acceptInvite(roomId: string): Promise<DesktopSnapshot>;
+  declineInvite(roomId: string): Promise<DesktopSnapshot>;
+  startDirectMessage(userId: string): Promise<DesktopSnapshot>;
+  inviteUser(roomId: string, userId: string): Promise<DesktopSnapshot>;
   setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   cancelComposerReply(): Promise<DesktopSnapshot>;
   sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<DesktopSnapshot>;
@@ -628,6 +632,84 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async acceptInvite(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    const invite = this.snapshot.state.invites.find((candidate) => candidate.room_id === roomId);
+    if (!invite) {
+      return this.getSnapshot();
+    }
+
+    const joinedRoom: RoomSummary = {
+      room_id: roomId,
+      display_name: invite.display_name,
+      is_dm: invite.is_dm,
+      unread_count: 0,
+      parent_space_ids: []
+    };
+    this.snapshot.state.invites = this.snapshot.state.invites.filter(
+      (candidate) => candidate.room_id !== roomId
+    );
+    this.snapshot.state.rooms = [...this.snapshot.state.rooms, joinedRoom];
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
+    await this.selectRoom(roomId);
+    return this.getSnapshot();
+  }
+
+  async declineInvite(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.invites = this.snapshot.state.invites.filter(
+      (candidate) => candidate.room_id !== roomId
+    );
+    return this.getSnapshot();
+  }
+
+  async startDirectMessage(userId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    const trimmedUserId = userId.trim();
+    if (!trimmedUserId) {
+      return this.getSnapshot();
+    }
+
+    const count = this.snapshot.state.rooms.filter((room) => room.is_dm).length + 1;
+    const newRoomId = `!local-dm-${count}:fake.local`;
+    const newRoom: RoomSummary = {
+      room_id: newRoomId,
+      display_name: trimmedUserId,
+      is_dm: true,
+      unread_count: 0,
+      parent_space_ids: []
+    };
+    this.snapshot.state.rooms = [...this.snapshot.state.rooms, newRoom];
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
+    await this.selectRoom(newRoomId);
+    return this.getSnapshot();
+  }
+
+  async inviteUser(roomId: string, userId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim() || !userId.trim()) {
+      return this.getSnapshot();
+    }
+
+    return this.getSnapshot();
+  }
+
   async setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
@@ -731,6 +813,7 @@ class BrowserFakeApi implements DesktopApi {
     };
     this.snapshot.state.spaces = [];
     this.snapshot.state.rooms = [];
+    this.snapshot.state.invites = [];
     this.snapshot.state.timeline = {
       room_id: null,
       is_subscribed: false,
