@@ -614,6 +614,7 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
         CoreEvent::Room(e) => serde_json::json!({ "kind": "Room", "event": e }),
         CoreEvent::Timeline(e) => serde_json::json!({ "kind": "Timeline", "event": e }),
         CoreEvent::Search(e) => serde_json::json!({ "kind": "Search", "event": e }),
+        CoreEvent::E2eeTrust(e) => serde_json::json!({ "kind": "E2eeTrust", "event": e }),
         CoreEvent::OperationFailed {
             request_id,
             failure,
@@ -1134,12 +1135,14 @@ mod tests {
         use matrix_desktop_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
-                AccountEvent, PaginationDirection, PaginationState, ReactionGroup, RoomEvent,
-                TimelineEvent, TimelineItem, TimelineItemId, TimelineResyncReason,
+                AccountEvent, E2eeTrustEvent, PaginationDirection, PaginationState,
+                ReactionGroup, RoomEvent, TimelineEvent, TimelineItem, TimelineItemId,
+                TimelineResyncReason,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
+        use matrix_desktop_state::{SasEmoji, VerificationFlowState, VerificationTarget};
         use serde_json::json;
 
         let request_id = RequestId {
@@ -1300,8 +1303,33 @@ mod tests {
             json!("!r:example.test")
         );
 
+        let e2ee_trust = serialize_core_event(&CoreEvent::E2eeTrust(
+            E2eeTrustEvent::VerificationProgress {
+                account_key: AccountKey("@u:example.test".to_owned()),
+                state: VerificationFlowState::SasPresented {
+                    request_id: request_id.sequence,
+                    target: VerificationTarget {
+                        user_id: "@other:example.test".to_owned(),
+                        device_id: "OTHERDEVICE".to_owned(),
+                    },
+                    emojis: vec![SasEmoji {
+                        symbol: "🐶".to_owned(),
+                        description: "Dog".to_owned(),
+                    }],
+                },
+            },
+        ))
+        .expect("serialize");
+        assert_eq!(e2ee_trust["kind"], json!("E2eeTrust"));
+        assert_eq!(e2ee_trust["event"]["kind"], json!("verificationProgress"));
+        assert_eq!(
+            e2ee_trust["event"]["state"]["kind"],
+            json!("sasPresented")
+        );
+
         let actual_contract = json!({
             "accountSavedSessionsListed": listed,
+            "e2eeTrustVerificationProgress": e2ee_trust,
             "operationFailedSessionNotFound": failed,
             "roomLeft": room_left,
             "timelineInitialItems": initial,

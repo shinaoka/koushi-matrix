@@ -6,7 +6,7 @@ use matrix_desktop_search::{SearchDocumentStore, SearchEdit, SearchableEvent};
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, LoginFlow, LoginRequest, RecoveryMethod, RecoveryRequest,
     RoomSummary, SearchResult, SearchScope, SessionInfo, SidebarModel, SpaceSummary,
-    ThreadPaneState, compose_sidebar, reduce,
+    ThreadPaneState, TrustOperationFailureKind, compose_sidebar, reduce,
 };
 use serde::{Deserialize, Serialize};
 
@@ -400,6 +400,34 @@ impl FakeDesktopBackend {
             | AppEffect::PersistSettings { .. }
             | AppEffect::StopSync
             | AppEffect::EmitUiEvent(_) => Vec::new(),
+            AppEffect::RequestVerification { request_id, .. }
+            | AppEffect::AcceptVerification { request_id }
+            | AppEffect::ConfirmSasVerification { request_id } => {
+                vec![AppAction::VerificationFailed {
+                    request_id: *request_id,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]
+            }
+            AppEffect::CancelVerification { .. } => Vec::new(),
+            AppEffect::BootstrapCrossSigning { request_id } => {
+                vec![AppAction::BootstrapCrossSigningFailed {
+                    request_id: *request_id,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]
+            }
+            AppEffect::EnableKeyBackup { request_id }
+            | AppEffect::RestoreKeyBackup { request_id, .. } => {
+                vec![AppAction::KeyBackupFailed {
+                    request_id: *request_id,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]
+            }
+            AppEffect::ResetIdentity { request_id } => {
+                vec![AppAction::ResetIdentityFailed {
+                    request_id: *request_id,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]
+            }
             AppEffect::Login(request) => self.login(request),
             AppEffect::RecoverE2ee(request) => self.recover_e2ee(request),
         }

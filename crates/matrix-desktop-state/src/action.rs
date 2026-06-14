@@ -1,8 +1,9 @@
 use std::fmt;
 
 use crate::state::{
-    BasicOperationRequest, E2eeRecoveryState, LoginFlow, RecoveryMethod, RoomSummary, SearchResult,
-    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
+    BasicOperationRequest, CrossSigningStatus, E2eeRecoveryState, LoginFlow, RecoveryMethod,
+    RoomSummary, SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues,
+    SpaceSummary, TrustOperationFailureKind, VerificationTarget,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +59,74 @@ pub enum AppAction {
     E2eeRecoveryStateChanged {
         state: E2eeRecoveryState,
         methods: Vec<RecoveryMethod>,
+    },
+    VerificationRequested {
+        request_id: u64,
+        target: VerificationTarget,
+    },
+    VerificationAccepted {
+        request_id: u64,
+    },
+    VerificationSasPresented {
+        request_id: u64,
+        emojis: Vec<SasEmoji>,
+    },
+    VerificationConfirmed {
+        request_id: u64,
+    },
+    VerificationCancelled {
+        request_id: u64,
+    },
+    VerificationCompleted {
+        request_id: u64,
+    },
+    VerificationFailed {
+        request_id: u64,
+        kind: TrustOperationFailureKind,
+    },
+    CrossSigningStatusChanged {
+        status: CrossSigningStatus,
+    },
+    BootstrapCrossSigningRequested {
+        request_id: u64,
+    },
+    BootstrapCrossSigningFailed {
+        request_id: u64,
+        kind: TrustOperationFailureKind,
+    },
+    EnableKeyBackupRequested {
+        request_id: u64,
+    },
+    KeyBackupEnabled {
+        request_id: u64,
+        version: String,
+    },
+    KeyBackupFailed {
+        request_id: u64,
+        kind: TrustOperationFailureKind,
+    },
+    RestoreKeyBackupRequested {
+        request_id: u64,
+        version: Option<String>,
+    },
+    KeyBackupRestoreProgress {
+        request_id: u64,
+        restored_rooms: u64,
+        total_rooms: Option<u64>,
+    },
+    KeyBackupRestored {
+        request_id: u64,
+        version: Option<String>,
+    },
+    ResetIdentityRequested {
+        request_id: u64,
+    },
+    ResetIdentityCompleted {
+        request_id: u64,
+    },
+    ResetIdentityFailed {
+        request_id: u64,
+        kind: TrustOperationFailureKind,
     },
     LoginFailed {
         message: String,

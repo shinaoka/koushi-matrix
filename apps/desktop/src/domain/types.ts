@@ -28,6 +28,7 @@ export interface AppState {
   search: SearchState;
   errors: AppError[];
   basic_operation: BasicOperationState;
+  e2ee_trust: E2eeTrustState;
 }
 
 export interface SettingsState {
@@ -217,6 +218,86 @@ export type BasicOperationState =
   | { kind: "creatingRoom"; request_id: number; name: string }
   | { kind: "creatingSpace"; request_id: number; name: string }
   | { kind: "linkingSpaceChild"; request_id: number; space_id: string; child_room_id: string };
+
+export interface E2eeTrustState {
+  verification: VerificationFlowState;
+  cross_signing: CrossSigningStatus;
+  key_backup: KeyBackupStatus;
+  identity_reset_request_id: number | null;
+  devices: DeviceTrustSummary[];
+}
+
+export type VerificationFlowState =
+  | { kind: "idle" }
+  | { kind: "requested"; request_id: number; target: VerificationTarget }
+  | { kind: "accepted"; request_id: number; target: VerificationTarget }
+  | {
+      kind: "sasPresented";
+      request_id: number;
+      target: VerificationTarget;
+      emojis: SasEmoji[];
+    }
+  | {
+      kind: "confirming";
+      request_id: number;
+      target: VerificationTarget;
+      emojis: SasEmoji[];
+    }
+  | { kind: "done"; request_id: number; target: VerificationTarget }
+  | {
+      kind: "failed";
+      request_id: number;
+      target: VerificationTarget;
+      failureKind: TrustOperationFailureKind;
+    };
+
+export interface VerificationTarget {
+  user_id: string;
+  device_id: string;
+}
+
+export interface SasEmoji {
+  symbol: string;
+  description: string;
+}
+
+export type CrossSigningStatus =
+  | { kind: "unknown" }
+  | { kind: "missing" }
+  | { kind: "bootstrapping"; request_id: number }
+  | { kind: "trusted" }
+  | { kind: "notTrusted" }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export type KeyBackupStatus =
+  | { kind: "unknown" }
+  | { kind: "disabled" }
+  | { kind: "enabling"; request_id: number }
+  | { kind: "enabled"; version: string }
+  | {
+      kind: "restoring";
+      request_id: number;
+      version: string | null;
+      restored_rooms: number;
+      total_rooms: number | null;
+    }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export interface DeviceTrustSummary {
+  user_id: string;
+  device_id: string;
+  trust_level: DeviceTrustLevel;
+}
+
+export type DeviceTrustLevel = "unknown" | "unverified" | "verified" | "blocked";
+
+export type TrustOperationFailureKind =
+  | "cancelled"
+  | "mismatch"
+  | "network"
+  | "forbidden"
+  | "timeout"
+  | "sdk";
 
 export interface ThreadPaneState {
   kind: "closed" | "opening" | "open";

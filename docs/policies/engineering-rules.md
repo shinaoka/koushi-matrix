@@ -65,6 +65,11 @@ Rules:
    local unlock secrets, SDK/search keys, raw Matrix session JSON,
    room/event/user IDs, message bodies, attachment filenames, search queries,
    or raw SDK errors.
+11. E2EE trust diagnostics are kind-only. Verification, cross-signing,
+   key-backup, and identity-reset commands/events may expose structured state to
+   the UI, but normal `Debug`, QA logs, and window-title tokens must redact
+   account keys, verification target user/device IDs, backup versions, raw SDK
+   errors, and all key material.
 
 ## Logging and Diagnostics
 

@@ -17,6 +17,27 @@
     },
     "kind": "Account"
   },
+  "e2eeTrustVerificationProgress": {
+    "event": {
+      "account_key": "@u:example.test",
+      "kind": "verificationProgress",
+      "state": {
+        "emojis": [
+          {
+            "description": "Dog",
+            "symbol": "🐶"
+          }
+        ],
+        "kind": "sasPresented",
+        "request_id": 7,
+        "target": {
+          "device_id": "OTHERDEVICE",
+          "user_id": "@other:example.test"
+        }
+      }
+    },
+    "kind": "E2eeTrust"
+  },
   "operationFailedSessionNotFound": {
     "failure": "SessionNotFound",
     "kind": "OperationFailed",

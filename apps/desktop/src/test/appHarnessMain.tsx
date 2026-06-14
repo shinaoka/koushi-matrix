@@ -138,7 +138,8 @@ function readySnapshot(
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
-      basic_operation: basicOperation
+      basic_operation: basicOperation,
+      e2ee_trust: defaultE2eeTrustState()
     },
     sidebar: {
       active_space_id: null,
@@ -165,6 +166,16 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       keyboard: { composer_send_shortcut: "enter" }
     },
     persistence: { kind: "idle" }
+  };
+}
+
+function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
+  return {
+    verification: { kind: "idle" },
+    cross_signing: { kind: "unknown" },
+    key_backup: { kind: "unknown" },
+    identity_reset_request_id: null,
+    devices: []
   };
 }
 

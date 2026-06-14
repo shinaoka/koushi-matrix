@@ -131,7 +131,14 @@ function snapshotForPanelMode(
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
-      basic_operation: { kind: "idle" }
+      basic_operation: { kind: "idle" },
+      e2ee_trust: {
+        verification: { kind: "idle" },
+        cross_signing: { kind: "unknown" },
+        key_backup: { kind: "unknown" },
+        identity_reset_request_id: null,
+        devices: []
+      }
     },
     // Production always sends the legacy top-level thread as null; the open/closed
     // decision must come from state.thread, never this placeholder.

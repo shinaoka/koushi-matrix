@@ -1,6 +1,6 @@
 use crate::{
     action::{LoginRequest, RecoveryRequest},
-    state::{SearchScope, SessionInfo, SettingsValues},
+    state::{SearchScope, SessionInfo, SettingsValues, VerificationTarget},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -12,6 +12,32 @@ pub enum AppEffect {
     },
     Login(LoginRequest),
     RecoverE2ee(RecoveryRequest),
+    RequestVerification {
+        request_id: u64,
+        target: VerificationTarget,
+    },
+    AcceptVerification {
+        request_id: u64,
+    },
+    ConfirmSasVerification {
+        request_id: u64,
+    },
+    CancelVerification {
+        request_id: u64,
+    },
+    BootstrapCrossSigning {
+        request_id: u64,
+    },
+    EnableKeyBackup {
+        request_id: u64,
+    },
+    RestoreKeyBackup {
+        request_id: u64,
+        version: Option<String>,
+    },
+    ResetIdentity {
+        request_id: u64,
+    },
     PersistSession(SessionInfo),
     PersistSettings {
         request_id: u64,
@@ -56,5 +82,6 @@ pub enum UiEvent {
     TimelineChanged { room_id: String },
     ThreadChanged,
     SearchChanged,
+    E2eeTrustChanged,
     ErrorChanged,
 }

@@ -1,6 +1,9 @@
 //! Public event boundary. Events carry the originating `RequestId` when one
 //! exists; identifiers and visible bodies are allowed, secrets never.
 
+use std::fmt;
+
+use matrix_desktop_state::{CrossSigningStatus, KeyBackupStatus, VerificationFlowState};
 use serde::{Deserialize, Serialize};
 
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -18,6 +21,7 @@ pub enum CoreEvent {
     Room(RoomEvent),
     Timeline(TimelineEvent),
     Search(SearchEvent),
+    E2eeTrust(E2eeTrustEvent),
     OperationFailed {
         request_id: RequestId,
         failure: CoreFailure,
@@ -55,6 +59,88 @@ pub enum AccountEvent {
         request_id: RequestId,
         account_key: AccountKey,
     },
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum E2eeTrustEvent {
+    VerificationProgress {
+        account_key: AccountKey,
+        state: VerificationFlowState,
+    },
+    CrossSigningChanged {
+        account_key: AccountKey,
+        status: CrossSigningStatus,
+    },
+    KeyBackupChanged {
+        account_key: AccountKey,
+        status: KeyBackupStatus,
+    },
+    IdentityResetChanged {
+        account_key: AccountKey,
+        request_id: Option<RequestId>,
+    },
+}
+
+impl fmt::Debug for E2eeTrustEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::VerificationProgress { state, .. } => formatter
+                .debug_struct("VerificationProgress")
+                .field("account_key", &"AccountKey(..)")
+                .field("state", &verification_state_name(state))
+                .finish(),
+            Self::CrossSigningChanged { status, .. } => formatter
+                .debug_struct("CrossSigningChanged")
+                .field("account_key", &"AccountKey(..)")
+                .field("status", &cross_signing_status_name(status))
+                .finish(),
+            Self::KeyBackupChanged { status, .. } => formatter
+                .debug_struct("KeyBackupChanged")
+                .field("account_key", &"AccountKey(..)")
+                .field("status", &key_backup_status_name(status))
+                .finish(),
+            Self::IdentityResetChanged { request_id, .. } => formatter
+                .debug_struct("IdentityResetChanged")
+                .field("account_key", &"AccountKey(..)")
+                .field("request_id", request_id)
+                .finish(),
+        }
+    }
+}
+
+fn verification_state_name(state: &VerificationFlowState) -> &'static str {
+    match state {
+        VerificationFlowState::Idle => "Idle",
+        VerificationFlowState::Requested { .. } => "Requested",
+        VerificationFlowState::Accepted { .. } => "Accepted",
+        VerificationFlowState::SasPresented { .. } => "SasPresented",
+        VerificationFlowState::Confirming { .. } => "Confirming",
+        VerificationFlowState::Done { .. } => "Done",
+        VerificationFlowState::Failed { .. } => "Failed",
+    }
+}
+
+fn cross_signing_status_name(status: &CrossSigningStatus) -> &'static str {
+    match status {
+        CrossSigningStatus::Unknown => "Unknown",
+        CrossSigningStatus::Missing => "Missing",
+        CrossSigningStatus::Bootstrapping { .. } => "Bootstrapping",
+        CrossSigningStatus::Trusted => "Trusted",
+        CrossSigningStatus::NotTrusted => "NotTrusted",
+        CrossSigningStatus::Failed { .. } => "Failed",
+    }
+}
+
+fn key_backup_status_name(status: &KeyBackupStatus) -> &'static str {
+    match status {
+        KeyBackupStatus::Unknown => "Unknown",
+        KeyBackupStatus::Disabled => "Disabled",
+        KeyBackupStatus::Enabling { .. } => "Enabling",
+        KeyBackupStatus::Enabled { .. } => "Enabled",
+        KeyBackupStatus::Restoring { .. } => "Restoring",
+        KeyBackupStatus::Failed { .. } => "Failed",
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

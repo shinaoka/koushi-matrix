@@ -231,6 +231,96 @@ export type SearchEvent = {
 };
 
 // ---------------------------------------------------------------------------
+// E2EE trust events (internally tagged by Rust with `kind`)
+// ---------------------------------------------------------------------------
+
+export type TrustOperationFailureKind =
+  | "cancelled"
+  | "mismatch"
+  | "network"
+  | "forbidden"
+  | "timeout"
+  | "sdk";
+
+export interface VerificationTarget {
+  user_id: string;
+  device_id: string;
+}
+
+export interface SasEmoji {
+  symbol: string;
+  description: string;
+}
+
+export type VerificationFlowState =
+  | { kind: "idle" }
+  | { kind: "requested"; request_id: number; target: VerificationTarget }
+  | { kind: "accepted"; request_id: number; target: VerificationTarget }
+  | {
+      kind: "sasPresented";
+      request_id: number;
+      target: VerificationTarget;
+      emojis: SasEmoji[];
+    }
+  | {
+      kind: "confirming";
+      request_id: number;
+      target: VerificationTarget;
+      emojis: SasEmoji[];
+    }
+  | { kind: "done"; request_id: number; target: VerificationTarget }
+  | {
+      kind: "failed";
+      request_id: number;
+      target: VerificationTarget;
+      failureKind: TrustOperationFailureKind;
+    };
+
+export type CrossSigningStatus =
+  | { kind: "unknown" }
+  | { kind: "missing" }
+  | { kind: "bootstrapping"; request_id: number }
+  | { kind: "trusted" }
+  | { kind: "notTrusted" }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export type KeyBackupStatus =
+  | { kind: "unknown" }
+  | { kind: "disabled" }
+  | { kind: "enabling"; request_id: number }
+  | { kind: "enabled"; version: string }
+  | {
+      kind: "restoring";
+      request_id: number;
+      version: string | null;
+      restored_rooms: number;
+      total_rooms: number | null;
+    }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export type E2eeTrustEvent =
+  | {
+      kind: "verificationProgress";
+      account_key: string;
+      state: VerificationFlowState;
+    }
+  | {
+      kind: "crossSigningChanged";
+      account_key: string;
+      status: CrossSigningStatus;
+    }
+  | {
+      kind: "keyBackupChanged";
+      account_key: string;
+      status: KeyBackupStatus;
+    }
+  | {
+      kind: "identityResetChanged";
+      account_key: string;
+      request_id: RequestId | null;
+    };
+
+// ---------------------------------------------------------------------------
 // Failures (externally tagged; unit variants are bare strings)
 // ---------------------------------------------------------------------------
 
@@ -258,6 +348,7 @@ export type CoreEventPayload =
   | { kind: "Room"; event: RoomEvent }
   | { kind: "Timeline"; event: TimelineEvent }
   | { kind: "Search"; event: SearchEvent }
+  | { kind: "E2eeTrust"; event: E2eeTrustEvent }
   | {
       kind: "OperationFailed";
       request_id: RequestId | null;

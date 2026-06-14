@@ -612,6 +612,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.focused_context = { kind: "closed" };
     this.snapshot.state.search = { kind: "closed" };
     this.snapshot.state.basic_operation = { kind: "idle" };
+    this.snapshot.state.e2ee_trust = defaultE2eeTrustState();
     this.snapshot.sidebar = emptySidebar();
     this.snapshot.timeline = [];
     this.snapshot.thread = null;
@@ -700,7 +701,8 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
-      basic_operation: { kind: "idle" }
+      basic_operation: { kind: "idle" },
+      e2ee_trust: defaultE2eeTrustState()
     },
     sidebar,
     timeline: timelineMessages.filter((message) => message.room_id === active_room_id),
@@ -767,7 +769,8 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
-      basic_operation: { kind: "idle" }
+      basic_operation: { kind: "idle" },
+      e2ee_trust: defaultE2eeTrustState()
     },
     sidebar: emptySidebar(),
     timeline: [],
@@ -784,6 +787,16 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       keyboard: { composer_send_shortcut: "enter" }
     },
     persistence: { kind: "idle" }
+  };
+}
+
+function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
+  return {
+    verification: { kind: "idle" },
+    cross_signing: { kind: "unknown" },
+    key_backup: { kind: "unknown" },
+    identity_reset_request_id: null,
+    devices: []
   };
 }
 

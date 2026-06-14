@@ -3,9 +3,10 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppError, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
-        E2eeRecoveryState, FocusedContextState, NavigationState, PendingComposerSendKind,
-        SearchState, SessionState, SettingsPersistenceState, SyncState, ThreadPaneState,
-        TimelinePaneState,
+        CrossSigningStatus, E2eeRecoveryState, E2eeTrustState, FocusedContextState,
+        KeyBackupStatus, NavigationState, PendingComposerSendKind, SasEmoji, SearchState,
+        SessionState, SettingsPersistenceState, SyncState, ThreadPaneState, TimelinePaneState,
+        VerificationFlowState, VerificationTarget,
     },
 };
 
@@ -112,6 +113,293 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 ]
             }
         },
+        AppAction::VerificationRequested { request_id, target } => {
+            if !is_session_ready(state)
+                || !matches!(
+                    state.e2ee_trust.verification,
+                    VerificationFlowState::Idle
+                        | VerificationFlowState::Done { .. }
+                        | VerificationFlowState::Failed { .. }
+                )
+            {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.verification = VerificationFlowState::Requested {
+                request_id,
+                target: target.clone(),
+            };
+            vec![
+                AppEffect::RequestVerification { request_id, target },
+                AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            ]
+        }
+        AppAction::VerificationAccepted { request_id } => {
+            let VerificationFlowState::Requested { target, .. } = &state.e2ee_trust.verification
+            else {
+                return Vec::new();
+            };
+            if verification_request_id(&state.e2ee_trust.verification) != Some(request_id) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.verification = VerificationFlowState::Accepted {
+                request_id,
+                target: target.clone(),
+            };
+            vec![
+                AppEffect::AcceptVerification { request_id },
+                AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            ]
+        }
+        AppAction::VerificationSasPresented { request_id, emojis } => {
+            if !matches!(
+                state.e2ee_trust.verification,
+                VerificationFlowState::Requested { .. }
+                    | VerificationFlowState::Accepted { .. }
+                    | VerificationFlowState::SasPresented { .. }
+            ) {
+                return Vec::new();
+            }
+            let Some(target) = verification_target(&state.e2ee_trust.verification) else {
+                return Vec::new();
+            };
+            if verification_request_id(&state.e2ee_trust.verification) != Some(request_id) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.verification = VerificationFlowState::SasPresented {
+                request_id,
+                target,
+                emojis,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::VerificationConfirmed { request_id } => {
+            let VerificationFlowState::SasPresented { .. } = &state.e2ee_trust.verification else {
+                return Vec::new();
+            };
+            let Some(target) = verification_target(&state.e2ee_trust.verification) else {
+                return Vec::new();
+            };
+            if verification_request_id(&state.e2ee_trust.verification) != Some(request_id) {
+                return Vec::new();
+            }
+            let emojis = verification_emojis(&state.e2ee_trust.verification);
+
+            state.e2ee_trust.verification = VerificationFlowState::Confirming {
+                request_id,
+                target,
+                emojis,
+            };
+            vec![
+                AppEffect::ConfirmSasVerification { request_id },
+                AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            ]
+        }
+        AppAction::VerificationCancelled { request_id } => {
+            if !verification_is_active(&state.e2ee_trust.verification)
+                || verification_request_id(&state.e2ee_trust.verification) != Some(request_id)
+            {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.verification = VerificationFlowState::Idle;
+            vec![
+                AppEffect::CancelVerification { request_id },
+                AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            ]
+        }
+        AppAction::VerificationCompleted { request_id } => {
+            if !verification_is_active(&state.e2ee_trust.verification)
+                || verification_request_id(&state.e2ee_trust.verification) != Some(request_id)
+            {
+                return Vec::new();
+            }
+            let Some(target) = verification_target(&state.e2ee_trust.verification) else {
+                return Vec::new();
+            };
+
+            state.e2ee_trust.verification = VerificationFlowState::Done { request_id, target };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::VerificationFailed { request_id, kind } => {
+            if !verification_is_active(&state.e2ee_trust.verification)
+                || verification_request_id(&state.e2ee_trust.verification) != Some(request_id)
+            {
+                return Vec::new();
+            }
+            let Some(target) = verification_target(&state.e2ee_trust.verification) else {
+                return Vec::new();
+            };
+
+            state.e2ee_trust.verification = VerificationFlowState::Failed {
+                request_id,
+                target,
+                kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::CrossSigningStatusChanged { status } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.cross_signing = status;
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::BootstrapCrossSigningRequested { request_id } => {
+            if !is_session_ready(state)
+                || matches!(
+                    state.e2ee_trust.cross_signing,
+                    CrossSigningStatus::Bootstrapping { .. }
+                )
+            {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.cross_signing = CrossSigningStatus::Bootstrapping { request_id };
+            vec![
+                AppEffect::BootstrapCrossSigning { request_id },
+                AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            ]
+        }
+        AppAction::BootstrapCrossSigningFailed { request_id, kind } => {
+            if state.e2ee_trust.cross_signing != (CrossSigningStatus::Bootstrapping { request_id })
+            {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.cross_signing = CrossSigningStatus::Failed { request_id, kind };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::EnableKeyBackupRequested { request_id } => {
+            if !is_session_ready(state)
+                || matches!(
+                    state.e2ee_trust.key_backup,
+                    KeyBackupStatus::Enabling { .. } | KeyBackupStatus::Restoring { .. }
+                )
+            {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.key_backup = KeyBackupStatus::Enabling { request_id };
+            vec![
+                AppEffect::EnableKeyBackup { request_id },
+                AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            ]
+        }
+        AppAction::KeyBackupEnabled {
+            request_id,
+            version,
+        } => {
+            if state.e2ee_trust.key_backup != (KeyBackupStatus::Enabling { request_id }) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.key_backup = KeyBackupStatus::Enabled { version };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::KeyBackupFailed { request_id, kind } => {
+            if !key_backup_request_matches(&state.e2ee_trust.key_backup, request_id) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.key_backup = KeyBackupStatus::Failed { request_id, kind };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::RestoreKeyBackupRequested {
+            request_id,
+            version,
+        } => {
+            if !is_session_ready(state)
+                || matches!(
+                    state.e2ee_trust.key_backup,
+                    KeyBackupStatus::Enabling { .. } | KeyBackupStatus::Restoring { .. }
+                )
+            {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.key_backup = KeyBackupStatus::Restoring {
+                request_id,
+                version: version.clone(),
+                restored_rooms: 0,
+                total_rooms: None,
+            };
+            vec![
+                AppEffect::RestoreKeyBackup {
+                    request_id,
+                    version,
+                },
+                AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            ]
+        }
+        AppAction::KeyBackupRestoreProgress {
+            request_id,
+            restored_rooms,
+            total_rooms,
+        } => {
+            let KeyBackupStatus::Restoring { version, .. } = &state.e2ee_trust.key_backup else {
+                return Vec::new();
+            };
+            if !key_backup_request_matches(&state.e2ee_trust.key_backup, request_id) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.key_backup = KeyBackupStatus::Restoring {
+                request_id,
+                version: version.clone(),
+                restored_rooms,
+                total_rooms,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::KeyBackupRestored {
+            request_id,
+            version,
+        } => {
+            if !key_backup_restore_request_matches(&state.e2ee_trust.key_backup, request_id) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.key_backup = match version {
+                Some(version) => KeyBackupStatus::Enabled { version },
+                None => KeyBackupStatus::Unknown,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::ResetIdentityRequested { request_id } => {
+            if !is_session_ready(state) || state.e2ee_trust.identity_reset_request_id.is_some() {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.identity_reset_request_id = Some(request_id);
+            vec![
+                AppEffect::ResetIdentity { request_id },
+                AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            ]
+        }
+        AppAction::ResetIdentityCompleted { request_id } => {
+            if state.e2ee_trust.identity_reset_request_id != Some(request_id) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.identity_reset_request_id = None;
+            state.e2ee_trust.verification = VerificationFlowState::Idle;
+            state.e2ee_trust.cross_signing = CrossSigningStatus::Missing;
+            state.e2ee_trust.key_backup = KeyBackupStatus::Disabled;
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::ResetIdentityFailed { request_id, kind } => {
+            if state.e2ee_trust.identity_reset_request_id != Some(request_id) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.identity_reset_request_id = None;
+            state.e2ee_trust.cross_signing = CrossSigningStatus::Failed { request_id, kind };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
         AppAction::RestoreSessionNotFound => {
             state.session = SessionState::SignedOut;
             vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
@@ -993,6 +1281,74 @@ fn is_session_ready(state: &AppState) -> bool {
     )
 }
 
+fn verification_request_id(verification: &VerificationFlowState) -> Option<u64> {
+    match verification {
+        VerificationFlowState::Idle => None,
+        VerificationFlowState::Requested { request_id, .. }
+        | VerificationFlowState::Accepted { request_id, .. }
+        | VerificationFlowState::SasPresented { request_id, .. }
+        | VerificationFlowState::Confirming { request_id, .. }
+        | VerificationFlowState::Done { request_id, .. }
+        | VerificationFlowState::Failed { request_id, .. } => Some(*request_id),
+    }
+}
+
+fn verification_target(verification: &VerificationFlowState) -> Option<VerificationTarget> {
+    match verification {
+        VerificationFlowState::Idle => None,
+        VerificationFlowState::Requested { target, .. }
+        | VerificationFlowState::Accepted { target, .. }
+        | VerificationFlowState::SasPresented { target, .. }
+        | VerificationFlowState::Confirming { target, .. }
+        | VerificationFlowState::Done { target, .. }
+        | VerificationFlowState::Failed { target, .. } => Some(target.clone()),
+    }
+}
+
+fn verification_emojis(verification: &VerificationFlowState) -> Vec<SasEmoji> {
+    match verification {
+        VerificationFlowState::SasPresented { emojis, .. }
+        | VerificationFlowState::Confirming { emojis, .. } => emojis.clone(),
+        VerificationFlowState::Idle
+        | VerificationFlowState::Requested { .. }
+        | VerificationFlowState::Accepted { .. }
+        | VerificationFlowState::Done { .. }
+        | VerificationFlowState::Failed { .. } => Vec::new(),
+    }
+}
+
+fn verification_is_active(verification: &VerificationFlowState) -> bool {
+    matches!(
+        verification,
+        VerificationFlowState::Requested { .. }
+            | VerificationFlowState::Accepted { .. }
+            | VerificationFlowState::SasPresented { .. }
+            | VerificationFlowState::Confirming { .. }
+    )
+}
+
+fn key_backup_request_matches(key_backup: &KeyBackupStatus, request_id: u64) -> bool {
+    matches!(
+        key_backup,
+        KeyBackupStatus::Enabling {
+            request_id: current_request_id,
+        } | KeyBackupStatus::Restoring {
+            request_id: current_request_id,
+            ..
+        } if *current_request_id == request_id
+    )
+}
+
+fn key_backup_restore_request_matches(key_backup: &KeyBackupStatus, request_id: u64) -> bool {
+    matches!(
+        key_backup,
+        KeyBackupStatus::Restoring {
+            request_id: current_request_id,
+            ..
+        } if *current_request_id == request_id
+    )
+}
+
 fn first_default_room_id(state: &AppState) -> Option<String> {
     state
         .rooms
@@ -1118,6 +1474,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let previous_room_id = state.timeline.room_id.clone();
     let had_thread = state.thread != ThreadPaneState::Closed;
     let had_search = state.search != SearchState::Closed;
+    let had_e2ee_trust = state.e2ee_trust != E2eeTrustState::default();
 
     state.navigation = NavigationState::default();
     state.spaces.clear();
@@ -1126,6 +1483,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.thread = ThreadPaneState::Closed;
     state.focused_context = FocusedContextState::Closed;
     state.search = SearchState::Closed;
+    state.e2ee_trust = E2eeTrustState::default();
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
     if let Some(room_id) = previous_room_id {
@@ -1136,6 +1494,9 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_search {
         effects.push(AppEffect::EmitUiEvent(UiEvent::SearchChanged));
+    }
+    if had_e2ee_trust {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged));
     }
     effects
 }

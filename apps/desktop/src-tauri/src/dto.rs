@@ -11,10 +11,10 @@
 
 use matrix_desktop_state::{
     AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState, DisplayPlatform,
-    FocusedContextState, LocaleDisplayProfile, NavigationState, RecoveryMethod, RoomSummary,
-    SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState,
-    SettingsState, SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
-    resolve_locale_display_profile,
+    E2eeTrustState, FocusedContextState, LocaleDisplayProfile, NavigationState, RecoveryMethod,
+    RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+    SessionState, SettingsState, SidebarModel, SpaceSummary, SyncState, ThreadPaneState,
+    TimelinePaneState, resolve_locale_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +63,7 @@ pub struct FrontendAppState {
     pub focused_context: FocusedContextState,
     pub search: FrontendSearchState,
     pub basic_operation: BasicOperationState,
+    pub e2ee_trust: E2eeTrustState,
     pub errors: Vec<AppError>,
 }
 
@@ -86,6 +87,7 @@ impl From<AppState> for FrontendAppState {
             focused_context: state.focused_context,
             search: state.search.into(),
             basic_operation: state.basic_operation,
+            e2ee_trust: state.e2ee_trust,
             errors: state.errors,
         }
     }
@@ -468,6 +470,17 @@ mod tests {
         // basic_operation must be present (default Idle) so the UI can read
         // snapshot.state.basic_operation.kind without crashing.
         assert_eq!(value["state"]["basic_operation"]["kind"], json!("idle"));
+        // e2ee_trust must be present (default private-data-free unknowns) so
+        // later GUI work consumes the Rust-owned trust state machine.
+        assert_eq!(value["state"]["e2ee_trust"]["verification"]["kind"], json!("idle"));
+        assert_eq!(
+            value["state"]["e2ee_trust"]["cross_signing"]["kind"],
+            json!("unknown")
+        );
+        assert_eq!(
+            value["state"]["e2ee_trust"]["key_backup"]["kind"],
+            json!("unknown")
+        );
         // settings must be present so React can consume Rust-owned product
         // preferences instead of owning theme/locale/shortcut state.
         assert_eq!(

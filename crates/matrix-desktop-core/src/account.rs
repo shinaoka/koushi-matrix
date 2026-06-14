@@ -389,6 +389,16 @@ impl AccountActor {
             } => {
                 self.handle_submit_recovery(request_id, request).await;
             }
+            AccountCommand::RequestVerification { request_id, .. }
+            | AccountCommand::AcceptVerification { request_id }
+            | AccountCommand::ConfirmSasVerification { request_id }
+            | AccountCommand::CancelVerification { request_id }
+            | AccountCommand::BootstrapCrossSigning { request_id }
+            | AccountCommand::EnableKeyBackup { request_id }
+            | AccountCommand::RestoreKeyBackup { request_id, .. }
+            | AccountCommand::ResetIdentity { request_id } => {
+                self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+            }
         }
     }
 

@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use matrix_desktop_state::{LoginRequest, RecoveryRequest, SettingsPatch};
+use matrix_desktop_state::{LoginRequest, RecoveryRequest, SettingsPatch, VerificationTarget};
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
 
@@ -38,6 +38,14 @@ impl CoreCommand {
                 | AccountCommand::RestoreLastSession { request_id }
                 | AccountCommand::QuerySavedSessions { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
+                | AccountCommand::RequestVerification { request_id, .. }
+                | AccountCommand::AcceptVerification { request_id }
+                | AccountCommand::ConfirmSasVerification { request_id }
+                | AccountCommand::CancelVerification { request_id }
+                | AccountCommand::BootstrapCrossSigning { request_id }
+                | AccountCommand::EnableKeyBackup { request_id }
+                | AccountCommand::RestoreKeyBackup { request_id, .. }
+                | AccountCommand::ResetIdentity { request_id }
                 | AccountCommand::Logout { request_id }
                 | AccountCommand::SwitchAccount { request_id, .. } => *request_id,
             },
@@ -79,6 +87,9 @@ impl CoreCommand {
         matches!(
             self,
             Self::Sync(_) | Self::Room(_) | Self::Timeline(_) | Self::Search(_)
+        ) || matches!(
+            self,
+            Self::Account(command) if command.requires_ready_session()
         )
     }
 }
@@ -211,7 +222,6 @@ fn settings_patch_field_names(patch: &SettingsPatch) -> Vec<&'static str> {
 
 // LoginRequest and RecoveryRequest redact their own Debug in
 // matrix-desktop-state (username, password, device name, recovery secret).
-#[derive(Debug)]
 pub enum AccountCommand {
     LoginPassword {
         request_id: RequestId,
@@ -238,6 +248,32 @@ pub enum AccountCommand {
         request_id: RequestId,
         request: RecoveryRequest,
     },
+    RequestVerification {
+        request_id: RequestId,
+        target: VerificationTarget,
+    },
+    AcceptVerification {
+        request_id: RequestId,
+    },
+    ConfirmSasVerification {
+        request_id: RequestId,
+    },
+    CancelVerification {
+        request_id: RequestId,
+    },
+    BootstrapCrossSigning {
+        request_id: RequestId,
+    },
+    EnableKeyBackup {
+        request_id: RequestId,
+    },
+    RestoreKeyBackup {
+        request_id: RequestId,
+        version: Option<String>,
+    },
+    ResetIdentity {
+        request_id: RequestId,
+    },
     Logout {
         request_id: RequestId,
     },
@@ -245,6 +281,110 @@ pub enum AccountCommand {
         request_id: RequestId,
         account_key: AccountKey,
     },
+}
+
+impl AccountCommand {
+    pub fn requires_ready_session(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestVerification { .. }
+                | Self::AcceptVerification { .. }
+                | Self::ConfirmSasVerification { .. }
+                | Self::CancelVerification { .. }
+                | Self::BootstrapCrossSigning { .. }
+                | Self::EnableKeyBackup { .. }
+                | Self::RestoreKeyBackup { .. }
+                | Self::ResetIdentity { .. }
+        )
+    }
+}
+
+impl fmt::Debug for AccountCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LoginPassword {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("LoginPassword")
+                .field("request_id", request_id)
+                .field("request", request)
+                .finish(),
+            Self::RestoreSession {
+                request_id,
+                account_key,
+            } => formatter
+                .debug_struct("RestoreSession")
+                .field("request_id", request_id)
+                .field("account_key", account_key)
+                .finish(),
+            Self::RestoreLastSession { request_id } => formatter
+                .debug_struct("RestoreLastSession")
+                .field("request_id", request_id)
+                .finish(),
+            Self::QuerySavedSessions { request_id } => formatter
+                .debug_struct("QuerySavedSessions")
+                .field("request_id", request_id)
+                .finish(),
+            Self::SubmitRecovery {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("SubmitRecovery")
+                .field("request_id", request_id)
+                .field("request", request)
+                .finish(),
+            Self::RequestVerification { request_id, .. } => formatter
+                .debug_struct("RequestVerification")
+                .field("request_id", request_id)
+                .field("target", &"VerificationTarget(..)")
+                .finish(),
+            Self::AcceptVerification { request_id } => formatter
+                .debug_struct("AcceptVerification")
+                .field("request_id", request_id)
+                .finish(),
+            Self::ConfirmSasVerification { request_id } => formatter
+                .debug_struct("ConfirmSasVerification")
+                .field("request_id", request_id)
+                .finish(),
+            Self::CancelVerification { request_id } => formatter
+                .debug_struct("CancelVerification")
+                .field("request_id", request_id)
+                .finish(),
+            Self::BootstrapCrossSigning { request_id } => formatter
+                .debug_struct("BootstrapCrossSigning")
+                .field("request_id", request_id)
+                .finish(),
+            Self::EnableKeyBackup { request_id } => formatter
+                .debug_struct("EnableKeyBackup")
+                .field("request_id", request_id)
+                .finish(),
+            Self::RestoreKeyBackup {
+                request_id,
+                version,
+            } => formatter
+                .debug_struct("RestoreKeyBackup")
+                .field("request_id", request_id)
+                .field("version", &version.as_ref().map(|_| "BackupVersion(..)"))
+                .finish(),
+            Self::ResetIdentity { request_id } => formatter
+                .debug_struct("ResetIdentity")
+                .field("request_id", request_id)
+                .finish(),
+            Self::Logout { request_id } => formatter
+                .debug_struct("Logout")
+                .field("request_id", request_id)
+                .finish(),
+            Self::SwitchAccount {
+                request_id,
+                account_key,
+            } => formatter
+                .debug_struct("SwitchAccount")
+                .field("request_id", request_id)
+                .field("account_key", account_key)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug)]

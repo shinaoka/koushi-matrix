@@ -31,6 +31,8 @@ follow
 [docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md](docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md).
 All agents implementing local GUI room/space/reply operations follow
 [docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md](docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md).
+All agents implementing E2EE trust Phase A state-machine contracts follow
+[docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md](docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md).
 All agents implementing Rust-owned settings Phase A follow
 [docs/superpowers/plans/2026-06-14-rust-owned-settings-phase-a.md](docs/superpowers/plans/2026-06-14-rust-owned-settings-phase-a.md).
 All agents implementing the headless i18n substrate follow
@@ -205,6 +207,20 @@ All agents implementing the i18n GUI wiring follow
   mock IPC will NOT catch this (they build their own snapshots); only the real
   Tauri lane or the `dto.rs` serialization-contract test does. Extend that test
   when adding `AppState` fields.
+- The TypeScript snapshot shape is also hand-maintained in
+  `apps/desktop/src/domain/types.ts`, `browserFakeApi.ts`,
+  `tauriIpcMock.ts`, and `appHarnessMain.tsx`. When adding Rust `AppState`
+  fields such as `e2ee_trust`, update all mock/default snapshots in the same
+  change and run `npm --prefix apps/desktop run typecheck`.
+- New `CoreEvent` variants must be wired through the Tauri adapter's
+  `serialize_core_event`, TypeScript `coreEvents.ts`, and the checked-in
+  `coreEvents.generated.json` contract artifact. The src-tauri
+  `core_event_wire_format_matches_checked_in_contract_artifact` test catches
+  drift.
+- E2EE trust Phase A commands/events are Rust-owned contracts only until the
+  AccountActor SDK implementation lands. The fixture/demo backend should return
+  typed unavailable/failure actions for trust effects and must not silently
+  discard them.
 - WebDriver `waitForDisplayed`/`click` does NOT reveal hover-gated controls.
   Timeline row actions (`.message-action` inside `.message-actions`) are
   `opacity:0` until `.message:hover`/`:focus-within`, so a direct

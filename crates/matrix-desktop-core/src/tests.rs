@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use matrix_desktop_state::{
     AppAction, AppearanceSettings, AuthSecret, ComposerMode, LoginRequest, RecoveryRequest,
-    RoomSummary, SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
-    ThemePreference,
+    RoomSummary, SasEmoji, SearchState, SessionInfo, SessionState, SettingsPatch,
+    SettingsPersistenceState, ThemePreference, VerificationFlowState, VerificationTarget,
 };
 
 use crate::command::{
     AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, TimelineCommand,
 };
-use crate::event::{CoreEvent, PaginationDirection};
+use crate::event::{CoreEvent, E2eeTrustEvent, PaginationDirection};
 use crate::executor;
 use crate::failure::CoreFailure;
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey};
@@ -114,6 +114,69 @@ fn secret_bearing_commands_redact_debug() {
     }
     // Non-secret correlation data stays visible.
     assert!(format!("{send:?}").contains("txn-1"));
+}
+
+#[test]
+fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
+    let request_id = fake_request_id();
+    let target = VerificationTarget {
+        user_id: "@bob:example.test".to_owned(),
+        device_id: "BOBDEVICE".to_owned(),
+    };
+    let commands = vec![
+        CoreCommand::Account(AccountCommand::RequestVerification {
+            request_id,
+            target: target.clone(),
+        }),
+        CoreCommand::Account(AccountCommand::AcceptVerification { request_id }),
+        CoreCommand::Account(AccountCommand::ConfirmSasVerification { request_id }),
+        CoreCommand::Account(AccountCommand::CancelVerification { request_id }),
+        CoreCommand::Account(AccountCommand::BootstrapCrossSigning { request_id }),
+        CoreCommand::Account(AccountCommand::EnableKeyBackup { request_id }),
+        CoreCommand::Account(AccountCommand::RestoreKeyBackup {
+            request_id,
+            version: Some("backup-version-1".to_owned()),
+        }),
+        CoreCommand::Account(AccountCommand::ResetIdentity { request_id }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(!debug.contains("@bob:example.test"));
+        assert!(!debug.contains("BOBDEVICE"));
+        assert!(!debug.contains("backup-version-1"));
+    }
+}
+
+#[test]
+fn e2ee_trust_events_are_typed_and_debug_redacts_identifiers() {
+    let target = VerificationTarget {
+        user_id: "@bob:example.test".to_owned(),
+        device_id: "BOBDEVICE".to_owned(),
+    };
+    let event = E2eeTrustEvent::VerificationProgress {
+        account_key: AccountKey("@alice:example.test".to_owned()),
+        state: VerificationFlowState::SasPresented {
+            request_id: 7,
+            target,
+            emojis: vec![SasEmoji {
+                symbol: "🐶".to_owned(),
+                description: "Dog".to_owned(),
+            }],
+        },
+    };
+
+    let value = serde_json::to_value(&event).expect("E2EE trust event serializes");
+    assert_eq!(value["kind"], "verificationProgress");
+    assert_eq!(value["state"]["kind"], "sasPresented");
+
+    let debug = format!("{:?}", CoreEvent::E2eeTrust(event));
+    assert!(debug.contains("VerificationProgress"));
+    assert!(!debug.contains("@alice:example.test"));
+    assert!(!debug.contains("@bob:example.test"));
+    assert!(!debug.contains("BOBDEVICE"));
 }
 
 #[tokio::test]

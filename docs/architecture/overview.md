@@ -44,6 +44,9 @@ Crate responsibilities:
 
 - `matrix-desktop-state` — pure. `AppState`, `AppAction`, `reduce()`,
   serializable snapshot DTOs. No SDK handles, no Tauri, no async.
+  E2EE trust, verification, cross-signing, key-backup, and identity-reset UI
+  state is modeled here as guarded, request-correlated state. GUI code renders
+  that state; it does not own trust decisions.
 - `SettingsState` is serializable Rust product state owned by
   `matrix-desktop-state` and persisted by `matrix-desktop-core` through a
   non-secret settings store. React may apply settings to presentation, but it
@@ -507,13 +510,14 @@ architectural invariants:
   canonical visible text and indexing the replacement text, a redaction removes
   only the redacted document from the searchable corpus, and an unresolved
   replacement event is not indexed as a standalone message.
-- **Device verification and cross-signing** remain open and are
-  release-blocking Phase 16 work. They are account-level security features
-  that will live under `AccountActor` with their own commands/events; until
-  then, no design doc may claim E2EE trust UX completeness. Element's device
-  verification rollout was postponed to October 2026, after which insecure
-  devices will no longer be able to send or receive messages, so this work is
-  required before first release rather than post-release.
+- **Device verification, cross-signing, key backup, and identity reset** are
+  release-blocking E2EE trust work. Issue #13 Phase A establishes the
+  Rust-owned reducer state and typed `CoreCommand`/`CoreEvent` surface; SDK
+  actor implementation, local-homeserver proof, and GUI rendering remain
+  incomplete until the follow-up phases land. No design doc may claim E2EE
+  trust UX completeness until those phases prove device verification,
+  cross-signing trust, backed-up room-key restore, and identity reset
+  headlessly before GUI wiring.
 
 ## QA Model
 
@@ -584,6 +588,6 @@ and keeps the same QA hierarchy.
 - **Phase 14:** build the Linux virtual-display real-Tauri lane for native
   window, IPC, menu, and WebKitGTK behavior under Xvfb + `tauri-driver`.
   macOS-specific WKWebView/menu/Keychain checks remain attended only.
-- **Phase 15+:** finish desktop interaction completeness, device
-  verification/cross-signing, performance/soak, distribution hardening,
+- **Phase 15+:** finish desktop interaction completeness, E2EE trust
+  implementation and GUI, performance/soak, distribution hardening,
   platform credential-store evidence, signing/notarization, and release.

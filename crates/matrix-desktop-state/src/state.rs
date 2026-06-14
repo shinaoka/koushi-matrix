@@ -14,6 +14,7 @@ pub struct AppState {
     pub focused_context: FocusedContextState,
     pub search: SearchState,
     pub basic_operation: BasicOperationState,
+    pub e2ee_trust: E2eeTrustState,
     pub errors: Vec<AppError>,
 }
 
@@ -32,6 +33,7 @@ impl Default for AppState {
             focused_context: FocusedContextState::Closed,
             search: SearchState::Closed,
             basic_operation: BasicOperationState::Idle,
+            e2ee_trust: E2eeTrustState::default(),
             errors: Vec::new(),
         }
     }
@@ -264,6 +266,132 @@ pub enum E2eeRecoveryState {
     Enabled,
     Disabled,
     Incomplete,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct E2eeTrustState {
+    pub verification: VerificationFlowState,
+    pub cross_signing: CrossSigningStatus,
+    pub key_backup: KeyBackupStatus,
+    pub identity_reset_request_id: Option<u64>,
+    pub devices: Vec<DeviceTrustSummary>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum VerificationFlowState {
+    #[default]
+    Idle,
+    Requested {
+        request_id: u64,
+        target: VerificationTarget,
+    },
+    Accepted {
+        request_id: u64,
+        target: VerificationTarget,
+    },
+    SasPresented {
+        request_id: u64,
+        target: VerificationTarget,
+        emojis: Vec<SasEmoji>,
+    },
+    Confirming {
+        request_id: u64,
+        target: VerificationTarget,
+        emojis: Vec<SasEmoji>,
+    },
+    Done {
+        request_id: u64,
+        target: VerificationTarget,
+    },
+    Failed {
+        request_id: u64,
+        target: VerificationTarget,
+        #[serde(rename = "failureKind")]
+        kind: TrustOperationFailureKind,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VerificationTarget {
+    pub user_id: String,
+    pub device_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SasEmoji {
+    pub symbol: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CrossSigningStatus {
+    #[default]
+    Unknown,
+    Missing,
+    Bootstrapping {
+        request_id: u64,
+    },
+    Trusted,
+    NotTrusted,
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: TrustOperationFailureKind,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum KeyBackupStatus {
+    #[default]
+    Unknown,
+    Disabled,
+    Enabling {
+        request_id: u64,
+    },
+    Enabled {
+        version: String,
+    },
+    Restoring {
+        request_id: u64,
+        version: Option<String>,
+        restored_rooms: u64,
+        total_rooms: Option<u64>,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: TrustOperationFailureKind,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeviceTrustSummary {
+    pub user_id: String,
+    pub device_id: String,
+    pub trust_level: DeviceTrustLevel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeviceTrustLevel {
+    Unknown,
+    Unverified,
+    Verified,
+    Blocked,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TrustOperationFailureKind {
+    Cancelled,
+    Mismatch,
+    Network,
+    Forbidden,
+    Timeout,
+    Sdk,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

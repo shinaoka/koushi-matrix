@@ -127,6 +127,12 @@ conflict is being resolved.
   record passwords, tokens, recovery material, message bodies, attachment
   names, raw SDK errors, transaction IDs, event IDs from real accounts, or room
   IDs from real accounts.
+- E2EE trust, verification, cross-signing, key-backup, and identity-reset
+  state may carry only app-owned DTOs and private-data-free failure kinds.
+  Private keys, recovery secrets, room keys, key-backup secrets, and raw SDK
+  errors must never cross the command/event/snapshot boundary. Debug output and
+  QA tokens for these flows must redact account keys, verification target user
+  and device IDs, and backup version identifiers.
 - `.local-secrets/` is reserved for local, ignored manual-testing notes or
   scratch files only. It is not an application secret store, must not be
   required for tests or builds, and must not replace OS secret storage.

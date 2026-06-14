@@ -261,6 +261,121 @@ stateDiagram-v2
   events around the `CreateRoom` / `CreateSpace` / `SetSpaceChild` SDK calls,
   using the command's `request_id` (its `sequence`) as the correlation id.
 
+## E2EE Trust, Verification, And Key Backup
+
+Account-level E2EE trust UX is Rust-owned state in `AppState.e2ee_trust`.
+React may render verification, cross-signing, key-backup, device-trust, and
+identity-reset state, but it must not decide completion, retry, failure, or
+trust semantics locally.
+
+Verification flow:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Requested: VerificationRequested
+    Done --> Requested: VerificationRequested
+    Failed --> Requested: VerificationRequested
+    Requested --> Accepted: VerificationAccepted [matching request_id]
+    Requested --> SasPresented: VerificationSasPresented [matching request_id]
+    Accepted --> SasPresented: VerificationSasPresented [matching request_id]
+    SasPresented --> SasPresented: VerificationSasPresented [matching request_id]
+    SasPresented --> Confirming: VerificationConfirmed [matching request_id]
+    Requested --> Idle: VerificationCancelled [matching request_id]
+    Accepted --> Idle: VerificationCancelled [matching request_id]
+    SasPresented --> Idle: VerificationCancelled [matching request_id]
+    Confirming --> Idle: VerificationCancelled [matching request_id]
+    Requested --> Done: VerificationCompleted [matching request_id]
+    Accepted --> Done: VerificationCompleted [matching request_id]
+    SasPresented --> Done: VerificationCompleted [matching request_id]
+    Confirming --> Done: VerificationCompleted [matching request_id]
+    Requested --> Failed: VerificationFailed [matching request_id]
+    Accepted --> Failed: VerificationFailed [matching request_id]
+    SasPresented --> Failed: VerificationFailed [matching request_id]
+    Confirming --> Failed: VerificationFailed [matching request_id]
+```
+
+Cross-signing status:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+    Unknown --> Bootstrapping: BootstrapCrossSigningRequested
+    Missing --> Bootstrapping: BootstrapCrossSigningRequested
+    NotTrusted --> Bootstrapping: BootstrapCrossSigningRequested
+    Failed --> Bootstrapping: BootstrapCrossSigningRequested
+    Trusted --> Bootstrapping: BootstrapCrossSigningRequested
+    Bootstrapping --> Failed: BootstrapCrossSigningFailed [matching request_id]
+    Unknown --> Missing: CrossSigningStatusChanged
+    Unknown --> Trusted: CrossSigningStatusChanged
+    Unknown --> NotTrusted: CrossSigningStatusChanged
+    Bootstrapping --> Trusted: CrossSigningStatusChanged
+    Bootstrapping --> Missing: CrossSigningStatusChanged
+    Bootstrapping --> NotTrusted: CrossSigningStatusChanged
+```
+
+Key-backup status:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+    Unknown --> Enabling: EnableKeyBackupRequested
+    Disabled --> Enabling: EnableKeyBackupRequested
+    Failed --> Enabling: EnableKeyBackupRequested
+    Enabled --> Enabling: EnableKeyBackupRequested
+    Enabling --> Enabled: KeyBackupEnabled [matching request_id]
+    Enabling --> Failed: KeyBackupFailed [matching request_id]
+    Unknown --> Restoring: RestoreKeyBackupRequested
+    Disabled --> Restoring: RestoreKeyBackupRequested
+    Enabled --> Restoring: RestoreKeyBackupRequested
+    Failed --> Restoring: RestoreKeyBackupRequested
+    Restoring --> Restoring: KeyBackupRestoreProgress [matching request_id]
+    Restoring --> Enabled: KeyBackupRestored(Some(version)) [matching request_id]
+    Restoring --> Unknown: KeyBackupRestored(None) [matching request_id]
+    Restoring --> Failed: KeyBackupFailed [matching request_id]
+```
+
+Identity reset:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Resetting: ResetIdentityRequested
+    Resetting --> Idle: ResetIdentityCompleted [matching request_id]
+    Resetting --> Idle: ResetIdentityFailed [matching request_id]
+```
+
+- Every transition requires a Ready session unless it is a stale settle signal
+  ignored from an already-reset state. Signed-out, restoring, locked, and
+  logging-out states ignore E2EE trust actions.
+- Session-view clearing transitions (`LogoutRequested`, `SessionLocked`,
+  `SwitchAccountRequested`) reset `AppState.e2ee_trust` to its default
+  private-data-free unknowns and emit `E2eeTrustChanged` when trust state was
+  non-default. Verification targets from one account must not remain visible in
+  snapshots for another account or a signed-out/locked surface.
+- Verification start is accepted only when no verification is active
+  (`Idle`, `Done`, or `Failed`). A second request while `Requested`,
+  `Accepted`, `SasPresented`, or `Confirming` is ignored.
+- All settle/progress actions are request-correlated. Stale request ids are
+  ignored and must not clobber an active verification, cross-signing bootstrap,
+  backup enable/restore, or identity reset.
+- Failure state carries only `TrustOperationFailureKind` (`cancelled`,
+  `mismatch`, `network`, `forbidden`, `timeout`, `sdk`). Raw SDK errors,
+  private keys, recovery secrets, room keys, and key-backup secrets never enter
+  `AppState`, `CoreEvent`, `Debug`, or QA output.
+- `CoreCommand::Account` owns the typed command surface:
+  `RequestVerification`, `AcceptVerification`, `ConfirmSasVerification`,
+  `CancelVerification`, `BootstrapCrossSigning`, `EnableKeyBackup`,
+  `RestoreKeyBackup`, and `ResetIdentity`. These commands are ready-session
+  gated and redact verification targets / backup versions in `Debug`.
+- `CoreEvent::E2eeTrust` owns the typed event surface for verification
+  progress, cross-signing status, key-backup status, and identity reset. The
+  event payload is structured for UI consumption; event `Debug` redacts account
+  keys and verification targets so QA output remains private-data-free.
+- The fixture/demo backend reports E2EE trust effects as unavailable until the
+  `AccountActor` SDK implementation lands. It must not silently discard those
+  effects.
+
 ## Search
 
 ```mermaid
