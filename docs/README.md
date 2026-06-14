@@ -17,6 +17,8 @@ not dated snapshots; they are amended in place through review.
   security/privacy prohibitions, QA cleanup, tests, and documentation rules.
 - [architecture/state-machine.md](architecture/state-machine.md) — normative
   reducer state-machine diagrams and guard notes.
+- [architecture/i18n.md](architecture/i18n.md) — Rust-owned locale/display
+  profile, catalog, pseudo-locale, RTL, and i18n headless gate rules.
 - [policies/engineering-rules.md](policies/engineering-rules.md) — prohibitions
   and detailed policy rules: secrets, logging, QA automation, build gates.
 

@@ -12,9 +12,11 @@ footguns. Durable repository rules do not live here.
    architecture, layer ownership, runtime, security, and QA model.
 3. [docs/architecture/state-machine.md](docs/architecture/state-machine.md) -
    normative reducer state-machine diagrams and guard notes.
-4. [docs/policies/engineering-rules.md](docs/policies/engineering-rules.md) -
+4. [docs/architecture/i18n.md](docs/architecture/i18n.md) - Rust-owned
+   locale/display profile, catalog, pseudo-locale, RTL, and i18n gates.
+5. [docs/policies/engineering-rules.md](docs/policies/engineering-rules.md) -
    detailed policy extension for secrets, logging, QA automation, and gates.
-5. The relevant dated implementation plan under `docs/superpowers/plans/`.
+6. The relevant dated implementation plan under `docs/superpowers/plans/`.
 
 When an operational note here hardens into a durable rule, promote it to
 `REPOSITORY_RULES.md` or `docs/policies/engineering-rules.md` and keep only the
@@ -31,6 +33,8 @@ All agents implementing local GUI room/space/reply operations follow
 [docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md](docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md).
 All agents implementing Rust-owned settings Phase A follow
 [docs/superpowers/plans/2026-06-14-rust-owned-settings-phase-a.md](docs/superpowers/plans/2026-06-14-rust-owned-settings-phase-a.md).
+All agents implementing the headless i18n substrate follow
+[docs/superpowers/plans/2026-06-14-i18n-substrate-phase-a.md](docs/superpowers/plans/2026-06-14-i18n-substrate-phase-a.md).
 
 ## Rust-Owned Settings Notes
 
@@ -38,6 +42,11 @@ All agents implementing Rust-owned settings Phase A follow
   GUI work may render it and dispatch `update_settings`, but must not make
   locale, theme, font/emoji, or composer-send shortcut preferences a React or
   localStorage source of truth.
+- Locale/display behavior is resolved by
+  `matrix_desktop_state::resolve_locale_display_profile`. GUI components may
+  consume the resulting `lang`, `dir`, catalog locale, pseudo-locale mode,
+  platform, and modifier labels, but must not parse raw language tags or own
+  fallback locale rules.
 - Composer key behavior belongs to the Rust-owned resolver in
   `matrix-desktop-state`, shared by main, thread, and edit composer surfaces.
   GUI code normalizes DOM/native key input into typed resolver facts and then

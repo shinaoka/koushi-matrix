@@ -99,6 +99,82 @@ export type MessageId =
 
 type MessageValues = Record<string, string | number>;
 type Catalog = Record<MessageId, string>;
+export type PseudoLocaleMode = "accented" | "bidi";
+
+const pseudoAccentMap: Record<string, string> = {
+  A: "Å",
+  B: "ß",
+  C: "Ç",
+  D: "Ð",
+  E: "É",
+  F: "Ƒ",
+  G: "Ĝ",
+  H: "Ħ",
+  I: "Î",
+  J: "Ĵ",
+  K: "Ķ",
+  L: "Ŀ",
+  M: "Ṁ",
+  N: "Ñ",
+  O: "Ø",
+  P: "Þ",
+  Q: "Ǫ",
+  R: "Ŕ",
+  S: "Š",
+  T: "Ŧ",
+  U: "Û",
+  V: "Ṽ",
+  W: "Ŵ",
+  X: "Ẋ",
+  Y: "Ý",
+  Z: "Ž",
+  a: "å",
+  b: "ƀ",
+  c: "ç",
+  d: "ð",
+  e: "é",
+  f: "ƒ",
+  g: "ĝ",
+  h: "ħ",
+  i: "î",
+  j: "ĵ",
+  k: "ķ",
+  l: "ŀ",
+  m: "ṁ",
+  n: "ñ",
+  o: "ø",
+  p: "þ",
+  q: "ǫ",
+  r: "ŕ",
+  s: "š",
+  t: "ŧ",
+  u: "û",
+  v: "ṽ",
+  w: "ŵ",
+  x: "ẋ",
+  y: "ý",
+  z: "ž"
+};
+
+export function pseudoLocalize(input: string, mode: PseudoLocaleMode = "accented"): string {
+  const chunks = input.split(/(\{[a-zA-Z0-9_]+\})/g);
+  const expanded = chunks
+    .map((chunk) => {
+      if (/^\{[a-zA-Z0-9_]+\}$/.test(chunk)) {
+        return chunk;
+      }
+      return Array.from(chunk)
+        .map((char) => pseudoAccentMap[char] ?? char)
+        .join("");
+    })
+    .join("");
+
+  if (mode === "bidi") {
+    return `[!! \u202e${expanded}\u202c !!]`;
+  }
+
+  return `[!! ${expanded} !!]`;
+}
 
 const en: Catalog = {
   "action.add": "Add",
@@ -201,7 +277,7 @@ const en: Catalog = {
 const ja: Catalog = { ...en };
 
 const pseudo: Catalog = Object.fromEntries(
-  Object.entries(en).map(([id, value]) => [id, `[!! ${value} !!]`])
+  Object.entries(en).map(([id, value]) => [id, pseudoLocalize(value)])
 ) as Catalog;
 
 export const catalogs: Record<Locale, Catalog> = { en, ja, pseudo };

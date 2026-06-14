@@ -244,6 +244,10 @@ conflict is being resolved.
   Accessibility labels, button labels, menu labels, empty states, dialogs,
   toasts, and validation messages are user-facing text and use the same
   catalog.
+- Locale/display behavior is Rust-owned. GUI code consumes the resolved
+  `LocaleDisplayProfile` (`lang`, `dir`, catalog locale, pseudo-locale mode,
+  platform, and modifier labels) and must not branch on raw persisted locale
+  tags in feature components.
 - QA tokens, protocol enum variants, log kinds, CSS class names, data-testid
   values, and synthetic fixture message bodies are not localized. Tests should
   prefer roles, stable test IDs, message IDs, or semantic state over localized
