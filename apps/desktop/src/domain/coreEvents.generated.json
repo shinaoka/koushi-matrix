@@ -50,6 +50,24 @@
               }
             },
             "in_reply_to_event_id": null,
+            "thread_root": null,
+            "thread_summary": null,
+            "can_react": true,
+            "is_redacted": false,
+            "can_redact": true,
+            "is_edited": true,
+            "can_edit": true,
+            "reactions": [
+              {
+                "count": 2,
+                "key": "👍",
+                "my_reaction_event_id": "$reaction:test",
+                "reacted_by_me": true,
+                "sender_preview": [
+                  "@u:example.test"
+                ]
+              }
+            ],
             "sender": "@u:example.test",
             "timestamp_ms": 123
           }
@@ -85,6 +103,24 @@
                   }
                 },
                 "in_reply_to_event_id": null,
+                "thread_root": null,
+                "thread_summary": null,
+                "can_react": true,
+                "is_redacted": false,
+                "can_redact": true,
+                "is_edited": true,
+                "can_edit": true,
+                "reactions": [
+                  {
+                    "count": 2,
+                    "key": "👍",
+                    "my_reaction_event_id": "$reaction:test",
+                    "reacted_by_me": true,
+                    "sender_preview": [
+                      "@u:example.test"
+                    ]
+                  }
+                ],
                 "sender": "@u:example.test",
                 "timestamp_ms": 123
               }

@@ -10,6 +10,7 @@ pub struct AppState {
     pub rooms: Vec<RoomSummary>,
     pub timeline: TimelinePaneState,
     pub thread: ThreadPaneState,
+    pub focused_context: FocusedContextState,
     pub search: SearchState,
     pub basic_operation: BasicOperationState,
     pub errors: Vec<AppError>,
@@ -26,6 +27,7 @@ impl Default for AppState {
             rooms: Vec::new(),
             timeline: TimelinePaneState::default(),
             thread: ThreadPaneState::Closed,
+            focused_context: FocusedContextState::Closed,
             search: SearchState::Closed,
             basic_operation: BasicOperationState::Idle,
             errors: Vec::new(),
@@ -243,6 +245,21 @@ pub enum ThreadPaneState {
         root_event_id: String,
         is_subscribed: bool,
         composer: ComposerState,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum FocusedContextState {
+    Closed,
+    Opening {
+        room_id: String,
+        event_id: String,
+    },
+    Open {
+        room_id: String,
+        event_id: String,
+        is_subscribed: bool,
     },
 }
 

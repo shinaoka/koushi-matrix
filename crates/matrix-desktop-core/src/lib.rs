@@ -25,9 +25,9 @@ pub use command::{
     TimelineCommand,
 };
 pub use event::{
-    AccountEvent, AppStateSnapshot, CoreEvent, PaginationDirection, PaginationState, RoomEvent,
-    SearchEvent, SearchResultItem, SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent,
-    TimelineItem, TimelineItemId, TimelineResyncReason,
+    AccountEvent, AppStateSnapshot, CoreEvent, PaginationDirection, PaginationState, ReactionGroup,
+    RoomEvent, SearchEvent, SearchResultItem, SyncBackendKind, SyncEvent, TimelineDiff,
+    TimelineEvent, TimelineItem, TimelineItemId, TimelineResyncReason,
 };
 pub use failure::{
     CoreFailure, LoginFailureKind, RecoveryFailureKind, RoomFailureKind, SearchFailureKind,

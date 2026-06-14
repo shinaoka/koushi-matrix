@@ -132,11 +132,16 @@ An in-process actor system in `matrix-desktop-core`:
   (e.g. `m.room.create` for space classification) the live service
   requests.
 - `TimelineActor` (per room/thread timeline) — subscription, diffs,
-  pagination, send/edit/redaction relay. On the sliding-sync backend,
+  pagination, send/edit/redaction relay. Room live timelines use
+  `TimelineFocus::Live { hide_threaded_events: true }` so threaded replies
+  are hidden from the main room timeline. Expanded threads use
+  `TimelineKind::Thread`. On the sliding-sync backend,
   subscribing a timeline also subscribes its room with the live
   `RoomListService` (`subscribe_to_rooms`, the Element X room-open pattern):
   the all-rooms list alone only guarantees the initial window on some
-  servers. Edits and redactions go through the SDK `Timeline` handle (not
+  servers. Thread backward pagination uses the same `TimelineKind::Thread {
+  room_id, root_event_id }` key as the thread subscription. Edits and
+  redactions go through the SDK `Timeline` handle (not
   direct room sends) so their diffs are produced as local echoes instead of
   depending on the server echoing them back; for own sent events whose
   remote echo has not arrived, the actor resolves the event id back to the
@@ -237,6 +242,14 @@ pub enum TimelineFailureKind {
     QueueOverflow,
 }
 ```
+
+Timeline item events carry app-owned DTOs. `TimelineItem` includes stable
+identity, sender/body/timestamp fields, `in_reply_to_event_id`, reactions and
+edit/redact affordances, plus thread fields: `thread_root: Option<String>` for
+items that are in a thread, and `thread_summary: Option<ThreadSummaryDto>` on
+thread root items. `ThreadSummaryDto` contains `reply_count`, `latest_sender`,
+`latest_body_preview`, and `latest_timestamp_ms`; the `latest_*` fields are
+`None` when the SDK has not loaded the latest event details.
 
 The runtime assigns each attached consumer a `RuntimeConnectionId`; the
 attached connection allocates a monotonically increasing `sequence` within that

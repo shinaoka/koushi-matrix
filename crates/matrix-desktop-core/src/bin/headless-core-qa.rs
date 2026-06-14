@@ -41,7 +41,7 @@ use matrix_desktop_core::command::{
 };
 use matrix_desktop_core::event::{
     AccountEvent, CoreEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
-    SyncBackendKind, SyncEvent, TimelineEvent,
+    SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
 };
 use matrix_desktop_core::failure::CoreFailure;
 use matrix_desktop_core::ids::{AccountKey, TimelineKey, TimelineKind};
@@ -68,6 +68,7 @@ const DEVICE_B: &str = "Matrix Desktop Core QA B";
 
 /// Maximum time to wait for a single event.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QaScenario {
@@ -238,14 +239,35 @@ fn scenario_preflight_error(scenario: QaScenario) -> Result<(), String> {
     Ok(())
 }
 
-fn implemented_final_tokens() -> [&'static str; 8] {
-    [
+fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
+    match stage {
+        QaStage::Safety => &["safety=ok"],
+        QaStage::LoginSync => &["login_sync=ok"],
+        QaStage::RoomSpace => &["room_space=ok"],
+        QaStage::Timeline => &["timeline=ok"],
+        QaStage::Reply => &["reply=ok"],
+        QaStage::Thread => &[
+            "thread_hidden=ok",
+            "thread_summary=ok",
+            "thread_recv=ok",
+            "thread_paginate=end_reached",
+        ],
+        QaStage::EditRedactSearch => &["edit_redact_search=ok"],
+        QaStage::RestoreCleanup => &["restore_cleanup=ok"],
+    }
+}
+
+fn implemented_final_tokens() -> Vec<&'static str> {
+    vec![
         "safety=ok",
         "login_sync=ok",
         "room_space=ok",
         "timeline=ok",
         "reply=ok",
-        "thread=ok",
+        "thread_hidden=ok",
+        "thread_summary=ok",
+        "thread_recv=ok",
+        "thread_paginate=end_reached",
         "edit_redact_search=ok",
         "restore_cleanup=ok",
     ]
@@ -311,16 +333,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         QaScenario::LoginSync => {
             let mut tokens = stages_for_scenario(scenario)
                 .into_iter()
-                .map(|stage| match stage {
-                    QaStage::Safety => "safety=ok",
-                    QaStage::LoginSync => "login_sync=ok",
-                    QaStage::RoomSpace => "room_space=ok",
-                    QaStage::Timeline => "timeline=ok",
-                    QaStage::Reply => "reply=ok",
-                    QaStage::Thread => "thread=ok",
-                    QaStage::EditRedactSearch => "edit_redact_search=ok",
-                    QaStage::RestoreCleanup => "restore_cleanup=ok",
-                })
+                .flat_map(|stage| tokens_for_stage(stage).iter().copied())
                 .collect::<Vec<_>>();
             tokens.push("restore_cleanup=ok");
             tokens.dedup();
@@ -334,22 +347,13 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::RestoreCleanup => {
             let mut tokens = stages_for_scenario(scenario)
                 .into_iter()
-                .map(|stage| match stage {
-                    QaStage::Safety => "safety=ok",
-                    QaStage::LoginSync => "login_sync=ok",
-                    QaStage::RoomSpace => "room_space=ok",
-                    QaStage::Timeline => "timeline=ok",
-                    QaStage::Reply => "reply=ok",
-                    QaStage::Thread => "thread=ok",
-                    QaStage::EditRedactSearch => "edit_redact_search=ok",
-                    QaStage::RestoreCleanup => "restore_cleanup=ok",
-                })
+                .flat_map(|stage| tokens_for_stage(stage).iter().copied())
                 .collect::<Vec<_>>();
             tokens.push("restore_cleanup=ok");
             tokens.dedup();
             tokens
         }
-        QaScenario::All => implemented_final_tokens().to_vec(),
+        QaScenario::All => implemented_final_tokens(),
     }
 }
 
@@ -1056,7 +1060,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         )
         .await?;
 
-        let txn_b_thread_reply = "qa-phase5-txn-b-thread-reply".to_owned();
+        let txn_b_thread_reply = "qa-phase11-txn-b-thread-reply".to_owned();
         let send_b_thread_reply_id = conn_b.next_request_id();
         conn_b
             .command(CoreCommand::Timeline(TimelineCommand::SendReply {
@@ -1064,7 +1068,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
                 key: thread_key_b.clone(),
                 transaction_id: txn_b_thread_reply.clone(),
                 in_reply_to_event_id: event1_id.clone(),
-                body: "Phase 5 QA thread reply from B".to_owned(),
+                body: THREAD_REPLY_BODY.to_owned(),
             }))
             .await
             .map_err(|e| format!("submit B thread reply: {e}"))?;
@@ -1076,6 +1080,34 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             "B thread reply completed",
         )
         .await?;
+
+        let refresh_room_a_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+                request_id: refresh_room_a_id,
+                key: key_a.clone(),
+            }))
+            .await
+            .map_err(|e| format!("submit refresh room timeline A: {e}"))?;
+
+        let refreshed_room_items = wait_for_initial_items(
+            &mut conn_a,
+            &key_a,
+            refresh_room_a_id,
+            "refresh room timeline A after thread send",
+        )
+        .await?;
+        wait_for_room_timeline_thread_summary(
+            &mut conn_a,
+            &key_a,
+            &refreshed_room_items,
+            THREAD_REPLY_BODY,
+            &event1_id,
+            "wait for A room live thread summary",
+        )
+        .await?;
+        println!("thread_hidden=ok");
+        println!("thread_summary=ok");
 
         let thread_key_a = TimelineKey {
             account_key: account_key_a.clone(),
@@ -1097,34 +1129,48 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             &mut conn_a,
             &thread_key_a,
             subscribe_thread_a_id,
-            "subscribe thread A",
+            "subscribe thread A after thread send",
         )
         .await?;
 
         let thread_item = if thread_initial_items_need_paginate_backfill(
             &thread_initial_items,
-            "Phase 5 QA thread reply from B",
+            THREAD_REPLY_BODY,
         ) {
             wait_for_thread_reply_item(
                 &mut conn_a,
                 &thread_key_a,
                 &thread_initial_items,
-                "Phase 5 QA thread reply from B",
+                THREAD_REPLY_BODY,
                 "A receives thread reply from B",
             )
             .await?
         } else {
-            find_timeline_item_with_body(&thread_initial_items, "Phase 5 QA thread reply from B")
+            find_timeline_item_with_body(&thread_initial_items, THREAD_REPLY_BODY)
                 .expect("thread reply present after initial scan")
         };
-        if thread_item.in_reply_to_event_id != Some(event1_id.clone()) {
-            return Err(format!(
-                "thread relation mismatch: expected {:?}, got {:?}",
-                Some(event1_id.clone()),
-                thread_item.in_reply_to_event_id
-            ));
-        }
-        println!("thread=ok");
+        assert_thread_reply_relation(&thread_item, &event1_id)?;
+        println!("thread_recv=ok");
+
+        let thread_paginate_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Timeline(TimelineCommand::Paginate {
+                request_id: thread_paginate_id,
+                key: thread_key_a.clone(),
+                direction: PaginationDirection::Backward,
+                event_count: 5,
+            }))
+            .await
+            .map_err(|e| format!("submit thread paginate: {e}"))?;
+
+        let thread_paginate_result = wait_for_paginate_end_reached(
+            &mut conn_a,
+            &thread_key_a,
+            thread_paginate_id,
+            "thread paginate to EndReached",
+        )
+        .await?;
+        println!("thread_paginate={thread_paginate_result}");
 
         let unsub_thread_a_id = conn_a.next_request_id();
         conn_a
@@ -2406,6 +2452,7 @@ async fn wait_for_bodies_and_pagination_settle(
 /// `InitialItems`, `ItemsUpdated`, and `PaginationStateChanged` events for the
 /// reply body. If the reply is not yet visible, this helper drives additional
 /// backward pagination until the reply arrives or pagination ends/fails.
+#[allow(dead_code)]
 async fn wait_for_thread_reply_item(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -2512,6 +2559,169 @@ async fn wait_for_thread_reply_item(
             _ => {}
         }
     }
+}
+
+fn timeline_item_body_contains(item: &TimelineItem, expected_body: &str) -> bool {
+    item.body
+        .as_ref()
+        .map(|body| body.contains(expected_body))
+        .unwrap_or(false)
+}
+
+fn timeline_item_event_id(item: &TimelineItem) -> Option<&str> {
+    match &item.id {
+        TimelineItemId::Event { event_id } => Some(event_id),
+        TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+    }
+}
+
+fn timeline_item_has_thread_summary_reply(item: &TimelineItem, root_event_id: &str) -> bool {
+    timeline_item_event_id(item) == Some(root_event_id)
+        && item
+            .thread_summary
+            .as_ref()
+            .map(|summary| summary.reply_count >= 1)
+            .unwrap_or(false)
+}
+
+struct RoomThreadSummaryObserver<'a> {
+    expected_thread_body: &'a str,
+    root_event_id: &'a str,
+}
+
+impl<'a> RoomThreadSummaryObserver<'a> {
+    fn new(expected_thread_body: &'a str, root_event_id: &'a str) -> Self {
+        Self {
+            expected_thread_body,
+            root_event_id,
+        }
+    }
+
+    fn observe_items(&mut self, items: &[TimelineItem]) -> Result<bool, String> {
+        let mut saw_summary = false;
+        for item in items {
+            if timeline_item_body_contains(item, self.expected_thread_body) {
+                return Err(
+                    "thread_hidden failed: thread reply appeared on room live timeline".to_owned(),
+                );
+            }
+            saw_summary |= timeline_item_has_thread_summary_reply(item, self.root_event_id);
+        }
+        Ok(saw_summary)
+    }
+
+    fn observe_diffs(&mut self, diffs: &[TimelineDiff]) -> Result<bool, String> {
+        let mut saw_summary = false;
+        visit_timeline_diff_items(diffs, |item| {
+            if timeline_item_body_contains(item, self.expected_thread_body) {
+                return Err(
+                    "thread_hidden failed: thread reply appeared on room live timeline".to_owned(),
+                );
+            }
+            saw_summary |= timeline_item_has_thread_summary_reply(item, self.root_event_id);
+            Ok(())
+        })?;
+        Ok(saw_summary)
+    }
+}
+
+async fn wait_for_room_timeline_thread_summary(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    initial_items: &[TimelineItem],
+    expected_thread_body: &str,
+    root_event_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let mut observer = RoomThreadSummaryObserver::new(expected_thread_body, root_event_id);
+    if observer.observe_items(initial_items)? {
+        return Ok(());
+    }
+
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(
+                "thread_summary failed: root item did not carry a reply summary".to_owned(),
+            );
+        }
+
+        let event =
+            tokio::time::timeout(deadline.saturating_duration_since(now), conn.recv_event())
+                .await
+                .map_err(|_| {
+                    "thread_summary failed: root item did not carry a reply summary".to_owned()
+                })?
+                .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                if observer.observe_items(&items)? {
+                    return Ok(());
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                if observer.observe_diffs(&diffs)? {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn assert_room_timeline_hides_thread_reply_and_summarizes_root(
+    items: &[TimelineItem],
+    expected_thread_body: &str,
+    root_event_id: &str,
+) -> Result<(), String> {
+    let mut observer = RoomThreadSummaryObserver::new(expected_thread_body, root_event_id);
+    if !observer.observe_items(items)? {
+        return Err("thread_summary failed: root item did not carry a reply summary".to_owned());
+    }
+    Ok(())
+}
+
+fn assert_thread_reply_relation(item: &TimelineItem, root_event_id: &str) -> Result<(), String> {
+    if item.in_reply_to_event_id.as_deref() != Some(root_event_id) {
+        return Err("thread_recv relation mismatch: in_reply_to did not match root".to_owned());
+    }
+    if item.thread_root.as_deref() != Some(root_event_id) {
+        return Err("thread_recv relation mismatch: thread_root did not match root".to_owned());
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn visit_timeline_diff_items(
+    diffs: &[TimelineDiff],
+    mut visit: impl FnMut(&TimelineItem) -> Result<(), String>,
+) -> Result<(), String> {
+    for diff in diffs {
+        match diff {
+            TimelineDiff::PushBack { item }
+            | TimelineDiff::PushFront { item }
+            | TimelineDiff::Insert { item, .. }
+            | TimelineDiff::Set { item, .. } => visit(item)?,
+            TimelineDiff::Reset { items } => {
+                for item in items {
+                    visit(item)?;
+                }
+            }
+            TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {}
+        }
+    }
+    Ok(())
 }
 
 /// Wait for an `ItemsUpdated` Set diff for the event identified by `event_id`
@@ -2826,6 +3036,7 @@ async fn wait_for_search_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use matrix_desktop_core::event::ThreadSummaryDto;
 
     #[test]
     fn parses_all_scenarios_from_env_value() {
@@ -2904,6 +3115,14 @@ mod tests {
                 body: Some("first item".to_owned()),
                 timestamp_ms: None,
                 in_reply_to_event_id: None,
+                thread_root: None,
+                thread_summary: None,
+                reactions: Vec::new(),
+                can_react: false,
+                is_redacted: false,
+                can_redact: false,
+                is_edited: false,
+                can_edit: false,
             },
             matrix_desktop_core::event::TimelineItem {
                 id: matrix_desktop_core::event::TimelineItemId::Event {
@@ -2913,6 +3132,14 @@ mod tests {
                 body: Some("Phase 5 QA thread reply from B".to_owned()),
                 timestamp_ms: None,
                 in_reply_to_event_id: Some("$root:test".to_owned()),
+                thread_root: None,
+                thread_summary: None,
+                reactions: Vec::new(),
+                can_react: true,
+                is_redacted: false,
+                can_redact: false,
+                is_edited: false,
+                can_edit: true,
             },
         ];
 
@@ -2933,6 +3160,14 @@ mod tests {
             body: Some("Phase 5 QA message 1".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: None,
+            thread_root: None,
+            thread_summary: None,
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
         }];
 
         assert!(thread_initial_items_need_paginate_backfill(
@@ -2951,6 +3186,14 @@ mod tests {
             body: Some("Phase 5 QA thread reply from B".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: Some("$root:test".to_owned()),
+            thread_root: None,
+            thread_summary: None,
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
         }];
 
         assert!(!thread_initial_items_need_paginate_backfill(
@@ -2965,6 +3208,224 @@ mod tests {
         assert!(!thread_reply_should_repaginate_on_idle(true));
     }
 
+    fn synthetic_timeline_item(
+        event_id: &str,
+        body: Option<&str>,
+        in_reply_to_event_id: Option<&str>,
+        thread_root: Option<&str>,
+        thread_summary: Option<ThreadSummaryDto>,
+    ) -> TimelineItem {
+        TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: event_id.to_owned(),
+            },
+            sender: Some("@member:test".to_owned()),
+            body: body.map(str::to_owned),
+            timestamp_ms: None,
+            in_reply_to_event_id: in_reply_to_event_id.map(str::to_owned),
+            thread_root: thread_root.map(str::to_owned),
+            thread_summary,
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+        }
+    }
+
+    #[test]
+    fn thread_summary_helper_requires_root_item_with_reply_count() {
+        let summary = ThreadSummaryDto {
+            reply_count: 1,
+            latest_sender: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: None,
+        };
+        let root = synthetic_timeline_item("$root:test", None, None, None, Some(summary.clone()));
+        let no_replies = synthetic_timeline_item(
+            "$root:test",
+            None,
+            None,
+            None,
+            Some(ThreadSummaryDto {
+                reply_count: 0,
+                ..summary.clone()
+            }),
+        );
+        let other_root =
+            synthetic_timeline_item("$other:test", None, None, None, Some(summary.clone()));
+
+        assert!(timeline_item_has_thread_summary_reply(&root, "$root:test"));
+        assert!(!timeline_item_has_thread_summary_reply(
+            &no_replies,
+            "$root:test"
+        ));
+        assert!(!timeline_item_has_thread_summary_reply(
+            &other_root,
+            "$root:test"
+        ));
+    }
+
+    #[test]
+    fn room_thread_assertion_requires_hidden_reply_and_root_summary() {
+        let root = synthetic_timeline_item(
+            "$root:test",
+            Some("root message"),
+            None,
+            None,
+            Some(ThreadSummaryDto {
+                reply_count: 1,
+                latest_sender: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: None,
+            }),
+        );
+        let unrelated = synthetic_timeline_item("$other:test", Some("other"), None, None, None);
+
+        assert!(
+            assert_room_timeline_hides_thread_reply_and_summarizes_root(
+                &[root.clone(), unrelated],
+                "Phase 11 QA thread reply from B",
+                "$root:test",
+            )
+            .is_ok()
+        );
+
+        let leaked = synthetic_timeline_item(
+            "$reply:test",
+            Some("Phase 11 QA thread reply from B"),
+            Some("$root:test"),
+            Some("$root:test"),
+            None,
+        );
+        assert!(
+            assert_room_timeline_hides_thread_reply_and_summarizes_root(
+                &[root.clone(), leaked],
+                "Phase 11 QA thread reply from B",
+                "$root:test",
+            )
+            .is_err()
+        );
+
+        assert!(
+            assert_room_timeline_hides_thread_reply_and_summarizes_root(
+                &[synthetic_timeline_item(
+                    "$root:test",
+                    Some("root message"),
+                    None,
+                    None,
+                    None,
+                )],
+                "Phase 11 QA thread reply from B",
+                "$root:test",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn room_thread_summary_observer_waits_for_late_summary_diff() {
+        let mut observer =
+            RoomThreadSummaryObserver::new("Phase 11 QA thread reply from B", "$root:test");
+        let root_without_summary =
+            synthetic_timeline_item("$root:test", Some("root message"), None, None, None);
+
+        assert!(!observer.observe_items(&[root_without_summary]).unwrap());
+
+        let root_with_summary = synthetic_timeline_item(
+            "$root:test",
+            Some("root message"),
+            None,
+            None,
+            Some(ThreadSummaryDto {
+                reply_count: 1,
+                latest_sender: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: None,
+            }),
+        );
+
+        assert!(
+            observer
+                .observe_diffs(&[TimelineDiff::Set {
+                    index: 0,
+                    item: root_with_summary,
+                }])
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn room_thread_summary_observer_fails_immediately_on_leaked_reply() {
+        let mut observer =
+            RoomThreadSummaryObserver::new("Phase 11 QA thread reply from B", "$root:test");
+        let leaked = synthetic_timeline_item(
+            "$reply:test",
+            Some("Phase 11 QA thread reply from B"),
+            Some("$root:test"),
+            Some("$root:test"),
+            None,
+        );
+
+        let error = observer.observe_items(&[leaked]).unwrap_err();
+
+        assert!(error.contains("thread_hidden failed"));
+    }
+
+    #[test]
+    fn thread_relation_helper_requires_reply_and_thread_root_metadata() {
+        let valid = synthetic_timeline_item(
+            "$reply:test",
+            Some("Phase 11 QA thread reply from B"),
+            Some("$root:test"),
+            Some("$root:test"),
+            None,
+        );
+        let missing_thread_root = synthetic_timeline_item(
+            "$reply:test",
+            Some("Phase 11 QA thread reply from B"),
+            Some("$root:test"),
+            None,
+            None,
+        );
+
+        assert_thread_reply_relation(&valid, "$root:test").unwrap();
+        assert!(assert_thread_reply_relation(&missing_thread_root, "$root:test").is_err());
+    }
+
+    #[test]
+    fn diff_item_visitor_scans_set_and_reset_items() {
+        let set_item = synthetic_timeline_item("$root:test", Some("root"), None, None, None);
+        let reset_item = synthetic_timeline_item(
+            "$reply:test",
+            Some("Phase 11 QA thread reply from B"),
+            Some("$root:test"),
+            Some("$root:test"),
+            None,
+        );
+        let diffs = vec![
+            TimelineDiff::Set {
+                index: 0,
+                item: set_item,
+            },
+            TimelineDiff::Reset {
+                items: vec![reset_item],
+            },
+        ];
+        let mut bodies = Vec::new();
+
+        visit_timeline_diff_items(&diffs, |item| {
+            if let Some(body) = item.body.as_deref() {
+                bodies.push(body.to_owned());
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(bodies, ["root", "Phase 11 QA thread reply from B"]);
+    }
+
     #[test]
     fn find_timeline_item_with_body_finds_thread_reply_in_one_batch() {
         let items = vec![matrix_desktop_core::event::TimelineItem {
@@ -2975,6 +3436,14 @@ mod tests {
             body: Some("Phase 5 QA thread reply from B".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: Some("$root:test".to_owned()),
+            thread_root: None,
+            thread_summary: None,
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
         }];
 
         assert_eq!(
@@ -2995,6 +3464,14 @@ mod tests {
             body: Some("Phase 5 QA message 1".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: None,
+            thread_root: None,
+            thread_summary: None,
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
         }];
 
         assert!(find_timeline_item_with_body(&items, "thread reply from B").is_none());
@@ -3042,6 +3519,14 @@ mod tests {
                         body: Some("Phase 5 QA message 1".to_owned()),
                         timestamp_ms: None,
                         in_reply_to_event_id: None,
+                        thread_root: None,
+                        thread_summary: None,
+                        reactions: Vec::new(),
+                        can_react: false,
+                        is_redacted: false,
+                        can_redact: false,
+                        is_edited: false,
+                        can_edit: false,
                     },
                 }],
             }))
@@ -3099,17 +3584,20 @@ mod tests {
     #[test]
     fn implemented_final_tokens_include_thread() {
         assert_eq!(
-            implemented_final_tokens(),
-            [
+            &implemented_final_tokens()[..],
+            &[
                 "safety=ok",
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
-                "thread=ok",
+                "thread_hidden=ok",
+                "thread_summary=ok",
+                "thread_recv=ok",
+                "thread_paginate=end_reached",
                 "edit_redact_search=ok",
                 "restore_cleanup=ok",
-            ]
+            ][..]
         );
     }
 
@@ -3158,7 +3646,10 @@ mod tests {
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
-                "thread=ok",
+                "thread_hidden=ok",
+                "thread_summary=ok",
+                "thread_recv=ok",
+                "thread_paginate=end_reached",
                 "restore_cleanup=ok",
             ]
         );
@@ -3182,17 +3673,20 @@ mod tests {
     #[test]
     fn implemented_final_tokens_include_safety() {
         assert_eq!(
-            implemented_final_tokens(),
-            [
+            &implemented_final_tokens()[..],
+            &[
                 "safety=ok",
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
-                "thread=ok",
+                "thread_hidden=ok",
+                "thread_summary=ok",
+                "thread_recv=ok",
+                "thread_paginate=end_reached",
                 "edit_redact_search=ok",
                 "restore_cleanup=ok",
-            ]
+            ][..]
         );
     }
 }

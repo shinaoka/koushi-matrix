@@ -25,8 +25,11 @@ impl CoreCommand {
                 AppCommand::Shutdown { request_id }
                 | AppCommand::SetComposerReplyTarget { request_id, .. }
                 | AppCommand::CancelComposerReply { request_id }
+                | AppCommand::SetThreadComposerDraft { request_id, .. }
                 | AppCommand::OpenThread { request_id, .. }
-                | AppCommand::CloseThread { request_id },
+                | AppCommand::CloseThread { request_id }
+                | AppCommand::OpenFocusedContext { request_id, .. }
+                | AppCommand::CloseFocusedContext { request_id },
             ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
@@ -61,7 +64,8 @@ impl CoreCommand {
                 | TimelineCommand::SendText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
                 | TimelineCommand::EditText { request_id, .. }
-                | TimelineCommand::Redact { request_id, .. } => *request_id,
+                | TimelineCommand::Redact { request_id, .. }
+                | TimelineCommand::ToggleReaction { request_id, .. } => *request_id,
             },
             Self::Search(command) => match command {
                 SearchCommand::Query { request_id, .. } => *request_id,
@@ -78,7 +82,6 @@ impl CoreCommand {
     }
 }
 
-#[derive(Debug)]
 pub enum AppCommand {
     Shutdown {
         request_id: RequestId,
@@ -91,6 +94,12 @@ pub enum AppCommand {
     CancelComposerReply {
         request_id: RequestId,
     },
+    SetThreadComposerDraft {
+        request_id: RequestId,
+        room_id: String,
+        root_event_id: String,
+        draft: String,
+    },
     OpenThread {
         request_id: RequestId,
         room_id: String,
@@ -99,6 +108,78 @@ pub enum AppCommand {
     CloseThread {
         request_id: RequestId,
     },
+    OpenFocusedContext {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    },
+    CloseFocusedContext {
+        request_id: RequestId,
+    },
+}
+
+impl fmt::Debug for AppCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Shutdown { request_id } => formatter
+                .debug_struct("Shutdown")
+                .field("request_id", request_id)
+                .finish(),
+            Self::SetComposerReplyTarget {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("SetComposerReplyTarget")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::CancelComposerReply { request_id } => formatter
+                .debug_struct("CancelComposerReply")
+                .field("request_id", request_id)
+                .finish(),
+            Self::SetThreadComposerDraft {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("SetThreadComposerDraft")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("root_event_id", &"EventId(..)")
+                .field("draft", &"MessageBody(..)")
+                .finish(),
+            Self::OpenThread {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("OpenThread")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("root_event_id", &"EventId(..)")
+                .finish(),
+            Self::CloseThread { request_id } => formatter
+                .debug_struct("CloseThread")
+                .field("request_id", request_id)
+                .finish(),
+            Self::OpenFocusedContext {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("OpenFocusedContext")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::CloseFocusedContext { request_id } => formatter
+                .debug_struct("CloseFocusedContext")
+                .field("request_id", request_id)
+                .finish(),
+        }
+    }
 }
 
 // LoginRequest and RecoveryRequest redact their own Debug in
@@ -229,10 +310,17 @@ pub enum TimelineCommand {
         key: TimelineKey,
         event_id: String,
     },
+    ToggleReaction {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+        reaction_key: String,
+    },
 }
 
-// Message bodies are visible UI state but must not reach logs through Debug
-// (spec: "SendText and EditText redact body in Debug and errors").
+// Message bodies and reaction keys are visible UI state but must not reach
+// logs through Debug (spec: "SendText and EditText redact body in Debug and
+// errors").
 impl fmt::Debug for TimelineCommand {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -296,14 +384,21 @@ impl fmt::Debug for TimelineCommand {
                 .field("body", &"MessageBody(..)")
                 .finish(),
             Self::Redact {
-                request_id,
-                key,
-                event_id,
+                request_id, key, ..
             } => formatter
                 .debug_struct("Redact")
                 .field("request_id", request_id)
                 .field("key", key)
-                .field("event_id", event_id)
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::ToggleReaction {
+                request_id, key, ..
+            } => formatter
+                .debug_struct("ToggleReaction")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("event_id", &"EventId(..)")
+                .field("reaction_key", &"ReactionKey(..)")
                 .finish(),
         }
     }

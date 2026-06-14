@@ -867,7 +867,8 @@ async fn build_client(
     homeserver: &Homeserver,
     store_config: Option<&MatrixClientStoreConfig>,
 ) -> Result<matrix_sdk::Client, PasswordLoginError> {
-    let builder = matrix_sdk::Client::builder().homeserver_url(homeserver.normalized());
+    let builder = desktop_client_builder_defaults(matrix_sdk::Client::builder())
+        .homeserver_url(homeserver.normalized());
     let builder = match store_config {
         Some(store_config) => store_config.apply_to_builder(builder),
         None => builder,
@@ -876,6 +877,14 @@ async fn build_client(
         .build()
         .await
         .map_err(|error| PasswordLoginError::Sdk(error.to_string()))
+}
+
+fn desktop_client_builder_defaults(
+    builder: matrix_sdk::ClientBuilder,
+) -> matrix_sdk::ClientBuilder {
+    builder.with_threading_support(matrix_sdk::ThreadingSupport::Enabled {
+        with_subscriptions: true,
+    })
 }
 
 pub async fn recover_e2ee(
@@ -1761,6 +1770,22 @@ mod tests {
     use super::{
         MatrixSearchIndexKey, MatrixSearchIndexStoreConfig, matrix_room_list_room_from_counts,
     };
+
+    #[test]
+    fn client_builder_defaults_enable_thread_subscriptions() {
+        let source = include_str!("lib.rs");
+        let defaults_body = source
+            .split("fn desktop_client_builder_defaults")
+            .nth(1)
+            .expect("desktop client builder defaults helper should exist")
+            .split("pub async fn recover_e2ee")
+            .next()
+            .expect("recover_e2ee should follow desktop client builder defaults");
+
+        assert!(defaults_body.contains("with_threading_support"));
+        assert!(defaults_body.contains("ThreadingSupport::Enabled"));
+        assert!(defaults_body.contains("with_subscriptions: true"));
+    }
 
     #[test]
     fn search_index_store_config_uses_encrypted_ngram_index() {

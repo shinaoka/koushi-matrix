@@ -10,11 +10,14 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use matrix_desktop_state::{AppAction, AppEffect, AppState, SessionState, ThreadPaneState, reduce};
+use matrix_desktop_state::{
+    AppAction, AppEffect, AppState, SearchScope as AppSearchScope, SessionState, ThreadPaneState,
+    reduce,
+};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::account::{AccountActorHandle, AccountMessage};
-use crate::command::{AppCommand, CoreCommand, TimelineCommand};
+use crate::command::{AppCommand, CoreCommand, SearchCommand, SearchScope, TimelineCommand};
 use crate::event::{AppStateSnapshot, CoreEvent};
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -283,11 +286,30 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::SetThreadComposerDraft {
+                    request_id,
+                    room_id,
+                    root_event_id,
+                    draft,
+                } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::ThreadComposerDraftChanged {
+                            room_id,
+                            root_event_id,
+                            draft,
+                        },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
                 AppCommand::OpenThread {
                     request_id,
                     room_id,
                     root_event_id,
                 } => {
+                    let replaced_thread_key =
+                        self.unsubscribe_replaced_thread_timeline(&room_id, &root_event_id);
                     let effects = reduce(
                         &mut self.state,
                         AppAction::OpenThread {
@@ -295,6 +317,15 @@ impl AppActor {
                             root_event_id,
                         },
                     );
+                    if effects_open_thread_timeline(&effects) {
+                        if let Some(key) = replaced_thread_key {
+                            self.send_timeline_command_or_fail(
+                                request_id,
+                                TimelineCommand::Unsubscribe { request_id, key },
+                            )
+                            .await;
+                        }
+                    }
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
@@ -302,6 +333,42 @@ impl AppActor {
                     let thread_key = self.current_thread_timeline_key();
                     let effects = reduce(&mut self.state, AppAction::CloseThread);
                     if let Some(key) = thread_key {
+                        self.send_timeline_command_or_fail(
+                            request_id,
+                            TimelineCommand::Unsubscribe { request_id, key },
+                        )
+                        .await;
+                    }
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::OpenFocusedContext {
+                    request_id,
+                    room_id,
+                    event_id,
+                } => {
+                    let replaced_focused_key =
+                        self.unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::OpenFocusedContext { room_id, event_id },
+                    );
+                    if effects_open_focused_timeline(&effects) {
+                        if let Some(key) = replaced_focused_key {
+                            self.send_timeline_command_or_fail(
+                                request_id,
+                                TimelineCommand::Unsubscribe { request_id, key },
+                            )
+                            .await;
+                        }
+                    }
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::CloseFocusedContext { request_id } => {
+                    let focused_key = self.current_focused_context_timeline_key();
+                    let effects = reduce(&mut self.state, AppAction::CloseFocusedContext);
+                    if let Some(key) = focused_key {
                         self.send_timeline_command_or_fail(
                             request_id,
                             TimelineCommand::Unsubscribe { request_id, key },
@@ -339,14 +406,23 @@ impl AppActor {
                 false
             }
             CoreCommand::Search(search_command) => {
-                // Route to AccountActor (which forwards to SearchActor).
-                let _ = self
-                    .account_actor
-                    .send(crate::account::AccountMessage::SearchCommand(
-                        search_command,
-                    ))
-                    .await;
-                false
+                let (request_id, query, scope) = match search_command {
+                    SearchCommand::Query {
+                        request_id,
+                        query,
+                        scope,
+                    } => (request_id, query, scope),
+                };
+                let effects = reduce(
+                    &mut self.state,
+                    AppAction::SearchSubmitted {
+                        request_id: request_id.sequence,
+                        query: query.clone(),
+                        scope: map_core_search_scope_to_state(scope.clone()),
+                    },
+                );
+                self.handle_app_effects(request_id, effects).await;
+                true
             }
         }
     }
@@ -379,6 +455,44 @@ impl AppActor {
                     },
                 )
                 .await;
+            } else if let AppEffect::OpenFocusedTimeline { room_id, event_id } = effect {
+                let Some(account_key) = self.current_account_key() else {
+                    self.emit(CoreEvent::OperationFailed {
+                        request_id,
+                        failure: CoreFailure::SessionRequired,
+                    });
+                    continue;
+                };
+                self.send_timeline_command_or_fail(
+                    request_id,
+                    TimelineCommand::Subscribe {
+                        request_id,
+                        key: TimelineKey {
+                            account_key,
+                            kind: TimelineKind::Focused { room_id, event_id },
+                        },
+                    },
+                )
+                .await;
+            } else if let AppEffect::SearchMessages {
+                request_id: effect_request_id,
+                query,
+                scope,
+            } = effect
+            {
+                if effect_request_id != request_id.sequence {
+                    continue;
+                }
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::SearchCommand(
+                        SearchCommand::Query {
+                            request_id,
+                            query,
+                            scope: map_state_search_scope_to_core(scope),
+                        },
+                    ))
+                    .await;
             }
         }
     }
@@ -434,6 +548,59 @@ impl AppActor {
         }
     }
 
+    fn unsubscribe_replaced_thread_timeline(
+        &self,
+        room_id: &str,
+        root_event_id: &str,
+    ) -> Option<TimelineKey> {
+        let replacement_key = TimelineKey {
+            account_key: self.current_account_key()?,
+            kind: TimelineKind::Thread {
+                room_id: room_id.to_owned(),
+                root_event_id: root_event_id.to_owned(),
+            },
+        };
+        unsubscribe_replaced_thread_timeline_key(
+            self.current_thread_timeline_key(),
+            replacement_key,
+        )
+    }
+
+    fn current_focused_context_timeline_key(&self) -> Option<TimelineKey> {
+        let account_key = self.current_account_key()?;
+        match &self.state.focused_context {
+            matrix_desktop_state::FocusedContextState::Opening { room_id, event_id }
+            | matrix_desktop_state::FocusedContextState::Open {
+                room_id, event_id, ..
+            } => Some(TimelineKey {
+                account_key,
+                kind: TimelineKind::Focused {
+                    room_id: room_id.clone(),
+                    event_id: event_id.clone(),
+                },
+            }),
+            matrix_desktop_state::FocusedContextState::Closed => None,
+        }
+    }
+
+    fn unsubscribe_replaced_focused_context_timeline(
+        &self,
+        room_id: &str,
+        event_id: &str,
+    ) -> Option<TimelineKey> {
+        let replacement_key = TimelineKey {
+            account_key: self.current_account_key()?,
+            kind: TimelineKind::Focused {
+                room_id: room_id.to_owned(),
+                event_id: event_id.to_owned(),
+            },
+        };
+        unsubscribe_replaced_focused_context_timeline_key(
+            self.current_focused_context_timeline_key(),
+            replacement_key,
+        )
+    }
+
     fn emit(&self, event: CoreEvent) {
         // A send error only means no consumer is currently attached.
         let _ = self.event_tx.send(event);
@@ -444,6 +611,55 @@ impl AppActor {
         let _ = self
             .event_tx
             .send(CoreEvent::StateChanged(self.state.clone()));
+    }
+}
+
+fn unsubscribe_replaced_thread_timeline_key(
+    current_key: Option<TimelineKey>,
+    replacement_key: TimelineKey,
+) -> Option<TimelineKey> {
+    unsubscribe_replaced_timeline_key(current_key, replacement_key)
+}
+
+fn unsubscribe_replaced_focused_context_timeline_key(
+    current_key: Option<TimelineKey>,
+    replacement_key: TimelineKey,
+) -> Option<TimelineKey> {
+    unsubscribe_replaced_timeline_key(current_key, replacement_key)
+}
+
+fn unsubscribe_replaced_timeline_key(
+    current_key: Option<TimelineKey>,
+    replacement_key: TimelineKey,
+) -> Option<TimelineKey> {
+    current_key.filter(|current_key| current_key != &replacement_key)
+}
+
+fn effects_open_thread_timeline(effects: &[AppEffect]) -> bool {
+    effects
+        .iter()
+        .any(|effect| matches!(effect, AppEffect::OpenThreadTimeline { .. }))
+}
+
+fn effects_open_focused_timeline(effects: &[AppEffect]) -> bool {
+    effects
+        .iter()
+        .any(|effect| matches!(effect, AppEffect::OpenFocusedTimeline { .. }))
+}
+
+fn map_core_search_scope_to_state(scope: SearchScope) -> AppSearchScope {
+    match scope {
+        SearchScope::Global => AppSearchScope::AllRooms,
+        SearchScope::Room { room_id } => AppSearchScope::CurrentRoom { room_id },
+    }
+}
+
+fn map_state_search_scope_to_core(scope: AppSearchScope) -> SearchScope {
+    match scope {
+        AppSearchScope::AllRooms | AppSearchScope::CurrentSpace { .. } | AppSearchScope::Dms => {
+            SearchScope::Global
+        }
+        AppSearchScope::CurrentRoom { room_id } => SearchScope::Room { room_id },
     }
 }
 
@@ -504,5 +720,144 @@ mod tests {
                 || open_thread_arm.contains("TimelineCommand::Subscribe"),
             "OpenThread must execute the OpenThreadTimeline effect through the timeline actor"
         );
+    }
+
+    #[test]
+    fn replacement_thread_helper_preserves_same_key_and_unsubscribes_different_key() {
+        let account_key = AccountKey("@alice:example.invalid".to_owned());
+        let current = TimelineKey {
+            account_key: account_key.clone(),
+            kind: TimelineKind::Thread {
+                room_id: "!room:example.invalid".to_owned(),
+                root_event_id: "$root-a:example.invalid".to_owned(),
+            },
+        };
+        let same = current.clone();
+        let different = TimelineKey {
+            account_key,
+            kind: TimelineKind::Thread {
+                room_id: "!room:example.invalid".to_owned(),
+                root_event_id: "$root-b:example.invalid".to_owned(),
+            },
+        };
+
+        assert_eq!(
+            unsubscribe_replaced_thread_timeline_key(Some(current.clone()), same),
+            None
+        );
+        assert_eq!(
+            unsubscribe_replaced_thread_timeline_key(Some(current.clone()), different),
+            Some(current)
+        );
+        assert_eq!(
+            unsubscribe_replaced_thread_timeline_key(None, thread_key("$root-c:example.invalid")),
+            None
+        );
+    }
+
+    #[test]
+    fn replacement_focused_helper_preserves_same_key_and_unsubscribes_different_key() {
+        let account_key = AccountKey("@alice:example.invalid".to_owned());
+        let current = TimelineKey {
+            account_key: account_key.clone(),
+            kind: TimelineKind::Focused {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: "$event-a:example.invalid".to_owned(),
+            },
+        };
+        let same = current.clone();
+        let different = TimelineKey {
+            account_key,
+            kind: TimelineKind::Focused {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: "$event-b:example.invalid".to_owned(),
+            },
+        };
+
+        assert_eq!(
+            unsubscribe_replaced_focused_context_timeline_key(Some(current.clone()), same),
+            None
+        );
+        assert_eq!(
+            unsubscribe_replaced_focused_context_timeline_key(Some(current.clone()), different),
+            Some(current)
+        );
+        assert_eq!(
+            unsubscribe_replaced_focused_context_timeline_key(
+                None,
+                focused_key("$event-c:example.invalid")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn opening_a_replacement_thread_unsubscribes_the_previous_thread_before_subscribe() {
+        let source = include_str!("runtime.rs");
+        let open_thread_arm = source
+            .split("AppCommand::OpenThread")
+            .nth(1)
+            .expect("OpenThread arm should exist")
+            .split("AppCommand::CloseThread")
+            .next()
+            .expect("CloseThread arm should follow OpenThread");
+
+        let replacement_offset = open_thread_arm
+            .find("unsubscribe_replaced_thread_timeline")
+            .expect("OpenThread must check whether an existing thread timeline is being replaced");
+        let effects_offset = open_thread_arm
+            .find("handle_app_effects")
+            .expect("OpenThread must execute the new thread subscribe effect");
+
+        assert!(
+            replacement_offset < effects_offset,
+            "OpenThread must unsubscribe a different existing thread before subscribing the replacement"
+        );
+    }
+
+    #[test]
+    fn opening_a_replacement_focused_context_unsubscribes_previous_focused_before_subscribe() {
+        let source = include_str!("runtime.rs");
+        let open_focused_arm = source
+            .split("AppCommand::OpenFocusedContext")
+            .nth(1)
+            .expect("OpenFocusedContext arm should exist")
+            .split("AppCommand::CloseFocusedContext")
+            .next()
+            .expect("CloseFocusedContext arm should follow OpenFocusedContext");
+
+        let replacement_offset = open_focused_arm
+            .find("unsubscribe_replaced_focused_context_timeline")
+            .expect(
+                "OpenFocusedContext must check whether an existing focused timeline is being replaced",
+            );
+        let effects_offset = open_focused_arm
+            .find("handle_app_effects")
+            .expect("OpenFocusedContext must execute the new focused subscribe effect");
+
+        assert!(
+            replacement_offset < effects_offset,
+            "OpenFocusedContext must unsubscribe a different existing focused timeline before subscribing the replacement"
+        );
+    }
+
+    fn thread_key(root_event_id: &str) -> TimelineKey {
+        TimelineKey {
+            account_key: AccountKey("@alice:example.invalid".to_owned()),
+            kind: TimelineKind::Thread {
+                room_id: "!room:example.invalid".to_owned(),
+                root_event_id: root_event_id.to_owned(),
+            },
+        }
+    }
+
+    fn focused_key(event_id: &str) -> TimelineKey {
+        TimelineKey {
+            account_key: AccountKey("@alice:example.invalid".to_owned()),
+            kind: TimelineKind::Focused {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: event_id.to_owned(),
+            },
+        }
     }
 }

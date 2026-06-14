@@ -24,6 +24,8 @@ export interface DesktopApi {
   restartSync(): Promise<DesktopSnapshot>;
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
+  selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  closeFocusedContext(): Promise<DesktopSnapshot>;
   paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
   sendText(roomId: string, body: string): Promise<DesktopSnapshot>;
   editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
@@ -32,6 +34,8 @@ export interface DesktopApi {
   forgetRoom(roomId: string): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
+  setThreadComposerDraft(roomId: string, rootEventId: string, draft: string): Promise<DesktopSnapshot>;
+  sendThreadReply(roomId: string, rootEventId: string, body: string): Promise<DesktopSnapshot>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
   createRoom(name: string): Promise<DesktopSnapshot>;
   createSpace(name: string): Promise<DesktopSnapshot>;
@@ -189,8 +193,32 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.timeline.room_id = roomId;
     this.snapshot.state.timeline.is_subscribed = true;
     this.snapshot.state.thread = { kind: "closed" };
+    this.snapshot.state.focused_context = { kind: "closed" };
     this.snapshot.thread = null;
     this.snapshot.timeline = timelineMessages.filter((message) => message.room_id === roomId);
+    return this.getSnapshot();
+  }
+
+  async selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    await this.selectRoom(roomId);
+    this.snapshot.state.focused_context = {
+      kind: "opening",
+      room_id: roomId,
+      event_id: eventId
+    };
+    return this.getSnapshot();
+  }
+
+  async closeFocusedContext(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.focused_context = { kind: "closed" };
     return this.getSnapshot();
   }
 
@@ -307,6 +335,52 @@ class BrowserFakeApi implements DesktopApi {
 
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.thread = null;
+    return this.getSnapshot();
+  }
+
+  async setThreadComposerDraft(
+    roomId: string,
+    rootEventId: string,
+    draft: string
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    const thread = this.snapshot.state.thread;
+    if (
+      thread.kind === "open" &&
+      thread.room_id === roomId &&
+      thread.root_event_id === rootEventId &&
+      thread.composer
+    ) {
+      thread.composer.draft = draft;
+    }
+    return this.getSnapshot();
+  }
+
+  async sendThreadReply(
+    roomId: string,
+    rootEventId: string,
+    body: string
+  ): Promise<DesktopSnapshot> {
+    const session = this.snapshot.state.session;
+    const thread = this.snapshot.state.thread;
+    if (
+      session.kind !== "ready" ||
+      !session.user_id ||
+      thread.kind !== "open" ||
+      thread.room_id !== roomId ||
+      thread.root_event_id !== rootEventId ||
+      !thread.composer ||
+      thread.composer.pending_transaction_id ||
+      body.trim().length === 0
+    ) {
+      return this.getSnapshot();
+    }
+
+    thread.composer.pending_transaction_id = null;
+    thread.composer.draft = "";
     return this.getSnapshot();
   }
 
@@ -497,6 +571,7 @@ class BrowserFakeApi implements DesktopApi {
       }
     };
     this.snapshot.state.thread = { kind: "closed" };
+    this.snapshot.state.focused_context = { kind: "closed" };
     this.snapshot.state.search = { kind: "closed" };
     this.snapshot.state.basic_operation = { kind: "idle" };
     this.snapshot.sidebar = emptySidebar();
@@ -582,6 +657,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
           mode: "Plain"
         }
       },
+      focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" }
@@ -646,6 +722,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
         }
       },
       thread: { kind: "closed" },
+      focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" }

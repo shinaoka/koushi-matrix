@@ -185,6 +185,39 @@ pub struct TimelineItem {
     pub body: Option<String>,
     pub timestamp_ms: Option<u64>,
     pub in_reply_to_event_id: Option<String>,
+    #[serde(default)]
+    pub thread_root: Option<String>,
+    #[serde(default)]
+    pub thread_summary: Option<ThreadSummaryDto>,
+    #[serde(default)]
+    pub reactions: Vec<ReactionGroup>,
+    #[serde(default)]
+    pub can_react: bool,
+    #[serde(default)]
+    pub is_redacted: bool,
+    #[serde(default)]
+    pub can_redact: bool,
+    #[serde(default)]
+    pub is_edited: bool,
+    #[serde(default)]
+    pub can_edit: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadSummaryDto {
+    pub reply_count: u32,
+    pub latest_sender: Option<String>,
+    pub latest_body_preview: Option<String>,
+    pub latest_timestamp_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReactionGroup {
+    pub key: String,
+    pub count: u32,
+    pub reacted_by_me: bool,
+    pub my_reaction_event_id: Option<String>,
+    pub sender_preview: Vec<String>,
 }
 
 /// `VectorDiff`-shaped update preserving positional operations so the UI can
@@ -219,4 +252,72 @@ pub struct SearchResultItem {
     pub room_id: String,
     pub event_id: String,
     pub snippet: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn timeline_item_serializes_thread_fields_reactions_and_redaction_affordances() {
+        let item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: "$event:test".to_owned(),
+            },
+            sender: Some("@alice:example.invalid".to_owned()),
+            body: Some("hello".to_owned()),
+            timestamp_ms: Some(1_234),
+            in_reply_to_event_id: None,
+            thread_root: Some("$root:test".to_owned()),
+            thread_summary: Some(ThreadSummaryDto {
+                reply_count: 2,
+                latest_sender: Some("@bob:example.invalid".to_owned()),
+                latest_body_preview: Some("latest reply".to_owned()),
+                latest_timestamp_ms: Some(1_456),
+            }),
+            reactions: vec![ReactionGroup {
+                key: "👍".to_owned(),
+                count: 2,
+                reacted_by_me: true,
+                my_reaction_event_id: Some("$reaction:test".to_owned()),
+                sender_preview: vec!["@alice:example.invalid".to_owned()],
+            }],
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: true,
+            can_edit: true,
+        };
+
+        let value = serde_json::to_value(&item).expect("timeline item serializes");
+
+        assert_eq!(
+            value["reactions"],
+            json!([
+                {
+                    "key": "👍",
+                    "count": 2,
+                    "reacted_by_me": true,
+                    "my_reaction_event_id": "$reaction:test",
+                    "sender_preview": ["@alice:example.invalid"]
+                }
+            ])
+        );
+        assert_eq!(value["can_react"], json!(true));
+        assert_eq!(value["is_redacted"], json!(false));
+        assert_eq!(value["can_redact"], json!(true));
+        assert_eq!(value["is_edited"], json!(true));
+        assert_eq!(value["can_edit"], json!(true));
+        assert_eq!(value["thread_root"], json!("$root:test"));
+        assert_eq!(
+            value["thread_summary"],
+            json!({
+                "reply_count": 2,
+                "latest_sender": "@bob:example.invalid",
+                "latest_body_preview": "latest reply",
+                "latest_timestamp_ms": 1456
+            })
+        );
+    }
 }

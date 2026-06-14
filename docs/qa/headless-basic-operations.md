@@ -31,10 +31,17 @@ login_sync=ok
 room_space=ok
 timeline=ok
 reply=ok
-thread=ok
+thread_hidden=ok
+thread_summary=ok
+thread_recv=ok
+thread_paginate=end_reached
 edit_redact_search=ok
 restore_cleanup=ok
 ```
+
+`thread_summary=ok` is a strict Phase 11 signal: local core QA fails if the
+server/SDK path does not surface a root `thread_summary` for the threaded
+reply.
 
 ## matrix.org compatibility lane
 

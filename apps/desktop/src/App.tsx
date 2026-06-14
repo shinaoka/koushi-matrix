@@ -51,7 +51,10 @@ import {
 } from "./components/TimelineView";
 import {
   type CoreEventPayload,
-  roomTimelineKey
+  type TimelineKey,
+  focusedTimelineKey,
+  roomTimelineKey,
+  threadTimelineKey
 } from "./domain/coreEvents";
 import { KeyboardSettingsPanel } from "./components/KeyboardSettingsPanel";
 import { RoomInfoPanel } from "./components/RoomInfoPanel";
@@ -136,10 +139,30 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           unlisten?.();
         };
       },
-      async paginateBackwards(roomId: string) {
-        await invoke("paginate_timeline_backwards", { roomId });
+      async paginateBackwards(timelineKey: TimelineKey) {
+        if ("Room" in timelineKey.kind) {
+          await invoke("paginate_timeline_backwards", {
+            roomId: timelineKey.kind.Room.room_id
+          });
+          return;
+        }
+        if ("Thread" in timelineKey.kind) {
+          await invoke("paginate_thread_timeline_backwards", {
+            roomId: timelineKey.kind.Thread.room_id,
+            rootEventId: timelineKey.kind.Thread.root_event_id
+          });
+        }
+      },
+      async toggleReaction(roomId: string, eventId: string, reactionKey: string) {
+        await invoke("toggle_reaction", { roomId, eventId, reactionKey });
+      },
+      async editMessage(roomId: string, eventId: string, body: string) {
+        await invoke("edit_message", { roomId, eventId, body });
+      },
+      async redactMessage(roomId: string, eventId: string) {
+        await invoke("redact_message", { roomId, eventId });
       }
-  }
+    }
   : null;
 const tauriNotificationTransport = isTauriRuntime()
   ? createTauriDesktopNotificationTransport()
@@ -239,10 +262,10 @@ export function App() {
   function handleShortcutAction(shortcutId: string): boolean {
     switch (shortcutId) {
       case "showKeyboardSettings":
-        setRightPanelMode("keyboardSettings");
+        void setRightPanelModeClosingFocusedContext("keyboardSettings");
         return true;
       case "openUserSettings":
-        setRightPanelMode("userSettings");
+        void setRightPanelModeClosingFocusedContext("userSettings");
         return true;
       case "searchInRoom":
         setSearchScope("currentRoom");
@@ -253,7 +276,9 @@ export function App() {
         searchInputRef.current?.focus();
         return true;
       case "toggleRightPanel":
-        setRightPanelMode((mode) => (mode === "closed" ? "roomInfo" : "closed"));
+        void setRightPanelModeClosingFocusedContext(
+          rightPanelMode === "closed" ? "roomInfo" : "closed"
+        );
         return true;
       default:
         return false;
@@ -701,6 +726,7 @@ export function App() {
   }
 
   async function openThread(roomId: string, rootEventId: string) {
+    await closeFocusedContextIfHiddenBy("thread");
     setSnapshot(await api.openThread(roomId, rootEventId));
     setRightPanelMode("thread");
   }
@@ -710,15 +736,53 @@ export function App() {
     setRightPanelMode("closed");
   }
 
+  async function setThreadComposerDraft(
+    roomId: string,
+    rootEventId: string,
+    draft: string
+  ) {
+    setSnapshot(await api.setThreadComposerDraft(roomId, rootEventId, draft));
+  }
+
+  async function sendThreadReply(roomId: string, rootEventId: string, body: string) {
+    setSnapshot(await api.sendThreadReply(roomId, rootEventId, body));
+  }
+
+  function focusedContextVisibleForMode(mode: RightPanelMode): boolean {
+    const effectiveMode = snapshot
+      ? effectiveRightPanelModeForSnapshot(mode, snapshot)
+      : mode;
+    return effectiveMode === "search" || effectiveMode === "focusedContext";
+  }
+
+  function hasActiveFocusedContext(): boolean {
+    const focusedContext = snapshot?.state.focused_context;
+    return focusedContext?.kind === "opening" || focusedContext?.kind === "open";
+  }
+
+  async function closeFocusedContextIfHiddenBy(nextMode: RightPanelMode): Promise<void> {
+    if (
+      hasActiveFocusedContext() &&
+      focusedContextVisibleForMode(rightPanelMode) &&
+      !focusedContextVisibleForMode(nextMode)
+    ) {
+      setSnapshot(await api.closeFocusedContext());
+    }
+  }
+
+  async function setRightPanelModeClosingFocusedContext(nextMode: RightPanelMode) {
+    await closeFocusedContextIfHiddenBy(nextMode);
+    setRightPanelMode(nextMode);
+  }
+
+  async function closeFocusedContextPanel() {
+    await setRightPanelModeClosingFocusedContext("closed");
+  }
+
   function selectSearchResult(roomId: string, eventId: string) {
-    void selectRoom(roomId).then(() => {
-      setSearchQuery("");
-      setRightPanelMode("closed");
-      requestAnimationFrame(() => {
-        document.querySelector(`[data-event-id="${cssEscape(eventId)}"]`)?.scrollIntoView({
-          block: "center"
-        });
-      });
+    void api.selectSearchResult(roomId, eventId).then((nextSnapshot) => {
+      setSnapshot(nextSnapshot);
+      setRightPanelMode("search");
     });
   }
 
@@ -754,9 +818,9 @@ export function App() {
       return;
     }
 
-    const applyIntentMode = () => {
+    const applyIntentMode = async () => {
       if (intent.mode) {
-        setRightPanelMode(intent.mode);
+        await setRightPanelModeClosingFocusedContext(intent.mode);
       }
       if (intent.focusSearch) {
         setSearchScope("currentRoom");
@@ -765,14 +829,18 @@ export function App() {
     };
 
     if (intent.selectRoomId) {
-      void selectRoom(intent.selectRoomId).then(applyIntentMode);
+      void selectRoom(intent.selectRoomId).then(() => {
+        void applyIntentMode();
+      });
       return;
     }
     if (intent.selectSpaceId) {
-      void selectSpace(intent.selectSpaceId).then(applyIntentMode);
+      void selectSpace(intent.selectSpaceId).then(() => {
+        void applyIntentMode();
+      });
       return;
     }
-    applyIntentMode();
+    void applyIntentMode();
     if (actionId === "switchAccount") {
       void refreshSavedSessions();
     }
@@ -782,8 +850,11 @@ export function App() {
     const trimmed = query.trim();
     const searchMode = rightPanelModeForSearchQuery(trimmed);
     if (!trimmed) {
-      setSnapshot(await api.getSnapshot());
-      setRightPanelMode((mode) => (mode === "search" ? "closed" : mode));
+      if (focusedContextVisibleForMode(rightPanelMode)) {
+        await setRightPanelModeClosingFocusedContext("closed");
+      } else {
+        setSnapshot(await api.getSnapshot());
+      }
       return;
     }
     setSnapshot(await api.submitSearch(trimmed, scope));
@@ -842,7 +913,9 @@ export function App() {
         searchQuery={searchQuery}
         searchScope={searchScope}
         sync={snapshot.state.sync}
-        onOpenKeyboardSettings={() => setRightPanelMode("keyboardSettings")}
+        onOpenKeyboardSettings={() => {
+          void setRightPanelModeClosingFocusedContext("keyboardSettings");
+        }}
         onRestartSync={restartSync}
         onSearchQueryChange={setSearchQuery}
         onSearchScopeChange={setSearchScope}
@@ -852,7 +925,9 @@ export function App() {
           snapshot={snapshot}
           onCreateSpace={() => openCreateDialog("space")}
           onOpenContextMenu={openContextMenu}
-          onOpenUserSettings={() => setRightPanelMode("userSettings")}
+          onOpenUserSettings={() => {
+            void setRightPanelModeClosingFocusedContext("userSettings");
+          }}
           onSelectSpace={selectSpace}
         />
         <Sidebar
@@ -860,7 +935,9 @@ export function App() {
           snapshot={snapshot}
           onCreateRoom={() => openCreateDialog("room")}
           onOpenContextMenu={openContextMenu}
-          onOpenSpaceInfo={() => setRightPanelMode("spaceInfo")}
+          onOpenSpaceInfo={() => {
+            void setRightPanelModeClosingFocusedContext("spaceInfo");
+          }}
           onSelectRoom={selectRoom}
         />
         <TimelinePane
@@ -887,16 +964,22 @@ export function App() {
           onResultSelect={selectSearchResult}
           onToggleThread={() => {
             if (rightPanelOpen) {
-              void closeThread();
+              if (effectiveRightPanelMode === "thread") {
+                void closeThread();
+              } else {
+                void setRightPanelModeClosingFocusedContext("closed");
+              }
             } else {
               // Opening a specific thread is driven by a message's "view replies"
               // action (openThread -> Rust ThreadPaneState), not by scanning the
               // legacy snapshot.timeline placeholder. The panel toggle opens room
               // info as the default right-panel surface.
-              setRightPanelMode("roomInfo");
+              void setRightPanelModeClosingFocusedContext("roomInfo");
             }
           }}
-          onOpenRoomInfo={() => setRightPanelMode("roomInfo")}
+          onOpenRoomInfo={() => {
+            void setRightPanelModeClosingFocusedContext("roomInfo");
+          }}
         />
         <ContextualRightPanel
           activeRoom={activeRoom ?? null}
@@ -907,19 +990,33 @@ export function App() {
           recoverySecretFilled={recoverySecretFilled}
           recoverySecretInputRef={recoverySecretRef}
           snapshot={snapshot}
+          timelineTransport={tauriTimelineTransport}
           searchQuery={searchQuery}
           searchResults={searchResults}
           savedSessions={savedSessions}
           onCloseThread={() => {
             void closeThread();
           }}
-          onClosePanel={() => setRightPanelMode("closed")}
-          onOpenKeyboardSettings={() => setRightPanelMode("keyboardSettings")}
+          onClosePanel={() => {
+            void closeFocusedContextPanel();
+          }}
+          onOpenKeyboardSettings={() => {
+            void setRightPanelModeClosingFocusedContext("keyboardSettings");
+          }}
           onRecoverySecretPresenceChange={setRecoverySecretFilled}
+          onReply={(roomId, eventId) => {
+            void setComposerReplyTarget(roomId, eventId);
+          }}
           onResultSelect={selectSearchResult}
           onSubmitRecovery={submitRecovery}
           onSwitchAccount={(session) => {
             void switchAccount(session);
+          }}
+          onThreadComposerDraftChange={(roomId, rootEventId, draft) => {
+            void setThreadComposerDraft(roomId, rootEventId, draft);
+          }}
+          onThreadReplySend={(roomId, rootEventId, body) => {
+            void sendThreadReply(roomId, rootEventId, body);
           }}
         />
       </div>
@@ -1729,6 +1826,7 @@ function TimelinePane({
               timelineKey={roomTimelineKey(currentUserId, timelineRoomId)}
               transport={tauriTimelineTransport}
               onReply={onReply}
+              onOpenThread={onOpenThread}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -1995,6 +2093,7 @@ export function ContextualRightPanel({
   recoverySecretFilled,
   recoverySecretInputRef,
   snapshot,
+  timelineTransport = null,
   searchQuery,
   searchResults,
   savedSessions,
@@ -2002,9 +2101,12 @@ export function ContextualRightPanel({
   onClosePanel,
   onOpenKeyboardSettings,
   onRecoverySecretPresenceChange,
+  onReply,
   onResultSelect,
   onSubmitRecovery,
-  onSwitchAccount
+  onSwitchAccount,
+  onThreadComposerDraftChange,
+  onThreadReplySend
 }: {
   activeRoom: DesktopSnapshot["state"]["rooms"][number] | null;
   activeSpace: DesktopSnapshot["state"]["spaces"][number] | null;
@@ -2014,6 +2116,7 @@ export function ContextualRightPanel({
   recoverySecretFilled: boolean;
   recoverySecretInputRef: RefObject<HTMLInputElement | null>;
   snapshot: DesktopSnapshot;
+  timelineTransport?: TimelineTransport | null;
   searchQuery: string;
   searchResults: SearchResult[];
   savedSessions: SavedSessionInfo[];
@@ -2021,9 +2124,12 @@ export function ContextualRightPanel({
   onClosePanel: () => void;
   onOpenKeyboardSettings: () => void;
   onRecoverySecretPresenceChange: (value: boolean) => void;
+  onReply: TimelineRowActionHandlers["onReply"];
   onResultSelect: (roomId: string, eventId: string) => void;
   onSubmitRecovery: (event: FormEvent<HTMLFormElement>) => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
+  onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
+  onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
 }) {
   if (mode === "closed") {
     return <aside className="thread-pane" aria-label={t("panel.context")} />;
@@ -2086,16 +2192,51 @@ export function ContextualRightPanel({
     );
   }
 
-  if (mode === "search") {
+  if (mode === "search" || mode === "focusedContext") {
+    const focusedContext = snapshot.state.focused_context;
+    const currentUserId = snapshot.state.session.user_id ?? null;
+    const focusedTimelineKeyValue =
+      currentUserId &&
+      timelineTransport &&
+      (focusedContext.kind === "opening" || focusedContext.kind === "open")
+        ? focusedTimelineKey(currentUserId, focusedContext.room_id, focusedContext.event_id)
+        : null;
+    const focusedRoomId =
+      focusedContext.kind === "opening" || focusedContext.kind === "open"
+        ? focusedContext.room_id
+        : null;
+    const focusedTimelineTransport = timelineTransport;
+
     return (
       <aside className="thread-pane" aria-label={t("panel.context")}>
-        <PanelHeader title={t("panel.search")} onClose={onClosePanel} />
-        <SearchResults
-          query={searchQuery}
-          results={searchResults}
-          rooms={snapshot.state.rooms}
-          onResultSelect={onResultSelect}
+        <PanelHeader
+          title={mode === "search" ? t("panel.search") : t("panel.focusedContext")}
+          onClose={onClosePanel}
         />
+        {focusedTimelineKeyValue && focusedRoomId && focusedTimelineTransport ? (
+          <section className="focused-context-panel" aria-label={t("panel.focusedContext")}>
+            {mode === "search" ? (
+              <div className="search-results-header">
+                <span>{t("panel.focusedContext")}</span>
+              </div>
+            ) : null}
+            <TimelineView
+              roomId={focusedRoomId}
+              timelineKey={focusedTimelineKeyValue}
+              transport={focusedTimelineTransport}
+              suppressPaginationUi={true}
+              onReply={onReply}
+            />
+          </section>
+        ) : null}
+        {mode === "search" ? (
+          <SearchResults
+            query={searchQuery}
+            results={searchResults}
+            rooms={snapshot.state.rooms}
+            onResultSelect={onResultSelect}
+          />
+        ) : null}
       </aside>
     );
   }
@@ -2105,51 +2246,99 @@ export function ContextualRightPanel({
     return <aside className="thread-pane" aria-label={t("panel.context")} />;
   }
 
-  const rootEventId = threadState.root_event_id ?? snapshot.thread?.root_event_id ?? "";
-  const root = snapshot.timeline.find((message) => message.event_id === rootEventId);
-  const replies = snapshot.thread?.replies ?? [];
+  const currentUserId = snapshot.state.session.user_id ?? null;
+  const threadRoomId = threadState.room_id;
+  const rootEventId = threadState.root_event_id;
+  const threadComposer = threadState.kind === "open" ? threadState.composer : undefined;
+  const threadDraft = threadComposer?.draft ?? "";
+  const threadSendPending = Boolean(threadComposer?.pending_transaction_id);
+  const threadTimelineKeyValue =
+    currentUserId && timelineTransport && threadRoomId && rootEventId
+      ? threadTimelineKey(currentUserId, threadRoomId, rootEventId)
+      : null;
 
   return (
     <aside className="thread-pane" aria-label={t("panel.context")}>
       <PanelHeader title={t("panel.thread")} onClose={onCloseThread} />
-      <section className="thread-scroll">
-        {root ? (
-          <div className="thread-root">
-            <MessageArticle
-              currentUserId={null}
-              message={root}
-              query={searchQuery}
-              onEditMessage={() => undefined}
-              onOpenThread={() => undefined}
-              onRedactMessage={() => undefined}
-            />
-          </div>
-        ) : null}
-        {!root && rootEventId ? (
-          <div className="thread-root-placeholder">{t("timeline.threadRoot", { eventId: rootEventId })}</div>
-        ) : null}
-        {threadState.kind === "opening" ? (
+      <section className="thread-scroll thread-timeline-panel">
+        {threadTimelineKeyValue && threadRoomId && timelineTransport ? (
+          <TimelineView
+            key={`${threadRoomId}:${rootEventId}`}
+            roomId={threadRoomId}
+            timelineKey={threadTimelineKeyValue}
+            transport={timelineTransport}
+            onReply={onReply}
+            onOpenThread={() => undefined}
+          />
+        ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>
-        ) : null}
-        {replies.map((reply) => (
-          <article className="thread-reply" key={reply.event_id}>
-            <div className="avatar" aria-hidden="true">
-              {initials(reply.sender)}
-            </div>
-            <div className="message-main">
-              <div className="message-heading">
-                <span className="sender">{reply.sender}</span>
-                <span className="time">{formatTime(reply.timestamp_ms)}</span>
-              </div>
-              <div className="message-body">{reply.body}</div>
-            </div>
-          </article>
-        ))}
+        )}
       </section>
-      <section className="thread-composer" aria-label={t("timeline.threadComposer")}>
-        <textarea placeholder={t("timeline.threadPlaceholder")} />
-      </section>
+      <ThreadComposer
+        draft={threadDraft}
+        isSending={threadSendPending}
+        canEdit={threadState.kind === "open" && Boolean(threadRoomId && rootEventId && threadComposer)}
+        onDraftChange={(draft) => {
+          if (threadRoomId && rootEventId) {
+            onThreadComposerDraftChange(threadRoomId, rootEventId, draft);
+          }
+        }}
+        onSend={() => {
+          if (threadRoomId && rootEventId) {
+            onThreadReplySend(threadRoomId, rootEventId, threadDraft);
+          }
+        }}
+      />
     </aside>
+  );
+}
+
+function ThreadComposer({
+  canEdit,
+  draft,
+  isSending,
+  onDraftChange,
+  onSend
+}: {
+  canEdit: boolean;
+  draft: string;
+  isSending: boolean;
+  onDraftChange: (draft: string) => void;
+  onSend: () => void;
+}) {
+  const canSend = canEdit && !isSending && draft.trim().length > 0;
+
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (canSend) {
+        onSend();
+      }
+    }
+  }
+
+  return (
+    <section className="thread-composer" aria-label={t("timeline.threadComposer")}>
+      <textarea
+        aria-label={t("timeline.threadComposer")}
+        disabled={!canEdit}
+        placeholder={t("timeline.threadPlaceholder")}
+        value={draft}
+        onChange={(event) => onDraftChange(event.target.value)}
+        onKeyDown={onComposerKeyDown}
+      />
+      <div className="thread-composer-footer">
+        <button
+          className={`send-button ${canSend ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
+          type="button"
+          aria-label={isSending ? t("action.sending") : t("action.send")}
+          disabled={!canSend}
+          onClick={onSend}
+        >
+          <Send size={17} />
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -2272,10 +2461,6 @@ function formatTime(timestampMs: number): string {
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(timestampMs));
-}
-
-function cssEscape(value: string): string {
-  return value.replace(/["\\]/g, "\\$&");
 }
 
 function initialSearchQuery(): string {

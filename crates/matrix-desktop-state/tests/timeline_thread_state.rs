@@ -1,6 +1,7 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, ComposerMode, ComposerState, NavigationState, RoomSummary,
-    SessionInfo, SessionState, ThreadPaneState, TimelinePaneState, UiEvent, reduce,
+    AppAction, AppEffect, AppState, ComposerMode, ComposerState, NavigationState,
+    PendingComposerSendKind, RoomSummary, SessionInfo, SessionState, ThreadPaneState,
+    TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -433,6 +434,278 @@ fn opening_thread_requests_thread_timeline_and_subscription_success_opens_pane()
     assert_eq!(
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+}
+
+fn open_thread_state(room_id: &str, root_event_id: &str) -> AppState {
+    let mut state = selected_room_state(room_id);
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: room_id.to_owned(),
+            root_event_id: root_event_id.to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadSubscribed {
+            room_id: room_id.to_owned(),
+            root_event_id: root_event_id.to_owned(),
+        },
+    );
+    state
+}
+
+fn open_thread_composer(state: &AppState) -> &ComposerState {
+    match &state.thread {
+        ThreadPaneState::Open { composer, .. } => composer,
+        other => panic!("expected open thread, got {other:?}"),
+    }
+}
+
+fn set_open_thread_draft(state: &mut AppState, draft: &str) {
+    match &mut state.thread {
+        ThreadPaneState::Open { composer, .. } => composer.draft = draft.to_owned(),
+        other => panic!("expected open thread, got {other:?}"),
+    }
+}
+
+#[test]
+fn thread_composer_draft_change_only_affects_matching_open_thread() {
+    let mut state = open_thread_state("room-a", "$root");
+    state.timeline.composer.draft = "main draft".to_owned();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$other".to_owned(),
+            draft: "ignored".to_owned(),
+        },
+    );
+    assert_eq!(effects, Vec::new());
+    assert_eq!(open_thread_composer(&state).draft, "");
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            draft: "thread draft".to_owned(),
+        },
+    );
+
+    assert_eq!(open_thread_composer(&state).draft, "thread draft");
+    assert_eq!(state.timeline.composer.draft, "main draft");
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+}
+
+#[test]
+fn thread_reply_submit_sets_thread_pending_reply_and_leaves_main_composer_alone() {
+    let mut state = open_thread_state("room-a", "$root");
+    state.timeline.composer.draft = "main draft".to_owned();
+    set_open_thread_draft(&mut state, "thread reply");
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadReplySubmitted {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            body: "thread reply".to_owned(),
+        },
+    );
+
+    let composer = open_thread_composer(&state);
+    assert_eq!(
+        composer.pending_transaction_id.as_deref(),
+        Some("txn-thread")
+    );
+    assert_eq!(
+        composer.pending_send_kind,
+        Some(PendingComposerSendKind::Reply {
+            in_reply_to_event_id: "$root".to_owned(),
+        })
+    );
+    assert_eq!(composer.draft, "");
+    assert_eq!(state.timeline.composer.pending_transaction_id, None);
+    assert_eq!(state.timeline.composer.draft, "main draft");
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+}
+
+#[test]
+fn thread_reply_submit_is_ignored_unless_ready_matching_open_and_idle() {
+    let mut state = open_thread_state("room-a", "$root");
+    reduce(
+        &mut state,
+        AppAction::ThreadReplySubmitted {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-one".to_owned(),
+            body: "first".to_owned(),
+        },
+    );
+    set_open_thread_draft(&mut state, "second draft");
+    let pending_state = state.clone();
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ThreadReplySubmitted {
+                room_id: "room-a".to_owned(),
+                root_event_id: "$root".to_owned(),
+                transaction_id: "txn-two".to_owned(),
+                body: "second".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(state, pending_state);
+
+    let mut signed_out = AppState {
+        session: SessionState::SignedOut,
+        thread: ThreadPaneState::Open {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            is_subscribed: true,
+            composer: ComposerState::default(),
+        },
+        ..AppState::default()
+    };
+    let signed_out_before = signed_out.clone();
+    assert_eq!(
+        reduce(
+            &mut signed_out,
+            AppAction::ThreadReplySubmitted {
+                room_id: "room-a".to_owned(),
+                root_event_id: "$root".to_owned(),
+                transaction_id: "txn".to_owned(),
+                body: "ignored".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(signed_out, signed_out_before);
+}
+
+#[test]
+fn thread_reply_finished_clears_only_matching_thread_transaction() {
+    let mut state = open_thread_state("room-a", "$root");
+    reduce(
+        &mut state,
+        AppAction::ThreadReplySubmitted {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            body: "thread reply".to_owned(),
+        },
+    );
+
+    for action in [
+        AppAction::ThreadReplyFinished {
+            room_id: "room-b".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+        },
+        AppAction::ThreadReplyFinished {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$other".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+        },
+        AppAction::ThreadReplyFinished {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-other".to_owned(),
+        },
+    ] {
+        assert_eq!(reduce(&mut state, action), Vec::new());
+        assert_eq!(
+            open_thread_composer(&state)
+                .pending_transaction_id
+                .as_deref(),
+            Some("txn-thread")
+        );
+    }
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadReplyFinished {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+        },
+    );
+
+    let composer = open_thread_composer(&state);
+    assert_eq!(composer.pending_transaction_id, None);
+    assert_eq!(composer.pending_send_kind, None);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+}
+
+#[test]
+fn thread_reply_failed_clears_matching_pending_and_records_recoverable_error() {
+    let mut state = open_thread_state("room-a", "$root");
+    reduce(
+        &mut state,
+        AppAction::ThreadReplySubmitted {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            body: "thread reply".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ThreadReplyFailed {
+                room_id: "room-a".to_owned(),
+                root_event_id: "$root".to_owned(),
+                transaction_id: "txn-other".to_owned(),
+                message: "send failed".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(
+        open_thread_composer(&state)
+            .pending_transaction_id
+            .as_deref(),
+        Some("txn-thread")
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadReplyFailed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            message: "send failed".to_owned(),
+        },
+    );
+
+    let composer = open_thread_composer(&state);
+    assert_eq!(composer.pending_transaction_id, None);
+    assert_eq!(composer.pending_send_kind, None);
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].code, "send_text_failed");
+    assert_eq!(state.errors[0].message, "send failed");
+    assert!(state.errors[0].recoverable);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+            AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+        ]
     );
 }
 

@@ -10,10 +10,10 @@
 //! References: overview.md "Async rule 4" — timeline items never in AppState.
 
 use matrix_desktop_state::{
-    AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState, NavigationState,
-    RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope,
-    SearchState, SessionState, SidebarModel, SpaceSummary, SyncState, ThreadPaneState,
-    TimelinePaneState,
+    AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState,
+    FocusedContextState, NavigationState, RecoveryMethod, RoomSummary, SearchMatchField,
+    SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState, SidebarModel,
+    SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +57,7 @@ pub struct FrontendAppState {
     pub rooms: Vec<RoomSummary>,
     pub timeline: TimelinePaneState,
     pub thread: FrontendThreadPaneState,
+    pub focused_context: FocusedContextState,
     pub search: FrontendSearchState,
     pub basic_operation: BasicOperationState,
     pub errors: Vec<AppError>,
@@ -73,6 +74,7 @@ impl From<AppState> for FrontendAppState {
             rooms: state.rooms,
             timeline: state.timeline,
             thread: state.thread.into(),
+            focused_context: state.focused_context,
             search: state.search.into(),
             basic_operation: state.basic_operation,
             errors: state.errors,
@@ -433,11 +435,17 @@ mod tests {
         // ...product thread state lives in state.thread (default Closed). The UI
         // reads the open/closed decision from here, not the legacy placeholder.
         assert_eq!(value["state"]["thread"]["kind"], json!("closed"));
+        // focused_context must be present (default Closed) so the UI can drive
+        // the focused search context view from the Rust-owned state machine.
+        assert_eq!(value["state"]["focused_context"]["kind"], json!("closed"));
         // basic_operation must be present (default Idle) so the UI can read
         // snapshot.state.basic_operation.kind without crashing.
         assert_eq!(value["state"]["basic_operation"]["kind"], json!("idle"));
         // composer.mode must be present (default Plain) for the same reason.
-        assert_eq!(value["state"]["timeline"]["composer"]["mode"], json!("Plain"));
+        assert_eq!(
+            value["state"]["timeline"]["composer"]["mode"],
+            json!("Plain")
+        );
     }
 
     #[test]

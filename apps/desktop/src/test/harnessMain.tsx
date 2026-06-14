@@ -45,8 +45,28 @@ const transport: TimelineTransport = {
       listener((envelope as { payload: CoreEventPayload }).payload);
     });
   },
-  paginateBackwards(roomId) {
-    return ipc.invoke("paginate_timeline_backwards", { roomId });
+  paginateBackwards(timelineKey) {
+    if ("Room" in timelineKey.kind) {
+      return ipc.invoke("paginate_timeline_backwards", {
+        roomId: timelineKey.kind.Room.room_id
+      });
+    }
+    if ("Thread" in timelineKey.kind) {
+      return ipc.invoke("paginate_thread_timeline_backwards", {
+        roomId: timelineKey.kind.Thread.room_id,
+        rootEventId: timelineKey.kind.Thread.root_event_id
+      });
+    }
+    return Promise.resolve();
+  },
+  toggleReaction(roomId, eventId, reactionKey) {
+    return ipc.invoke("toggle_reaction", { roomId, eventId, reactionKey });
+  },
+  editMessage(roomId, eventId, body) {
+    return ipc.invoke("edit_message", { roomId, eventId, body });
+  },
+  redactMessage(roomId, eventId) {
+    return ipc.invoke("redact_message", { roomId, eventId });
   }
 };
 

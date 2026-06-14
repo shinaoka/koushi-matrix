@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use matrix_desktop_state::{
-    AppAction, AuthSecret, ComposerMode, LoginRequest, RecoveryRequest, RoomSummary, SessionInfo,
-    SessionState,
+    AppAction, AuthSecret, ComposerMode, LoginRequest, RecoveryRequest, RoomSummary, SearchState,
+    SessionInfo, SessionState,
 };
 
 use crate::command::{
@@ -61,6 +61,12 @@ fn secret_bearing_commands_redact_debug() {
         transaction_id: "txn-1".to_owned(),
         body: BODY.to_owned(),
     });
+    let toggle_reaction = CoreCommand::Timeline(TimelineCommand::ToggleReaction {
+        request_id: fake_request_id(),
+        key: key.clone(),
+        event_id: "$evt".to_owned(),
+        reaction_key: "👍".to_owned(),
+    });
     let edit = CoreCommand::Timeline(TimelineCommand::EditText {
         request_id: fake_request_id(),
         key: key.clone(),
@@ -72,13 +78,21 @@ fn secret_bearing_commands_redact_debug() {
         query: QUERY.to_owned(),
         scope: crate::command::SearchScope::Global,
     });
+    let thread_draft = CoreCommand::App(AppCommand::SetThreadComposerDraft {
+        request_id: fake_request_id(),
+        room_id: "!room:example.test".to_owned(),
+        root_event_id: "$root".to_owned(),
+        draft: BODY.to_owned(),
+    });
 
     for (command, secrets) in [
         (&login, vec![PASSWORD, "alice-login-name", "Alice Laptop"]),
         (&recovery, vec![RECOVERY]),
         (&send, vec![BODY]),
+        (&toggle_reaction, vec!["👍", "$evt"]),
         (&edit, vec![BODY]),
         (&search, vec![QUERY]),
+        (&thread_draft, vec![BODY, "$root"]),
     ] {
         let debug = format!("{command:?}");
         for secret in secrets {
@@ -176,6 +190,86 @@ async fn ready_session_routes_past_appactor_session_gate() {
             _ => continue,
         }
     }
+}
+
+#[tokio::test]
+async fn search_query_projects_search_state_before_routing() {
+    let runtime = CoreRuntime::start();
+    let mut connection = runtime.attach();
+
+    runtime
+        .inject_actions(vec![AppAction::RestoreSessionSucceeded(session_info())])
+        .await;
+
+    loop {
+        if matches!(connection.snapshot().session, SessionState::Ready(_)) {
+            break;
+        }
+        executor::sleep(Duration::from_millis(5)).await;
+    }
+
+    let request_id = connection.next_request_id();
+    connection
+        .command(CoreCommand::Search(SearchCommand::Query {
+            request_id,
+            query: "Alpha".to_owned(),
+            scope: crate::command::SearchScope::Global,
+        }))
+        .await
+        .expect("submit");
+
+    let result = executor::timeout(Duration::from_secs(1), async {
+        loop {
+            match connection.recv_event().await.expect("event") {
+                CoreEvent::StateChanged(snapshot)
+                    if !matches!(snapshot.search, SearchState::Closed) =>
+                {
+                    return snapshot;
+                }
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("search submission should publish a non-closed search snapshot");
+
+    match result.search {
+        SearchState::Searching {
+            request_id: rid, ..
+        }
+        | SearchState::Failed {
+            request_id: rid, ..
+        }
+        | SearchState::Results {
+            request_id: rid, ..
+        } => {
+            assert_eq!(rid, request_id.sequence);
+        }
+        other => panic!("expected search state to project, got {other:?}"),
+    }
+}
+
+#[test]
+fn empty_search_is_not_special_cased_in_the_runtime() {
+    let runtime_source = include_str!("runtime.rs");
+    let search_source = include_str!("search.rs");
+
+    assert!(
+        !runtime_source.contains("is_empty_query"),
+        "runtime should not special-case empty search queries"
+    );
+    assert!(
+        !runtime_source.contains("results: Vec::new()"),
+        "runtime should not locally settle empty search results"
+    );
+    assert!(
+        search_source.contains("query.trim().is_empty()"),
+        "search actor should own empty-query handling"
+    );
+    assert!(
+        search_source.contains("CoreEvent::Search(SearchEvent::Results"),
+        "search actor should still emit search results events"
+    );
 }
 
 #[tokio::test]
@@ -390,6 +484,72 @@ async fn app_command_sets_and_clears_reply_target() {
     })
     .await;
     assert_eq!(snapshot.timeline.composer.mode, ComposerMode::Plain);
+}
+
+#[tokio::test]
+async fn app_command_sets_open_thread_composer_draft() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::OpenThread {
+                room_id: "!room:example.test".to_owned(),
+                root_event_id: "$root:example.test".to_owned(),
+            },
+            AppAction::ThreadSubscribed {
+                room_id: "!room:example.test".to_owned(),
+                root_event_id: "$root:example.test".to_owned(),
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(
+            &state.thread,
+            matrix_desktop_state::ThreadPaneState::Open {
+                room_id,
+                root_event_id,
+                ..
+            } if room_id == "!room:example.test" && root_event_id == "$root:example.test"
+        )
+    })
+    .await;
+
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::SetThreadComposerDraft {
+        request_id,
+        room_id: "!room:example.test".to_owned(),
+        root_event_id: "$root:example.test".to_owned(),
+        draft: "thread draft".to_owned(),
+    }))
+    .await
+    .expect("set thread composer draft command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(
+            &state.thread,
+            matrix_desktop_state::ThreadPaneState::Open { composer, .. }
+                if composer.draft == "thread draft"
+        )
+    })
+    .await;
+
+    match snapshot.thread {
+        matrix_desktop_state::ThreadPaneState::Open { composer, .. } => {
+            assert_eq!(composer.draft, "thread draft");
+        }
+        other => panic!("expected open thread, got {other:?}"),
+    }
 }
 
 #[tokio::test]

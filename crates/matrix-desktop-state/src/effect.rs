@@ -31,6 +31,10 @@ pub enum AppEffect {
         room_id: String,
         root_event_id: String,
     },
+    OpenFocusedTimeline {
+        room_id: String,
+        event_id: String,
+    },
     SearchMessages {
         request_id: u64,
         query: String,

@@ -59,14 +59,15 @@ use matrix_sdk::ruma::events::room::message::{
 };
 use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk_ui::timeline::{
-    Timeline, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
+    ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineEventItemId, TimelineFocus,
+    TimelineItem as SdkTimelineItem,
 };
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::TimelineCommand;
 use crate::event::{
-    CoreEvent, PaginationDirection, PaginationState, TimelineDiff, TimelineEvent, TimelineItem,
-    TimelineItemId, TimelineResyncReason,
+    CoreEvent, PaginationDirection, PaginationState, ThreadSummaryDto, TimelineDiff, TimelineEvent,
+    TimelineItem, TimelineItemId, TimelineResyncReason,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -220,6 +221,7 @@ impl TimelineManagerActor {
                     &key,
                     transaction_id.clone(),
                     body.clone(),
+                    SendComposerProjection::for_send_text(&key),
                     TimelineActorMessage::SendText {
                         request_id,
                         transaction_id,
@@ -240,6 +242,7 @@ impl TimelineManagerActor {
                     &key,
                     transaction_id.clone(),
                     body.clone(),
+                    SendComposerProjection::for_send_reply(&key),
                     TimelineActorMessage::SendReply {
                         request_id,
                         transaction_id,
@@ -281,6 +284,23 @@ impl TimelineManagerActor {
                 )
                 .await;
             }
+            TimelineCommand::ToggleReaction {
+                request_id,
+                key,
+                event_id,
+                reaction_key,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::ToggleReaction {
+                        request_id,
+                        event_id,
+                        reaction_key,
+                    },
+                )
+                .await;
+            }
         }
     }
 
@@ -290,6 +310,7 @@ impl TimelineManagerActor {
         key: &TimelineKey,
         transaction_id: String,
         body: String,
+        projection: SendComposerProjection,
         msg: TimelineActorMessage,
     ) {
         let Some(handle) = self.timelines.get(key) else {
@@ -302,17 +323,8 @@ impl TimelineManagerActor {
             return;
         };
 
-        if let Some(room_id) = reducer_room_id(key) {
-            if self
-                .action_tx
-                .send(vec![AppAction::SendTextSubmitted {
-                    room_id,
-                    transaction_id: transaction_id.clone(),
-                    body,
-                }])
-                .await
-                .is_err()
-            {
+        if let Some(action) = send_submitted_action(key, projection, transaction_id.clone(), body) {
+            if self.action_tx.send(vec![action]).await.is_err() {
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -324,15 +336,13 @@ impl TimelineManagerActor {
         }
 
         if !handle.send(msg).await {
-            if let Some(room_id) = reducer_room_id(key) {
-                let _ = self
-                    .action_tx
-                    .send(vec![AppAction::SendTextFailed {
-                        room_id,
-                        transaction_id,
-                        message: "timeline send route closed".to_owned(),
-                    }])
-                    .await;
+            if let Some(action) = send_failed_action(
+                key,
+                projection,
+                transaction_id,
+                "timeline send route closed".to_owned(),
+            ) {
+                let _ = self.action_tx.send(vec![action]).await;
             }
             self.emit_failure(
                 request_id,
@@ -404,7 +414,7 @@ impl TimelineManagerActor {
 
         let focus = match &key.kind {
             TimelineKind::Room { .. } => TimelineFocus::Live {
-                hide_threaded_events: false,
+                hide_threaded_events: true,
             },
             TimelineKind::Thread { root_event_id, .. } => {
                 match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
@@ -522,19 +532,114 @@ impl TimelineManagerActor {
                 room_id: room_id.clone(),
                 root_event_id: root_event_id.clone(),
             },
-            TimelineKind::Focused { .. } => return,
+            TimelineKind::Focused { room_id, event_id } => AppAction::FocusedContextSubscribed {
+                room_id: room_id.clone(),
+                event_id: event_id.clone(),
+            },
         };
         let _ = self.action_tx.try_send(vec![action]);
     }
 }
 
-/// Map a timeline key to the reducer `room_id` for main-room composer actions.
-/// Only room timelines drive the main composer state machine; thread and
-/// focused timelines do not own the main composer's pending/reply state.
-fn reducer_room_id(key: &TimelineKey) -> Option<String> {
+#[derive(Clone, Copy)]
+enum SendComposerProjection {
+    Room,
+    ThreadReply,
+    None,
+}
+
+impl SendComposerProjection {
+    fn for_send_text(key: &TimelineKey) -> Self {
+        match key.kind {
+            TimelineKind::Room { .. } => Self::Room,
+            TimelineKind::Thread { .. } | TimelineKind::Focused { .. } => Self::None,
+        }
+    }
+
+    fn for_send_reply(key: &TimelineKey) -> Self {
+        match key.kind {
+            TimelineKind::Room { .. } => Self::Room,
+            TimelineKind::Thread { .. } => Self::ThreadReply,
+            TimelineKind::Focused { .. } => Self::None,
+        }
+    }
+}
+
+fn send_submitted_action(
+    key: &TimelineKey,
+    projection: SendComposerProjection,
+    transaction_id: String,
+    body: String,
+) -> Option<AppAction> {
+    match (projection, &key.kind) {
+        (SendComposerProjection::Room, TimelineKind::Room { room_id }) => {
+            Some(AppAction::SendTextSubmitted {
+                room_id: room_id.clone(),
+                transaction_id,
+                body,
+            })
+        }
+        (
+            SendComposerProjection::ThreadReply,
+            TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            },
+        ) => Some(AppAction::ThreadReplySubmitted {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+            transaction_id,
+            body,
+        }),
+        _ => None,
+    }
+}
+
+fn send_finished_action(key: &TimelineKey, transaction_id: String) -> Option<AppAction> {
     match &key.kind {
-        TimelineKind::Room { room_id } => Some(room_id.clone()),
-        TimelineKind::Thread { .. } | TimelineKind::Focused { .. } => None,
+        TimelineKind::Room { room_id } => Some(AppAction::SendTextFinished {
+            room_id: room_id.clone(),
+            transaction_id,
+        }),
+        TimelineKind::Thread {
+            room_id,
+            root_event_id,
+        } => Some(AppAction::ThreadReplyFinished {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+            transaction_id,
+        }),
+        TimelineKind::Focused { .. } => None,
+    }
+}
+
+fn send_failed_action(
+    key: &TimelineKey,
+    projection: SendComposerProjection,
+    transaction_id: String,
+    message: String,
+) -> Option<AppAction> {
+    match (projection, &key.kind) {
+        (SendComposerProjection::Room, TimelineKind::Room { room_id }) => {
+            Some(AppAction::SendTextFailed {
+                room_id: room_id.clone(),
+                transaction_id,
+                message,
+            })
+        }
+        (
+            SendComposerProjection::ThreadReply,
+            TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            },
+        ) => Some(AppAction::ThreadReplyFailed {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+            transaction_id,
+            message,
+        }),
+        _ => None,
     }
 }
 
@@ -568,6 +673,11 @@ enum TimelineActorMessage {
         request_id: RequestId,
         event_id: String,
     },
+    ToggleReaction {
+        request_id: RequestId,
+        event_id: String,
+        reaction_key: String,
+    },
     /// Internal: diff batch from the relay task.
     DiffBatch(Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>),
     /// Internal: send completed (from send queue monitor task).
@@ -597,6 +707,8 @@ struct TimelineActor {
     next_batch_id: TimelineBatchId,
     /// Correlates send queue completions across the enqueue / SentEvent race.
     send_completion: SendCompletionTracker,
+    /// Current account user id, used to project reaction ownership.
+    own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
     /// event_id → SDK transaction id for events this actor sent. Used to
     /// address local-echo items whose remote echo has not arrived (e.g.
     /// Conduit's sliding sync does not echo own events into the timeline),
@@ -621,10 +733,11 @@ impl TimelineActor {
     ) -> TimelineActorHandle {
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
+        let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
 
         let initial_items: Vec<TimelineItem> = initial_sdk_items
             .iter()
-            .map(|item| sdk_item_to_timeline_item(item))
+            .map(|item| sdk_item_to_timeline_item(item, own_user_id.as_deref()))
             .collect();
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
@@ -666,6 +779,7 @@ impl TimelineActor {
             generation,
             next_batch_id: TimelineBatchId(0),
             send_completion: SendCompletionTracker::default(),
+            own_user_id,
             sent_event_txns: HashMap::new(),
             search_index_tx,
         };
@@ -720,6 +834,14 @@ impl TimelineActor {
                 event_id,
             } => {
                 self.handle_redact(request_id, event_id).await;
+            }
+            TimelineActorMessage::ToggleReaction {
+                request_id,
+                event_id,
+                reaction_key,
+            } => {
+                self.handle_toggle_reaction(request_id, event_id, reaction_key)
+                    .await;
             }
             TimelineActorMessage::DiffBatch(diffs) => {
                 self.handle_diff_batch(diffs);
@@ -1041,6 +1163,46 @@ impl TimelineActor {
         // Redact success: timeline diff reflects it (removal or redacted-state Set diff).
     }
 
+    async fn handle_toggle_reaction(
+        &mut self,
+        request_id: RequestId,
+        event_id: String,
+        reaction_key: String,
+    ) {
+        let candidates = self.item_ids_for_event(&event_id);
+        if candidates.is_empty() {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+            return;
+        }
+
+        let mut result: Result<(), matrix_sdk_ui::timeline::Error> = Ok(());
+        for item_id in &candidates {
+            result = self
+                .timeline
+                .toggle_reaction(item_id, &reaction_key)
+                .await
+                .map(|_| ());
+            match &result {
+                Err(matrix_sdk_ui::timeline::Error::EventNotInTimeline(_)) => continue,
+                _ => break,
+            }
+        }
+
+        if result.is_err() {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+        }
+    }
+
     fn handle_diff_batch(&mut self, diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>) {
         if diffs.is_empty() {
             return;
@@ -1055,7 +1217,7 @@ impl TimelineActor {
 
         let core_diffs: Vec<TimelineDiff> = diffs
             .into_iter()
-            .map(sdk_vector_diff_to_timeline_diff)
+            .map(|diff| sdk_vector_diff_to_timeline_diff(diff, self.own_user_id.as_deref()))
             .collect();
 
         let batch_id = self.next_batch_id;
@@ -1271,7 +1433,7 @@ impl TimelineActor {
         let (current_items, _) = self.timeline.subscribe().await;
         let items: Vec<TimelineItem> = current_items
             .iter()
-            .map(|item| sdk_item_to_timeline_item(item))
+            .map(|item| sdk_item_to_timeline_item(item, self.own_user_id.as_deref()))
             .collect();
 
         self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
@@ -1294,27 +1456,30 @@ impl TimelineActor {
     }
 
     /// Drive the reducer's composer completion transition for the matching
-    /// pending send: clears the pending transaction and returns the composer to
-    /// `Plain` (Rust owns the reply-mode completion, not React).
+    /// pending send. Room timelines settle the main composer; thread timelines
+    /// settle the open thread composer; focused timelines own no composer state.
     fn emit_send_finished_action(&self, client_txn_id: &str) {
-        if let Some(room_id) = reducer_room_id(&self.key) {
-            let _ = self.action_tx.try_send(vec![AppAction::SendTextFinished {
-                room_id,
-                transaction_id: client_txn_id.to_owned(),
-            }]);
+        if let Some(action) = send_finished_action(&self.key, client_txn_id.to_owned()) {
+            let _ = self.action_tx.try_send(vec![action]);
         }
     }
 
     /// Drive the reducer's composer failure transition for the matching pending
-    /// send: clears the pending transaction but preserves reply mode so the user
-    /// can retry or cancel explicitly.
+    /// send. Room timelines settle the main composer; thread timelines settle
+    /// the open thread composer; focused timelines own no composer state.
     fn emit_send_failed_action(&self, client_txn_id: &str) {
-        if let Some(room_id) = reducer_room_id(&self.key) {
-            let _ = self.action_tx.try_send(vec![AppAction::SendTextFailed {
-                room_id,
-                transaction_id: client_txn_id.to_owned(),
-                message: "send failed".to_owned(),
-            }]);
+        let projection = match self.key.kind {
+            TimelineKind::Room { .. } => SendComposerProjection::Room,
+            TimelineKind::Thread { .. } => SendComposerProjection::ThreadReply,
+            TimelineKind::Focused { .. } => SendComposerProjection::None,
+        };
+        if let Some(action) = send_failed_action(
+            &self.key,
+            projection,
+            client_txn_id.to_owned(),
+            "send failed".to_owned(),
+        ) {
+            let _ = self.action_tx.try_send(vec![action]);
         }
     }
 }
@@ -1397,7 +1562,10 @@ async fn run_send_queue_monitor(
 // ---------------------------------------------------------------------------
 
 /// Convert a single SDK `TimelineItem` to our `TimelineItem` DTO.
-pub fn sdk_item_to_timeline_item(item: &Arc<SdkTimelineItem>) -> TimelineItem {
+pub fn sdk_item_to_timeline_item(
+    item: &Arc<SdkTimelineItem>,
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
+) -> TimelineItem {
     use matrix_sdk_ui::timeline::{TimelineItemKind, VirtualTimelineItem};
 
     match &item.kind() {
@@ -1426,10 +1594,51 @@ pub fn sdk_item_to_timeline_item(item: &Arc<SdkTimelineItem>) -> TimelineItem {
                 .content()
                 .as_message()
                 .map(|msg| msg.body().to_owned());
+            let can_hold_reactions = event_item.content().reactions().is_some();
+            let can_react = timeline_item_can_react(
+                event_item.event_id().is_some(),
+                can_hold_reactions,
+                event_item.content().is_redacted(),
+                body.as_deref(),
+            );
+            let can_redact = timeline_item_can_redact(
+                event_item.event_id().is_some(),
+                own_user_id
+                    .map(|user_id| event_item.sender().as_str() == user_id.as_str())
+                    .unwrap_or(false),
+                event_item.content().is_redacted(),
+                body.as_deref(),
+            );
+            let can_edit = timeline_item_can_edit(
+                event_item.event_id().is_some(),
+                own_user_id
+                    .map(|user_id| event_item.sender().as_str() == user_id.as_str())
+                    .unwrap_or(false),
+                event_item.content().is_redacted(),
+                body.as_deref(),
+            );
             let in_reply_to_event_id = event_item
                 .content()
                 .in_reply_to()
                 .map(|details| details.event_id.to_string());
+            let thread_root = event_item
+                .content()
+                .thread_root()
+                .map(|event_id| event_id.to_string());
+            let thread_summary = event_item
+                .content()
+                .thread_summary()
+                .map(thread_summary_from_sdk);
+            let reactions = event_item
+                .content()
+                .reactions()
+                .map(|reactions| reaction_groups_from_sdk(reactions, own_user_id))
+                .unwrap_or_default();
+            let is_edited = event_item
+                .content()
+                .as_message()
+                .map(|message| message.is_edited())
+                .unwrap_or(false);
 
             TimelineItem {
                 id,
@@ -1437,6 +1646,14 @@ pub fn sdk_item_to_timeline_item(item: &Arc<SdkTimelineItem>) -> TimelineItem {
                 body,
                 timestamp_ms,
                 in_reply_to_event_id,
+                thread_root,
+                thread_summary,
+                reactions,
+                can_react,
+                is_redacted: event_item.content().is_redacted(),
+                can_redact,
+                is_edited,
+                can_edit,
             }
         }
         TimelineItemKind::Virtual(virtual_item) => {
@@ -1451,35 +1668,129 @@ pub fn sdk_item_to_timeline_item(item: &Arc<SdkTimelineItem>) -> TimelineItem {
                 body: None,
                 timestamp_ms: None,
                 in_reply_to_event_id: None,
+                thread_root: None,
+                thread_summary: None,
+                reactions: Vec::new(),
+                can_react: false,
+                is_redacted: false,
+                can_redact: false,
+                is_edited: false,
+                can_edit: false,
             }
         }
     }
 }
 
+fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> ThreadSummaryDto {
+    let mut dto = ThreadSummaryDto {
+        reply_count: summary.num_replies,
+        latest_sender: None,
+        latest_body_preview: None,
+        latest_timestamp_ms: None,
+    };
+
+    if let matrix_sdk_ui::timeline::TimelineDetails::Ready(latest_event) = summary.latest_event {
+        dto.latest_sender = Some(latest_event.sender.to_string());
+        dto.latest_body_preview = latest_event
+            .content
+            .as_message()
+            .map(|message| message.body().to_owned());
+        dto.latest_timestamp_ms = Some(latest_event.timestamp.0.into());
+    }
+
+    dto
+}
+
+pub(crate) fn timeline_item_can_react(
+    is_event_backed: bool,
+    can_hold_reactions: bool,
+    is_redacted: bool,
+    body: Option<&str>,
+) -> bool {
+    is_event_backed && can_hold_reactions && !is_redacted && body.is_some()
+}
+
+pub(crate) fn timeline_item_can_redact(
+    is_event_backed: bool,
+    is_own_message: bool,
+    is_redacted: bool,
+    body: Option<&str>,
+) -> bool {
+    is_event_backed && is_own_message && !is_redacted && body.is_some()
+}
+
+pub(crate) fn timeline_item_can_edit(
+    is_event_backed: bool,
+    is_own_message: bool,
+    is_redacted: bool,
+    body: Option<&str>,
+) -> bool {
+    is_event_backed && is_own_message && !is_redacted && body.is_some()
+}
+
+pub(crate) fn reaction_groups_from_sdk(
+    reactions: &ReactionsByKeyBySender,
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
+) -> Vec<crate::event::ReactionGroup> {
+    reactions
+        .iter()
+        .map(|(key, senders)| crate::event::ReactionGroup {
+            key: key.clone(),
+            count: senders.len().min(u32::MAX as usize) as u32,
+            reacted_by_me: own_user_id
+                .map(|user_id| {
+                    senders
+                        .keys()
+                        .any(|sender| sender.as_str() == user_id.as_str())
+                })
+                .unwrap_or(false),
+            my_reaction_event_id: own_user_id.and_then(|user_id| {
+                senders.iter().find_map(|(sender, info)| {
+                    if sender.as_str() == user_id.as_str() {
+                        match &info.status {
+                            ReactionStatus::RemoteToRemote(event_id) => Some(event_id.to_string()),
+                            ReactionStatus::LocalToLocal(_) | ReactionStatus::LocalToRemote(_) => {
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                })
+            }),
+            sender_preview: senders.keys().take(3).map(ToString::to_string).collect(),
+        })
+        .collect()
+}
+
 /// Convert an SDK `VectorDiff` to our `TimelineDiff`.
 fn sdk_vector_diff_to_timeline_diff(
     diff: eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
 ) -> TimelineDiff {
     match diff {
         eyeball_im::VectorDiff::PushFront { value } => TimelineDiff::PushFront {
-            item: sdk_item_to_timeline_item(&value),
+            item: sdk_item_to_timeline_item(&value, own_user_id),
         },
         eyeball_im::VectorDiff::PushBack { value } => TimelineDiff::PushBack {
-            item: sdk_item_to_timeline_item(&value),
+            item: sdk_item_to_timeline_item(&value, own_user_id),
         },
         eyeball_im::VectorDiff::Insert { index, value } => TimelineDiff::Insert {
             index,
-            item: sdk_item_to_timeline_item(&value),
+            item: sdk_item_to_timeline_item(&value, own_user_id),
         },
         eyeball_im::VectorDiff::Set { index, value } => TimelineDiff::Set {
             index,
-            item: sdk_item_to_timeline_item(&value),
+            item: sdk_item_to_timeline_item(&value, own_user_id),
         },
         eyeball_im::VectorDiff::Remove { index } => TimelineDiff::Remove { index },
         eyeball_im::VectorDiff::Truncate { length } => TimelineDiff::Truncate { length },
         eyeball_im::VectorDiff::Clear => TimelineDiff::Clear,
         eyeball_im::VectorDiff::Reset { values } => TimelineDiff::Reset {
-            items: values.iter().map(sdk_item_to_timeline_item).collect(),
+            items: values
+                .iter()
+                .map(|value| sdk_item_to_timeline_item(value, own_user_id))
+                .collect(),
         },
         eyeball_im::VectorDiff::PopFront => {
             // SDK VectorDiff::PopFront is not in the spec enum; map to Remove{0}.
@@ -1506,7 +1817,10 @@ fn sdk_vector_diff_to_timeline_diff(
             // Alternatively we could split into PushBacks, but that risks sending
             // oversized batches for large initial appends; Reset is more robust.
             TimelineDiff::Reset {
-                items: values.iter().map(sdk_item_to_timeline_item).collect(),
+                items: values
+                    .iter()
+                    .map(|value| sdk_item_to_timeline_item(value, own_user_id))
+                    .collect(),
             }
         }
     }
@@ -1588,6 +1902,8 @@ mod tests {
     use std::time::Duration;
 
     use matrix_desktop_state::{AppAction, SessionInfo, SessionState};
+    use matrix_sdk::ruma::{OwnedUserId, uint};
+    use matrix_sdk_ui::timeline::{ReactionInfo, ReactionStatus, ReactionsByKeyBySender};
     use tokio::sync::broadcast;
 
     use super::*;
@@ -1606,6 +1922,43 @@ mod tests {
 
     fn room_key() -> TimelineKey {
         TimelineKey::room(AccountKey("@a:test".to_owned()), "!r:test")
+    }
+
+    fn reaction_groups_fixture() -> ReactionsByKeyBySender {
+        let mut reactions = ReactionsByKeyBySender::default();
+        let thumbs = reactions.entry("👍".to_owned()).or_default();
+        thumbs.insert(
+            OwnedUserId::try_from("@me:test").expect("user id"),
+            ReactionInfo {
+                timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(1)),
+                status: ReactionStatus::RemoteToRemote(
+                    matrix_sdk::ruma::OwnedEventId::try_from("$reaction:me").expect("event id"),
+                ),
+            },
+        );
+        thumbs.insert(
+            OwnedUserId::try_from("@alice:test").expect("user id"),
+            ReactionInfo {
+                timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(2)),
+                status: ReactionStatus::LocalToRemote(None),
+            },
+        );
+        thumbs.insert(
+            OwnedUserId::try_from("@bob:test").expect("user id"),
+            ReactionInfo {
+                timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(3)),
+                status: ReactionStatus::LocalToRemote(None),
+            },
+        );
+        thumbs.insert(
+            OwnedUserId::try_from("@carol:test").expect("user id"),
+            ReactionInfo {
+                timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(4)),
+                status: ReactionStatus::LocalToRemote(None),
+            },
+        );
+
+        reactions
     }
 
     fn focused_key() -> TimelineKey {
@@ -1733,6 +2086,55 @@ mod tests {
     }
 
     #[test]
+    fn room_live_timeline_focus_hides_threaded_events() {
+        let source = include_str!("timeline.rs");
+        let focus_source = source
+            .split("let focus = match &key.kind")
+            .nth(1)
+            .expect("subscribe focus match should exist")
+            .split("let timeline_result")
+            .next()
+            .expect("timeline build should follow focus selection");
+        let room_focus = focus_source
+            .split("TimelineKind::Room")
+            .nth(1)
+            .expect("room timeline focus arm should exist")
+            .split("TimelineKind::Thread")
+            .next()
+            .expect("thread timeline focus arm should follow room arm");
+
+        assert!(
+            room_focus.contains("hide_threaded_events: true"),
+            "room live timelines must hide threaded replies"
+        );
+    }
+
+    #[test]
+    fn sdk_projection_reads_thread_contract_accessors() {
+        let source = include_str!("timeline.rs");
+        let projection_source = source
+            .split("pub fn sdk_item_to_timeline_item")
+            .nth(1)
+            .expect("sdk projection function should exist")
+            .split("pub(crate) fn timeline_item_can_react")
+            .next()
+            .expect("projection helper should follow sdk projection");
+        let compact_projection_source: String = projection_source
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect();
+
+        assert!(
+            compact_projection_source.contains("content().thread_root()"),
+            "timeline item projection must read SDK thread_root"
+        );
+        assert!(
+            compact_projection_source.contains("content().thread_summary()"),
+            "timeline item projection must read SDK thread_summary"
+        );
+    }
+
+    #[test]
     fn send_submission_is_not_reduced_before_actor_route_accepts_it() {
         let source = include_str!("timeline.rs");
         let send_text_arm = source
@@ -1754,13 +2156,17 @@ mod tests {
             let route_lookup_offset = helper_source
                 .find("self.timelines.get")
                 .expect("send route helper should look up the actor before reducing state");
-            let submitted_offset = helper_source
-                .find("SendTextSubmitted")
-                .expect("send route helper should reduce SendTextSubmitted");
+            let submitted_offset = helper_source.find("send_submitted_action").expect(
+                "send route helper should reduce submitted state through a projection helper",
+            );
 
             assert!(
                 route_lookup_offset < submitted_offset,
-                "SendTextSubmitted must not be reduced before the actor route is known to exist"
+                "submitted send state must not be reduced before the actor route is known to exist"
+            );
+            assert!(
+                source.contains("AppAction::SendTextSubmitted"),
+                "room send projection should reduce SendTextSubmitted"
             );
             return;
         }
@@ -1775,6 +2181,97 @@ mod tests {
         assert!(
             route_offset < submitted_offset,
             "SendTextSubmitted must not be reduced before the actor route is known to exist"
+        );
+    }
+
+    #[test]
+    fn thread_reply_submission_is_not_reduced_before_actor_route_accepts_it() {
+        let source = include_str!("timeline.rs");
+        let helper_source = source
+            .split("async fn route_send_to_actor_or_fail")
+            .nth(1)
+            .expect("send route helper should exist")
+            .split("async fn handle_subscribe")
+            .next()
+            .expect("handle_subscribe should follow the send route helper");
+
+        let route_lookup_offset = helper_source
+            .find("self.timelines.get")
+            .expect("send route helper should look up the actor before reducing state");
+        let submitted_offset = helper_source
+            .find("send_submitted_action")
+            .expect("send route helper should reduce submitted state through a projection helper");
+
+        assert!(
+            route_lookup_offset < submitted_offset,
+            "submitted send state must not be reduced before the actor route is known to exist"
+        );
+        assert!(
+            source.contains("AppAction::ThreadReplySubmitted"),
+            "thread send projection should reduce ThreadReplySubmitted"
+        );
+    }
+
+    #[test]
+    fn thread_timeline_keys_project_send_reply_to_thread_composer_actions() {
+        let source = include_str!("timeline.rs");
+        let helper_source = source
+            .split("async fn route_send_to_actor_or_fail")
+            .nth(1)
+            .expect("send route helper should exist")
+            .split("async fn handle_subscribe")
+            .next()
+            .expect("handle_subscribe should follow the send route helper");
+        let projection_source = source
+            .split("fn send_submitted_action")
+            .nth(1)
+            .expect("send submitted projection helper should exist")
+            .split("fn send_finished_action")
+            .next()
+            .expect("send finished projection helper should follow submit helper");
+        let finished_projection_source = source
+            .split("fn send_finished_action")
+            .nth(1)
+            .expect("send finished projection helper should exist")
+            .split("fn send_failed_action")
+            .next()
+            .expect("send failed projection helper should follow finished helper");
+        let failed_projection_source = source
+            .split("fn send_failed_action")
+            .nth(1)
+            .expect("send failed projection helper should exist")
+            .split("// ---------------------------------------------------------------------------")
+            .next()
+            .expect("projection helper section should end");
+        let actor_completion_source = source
+            .split("fn emit_send_finished_action")
+            .nth(1)
+            .expect("send completion helper should exist")
+            .split("// ---------------------------------------------------------------------------")
+            .next()
+            .expect("timeline actor helper section should end");
+
+        assert!(
+            helper_source.contains("send_submitted_action")
+                && projection_source.contains("TimelineKind::Thread")
+                && projection_source.contains("ThreadReplySubmitted"),
+            "thread SendReply routes must submit thread composer state"
+        );
+        assert!(
+            source.contains("ThreadReplyFailed"),
+            "thread SendReply route failures must clear thread composer pending state"
+        );
+        assert!(
+            actor_completion_source.contains("send_finished_action")
+                && actor_completion_source.contains("send_failed_action")
+                && finished_projection_source.contains("ThreadReplyFinished")
+                && failed_projection_source.contains("ThreadReplyFailed"),
+            "thread actor completion and failure must settle thread composer state"
+        );
+        assert!(
+            source.contains("TimelineKind::Focused { .. } => Self::None")
+                && source.contains("TimelineKind::Focused { .. } => None"),
+            "focused timelines must not own composer state"
         );
     }
 
@@ -2079,6 +2576,53 @@ mod tests {
         );
         assert!(tracker.pending_sends.is_empty());
         assert!(tracker.completed_sends.is_empty());
+    }
+
+    #[test]
+    fn reaction_groups_project_my_sender_and_remote_event_id() {
+        let own_user_id = OwnedUserId::try_from("@me:test").expect("user id");
+        let groups =
+            reaction_groups_from_sdk(&reaction_groups_fixture(), Some(own_user_id.as_ref()));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].key, "👍");
+        assert_eq!(groups[0].count, 4);
+        assert!(groups[0].reacted_by_me);
+        assert_eq!(
+            groups[0].my_reaction_event_id.as_deref(),
+            Some("$reaction:me")
+        );
+        assert_eq!(
+            groups[0].sender_preview,
+            vec!["@me:test", "@alice:test", "@bob:test"]
+        );
+    }
+
+    #[test]
+    fn timeline_item_can_react_requires_event_backed_visible_message() {
+        assert!(timeline_item_can_react(true, true, false, Some("hello")));
+        assert!(!timeline_item_can_react(false, true, false, Some("hello")));
+        assert!(!timeline_item_can_react(true, false, false, Some("hello")));
+        assert!(!timeline_item_can_react(true, true, false, None));
+        assert!(!timeline_item_can_react(true, true, true, Some("hello")));
+    }
+
+    #[test]
+    fn timeline_item_can_redact_requires_own_visible_event_message() {
+        assert!(timeline_item_can_redact(true, true, false, Some("hello")));
+        assert!(!timeline_item_can_redact(false, true, false, Some("hello")));
+        assert!(!timeline_item_can_redact(true, false, false, Some("hello")));
+        assert!(!timeline_item_can_redact(true, true, true, Some("hello")));
+        assert!(!timeline_item_can_redact(true, true, false, None));
+    }
+
+    #[test]
+    fn timeline_item_can_edit_requires_own_visible_event_message() {
+        assert!(timeline_item_can_edit(true, true, false, Some("hello")));
+        assert!(!timeline_item_can_edit(false, true, false, Some("hello")));
+        assert!(!timeline_item_can_edit(true, false, false, Some("hello")));
+        assert!(!timeline_item_can_edit(true, true, true, Some("hello")));
+        assert!(!timeline_item_can_edit(true, true, false, None));
     }
 
     // --- Debug redaction of new types ---

@@ -735,7 +735,10 @@ pub fn run() {
             commands::restart_sync,
             commands::select_space,
             commands::select_room,
+            commands::select_search_result,
+            commands::close_focused_context,
             commands::paginate_timeline_backwards,
+            commands::paginate_thread_timeline_backwards,
             commands::send_text,
             commands::edit_message,
             commands::redact_message,
@@ -749,7 +752,10 @@ pub fn run() {
             commands::set_space_child,
             commands::set_composer_reply_target,
             commands::cancel_composer_reply,
+            commands::set_thread_composer_draft,
+            commands::toggle_reaction,
             commands::send_reply,
+            commands::send_thread_reply,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run matrix desktop app");
@@ -1126,8 +1132,8 @@ mod tests {
         use matrix_desktop_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
-                AccountEvent, PaginationDirection, PaginationState, RoomEvent, TimelineEvent,
-                TimelineItem, TimelineItemId, TimelineResyncReason,
+                AccountEvent, PaginationDirection, PaginationState, ReactionGroup, RoomEvent,
+                TimelineEvent, TimelineItem, TimelineItemId, TimelineResyncReason,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1147,6 +1153,20 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(123),
             in_reply_to_event_id: None,
+            thread_root: None,
+            thread_summary: None,
+            reactions: vec![ReactionGroup {
+                key: "👍".to_owned(),
+                count: 2,
+                reacted_by_me: true,
+                my_reaction_event_id: Some("$reaction:test".to_owned()),
+                sender_preview: vec!["@u:example.test".to_owned()],
+            }],
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: true,
+            can_edit: true,
         };
 
         // InitialItems envelope + payload
@@ -1178,7 +1198,23 @@ mod tests {
                 "sender": "@u:example.test",
                 "body": "hello",
                 "timestamp_ms": 123,
-                "in_reply_to_event_id": null
+                "in_reply_to_event_id": null,
+                "thread_root": null,
+                "thread_summary": null,
+                "can_react": true,
+                "is_redacted": false,
+                "can_redact": true,
+                "is_edited": true,
+                "can_edit": true,
+                "reactions": [
+                    {
+                        "key": "👍",
+                        "count": 2,
+                        "reacted_by_me": true,
+                        "my_reaction_event_id": "$reaction:test",
+                        "sender_preview": ["@u:example.test"]
+                    }
+                ]
             })
         );
 

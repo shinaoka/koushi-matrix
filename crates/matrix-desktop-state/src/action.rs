@@ -101,6 +101,28 @@ pub enum AppAction {
         transaction_id: String,
         message: String,
     },
+    ThreadComposerDraftChanged {
+        room_id: String,
+        root_event_id: String,
+        draft: String,
+    },
+    ThreadReplySubmitted {
+        room_id: String,
+        root_event_id: String,
+        transaction_id: String,
+        body: String,
+    },
+    ThreadReplyFinished {
+        room_id: String,
+        root_event_id: String,
+        transaction_id: String,
+    },
+    ThreadReplyFailed {
+        room_id: String,
+        root_event_id: String,
+        transaction_id: String,
+        message: String,
+    },
     OpenThread {
         room_id: String,
         root_event_id: String,
@@ -110,6 +132,15 @@ pub enum AppAction {
         root_event_id: String,
     },
     CloseThread,
+    OpenFocusedContext {
+        room_id: String,
+        event_id: String,
+    },
+    FocusedContextSubscribed {
+        room_id: String,
+        event_id: String,
+    },
+    CloseFocusedContext,
     SearchEdited {
         query: String,
         scope: SearchScope,

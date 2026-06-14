@@ -363,6 +363,12 @@ impl FakeDesktopBackend {
                 room_id: room_id.clone(),
                 root_event_id: root_event_id.clone(),
             }],
+            AppEffect::OpenFocusedTimeline { room_id, event_id } => {
+                vec![AppAction::FocusedContextSubscribed {
+                    room_id: room_id.clone(),
+                    event_id: event_id.clone(),
+                }]
+            }
             AppEffect::SearchMessages {
                 request_id,
                 query,

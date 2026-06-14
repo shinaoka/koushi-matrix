@@ -242,6 +242,23 @@ describe("desktop release scripts", () => {
     }
   });
 
+  test("headless basic operations docs list the Phase 11 local thread tokens", () => {
+    const docs = readFileSync(
+      new URL("../../../../docs/qa/headless-basic-operations.md", import.meta.url),
+      "utf8"
+    );
+
+    for (const token of [
+      "thread_hidden=ok",
+      "thread_summary=ok",
+      "thread_recv=ok",
+      "thread_paginate=end_reached"
+    ]) {
+      expect(docs).toContain(token);
+    }
+    expect(docs).not.toContain("thread=ok");
+  });
+
   test("package scripts expose the linux GUI smoke runner", () => {
     const packageJson = JSON.parse(
       readFileSync(new URL("../../../../apps/desktop/package.json", import.meta.url), "utf8")

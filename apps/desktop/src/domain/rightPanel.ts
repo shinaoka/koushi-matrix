@@ -4,6 +4,7 @@ import type { DesktopSnapshot } from "./types";
 export type RightPanelMode =
   | "closed"
   | "thread"
+  | "focusedContext"
   | "search"
   | "recovery"
   | "keyboardSettings"
@@ -78,6 +79,13 @@ export function effectiveRightPanelModeForSnapshot(
   const sessionKind = snapshot.state.session.kind;
   if (sessionKind === "needsRecovery" || sessionKind === "recovering") {
     return "recovery";
+  }
+
+  if (
+    requestedMode === "focusedContext" &&
+    snapshot.state.focused_context.kind === "closed"
+  ) {
+    return "closed";
   }
 
   // Thread open/closed is Rust-owned product state: read it from state.thread,

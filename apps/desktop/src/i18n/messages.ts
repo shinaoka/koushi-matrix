@@ -31,6 +31,7 @@ export type MessageId =
   | "dialog.submitCreateSpace"
   | "panel.context"
   | "panel.keyboard"
+  | "panel.focusedContext"
   | "panel.recovery"
   | "panel.roomInfo"
   | "panel.search"
@@ -62,15 +63,30 @@ export type MessageId =
   | "shortcut.sendMessage"
   | "timeline.conversation"
   | "timeline.conversationStart"
+  | "timeline.editedMessage"
   | "timeline.editMessage"
+  | "timeline.editBody"
   | "timeline.loading"
   | "timeline.openingThread"
+  | "timeline.addReaction"
+  | "timeline.reactionSummary"
+  | "timeline.reactionPicker"
+  | "timeline.reactionOption"
   | "timeline.olderMessages"
+  | "timeline.saveEdit"
+  | "timeline.cancelEdit"
   | "timeline.redactMessage"
+  | "timeline.redactedMessage"
   | "timeline.replyToMessage"
   | "timeline.threadComposer"
   | "timeline.threadPlaceholder"
+  | "timeline.threadReplyCountOne"
+  | "timeline.threadReplyCountMany"
   | "timeline.threadRoot"
+  | "timeline.threadSummaryWithBody"
+  | "timeline.threadSummaryWithPreview"
+  | "timeline.threadSummaryWithSender"
+  | "timeline.openThreadSummary"
   | "timeline.viewReplies"
   | "workspace.createSpace"
   | "workspace.rooms"
@@ -115,6 +131,7 @@ const en: Catalog = {
   "dialog.submitCreateSpace": "Submit create space",
   "panel.context": "Context panel",
   "panel.keyboard": "Keyboard",
+  "panel.focusedContext": "Focused context",
   "panel.recovery": "Recovery",
   "panel.roomInfo": "Room info",
   "panel.search": "Search",
@@ -146,15 +163,30 @@ const en: Catalog = {
   "shortcut.sendMessage": "Send message",
   "timeline.conversation": "Conversation timeline",
   "timeline.conversationStart": "Start of conversation",
+  "timeline.editedMessage": "Edited",
   "timeline.editMessage": "Edit message",
+  "timeline.editBody": "Edit message body",
   "timeline.loading": "Loading",
   "timeline.openingThread": "Opening thread",
+  "timeline.addReaction": "Add reaction",
+  "timeline.reactionSummary": "Reaction {key}, count {count}",
+  "timeline.reactionPicker": "Choose reaction",
+  "timeline.reactionOption": "React with {emoji}",
   "timeline.olderMessages": "Older messages",
+  "timeline.saveEdit": "Save edit",
+  "timeline.cancelEdit": "Cancel edit",
   "timeline.redactMessage": "Redact message",
+  "timeline.redactedMessage": "Message redacted",
   "timeline.replyToMessage": "Reply to message",
   "timeline.threadComposer": "Thread composer",
   "timeline.threadPlaceholder": "Reply",
+  "timeline.threadReplyCountOne": "1 reply",
+  "timeline.threadReplyCountMany": "{count} replies",
   "timeline.threadRoot": "Thread root {eventId}",
+  "timeline.threadSummaryWithBody": "{count} · {preview}",
+  "timeline.threadSummaryWithPreview": "{count} · {sender}: {preview}",
+  "timeline.threadSummaryWithSender": "{count} · {sender}",
+  "timeline.openThreadSummary": "Open thread, {summary}",
   "timeline.viewReplies": "View new replies · {count}",
   "workspace.createSpace": "Create space",
   "workspace.rooms": "Rooms",

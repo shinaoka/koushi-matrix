@@ -50,6 +50,7 @@ use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_search::{
     SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
 };
+use matrix_desktop_state::AppAction;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::{SearchCommand, SearchScope};
@@ -61,6 +62,7 @@ use crate::ids::RequestId;
 /// Maximum number of candidates requested from the SDK ngram index.
 /// Verification filters this down; the final result set may be smaller.
 const SEARCH_CANDIDATE_LIMIT: usize = 50;
+const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 
 /// Search index mutation queue capacity (canon, overview.md: 512).
 pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
@@ -208,6 +210,7 @@ pub(crate) struct SearchActor {
     /// the target event id. These are app-owned visible-state identifiers
     /// (never bodies), so retaining them here does not leak secrets.
     indexed_rooms: HashMap<String, String>,
+    action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<SearchActorMessage>,
 }
@@ -216,6 +219,7 @@ impl SearchActor {
     /// Spawn the actor and return its handle.
     pub fn spawn(
         session: Arc<MatrixClientSession>,
+        action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
     ) -> SearchActorHandle {
         let (tx, msg_rx) = mpsc::channel(64);
@@ -225,6 +229,7 @@ impl SearchActor {
             session,
             document_store: SearchDocumentStore::default(),
             indexed_rooms: HashMap::new(),
+            action_tx,
             event_tx,
             msg_rx,
         };
@@ -261,6 +266,7 @@ impl SearchActor {
 
     async fn handle_query(&self, request_id: RequestId, query: &str, scope: SearchScope) {
         if query.trim().is_empty() {
+            self.emit_search_succeeded(request_id, Vec::new()).await;
             self.emit(CoreEvent::Search(SearchEvent::Results {
                 request_id,
                 results: Vec::new(),
@@ -278,6 +284,8 @@ impl SearchActor {
         let candidates = match candidates {
             Ok(c) => c,
             Err(_) => {
+                self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
+                    .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::SearchFailed {
@@ -299,27 +307,55 @@ impl SearchActor {
 
         // Verify each candidate against the document store's canonical text.
         // Candidates that fail verification are silently dropped (Security Model).
-        let results: Vec<SearchResultItem> = candidates
-            .into_iter()
-            .filter_map(|sdk_candidate| {
-                let candidate = SearchCandidate {
-                    room_id: sdk_candidate.room_id.clone(),
-                    event_id: sdk_candidate.event_id.clone(),
-                    score_millis: sdk_candidate.score_millis,
-                };
-                let result = self.document_store.verify_candidate(candidate, query)?;
-                Some(SearchResultItem {
-                    room_id: result.room_id,
-                    event_id: result.event_id,
-                    snippet: result.snippet,
-                })
-            })
-            .collect();
+        let mut projected_results = Vec::new();
+        let mut compact_results = Vec::new();
+        for sdk_candidate in candidates {
+            let candidate = SearchCandidate {
+                room_id: sdk_candidate.room_id.clone(),
+                event_id: sdk_candidate.event_id.clone(),
+                score_millis: sdk_candidate.score_millis,
+            };
+            let Some(result) = self.document_store.verify_candidate(candidate, query) else {
+                continue;
+            };
+            compact_results.push(SearchResultItem {
+                room_id: result.room_id.clone(),
+                event_id: result.event_id.clone(),
+                snippet: result.snippet.clone(),
+            });
+            projected_results.push(result);
+        }
 
+        self.emit_search_succeeded(request_id, projected_results)
+            .await;
         self.emit(CoreEvent::Search(SearchEvent::Results {
             request_id,
-            results,
+            results: compact_results,
         }));
+    }
+
+    async fn emit_search_succeeded(
+        &self,
+        request_id: RequestId,
+        results: Vec<matrix_desktop_state::SearchResult>,
+    ) {
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::SearchSucceeded {
+                request_id: request_id.sequence,
+                results,
+            }])
+            .await;
+    }
+
+    async fn emit_search_failed(&self, request_id: RequestId, message: &str) {
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::SearchFailed {
+                request_id: request_id.sequence,
+                message: message.to_owned(),
+            }])
+            .await;
     }
 
     fn handle_index(&mut self, msg: SearchIndexMessage) {

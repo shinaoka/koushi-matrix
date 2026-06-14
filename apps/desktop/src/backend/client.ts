@@ -94,6 +94,30 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("close_thread");
   }
 
+  async setThreadComposerDraft(
+    roomId: string,
+    rootEventId: string,
+    draft: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_thread_composer_draft", { roomId, rootEventId, draft });
+  }
+
+  async sendThreadReply(
+    roomId: string,
+    rootEventId: string,
+    body: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("send_thread_reply", { roomId, rootEventId, body });
+  }
+
+  async selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("select_search_result", { roomId, eventId });
+  }
+
+  async closeFocusedContext(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("close_focused_context");
+  }
+
   async submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("submit_search", { query, scope });
   }

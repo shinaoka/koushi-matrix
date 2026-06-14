@@ -33,7 +33,14 @@ function makeItem(id: string, body: string) {
     id: { Event: { event_id: id } },
     sender: "@sender:example.invalid",
     body,
-    timestamp_ms: 1_800_000_000_000
+    timestamp_ms: 1_800_000_000_000,
+    in_reply_to_event_id: null,
+    can_react: false,
+    is_redacted: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false,
+    reactions: []
   };
 }
 

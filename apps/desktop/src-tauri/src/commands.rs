@@ -15,8 +15,8 @@ use std::path::PathBuf;
 
 use matrix_desktop_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
-    PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand, SearchScope, SyncCommand,
-    TimelineCommand, TimelineKey, TimelineKind,
+    PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand, SearchScope,
+    SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
 };
 use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest, SessionInfo};
 #[cfg(any(debug_assertions, test))]
@@ -35,6 +35,7 @@ static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(any(debug_assertions, test))]
 const QA_RECOVERY_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const QA_TITLE_ENV: &str = "MATRIX_DESKTOP_QA_TITLE";
+const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 30;
 
 // ---- Core command dispatch helpers ----
 
@@ -464,6 +465,80 @@ pub async fn select_room(
 }
 
 #[tauri::command]
+pub async fn select_search_result(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let selected_room_id = room_id.clone();
+    let mut event_conn = state.runtime.attach();
+
+    let close_request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::CloseFocusedContext {
+            request_id: close_request_id,
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+
+    let select_request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_select_room_command(
+            select_request_id,
+            room_id.clone(),
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_selected_room(
+        &mut event_conn,
+        select_request_id,
+        &selected_room_id,
+        SELECT_ROOM_EVENT_TIMEOUT,
+    )
+    .await?;
+
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let subscribe_request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_subscribe_timeline_command(
+            subscribe_request_id,
+            account_key,
+            selected_room_id,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+
+    let open_request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::OpenFocusedContext {
+            request_id: open_request_id,
+            room_id,
+            event_id,
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn close_focused_context(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::App(AppCommand::CloseFocusedContext { request_id }),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn paginate_timeline_backwards(
     room_id: String,
     app: AppHandle,
@@ -474,6 +549,29 @@ pub async fn paginate_timeline_backwards(
     submit_core_command(
         state.inner(),
         build_paginate_timeline_backwards_command(request_id, account_key, room_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn paginate_thread_timeline_backwards(
+    room_id: String,
+    root_event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_paginate_thread_timeline_backwards_command(
+            request_id,
+            account_key,
+            room_id,
+            root_event_id,
+        ),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -542,6 +640,29 @@ pub async fn redact_message(
         build_redact_message_command(request_id, account_key, room_id, event_id),
     )
     .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn toggle_reaction(
+    room_id: String,
+    event_id: String,
+    reaction_key: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if reaction_key.is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) =
+        build_toggle_reaction_command(request_id, account_key, room_id, event_id, reaction_key)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -776,6 +897,24 @@ pub async fn cancel_composer_reply(
 }
 
 #[tauri::command]
+pub async fn set_thread_composer_draft(
+    room_id: String,
+    root_event_id: String,
+    draft: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_thread_composer_draft_command(request_id, room_id, root_event_id, draft),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn send_reply(
     room_id: String,
     in_reply_to_event_id: String,
@@ -799,6 +938,38 @@ pub async fn send_reply(
         room_id,
         transaction_id,
         in_reply_to_event_id,
+        body,
+    ) {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn send_thread_reply(
+    room_id: String,
+    root_event_id: String,
+    body: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if body.trim().is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let transaction_id = format!(
+        "desktop-{}",
+        NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) = build_send_thread_reply_command(
+        request_id,
+        account_key,
+        room_id,
+        root_event_id,
+        transaction_id,
         body,
     ) {
         submit_core_command(state.inner(), command).await?;
@@ -891,6 +1062,22 @@ pub(crate) fn build_subscribe_timeline_command(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn build_subscribe_focused_timeline_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+) -> CoreCommand {
+    CoreCommand::Timeline(TimelineCommand::Subscribe {
+        request_id,
+        key: TimelineKey {
+            account_key,
+            kind: TimelineKind::Focused { room_id, event_id },
+        },
+    })
+}
+
 pub(crate) fn build_paginate_timeline_backwards_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -900,7 +1087,27 @@ pub(crate) fn build_paginate_timeline_backwards_command(
         request_id,
         key: build_timeline_key(account_key, room_id),
         direction: PaginationDirection::Backward,
-        event_count: 30,
+        event_count: TIMELINE_BACKWARDS_PAGE_EVENT_COUNT,
+    })
+}
+
+pub(crate) fn build_paginate_thread_timeline_backwards_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    root_event_id: String,
+) -> CoreCommand {
+    CoreCommand::Timeline(TimelineCommand::Paginate {
+        request_id,
+        key: TimelineKey {
+            account_key,
+            kind: TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            },
+        },
+        direction: PaginationDirection::Backward,
+        event_count: TIMELINE_BACKWARDS_PAGE_EVENT_COUNT,
     })
 }
 
@@ -951,6 +1158,24 @@ pub(crate) fn build_redact_message_command(
         key: build_timeline_key(account_key, room_id),
         event_id,
     })
+}
+
+pub(crate) fn build_toggle_reaction_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+    reaction_key: String,
+) -> Option<CoreCommand> {
+    if reaction_key.is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::ToggleReaction {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+        reaction_key,
+    }))
 }
 
 pub(crate) fn build_leave_room_command(
@@ -1029,6 +1254,46 @@ pub(crate) fn build_send_reply_command(
         key: build_timeline_key(account_key, room_id),
         transaction_id,
         in_reply_to_event_id,
+        body,
+    }))
+}
+
+pub(crate) fn build_set_thread_composer_draft_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    root_event_id: String,
+    draft: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::SetThreadComposerDraft {
+        request_id,
+        room_id,
+        root_event_id,
+        draft,
+    })
+}
+
+pub(crate) fn build_send_thread_reply_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    root_event_id: String,
+    transaction_id: String,
+    body: String,
+) -> Option<CoreCommand> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SendReply {
+        request_id,
+        key: TimelineKey {
+            account_key,
+            kind: TimelineKind::Thread {
+                room_id,
+                root_event_id: root_event_id.clone(),
+            },
+        },
+        transaction_id,
+        in_reply_to_event_id: root_event_id,
         body,
     }))
 }
@@ -1295,24 +1560,27 @@ async fn read_qa_control_pipe(pipe_path: PathBuf) -> Result<String, String> {
 mod tests {
     use matrix_desktop_core::AccountKey;
     use matrix_desktop_core::{
-        AccountCommand, CoreCommand, PaginationDirection, RoomCommand, SearchCommand, SearchScope,
-        SyncCommand, TimelineCommand,
+        AccountCommand, AppCommand, CoreCommand, PaginationDirection, RoomCommand, SearchCommand,
+        SearchScope, SyncCommand, TimelineCommand,
     };
     use matrix_desktop_state::{AppState, AuthSecret, LoginRequest, SessionInfo, SessionState};
 
+    use super::QaControlCommand;
     use super::SearchScopeKind;
     use super::{
         build_create_room_command, build_create_space_command, build_edit_message_command,
         build_forget_room_command, build_leave_room_command, build_logout_command,
+        build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_redact_message_command,
         build_restart_sync_command, build_select_room_command, build_select_space_command,
-        build_send_reply_command, build_send_text_command, build_set_space_child_command,
+        build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
+        build_set_space_child_command, build_set_thread_composer_draft_command,
         build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
-        build_subscribe_timeline_command, build_switch_account_command,
-        parse_qa_control_pipe_line, parse_qa_login_pipe_payload, qa_recovery_prompt_is_available,
-        qa_window_title_string, resolve_search_scope_from_active_room,
+        build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
+        build_switch_account_command, build_toggle_reaction_command, parse_qa_control_pipe_line,
+        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
+        resolve_search_scope_from_active_room,
     };
-    use super::QaControlCommand;
     use matrix_desktop_state::RoomSummary;
 
     #[test]
@@ -1638,6 +1906,46 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_toggle_reaction_command(
+            fake_request_id(13),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$event".to_owned(),
+            "👍".to_owned(),
+        )
+        .expect("toggle_reaction should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::ToggleReaction {
+                request_id,
+                key,
+                event_id,
+                reaction_key,
+            }) => {
+                assert_eq!(request_id, fake_request_id(13));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$event");
+                assert_eq!(reaction_key, "👍");
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Timeline(TimelineCommand::ToggleReaction {
+                        request_id: fake_request_id(13),
+                        key,
+                        event_id,
+                        reaction_key,
+                    })
+                );
+                assert!(!debug.contains("👍"), "{debug}");
+                assert!(!debug.contains("$event"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_leave_room_command(fake_request_id(13), room_id.clone()) {
             CoreCommand::Room(RoomCommand::LeaveRoom {
                 request_id,
@@ -1675,7 +1983,12 @@ mod tests {
             }) => {
                 assert_eq!(request_id, fake_request_id(15));
                 assert_eq!(route_query, query);
-                assert_eq!(scope, SearchScope::Room { room_id: room_id.clone() });
+                assert_eq!(
+                    scope,
+                    SearchScope::Room {
+                        room_id: room_id.clone()
+                    }
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -1742,11 +2055,66 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room { room_id: room_id.clone() }
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
                 );
                 assert_eq!(transaction_id, "desktop-reply-1");
                 assert_eq!(in_reply_to_event_id, "$root");
                 assert_eq!(body, "reply body");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_send_thread_reply_command(
+            fake_request_id(20),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$root".to_owned(),
+            "desktop-thread-reply-1".to_owned(),
+            "thread reply body".to_owned(),
+        )
+        .expect("send_thread_reply should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::SendReply {
+                request_id,
+                key,
+                transaction_id,
+                in_reply_to_event_id,
+                body,
+            }) => {
+                assert_eq!(request_id, fake_request_id(20));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Thread {
+                        room_id: room_id.clone(),
+                        root_event_id: "$root".to_owned(),
+                    }
+                );
+                assert_eq!(transaction_id, "desktop-thread-reply-1");
+                assert_eq!(in_reply_to_event_id, "$root");
+                assert_eq!(body, "thread reply body");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_thread_composer_draft_command(
+            fake_request_id(21),
+            room_id.clone(),
+            "$root".to_owned(),
+            "thread draft".to_owned(),
+        ) {
+            CoreCommand::App(AppCommand::SetThreadComposerDraft {
+                request_id,
+                room_id: command_room_id,
+                root_event_id,
+                draft,
+            }) => {
+                assert_eq!(request_id, fake_request_id(21));
+                assert_eq!(command_room_id, room_id);
+                assert_eq!(root_event_id, "$root");
+                assert_eq!(draft, "thread draft");
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -1776,6 +2144,90 @@ mod tests {
                 "\n\t ".to_owned(),
             )
             .is_none()
+        );
+        assert!(
+            build_send_thread_reply_command(
+                fake_request_id(16),
+                AccountKey("@alice:example.org".to_owned()),
+                "!room:example.org".to_owned(),
+                "$root".to_owned(),
+                "desktop-16".to_owned(),
+                "\n\t ".to_owned(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn thread_timeline_backwards_pagination_builder_targets_thread_key() {
+        let account_key = AccountKey("@alice:example.org".to_owned());
+        let room_id = "!room:example.org".to_owned();
+        let root_event_id = "$thread-root".to_owned();
+
+        match build_paginate_thread_timeline_backwards_command(
+            fake_request_id(22),
+            account_key.clone(),
+            room_id.clone(),
+            root_event_id.clone(),
+        ) {
+            CoreCommand::Timeline(TimelineCommand::Paginate {
+                request_id,
+                key,
+                direction,
+                event_count,
+            }) => {
+                assert_eq!(request_id, fake_request_id(22));
+                assert_eq!(key.account_key, account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Thread {
+                        room_id,
+                        root_event_id,
+                    }
+                );
+                assert_eq!(direction, PaginationDirection::Backward);
+                assert_eq!(event_count, 30);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thread_timeline_backwards_pagination_contract_is_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        let helper_name = "build_paginate_thread_timeline_backwards_command";
+        let command_name = "pub async fn paginate_thread_timeline_backwards";
+        let registration_name = "commands::paginate_thread_timeline_backwards";
+
+        let helper_offset = commands_source
+            .find(helper_name)
+            .expect("thread pagination builder helper should exist");
+        let helper_source = &commands_source[helper_offset..];
+        let helper_end = helper_source
+            .find("pub(crate) fn build_send_text_command")
+            .expect("thread pagination builder should live before send_text builder");
+        let helper_source = &helper_source[..helper_end];
+
+        assert!(
+            commands_source.contains(command_name),
+            "Tauri command should expose thread pagination"
+        );
+        assert!(
+            lib_source.contains(registration_name),
+            "Tauri command should be registered in generate_handler"
+        );
+        assert!(
+            helper_source.contains("TimelineKind::Thread"),
+            "thread pagination builder should use a thread timeline key"
+        );
+        assert!(
+            helper_source.contains("PaginationDirection::Backward"),
+            "thread pagination builder should request backward pagination"
+        );
+        assert!(
+            helper_source.contains("event_count: TIMELINE_BACKWARDS_PAGE_EVENT_COUNT"),
+            "thread pagination should keep the shared room pagination event count"
         );
     }
 
@@ -1826,6 +2278,128 @@ mod tests {
             select_room_source.contains(timeout_token),
             "selected-room wait should be bounded"
         );
+    }
+
+    #[test]
+    fn select_search_result_submits_room_selection_then_focused_timeline_subscription() {
+        let source = include_str!("commands.rs");
+        let fn_name = "pub async fn select_search_result";
+        let select_token = "select_search_result";
+        let close_token = "CloseFocusedContext";
+        let open_token = "OpenFocusedContext";
+        let select_room_token = concat!("build_select", "_room_command");
+        let subscribe_room_token = "build_subscribe_timeline_command";
+
+        let fn_offset = source
+            .find(fn_name)
+            .expect("select_search_result command should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("pub async fn paginate_timeline_backwards")
+            .expect("next command should exist");
+        let select_source = &rest[..end];
+
+        assert!(
+            select_source.contains(select_token),
+            "select_search_result should name the command path"
+        );
+        assert!(
+            select_source.contains(close_token),
+            "select_search_result should close the previous focused context"
+        );
+        assert!(
+            select_source.contains(open_token),
+            "select_search_result should open the new focused context through AppCommand"
+        );
+        assert!(
+            select_source.contains(select_room_token),
+            "select_search_result should select the room before opening the focused context"
+        );
+        assert!(
+            select_source.contains(subscribe_room_token),
+            "select_search_result should subscribe the selected room timeline before opening focused context"
+        );
+        assert!(
+            select_source.contains("wait_for_selected_room"),
+            "select_search_result should wait for the selected room state"
+        );
+        assert!(
+            select_source.contains("state.runtime.attach"),
+            "select_search_result should attach a fresh core connection"
+        );
+
+        let subscribe_offset = select_source
+            .find(subscribe_room_token)
+            .expect("search result command should subscribe the normal room timeline");
+        let open_offset = select_source
+            .find(open_token)
+            .expect("search result command should open focused context");
+        assert!(
+            subscribe_offset < open_offset,
+            "normal room timeline subscription should happen before focused context open"
+        );
+    }
+
+    #[test]
+    fn close_focused_context_command_routes_to_app_close_focused_context() {
+        let source = include_str!("commands.rs");
+        let fn_name = concat!("pub async fn close", "_focused_context");
+        let command_token = concat!("Close", "FocusedContext");
+        let submit_token = "submit_core_command";
+        let title_token = "update_qa_window_title_from_state";
+        let snapshot_token = "current_snapshot";
+
+        let fn_offset = source
+            .find(fn_name)
+            .expect("close_focused_context command should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("pub async fn paginate_timeline_backwards")
+            .expect("next command should exist");
+        let close_source = &rest[..end];
+
+        assert!(
+            close_source.contains(command_token),
+            "close_focused_context should route through AppCommand::CloseFocusedContext"
+        );
+        assert!(
+            close_source.contains(submit_token),
+            "close_focused_context should submit the core command"
+        );
+        assert!(
+            close_source.contains(title_token),
+            "close_focused_context should refresh the QA title after state changes"
+        );
+        assert!(
+            close_source.contains(snapshot_token),
+            "close_focused_context should return the current snapshot"
+        );
+    }
+
+    #[test]
+    fn build_subscribe_focused_timeline_command_routes_to_focused_timeline_kind() {
+        let account_key = AccountKey("@alice:example.org".to_owned());
+        let command = build_subscribe_focused_timeline_command(
+            fake_request_id(21),
+            account_key.clone(),
+            "!room:example.org".to_owned(),
+            "$event".to_owned(),
+        );
+
+        match command {
+            CoreCommand::Timeline(TimelineCommand::Subscribe { request_id, key }) => {
+                assert_eq!(request_id, fake_request_id(21));
+                assert_eq!(key.account_key, account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Focused {
+                        room_id: "!room:example.org".to_owned(),
+                        event_id: "$event".to_owned(),
+                    }
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

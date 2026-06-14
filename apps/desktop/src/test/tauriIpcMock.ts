@@ -27,6 +27,10 @@ export interface IpcInvocation {
   args: Record<string, any>;
 }
 
+type CommandResponse =
+  | unknown
+  | ((args: Record<string, any>) => unknown | Promise<unknown>);
+
 // ---------------------------------------------------------------------------
 // Mock IPC state
 // ---------------------------------------------------------------------------
@@ -36,8 +40,7 @@ type EventListener = (payload: unknown) => void;
 export class TauriIpcMock {
   private invocations: IpcInvocation[] = [];
   private listeners: Map<string, EventListener[]> = new Map();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private commandResponses: Map<string, any> = new Map();
+  private commandResponses: Map<string, CommandResponse> = new Map();
 
   // ---- Recording ----
 
@@ -55,8 +58,7 @@ export class TauriIpcMock {
 
   // ---- Controlled responses ----
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  setCommandResponse(command: string, response: any): void {
+  setCommandResponse(command: string, response: CommandResponse): void {
     this.commandResponses.set(command, response);
   }
 
@@ -69,7 +71,10 @@ export class TauriIpcMock {
     this.invocations.push({ command, args: safeArgs });
 
     if (this.commandResponses.has(command)) {
-      return Promise.resolve(this.commandResponses.get(command) as T);
+      const response = this.commandResponses.get(command);
+      const resolved =
+        typeof response === "function" ? response(args) : response;
+      return Promise.resolve(resolved as T);
     }
 
     // Default: return a minimal empty snapshot.
@@ -152,6 +157,7 @@ function defaultSnapshotResponse() {
         composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
       },
       thread: { kind: "closed" },
+      focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" }

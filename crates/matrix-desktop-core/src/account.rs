@@ -49,6 +49,7 @@ use crate::timeline::{TimelineManagerHandle, TimelineMessage};
 /// "Credential store healthy, but no stored session for that account"
 /// during restore/switch (canon: `CoreFailure::SessionNotFound`).
 const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::SessionNotFound;
+const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 
 /// Redacted message used in reducer error projections (never raw SDK text).
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
@@ -209,12 +210,28 @@ impl AccountActor {
         };
         match &self.search_actor {
             Some(handle) => {
-                handle.send_command(command).await;
+                if !handle.send_command(command).await {
+                    self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
+                        .await;
+                    self.emit_failure(request_id, CoreFailure::SessionRequired);
+                }
             }
             None => {
+                self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
+                    .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
             }
         }
+    }
+
+    async fn emit_search_failed(&self, request_id: RequestId, message: &str) {
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::SearchFailed {
+                request_id: request_id.sequence,
+                message: message.to_owned(),
+            }])
+            .await;
     }
 
     /// Ordered shutdown of the SearchActor (step 3 of the shutdown sequence,
@@ -274,8 +291,11 @@ impl AccountActor {
         // index (configured in restore_into_store / the client builder). The
         // search actor gets an mpsc::Sender<SearchIndexMessage> which will be
         // forwarded to the TimelineManagerActor below.
-        let search_handle =
-            crate::search::SearchActor::spawn(session.clone(), self.event_tx.clone());
+        let search_handle = crate::search::SearchActor::spawn(
+            session.clone(),
+            self.action_tx.clone(),
+            self.event_tx.clone(),
+        );
         let search_index_tx = search_handle.index_sender();
         self.search_actor = Some(search_handle);
 

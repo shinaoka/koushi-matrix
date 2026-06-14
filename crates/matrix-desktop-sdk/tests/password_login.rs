@@ -14,6 +14,8 @@ use std::{
     thread,
 };
 
+const MATRIX_VERSIONS_RESPONSE: &str = r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"],"unstable_features":{}}"#;
+
 #[test]
 fn room_list_smoke_report_counts_without_private_names() {
     let snapshot = MatrixRoomListSnapshot {
@@ -903,18 +905,18 @@ fn spawn_password_login_server_with_space_sync() -> String {
         .expect("test server should have an address");
 
     thread::spawn(move || {
-        for _ in 0..8 {
+        for _ in 0..16 {
             let (mut stream, _) = listener
                 .accept()
                 .expect("test server should accept a request");
             let request = read_http_request(&mut stream);
 
             if request.starts_with("GET /_matrix/client/versions ") {
-                write_json(
-                    &mut stream,
-                    200,
-                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
-                );
+                write_json(&mut stream, 200, MATRIX_VERSIONS_RESPONSE);
+                continue;
+            }
+
+            if write_common_sdk_bootstrap_response(&mut stream, &request) {
                 continue;
             }
 
@@ -954,18 +956,18 @@ fn spawn_password_login_server_with_joined_and_left_sync() -> String {
         .expect("test server should have an address");
 
     thread::spawn(move || {
-        for _ in 0..8 {
+        for _ in 0..16 {
             let (mut stream, _) = listener
                 .accept()
                 .expect("test server should accept a request");
             let request = read_http_request(&mut stream);
 
             if request.starts_with("GET /_matrix/client/versions ") {
-                write_json(
-                    &mut stream,
-                    200,
-                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
-                );
+                write_json(&mut stream, 200, MATRIX_VERSIONS_RESPONSE);
+                continue;
+            }
+
+            if write_common_sdk_bootstrap_response(&mut stream, &request) {
                 continue;
             }
 
@@ -1012,11 +1014,11 @@ fn spawn_password_login_server_with_send_forbidden() -> String {
             let request = read_http_request(&mut stream);
 
             if request.starts_with("GET /_matrix/client/versions ") {
-                write_json(
-                    &mut stream,
-                    200,
-                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
-                );
+                write_json(&mut stream, 200, MATRIX_VERSIONS_RESPONSE);
+                continue;
+            }
+
+            if write_common_sdk_bootstrap_response(&mut stream, &request) {
                 continue;
             }
 
@@ -1085,11 +1087,11 @@ fn spawn_password_login_server_with_sendable_room_sync() -> String {
             let request = read_http_request(&mut stream);
 
             if request.starts_with("GET /_matrix/client/versions ") {
-                write_json(
-                    &mut stream,
-                    200,
-                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
-                );
+                write_json(&mut stream, 200, MATRIX_VERSIONS_RESPONSE);
+                continue;
+            }
+
+            if write_common_sdk_bootstrap_response(&mut stream, &request) {
                 continue;
             }
 
@@ -1137,18 +1139,18 @@ fn spawn_password_login_server_with_options(
         .expect("test server should have an address");
 
     thread::spawn(move || {
-        for _ in 0..8 {
+        for _ in 0..16 {
             let (mut stream, _) = listener
                 .accept()
                 .expect("test server should accept a request");
             let request = read_http_request(&mut stream);
 
             if request.starts_with("GET /_matrix/client/versions ") {
-                write_json(
-                    &mut stream,
-                    200,
-                    r#"{"versions":["r0.6.0","v1.1","v1.2","v1.3","v1.4","v1.5","v1.6","v1.7"]}"#,
-                );
+                write_json(&mut stream, 200, MATRIX_VERSIONS_RESPONSE);
+                continue;
+            }
+
+            if write_common_sdk_bootstrap_response(&mut stream, &request) {
                 continue;
             }
 
@@ -1243,6 +1245,31 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> String {
     }
 
     String::from_utf8(request).expect("test request should be UTF-8")
+}
+
+fn write_common_sdk_bootstrap_response(stream: &mut std::net::TcpStream, request: &str) -> bool {
+    if request.starts_with("GET /_matrix/client/")
+        && request.contains("/account_data/m.secret_storage.default_key")
+    {
+        write_json(
+            stream,
+            404,
+            r#"{"errcode":"M_NOT_FOUND","error":"No default secret storage key"}"#,
+        );
+        return true;
+    }
+
+    if request.starts_with("POST /_matrix/client/") && request.contains("/keys/upload") {
+        write_json(stream, 200, r#"{"one_time_key_counts":{}}"#);
+        return true;
+    }
+
+    if request.starts_with("POST /_matrix/client/") && request.contains("/keys/query") {
+        write_json(stream, 200, r#"{"device_keys":{},"failures":{}}"#);
+        return true;
+    }
+
+    false
 }
 
 fn space_relationship_sync_response() -> &'static str {

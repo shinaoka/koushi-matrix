@@ -3,7 +3,7 @@
  * Tauri IPC transport, so the headless-Chromium spec
  * (e2e/basic-operations.spec.ts) can prove that the Task 5 UI drives the
  * right Tauri COMMAND NAMES (create_room, create_space,
- * set_composer_reply_target, send_reply).
+ * set_composer_reply_target, send_reply, edit_message).
  *
  * Loaded only by appHarness.html (never part of the production index.html
  * bundle). No Tauri process, no network: everything flows through
@@ -124,6 +124,7 @@ function readySnapshot(
         }
       },
       thread: { kind: "closed" },
+      focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
       basic_operation: basicOperation
@@ -199,19 +200,186 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
 // ---------------------------------------------------------------------------
 
 const mock = new TauriIpcMock();
+let currentSnapshot = readySnapshot();
+
+function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
+  currentSnapshot = next;
+  return currentSnapshot;
+}
 
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
-mock.setCommandResponse("get_snapshot", readySnapshot());
-mock.setCommandResponse("create_room", afterCreateRoomSnapshot());
-mock.setCommandResponse("create_space", afterCreateSpaceSnapshot());
+mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+mock.setCommandResponse("create_room", () => setCurrentSnapshot(afterCreateRoomSnapshot()));
+mock.setCommandResponse("create_space", () => setCurrentSnapshot(afterCreateSpaceSnapshot()));
 // Clicking reply records set_composer_reply_target AND returns a reply-mode
 // snapshot, so the subsequent composer submit dispatches send_reply.
-mock.setCommandResponse("set_composer_reply_target", replyModeSnapshot());
-mock.setCommandResponse("cancel_composer_reply", readySnapshot());
+mock.setCommandResponse("set_composer_reply_target", () =>
+  setCurrentSnapshot(replyModeSnapshot())
+);
+mock.setCommandResponse("cancel_composer_reply", () => setCurrentSnapshot(readySnapshot()));
 // send_reply / send_text return to a Plain composer snapshot.
-mock.setCommandResponse("send_reply", readySnapshot());
-mock.setCommandResponse("send_text", readySnapshot());
+mock.setCommandResponse("send_reply", () => setCurrentSnapshot(readySnapshot()));
+mock.setCommandResponse("send_text", () => setCurrentSnapshot(readySnapshot()));
+mock.setCommandResponse(
+  "open_thread",
+  ({ roomId, rootEventId }: { roomId: string; rootEventId: string }) => {
+    const next: DesktopSnapshot = {
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        thread: {
+          kind: "open",
+          room_id: roomId,
+          root_event_id: rootEventId,
+          is_subscribed: true,
+          composer: {
+            pending_transaction_id: null,
+            draft: "",
+            mode: "Plain"
+          }
+        }
+      },
+      thread: null
+    };
+    return setCurrentSnapshot(next);
+  }
+);
+mock.setCommandResponse(
+  "set_thread_composer_draft",
+  ({ roomId, rootEventId, draft }: { roomId: string; rootEventId: string; draft: string }) => {
+    const thread = currentSnapshot.state.thread;
+    if (
+      thread.kind !== "open" ||
+      thread.room_id !== roomId ||
+      thread.root_event_id !== rootEventId ||
+      !thread.composer
+    ) {
+      return currentSnapshot;
+    }
+    const next: DesktopSnapshot = {
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        thread: {
+          ...thread,
+          composer: {
+            ...thread.composer,
+            draft
+          }
+        }
+      }
+    };
+    return setCurrentSnapshot(next);
+  }
+);
+mock.setCommandResponse(
+  "send_thread_reply",
+  ({ roomId, rootEventId, body }: { roomId: string; rootEventId: string; body: string }) => {
+    const thread = currentSnapshot.state.thread;
+    if (
+      thread.kind !== "open" ||
+      thread.room_id !== roomId ||
+      thread.root_event_id !== rootEventId ||
+      !thread.composer ||
+      thread.composer.pending_transaction_id ||
+      body.trim().length === 0
+    ) {
+      return currentSnapshot;
+    }
+    const next: DesktopSnapshot = {
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        thread: {
+          ...thread,
+          composer: {
+            ...thread.composer,
+            draft: "",
+            pending_transaction_id: null
+          }
+        }
+      }
+    };
+    return setCurrentSnapshot(next);
+  }
+);
+mock.setCommandResponse("close_thread", () => {
+  const next: DesktopSnapshot = {
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      thread: { kind: "closed" }
+    },
+    thread: null
+  };
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("submit_search", ({ query }: { query?: string }) => {
+  const next = readySnapshot();
+  next.state.search = {
+    kind: "results",
+    request_id: 1,
+    query: String(query ?? "Alpha"),
+    scope: "allRooms",
+    results: [
+      {
+        room_id: ROOM_ID,
+        event_id: SEED_EVENT_ID,
+        sender: USER_ID,
+        timestamp_ms: 1_800_000_000_000,
+        score_millis: 950,
+        snippet: "Alpha keyword update from demo coordinator.",
+        match_field: "messageBody",
+        highlights: [{ start_utf16: 0, end_utf16: 5 }],
+        match_kind: "exact"
+      }
+    ]
+  };
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse(
+  "select_search_result",
+  ({ roomId, eventId }: { roomId: string; eventId: string }) => {
+    const next: DesktopSnapshot = {
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        navigation: {
+          ...currentSnapshot.state.navigation,
+          active_room_id: roomId
+        },
+        timeline: {
+          ...currentSnapshot.state.timeline,
+          room_id: roomId,
+          is_subscribed: true
+        },
+        thread: { kind: "closed" },
+        focused_context: {
+          kind: "opening",
+          room_id: roomId,
+          event_id: eventId
+        }
+      }
+    };
+    return setCurrentSnapshot(next);
+  }
+);
+mock.setCommandResponse("close_focused_context", () => {
+  const next: DesktopSnapshot = {
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      focused_context: { kind: "closed" }
+    }
+  };
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("toggle_reaction", () => currentSnapshot);
+mock.setCommandResponse("edit_message", () => currentSnapshot);
+mock.setCommandResponse("redact_message", () => currentSnapshot);
+mock.setCommandResponse("paginate_timeline_backwards", () => currentSnapshot);
+mock.setCommandResponse("paginate_thread_timeline_backwards", () => currentSnapshot);
 
 // Route ALL Tauri IPC through the recording mock. Plugin commands
 // (window setTitle/setBadge, notifications, etc.) must NOT throw: they are
@@ -262,10 +430,31 @@ async function boot() {
   // "Reply to message" action renders.
   const seedItem: TimelineItem = {
     id: { Event: { event_id: SEED_EVENT_ID } },
-    sender: "@other-user:example.invalid",
+    sender: USER_ID,
     body: "Seed message for reply target",
     timestamp_ms: 1_800_000_000_000,
-    in_reply_to_event_id: null
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: {
+      reply_count: 2,
+      latest_sender: "@thread-user:example.invalid",
+      latest_body_preview: "Thread panel reply from keyed event stream",
+      latest_timestamp_ms: 1_800_000_000_200
+    },
+    can_react: true,
+    is_redacted: false,
+    can_redact: true,
+    is_edited: false,
+    can_edit: true,
+    reactions: [
+      {
+        key: "👍",
+        count: 1,
+        reacted_by_me: false,
+        my_reaction_event_id: null,
+        sender_preview: ["@other-user:example.invalid"]
+      }
+    ]
   };
   const payload: CoreEventPayload = {
     kind: "Timeline",

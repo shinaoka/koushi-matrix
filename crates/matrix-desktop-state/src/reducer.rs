@@ -3,8 +3,8 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppError, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
-        E2eeRecoveryState, NavigationState, PendingComposerSendKind, SearchState, SessionState,
-        SyncState, ThreadPaneState, TimelinePaneState,
+        E2eeRecoveryState, FocusedContextState, NavigationState, PendingComposerSendKind,
+        SearchState, SessionState, SyncState, ThreadPaneState, TimelinePaneState,
     },
 };
 
@@ -380,6 +380,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 composer: Default::default(),
             };
             state.thread = ThreadPaneState::Closed;
+            state.focused_context = FocusedContextState::Closed;
             let mut effects = vec![
                 AppEffect::SubscribeTimeline {
                     room_id: room_id.clone(),
@@ -542,6 +543,121 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
         }
+        AppAction::ThreadComposerDraftChanged {
+            room_id,
+            root_event_id,
+            draft,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            match &mut state.thread {
+                ThreadPaneState::Open {
+                    room_id: open_room_id,
+                    root_event_id: open_root_event_id,
+                    composer,
+                    ..
+                } if open_room_id == &room_id && open_root_event_id == &root_event_id => {
+                    composer.draft = draft;
+                    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+                }
+                _ => Vec::new(),
+            }
+        }
+        AppAction::ThreadReplySubmitted {
+            room_id,
+            root_event_id,
+            transaction_id,
+            body: _body,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            match &mut state.thread {
+                ThreadPaneState::Open {
+                    room_id: open_room_id,
+                    root_event_id: open_root_event_id,
+                    composer,
+                    ..
+                } if open_room_id == &room_id
+                    && open_root_event_id == &root_event_id
+                    && composer.pending_transaction_id.is_none() =>
+                {
+                    composer.pending_transaction_id = Some(transaction_id);
+                    composer.pending_send_kind = Some(PendingComposerSendKind::Reply {
+                        in_reply_to_event_id: root_event_id,
+                    });
+                    composer.draft.clear();
+                    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+                }
+                _ => Vec::new(),
+            }
+        }
+        AppAction::ThreadReplyFinished {
+            room_id,
+            root_event_id,
+            transaction_id,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            match &mut state.thread {
+                ThreadPaneState::Open {
+                    room_id: open_room_id,
+                    root_event_id: open_root_event_id,
+                    composer,
+                    ..
+                } if open_room_id == &room_id
+                    && open_root_event_id == &root_event_id
+                    && composer.pending_transaction_id.as_deref()
+                        == Some(transaction_id.as_str()) =>
+                {
+                    composer.pending_transaction_id = None;
+                    composer.pending_send_kind = None;
+                    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+                }
+                _ => Vec::new(),
+            }
+        }
+        AppAction::ThreadReplyFailed {
+            room_id,
+            root_event_id,
+            transaction_id,
+            message,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            match &mut state.thread {
+                ThreadPaneState::Open {
+                    room_id: open_room_id,
+                    root_event_id: open_root_event_id,
+                    composer,
+                    ..
+                } if open_room_id == &room_id
+                    && open_root_event_id == &root_event_id
+                    && composer.pending_transaction_id.as_deref()
+                        == Some(transaction_id.as_str()) =>
+                {
+                    composer.pending_transaction_id = None;
+                    composer.pending_send_kind = None;
+                    state.errors.push(AppError {
+                        code: "send_text_failed".to_owned(),
+                        message,
+                        recoverable: true,
+                    });
+                    vec![
+                        AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+                        AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+                    ]
+                }
+                _ => Vec::new(),
+            }
+        }
         AppAction::OpenThread {
             room_id,
             root_event_id,
@@ -595,6 +711,47 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             state.thread = ThreadPaneState::Closed;
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+        }
+        AppAction::OpenFocusedContext { room_id, event_id } => {
+            if !is_session_ready(state)
+                || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+            {
+                return Vec::new();
+            }
+
+            state.focused_context = FocusedContextState::Opening {
+                room_id: room_id.clone(),
+                event_id: event_id.clone(),
+            };
+            vec![AppEffect::OpenFocusedTimeline { room_id, event_id }]
+        }
+        AppAction::FocusedContextSubscribed { room_id, event_id } => {
+            if !is_session_ready(state)
+                || !matches!(
+                    &state.focused_context,
+                    FocusedContextState::Opening {
+                        room_id: opening_room_id,
+                        event_id: opening_event_id,
+                    } if opening_room_id == &room_id && opening_event_id == &event_id
+                )
+            {
+                return Vec::new();
+            }
+
+            state.focused_context = FocusedContextState::Open {
+                room_id,
+                event_id,
+                is_subscribed: true,
+            };
+            Vec::new()
+        }
+        AppAction::CloseFocusedContext => {
+            if !is_session_ready(state) || state.focused_context == FocusedContextState::Closed {
+                return Vec::new();
+            }
+
+            state.focused_context = FocusedContextState::Closed;
+            Vec::new()
         }
         AppAction::SearchEdited { query, scope } => {
             if !is_session_ready(state) {
@@ -909,6 +1066,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.rooms.clear();
     state.timeline = Default::default();
     state.thread = ThreadPaneState::Closed;
+    state.focused_context = FocusedContextState::Closed;
     state.search = SearchState::Closed;
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];

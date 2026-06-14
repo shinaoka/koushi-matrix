@@ -762,6 +762,19 @@ button {
   min-width: 0;
 }
 
+.message-edited {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: #7d5c18;
+  background: #fff1c7;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
 .message-actions {
   display: inline-flex;
   gap: 2px;
@@ -785,6 +798,44 @@ button {
 }
 
 .message-action:hover {
+  color: #ffffff;
+  background: var(--brand);
+}
+
+.reaction-control {
+  position: relative;
+  display: inline-flex;
+}
+
+.reaction-picker {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  min-width: 164px;
+  padding: 6px;
+  border: 1px solid #d8d1dc;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 16px 32px rgb(25 17 31 / 18%);
+}
+
+.reaction-picker-option {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: #4e3b57;
+  background: #f8f3f9;
+  font-size: 15px;
+}
+
+.reaction-picker-option:hover,
+.reaction-picker-option:focus-visible {
   color: #ffffff;
   background: var(--brand);
 }
@@ -861,6 +912,156 @@ button {
   margin-top: 3px;
   color: #2d2931;
   line-height: 1.48;
+}
+
+.message-edit-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.message-edit-body {
+  width: 100%;
+  min-height: 88px;
+  padding: 8px 10px;
+  border: 1px solid #d9d1df;
+  border-radius: 6px;
+  color: #2d2931;
+  background: #ffffff;
+  line-height: 1.45;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.message-edit-body:focus {
+  outline: 0;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px rgb(136 75 179 / 18%);
+}
+
+.message-edit-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.message-edit-button {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: #ffffff;
+  background: var(--brand);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.message-edit-button:hover,
+.message-edit-button:focus-visible {
+  background: #6a3590;
+}
+
+.message-edit-button[type="button"] {
+  color: #4e3b57;
+  background: #f4ecf6;
+}
+
+.message-edit-button[type="button"]:hover,
+.message-edit-button[type="button"]:focus-visible {
+  color: #ffffff;
+  background: #7e5a8f;
+}
+
+.message-redacted {
+  display: inline-flex;
+  margin-top: 3px;
+  color: #7a7280;
+  font-style: italic;
+}
+
+.message-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.reaction-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid #d9d1df;
+  border-radius: 999px;
+  color: #4e3b57;
+  background: #f8f3f9;
+  appearance: none;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.reaction-pill[data-reacted-by-me="true"] {
+  border-color: var(--brand);
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.reaction-pill:hover {
+  background: #f0e7f4;
+}
+
+.reaction-pill:focus-visible {
+  outline: 2px solid var(--brand-2);
+  outline-offset: 2px;
+}
+
+.reaction-pill-key {
+  min-width: 0;
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reaction-pill-count {
+  color: var(--brand);
+  font-variant-numeric: tabular-nums;
+}
+
+.thread-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(100%, 28rem);
+  min-height: 28px;
+  margin-top: 8px;
+  padding: 0 10px;
+  border: 1px solid #d8e0d2;
+  border-radius: 999px;
+  color: #285047;
+  background: #f1f7f2;
+  appearance: none;
+  font-size: 12px;
+  font-weight: 760;
+  text-align: left;
+}
+
+.thread-summary-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-summary-chip:hover {
+  background: #e5f0e7;
+}
+
+.thread-summary-chip:focus-visible {
+  outline: 2px solid var(--brand-2);
+  outline-offset: 2px;
 }
 
 .reply-link {
@@ -1095,15 +1296,31 @@ mark {
 }
 
 .thread-composer {
+  display: grid;
+  gap: 8px;
   margin: 0 16px 16px;
   border: 1px solid #e2d6c1;
   border-radius: 8px;
   background: #ffffff;
+  padding: 10px;
 }
 
 .thread-composer textarea {
   height: 78px;
-  padding: 12px;
+  min-width: 0;
+  padding: 2px;
+  border: 0;
+  resize: vertical;
+}
+
+.thread-composer textarea:disabled {
+  color: var(--muted);
+  background: transparent;
+}
+
+.thread-composer-footer {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .settings-panel {

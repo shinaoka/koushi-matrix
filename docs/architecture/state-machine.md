@@ -8,7 +8,7 @@ fixture/demo backend contract mentioned below is historical (dev/demo only).
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-06-11
+Date: 2026-06-14
 
 ## Contract
 
@@ -115,6 +115,82 @@ search state. The reducer emits UI events for any cleared visible panes.
   thread items are not stored in `AppState`; they flow as `TimelineEvent`
   batches/diffs keyed by the thread `TimelineKey`. Legacy top-level frontend
   placeholders such as `snapshot.thread` are not authoritative in production.
+- The open thread pane owns its own Rust `ComposerState`. The thread composer
+  sends by routing `TimelineCommand::SendReply` to
+  `TimelineKind::Thread { room_id, root_event_id }`, with
+  `in_reply_to_event_id == root_event_id`. Focused timelines do not own
+  composer state.
+
+## Focused Context
+
+A focused context is the Rust-owned result-context timeline used when the
+product opens a specific event from search or another contextual entry point.
+It is separate from the selected room timeline and from the thread pane.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Opening: OpenFocusedContext
+    Opening --> Opening: OpenFocusedContext [replacement]
+    Open --> Opening: OpenFocusedContext [replacement]
+    Opening --> Open: FocusedContextSubscribed
+    Opening --> Closed: CloseFocusedContext
+    Open --> Closed: CloseFocusedContext
+```
+
+- `OpenFocusedContext { room_id, event_id }` is accepted only for a ready session
+  whose selected timeline room equals `room_id`; otherwise it is ignored. The
+  selected timeline room guard prevents search/result UI from owning Matrix
+  operation semantics.
+- On accepted open, the reducer enters `Opening` and emits
+  `OpenFocusedTimeline { room_id, event_id }`. Production runtime subscribes
+  `TimelineKind::Focused { room_id, event_id }` through that effect.
+- `FocusedContextSubscribed { room_id, event_id }` moves `Opening` to `Open`
+  only when both fields match the currently opening context; stale subscription signals are ignored.
+- `CloseFocusedContext` closes an `Opening` or `Open` context for a ready
+  session. close from `Closed`, or any close without a ready session, is a no-op.
+- Focused context replacement is core-owned: when opening a different focused
+  context while another focused context is `Opening` or `Open`, production
+  runtime unsubscribes the previous focused timeline before subscribing the new
+  key. Reopening the same focused key is idempotent as far as runtime
+  subscription ownership allows.
+- focused timelines do not own composer/send state. The selected room composer
+  and the thread composer are separate Rust state machines; focused timelines do
+  not submit sends, clear drafts, repair reply mode, or settle pending
+  transactions.
+
+## Thread Composer Reply Mode
+
+The open thread pane's composer tracks draft and pending reply state separately
+from the selected room's main composer:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Editing: ThreadComposerDraftChanged [matching open thread]
+    Editing --> Editing: ThreadComposerDraftChanged [matching open thread]
+    Idle --> Pending: ThreadReplySubmitted [matching open thread]
+    Editing --> Pending: ThreadReplySubmitted [matching open thread]
+    Pending --> Idle: ThreadReplyFinished [matching transaction]
+    Pending --> Idle: ThreadReplyFailed [matching transaction]
+```
+
+- `ThreadComposerDraftChanged { room_id, root_event_id, draft }` applies only
+  when a ready session has that exact thread open. Stale room/root signals and
+  closed/opening thread states are ignored.
+- `ThreadReplySubmitted { room_id, root_event_id, transaction_id, body }`
+  applies only when a ready session has that exact thread open and the thread
+  composer has no pending transaction. It records the pending transaction as a
+  reply to `root_event_id`, clears the thread draft, and emits `ThreadChanged`.
+  It does not mutate the selected room's main composer.
+- `ThreadReplyFinished { room_id, root_event_id, transaction_id }` clears only
+  the matching thread composer pending transaction and emits `ThreadChanged`.
+  Stale room/root/transaction signals are ignored.
+- `ThreadReplyFailed { room_id, root_event_id, transaction_id, message }`
+  clears only the matching thread composer pending transaction, records the same
+  recoverable `send_text_failed` error pattern as main composer failures, and
+  emits `ThreadChanged` plus `ErrorChanged`. Stale room/root/transaction signals
+  are ignored.
 
 ## Composer Reply Mode
 

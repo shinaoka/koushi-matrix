@@ -22,6 +22,7 @@ export interface AppState {
   rooms: RoomSummary[];
   timeline: TimelinePaneState;
   thread: ThreadPaneState;
+  focused_context: FocusedContextState;
   search: SearchState;
   errors: AppError[];
   basic_operation: BasicOperationState;
@@ -119,6 +120,16 @@ export interface ThreadPaneState {
   is_subscribed?: boolean;
   composer?: ComposerState;
 }
+
+export type FocusedContextState =
+  | { kind: "closed" }
+  | { kind: "opening"; room_id: string; event_id: string }
+  | {
+      kind: "open";
+      room_id: string;
+      event_id: string;
+      is_subscribed: boolean;
+    };
 
 export type SearchState =
   | { kind: "closed" }

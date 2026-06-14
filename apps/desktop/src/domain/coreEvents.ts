@@ -74,12 +74,35 @@ export type TimelineItemId =
   | { Transaction: { transaction_id: string } }
   | { Synthetic: { synthetic_id: string } };
 
+export interface ReactionGroup {
+  key: string;
+  count: number;
+  reacted_by_me: boolean;
+  my_reaction_event_id: string | null;
+  sender_preview: string[];
+}
+
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
   body: string | null;
   timestamp_ms: number | null;
   in_reply_to_event_id: string | null;
+  thread_root: string | null;
+  thread_summary: ThreadSummaryDto | null;
+  reactions: ReactionGroup[];
+  can_react: boolean;
+  is_redacted: boolean;
+  can_redact: boolean;
+  is_edited: boolean;
+  can_edit: boolean;
+}
+
+export interface ThreadSummaryDto {
+  reply_count: number;
+  latest_sender: string | null;
+  latest_body_preview: string | null;
+  latest_timestamp_ms: number | null;
 }
 
 /** Stable string id usable as a React key and a `data-item-id` DOM hook. */
@@ -263,4 +286,26 @@ export function timelineKeyEquals(a: TimelineKey, b: TimelineKey): boolean {
 
 export function roomTimelineKey(accountKey: string, roomId: string): TimelineKey {
   return { account_key: accountKey, kind: { Room: { room_id: roomId } } };
+}
+
+export function focusedTimelineKey(
+  accountKey: string,
+  roomId: string,
+  eventId: string
+): TimelineKey {
+  return {
+    account_key: accountKey,
+    kind: { Focused: { room_id: roomId, event_id: eventId } }
+  };
+}
+
+export function threadTimelineKey(
+  accountKey: string,
+  roomId: string,
+  rootEventId: string
+): TimelineKey {
+  return {
+    account_key: accountKey,
+    kind: { Thread: { room_id: roomId, root_event_id: rootEventId } }
+  };
 }

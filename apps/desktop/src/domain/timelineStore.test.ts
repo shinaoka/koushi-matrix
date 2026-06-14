@@ -48,7 +48,23 @@ function makeMsg(id: string, body: string): TimelineItem {
     sender: "@sender:example.invalid",
     body,
     timestamp_ms: 1_800_000_000_000,
-    in_reply_to_event_id: null
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    can_react: true,
+    is_redacted: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false,
+    reactions: [
+      {
+        key: "👍",
+        count: 1,
+        reacted_by_me: false,
+        my_reaction_event_id: null,
+        sender_preview: ["@alice:example.invalid"]
+      }
+    ]
   };
 }
 
@@ -58,7 +74,15 @@ function makeLocalEcho(txnId: string, body: string): TimelineItem {
     sender: "@qa-user:example.invalid",
     body,
     timestamp_ms: 1_820_000_000_000,
-    in_reply_to_event_id: null
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    can_react: false,
+    is_redacted: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false,
+    reactions: []
   };
 }
 
@@ -131,6 +155,59 @@ describe("timeline store — diff application", () => {
     expect(itemId(items[0])).toBe("$a");
     expect(items[0].body).toBe("edited body");
     expect(itemId(items[1])).toBe("$b");
+  });
+
+  test("reaction groups survive InitialItems and Set diff application", () => {
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [makeMsg("$a", "hello")]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 2,
+        diffs: [
+          {
+            Set: {
+              index: 0,
+              item: {
+                ...makeMsg("$a", "edited body"),
+                reactions: [
+                  {
+                    key: "🔥",
+                    count: 3,
+                    reacted_by_me: true,
+                    my_reaction_event_id: "$reaction:test",
+                    sender_preview: ["@alice:example.invalid", "@bob:example.invalid"]
+                  }
+                ],
+                can_react: true,
+                is_redacted: false,
+                can_redact: false,
+                is_edited: true,
+                can_edit: false
+              }
+            }
+          }
+        ]
+      }
+    });
+
+    const items = getItems(store, KEY);
+    expect(items[0].reactions).toHaveLength(1);
+    expect(items[0].reactions[0]).toEqual({
+      key: "🔥",
+      count: 3,
+      reacted_by_me: true,
+      my_reaction_event_id: "$reaction:test",
+      sender_preview: ["@alice:example.invalid", "@bob:example.invalid"]
+    });
   });
 
   test("Remove diff removes an item by index", () => {
