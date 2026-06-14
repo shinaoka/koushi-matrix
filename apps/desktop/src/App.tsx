@@ -657,6 +657,38 @@ export function App() {
     setSnapshot(await api.updateSettings(patch));
   }
 
+  async function bootstrapCrossSigning() {
+    setSnapshot(await api.bootstrapCrossSigning());
+  }
+
+  async function enableKeyBackup() {
+    setSnapshot(await api.enableKeyBackup());
+  }
+
+  async function acceptVerification(flowId: number) {
+    setSnapshot(await api.acceptVerification(flowId));
+  }
+
+  async function confirmSasVerification(flowId: number) {
+    setSnapshot(await api.confirmSasVerification(flowId));
+  }
+
+  async function cancelVerification(flowId: number) {
+    setSnapshot(await api.cancelVerification(flowId));
+  }
+
+  async function resetIdentity() {
+    setSnapshot(await api.resetIdentity());
+  }
+
+  async function submitIdentityResetPassword(flowId: number, password: string) {
+    setSnapshot(await api.submitIdentityResetPassword(flowId, password));
+  }
+
+  async function submitIdentityResetOAuth(flowId: number) {
+    setSnapshot(await api.submitIdentityResetOAuth(flowId));
+  }
+
   const resolveComposerKeyAction: ResolveComposerKeyAction = (
     surface,
     keyEvent,
@@ -1072,6 +1104,30 @@ export function App() {
             void sendThreadReply(roomId, rootEventId, body);
           }}
           onResolveComposerKeyAction={resolveComposerKeyAction}
+          onAcceptVerification={(flowId) => {
+            void acceptVerification(flowId);
+          }}
+          onBootstrapCrossSigning={() => {
+            void bootstrapCrossSigning();
+          }}
+          onCancelVerification={(flowId) => {
+            void cancelVerification(flowId);
+          }}
+          onConfirmSasVerification={(flowId) => {
+            void confirmSasVerification(flowId);
+          }}
+          onEnableKeyBackup={() => {
+            void enableKeyBackup();
+          }}
+          onResetIdentity={() => {
+            void resetIdentity();
+          }}
+          onSubmitIdentityResetOAuth={(flowId) => {
+            void submitIdentityResetOAuth(flowId);
+          }}
+          onSubmitIdentityResetPassword={(flowId, password) => {
+            void submitIdentityResetPassword(flowId, password);
+          }}
           onUpdateSettings={(patch) => {
             void updateSettings(patch);
           }}
@@ -1568,7 +1624,7 @@ export function TopBar({
         <button
           className="icon-button"
           type="button"
-          aria-label={t("settings.keyboard")}
+          aria-label={t("shortcut.showKeyboardSettings")}
           onClick={onOpenKeyboardSettings}
         >
           <HelpCircle size={18} />
@@ -2202,7 +2258,15 @@ export function ContextualRightPanel({
   onResultSelect,
   onSubmitRecovery,
   onSwitchAccount,
+  onAcceptVerification,
+  onBootstrapCrossSigning,
+  onCancelVerification,
+  onConfirmSasVerification,
+  onEnableKeyBackup,
+  onResetIdentity,
   onResolveComposerKeyAction = ignoreComposerKeyAction,
+  onSubmitIdentityResetOAuth,
+  onSubmitIdentityResetPassword,
   onUpdateSettings = () => undefined,
   onThreadComposerDraftChange,
   onThreadReplySend
@@ -2227,7 +2291,15 @@ export function ContextualRightPanel({
   onResultSelect: (roomId: string, eventId: string) => void;
   onSubmitRecovery: (event: FormEvent<HTMLFormElement>) => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
+  onAcceptVerification: (flowId: number) => void;
+  onBootstrapCrossSigning: () => void;
+  onCancelVerification: (flowId: number) => void;
+  onConfirmSasVerification: (flowId: number) => void;
+  onEnableKeyBackup: () => void;
+  onResetIdentity: () => void;
   onResolveComposerKeyAction?: ResolveComposerKeyAction;
+  onSubmitIdentityResetOAuth: (flowId: number) => void;
+  onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onUpdateSettings?: (patch: SettingsPatch) => void;
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
   onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
@@ -2271,9 +2343,18 @@ export function ContextualRightPanel({
         <PanelHeader title={t("panel.userSettings")} onClose={onClosePanel} />
         <UserSettingsPanel
           currentSession={currentSavedSession(snapshot)}
+          e2eeTrust={snapshot.state.e2ee_trust}
           savedSessions={savedSessions}
           settings={snapshot.state.settings}
+          onAcceptVerification={onAcceptVerification}
+          onBootstrapCrossSigning={onBootstrapCrossSigning}
+          onCancelVerification={onCancelVerification}
+          onConfirmSasVerification={onConfirmSasVerification}
+          onEnableKeyBackup={onEnableKeyBackup}
           onOpenKeyboardSettings={onOpenKeyboardSettings}
+          onResetIdentity={onResetIdentity}
+          onSubmitIdentityResetOAuth={onSubmitIdentityResetOAuth}
+          onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
           onUpdateSettings={onUpdateSettings}
           onSwitchAccount={onSwitchAccount}
         />

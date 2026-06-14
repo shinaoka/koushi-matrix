@@ -30,6 +30,14 @@ export interface DesktopApi {
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
   updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
+  bootstrapCrossSigning(): Promise<DesktopSnapshot>;
+  enableKeyBackup(): Promise<DesktopSnapshot>;
+  acceptVerification(flowId: number): Promise<DesktopSnapshot>;
+  confirmSasVerification(flowId: number): Promise<DesktopSnapshot>;
+  cancelVerification(flowId: number): Promise<DesktopSnapshot>;
+  resetIdentity(): Promise<DesktopSnapshot>;
+  submitIdentityResetPassword(flowId: number, password: string): Promise<DesktopSnapshot>;
+  submitIdentityResetOAuth(flowId: number): Promise<DesktopSnapshot>;
   resolveComposerKeyAction(
     surface: ComposerSurface,
     keyEvent: ComposerKeyEvent,
@@ -69,6 +77,7 @@ export function createBrowserFakeApi(options: BrowserFakeApiOptions = {}): Deskt
 
 class BrowserFakeApi implements DesktopApi {
   private snapshot: DesktopSnapshot;
+  private requestSequence = 1_000;
 
   constructor(options: BrowserFakeApiOptions) {
     this.snapshot = createInitialSnapshot(initialSession(options));
@@ -206,6 +215,112 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.settings.values.locale
     );
     this.snapshot.state.settings.persistence = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async bootstrapCrossSigning(): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.e2ee_trust.cross_signing = { kind: "trusted" };
+    return this.getSnapshot();
+  }
+
+  async enableKeyBackup(): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.e2ee_trust.key_backup = {
+      kind: "enabled",
+      version: "browser-preview"
+    };
+    return this.getSnapshot();
+  }
+
+  async acceptVerification(flowId: number): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    const verification = this.snapshot.state.e2ee_trust.verification;
+    if (verification.kind === "requested" && verification.request_id === flowId) {
+      this.snapshot.state.e2ee_trust.verification = {
+        kind: "accepted",
+        request_id: flowId,
+        target: verification.target
+      };
+    }
+    return this.getSnapshot();
+  }
+
+  async confirmSasVerification(flowId: number): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    const verification = this.snapshot.state.e2ee_trust.verification;
+    if (
+      (verification.kind === "sasPresented" || verification.kind === "confirming") &&
+      verification.request_id === flowId
+    ) {
+      this.snapshot.state.e2ee_trust.verification = {
+        kind: "done",
+        request_id: flowId,
+        target: verification.target
+      };
+    }
+    return this.getSnapshot();
+  }
+
+  async cancelVerification(flowId: number): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    const verification = this.snapshot.state.e2ee_trust.verification;
+    if (verification.kind !== "idle" && verification.request_id === flowId) {
+      this.snapshot.state.e2ee_trust.verification = { kind: "idle" };
+    }
+    return this.getSnapshot();
+  }
+
+  async resetIdentity(): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.e2ee_trust.identity_reset = {
+      kind: "awaitingAuth",
+      request_id: this.nextRequestId(),
+      auth_type: "uiaa"
+    };
+    return this.getSnapshot();
+  }
+
+  async submitIdentityResetPassword(flowId: number, password: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    void password;
+    const identityReset = this.snapshot.state.e2ee_trust.identity_reset;
+    if (identityReset.kind === "awaitingAuth" && identityReset.request_id === flowId) {
+      this.completeIdentityReset();
+    }
+    return this.getSnapshot();
+  }
+
+  async submitIdentityResetOAuth(flowId: number): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    const identityReset = this.snapshot.state.e2ee_trust.identity_reset;
+    if (identityReset.kind === "awaitingAuth" && identityReset.request_id === flowId) {
+      this.completeIdentityReset();
+    }
     return this.getSnapshot();
   }
 
@@ -587,6 +702,24 @@ class BrowserFakeApi implements DesktopApi {
       sync === "stopped" ||
       sync === "starting" ||
       (typeof sync === "object" && ("failed" in sync || "reconnecting" in sync))
+    );
+  }
+
+  private nextRequestId(): number {
+    const requestId = this.requestSequence;
+    this.requestSequence += 1;
+    return requestId;
+  }
+
+  private completeIdentityReset() {
+    this.snapshot.state.e2ee_trust.identity_reset = { kind: "idle" };
+    this.snapshot.state.e2ee_trust.cross_signing = { kind: "missing" };
+    this.snapshot.state.e2ee_trust.key_backup = { kind: "disabled" };
+    this.snapshot.state.e2ee_trust.devices = this.snapshot.state.e2ee_trust.devices.map(
+      (device) => ({
+        ...device,
+        trust_level: "unverified"
+      })
     );
   }
 

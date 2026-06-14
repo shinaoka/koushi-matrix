@@ -31,6 +31,7 @@ import type {
   ComposerMode,
   ComposerSurface,
   DesktopSnapshot,
+  E2eeTrustState,
   LocaleDisplayProfile,
   LocaleSettings,
   SettingsPatch
@@ -62,8 +63,11 @@ interface AppHarnessControl {
   clearInvocations(): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   setCommandResponse(command: string, response: any): void;
+  setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
   pushStateChanged(): void;
+  currentSnapshot(): DesktopSnapshot;
+  e2eeTrustSnapshot(): DesktopSnapshot;
   replyModeSnapshot(): DesktopSnapshot;
 }
 
@@ -78,6 +82,7 @@ function readySnapshot(
   overrides: {
     composerMode?: ComposerMode;
     basicOperation?: DesktopSnapshot["state"]["basic_operation"];
+    e2eeTrust?: E2eeTrustState;
     extraSpaces?: DesktopSnapshot["state"]["spaces"];
     extraRailItems?: DesktopSnapshot["sidebar"]["space_rail"];
   } = {}
@@ -139,7 +144,7 @@ function readySnapshot(
       search: { kind: "closed" },
       errors: [],
       basic_operation: basicOperation,
-      e2ee_trust: defaultE2eeTrustState()
+      e2ee_trust: overrides.e2eeTrust ?? defaultE2eeTrustState()
     },
     sidebar: {
       active_space_id: null,
@@ -310,6 +315,38 @@ function replyModeSnapshot(): DesktopSnapshot {
   });
 }
 
+function e2eeTrustFixture(): E2eeTrustState {
+  return {
+    verification: {
+      kind: "requested",
+      request_id: 9_001,
+      target: {
+        user_id: "redacted-trust-target",
+        device_id: "TRUSTDEVICE"
+      }
+    },
+    cross_signing: { kind: "missing" },
+    key_backup: { kind: "disabled" },
+    identity_reset: { kind: "idle" },
+    devices: [
+      {
+        user_id: USER_ID,
+        device_id: DEVICE_ID,
+        trust_level: "verified"
+      },
+      {
+        user_id: "redacted-trust-target",
+        device_id: "TRUSTDEVICE",
+        trust_level: "unverified"
+      }
+    ]
+  };
+}
+
+function e2eeTrustSnapshot(): DesktopSnapshot {
+  return readySnapshot({ e2eeTrust: e2eeTrustFixture() });
+}
+
 // A snapshot where a freshly-created room/space is present + active, so the
 // create dialog's success path (which closes on success) is exercised.
 function afterCreateRoomSnapshot(): DesktopSnapshot {
@@ -366,6 +403,7 @@ function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+mock.setCommandResponse("list_saved_sessions", () => []);
 mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch }) => {
   const values = applySettingsPatch(currentSnapshot.state.settings.values, patch);
   return setCurrentSnapshot({
@@ -378,6 +416,152 @@ mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch })
         persistence: { kind: "idle" }
       },
       locale_profile: resolveLocaleDisplayProfile(values.locale)
+    }
+  });
+});
+mock.setCommandResponse("bootstrap_cross_signing", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        cross_signing: { kind: "trusted" }
+      }
+    }
+  })
+);
+mock.setCommandResponse("enable_key_backup", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        key_backup: { kind: "enabled", version: "harness-backup" }
+      }
+    }
+  })
+);
+mock.setCommandResponse("accept_verification", ({ flowId }: { flowId: number }) => {
+  const verification = currentSnapshot.state.e2ee_trust.verification;
+  if (verification.kind !== "requested" || verification.request_id !== flowId) {
+    return currentSnapshot;
+  }
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        verification: {
+          kind: "accepted",
+          request_id: flowId,
+          target: verification.target
+        }
+      }
+    }
+  });
+});
+mock.setCommandResponse("confirm_sas_verification", ({ flowId }: { flowId: number }) => {
+  const verification = currentSnapshot.state.e2ee_trust.verification;
+  if (
+    (verification.kind !== "sasPresented" && verification.kind !== "confirming") ||
+    verification.request_id !== flowId
+  ) {
+    return currentSnapshot;
+  }
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        verification: {
+          kind: "done",
+          request_id: flowId,
+          target: verification.target
+        }
+      }
+    }
+  });
+});
+mock.setCommandResponse("cancel_verification", ({ flowId }: { flowId: number }) => {
+  const verification = currentSnapshot.state.e2ee_trust.verification;
+  if (verification.kind === "idle" || verification.request_id !== flowId) {
+    return currentSnapshot;
+  }
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        verification: { kind: "idle" }
+      }
+    }
+  });
+});
+mock.setCommandResponse("reset_identity", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        identity_reset: {
+          kind: "awaitingAuth",
+          request_id: 9_100,
+          auth_type: "uiaa"
+        }
+      }
+    }
+  })
+);
+mock.setCommandResponse(
+  "submit_identity_reset_password",
+  ({ flowId }: { flowId: number; password: string }) => {
+    const identityReset = currentSnapshot.state.e2ee_trust.identity_reset;
+    if (identityReset.kind !== "awaitingAuth" || identityReset.request_id !== flowId) {
+      return currentSnapshot;
+    }
+    return setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        e2ee_trust: {
+          ...currentSnapshot.state.e2ee_trust,
+          cross_signing: { kind: "missing" },
+          key_backup: { kind: "disabled" },
+          identity_reset: { kind: "idle" },
+          devices: currentSnapshot.state.e2ee_trust.devices.map((device) => ({
+            ...device,
+            trust_level: "unverified"
+          }))
+        }
+      }
+    });
+  }
+);
+mock.setCommandResponse("submit_identity_reset_oauth", ({ flowId }: { flowId: number }) => {
+  const identityReset = currentSnapshot.state.e2ee_trust.identity_reset;
+  if (identityReset.kind !== "awaitingAuth" || identityReset.request_id !== flowId) {
+    return currentSnapshot;
+  }
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        cross_signing: { kind: "missing" },
+        key_backup: { kind: "disabled" },
+        identity_reset: { kind: "idle" },
+        devices: currentSnapshot.state.e2ee_trust.devices.map((device) => ({
+          ...device,
+          trust_level: "unverified"
+        }))
+      }
     }
   });
 });
@@ -599,10 +783,16 @@ const harnessControl: AppHarnessControl = {
   clearInvocations: () => mock.clearInvocations(),
   setCommandResponse: (command, response) =>
     mock.setCommandResponse(command, response),
+  setSnapshot: (snapshot) => {
+    setCurrentSnapshot(snapshot);
+    mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+  },
   pushCoreEvent: (event) => emit(CORE_EVENT_NAME, event),
   pushStateChanged: () => {
     void emit(STATE_EVENT_NAME, "stateChanged");
   },
+  currentSnapshot: () => currentSnapshot,
+  e2eeTrustSnapshot,
   replyModeSnapshot
 };
 (window as unknown as { __harness: AppHarnessControl }).__harness =

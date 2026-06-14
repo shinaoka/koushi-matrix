@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
 import { UserSettingsPanel } from "./UserSettingsPanel";
+import type { E2eeTrustState } from "../domain/types";
 
 describe("UserSettingsPanel", () => {
   const settings = {
@@ -13,6 +14,55 @@ describe("UserSettingsPanel", () => {
     },
     persistence: { kind: "idle" }
   } as const;
+  const e2eeTrust: E2eeTrustState = {
+    verification: {
+      kind: "sasPresented",
+      request_id: 7,
+      target: {
+        user_id: "redacted-target-user",
+        device_id: "TARGETDEVICE"
+      },
+      emojis: [
+        { symbol: "🐶", description: "dog" },
+        { symbol: "🐱", description: "cat" }
+      ]
+    },
+    cross_signing: { kind: "trusted" },
+    key_backup: { kind: "enabled", version: "backup-version" },
+    identity_reset: { kind: "idle" },
+    devices: [
+      {
+        user_id: "@demo-user:example.invalid",
+        device_id: "FAKEDEVICE",
+        trust_level: "verified"
+      },
+      {
+        user_id: "redacted-target-user",
+        device_id: "TARGETDEVICE",
+        trust_level: "unverified"
+      }
+    ]
+  };
+  const idleE2eeTrust: E2eeTrustState = {
+    verification: { kind: "idle" },
+    cross_signing: { kind: "unknown" },
+    key_backup: { kind: "unknown" },
+    identity_reset: { kind: "idle" },
+    devices: []
+  };
+  const handlers = {
+    onAcceptVerification: () => undefined,
+    onBootstrapCrossSigning: () => undefined,
+    onCancelVerification: () => undefined,
+    onConfirmSasVerification: () => undefined,
+    onEnableKeyBackup: () => undefined,
+    onOpenKeyboardSettings: () => undefined,
+    onResetIdentity: () => undefined,
+    onSubmitIdentityResetOAuth: () => undefined,
+    onSubmitIdentityResetPassword: () => undefined,
+    onSwitchAccount: () => undefined,
+    onUpdateSettings: () => undefined
+  };
 
   test("renders account switch entries and keyboard settings access", () => {
     const markup = renderToStaticMarkup(
@@ -22,6 +72,7 @@ describe("UserSettingsPanel", () => {
           user_id: "@demo-user:example.invalid",
           device_id: "FAKEDEVICE"
         }}
+        e2eeTrust={e2eeTrust}
         savedSessions={[
           {
             homeserver: "https://matrix.org",
@@ -35,9 +86,7 @@ describe("UserSettingsPanel", () => {
           }
         ]}
         settings={settings}
-        onOpenKeyboardSettings={() => undefined}
-        onUpdateSettings={() => undefined}
-        onSwitchAccount={() => undefined}
+        {...handlers}
       />
     );
 
@@ -56,12 +105,22 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain("Separate encrypted namespace");
     expect(markup).toContain("OS credential store");
+    expect(markup).toContain("Encryption");
+    expect(markup).toContain("Device verification");
+    expect(markup).toContain("Compare emoji");
+    expect(markup).toContain("🐶");
+    expect(markup).toContain("Key backup");
+    expect(markup).toContain("Device 1");
+    expect(markup).toContain("Device 2");
+    expect(markup).not.toContain("redacted-target-user");
+    expect(markup).not.toContain("TARGETDEVICE");
   });
 
   test("renders saved sessions when the current session is unavailable", () => {
     const markup = renderToStaticMarkup(
       <UserSettingsPanel
         currentSession={null}
+        e2eeTrust={idleE2eeTrust}
         savedSessions={[
           {
             homeserver: "https://matrix.org",
@@ -70,9 +129,7 @@ describe("UserSettingsPanel", () => {
           }
         ]}
         settings={settings}
-        onOpenKeyboardSettings={() => undefined}
-        onUpdateSettings={() => undefined}
-        onSwitchAccount={() => undefined}
+        {...handlers}
       />
     );
 

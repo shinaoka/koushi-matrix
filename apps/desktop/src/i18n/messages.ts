@@ -130,6 +130,59 @@ export type MessageId =
   | "settings.themeDark"
   | "settings.themeLight"
   | "settings.themeSystem"
+  | "trust.acceptVerification"
+  | "trust.closeVerification"
+  | "trust.confirmSas"
+  | "trust.continueIdentityReset"
+  | "trust.crossSigning"
+  | "trust.declineVerification"
+  | "trust.deviceBlocked"
+  | "trust.deviceCount"
+  | "trust.deviceOrdinal"
+  | "trust.deviceUnknown"
+  | "trust.deviceUnverified"
+  | "trust.deviceVerified"
+  | "trust.devices"
+  | "trust.enableKeyBackup"
+  | "trust.encryption"
+  | "trust.failureCancelled"
+  | "trust.failureForbidden"
+  | "trust.failureMismatch"
+  | "trust.failureNetwork"
+  | "trust.failureSdk"
+  | "trust.failureTimeout"
+  | "trust.identityReset"
+  | "trust.identityResetAuthUnknown"
+  | "trust.identityResetPassword"
+  | "trust.keyBackup"
+  | "trust.noDevices"
+  | "trust.resetIdentity"
+  | "trust.sasEmoji"
+  | "trust.sasEmojiList"
+  | "trust.setupCrossSigning"
+  | "trust.statusAwaitingAuth"
+  | "trust.statusBootstrapping"
+  | "trust.statusConfirming"
+  | "trust.statusDisabled"
+  | "trust.statusEnabled"
+  | "trust.statusEnabling"
+  | "trust.statusFailed"
+  | "trust.statusFailedReason"
+  | "trust.statusIdle"
+  | "trust.statusInProgress"
+  | "trust.statusMissing"
+  | "trust.statusNeedsAttention"
+  | "trust.statusNotTrusted"
+  | "trust.statusResetting"
+  | "trust.statusRestoringBackup"
+  | "trust.statusRestoringBackupOpen"
+  | "trust.statusSasPresented"
+  | "trust.statusTrusted"
+  | "trust.statusUnknown"
+  | "trust.statusVerificationAccepted"
+  | "trust.statusVerificationRequested"
+  | "trust.statusVerified"
+  | "trust.verification"
   | "space.allRooms"
   | "space.childRooms"
   | "space.directMessages"
@@ -467,6 +520,59 @@ const en: Catalog = {
   "settings.themeDark": "Dark",
   "settings.themeLight": "Light",
   "settings.themeSystem": "System",
+  "trust.acceptVerification": "Accept",
+  "trust.closeVerification": "Close",
+  "trust.confirmSas": "Confirm",
+  "trust.continueIdentityReset": "Continue",
+  "trust.crossSigning": "Cross-signing",
+  "trust.declineVerification": "Decline",
+  "trust.deviceBlocked": "Blocked",
+  "trust.deviceCount": "{count} devices",
+  "trust.deviceOrdinal": "Device {index}",
+  "trust.deviceUnknown": "Unknown",
+  "trust.deviceUnverified": "Unverified",
+  "trust.deviceVerified": "Verified",
+  "trust.devices": "Devices",
+  "trust.enableKeyBackup": "Enable",
+  "trust.encryption": "Encryption",
+  "trust.failureCancelled": "Cancelled",
+  "trust.failureForbidden": "Forbidden",
+  "trust.failureMismatch": "Mismatch",
+  "trust.failureNetwork": "Network",
+  "trust.failureSdk": "SDK",
+  "trust.failureTimeout": "Timeout",
+  "trust.identityReset": "Identity reset",
+  "trust.identityResetAuthUnknown": "Authorization unavailable",
+  "trust.identityResetPassword": "Password",
+  "trust.keyBackup": "Key backup",
+  "trust.noDevices": "No devices",
+  "trust.resetIdentity": "Reset",
+  "trust.sasEmoji": "SAS emoji {index}",
+  "trust.sasEmojiList": "SAS emoji",
+  "trust.setupCrossSigning": "Set up",
+  "trust.statusAwaitingAuth": "Awaiting authorization",
+  "trust.statusBootstrapping": "Setting up",
+  "trust.statusConfirming": "Confirming",
+  "trust.statusDisabled": "Disabled",
+  "trust.statusEnabled": "Enabled",
+  "trust.statusEnabling": "Enabling",
+  "trust.statusFailed": "Failed",
+  "trust.statusFailedReason": "Failed: {reason}",
+  "trust.statusIdle": "Idle",
+  "trust.statusInProgress": "In progress",
+  "trust.statusMissing": "Missing",
+  "trust.statusNeedsAttention": "Needs attention",
+  "trust.statusNotTrusted": "Not trusted",
+  "trust.statusResetting": "Resetting",
+  "trust.statusRestoringBackup": "Restoring {restored}/{total}",
+  "trust.statusRestoringBackupOpen": "Restoring {restored}",
+  "trust.statusSasPresented": "Compare emoji",
+  "trust.statusTrusted": "Trusted",
+  "trust.statusUnknown": "Unknown",
+  "trust.statusVerificationAccepted": "Accepted",
+  "trust.statusVerificationRequested": "Request pending",
+  "trust.statusVerified": "Verified",
+  "trust.verification": "Device verification",
   "space.allRooms": "All rooms",
   "space.childRooms": "Child rooms",
   "space.directMessages": "Direct messages",

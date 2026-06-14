@@ -10,6 +10,17 @@ import type { RightPanelMode } from "./domain/rightPanel";
 import { t } from "./i18n/messages";
 
 describe("ContextualRightPanel", () => {
+  const trustPanelHandlers = {
+    onAcceptVerification: () => undefined,
+    onBootstrapCrossSigning: () => undefined,
+    onCancelVerification: () => undefined,
+    onConfirmSasVerification: () => undefined,
+    onEnableKeyBackup: () => undefined,
+    onResetIdentity: () => undefined,
+    onSubmitIdentityResetOAuth: () => undefined,
+    onSubmitIdentityResetPassword: () => undefined
+  };
+
   test("composer disables sending while a transaction is pending", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { Composer } = await import("./App");
@@ -333,6 +344,7 @@ describe("ContextualRightPanel", () => {
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
         onSwitchAccount={() => undefined}
+        {...trustPanelHandlers}
         onThreadComposerDraftChange={() => undefined}
         onThreadReplySend={() => undefined}
       />
@@ -395,6 +407,7 @@ describe("ContextualRightPanel", () => {
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
         onSwitchAccount={() => undefined}
+        {...trustPanelHandlers}
         onThreadComposerDraftChange={() => undefined}
         onThreadReplySend={() => undefined}
       />
@@ -450,6 +463,7 @@ describe("ContextualRightPanel", () => {
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
         onSwitchAccount={() => undefined}
+        {...trustPanelHandlers}
         onThreadComposerDraftChange={() => undefined}
         onThreadReplySend={() => undefined}
       />
@@ -519,6 +533,7 @@ describe("ContextualRightPanel", () => {
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
         onSwitchAccount={() => undefined}
+        {...trustPanelHandlers}
         onThreadComposerDraftChange={() => undefined}
         onThreadReplySend={() => undefined}
       />
@@ -568,6 +583,7 @@ describe("ContextualRightPanel", () => {
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
         onSwitchAccount={() => undefined}
+        {...trustPanelHandlers}
         onThreadComposerDraftChange={() => undefined}
         onThreadReplySend={() => undefined}
       />
@@ -617,6 +633,7 @@ describe("ContextualRightPanel", () => {
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
         onSwitchAccount={() => undefined}
+        {...trustPanelHandlers}
         onThreadComposerDraftChange={() => undefined}
         onThreadReplySend={() => undefined}
       />
@@ -676,6 +693,7 @@ describe("ContextualRightPanel", () => {
         onResultSelect={() => undefined}
         onSubmitRecovery={(event) => event.preventDefault()}
         onSwitchAccount={() => undefined}
+        {...trustPanelHandlers}
         onThreadComposerDraftChange={() => undefined}
         onThreadReplySend={() => undefined}
       />

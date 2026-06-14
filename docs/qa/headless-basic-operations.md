@@ -65,6 +65,29 @@ Focused local proof:
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000
 ```
 
+## Headless browser IPC-contract lane
+
+Run the full headless browser tier:
+
+```bash
+npm --prefix apps/desktop run test:ui-headless
+```
+
+Focused E2EE trust GUI proof:
+
+```bash
+cd apps/desktop && npx playwright test e2e/basic-operations.spec.ts -g "E2EE trust controls"
+```
+
+This lane mounts the full React app over mocked Tauri IPC. For E2EE trust Phase
+B, it seeds a Rust-shaped `e2ee_trust` snapshot, drives User Settings controls,
+and asserts that the UI invokes the typed Tauri commands (`accept_verification`,
+`enable_key_backup`, `bootstrap_cross_signing`, `reset_identity`,
+`submit_identity_reset_password`) with Rust-owned flow ids. The test then checks
+the returned snapshot state, not React-local state. The mocked IPC recorder must
+redact password fields, and visible assertions must avoid verification target
+user/device ids.
+
 ## matrix.org compatibility lane
 
 This lane is reserved for the last compatibility pass after local headless and

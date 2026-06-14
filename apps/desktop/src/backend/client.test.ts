@@ -49,4 +49,30 @@ describe("TauriDesktopApi", () => {
       sendEnabled: true
     });
   });
+
+  test("passes E2EE trust actions to Rust-owned commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.bootstrapCrossSigning();
+    await api.enableKeyBackup();
+    await api.acceptVerification(41);
+    await api.confirmSasVerification(42);
+    await api.cancelVerification(43);
+    await api.resetIdentity();
+    await api.submitIdentityResetPassword(44, "synthetic-password");
+    await api.submitIdentityResetOAuth(45);
+
+    expect(invoke).toHaveBeenCalledWith("bootstrap_cross_signing");
+    expect(invoke).toHaveBeenCalledWith("enable_key_backup");
+    expect(invoke).toHaveBeenCalledWith("accept_verification", { flowId: 41 });
+    expect(invoke).toHaveBeenCalledWith("confirm_sas_verification", { flowId: 42 });
+    expect(invoke).toHaveBeenCalledWith("cancel_verification", { flowId: 43 });
+    expect(invoke).toHaveBeenCalledWith("reset_identity");
+    expect(invoke).toHaveBeenCalledWith("submit_identity_reset_password", {
+      flowId: 44,
+      password: "synthetic-password"
+    });
+    expect(invoke).toHaveBeenCalledWith("submit_identity_reset_oauth", { flowId: 45 });
+  });
 });

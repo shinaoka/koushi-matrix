@@ -19,11 +19,13 @@
  *      `send_reply` (not `send_text`). Reply mode is established by scenario 3's
  *      flow (the set_composer_reply_target response returns a reply-mode
  *      snapshot), then the composer is submitted.
+ *   8. Drive E2EE trust controls from User settings → invokes Rust-owned trust
+ *      commands and renders the returned `e2ee_trust` snapshot.
  */
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { focusedTimelineKey, threadTimelineKey } from "../src/domain/coreEvents";
+import { focusedTimelineKey, roomTimelineKey, threadTimelineKey } from "../src/domain/coreEvents";
 import { t } from "../src/i18n/messages";
 
 function makeThreadItem(index: number, rootEventId = "$seed-event:example.invalid") {
@@ -628,7 +630,7 @@ test("Rust-owned locale profile applies root lang and dir", async ({ page }) => 
       platform: "linux",
       modifier_labels: { primary: "Ctrl" }
     };
-    window.__harness.setCommandResponse("get_snapshot", snapshot);
+    window.__harness.setSnapshot(snapshot);
     window.__harness.pushStateChanged();
   });
 
@@ -648,6 +650,11 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
   await gotoReadyShell(page);
 
   const longRoomName = "Cafe\u0301 日本語 العربية Very Long Synthetic Room Label For Pseudo Locale";
+  const sampleBody = "Cafe\u0301 日本語 العربية long pseudo locale sample";
+  const roomKey = roomTimelineKey(
+    "@harness-user:example.invalid",
+    "!harness-room:example.invalid"
+  );
   await page.evaluate((roomName) => {
     const snapshot = window.__harness.replyModeSnapshot();
     snapshot.state.locale_profile = {
@@ -662,61 +669,61 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
     snapshot.sidebar.space_rooms[0].display_name = roomName;
     snapshot.state.spaces[0].display_name = "日本語 Space العربية";
     snapshot.sidebar.space_rail[0].display_name = "日本語 Space العربية";
-    window.__harness.setCommandResponse("get_snapshot", snapshot);
+    window.__harness.setSnapshot(snapshot);
     window.__harness.pushStateChanged();
   }, longRoomName);
 
-  await page.evaluate(async () => {
-    await window.__harness.pushCoreEvent({
+  await page.evaluate(async ({ key, body }) => {
+    const payload = {
       kind: "Timeline",
       event: {
-        ItemsUpdated: {
-          key: {
-            account_key: "@harness-user:example.invalid",
-            kind: { Room: { room_id: "!harness-room:example.invalid" } }
-          },
+        InitialItems: {
+          request_id: null,
+          key,
           generation: 1,
-          batch_id: 4,
-          diffs: [
+          items: [
             {
-              Set: {
-                index: 0,
-                item: {
-                  id: { Event: { event_id: "$seed-event:example.invalid" } },
-                  sender: "@rtl-user:example.invalid",
-                  body: "Cafe\u0301 日本語 العربية long pseudo locale sample",
-                  timestamp_ms: 1_800_000_000_000,
-                  in_reply_to_event_id: null,
-                  thread_root: null,
-                  thread_summary: null,
-                  can_react: true,
-                  is_redacted: false,
-                  can_redact: false,
-                  is_edited: false,
-                  can_edit: true,
-                  reactions: [
-                    {
-                      key: "日本語",
-                      count: 1,
-                      reacted_by_me: false,
-                      my_reaction_event_id: null,
-                      sender_preview: ["@rtl-user:example.invalid"]
-                    }
-                  ]
+              id: { Event: { event_id: "$seed-event:example.invalid" } },
+              sender: "@rtl-user:example.invalid",
+              body,
+              timestamp_ms: 1_800_000_000_000,
+              in_reply_to_event_id: null,
+              thread_root: null,
+              thread_summary: null,
+              can_react: true,
+              is_redacted: false,
+              can_redact: false,
+              is_edited: false,
+              can_edit: true,
+              reactions: [
+                {
+                  key: "日本語",
+                  count: 1,
+                  reacted_by_me: false,
+                  my_reaction_event_id: null,
+                  sender_preview: ["@rtl-user:example.invalid"]
                 }
-              }
+              ]
             }
           ]
         }
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-  });
+    } as any;
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await window.__harness.pushCoreEvent(payload);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (document.body.textContent?.includes(body)) {
+        break;
+      }
+    }
+  }, { key: roomKey, body: sampleBody });
 
   await expect.poll(() => page.evaluate(() => document.documentElement.dir)).toBe("rtl");
   await expect(page.locator(".room-name").first()).toHaveAttribute("dir", "auto");
   await expect(page.locator(".message-body").first()).toHaveAttribute("dir", "auto");
-  await expect(page.getByText("Cafe\u0301 日本語 العربية long pseudo locale sample")).toBeVisible();
+  await expect(page.getByText(sampleBody)).toBeVisible();
   await expect(page.locator(".reaction-pill-key", { hasText: "日本語" })).toBeVisible();
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2))
@@ -781,6 +788,75 @@ test("keyboard settings update composer send shortcut through Rust-owned command
   await composer.press("Control+Enter");
 
   await expect.poll(() => invocationCount(page, "send_text")).toBeGreaterThanOrEqual(1);
+});
+
+test("E2EE trust controls dispatch Rust-owned commands and render snapshot updates", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setSnapshot(window.__harness.e2eeTrustSnapshot());
+    window.__harness.pushStateChanged();
+  });
+
+  await page.getByRole("button", { name: "User settings" }).click();
+  await expect(page.getByRole("heading", { name: "Encryption" })).toBeVisible();
+  await expect(page.getByText("Device verification")).toBeVisible();
+  await expect(page.getByText("Device 1")).toBeVisible();
+  await expect(page.getByText("redacted-trust-target")).toHaveCount(0);
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.getByRole("button", { name: "Accept" }).click();
+
+  await expect.poll(() => invocationCount(page, "accept_verification")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("accept_verification")[0]?.args)
+    )
+    .toEqual({ flowId: 9001 });
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.currentSnapshot().state.e2ee_trust.verification.kind)
+    )
+    .toBe("accepted");
+  await expect(page.getByText("Accepted")).toBeVisible();
+
+  await page.getByRole("button", { name: "Enable", exact: true }).click();
+  await expect.poll(() => invocationCount(page, "enable_key_backup")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.currentSnapshot().state.e2ee_trust.key_backup.kind)
+    )
+    .toBe("enabled");
+  await expect(page.getByText("Enabled")).toBeVisible();
+
+  await page.getByRole("button", { name: "Set up", exact: true }).click();
+  await expect.poll(() => invocationCount(page, "bootstrap_cross_signing")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.currentSnapshot().state.e2ee_trust.cross_signing.kind)
+    )
+    .toBe("trusted");
+
+  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await expect.poll(() => invocationCount(page, "reset_identity")).toBe(1);
+  await expect(page.getByLabel("Password")).toBeVisible();
+  await page.getByLabel("Password").fill("identity reset smoke password");
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  await expect.poll(() => invocationCount(page, "submit_identity_reset_password")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("submit_identity_reset_password")[0]?.args
+      )
+    )
+    .toEqual({ flowId: 9100, password: "[REDACTED]" });
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.currentSnapshot().state.e2ee_trust.identity_reset.kind)
+    )
+    .toBe("idle");
 });
 
 test("edit composer respects the Rust-owned composer shortcut resolver", async ({

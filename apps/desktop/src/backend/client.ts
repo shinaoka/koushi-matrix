@@ -67,6 +67,41 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("update_settings", { patch });
   }
 
+  async bootstrapCrossSigning(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("bootstrap_cross_signing");
+  }
+
+  async enableKeyBackup(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("enable_key_backup");
+  }
+
+  async acceptVerification(flowId: number): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("accept_verification", { flowId });
+  }
+
+  async confirmSasVerification(flowId: number): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("confirm_sas_verification", { flowId });
+  }
+
+  async cancelVerification(flowId: number): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("cancel_verification", { flowId });
+  }
+
+  async resetIdentity(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("reset_identity");
+  }
+
+  async submitIdentityResetPassword(
+    flowId: number,
+    password: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("submit_identity_reset_password", { flowId, password });
+  }
+
+  async submitIdentityResetOAuth(flowId: number): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("submit_identity_reset_oauth", { flowId });
+  }
+
   async resolveComposerKeyAction(
     surface: ComposerSurface,
     keyEvent: ComposerKeyEvent,

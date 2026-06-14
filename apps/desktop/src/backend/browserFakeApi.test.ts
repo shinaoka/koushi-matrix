@@ -76,4 +76,39 @@ describe("BrowserFakeApi settings preview", () => {
       modifier_labels: { primary: "Ctrl" }
     });
   });
+
+  test("updates the Rust-shaped E2EE trust snapshot for preview controls", async () => {
+    const api = createBrowserFakeApi();
+
+    await expect(api.bootstrapCrossSigning()).resolves.toMatchObject({
+      state: {
+        e2ee_trust: {
+          cross_signing: { kind: "trusted" }
+        }
+      }
+    });
+
+    await expect(api.enableKeyBackup()).resolves.toMatchObject({
+      state: {
+        e2ee_trust: {
+          key_backup: { kind: "enabled", version: "browser-preview" }
+        }
+      }
+    });
+
+    const awaitingAuth = await api.resetIdentity();
+    expect(awaitingAuth.state.e2ee_trust.identity_reset).toMatchObject({
+      kind: "awaitingAuth",
+      auth_type: "uiaa"
+    });
+
+    const flow =
+      awaitingAuth.state.e2ee_trust.identity_reset.kind === "awaitingAuth"
+        ? awaitingAuth.state.e2ee_trust.identity_reset.request_id
+        : 0;
+    const reset = await api.submitIdentityResetPassword(flow, "synthetic-password");
+    expect(reset.state.e2ee_trust.identity_reset).toEqual({ kind: "idle" });
+    expect(reset.state.e2ee_trust.cross_signing).toEqual({ kind: "missing" });
+    expect(reset.state.e2ee_trust.key_backup).toEqual({ kind: "disabled" });
+  });
 });

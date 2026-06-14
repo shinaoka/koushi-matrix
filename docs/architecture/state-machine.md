@@ -8,7 +8,7 @@ fixture/demo backend contract mentioned below is historical (dev/demo only).
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-06-14
+Date: 2026-06-15
 
 ## Contract
 
@@ -413,6 +413,20 @@ stateDiagram-v2
   `RestoreKeyBackup`, `ResetIdentity`, and `SubmitIdentityResetAuth`. These
   commands are ready-session gated and redact verification targets, backup
   versions, and auth secrets in `Debug`.
+- Phase B GUI controls are thin transport clients for that command surface.
+  Tauri handlers allocate a fresh command `request_id`, pass the Rust-owned
+  verification/identity-reset `flow_id` from the snapshot when required, and
+  submit `CoreCommand::Account`; they must not call SDK wrappers directly or
+  repair trust state in the adapter. Browser preview and Playwright harnesses
+  may provide deterministic Rust-shaped `e2ee_trust` snapshots, but those
+  fixtures must mirror the DTO shape rather than inventing React-only trust
+  state.
+- React trust UI must render `AppState.e2ee_trust` and dispatch typed
+  commands only. Verification target user/device ids are not display labels;
+  device rows should use private-data-free ordinal/status labels unless a
+  later product decision explicitly introduces a redacted display model in
+  Rust. SAS comparison UI may render the emoji symbols from Rust, but visible
+  labels/status text must come from the i18n catalog.
 - `RestoreKeyBackup` carries the secret-bearing recovery request only inside
   `CoreCommand::Account`; the projected `AppAction::RestoreKeyBackupRequested`,
   reducer effects, `CoreEvent`, and snapshots carry only request id, optional

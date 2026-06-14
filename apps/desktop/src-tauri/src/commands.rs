@@ -20,7 +20,8 @@ use matrix_desktop_core::{
 };
 use matrix_desktop_state::{
     AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
-    LoginRequest, RecoveryRequest, SessionInfo, SettingsPatch,
+    IdentityResetAuthRequest, LoginRequest, RecoveryRequest, SessionInfo, SettingsPatch,
+    VerificationCancelReason,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -427,6 +428,132 @@ pub async fn update_settings(
     submit_core_command(
         state.inner(),
         build_update_settings_command(request_id, patch),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn bootstrap_cross_signing(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_bootstrap_cross_signing_command(request_id, None),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn enable_key_backup(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_enable_key_backup_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn accept_verification(
+    flow_id: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_accept_verification_command(request_id, flow_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn confirm_sas_verification(
+    flow_id: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_confirm_sas_verification_command(request_id, flow_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn cancel_verification(
+    flow_id: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_cancel_verification_command(
+            request_id,
+            flow_id,
+            VerificationCancelReason::User,
+        ),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn reset_identity(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_reset_identity_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn submit_identity_reset_password(
+    flow_id: u64,
+    password: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_submit_identity_reset_password_command(
+            request_id,
+            flow_id,
+            AuthSecret::new(password),
+        ),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn submit_identity_reset_oauth(
+    flow_id: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_submit_identity_reset_oauth_command(request_id, flow_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -1066,6 +1193,80 @@ pub(crate) fn build_update_settings_command(
     CoreCommand::App(AppCommand::UpdateSettings { request_id, patch })
 }
 
+pub(crate) fn build_bootstrap_cross_signing_command(
+    request_id: matrix_desktop_core::RequestId,
+    auth: Option<AuthSecret>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::BootstrapCrossSigning { request_id, auth })
+}
+
+pub(crate) fn build_enable_key_backup_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::EnableKeyBackup { request_id })
+}
+
+pub(crate) fn build_accept_verification_command(
+    request_id: matrix_desktop_core::RequestId,
+    flow_id: u64,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::AcceptVerification {
+        request_id,
+        flow_id,
+    })
+}
+
+pub(crate) fn build_confirm_sas_verification_command(
+    request_id: matrix_desktop_core::RequestId,
+    flow_id: u64,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ConfirmSasVerification {
+        request_id,
+        flow_id,
+    })
+}
+
+pub(crate) fn build_cancel_verification_command(
+    request_id: matrix_desktop_core::RequestId,
+    flow_id: u64,
+    reason: VerificationCancelReason,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::CancelVerification {
+        request_id,
+        flow_id,
+        reason,
+    })
+}
+
+pub(crate) fn build_reset_identity_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ResetIdentity { request_id })
+}
+
+pub(crate) fn build_submit_identity_reset_password_command(
+    request_id: matrix_desktop_core::RequestId,
+    flow_id: u64,
+    password: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
+        request_id,
+        flow_id,
+        request: IdentityResetAuthRequest::UiaaPassword { password },
+    })
+}
+
+pub(crate) fn build_submit_identity_reset_oauth_command(
+    request_id: matrix_desktop_core::RequestId,
+    flow_id: u64,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
+        request_id,
+        flow_id,
+        request: IdentityResetAuthRequest::OAuthApproved,
+    })
+}
+
 pub(crate) fn build_start_sync_command(request_id: matrix_desktop_core::RequestId) -> CoreCommand {
     CoreCommand::Sync(SyncCommand::Start { request_id })
 }
@@ -1609,7 +1810,10 @@ mod tests {
         AccountCommand, AppCommand, CoreCommand, PaginationDirection, RoomCommand, SearchCommand,
         SearchScope, SyncCommand, TimelineCommand,
     };
-    use matrix_desktop_state::{AppState, AuthSecret, LoginRequest, SessionInfo, SessionState};
+    use matrix_desktop_state::{
+        AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, SessionInfo, SessionState,
+        VerificationCancelReason,
+    };
     use matrix_desktop_state::{
         AppearanceSettings, LocaleSettings, SettingsPatch, TextDirectionPreference, ThemePreference,
     };
@@ -1617,14 +1821,18 @@ mod tests {
     use super::QaControlCommand;
     use super::SearchScopeKind;
     use super::{
+        build_accept_verification_command, build_bootstrap_cross_signing_command,
+        build_cancel_verification_command, build_confirm_sas_verification_command,
         build_create_room_command, build_create_space_command, build_edit_message_command,
-        build_forget_room_command, build_leave_room_command, build_logout_command,
-        build_paginate_thread_timeline_backwards_command,
+        build_enable_key_backup_command, build_forget_room_command, build_leave_room_command,
+        build_logout_command, build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_redact_message_command,
-        build_restart_sync_command, build_select_room_command, build_select_space_command,
-        build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
-        build_set_space_child_command, build_set_thread_composer_draft_command,
-        build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
+        build_reset_identity_command, build_restart_sync_command, build_select_room_command,
+        build_select_space_command, build_send_reply_command, build_send_text_command,
+        build_send_thread_reply_command, build_set_space_child_command,
+        build_set_thread_composer_draft_command, build_submit_identity_reset_oauth_command,
+        build_submit_identity_reset_password_command, build_submit_login_command,
+        build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
         parse_qa_control_pipe_line, parse_qa_login_pipe_payload, qa_recovery_prompt_is_available,
@@ -2321,6 +2529,111 @@ mod tests {
     }
 
     #[test]
+    fn e2ee_trust_commands_route_to_account_state_machine() {
+        match build_bootstrap_cross_signing_command(
+            fake_request_id(25),
+            Some(AuthSecret::new("cross-signing-password")),
+        ) {
+            CoreCommand::Account(AccountCommand::BootstrapCrossSigning { request_id, auth }) => {
+                assert_eq!(request_id, fake_request_id(25));
+                assert_eq!(
+                    auth.expect("auth secret").expose_secret(),
+                    "cross-signing-password"
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_enable_key_backup_command(fake_request_id(26)) {
+            CoreCommand::Account(AccountCommand::EnableKeyBackup { request_id }) => {
+                assert_eq!(request_id, fake_request_id(26));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_accept_verification_command(fake_request_id(27), 72) {
+            CoreCommand::Account(AccountCommand::AcceptVerification {
+                request_id,
+                flow_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(27));
+                assert_eq!(flow_id, 72);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_confirm_sas_verification_command(fake_request_id(28), 73) {
+            CoreCommand::Account(AccountCommand::ConfirmSasVerification {
+                request_id,
+                flow_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(28));
+                assert_eq!(flow_id, 73);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_cancel_verification_command(
+            fake_request_id(29),
+            74,
+            VerificationCancelReason::User,
+        ) {
+            CoreCommand::Account(AccountCommand::CancelVerification {
+                request_id,
+                flow_id,
+                reason,
+            }) => {
+                assert_eq!(request_id, fake_request_id(29));
+                assert_eq!(flow_id, 74);
+                assert_eq!(reason, VerificationCancelReason::User);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_reset_identity_command(fake_request_id(30)) {
+            CoreCommand::Account(AccountCommand::ResetIdentity { request_id }) => {
+                assert_eq!(request_id, fake_request_id(30));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let password_command = build_submit_identity_reset_password_command(
+            fake_request_id(31),
+            75,
+            AuthSecret::new("identity-reset-password"),
+        );
+        match &password_command {
+            CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
+                request_id,
+                flow_id,
+                request:
+                    IdentityResetAuthRequest::UiaaPassword {
+                        password,
+                    },
+            }) => {
+                assert_eq!(*request_id, fake_request_id(31));
+                assert_eq!(*flow_id, 75);
+                assert_eq!(password.expose_secret(), "identity-reset-password");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        let debug = format!("{password_command:?}");
+        assert!(!debug.contains("identity-reset-password"), "{debug}");
+
+        match build_submit_identity_reset_oauth_command(fake_request_id(32), 76) {
+            CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
+                request_id,
+                flow_id,
+                request: IdentityResetAuthRequest::OAuthApproved,
+            }) => {
+                assert_eq!(request_id, fake_request_id(32));
+                assert_eq!(flow_id, 76);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
     fn update_settings_tauri_command_contract_is_present() {
         let commands_source = include_str!("commands.rs");
         let lib_source = include_str!("lib.rs");
@@ -2345,6 +2658,67 @@ mod tests {
             lib_source.contains(registration_name),
             "Tauri command should be registered in generate_handler"
         );
+    }
+
+    #[test]
+    fn e2ee_trust_tauri_command_contracts_are_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        for (command_name, route_name, registration_name) in [
+            (
+                "pub async fn bootstrap_cross_signing",
+                "build_bootstrap_cross_signing_command",
+                "commands::bootstrap_cross_signing",
+            ),
+            (
+                "pub async fn enable_key_backup",
+                "build_enable_key_backup_command",
+                "commands::enable_key_backup",
+            ),
+            (
+                "pub async fn accept_verification",
+                "build_accept_verification_command",
+                "commands::accept_verification",
+            ),
+            (
+                "pub async fn confirm_sas_verification",
+                "build_confirm_sas_verification_command",
+                "commands::confirm_sas_verification",
+            ),
+            (
+                "pub async fn cancel_verification",
+                "build_cancel_verification_command",
+                "commands::cancel_verification",
+            ),
+            (
+                "pub async fn reset_identity",
+                "build_reset_identity_command",
+                "commands::reset_identity",
+            ),
+            (
+                "pub async fn submit_identity_reset_password",
+                "build_submit_identity_reset_password_command",
+                "commands::submit_identity_reset_password",
+            ),
+            (
+                "pub async fn submit_identity_reset_oauth",
+                "build_submit_identity_reset_oauth_command",
+                "commands::submit_identity_reset_oauth",
+            ),
+        ] {
+            assert!(
+                commands_source.contains(command_name),
+                "Tauri command should expose {command_name}"
+            );
+            assert!(
+                commands_source.contains(route_name),
+                "Tauri command should route through {route_name}"
+            );
+            assert!(
+                lib_source.contains(registration_name),
+                "Tauri command should register {registration_name}"
+            );
+        }
     }
 
     #[test]

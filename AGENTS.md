@@ -119,6 +119,31 @@ All agents implementing the i18n GUI wiring follow
   The runner supports `--core-backend=legacy|both` for non-E2EE backend
   coverage, but the Phase A E2EE trust proof is the probed SyncService leg.
 
+## E2EE Trust Phase B GUI Notes
+
+- Trust GUI controls are transport clients only. Add Tauri commands as thin
+  `CoreCommand::Account` submitters and keep SDK calls, UIAA/OAuth continuation
+  handles, and verification handles inside Rust actors.
+- React must render `snapshot.state.e2ee_trust` and dispatch typed API methods.
+  Do not add React-local pending/success/failure state for verification,
+  cross-signing, key backup, or identity reset. Button-click feedback must come
+  back through the Rust-owned snapshot/event path.
+- Verification and device DTOs include user/device ids for Rust correlation,
+  but the GUI should not display those ids by default. Use ordinal/status labels
+  (`Device 1`, `Verified`, etc.) unless a Rust-owned redacted display model is
+  added. Playwright/Vitest assertions must not print verification targets,
+  account keys, backup versions, recovery secrets, or raw SDK errors.
+- Identity-reset password/UIAA input may exist only as transient DOM input that
+  is immediately sent to Tauri. Clear the input after submit, and verify the
+  mocked IPC layer records password fields as `[REDACTED]`.
+- When adding trust GUI tests, update `apps/desktop/src/test/appHarnessMain.tsx`
+  with Rust-shaped `e2ee_trust` fixtures and command responses. Do not test
+  trust success by mutating React component state; assert the returned snapshot
+  changed and the expected Tauri command name/flow id was invoked.
+- All visible trust labels/status text must go through `apps/desktop/src/i18n/messages.ts`.
+  SDK-provided SAS emoji descriptions are not catalog strings; render emoji
+  symbols or add a Rust-owned localized DTO before showing descriptions.
+
 ## Rust-Owned Settings Notes
 
 - Settings product state lives in `matrix-desktop-state::AppState.settings`.
