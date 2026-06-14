@@ -79,6 +79,8 @@ impl CoreCommand {
                 | TimelineCommand::Paginate { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
+                | TimelineCommand::UploadAndSendMedia { request_id, .. }
+                | TimelineCommand::DownloadMedia { request_id, .. }
                 | TimelineCommand::EditText { request_id, .. }
                 | TimelineCommand::Redact { request_id, .. }
                 | TimelineCommand::ToggleReaction { request_id, .. } => *request_id,
@@ -501,6 +503,47 @@ pub enum RoomCommand {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UploadMediaKind {
+    Image {
+        width: Option<u64>,
+        height: Option<u64>,
+    },
+    File,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct UploadMediaRequest {
+    pub filename: String,
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+    pub kind: UploadMediaKind,
+    pub caption: Option<String>,
+}
+
+impl fmt::Debug for UploadMediaRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UploadMediaRequest")
+            .field("filename", &"MediaFilename(..)")
+            .field("mime_type", &self.mime_type)
+            .field("bytes", &"MediaBytes(..)")
+            .field("bytes_len", &self.bytes.len())
+            .field("kind", &self.kind)
+            .field(
+                "caption",
+                &self.caption.as_ref().map(|_| "MediaCaption(..)"),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MediaDownloadSelection {
+    File,
+    Thumbnail { width: u64, height: u64 },
+}
+
 pub enum TimelineCommand {
     Subscribe {
         request_id: RequestId,
@@ -528,6 +571,18 @@ pub enum TimelineCommand {
         transaction_id: String,
         in_reply_to_event_id: String,
         body: String,
+    },
+    UploadAndSendMedia {
+        request_id: RequestId,
+        key: TimelineKey,
+        transaction_id: String,
+        request: UploadMediaRequest,
+    },
+    DownloadMedia {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+        selection: MediaDownloadSelection,
     },
     EditText {
         request_id: RequestId,
@@ -600,6 +655,37 @@ impl fmt::Debug for TimelineCommand {
                 .field("transaction_id", transaction_id)
                 .field("in_reply_to_event_id", &"EventId(..)")
                 .field("body", &"MessageBody(..)")
+                .finish(),
+            Self::UploadAndSendMedia {
+                request_id,
+                key,
+                transaction_id,
+                request,
+            } => formatter
+                .debug_struct("UploadAndSendMedia")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("transaction_id", transaction_id)
+                .field("mime_type", &request.mime_type)
+                .field("kind", &request.kind)
+                .field("filename", &"MediaFilename(..)")
+                .field("bytes", &"MediaBytes(..)")
+                .field(
+                    "caption",
+                    &request.caption.as_ref().map(|_| "MediaCaption(..)"),
+                )
+                .finish(),
+            Self::DownloadMedia {
+                request_id,
+                key,
+                selection,
+                ..
+            } => formatter
+                .debug_struct("DownloadMedia")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("event_id", &"EventId(..)")
+                .field("selection", selection)
                 .finish(),
             Self::EditText {
                 request_id,
@@ -690,5 +776,32 @@ mod tests {
         assert!(debug.contains("txn-reply"), "{debug}");
         assert!(!debug.contains("secret reply body"), "{debug}");
         assert!(!debug.contains("$event:test"), "{debug}");
+    }
+
+    #[test]
+    fn upload_media_debug_redacts_filename_caption_and_bytes() {
+        let command = TimelineCommand::UploadAndSendMedia {
+            request_id: fake_rid(8),
+            key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test"),
+            transaction_id: "txn-media".to_owned(),
+            request: UploadMediaRequest {
+                filename: "private-fixture-name.png".to_owned(),
+                mime_type: "image/png".to_owned(),
+                bytes: vec![1, 2, 3, 4],
+                kind: UploadMediaKind::Image {
+                    width: Some(2),
+                    height: Some(2),
+                },
+                caption: Some("private caption".to_owned()),
+            },
+        };
+
+        let debug = format!("{command:?}");
+        assert!(debug.contains("UploadAndSendMedia"), "{debug}");
+        assert!(debug.contains("txn-media"), "{debug}");
+        assert!(debug.contains("image/png"), "{debug}");
+        assert!(!debug.contains("private-fixture-name.png"), "{debug}");
+        assert!(!debug.contains("private caption"), "{debug}");
+        assert!(!debug.contains("1, 2, 3, 4"), "{debug}");
     }
 }

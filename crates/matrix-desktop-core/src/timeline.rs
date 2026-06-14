@@ -52,11 +52,15 @@ use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_state::AppAction;
+use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
+use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
 use matrix_sdk::ruma::events::room::message::{
-    AddMentions, ReplyWithinThread, RoomMessageEventContentWithoutRelation,
+    AddMentions, MessageType, ReplyWithinThread, RoomMessageEventContentWithoutRelation,
+    TextMessageEventContent,
 };
+use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
 use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk_ui::timeline::{
     ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineEventItemId, TimelineFocus,
@@ -64,10 +68,13 @@ use matrix_sdk_ui::timeline::{
 };
 use tokio::sync::{broadcast, mpsc};
 
-use crate::command::TimelineCommand;
+use crate::command::{
+    MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
+};
 use crate::event::{
-    CoreEvent, PaginationDirection, PaginationState, ThreadSummaryDto, TimelineDiff, TimelineEvent,
-    TimelineItem, TimelineItemId, TimelineResyncReason,
+    CoreEvent, MediaTransferProgress, PaginationDirection, PaginationState, ThreadSummaryDto,
+    TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
+    TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -248,6 +255,40 @@ impl TimelineManagerActor {
                         transaction_id,
                         in_reply_to_event_id,
                         body,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::UploadAndSendMedia {
+                request_id,
+                key,
+                transaction_id,
+                request,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::UploadAndSendMedia {
+                        request_id,
+                        transaction_id,
+                        request,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::DownloadMedia {
+                request_id,
+                key,
+                event_id,
+                selection,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::DownloadMedia {
+                        request_id,
+                        event_id,
+                        selection,
                     },
                 )
                 .await;
@@ -664,6 +705,16 @@ enum TimelineActorMessage {
         in_reply_to_event_id: String,
         body: String,
     },
+    UploadAndSendMedia {
+        request_id: RequestId,
+        transaction_id: String,
+        request: UploadMediaRequest,
+    },
+    DownloadMedia {
+        request_id: RequestId,
+        event_id: String,
+        selection: MediaDownloadSelection,
+    },
     EditText {
         request_id: RequestId,
         event_id: String,
@@ -696,6 +747,13 @@ impl TimelineActorHandle {
     }
 }
 
+#[derive(Clone)]
+struct PrivateMediaEntry {
+    source: MediaSource,
+    thumbnail_source: Option<MediaSource>,
+    mimetype: Option<String>,
+}
+
 struct TimelineActor {
     key: TimelineKey,
     timeline: Arc<Timeline>,
@@ -714,6 +772,9 @@ struct TimelineActor {
     /// Conduit's sliding sync does not echo own events into the timeline),
     /// so edit/redact by event id can fall back to the transaction identity.
     sent_event_txns: HashMap<String, matrix_sdk::ruma::OwnedTransactionId>,
+    /// event_id -> SDK media source. This cache may contain encrypted media
+    /// keys/hashes and must never be serialized or logged.
+    media_sources: HashMap<String, PrivateMediaEntry>,
     /// Search index mutation sender (Phase 6). `None` when no search index is
     /// configured (pre-session or pre-Phase-6 builds). Fire-and-forget: if the
     /// channel is full, we drop the mutation rather than block the diff relay.
@@ -734,6 +795,11 @@ impl TimelineActor {
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
+
+        let mut media_sources = HashMap::new();
+        for item in &initial_sdk_items {
+            cache_sdk_item_media_source(&mut media_sources, item);
+        }
 
         let initial_items: Vec<TimelineItem> = initial_sdk_items
             .iter()
@@ -781,6 +847,7 @@ impl TimelineActor {
             send_completion: SendCompletionTracker::default(),
             own_user_id,
             sent_event_txns: HashMap::new(),
+            media_sources,
             search_index_tx,
         };
 
@@ -820,6 +887,22 @@ impl TimelineActor {
                 body,
             } => {
                 self.handle_send_reply(request_id, transaction_id, in_reply_to_event_id, body)
+                    .await;
+            }
+            TimelineActorMessage::UploadAndSendMedia {
+                request_id,
+                transaction_id,
+                request,
+            } => {
+                self.handle_upload_and_send_media(request_id, transaction_id, request)
+                    .await;
+            }
+            TimelineActorMessage::DownloadMedia {
+                request_id,
+                event_id,
+                selection,
+            } => {
+                self.handle_download_media(request_id, event_id, selection)
                     .await;
             }
             TimelineActorMessage::EditText {
@@ -956,7 +1039,7 @@ impl TimelineActor {
                 let sdk_txn_id = handle.transaction_id().to_string();
                 if let Some((client_txn_id, request_id, event_id)) = self
                     .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id)
+                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
                 {
                     self.emit_send_finished_action(&client_txn_id);
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
@@ -1063,7 +1146,7 @@ impl TimelineActor {
                 let sdk_txn_id = handle.transaction_id().to_string();
                 if let Some((client_txn_id, request_id, event_id)) = self
                     .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id)
+                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
                 {
                     self.emit_send_finished_action(&client_txn_id);
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
@@ -1076,6 +1159,150 @@ impl TimelineActor {
             }
             Err(_) => {
                 self.emit_send_failed_action(&client_txn_id);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_upload_and_send_media(
+        &mut self,
+        request_id: RequestId,
+        client_txn_id: String,
+        request: UploadMediaRequest,
+    ) {
+        let room_id_str = match &self.key.kind {
+            TimelineKind::Room { room_id }
+            | TimelineKind::Thread { room_id, .. }
+            | TimelineKind::Focused { room_id, .. } => room_id.clone(),
+        };
+
+        let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
+            Ok(id) => id,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+
+        let client = self.session.client();
+        let Some(room) = client.get_room(&room_id) else {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+            return;
+        };
+
+        let mime_type = match request.mime_type.parse() {
+            Ok(mime_type) => mime_type,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+
+        let config = AttachmentConfig::new()
+            .txn_id(matrix_sdk::ruma::OwnedTransactionId::from(
+                client_txn_id.clone(),
+            ))
+            .info(attachment_info_for_upload(&request))
+            .caption(
+                request
+                    .caption
+                    .as_deref()
+                    .map(TextMessageEventContent::plain),
+            );
+
+        match room
+            .send_queue()
+            .send_attachment(request.filename, mime_type, request.bytes, config)
+            .await
+        {
+            Ok(handle) => {
+                let sdk_txn_id = handle.transaction_id().to_string();
+                if let Some((client_txn_id, request_id, event_id)) = self
+                    .send_completion
+                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id, false)
+                {
+                    self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                        request_id,
+                        key: self.key.clone(),
+                        transaction_id: client_txn_id,
+                        event_id,
+                    }));
+                }
+            }
+            Err(err) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: classify_send_queue_error(&err),
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_download_media(
+        &mut self,
+        request_id: RequestId,
+        event_id: String,
+        selection: MediaDownloadSelection,
+    ) {
+        let Some(entry) = self.media_sources.get(&event_id).cloned() else {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+            return;
+        };
+
+        let Some(request) = media_request_for_download(&entry, selection) else {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+            return;
+        };
+
+        match self
+            .session
+            .client()
+            .media()
+            .get_media_content(&request, true)
+            .await
+        {
+            Ok(bytes) => {
+                self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadCompleted {
+                    request_id,
+                    key: self.key.clone(),
+                    event_id,
+                    byte_count: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                    mimetype: entry.mimetype,
+                }));
+            }
+            Err(_) => {
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -1208,6 +1435,10 @@ impl TimelineActor {
             return;
         }
 
+        for diff in &diffs {
+            self.apply_media_cache_diff(diff);
+        }
+
         // Phase 6: forward search index mutations before converting diffs.
         if self.search_index_tx.is_some() {
             for diff in &diffs {
@@ -1229,6 +1460,37 @@ impl TimelineActor {
             batch_id,
             diffs: core_diffs,
         }));
+    }
+
+    fn apply_media_cache_diff(&mut self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
+        use eyeball_im::VectorDiff;
+
+        match diff {
+            VectorDiff::PushFront { value }
+            | VectorDiff::PushBack { value }
+            | VectorDiff::Insert { value, .. }
+            | VectorDiff::Set { value, .. } => {
+                cache_sdk_item_media_source(&mut self.media_sources, value);
+            }
+            VectorDiff::Append { values } => {
+                for item in values {
+                    cache_sdk_item_media_source(&mut self.media_sources, item);
+                }
+            }
+            VectorDiff::Reset { values } => {
+                self.media_sources.clear();
+                for item in values {
+                    cache_sdk_item_media_source(&mut self.media_sources, item);
+                }
+            }
+            VectorDiff::Clear => {
+                self.media_sources.clear();
+            }
+            VectorDiff::Remove { .. }
+            | VectorDiff::Truncate { .. }
+            | VectorDiff::PopFront
+            | VectorDiff::PopBack => {}
+        }
     }
 
     /// Forward a single SDK diff item to the search index channel.
@@ -1309,15 +1571,17 @@ impl TimelineActor {
             return;
         }
 
-        // Extract text body from message content.
-        let body: Option<String> = event_item
-            .content()
-            .as_message()
-            .map(|msg| msg.body().to_owned());
+        let Some(message) = event_item.content().as_message() else {
+            return;
+        };
+        let projection = message_projection_from_msgtype(message.msgtype(), message.body());
+        let attachment_filename = projection
+            .media
+            .as_ref()
+            .map(|media| media.filename.clone());
+        let body = projection.body;
 
-        // Only index events that have visible text content.
-        // Virtual items, redacted items, and non-message events are skipped.
-        if body.is_none() {
+        if body.is_none() && attachment_filename.is_none() {
             return;
         }
 
@@ -1325,12 +1589,7 @@ impl TimelineActor {
         // index the edit event under the edit event_id (not the original).
         // We must register an alias so verify_candidate can resolve it back.
         // Extract the edit event_id from latest_edit_json if available.
-        let edit_event_id: Option<String> = if event_item
-            .content()
-            .as_message()
-            .map(|m| m.is_edited())
-            .unwrap_or(false)
-        {
+        let edit_event_id: Option<String> = if message.is_edited() {
             event_item
                 .latest_edit_json()
                 .and_then(|raw| {
@@ -1353,7 +1612,7 @@ impl TimelineActor {
                 sender: sender.clone(),
                 timestamp_ms,
                 body: body.clone(),
-                attachment_filename: None,
+                attachment_filename: attachment_filename.clone(),
             });
             let _ = tx.try_send(SearchIndexMessage::Edit {
                 edit_event_id,
@@ -1361,7 +1620,7 @@ impl TimelineActor {
                 sender,
                 timestamp_ms,
                 body,
-                attachment_filename: None,
+                attachment_filename,
             });
         } else {
             // New (unedited) message: Upsert into document store.
@@ -1371,7 +1630,7 @@ impl TimelineActor {
                 sender,
                 timestamp_ms,
                 body,
-                attachment_filename: None,
+                attachment_filename,
             });
         }
     }
@@ -1391,27 +1650,59 @@ impl TimelineActor {
     }
 
     fn handle_send_queue_update(&mut self, update: RoomSendQueueUpdate) {
-        if let RoomSendQueueUpdate::SentEvent {
-            transaction_id,
-            event_id,
-        } = update
-        {
-            // The SDK fires SentEvent with its own txn_id; look up the client txn_id.
-            let sdk_txn_str = transaction_id.to_string();
-            self.sent_event_txns
-                .insert(event_id.to_string(), transaction_id.clone());
-            if let Some((client_txn_id, request_id, event_id)) = self
-                .send_completion
-                .record_sent_event(sdk_txn_str, event_id.to_string())
-            {
-                self.emit_send_finished_action(&client_txn_id);
-                self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
+        match update {
+            RoomSendQueueUpdate::SentEvent {
+                transaction_id,
+                event_id,
+            } => {
+                // The SDK fires SentEvent with its own txn_id; look up the client txn_id.
+                let sdk_txn_str = transaction_id.to_string();
+                self.sent_event_txns
+                    .insert(event_id.to_string(), transaction_id.clone());
+                if let Some((client_txn_id, request_id, event_id, settles_composer)) = self
+                    .send_completion
+                    .record_sent_event(sdk_txn_str, event_id.to_string())
+                {
+                    if settles_composer {
+                        self.emit_send_finished_action(&client_txn_id);
+                    }
+                    self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                        request_id,
+                        key: self.key.clone(),
+                        transaction_id: client_txn_id,
+                        event_id,
+                    }));
+                }
+            }
+            RoomSendQueueUpdate::MediaUpload {
+                related_to,
+                file,
+                index,
+                progress,
+            } => {
+                let sdk_txn_str = related_to.to_string();
+                let pending = self.send_completion.pending_send(&sdk_txn_str);
+                let (transaction_id, request_id) = pending
+                    .map(|(client_txn_id, request_id)| (client_txn_id.to_owned(), Some(request_id)))
+                    .unwrap_or((sdk_txn_str, None));
+
+                self.emit(CoreEvent::Timeline(TimelineEvent::MediaUploadProgress {
                     request_id,
                     key: self.key.clone(),
-                    transaction_id: client_txn_id,
-                    event_id,
+                    transaction_id,
+                    index,
+                    progress: MediaTransferProgress {
+                        current: u64::try_from(progress.current).unwrap_or(u64::MAX),
+                        total: u64::try_from(progress.total).unwrap_or(u64::MAX),
+                    },
+                    source: file.as_ref().map(timeline_media_source_from_sdk),
                 }));
             }
+            RoomSendQueueUpdate::NewLocalEvent(_)
+            | RoomSendQueueUpdate::CancelledLocalEvent { .. }
+            | RoomSendQueueUpdate::ReplacedLocalEvent { .. }
+            | RoomSendQueueUpdate::SendError { .. }
+            | RoomSendQueueUpdate::RetryEvent { .. } => {}
         }
     }
 
@@ -1589,17 +1880,21 @@ pub fn sdk_item_to_timeline_item(
             let sender = Some(event_item.sender().to_string());
             let timestamp_ms = Some(event_item.timestamp().0.into());
 
-            // Extract text body if this is a message event.
-            let body = event_item
+            let message_projection = event_item
                 .content()
                 .as_message()
-                .map(|msg| msg.body().to_owned());
+                .map(|msg| message_projection_from_msgtype(msg.msgtype(), msg.body()));
+            let body = message_projection
+                .as_ref()
+                .and_then(|projection| projection.body.clone());
+            let media = message_projection.and_then(|projection| projection.media);
+            let has_renderable_content = body.is_some() || media.is_some();
             let can_hold_reactions = event_item.content().reactions().is_some();
             let can_react = timeline_item_can_react(
                 event_item.event_id().is_some(),
                 can_hold_reactions,
                 event_item.content().is_redacted(),
-                body.as_deref(),
+                has_renderable_content,
             );
             let can_redact = timeline_item_can_redact(
                 event_item.event_id().is_some(),
@@ -1607,7 +1902,7 @@ pub fn sdk_item_to_timeline_item(
                     .map(|user_id| event_item.sender().as_str() == user_id.as_str())
                     .unwrap_or(false),
                 event_item.content().is_redacted(),
-                body.as_deref(),
+                has_renderable_content,
             );
             let can_edit = timeline_item_can_edit(
                 event_item.event_id().is_some(),
@@ -1615,7 +1910,7 @@ pub fn sdk_item_to_timeline_item(
                     .map(|user_id| event_item.sender().as_str() == user_id.as_str())
                     .unwrap_or(false),
                 event_item.content().is_redacted(),
-                body.as_deref(),
+                body.is_some(),
             );
             let in_reply_to_event_id = event_item
                 .content()
@@ -1648,6 +1943,7 @@ pub fn sdk_item_to_timeline_item(
                 in_reply_to_event_id,
                 thread_root,
                 thread_summary,
+                media,
                 reactions,
                 can_react,
                 is_redacted: event_item.content().is_redacted(),
@@ -1670,6 +1966,7 @@ pub fn sdk_item_to_timeline_item(
                 in_reply_to_event_id: None,
                 thread_root: None,
                 thread_summary: None,
+                media: None,
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
@@ -1701,31 +1998,221 @@ fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> T
     dto
 }
 
+struct MessageProjection {
+    body: Option<String>,
+    media: Option<TimelineMedia>,
+}
+
+fn message_projection_from_msgtype(
+    msgtype: &MessageType,
+    fallback_body: &str,
+) -> MessageProjection {
+    match msgtype {
+        MessageType::Image(content) => MessageProjection {
+            body: content.caption().map(str::to_owned),
+            media: Some(timeline_media_from_image(content)),
+        },
+        MessageType::File(content) => MessageProjection {
+            body: content.caption().map(str::to_owned),
+            media: Some(timeline_media_from_file(content)),
+        },
+        _ => MessageProjection {
+            body: Some(fallback_body.to_owned()),
+            media: None,
+        },
+    }
+}
+
+fn timeline_media_from_image(
+    content: &matrix_sdk::ruma::events::room::message::ImageMessageEventContent,
+) -> TimelineMedia {
+    let info = content.info.as_deref();
+    TimelineMedia {
+        kind: TimelineMediaKind::Image,
+        filename: content.filename().to_owned(),
+        source: timeline_media_source_from_sdk(&content.source),
+        mimetype: info.and_then(|info| info.mimetype.clone()),
+        size: info.and_then(|info| uint_to_u64(info.size.as_ref())),
+        width: info.and_then(|info| uint_to_u64(info.width.as_ref())),
+        height: info.and_then(|info| uint_to_u64(info.height.as_ref())),
+        thumbnail: info.and_then(|info| {
+            timeline_media_thumbnail_from_sdk(
+                info.thumbnail_source.as_ref(),
+                info.thumbnail_info.as_deref(),
+            )
+        }),
+    }
+}
+
+fn timeline_media_from_file(
+    content: &matrix_sdk::ruma::events::room::message::FileMessageEventContent,
+) -> TimelineMedia {
+    let info = content.info.as_deref();
+    TimelineMedia {
+        kind: TimelineMediaKind::File,
+        filename: content.filename().to_owned(),
+        source: timeline_media_source_from_sdk(&content.source),
+        mimetype: info.and_then(|info| info.mimetype.clone()),
+        size: info.and_then(|info| uint_to_u64(info.size.as_ref())),
+        width: None,
+        height: None,
+        thumbnail: info.and_then(|info| {
+            timeline_media_thumbnail_from_sdk(
+                info.thumbnail_source.as_ref(),
+                info.thumbnail_info.as_deref(),
+            )
+        }),
+    }
+}
+
+fn timeline_media_source_from_sdk(source: &MediaSource) -> TimelineMediaSource {
+    match source {
+        MediaSource::Plain(uri) => TimelineMediaSource {
+            mxc_uri: uri.to_string(),
+            encrypted: false,
+            encryption_version: None,
+        },
+        MediaSource::Encrypted(file) => TimelineMediaSource {
+            mxc_uri: file.url.to_string(),
+            encrypted: true,
+            encryption_version: Some(file.info.version().to_owned()),
+        },
+    }
+}
+
+fn timeline_media_thumbnail_from_sdk(
+    source: Option<&MediaSource>,
+    info: Option<&ThumbnailInfo>,
+) -> Option<TimelineMediaThumbnail> {
+    source.map(|source| TimelineMediaThumbnail {
+        source: timeline_media_source_from_sdk(source),
+        mimetype: info.and_then(|info| info.mimetype.clone()),
+        size: info.and_then(|info| uint_to_u64(info.size.as_ref())),
+        width: info.and_then(|info| uint_to_u64(info.width.as_ref())),
+        height: info.and_then(|info| uint_to_u64(info.height.as_ref())),
+    })
+}
+
+fn private_media_entry_from_msgtype(msgtype: &MessageType) -> Option<PrivateMediaEntry> {
+    match msgtype {
+        MessageType::Image(content) => {
+            let info = content.info.as_deref();
+            Some(PrivateMediaEntry {
+                source: content.source.clone(),
+                thumbnail_source: info.and_then(|info| info.thumbnail_source.clone()),
+                mimetype: info.and_then(|info| info.mimetype.clone()),
+            })
+        }
+        MessageType::File(content) => {
+            let info = content.info.as_deref();
+            Some(PrivateMediaEntry {
+                source: content.source.clone(),
+                thumbnail_source: info.and_then(|info| info.thumbnail_source.clone()),
+                mimetype: info.and_then(|info| info.mimetype.clone()),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn cache_sdk_item_media_source(
+    cache: &mut HashMap<String, PrivateMediaEntry>,
+    item: &Arc<SdkTimelineItem>,
+) {
+    use matrix_sdk_ui::timeline::TimelineItemKind;
+
+    let TimelineItemKind::Event(event_item) = item.kind() else {
+        return;
+    };
+    let Some(event_id) = event_item.event_id() else {
+        return;
+    };
+    let Some(message) = event_item.content().as_message() else {
+        return;
+    };
+    let Some(entry) = private_media_entry_from_msgtype(message.msgtype()) else {
+        return;
+    };
+
+    cache.insert(event_id.to_string(), entry);
+}
+
+fn attachment_info_for_upload(request: &UploadMediaRequest) -> AttachmentInfo {
+    let size = u64::try_from(request.bytes.len())
+        .ok()
+        .and_then(uint_from_u64);
+
+    match request.kind {
+        UploadMediaKind::Image { width, height } => AttachmentInfo::Image(BaseImageInfo {
+            width: width.and_then(uint_from_u64),
+            height: height.and_then(uint_from_u64),
+            size,
+            ..Default::default()
+        }),
+        UploadMediaKind::File => AttachmentInfo::File(BaseFileInfo { size }),
+    }
+}
+
+fn media_request_for_download(
+    entry: &PrivateMediaEntry,
+    selection: MediaDownloadSelection,
+) -> Option<MediaRequestParameters> {
+    match selection {
+        MediaDownloadSelection::File => Some(MediaRequestParameters {
+            source: entry.source.clone(),
+            format: MediaFormat::File,
+        }),
+        MediaDownloadSelection::Thumbnail { width, height } => {
+            if let Some(source) = entry.thumbnail_source.clone() {
+                return Some(MediaRequestParameters {
+                    source,
+                    format: MediaFormat::File,
+                });
+            }
+            Some(MediaRequestParameters {
+                source: entry.source.clone(),
+                format: MediaFormat::Thumbnail(MediaThumbnailSettings::new(
+                    uint_from_u64(width)?,
+                    uint_from_u64(height)?,
+                )),
+            })
+        }
+    }
+}
+
+fn uint_to_u64(value: Option<&matrix_sdk::ruma::UInt>) -> Option<u64> {
+    value.map(|value| (*value).into())
+}
+
+fn uint_from_u64(value: u64) -> Option<matrix_sdk::ruma::UInt> {
+    matrix_sdk::ruma::UInt::try_from(value).ok()
+}
+
 pub(crate) fn timeline_item_can_react(
     is_event_backed: bool,
     can_hold_reactions: bool,
     is_redacted: bool,
-    body: Option<&str>,
+    has_renderable_content: bool,
 ) -> bool {
-    is_event_backed && can_hold_reactions && !is_redacted && body.is_some()
+    is_event_backed && can_hold_reactions && !is_redacted && has_renderable_content
 }
 
 pub(crate) fn timeline_item_can_redact(
     is_event_backed: bool,
     is_own_message: bool,
     is_redacted: bool,
-    body: Option<&str>,
+    has_renderable_content: bool,
 ) -> bool {
-    is_event_backed && is_own_message && !is_redacted && body.is_some()
+    is_event_backed && is_own_message && !is_redacted && has_renderable_content
 }
 
 pub(crate) fn timeline_item_can_edit(
     is_event_backed: bool,
     is_own_message: bool,
     is_redacted: bool,
-    body: Option<&str>,
+    has_editable_body: bool,
 ) -> bool {
-    is_event_backed && is_own_message && !is_redacted && body.is_some()
+    is_event_backed && is_own_message && !is_redacted && has_editable_body
 }
 
 pub(crate) fn reaction_groups_from_sdk(
@@ -1855,11 +2342,17 @@ fn classify_send_queue_error(
 
 #[derive(Default)]
 struct SendCompletionTracker {
-    /// Pending send requests: sdk_txn_id → (client_txn_id, request_id).
-    pending_sends: HashMap<String, (String, RequestId)>,
+    /// Pending send requests: sdk_txn_id → completion metadata.
+    pending_sends: HashMap<String, PendingSendCompletion>,
     /// SentEvent updates that arrived before the pending mapping existed:
     /// sdk_txn_id → event_id.
     completed_sends: HashMap<String, String>,
+}
+
+struct PendingSendCompletion {
+    client_txn_id: String,
+    request_id: RequestId,
+    settles_composer: bool,
 }
 
 impl SendCompletionTracker {
@@ -1868,12 +2361,19 @@ impl SendCompletionTracker {
         sdk_txn_id: String,
         client_txn_id: String,
         request_id: RequestId,
+        settles_composer: bool,
     ) -> Option<(String, RequestId, String)> {
         if let Some(event_id) = self.completed_sends.remove(&sdk_txn_id) {
             Some((client_txn_id, request_id, event_id))
         } else {
-            self.pending_sends
-                .insert(sdk_txn_id, (client_txn_id, request_id));
+            self.pending_sends.insert(
+                sdk_txn_id,
+                PendingSendCompletion {
+                    client_txn_id,
+                    request_id,
+                    settles_composer,
+                },
+            );
             None
         }
     }
@@ -1882,13 +2382,24 @@ impl SendCompletionTracker {
         &mut self,
         sdk_txn_id: String,
         event_id: String,
-    ) -> Option<(String, RequestId, String)> {
-        if let Some((client_txn_id, request_id)) = self.pending_sends.remove(&sdk_txn_id) {
-            Some((client_txn_id, request_id, event_id))
+    ) -> Option<(String, RequestId, String, bool)> {
+        if let Some(pending) = self.pending_sends.remove(&sdk_txn_id) {
+            Some((
+                pending.client_txn_id,
+                pending.request_id,
+                event_id,
+                pending.settles_composer,
+            ))
         } else {
             self.completed_sends.insert(sdk_txn_id, event_id);
             None
         }
+    }
+
+    fn pending_send(&self, sdk_txn_id: &str) -> Option<(&str, RequestId)> {
+        self.pending_sends
+            .get(sdk_txn_id)
+            .map(|pending| (pending.client_txn_id.as_str(), pending.request_id))
     }
 }
 
@@ -2538,24 +3049,27 @@ mod tests {
 
     #[test]
     fn pending_sends_map_sdk_txn_to_client_txn_and_request_id() {
-        // Simulate: client sends with client_txn, send queue returns sdk_txn.
-        // pending_sends maps sdk_txn → (client_txn, request_id).
-        let mut pending: HashMap<String, (String, RequestId)> = HashMap::new();
+        let mut tracker = SendCompletionTracker::default();
         let sdk_txn = "sdk-auto-generated-txn".to_owned();
         let client_txn = "client-txn-42".to_owned();
         let rid = fake_rid(42);
-        pending.insert(sdk_txn.clone(), (client_txn.clone(), rid));
+        let event_id = "$event-42".to_owned();
 
-        // Simulate SentEvent arrival with sdk_txn.
-        if let Some((found_client_txn, found_rid)) = pending.remove(&sdk_txn) {
-            assert_eq!(found_client_txn, client_txn);
-            assert_eq!(found_rid, rid);
-        } else {
-            panic!("pending send not found");
-        }
+        assert_eq!(
+            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), rid, true),
+            None
+        );
+        assert_eq!(
+            tracker.pending_send(&sdk_txn),
+            Some((client_txn.as_str(), rid))
+        );
+        assert_eq!(
+            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
+            Some((client_txn.clone(), rid, event_id, true))
+        );
 
-        // After removal, the mapping is gone.
-        assert!(!pending.contains_key("sdk-auto-generated-txn"));
+        assert!(tracker.pending_sends.is_empty());
+        assert!(tracker.completed_sends.is_empty());
     }
 
     #[test]
@@ -2571,11 +3085,29 @@ mod tests {
             None
         );
         assert_eq!(
-            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), request_id),
+            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), request_id, true),
             Some((client_txn.clone(), request_id, event_id.clone()))
         );
         assert!(tracker.pending_sends.is_empty());
         assert!(tracker.completed_sends.is_empty());
+    }
+
+    #[test]
+    fn media_pending_send_does_not_settle_text_composer() {
+        let mut tracker = SendCompletionTracker::default();
+        let sdk_txn = "sdk-media-txn".to_owned();
+        let client_txn = "client-media-txn".to_owned();
+        let request_id = fake_rid(78);
+        let event_id = "$event-media".to_owned();
+
+        assert_eq!(
+            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), request_id, false),
+            None
+        );
+        assert_eq!(
+            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
+            Some((client_txn, request_id, event_id, false))
+        );
     }
 
     #[test]
@@ -2599,30 +3131,30 @@ mod tests {
     }
 
     #[test]
-    fn timeline_item_can_react_requires_event_backed_visible_message() {
-        assert!(timeline_item_can_react(true, true, false, Some("hello")));
-        assert!(!timeline_item_can_react(false, true, false, Some("hello")));
-        assert!(!timeline_item_can_react(true, false, false, Some("hello")));
-        assert!(!timeline_item_can_react(true, true, false, None));
-        assert!(!timeline_item_can_react(true, true, true, Some("hello")));
+    fn timeline_item_can_react_requires_event_backed_renderable_content() {
+        assert!(timeline_item_can_react(true, true, false, true));
+        assert!(!timeline_item_can_react(false, true, false, true));
+        assert!(!timeline_item_can_react(true, false, false, true));
+        assert!(!timeline_item_can_react(true, true, false, false));
+        assert!(!timeline_item_can_react(true, true, true, true));
     }
 
     #[test]
-    fn timeline_item_can_redact_requires_own_visible_event_message() {
-        assert!(timeline_item_can_redact(true, true, false, Some("hello")));
-        assert!(!timeline_item_can_redact(false, true, false, Some("hello")));
-        assert!(!timeline_item_can_redact(true, false, false, Some("hello")));
-        assert!(!timeline_item_can_redact(true, true, true, Some("hello")));
-        assert!(!timeline_item_can_redact(true, true, false, None));
+    fn timeline_item_can_redact_requires_own_renderable_event_content() {
+        assert!(timeline_item_can_redact(true, true, false, true));
+        assert!(!timeline_item_can_redact(false, true, false, true));
+        assert!(!timeline_item_can_redact(true, false, false, true));
+        assert!(!timeline_item_can_redact(true, true, true, true));
+        assert!(!timeline_item_can_redact(true, true, false, false));
     }
 
     #[test]
-    fn timeline_item_can_edit_requires_own_visible_event_message() {
-        assert!(timeline_item_can_edit(true, true, false, Some("hello")));
-        assert!(!timeline_item_can_edit(false, true, false, Some("hello")));
-        assert!(!timeline_item_can_edit(true, false, false, Some("hello")));
-        assert!(!timeline_item_can_edit(true, true, true, Some("hello")));
-        assert!(!timeline_item_can_edit(true, true, false, None));
+    fn timeline_item_can_edit_requires_own_editable_body() {
+        assert!(timeline_item_can_edit(true, true, false, true));
+        assert!(!timeline_item_can_edit(false, true, false, true));
+        assert!(!timeline_item_can_edit(true, false, false, true));
+        assert!(!timeline_item_can_edit(true, true, true, true));
+        assert!(!timeline_item_can_edit(true, true, false, false));
     }
 
     // --- Debug redaction of new types ---

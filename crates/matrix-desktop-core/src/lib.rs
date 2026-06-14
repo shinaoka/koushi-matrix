@@ -22,13 +22,15 @@ pub mod sync;
 pub mod timeline;
 
 pub use command::{
-    AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, SearchScope, SyncCommand,
-    TimelineCommand,
+    AccountCommand, AppCommand, CoreCommand, MediaDownloadSelection, RoomCommand, SearchCommand,
+    SearchScope, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 pub use event::{
-    AccountEvent, AppStateSnapshot, CoreEvent, E2eeTrustEvent, PaginationDirection,
-    PaginationState, ReactionGroup, RoomEvent, SearchEvent, SearchResultItem, SyncBackendKind,
-    SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineResyncReason,
+    AccountEvent, AppStateSnapshot, CoreEvent, E2eeTrustEvent, MediaTransferProgress,
+    PaginationDirection, PaginationState, ReactionGroup, RoomEvent, SearchEvent, SearchResultItem,
+    SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
+    TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+    TimelineResyncReason,
 };
 pub use failure::{
     CoreFailure, LoginFailureKind, RecoveryFailureKind, RoomFailureKind, SearchFailureKind,

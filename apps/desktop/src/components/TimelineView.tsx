@@ -198,7 +198,11 @@ export function TimelineView({
               ? event.PaginationStateChanged.key
               : "SendCompleted" in event
                 ? event.SendCompleted.key
-                : event.ResyncRequired.key;
+                : "MediaUploadProgress" in event
+                  ? event.MediaUploadProgress.key
+                  : "MediaDownloadCompleted" in event
+                    ? event.MediaDownloadCompleted.key
+                    : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         return;
       }

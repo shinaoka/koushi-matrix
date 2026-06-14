@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-06-14.
+Last amended: 2026-06-15.
 
 ## Product Scope
 
@@ -155,8 +155,9 @@ An in-process actor system in `matrix-desktop-core`:
   requests. Its live entries adapter uses a non-left filter so invited-room
   diffs also wake Rust-owned invite projection; joined-only observation leaves
   `AppState.invites` stale.
-- `TimelineActor` (per room/thread timeline) — subscription, diffs,
-  pagination, send/edit/redaction relay. Room live timelines use
+- `TimelineActor` (per room/thread/focused timeline) — subscription, diffs,
+  pagination, send/edit/redaction relay, media/file projection, upload
+  progress, and Rust-only media download effects. Room live timelines use
   `TimelineFocus::Live { hide_threaded_events: true }` so threaded replies
   are hidden from the main room timeline. Expanded threads use
   `TimelineKind::Thread`. On the sliding-sync backend,
@@ -169,7 +170,11 @@ An in-process actor system in `matrix-desktop-core`:
   direct room sends) so their diffs are produced as local echoes instead of
   depending on the server echoing them back; for own sent events whose
   remote echo has not arrived, the actor resolves the event id back to the
-  local-echo transaction identity.
+  local-echo transaction identity. Media messages are projected into
+  `TimelineItem.media` from SDK message content. React renders that DTO only:
+  it does not infer Matrix media semantics, upload state, encrypted media
+  metadata, or download behavior. Downloaded bytes and encrypted media keys or
+  hashes stay inside Rust actor effects and are never sent through CoreEvents.
 - `SearchActor` — ngram candidates, canonical-text verification,
   document-level index mutations for edits/redactions/late decryptions.
 - `StoreActor` — credential store access, store/search keys, per-account

@@ -774,6 +774,7 @@ describe("desktop release scripts", () => {
       "scenario room_space",
       "scenario timeline",
       "scenario reply",
+      "scenario media",
       "scenario thread",
       "scenario edit_redact_search",
       "scenario restore_cleanup"

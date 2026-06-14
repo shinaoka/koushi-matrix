@@ -7,10 +7,10 @@ This contract covers three lanes:
   token set and one login per run.
 - Linux virtual-display client QA, using the real Tauri client under Xvfb.
 
-Current GUI-operation policy: room creation, space creation, replies, and other
-destructive Matrix operations are iterated only against disposable local
-Conduit/Tuwunel homeservers. matrix.org is a final compatibility gate, not a
-GUI development or retry loop.
+Current GUI-operation policy: room creation, space creation, replies,
+media/file sends and downloads, and other destructive Matrix operations are
+iterated only against disposable local Conduit/Tuwunel homeservers. matrix.org
+is a final compatibility gate, not a GUI development or retry loop.
 
 ## Local headless lane
 
@@ -39,6 +39,8 @@ thread_hidden=ok
 thread_summary=ok
 thread_recv=ok
 thread_paginate=end_reached
+send_media=ok
+recv_media=ok
 edit_redact_search=ok
 e2ee_trust=ok
 restore_cleanup=ok
@@ -47,6 +49,14 @@ restore_cleanup=ok
 `thread_summary=ok` is a strict Phase 11 signal: local core QA fails if the
 server/SDK path does not surface a root `thread_summary` for the threaded
 reply.
+
+`send_media=ok` and `recv_media=ok` are the Phase A media/file state-machine
+signals. The core lane sends a synthetic file through
+`TimelineCommand::UploadAndSendMedia`, observes Rust-owned upload progress and
+local-echo media metadata, receives the event on the second account timeline,
+and downloads it through a Rust-only effect that emits only byte-count
+completion. The lane must not print filenames, MXC URIs, room IDs, event IDs,
+media bytes, encrypted media keys/hashes, or raw SDK errors.
 
 `invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, and `dm_start=ok`
 are the Phase A invite/DM state-machine proof. The core lane proves incoming
@@ -79,6 +89,7 @@ Focused local proof:
 ```bash
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=invites_dm --core --core-backend=probed --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=media --core --core-backend=probed --timeout-ms=240000
 ```
 
 ## Headless browser IPC-contract lane

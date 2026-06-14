@@ -215,6 +215,123 @@
     },
     "kind": "Timeline"
   },
+  "timelineMediaDownloadCompleted": {
+    "event": {
+      "MediaDownloadCompleted": {
+        "byte_count": 68,
+        "event_id": "$media1",
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "mimetype": "image/png",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineMediaInitialItems": {
+    "event": {
+      "InitialItems": {
+        "generation": 2,
+        "items": [
+          {
+            "body": "caption",
+            "id": {
+              "Event": {
+                "event_id": "$media1"
+              }
+            },
+            "in_reply_to_event_id": null,
+            "thread_root": null,
+            "thread_summary": null,
+            "media": {
+              "filename": "fixture.png",
+              "height": 2,
+              "kind": "Image",
+              "mimetype": "image/png",
+              "size": 68,
+              "source": {
+                "encrypted": true,
+                "encryption_version": "v2",
+                "mxc_uri": "mxc://example.test/media"
+              },
+              "thumbnail": {
+                "height": 1,
+                "mimetype": "image/png",
+                "size": 32,
+                "source": {
+                  "encrypted": false,
+                  "encryption_version": null,
+                  "mxc_uri": "mxc://example.test/thumb"
+                },
+                "width": 1
+              },
+              "width": 2
+            },
+            "can_react": true,
+            "is_redacted": false,
+            "can_redact": true,
+            "is_edited": false,
+            "can_edit": false,
+            "reactions": [],
+            "sender": "@u:example.test",
+            "timestamp_ms": 456
+          }
+        ],
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineMediaUploadProgress": {
+    "event": {
+      "MediaUploadProgress": {
+        "index": 0,
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "progress": {
+          "current": 1,
+          "total": 2
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "source": {
+          "encrypted": false,
+          "encryption_version": null,
+          "mxc_uri": "mxc://example.test/media"
+        },
+        "transaction_id": "txn-media"
+      }
+    },
+    "kind": "Timeline"
+  },
   "timelinePaginationEndReached": {
     "event": {
       "PaginationStateChanged": {

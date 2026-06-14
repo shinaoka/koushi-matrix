@@ -82,6 +82,33 @@ export interface ReactionGroup {
   sender_preview: string[];
 }
 
+export type TimelineMediaKind = "Image" | "File" | "Audio" | "Video";
+
+export interface TimelineMediaSource {
+  mxc_uri: string;
+  encrypted: boolean;
+  encryption_version: string | null;
+}
+
+export interface TimelineMediaThumbnail {
+  source: TimelineMediaSource;
+  mimetype: string | null;
+  size: number | null;
+  width: number | null;
+  height: number | null;
+}
+
+export interface TimelineMedia {
+  kind: TimelineMediaKind;
+  filename: string;
+  source: TimelineMediaSource;
+  mimetype: string | null;
+  size: number | null;
+  width: number | null;
+  height: number | null;
+  thumbnail: TimelineMediaThumbnail | null;
+}
+
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
@@ -90,6 +117,7 @@ export interface TimelineItem {
   in_reply_to_event_id: string | null;
   thread_root: string | null;
   thread_summary: ThreadSummaryDto | null;
+  media?: TimelineMedia | null;
   reactions: ReactionGroup[];
   can_react: boolean;
   is_redacted: boolean;
@@ -130,6 +158,11 @@ export type TimelineDiff =
   | "Clear"
   | { Reset: { items: TimelineItem[] } };
 
+export interface MediaTransferProgress {
+  current: number;
+  total: number;
+}
+
 // ---------------------------------------------------------------------------
 // Timeline events (externally tagged on the wire)
 // ---------------------------------------------------------------------------
@@ -167,6 +200,25 @@ export type TimelineEvent =
         key: TimelineKey;
         transaction_id: string;
         event_id: string;
+      };
+    }
+  | {
+      MediaUploadProgress: {
+        request_id: RequestId | null;
+        key: TimelineKey;
+        transaction_id: string;
+        index: number;
+        progress: MediaTransferProgress;
+        source: TimelineMediaSource | null;
+      };
+    }
+  | {
+      MediaDownloadCompleted: {
+        request_id: RequestId;
+        key: TimelineKey;
+        event_id: string;
+        byte_count: number;
+        mimetype: string | null;
       };
     }
   | {

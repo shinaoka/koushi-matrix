@@ -31,6 +31,9 @@ follow
 [docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md](docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md).
 All agents implementing local GUI room/space/reply operations follow
 [docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md](docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md).
+All agents implementing media/file timeline support follow
+[docs/superpowers/plans/2026-06-15-media-phase-a.md](docs/superpowers/plans/2026-06-15-media-phase-a.md)
+for Phase A Rust/headless work before any GUI work.
 All agents implementing E2EE trust Phase A state-machine contracts follow
 [docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md](docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md).
 All agents implementing Rust-owned settings Phase A follow

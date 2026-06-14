@@ -169,6 +169,53 @@ stateDiagram-v2
   `in_reply_to_event_id == root_event_id`. Focused timelines do not own
   composer state.
 
+## Timeline Media
+
+Timeline media is a core-owned operation/effect state, not React-local logic.
+`TimelineItem.media` is projected in `matrix-desktop-core` from SDK
+`m.image`/`m.file` message content and flows to the UI as ordinary timeline
+diff data. React renders the metadata and dispatches typed commands; it must
+not parse Matrix media event content, infer encryption state, or synthesize
+upload/download lifecycle locally.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Uploading: UploadAndSendMedia
+    Uploading --> Uploading: MediaUploadProgress
+    Uploading --> Sent: SendCompleted
+    Uploading --> Failed: OperationFailed
+    Sent --> Idle
+
+    Idle --> Downloading: DownloadMedia
+    Downloading --> Downloaded: MediaDownloadCompleted
+    Downloading --> Failed: OperationFailed
+    Downloaded --> Idle
+    Failed --> Idle
+```
+
+- `UploadAndSendMedia { key, transaction_id, request }` is routed only to a
+  subscribed `TimelineActor`. The actor fixes the SDK attachment transaction id
+  to the caller-provided `transaction_id` so local echo, upload progress, and
+  `SendCompleted` correlate through the same Rust-owned key.
+- Upload requests may carry filename, caption, mimetype, dimensions, and bytes
+  because those are required to send the media. Those fields are private
+  visible-content payloads: `Debug`, QA output, logs, and errors must redact
+  them.
+- `MediaUploadProgress` carries only request/transaction correlation, progress,
+  index, and safe media source metadata. It never carries filenames, captions,
+  bytes, Matrix room ids, or raw SDK errors.
+- `TimelineItem.media.source` may expose the MXC URI, encrypted flag, and
+  encryption protocol version. Encrypted file keys, hashes, and decrypted bytes
+  remain inside Rust actor-private SDK media sources and are never serialized to
+  React.
+- `DownloadMedia` resolves the actor-private media source by event id and emits
+  `MediaDownloadCompleted` with `byte_count` only. A future GUI save/open flow
+  must use a Rust-owned platform port or Tauri command that does not put bytes
+  into React state.
+- The local core `media` QA scenario is the Phase A proof:
+  `send_media=ok recv_media=ok`. Its output must remain private-data-free.
+
 ## Focused Context
 
 A focused context is the Rust-owned result-context timeline used when the

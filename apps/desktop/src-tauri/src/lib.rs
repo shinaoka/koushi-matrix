@@ -1147,9 +1147,10 @@ mod tests {
         use matrix_desktop_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
-                AccountEvent, E2eeTrustEvent, PaginationDirection, PaginationState,
-                ReactionGroup, RoomEvent, TimelineEvent, TimelineItem, TimelineItemId,
-                TimelineResyncReason,
+                AccountEvent, E2eeTrustEvent, MediaTransferProgress, PaginationDirection,
+                PaginationState, ReactionGroup, RoomEvent, TimelineEvent, TimelineItem,
+                TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
+                TimelineMediaThumbnail, TimelineResyncReason,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1175,6 +1176,7 @@ mod tests {
             in_reply_to_event_id: None,
             thread_root: None,
             thread_summary: None,
+            media: None,
             reactions: vec![ReactionGroup {
                 key: "👍".to_owned(),
                 count: 2,
@@ -1187,6 +1189,47 @@ mod tests {
             can_redact: true,
             is_edited: true,
             can_edit: true,
+        };
+        let media_item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: "$media1".to_owned(),
+            },
+            sender: Some("@u:example.test".to_owned()),
+            body: Some("caption".to_owned()),
+            timestamp_ms: Some(456),
+            in_reply_to_event_id: None,
+            thread_root: None,
+            thread_summary: None,
+            media: Some(TimelineMedia {
+                kind: TimelineMediaKind::Image,
+                filename: "fixture.png".to_owned(),
+                source: TimelineMediaSource {
+                    mxc_uri: "mxc://example.test/media".to_owned(),
+                    encrypted: true,
+                    encryption_version: Some("v2".to_owned()),
+                },
+                mimetype: Some("image/png".to_owned()),
+                size: Some(68),
+                width: Some(2),
+                height: Some(2),
+                thumbnail: Some(TimelineMediaThumbnail {
+                    source: TimelineMediaSource {
+                        mxc_uri: "mxc://example.test/thumb".to_owned(),
+                        encrypted: false,
+                        encryption_version: None,
+                    },
+                    mimetype: Some("image/png".to_owned()),
+                    size: Some(32),
+                    width: Some(1),
+                    height: Some(1),
+                }),
+            }),
+            reactions: Vec::new(),
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: false,
+            can_edit: false,
         };
 
         // InitialItems envelope + payload
@@ -1255,6 +1298,71 @@ mod tests {
         assert_eq!(diffs[1], json!({ "Remove": { "index": 2 } }));
         assert_eq!(diffs[2], json!("Clear"));
         assert_eq!(updated["event"]["ItemsUpdated"]["batch_id"], json!(9));
+
+        let media_initial =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(request_id),
+                key: key.clone(),
+                generation: TimelineGeneration(2),
+                items: vec![media_item],
+            }))
+            .expect("serialize media initial items");
+        assert_eq!(
+            media_initial["event"]["InitialItems"]["items"][0]["media"],
+            json!({
+                "kind": "Image",
+                "filename": "fixture.png",
+                "source": {
+                    "mxc_uri": "mxc://example.test/media",
+                    "encrypted": true,
+                    "encryption_version": "v2"
+                },
+                "mimetype": "image/png",
+                "size": 68,
+                "width": 2,
+                "height": 2,
+                "thumbnail": {
+                    "source": {
+                        "mxc_uri": "mxc://example.test/thumb",
+                        "encrypted": false,
+                        "encryption_version": null
+                    },
+                    "mimetype": "image/png",
+                    "size": 32,
+                    "width": 1,
+                    "height": 1
+                }
+            })
+        );
+
+        let media_upload_progress =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MediaUploadProgress {
+                request_id: Some(request_id),
+                key: key.clone(),
+                transaction_id: "txn-media".to_owned(),
+                index: 0,
+                progress: MediaTransferProgress {
+                    current: 1,
+                    total: 2,
+                },
+                source: Some(TimelineMediaSource {
+                    mxc_uri: "mxc://example.test/media".to_owned(),
+                    encrypted: false,
+                    encryption_version: None,
+                }),
+            }))
+            .expect("serialize media upload progress");
+
+        let media_download_completed = serialize_core_event(&CoreEvent::Timeline(
+            TimelineEvent::MediaDownloadCompleted {
+                request_id,
+                key: key.clone(),
+                event_id: "$media1".to_owned(),
+                byte_count: 68,
+                mimetype: Some("image/png".to_owned()),
+            },
+        ))
+        .expect("serialize media download completion");
 
         // PaginationStateChanged: unit states are strings, Failed is tagged
         let pagination = serialize_core_event(&CoreEvent::Timeline(
@@ -1356,10 +1464,7 @@ mod tests {
         .expect("serialize");
         assert_eq!(e2ee_trust["kind"], json!("E2eeTrust"));
         assert_eq!(e2ee_trust["event"]["kind"], json!("verificationProgress"));
-        assert_eq!(
-            e2ee_trust["event"]["state"]["kind"],
-            json!("sasPresented")
-        );
+        assert_eq!(e2ee_trust["event"]["state"]["kind"], json!("sasPresented"));
 
         let e2ee_identity_reset = serialize_core_event(&CoreEvent::E2eeTrust(
             E2eeTrustEvent::IdentityResetChanged {
@@ -1391,6 +1496,9 @@ mod tests {
             "roomLeft": room_left,
             "timelineInitialItems": initial,
             "timelineItemsUpdated": updated,
+            "timelineMediaDownloadCompleted": media_download_completed,
+            "timelineMediaInitialItems": media_initial,
+            "timelineMediaUploadProgress": media_upload_progress,
             "timelinePaginationEndReached": serialize_core_event(&CoreEvent::Timeline(
                 TimelineEvent::PaginationStateChanged {
                     request_id: None,

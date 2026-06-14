@@ -36,8 +36,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use matrix_desktop_core::command::{
-    AccountCommand, CoreCommand, RoomCommand, SearchCommand, SearchScope, SyncCommand,
-    TimelineCommand,
+    AccountCommand, CoreCommand, MediaDownloadSelection, RoomCommand, SearchCommand, SearchScope,
+    SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 use matrix_desktop_core::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, PaginationDirection, PaginationState, RoomEvent,
@@ -89,6 +89,7 @@ enum QaScenario {
     RoomSpace,
     Timeline,
     Reply,
+    Media,
     Thread,
     EditRedactSearch,
     RestoreCleanup,
@@ -103,6 +104,7 @@ enum QaStage {
     RoomSpace,
     Timeline,
     Reply,
+    Media,
     Thread,
     EditRedactSearch,
     RestoreCleanup,
@@ -189,11 +191,12 @@ impl QaScenario {
             "room_space" => Ok(Self::RoomSpace),
             "timeline" => Ok(Self::Timeline),
             "reply" => Ok(Self::Reply),
+            "media" => Ok(Self::Media),
             "thread" => Ok(Self::Thread),
             "edit_redact_search" => Ok(Self::EditRedactSearch),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, reply, thread, edit_redact_search, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, reply, media, thread, edit_redact_search, restore_cleanup; got {other}"
             )),
         }
     }
@@ -228,6 +231,14 @@ impl QaScenario {
                     | QaStage::RoomSpace
                     | QaStage::Timeline
                     | QaStage::Reply
+            ),
+            Self::Media => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::Media
             ),
             Self::Thread => matches!(
                 stage,
@@ -278,6 +289,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Timeline => &["timeline=ok"],
         QaStage::Reply => &["reply=ok"],
+        QaStage::Media => &["send_media=ok", "recv_media=ok"],
         QaStage::Thread => &[
             "thread_hidden=ok",
             "thread_summary=ok",
@@ -304,6 +316,8 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "thread_summary=ok",
         "thread_recv=ok",
         "thread_paginate=end_reached",
+        "send_media=ok",
+        "recv_media=ok",
         "edit_redact_search=ok",
         "e2ee_trust=ok",
         "restore_cleanup=ok",
@@ -333,6 +347,13 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::RoomSpace,
             QaStage::Timeline,
             QaStage::Reply,
+        ],
+        QaScenario::Media => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::Media,
         ],
         QaScenario::Thread => vec![
             QaStage::Safety,
@@ -364,6 +385,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::RoomSpace,
             QaStage::Timeline,
             QaStage::Reply,
+            QaStage::Media,
             QaStage::Thread,
             QaStage::EditRedactSearch,
             QaStage::E2eeTrust,
@@ -389,6 +411,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::InvitesDm
         | QaScenario::Timeline
         | QaScenario::Reply
+        | QaScenario::Media
         | QaScenario::Thread
         | QaScenario::EditRedactSearch
         | QaScenario::RestoreCleanup => {
@@ -1403,6 +1426,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             ));
         }
         println!("reply=ok");
+    }
+
+    if scenario.should_run_stage(QaStage::Media) {
+        run_media_stage(&mut conn_a, &mut conn_b, &key_a, &key_b).await?;
     }
 
     if scenario.should_run_stage(QaStage::Thread) {
@@ -4242,6 +4269,311 @@ async fn wait_for_send_completed(
     }
 }
 
+struct MediaSendWaiter {
+    request_id: matrix_desktop_core::ids::RequestId,
+    key: TimelineKey,
+    expected_client_txn_id: String,
+    saw_local_media_echo: bool,
+    saw_upload_progress: bool,
+    event_id: Option<String>,
+}
+
+impl MediaSendWaiter {
+    fn new(
+        request_id: matrix_desktop_core::ids::RequestId,
+        key: TimelineKey,
+        expected_client_txn_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            request_id,
+            key,
+            expected_client_txn_id: expected_client_txn_id.into(),
+            saw_local_media_echo: false,
+            saw_upload_progress: false,
+            event_id: None,
+        }
+    }
+
+    fn observe(&mut self, event: CoreEvent) -> Result<(), String> {
+        match event {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == &self.key => {
+                if !self.saw_local_media_echo {
+                    self.saw_local_media_echo =
+                        media_diffs_include_transaction_media(&diffs, &self.expected_client_txn_id);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::MediaUploadProgress {
+                request_id,
+                key: ref ev_key,
+                transaction_id,
+                progress,
+                ..
+            }) if ev_key == &self.key && transaction_id == self.expected_client_txn_id => {
+                if let Some(request_id) = request_id
+                    && request_id != self.request_id
+                {
+                    return Err("media upload progress request_id mismatch".to_owned());
+                }
+                if progress.total > 0 && progress.current <= progress.total {
+                    self.saw_upload_progress = true;
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id,
+                key: ref ev_key,
+                transaction_id,
+                event_id,
+            }) if request_id == self.request_id && ev_key == &self.key => {
+                if transaction_id != self.expected_client_txn_id {
+                    return Err("media send transaction_id mismatch".to_owned());
+                }
+                self.event_id = Some(event_id);
+            }
+            CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } if request_id == self.request_id => {
+                return Err(format!("media send failed: {failure:?}"));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn is_complete(&self) -> bool {
+        self.saw_local_media_echo && self.saw_upload_progress && self.event_id.is_some()
+    }
+}
+
+fn media_diffs_include_transaction_media(
+    diffs: &[matrix_desktop_core::event::TimelineDiff],
+    expected_transaction_id: &str,
+) -> bool {
+    diffs.iter().any(|diff| match diff {
+        matrix_desktop_core::event::TimelineDiff::PushBack { item }
+        | matrix_desktop_core::event::TimelineDiff::PushFront { item }
+        | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
+        | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => {
+            timeline_item_is_transaction_media(item, expected_transaction_id)
+        }
+        matrix_desktop_core::event::TimelineDiff::Reset { items } => items
+            .iter()
+            .any(|item| timeline_item_is_transaction_media(item, expected_transaction_id)),
+        _ => false,
+    })
+}
+
+fn timeline_item_is_transaction_media(
+    item: &matrix_desktop_core::event::TimelineItem,
+    expected_transaction_id: &str,
+) -> bool {
+    item.media.is_some()
+        && matches!(
+            &item.id,
+            matrix_desktop_core::event::TimelineItemId::Transaction { transaction_id }
+                if transaction_id == expected_transaction_id
+        )
+}
+
+async fn wait_for_media_send_flow_completion(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    key: &TimelineKey,
+    client_txn_id: &str,
+    label: &str,
+) -> Result<String, String> {
+    let mut waiter = MediaSendWaiter::new(request_id, key.clone(), client_txn_id);
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for media send flow completion"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        waiter.observe(event)?;
+        if waiter.is_complete() {
+            return waiter
+                .event_id
+                .ok_or_else(|| "media send flow: missing event id".to_owned());
+        }
+    }
+}
+
+async fn wait_for_media_item(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    label: &str,
+) -> Result<matrix_desktop_core::event::TimelineItem, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for media item"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                if let Some(item) = items.into_iter().find(|item| item.media.is_some()) {
+                    return Ok(item);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                for diff in diffs {
+                    match diff {
+                        matrix_desktop_core::event::TimelineDiff::PushBack { item }
+                        | matrix_desktop_core::event::TimelineDiff::PushFront { item }
+                        | matrix_desktop_core::event::TimelineDiff::Insert { item, .. }
+                        | matrix_desktop_core::event::TimelineDiff::Set { item, .. } => {
+                            if item.media.is_some() {
+                                return Ok(item);
+                            }
+                        }
+                        matrix_desktop_core::event::TimelineDiff::Reset { items } => {
+                            if let Some(item) = items.into_iter().find(|item| item.media.is_some())
+                            {
+                                return Ok(item);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_media_download_completed(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    key: &TimelineKey,
+    expected_event_id: &str,
+    expected_byte_count: u64,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for media download completion"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::MediaDownloadCompleted {
+                request_id: ev_id,
+                key: ref ev_key,
+                event_id,
+                byte_count,
+                ..
+            }) if ev_id == request_id && ev_key == key => {
+                if event_id != expected_event_id {
+                    return Err("media download event_id mismatch".to_owned());
+                }
+                if byte_count != expected_byte_count {
+                    return Err(format!(
+                        "media download byte_count mismatch: expected {expected_byte_count}, got {byte_count}"
+                    ));
+                }
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn run_media_stage(
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+    key_a: &TimelineKey,
+    key_b: &TimelineKey,
+) -> Result<(), String> {
+    const MEDIA_BYTES: &[u8] = b"matrix-desktop synthetic media fixture";
+
+    let media_txn = "qa-phase15-media-txn".to_owned();
+    let send_media_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia {
+            request_id: send_media_id,
+            key: key_a.clone(),
+            transaction_id: media_txn.clone(),
+            request: UploadMediaRequest {
+                filename: "matrix-desktop-qa-media.bin".to_owned(),
+                mime_type: "application/octet-stream".to_owned(),
+                bytes: MEDIA_BYTES.to_vec(),
+                kind: UploadMediaKind::File,
+                caption: None,
+            },
+        }))
+        .await
+        .map_err(|e| format!("submit media send: {e}"))?;
+
+    let _media_event_id = wait_for_media_send_flow_completion(
+        conn_a,
+        send_media_id,
+        key_a,
+        &media_txn,
+        "media send flow",
+    )
+    .await?;
+    println!("send_media=ok");
+
+    let media_item = wait_for_media_item(conn_b, key_b, "B receives media item").await?;
+    let media = media_item
+        .media
+        .as_ref()
+        .ok_or_else(|| "media item missing media metadata".to_owned())?;
+    if media.kind != matrix_desktop_core::event::TimelineMediaKind::File {
+        return Err("media item kind mismatch".to_owned());
+    }
+    let media_event_id = match &media_item.id {
+        matrix_desktop_core::event::TimelineItemId::Event { event_id } => event_id.clone(),
+        matrix_desktop_core::event::TimelineItemId::Transaction { .. }
+        | matrix_desktop_core::event::TimelineItemId::Synthetic { .. } => {
+            return Err("received media item was not event-backed".to_owned());
+        }
+    };
+
+    let download_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::DownloadMedia {
+            request_id: download_id,
+            key: key_b.clone(),
+            event_id: media_event_id.clone(),
+            selection: MediaDownloadSelection::File,
+        }))
+        .await
+        .map_err(|e| format!("submit media download: {e}"))?;
+
+    wait_for_media_download_completed(
+        conn_b,
+        download_id,
+        key_b,
+        &media_event_id,
+        u64::try_from(MEDIA_BYTES.len()).unwrap_or(u64::MAX),
+        "media download",
+    )
+    .await?;
+    println!("recv_media=ok");
+
+    Ok(())
+}
+
 /// Wait for an item whose body contains `expected_body` and return the item so
 /// the caller can assert relation metadata on the projected DTO.
 async fn wait_for_item_with_body(
@@ -5007,6 +5339,10 @@ mod tests {
             QaScenario::Reply
         );
         assert_eq!(
+            QaScenario::from_env_value("media").unwrap(),
+            QaScenario::Media
+        );
+        assert_eq!(
             QaScenario::from_env_value("thread").unwrap(),
             QaScenario::Thread
         );
@@ -5041,6 +5377,7 @@ mod tests {
             QaScenario::InvitesDm,
             QaScenario::Timeline,
             QaScenario::Reply,
+            QaScenario::Media,
             QaScenario::Thread,
             QaScenario::EditRedactSearch,
             QaScenario::RestoreCleanup,
@@ -5068,6 +5405,7 @@ mod tests {
                 in_reply_to_event_id: None,
                 thread_root: None,
                 thread_summary: None,
+                media: None,
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
@@ -5085,6 +5423,7 @@ mod tests {
                 in_reply_to_event_id: Some("$root:test".to_owned()),
                 thread_root: None,
                 thread_summary: None,
+                media: None,
                 reactions: Vec::new(),
                 can_react: true,
                 is_redacted: false,
@@ -5113,6 +5452,7 @@ mod tests {
             in_reply_to_event_id: None,
             thread_root: None,
             thread_summary: None,
+            media: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -5139,6 +5479,7 @@ mod tests {
             in_reply_to_event_id: Some("$root:test".to_owned()),
             thread_root: None,
             thread_summary: None,
+            media: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -5176,6 +5517,7 @@ mod tests {
             in_reply_to_event_id: in_reply_to_event_id.map(str::to_owned),
             thread_root: thread_root.map(str::to_owned),
             thread_summary,
+            media: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -5389,6 +5731,7 @@ mod tests {
             in_reply_to_event_id: Some("$root:test".to_owned()),
             thread_root: None,
             thread_summary: None,
+            media: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -5417,6 +5760,7 @@ mod tests {
             in_reply_to_event_id: None,
             thread_root: None,
             thread_summary: None,
+            media: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -5472,6 +5816,7 @@ mod tests {
                         in_reply_to_event_id: None,
                         thread_root: None,
                         thread_summary: None,
+                        media: None,
                         reactions: Vec::new(),
                         can_react: false,
                         is_redacted: false,
@@ -5522,12 +5867,21 @@ mod tests {
         assert!(QaScenario::Reply.should_run_stage(QaStage::Reply));
         assert!(!QaScenario::Reply.should_run_stage(QaStage::EditRedactSearch));
 
+        assert!(QaScenario::Media.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::Media.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::Media.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::Media.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::Media.should_run_stage(QaStage::Media));
+        assert!(!QaScenario::Media.should_run_stage(QaStage::Thread));
+        assert!(!QaScenario::Media.should_run_stage(QaStage::EditRedactSearch));
+
         assert!(QaScenario::Thread.should_run_stage(QaStage::Safety));
         assert!(QaScenario::Thread.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::Thread.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::Thread.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::Thread.should_run_stage(QaStage::Reply));
         assert!(QaScenario::Thread.should_run_stage(QaStage::Thread));
+        assert!(!QaScenario::Thread.should_run_stage(QaStage::Media));
         assert!(!QaScenario::Thread.should_run_stage(QaStage::EditRedactSearch));
 
         assert!(QaScenario::All.should_run_stage(QaStage::Safety));
@@ -5537,6 +5891,7 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
+        assert!(QaScenario::All.should_run_stage(QaStage::Media));
         assert!(QaScenario::All.should_run_stage(QaStage::Thread));
         assert!(QaScenario::All.should_run_stage(QaStage::EditRedactSearch));
         assert!(QaScenario::All.should_run_stage(QaStage::RestoreCleanup));
@@ -5560,6 +5915,8 @@ mod tests {
                 "thread_summary=ok",
                 "thread_recv=ok",
                 "thread_paginate=end_reached",
+                "send_media=ok",
+                "recv_media=ok",
                 "edit_redact_search=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
@@ -5613,6 +5970,18 @@ mod tests {
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::Media),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "send_media=ok",
+                "recv_media=ok",
                 "restore_cleanup=ok",
             ]
         );
@@ -5675,6 +6044,8 @@ mod tests {
                 "thread_summary=ok",
                 "thread_recv=ok",
                 "thread_paginate=end_reached",
+                "send_media=ok",
+                "recv_media=ok",
                 "edit_redact_search=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",

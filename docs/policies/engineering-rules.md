@@ -71,6 +71,14 @@ Rules:
    account keys, verification target user/device IDs, backup versions, raw SDK
    errors, identity-reset auth details beyond UIAA/OAuth/unknown, and all key
    material.
+12. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
+   filename, caption, mimetype, dimensions, and bytes when sending media, and
+   `TimelineItem.media` may expose safe render metadata. Normal `Debug`, QA
+   logs, errors, window-title tokens, and docs examples must not expose
+   filenames, captions, bytes, MXC URIs from real accounts, encrypted media
+   keys/hashes, room IDs, event IDs, or raw SDK errors. Download effects emit
+   byte counts or app-owned handles only; downloaded bytes stay in Rust-owned
+   effects or platform ports.
 
 ## Logging and Diagnostics
 
