@@ -273,6 +273,7 @@ pub enum AccountCommand {
     RestoreKeyBackup {
         request_id: RequestId,
         version: Option<String>,
+        request: RecoveryRequest,
     },
     ResetIdentity {
         request_id: RequestId,
@@ -370,10 +371,12 @@ impl fmt::Debug for AccountCommand {
             Self::RestoreKeyBackup {
                 request_id,
                 version,
+                request,
             } => formatter
                 .debug_struct("RestoreKeyBackup")
                 .field("request_id", request_id)
                 .field("version", &version.as_ref().map(|_| "BackupVersion(..)"))
+                .field("request", request)
                 .finish(),
             Self::ResetIdentity { request_id } => formatter
                 .debug_struct("ResetIdentity")

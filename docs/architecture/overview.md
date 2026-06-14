@@ -63,6 +63,9 @@ Crate responsibilities:
   no-ops; React must not fall back to local send semantics.
 - `matrix-desktop-sdk` — low-level SDK adapter (login, restore, recovery,
   sync, room, timeline, search primitives). No app state, no QA orchestration.
+  E2EE key-backup restore wrappers consume recovery secrets internally and
+  return private-data-free restore summaries; they do not expose SDK backup
+  keys, room keys, or raw backup versions across the command/event boundary.
 - `matrix-desktop-core` — actor lifecycle, command routing, event emission,
   SDK session handles, background tasks, AppState projection, headless QA
   binaries. Production Matrix behavior lives here and nowhere else.

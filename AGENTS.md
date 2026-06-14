@@ -40,6 +40,21 @@ All agents implementing the headless i18n substrate follow
 All agents implementing the i18n GUI wiring follow
 [docs/superpowers/plans/2026-06-14-i18n-substrate-phase-b.md](docs/superpowers/plans/2026-06-14-i18n-substrate-phase-b.md).
 
+## E2EE Trust Phase A Notes
+
+- `RestoreKeyBackup` is secret-bearing only at the `CoreCommand::Account`
+  boundary. Its reducer projection, `AppEffect`, `CoreEvent`, Tauri DTO, and
+  React state must never carry the recovery secret.
+- The vendored SDK's backup-wide all-room-key download helper is private.
+  Current Phase A restore code must use public SDK APIs only: recover/import the
+  secret, then hydrate currently joined rooms with
+  `Backups::download_room_keys_for_room`. Do not patch vendored SDK just to call
+  `download_all_room_keys` unless that patch is separately justified and
+  recorded in the upstream feedback ledger.
+- Key-backup restore progress in the current public-API slice counts joined-room
+  hydration attempts. Do not describe it as exhaustive backup-wide restore until
+  a local homeserver QA lane proves the exact all-session behavior.
+
 ## Rust-Owned Settings Notes
 
 - Settings product state lives in `matrix-desktop-state::AppState.settings`.

@@ -33,8 +33,8 @@ use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
     AppAction, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType, IdentityResetState,
-    KeyBackupStatus, LoginRequest, RecoveryMethod, RecoveryRequest, SessionInfo,
-    TrustOperationFailureKind, VerificationFlowState,
+    LoginRequest, RecoveryMethod, RecoveryRequest, SessionInfo, TrustOperationFailureKind,
+    VerificationFlowState,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -407,6 +407,14 @@ impl AccountActor {
             AccountCommand::EnableKeyBackup { request_id } => {
                 self.handle_enable_key_backup(request_id).await;
             }
+            AccountCommand::RestoreKeyBackup {
+                request_id,
+                version,
+                request,
+            } => {
+                self.handle_restore_key_backup(request_id, version, request)
+                    .await;
+            }
             AccountCommand::ResetIdentity { request_id } => {
                 self.handle_reset_identity(request_id).await;
             }
@@ -452,30 +460,6 @@ impl AccountActor {
                         kind: TrustOperationFailureKind::Sdk,
                     }],
                     Vec::new(),
-                );
-            }
-            AccountCommand::RestoreKeyBackup { request_id, .. } => {
-                let kind = TrustOperationFailureKind::Sdk;
-                let events = self
-                    .active_account_key()
-                    .map(|account_key| {
-                        CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
-                            account_key,
-                            status: KeyBackupStatus::Failed {
-                                request_id: request_id.sequence,
-                                kind,
-                            },
-                        })
-                    })
-                    .into_iter()
-                    .collect();
-                self.emit_unavailable_trust_operation(
-                    request_id,
-                    vec![AppAction::KeyBackupFailed {
-                        request_id: request_id.sequence,
-                        kind,
-                    }],
-                    events,
                 );
             }
         }
@@ -568,6 +552,35 @@ impl AccountActor {
         let account_key = AccountKey(session.info.user_id.clone());
         let result = matrix_desktop_sdk::enable_key_backup(&session).await;
         let (actions, events) = project_enable_key_backup_result(request_id, account_key, result);
+        self.reduce(actions);
+        for event in events {
+            self.emit(event);
+        }
+    }
+
+    async fn handle_restore_key_backup(
+        &self,
+        request_id: RequestId,
+        version: Option<String>,
+        request: RecoveryRequest,
+    ) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::KeyBackupFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+        let account_key = AccountKey(session.info.user_id.clone());
+        let result =
+            matrix_desktop_sdk::restore_key_backup(&session, &request, version.as_deref()).await;
+        drop(request);
+
+        let (actions, events) = project_restore_key_backup_result(request_id, account_key, result);
         self.reduce(actions);
         for event in events {
             self.emit(event);
@@ -1327,6 +1340,67 @@ fn project_enable_key_backup_result(
     }
 }
 
+fn project_restore_key_backup_result(
+    request_id: RequestId,
+    account_key: AccountKey,
+    result: Result<matrix_desktop_sdk::KeyBackupRestoreSummary, matrix_desktop_sdk::E2eeTrustError>,
+) -> (Vec<AppAction>, Vec<CoreEvent>) {
+    match result {
+        Ok(summary) => {
+            let progress_status = matrix_desktop_state::KeyBackupStatus::Restoring {
+                request_id: request_id.sequence,
+                version: summary.version.clone(),
+                restored_rooms: summary.restored_rooms,
+                total_rooms: summary.total_rooms,
+            };
+            let restored_status = match summary.version.clone() {
+                Some(version) => matrix_desktop_state::KeyBackupStatus::Enabled { version },
+                None => matrix_desktop_state::KeyBackupStatus::Unknown,
+            };
+            (
+                vec![
+                    AppAction::KeyBackupRestoreProgress {
+                        request_id: request_id.sequence,
+                        restored_rooms: summary.restored_rooms,
+                        total_rooms: summary.total_rooms,
+                    },
+                    AppAction::KeyBackupRestored {
+                        request_id: request_id.sequence,
+                        version: summary.version,
+                    },
+                ],
+                vec![
+                    CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                        account_key: account_key.clone(),
+                        status: progress_status,
+                    }),
+                    CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                        account_key,
+                        status: restored_status,
+                    }),
+                ],
+            )
+        }
+        Err(error) => {
+            let kind = classify_e2ee_trust_error(&error);
+            let status = matrix_desktop_state::KeyBackupStatus::Failed {
+                request_id: request_id.sequence,
+                kind,
+            };
+            (
+                vec![AppAction::KeyBackupFailed {
+                    request_id: request_id.sequence,
+                    kind,
+                }],
+                vec![CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                    account_key,
+                    status,
+                })],
+            )
+        }
+    }
+}
+
 fn project_reset_identity_completed(
     request_id: RequestId,
     account_key: AccountKey,
@@ -2025,6 +2099,47 @@ mod tests {
                     ..
                 }
             )]
+        ));
+
+        let (actions, events) = project_restore_key_backup_result(
+            request_id,
+            AccountKey("@alice:example.test".to_owned()),
+            Ok(matrix_desktop_sdk::KeyBackupRestoreSummary {
+                version: Some("available".to_owned()),
+                restored_rooms: 2,
+                total_rooms: Some(3),
+            }),
+        );
+        assert_eq!(
+            actions,
+            vec![
+                AppAction::KeyBackupRestoreProgress {
+                    request_id: request_id.sequence,
+                    restored_rooms: 2,
+                    total_rooms: Some(3),
+                },
+                AppAction::KeyBackupRestored {
+                    request_id: request_id.sequence,
+                    version: Some("available".to_owned()),
+                },
+            ]
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [
+                CoreEvent::E2eeTrust(crate::event::E2eeTrustEvent::KeyBackupChanged {
+                    status: matrix_desktop_state::KeyBackupStatus::Restoring {
+                        restored_rooms: 2,
+                        total_rooms: Some(3),
+                        ..
+                    },
+                    ..
+                }),
+                CoreEvent::E2eeTrust(crate::event::E2eeTrustEvent::KeyBackupChanged {
+                    status: matrix_desktop_state::KeyBackupStatus::Enabled { .. },
+                    ..
+                })
+            ]
         ));
     }
 

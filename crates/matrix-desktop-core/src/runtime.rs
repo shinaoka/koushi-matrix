@@ -738,6 +738,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         AccountCommand::RestoreKeyBackup {
             request_id,
             version,
+            ..
         } => Some(AppAction::RestoreKeyBackupRequested {
             request_id: request_id.sequence,
             version: version.clone(),
@@ -960,6 +961,28 @@ mod tests {
                 request: matrix_desktop_state::IdentityResetAuthRequest::OAuthApproved,
             }),
             Some(AppAction::ResetIdentityAuthSubmitted { request_id: 7 })
+        );
+    }
+
+    #[test]
+    fn restore_key_backup_command_projects_state_without_recovery_secret() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 9,
+        };
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::RestoreKeyBackup {
+                request_id,
+                version: Some("backup-version-1".to_owned()),
+                request: matrix_desktop_state::RecoveryRequest {
+                    secret: matrix_desktop_state::AuthSecret::new("recovery secret"),
+                },
+            }),
+            Some(AppAction::RestoreKeyBackupRequested {
+                request_id: 9,
+                version: Some("backup-version-1".to_owned()),
+            })
         );
     }
 

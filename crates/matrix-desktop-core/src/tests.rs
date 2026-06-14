@@ -71,6 +71,13 @@ fn secret_bearing_commands_redact_debug() {
             password: AuthSecret::new(PASSWORD),
         },
     });
+    let restore_key_backup = CoreCommand::Account(AccountCommand::RestoreKeyBackup {
+        request_id: fake_request_id(),
+        version: Some("backup-version-1".to_owned()),
+        request: RecoveryRequest {
+            secret: AuthSecret::new(RECOVERY),
+        },
+    });
     let key = TimelineKey::room(AccountKey("acc".to_owned()), "!room:example.test");
     let send = CoreCommand::Timeline(TimelineCommand::SendText {
         request_id: fake_request_id(),
@@ -106,6 +113,7 @@ fn secret_bearing_commands_redact_debug() {
         (&login, vec![PASSWORD, "alice-login-name", "Alice Laptop"]),
         (&recovery, vec![RECOVERY]),
         (&identity_reset_auth, vec![PASSWORD]),
+        (&restore_key_backup, vec![RECOVERY, "backup-version-1"]),
         (&send, vec![BODY]),
         (&toggle_reaction, vec!["👍", "$evt"]),
         (&edit, vec![BODY]),
@@ -144,6 +152,9 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
         CoreCommand::Account(AccountCommand::RestoreKeyBackup {
             request_id,
             version: Some("backup-version-1".to_owned()),
+            request: RecoveryRequest {
+                secret: AuthSecret::new(RECOVERY),
+            },
         }),
         CoreCommand::Account(AccountCommand::ResetIdentity { request_id }),
         CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {

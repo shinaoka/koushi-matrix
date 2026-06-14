@@ -127,6 +127,27 @@ impl fmt::Debug for IdentityResetOutcome {
     }
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct KeyBackupRestoreSummary {
+    pub version: Option<String>,
+    pub restored_rooms: u64,
+    pub total_rooms: Option<u64>,
+}
+
+impl fmt::Debug for KeyBackupRestoreSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KeyBackupRestoreSummary")
+            .field(
+                "version",
+                &self.version.as_ref().map(|_| "BackupVersion(..)"),
+            )
+            .field("restored_rooms", &self.restored_rooms)
+            .field("total_rooms", &self.total_rooms)
+            .finish()
+    }
+}
+
 #[derive(Clone, Eq, Error, PartialEq)]
 pub enum E2eeTrustError {
     #[error("Matrix encryption is not initialized")]
@@ -229,6 +250,53 @@ pub async fn enable_key_backup(
     Ok(map_backup_state_to_desktop(encryption.backups().state()))
 }
 
+pub async fn restore_key_backup(
+    session: &MatrixClientSession,
+    request: &RecoveryRequest,
+    version: Option<&str>,
+) -> Result<KeyBackupRestoreSummary, E2eeTrustError> {
+    let encryption = session.client().encryption();
+    encryption
+        .recovery()
+        .recover(request.secret.expose_secret())
+        .await?;
+
+    let backup_state = encryption.backups().state();
+    if !matches!(
+        backup_state,
+        matrix_sdk::encryption::backups::BackupState::Enabled
+            | matrix_sdk::encryption::backups::BackupState::Downloading
+    ) {
+        return Err(E2eeTrustError::Sdk(
+            "key backup unavailable after recovery".to_owned(),
+        ));
+    }
+
+    let rooms = session.client().joined_rooms();
+    let total_rooms = rooms.len() as u64;
+    let mut restored_rooms = 0;
+    for room in rooms {
+        encryption
+            .backups()
+            .download_room_keys_for_room(room.room_id())
+            .await?;
+        restored_rooms += 1;
+    }
+
+    let backup_status = map_backup_state_to_desktop(encryption.backups().state());
+    let backup_version = version.map(str::to_owned).or_else(|| match backup_status {
+        KeyBackupStatus::Enabled { version } => Some(version),
+        KeyBackupStatus::Restoring { version, .. } => version,
+        _ => None,
+    });
+
+    Ok(KeyBackupRestoreSummary {
+        version: backup_version,
+        restored_rooms,
+        total_rooms: Some(total_rooms),
+    })
+}
+
 pub async fn reset_identity(
     session: &MatrixClientSession,
 ) -> Result<IdentityResetOutcome, E2eeTrustError> {
@@ -291,7 +359,7 @@ mod e2ee_trust_tests {
         E2eeTrustError, MatrixCrossSigningStatus, MatrixIdentityResetAuthType,
         bootstrap_cross_signing, complete_identity_reset, cross_signing_status, enable_key_backup,
         map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
-        map_identity_reset_auth_type_to_desktop, reset_identity,
+        map_identity_reset_auth_type_to_desktop, reset_identity, restore_key_backup,
     };
 
     #[test]
@@ -356,6 +424,7 @@ mod e2ee_trust_tests {
         let _ = cross_signing_status;
         let _ = bootstrap_cross_signing;
         let _ = enable_key_backup;
+        let _ = restore_key_backup;
         let _ = reset_identity;
         let _ = complete_identity_reset;
     }

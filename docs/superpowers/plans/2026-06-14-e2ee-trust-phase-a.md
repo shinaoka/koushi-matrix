@@ -38,8 +38,17 @@ typed `AwaitingAuth` state with only UIAA/OAuth/unknown auth kind; the SDK
 continuation handle stays inside `AccountActor`. The continuation slice adds
 `SubmitIdentityResetAuth` so OAuth approval and UIAA password submission
 also project through the reducer before the actor calls the SDK handle. Device
-verification, key-backup restore with real progress/version evidence, local
-homeserver QA tokens, and all GUI controls remain outside this slice.
+verification, local homeserver QA tokens, and all GUI controls remain outside
+this slice.
+
+The key-backup restore slice adds the secret-bearing `RestoreKeyBackup`
+`CoreCommand::Account` payload while keeping the projected reducer action,
+events, effects, and snapshots secret-free. The SDK wrapper uses public
+matrix-rust-sdk APIs only: recover/import secrets, then hydrate currently joined
+rooms via `Backups::download_room_keys_for_room`. Progress counters describe the
+joined-room hydration set, not a backup-wide exhaustive import. True all-session
+backup-wide restore remains a later SDK API/patch decision and must be proven
+with local homeserver QA before #13 closure.
 
 ## Verification
 

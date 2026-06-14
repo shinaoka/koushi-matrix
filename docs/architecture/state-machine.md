@@ -381,6 +381,11 @@ stateDiagram-v2
   `CancelVerification`, `BootstrapCrossSigning`, `EnableKeyBackup`,
   `RestoreKeyBackup`, and `ResetIdentity`. These commands are ready-session
   gated and redact verification targets / backup versions in `Debug`.
+- `RestoreKeyBackup` carries the secret-bearing recovery request only inside
+  `CoreCommand::Account`; the projected `AppAction::RestoreKeyBackupRequested`,
+  reducer effects, `CoreEvent`, and snapshots carry only request id, optional
+  private-data-free backup version, and progress counters. React never receives
+  or interprets the recovery secret.
 - Production `CoreCommand::Account` trust commands are projected through the
   reducer before actor routing. This is required even though the SDK work
   happens in `AccountActor`: pending state such as `Bootstrapping`,
@@ -396,6 +401,13 @@ stateDiagram-v2
   core/state boundary. Until a public SDK backup-version accessor is used, an
   enabled backup may be surfaced as a private-data-free `available` version
   sentinel; local-homeserver proof must tighten this before issue closure.
+- Current Phase A key-backup restore uses public SDK APIs only: import recovery
+  secrets, then hydrate currently joined rooms through
+  `Backups::download_room_keys_for_room`. `restored_rooms` / `total_rooms`
+  describe that joined-room hydration set. The SDK's true backup-wide
+  all-session one-shot download remains behind private internals, so the app
+  must not claim exhaustive backup-wide restore until a public SDK API or
+  reviewed vendored patch exists.
 - Actor-side unavailable paths must also settle any already-projected pending
   trust state with the matching reducer failure action. `OperationFailed`
   alone is a transport error signal; it is not a state-machine transition.
