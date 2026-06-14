@@ -257,8 +257,12 @@ impl RoomActor {
 
     async fn handle_command(&self, command: RoomCommand) {
         match command {
-            RoomCommand::CreateRoom { request_id, name } => {
-                self.handle_create_room(request_id, name).await;
+            RoomCommand::CreateRoom {
+                request_id,
+                name,
+                encrypted,
+            } => {
+                self.handle_create_room(request_id, name, encrypted).await;
             }
             RoomCommand::CreateSpace { request_id, name } => {
                 self.handle_create_space(request_id, name).await;
@@ -317,7 +321,7 @@ impl RoomActor {
         }
     }
 
-    async fn handle_create_room(&self, request_id: RequestId, name: String) {
+    async fn handle_create_room(&self, request_id: RequestId, name: String, encrypted: bool) {
         let Some(session) = &self.session else {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
@@ -329,7 +333,7 @@ impl RoomActor {
             request_id: request_id.sequence,
             request: BasicOperationRequest::CreateRoom { name: name.clone() },
         }]);
-        match matrix_desktop_sdk::create_room(session, &name).await {
+        match matrix_desktop_sdk::create_room(session, &name, encrypted).await {
             Ok(room_id) => {
                 self.emit(CoreEvent::Room(RoomEvent::RoomCreated {
                     request_id,
@@ -986,6 +990,7 @@ pub mod tests {
             .send(RoomMessage::Command(RoomCommand::CreateRoom {
                 request_id,
                 name: "test room".to_owned(),
+                encrypted: false,
             }))
             .await;
 

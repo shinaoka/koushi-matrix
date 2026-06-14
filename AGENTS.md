@@ -88,9 +88,19 @@ All agents implementing the i18n GUI wiring follow
 - `BootstrapCrossSigning` may carry a UIAA password `AuthSecret` only inside
   the `CoreCommand::Account` command boundary. Its reducer action, effect,
   event, snapshot, logs, and `Debug` output must remain secret-free.
+- `EnableKeyBackup` may carry an optional recovery passphrase `AuthSecret`
+  only inside the `CoreCommand::Account` command boundary. Use it for
+  passphrase-backed local proof or future product input, but never project the
+  passphrase or returned recovery key into reducer state, DTOs, logs, or QA
+  output.
 - `RestoreKeyBackup` is secret-bearing only at the `CoreCommand::Account`
   boundary. Its reducer projection, `AppEffect`, `CoreEvent`, Tauri DTO, and
   React state must never carry the recovery secret.
+- `RestoreKeyBackup` must not be runtime gated to `SessionState::Ready` only.
+  A newly logged-in device can become `NeedsRecovery` after sync discovers
+  secret storage, and key-backup restore is the operation that gets it out of
+  that state. Let `AccountActor` enforce that a store-backed Matrix session
+  exists; `SignedOut` still fails as `SessionRequired`.
 - The vendored SDK's backup-wide all-room-key download helper is private.
   Current Phase A restore code must use public SDK APIs only: recover/import the
   secret, then hydrate currently joined rooms with
@@ -101,11 +111,13 @@ All agents implementing the i18n GUI wiring follow
   hydration attempts. Do not describe it as exhaustive backup-wide restore until
   a local homeserver QA lane proves the exact all-session behavior.
 - The local core QA `e2ee_trust` scenario logs the same synthetic user into a
-  second data directory/device and proves cross-signing bootstrap, key-backup
-  enable, wrong-secret restore failure, SAS device verification, and identity
-  reset through `CoreCommand`/`CoreEvent` only. Its stdout must stay token-only
-  for these checks; do not print account keys, verification target user/device
-  ids, backup versions, recovery secrets, or raw SDK errors.
+  second data directory/device and proves cross-signing bootstrap, encrypted
+  seed-room key-backup upload, wrong-secret restore failure, successful
+  passphrase restore on the second device, SAS device verification, and
+  identity reset through `CoreCommand`/`CoreEvent` only. Its stdout must stay
+  token-only for these checks; do not print account keys, verification target
+  user/device ids, backup versions, room ids, event ids, recovery secrets, or
+  raw SDK errors.
 - The local headless runner registers separate synthetic users for the SDK lane
   and each core backend leg. Keep E2EE trust proofs isolated per core leg so
   unrelated smoke-test devices do not become part of the account's device graph.

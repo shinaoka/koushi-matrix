@@ -76,6 +76,7 @@ const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 const ROOM_LIST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
+const E2EE_KEY_BACKUP_SEED_BODY: &str = "Matrix Desktop E2EE key backup seed";
 const QA_WRONG_RECOVERY_SECRET: &str = "matrix-desktop-headless-qa-wrong-recovery-secret";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -481,18 +482,18 @@ async fn run_e2ee_trust_stage(
     .await?;
     println!("e2ee_cross_signing=ok");
 
-    let key_backup_version =
-        enable_key_backup_for_qa(conn_a, account_key_a, "enable key backup A").await?;
-    println!("e2ee_key_backup_enable=ok");
+    let key_backup_seed_room_id =
+        seed_encrypted_room_key_for_qa(conn_a, account_key_a, "seed key backup room A").await?;
+    println!("e2ee_key_backup_seed=ok");
 
-    restore_key_backup_failure_for_qa(
+    let key_backup_version = enable_key_backup_for_qa(
         conn_a,
         account_key_a,
-        Some(key_backup_version),
-        "restore key backup failure A",
+        Some(AuthSecret::new(config.password_a.clone())),
+        "enable key backup A",
     )
     .await?;
-    println!("e2ee_key_backup_restore_failure=ok");
+    println!("e2ee_key_backup_enable=ok");
 
     let runtime_a2 = CoreRuntime::start_with_data_dir(qa_data_dir("a2"));
     let mut conn_a2 = runtime_a2.attach();
@@ -530,6 +531,32 @@ async fn run_e2ee_trust_stage(
         "sync start A2",
     )?;
     wait_for_sync_running(&mut conn_a2, "sync A2 running").await?;
+
+    wait_for_room_in_room_list(
+        &mut conn_a2,
+        &key_backup_seed_room_id,
+        "room list A2 after key backup seed",
+    )
+    .await?;
+
+    restore_key_backup_failure_for_qa(
+        &mut conn_a2,
+        &account_key_a2,
+        Some(key_backup_version.clone()),
+        "restore key backup failure A2",
+    )
+    .await?;
+    println!("e2ee_key_backup_restore_failure=ok");
+
+    restore_key_backup_success_for_qa(
+        &mut conn_a2,
+        &account_key_a2,
+        Some(key_backup_version),
+        AuthSecret::new(config.password_a.clone()),
+        "restore key backup success A2",
+    )
+    .await?;
+    println!("e2ee_key_backup_restore_success=ok");
 
     verify_second_device_for_qa(conn_a, &mut conn_a2, &session_a, &session_a2).await?;
     println!("e2ee_verification=ok");
@@ -766,6 +793,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .command(CoreCommand::Room(RoomCommand::CreateRoom {
             request_id: create_room_id,
             name: "QA Room".to_owned(),
+            encrypted: false,
         }))
         .await
         .map_err(|e| format!("submit create room: {e}"))?;
@@ -1887,6 +1915,49 @@ async fn wait_for_room_list_containing(
     }
 }
 
+async fn wait_for_room_in_room_list(
+    conn: &mut CoreConnection,
+    expected_room_id: &str,
+    label: &str,
+) -> Result<AppState, String> {
+    let contains_expected =
+        |snapshot: &AppState| snapshot.rooms.iter().any(|r| r.room_id == expected_room_id);
+
+    let snapshot = conn.snapshot();
+    if contains_expected(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: timed out waiting for room list to include the expected room \
+                     (have {} rooms)",
+                    snapshot.rooms.len()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3 event waiter helpers (unchanged)
 // ---------------------------------------------------------------------------
@@ -2280,14 +2351,70 @@ fn handle_cross_signing_status(
     Ok(())
 }
 
+async fn seed_encrypted_room_key_for_qa(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    label: &str,
+) -> Result<String, String> {
+    let create_room_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::CreateRoom {
+        request_id: create_room_id,
+        name: "QA E2EE Backup Room".to_owned(),
+        encrypted: true,
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit encrypted room create failed: {e}"))?;
+
+    let room_id = wait_for_room_created(conn, create_room_id, label).await?;
+
+    sync_once_for_qa(conn, "sync after encrypted backup seed room").await?;
+    wait_for_room_in_room_list(conn, &room_id, "room list after encrypted backup seed").await?;
+
+    let key = TimelineKey::room(account_key.clone(), room_id.clone());
+    let subscribe_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+        request_id: subscribe_id,
+        key: key.clone(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit encrypted timeline subscribe failed: {e}"))?;
+
+    wait_for_initial_items(conn, &key, subscribe_id, "subscribe encrypted backup seed").await?;
+
+    let transaction_id = "qa-e2ee-key-backup-seed".to_owned();
+    let send_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id: send_id,
+        key: key.clone(),
+        transaction_id: transaction_id.clone(),
+        body: E2EE_KEY_BACKUP_SEED_BODY.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit encrypted backup seed send failed: {e}"))?;
+
+    wait_for_send_flow_completion(
+        conn,
+        send_id,
+        &key,
+        &transaction_id,
+        E2EE_KEY_BACKUP_SEED_BODY,
+        "send encrypted backup seed",
+    )
+    .await?;
+
+    Ok(room_id)
+}
+
 async fn enable_key_backup_for_qa(
     conn: &mut CoreConnection,
     account_key: &AccountKey,
+    passphrase: Option<AuthSecret>,
     label: &str,
 ) -> Result<String, String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Account(AccountCommand::EnableKeyBackup {
         request_id,
+        passphrase,
     }))
     .await
     .map_err(|e| format!("{label}: submit enable key backup failed: {e}"))?;
@@ -2366,6 +2493,25 @@ async fn restore_key_backup_failure_for_qa(
     wait_for_key_backup_failed(conn, account_key, request_id, label).await
 }
 
+async fn restore_key_backup_success_for_qa(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    version: Option<String>,
+    secret: AuthSecret,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::RestoreKeyBackup {
+        request_id,
+        version,
+        request: RecoveryRequest { secret },
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit restore key backup failed: {e}"))?;
+
+    wait_for_key_backup_restored(conn, account_key, request_id, label).await
+}
+
 async fn wait_for_key_backup_failed(
     conn: &mut CoreConnection,
     account_key: &AccountKey,
@@ -2419,6 +2565,92 @@ async fn wait_for_key_backup_failed(
                 }
                 KeyBackupStatus::Enabled { .. } if saw_request_state => {
                     return Err(format!("{label}: restore unexpectedly succeeded"));
+                }
+                _ => {}
+            },
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_key_backup_restored(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    request_id: RequestId,
+    label: &str,
+) -> Result<(), String> {
+    let mut saw_request_state = matches!(
+        conn.snapshot().e2ee_trust.key_backup,
+        KeyBackupStatus::Restoring {
+            request_id: current,
+            ..
+        } if current == request_id.sequence
+    );
+    let mut saw_restored_room = false;
+
+    loop {
+        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for key backup restore success"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                account_key: ev_account_key,
+                status,
+            }) if &ev_account_key == account_key => match status {
+                KeyBackupStatus::Restoring {
+                    request_id: current,
+                    restored_rooms,
+                    ..
+                } if current == request_id.sequence => {
+                    saw_request_state = true;
+                    saw_restored_room |= restored_rooms > 0;
+                }
+                KeyBackupStatus::Enabled { .. } if saw_request_state => {
+                    if saw_restored_room {
+                        return Ok(());
+                    }
+                    return Err(format!(
+                        "{label}: restore succeeded without any joined room"
+                    ));
+                }
+                KeyBackupStatus::Failed {
+                    request_id: failed_id,
+                    kind,
+                } if failed_id == request_id.sequence => {
+                    return Err(format!("{label}: key backup restore failed: {kind:?}"));
+                }
+                _ => {}
+            },
+            CoreEvent::StateChanged(snapshot) => match snapshot.e2ee_trust.key_backup {
+                KeyBackupStatus::Restoring {
+                    request_id: current,
+                    restored_rooms,
+                    ..
+                } if current == request_id.sequence => {
+                    saw_request_state = true;
+                    saw_restored_room |= restored_rooms > 0;
+                }
+                KeyBackupStatus::Enabled { .. } if saw_request_state => {
+                    if saw_restored_room {
+                        return Ok(());
+                    }
+                    return Err(format!(
+                        "{label}: restore succeeded without any joined room"
+                    ));
+                }
+                KeyBackupStatus::Failed {
+                    request_id: failed_id,
+                    kind,
+                } if failed_id == request_id.sequence => {
+                    return Err(format!("{label}: key backup restore failed: {kind:?}"));
                 }
                 _ => {}
             },

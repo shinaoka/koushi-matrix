@@ -549,6 +549,7 @@ async fn run_async_inner(
     conn.command(CoreCommand::Room(RoomCommand::CreateRoom {
         request_id: create_room_id,
         name: qa_room_name.clone(),
+        encrypted: false,
     }))
     .await
     .map_err(|e| format!("create QA room command submit failed: {e}"))?;

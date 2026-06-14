@@ -1203,7 +1203,10 @@ pub(crate) fn build_bootstrap_cross_signing_command(
 pub(crate) fn build_enable_key_backup_command(
     request_id: matrix_desktop_core::RequestId,
 ) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::EnableKeyBackup { request_id })
+    CoreCommand::Account(AccountCommand::EnableKeyBackup {
+        request_id,
+        passphrase: None,
+    })
 }
 
 pub(crate) fn build_accept_verification_command(
@@ -1461,7 +1464,11 @@ pub(crate) fn build_create_room_command(
     request_id: matrix_desktop_core::RequestId,
     name: String,
 ) -> CoreCommand {
-    CoreCommand::Room(RoomCommand::CreateRoom { request_id, name })
+    CoreCommand::Room(RoomCommand::CreateRoom {
+        request_id,
+        name,
+        encrypted: false,
+    })
 }
 
 pub(crate) fn build_create_space_command(
@@ -2256,9 +2263,14 @@ mod tests {
         );
 
         match build_create_room_command(fake_request_id(16), "Local QA Room".to_owned()) {
-            CoreCommand::Room(RoomCommand::CreateRoom { request_id, name }) => {
+            CoreCommand::Room(RoomCommand::CreateRoom {
+                request_id,
+                name,
+                encrypted,
+            }) => {
                 assert_eq!(request_id, fake_request_id(16));
                 assert_eq!(name, "Local QA Room");
+                assert!(!encrypted);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -2545,8 +2557,12 @@ mod tests {
         }
 
         match build_enable_key_backup_command(fake_request_id(26)) {
-            CoreCommand::Account(AccountCommand::EnableKeyBackup { request_id }) => {
+            CoreCommand::Account(AccountCommand::EnableKeyBackup {
+                request_id,
+                passphrase,
+            }) => {
                 assert_eq!(request_id, fake_request_id(26));
+                assert!(passphrase.is_none());
             }
             other => panic!("unexpected command: {other:?}"),
         }

@@ -411,8 +411,11 @@ stateDiagram-v2
   `RequestVerification`, `AcceptVerification`, `ConfirmSasVerification`,
   `CancelVerification`, `BootstrapCrossSigning`, `EnableKeyBackup`,
   `RestoreKeyBackup`, `ResetIdentity`, and `SubmitIdentityResetAuth`. These
-  commands are ready-session gated and redact verification targets, backup
-  versions, and auth secrets in `Debug`.
+  commands redact verification targets, backup versions, and auth secrets in
+  `Debug`. Trust commands are ready-session gated except
+  `RestoreKeyBackup`, which must also be accepted while the authenticated
+  session is `NeedsRecovery` / `Recovering`; the `AccountActor` still enforces
+  that a store-backed Matrix session exists.
 - Phase B GUI controls are thin transport clients for that command surface.
   Tauri handlers allocate a fresh command `request_id`, pass the Rust-owned
   verification/identity-reset `flow_id` from the snapshot when required, and
@@ -432,6 +435,9 @@ stateDiagram-v2
   reducer effects, `CoreEvent`, and snapshots carry only request id, optional
   private-data-free backup version, and progress counters. React never receives
   or interprets the recovery secret.
+- `EnableKeyBackup` may carry an optional passphrase `AuthSecret` only inside
+  `CoreCommand::Account`; reducer actions, effects, events, snapshots, and logs
+  must not expose the passphrase or the recovery key returned by the SDK.
 - `BootstrapCrossSigning` may carry a UIAA password `AuthSecret` only inside
   `CoreCommand::Account`; reducer actions, effects, events, snapshots, and
   logs remain secret-free.
@@ -468,9 +474,11 @@ stateDiagram-v2
   alone is a transport error signal; it is not a state-machine transition.
 - The local core QA `e2ee_trust` scenario is the Phase A proof for this
   contract on disposable homeservers. It exercises Rust-owned cross-signing
-  bootstrap, key-backup enable, wrong-secret restore failure, same-user
-  two-device SAS verification, and identity reset before any GUI controls are
-  considered complete. Run it on the probed SyncService core leg:
+  bootstrap, encrypted seed-room backup upload, passphrase-backed key-backup
+  enable, wrong-secret restore failure, successful passphrase restore on a
+  second same-user device, two-device SAS verification, and identity reset
+  before any GUI controls are considered complete. Run it on the probed
+  SyncService core leg:
   `npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000`.
   The runner registers separate synthetic users for the SDK lane and each core
   backend leg so the E2EE proof's account/device graph stays isolated.

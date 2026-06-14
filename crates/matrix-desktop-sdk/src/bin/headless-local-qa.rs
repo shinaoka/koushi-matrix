@@ -145,6 +145,7 @@ async fn run_authenticated(
     let room_id = matrix_desktop_sdk::create_room(
         session_a,
         &format!("Matrix Desktop Headless QA Room {suffix}"),
+        false,
     )
     .await
     .map_err(|error| format!("create room failed: {error}"))?;

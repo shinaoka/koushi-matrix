@@ -46,7 +46,7 @@ impl CoreCommand {
                 | AccountCommand::ConfirmSasVerification { request_id, .. }
                 | AccountCommand::CancelVerification { request_id, .. }
                 | AccountCommand::BootstrapCrossSigning { request_id, .. }
-                | AccountCommand::EnableKeyBackup { request_id }
+                | AccountCommand::EnableKeyBackup { request_id, .. }
                 | AccountCommand::RestoreKeyBackup { request_id, .. }
                 | AccountCommand::ResetIdentity { request_id }
                 | AccountCommand::SubmitIdentityResetAuth { request_id, .. }
@@ -275,6 +275,7 @@ pub enum AccountCommand {
     },
     EnableKeyBackup {
         request_id: RequestId,
+        passphrase: Option<matrix_desktop_state::AuthSecret>,
     },
     RestoreKeyBackup {
         request_id: RequestId,
@@ -308,7 +309,6 @@ impl AccountCommand {
                 | Self::CancelVerification { .. }
                 | Self::BootstrapCrossSigning { .. }
                 | Self::EnableKeyBackup { .. }
-                | Self::RestoreKeyBackup { .. }
                 | Self::ResetIdentity { .. }
                 | Self::SubmitIdentityResetAuth { .. }
         )
@@ -386,9 +386,13 @@ impl fmt::Debug for AccountCommand {
                 .field("request_id", request_id)
                 .field("auth", auth)
                 .finish(),
-            Self::EnableKeyBackup { request_id } => formatter
+            Self::EnableKeyBackup {
+                request_id,
+                passphrase,
+            } => formatter
                 .debug_struct("EnableKeyBackup")
                 .field("request_id", request_id)
+                .field("passphrase", passphrase)
                 .finish(),
             Self::RestoreKeyBackup {
                 request_id,
@@ -443,6 +447,7 @@ pub enum RoomCommand {
     CreateRoom {
         request_id: RequestId,
         name: String,
+        encrypted: bool,
     },
     CreateSpace {
         request_id: RequestId,

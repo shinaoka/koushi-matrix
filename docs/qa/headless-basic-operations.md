@@ -45,14 +45,16 @@ server/SDK path does not surface a root `thread_summary` for the threaded
 reply.
 
 `e2ee_trust=ok` is the Phase A E2EE trust signal. The core lane proves
-cross-signing bootstrap, key-backup enable, wrong-secret restore failure,
-same-user two-device SAS verification, and identity reset through
+cross-signing bootstrap, encrypted seed-room backup upload, passphrase-backed
+key-backup enable, wrong-secret restore failure, successful restore on a second
+same-user device, SAS verification, and identity reset through
 `CoreCommand`/`CoreEvent` only. The runner must not print account keys,
-verification target user/device ids, backup versions, recovery secrets, or raw
-SDK errors for this stage. It is a separate Rust-owned trust proof and runs
-after the ordinary room/timeline/search operations in the aggregate local lane.
-The local runner registers separate synthetic users for each core backend leg so
-the trust proof is not affected by devices created by the SDK smoke lane.
+verification target user/device ids, backup versions, room ids, event ids,
+recovery secrets, or raw SDK errors for this stage. It is a separate Rust-owned
+trust proof and runs after the ordinary room/timeline/search operations in the
+aggregate local lane. The local runner registers separate synthetic users for
+each core backend leg so the trust proof is not affected by devices created by
+the SDK smoke lane.
 
 For room/space checks, the core lane performs bounded `SyncOnce` refreshes
 before asserting `rooms` vs `spaces`. Local homeservers can briefly report a

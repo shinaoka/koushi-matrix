@@ -76,6 +76,10 @@ fn secret_bearing_commands_redact_debug() {
         request_id: fake_request_id(),
         auth: Some(AuthSecret::new(PASSWORD)),
     });
+    let enable_key_backup = CoreCommand::Account(AccountCommand::EnableKeyBackup {
+        request_id: fake_request_id(),
+        passphrase: Some(AuthSecret::new(RECOVERY)),
+    });
     let restore_key_backup = CoreCommand::Account(AccountCommand::RestoreKeyBackup {
         request_id: fake_request_id(),
         version: Some("backup-version-1".to_owned()),
@@ -119,6 +123,7 @@ fn secret_bearing_commands_redact_debug() {
         (&recovery, vec![RECOVERY]),
         (&identity_reset_auth, vec![PASSWORD]),
         (&bootstrap_cross_signing, vec![PASSWORD]),
+        (&enable_key_backup, vec![RECOVERY]),
         (&restore_key_backup, vec![RECOVERY, "backup-version-1"]),
         (&send, vec![BODY]),
         (&toggle_reaction, vec!["👍", "$evt"]),
@@ -168,7 +173,10 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
             request_id,
             auth: None,
         }),
-        CoreCommand::Account(AccountCommand::EnableKeyBackup { request_id }),
+        CoreCommand::Account(AccountCommand::EnableKeyBackup {
+            request_id,
+            passphrase: Some(AuthSecret::new(RECOVERY)),
+        }),
         CoreCommand::Account(AccountCommand::RestoreKeyBackup {
             request_id,
             version: Some("backup-version-1".to_owned()),
@@ -186,7 +194,18 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
 
     for command in commands {
         assert_eq!(command.request_id(), request_id);
-        assert!(command.requires_ready_session());
+        let requires_ready = command.requires_ready_session();
+        if matches!(
+            command,
+            CoreCommand::Account(AccountCommand::RestoreKeyBackup { .. })
+        ) {
+            assert!(
+                !requires_ready,
+                "key-backup restore must be allowed while the session is NeedsRecovery"
+            );
+        } else {
+            assert!(requires_ready);
+        }
         let debug = format!("{command:?}");
         assert!(!debug.contains("@bob:example.test"));
         assert!(!debug.contains("BOBDEVICE"));
@@ -233,6 +252,7 @@ async fn unauthenticated_session_commands_are_rejected() {
         .command(CoreCommand::Room(RoomCommand::CreateRoom {
             request_id,
             name: "qa room".to_owned(),
+            encrypted: false,
         }))
         .await
         .expect("submit");

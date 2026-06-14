@@ -64,10 +64,12 @@ be accepted/cancelled later without React owning discovery or handle state.
 
 The local proof slice adds the core QA `e2ee_trust` scenario. It runs through
 `CoreCommand`/`CoreEvent` only, logs the same synthetic user into a second local
-data directory/device, and proves cross-signing bootstrap, key-backup enable,
-wrong-secret restore failure, same-user SAS device verification, and identity
-reset before any GUI wiring. The slice also separates identity-reset auth
-continuation command `request_id` from the Rust-owned identity-reset `flow_id`,
+data directory/device, and proves cross-signing bootstrap, encrypted seed-room
+backup upload, passphrase-backed key-backup enable, wrong-secret restore
+failure, successful restore on the second device, same-user SAS device
+verification, and identity reset before any GUI wiring. The slice also
+separates identity-reset auth continuation command `request_id` from the
+Rust-owned identity-reset `flow_id`,
 matching the verification follow-up model so React never owns pending trust
 state. The proof uses the probed SyncService core backend; `AccountActor`
 auto-accepts peer SAS only when the SDK SAS state is `Started`, while `Created`
@@ -80,6 +82,8 @@ polling; overlapping continuous SyncService delivery with manual `SyncOnce`
 nudges reproduced pre-SAS key-mismatch flakes. The headless runner registers
 separate synthetic users for the SDK lane and each core backend leg so the E2EE
 proof's device graph is isolated. GUI surfaces remain Phase B work, and
+`RestoreKeyBackup` is intentionally not runtime-gated to `SessionState::Ready`
+only because a fresh second device can move to `NeedsRecovery` before restore.
 backup-wide all-session restore semantics still require a public SDK API or
 reviewed vendored patch before the product can claim exhaustive restore.
 

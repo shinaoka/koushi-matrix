@@ -526,13 +526,12 @@ architectural invariants:
   reducer with typed actions and expose only private-data-free DTOs such as SAS
   emojis. Incoming verification request discovery is Rust-owned in
   `AccountActor`. The local core `e2ee_trust` proof exercises same-user
-  two-device SAS verification, cross-signing bootstrap, key-backup enable,
-  wrong-secret restore failure, and identity reset on disposable local
-  homeservers through the probed SyncService core leg before GUI wiring. GUI
-  rendering remains incomplete until the follow-up phases land. No design doc
-  may claim E2EE trust UX completeness until GUI controls consume this
-  Rust-owned state and backup restore semantics
-  are proven for the exact supported restore scope.
+  two-device SAS verification, cross-signing bootstrap, passphrase-backed
+  key-backup enable, encrypted seed-room backup upload, wrong-secret restore
+  failure, successful restore on the second device, and identity reset on
+  disposable local homeservers through the probed SyncService core leg before
+  GUI wiring. No design doc may claim exhaustive backup-wide restore until the
+  exact supported restore scope is proven or split into an explicit follow-up.
 
 ## QA Model
 

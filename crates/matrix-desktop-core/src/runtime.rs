@@ -731,7 +731,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: request_id.sequence,
             })
         }
-        AccountCommand::EnableKeyBackup { request_id } => {
+        AccountCommand::EnableKeyBackup { request_id, .. } => {
             Some(AppAction::EnableKeyBackupRequested {
                 request_id: request_id.sequence,
             })

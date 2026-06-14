@@ -558,8 +558,11 @@ impl AccountActor {
             AccountCommand::BootstrapCrossSigning { request_id, auth } => {
                 self.handle_bootstrap_cross_signing(request_id, auth).await;
             }
-            AccountCommand::EnableKeyBackup { request_id } => {
-                self.handle_enable_key_backup(request_id).await;
+            AccountCommand::EnableKeyBackup {
+                request_id,
+                passphrase,
+            } => {
+                self.handle_enable_key_backup(request_id, passphrase).await;
             }
             AccountCommand::RestoreKeyBackup {
                 request_id,
@@ -1294,7 +1297,11 @@ impl AccountActor {
         }
     }
 
-    async fn handle_enable_key_backup(&self, request_id: RequestId) {
+    async fn handle_enable_key_backup(
+        &self,
+        request_id: RequestId,
+        passphrase: Option<matrix_desktop_state::AuthSecret>,
+    ) {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
@@ -1307,7 +1314,8 @@ impl AccountActor {
             }
         };
         let account_key = AccountKey(session.info.user_id.clone());
-        let result = matrix_desktop_sdk::enable_key_backup(&session).await;
+        let result = matrix_desktop_sdk::enable_key_backup(&session, passphrase.as_ref()).await;
+        drop(passphrase);
         let (actions, events) = project_enable_key_backup_result(request_id, account_key, result);
         self.reduce(actions);
         for event in events {
@@ -2680,10 +2688,10 @@ mod tests {
         }
     }
 
-    /// Network-free: E2EE trust commands are ready-session operations. Without
-    /// an active store-backed session they must fail as SessionRequired, not as
-    /// local-encryption unavailable. LocalEncryptionUnavailable is reserved for
-    /// store/key initialization failure, not for command gating.
+    /// Network-free: E2EE trust commands require an active store-backed
+    /// session. Runtime may allow recovery commands while AppState is
+    /// NeedsRecovery; without an actor session they must still fail as
+    /// SessionRequired, not as local-encryption unavailable.
     #[tokio::test]
     async fn e2ee_trust_commands_without_session_emit_session_required() {
         let cred_dir = tempdir().expect("tempdir");

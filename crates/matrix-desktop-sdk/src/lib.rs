@@ -466,9 +466,19 @@ pub async fn bootstrap_cross_signing(
 
 pub async fn enable_key_backup(
     session: &MatrixClientSession,
+    passphrase: Option<&AuthSecret>,
 ) -> Result<KeyBackupStatus, E2eeTrustError> {
     let encryption = session.client().encryption();
-    encryption.recovery().enable_backup().await?;
+    if let Some(passphrase) = passphrase {
+        let _recovery_key = encryption
+            .recovery()
+            .enable()
+            .wait_for_backups_to_upload()
+            .with_passphrase(passphrase.expose_secret())
+            .await?;
+    } else {
+        encryption.recovery().enable_backup().await?;
+    }
     Ok(map_backup_state_to_desktop(encryption.backups().state()))
 }
 
@@ -1824,9 +1834,18 @@ pub async fn room_can_send_text_message(
 pub async fn create_room(
     session: &MatrixClientSession,
     name: &str,
+    encrypted: bool,
 ) -> Result<String, MatrixRoomOperationError> {
     let mut request = matrix_sdk::ruma::api::client::room::create_room::v3::Request::new();
     request.name = non_empty_name(name);
+    if encrypted {
+        request.initial_state.push(
+            matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
+                matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent::with_recommended_defaults(),
+            )
+            .to_raw_any(),
+        );
+    }
     let room = session
         .client()
         .create_room(request)
