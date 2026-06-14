@@ -80,6 +80,28 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain('aria-label="Cancel reply"');
   });
 
+  test("composer exposes an attach file control separately from text send", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { Composer } = await import("./App");
+
+    const markup = renderToStaticMarkup(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Room Alpha"
+        value=""
+        onCancelReply={() => undefined}
+        onSend={() => undefined}
+        onValueChange={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('aria-label="Attach file"');
+    expect(markup).toContain('type="file"');
+    expect(markup).toContain('aria-label="Attach file input"');
+    expect(markup).toContain('aria-label="Send"');
+  });
+
   test("TimelineItemRow renders reaction pills with accessible labels", () => {
     const markup = renderToStaticMarkup(
       <TimelineItemRow
@@ -175,6 +197,54 @@ describe("ContextualRightPanel", () => {
 
     expect(reactableMarkup).toContain('aria-label="Add reaction"');
     expect(nonReactableMarkup).not.toContain('aria-label="Add reaction"');
+  });
+
+  test("TimelineItemRow renders media metadata from Rust-owned timeline DTOs", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={{
+          id: { Event: { event_id: "$media:example.invalid" } },
+          sender: "@alice:example.invalid",
+          body: "Project notes",
+          timestamp_ms: 1_800_000_000_000,
+          in_reply_to_event_id: null,
+          thread_root: null,
+          thread_summary: null,
+          media: {
+            kind: "File",
+            filename: "release-notes.pdf",
+            source: {
+              mxc_uri: "mxc://example.invalid/private-file",
+              encrypted: true,
+              encryption_version: "v2"
+            },
+            mimetype: "application/pdf",
+            size: 1024,
+            width: null,
+            height: null,
+            thumbnail: null
+          },
+          can_react: true,
+          is_redacted: false,
+          can_redact: false,
+          is_edited: false,
+          can_edit: true,
+          reactions: []
+        }}
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onToggleReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('class="message-media"');
+    expect(markup).toContain("release-notes.pdf");
+    expect(markup).toContain("application/pdf");
+    expect(markup).toContain("1 KB");
+    expect(markup).toContain('aria-label="Download release-notes.pdf"');
+    expect(markup).not.toContain("mxc://example.invalid/private-file");
   });
 
   test("TimelineItemRow renders redaction affordance and redacted placeholder", () => {
@@ -396,7 +466,8 @@ describe("ContextualRightPanel", () => {
             },
             toggleReaction: async () => undefined,
             editMessage: async () => undefined,
-            redactMessage: async () => undefined
+            redactMessage: async () => undefined,
+            downloadMedia: async () => undefined
           } as const
         }
         onClosePanel={() => undefined}
@@ -452,7 +523,8 @@ describe("ContextualRightPanel", () => {
             paginateBackwards: async () => undefined,
             toggleReaction: async () => undefined,
             editMessage: async () => undefined,
-            redactMessage: async () => undefined
+            redactMessage: async () => undefined,
+            downloadMedia: async () => undefined
           } as const
         }
         onClosePanel={() => undefined}
@@ -522,7 +594,8 @@ describe("ContextualRightPanel", () => {
             },
             toggleReaction: async () => undefined,
             editMessage: async () => undefined,
-            redactMessage: async () => undefined
+            redactMessage: async () => undefined,
+            downloadMedia: async () => undefined
           } as const
         }
         onClosePanel={() => undefined}

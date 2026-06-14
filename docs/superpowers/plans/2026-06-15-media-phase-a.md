@@ -1,8 +1,9 @@
-# Media And Files Phase A Implementation Plan
+# Media And Files Phase A/B Implementation Plan
 
 Date: 2026-06-15
-Status: Phase A implemented; local homeserver media gate pending in this
-environment because Conduit is not installed.
+Status: Phase A Rust/headless and Phase B headless GUI wiring implemented;
+local homeserver media gate pending in this environment because Conduit is not
+installed.
 
 > **For agentic workers:** implement Phase A before any GUI work. Use mini
 > agents only for bounded investigation or isolated patches; the main agent
@@ -45,6 +46,8 @@ infer Matrix media semantics.
 
 ## Tasks
 
+### Phase A
+
 - [x] Add RED tests for media DTO serialization, command Debug redaction, and
   headless QA scenario tokens.
 - [x] Add core media DTOs and command/event types.
@@ -58,6 +61,22 @@ infer Matrix media semantics.
 - [x] Update TypeScript wire types and checked-in `coreEvents.generated.json`.
 - [x] Update architecture/QA docs and operational notes with lessons learned.
 
+### Phase B
+
+- [x] Add RED React and Playwright tests for attach control, media metadata
+  rendering, upload progress, and download command shape.
+- [x] Add thin Tauri `upload_media` / `download_media` commands that submit
+  `TimelineCommand` values only; no SDK calls or Matrix media semantics in the
+  adapter.
+- [x] Add a Composer file input usable by headless Playwright without opening a
+  native file dialog.
+- [x] Render `TimelineItem.media` in `TimelineView` from Rust-owned DTOs only,
+  including upload progress keyed by the local transaction id.
+- [x] Keep media source details private to Rust/DTO contracts: the GUI does not
+  render MXC URIs, encrypted media keys/hashes, or downloaded bytes.
+- [x] Update headless app harness responses for `upload_media` and
+  `download_media`.
+
 ## Verification
 
 Focused checks before committing:
@@ -65,6 +84,8 @@ Focused checks before committing:
 ```bash
 cargo test -p matrix-desktop-core --lib
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact
+npm --prefix apps/desktop test -- src/App.test.tsx src/domain/timelineStore.test.ts
+npm --prefix apps/desktop run test:ui-headless -- e2e/basic-operations.spec.ts --grep "attach control"
 npm --prefix apps/desktop run typecheck
 ```
 

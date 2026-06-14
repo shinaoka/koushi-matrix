@@ -33,7 +33,7 @@ All agents implementing local GUI room/space/reply operations follow
 [docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md](docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md).
 All agents implementing media/file timeline support follow
 [docs/superpowers/plans/2026-06-15-media-phase-a.md](docs/superpowers/plans/2026-06-15-media-phase-a.md)
-for Phase A Rust/headless work before any GUI work.
+for Phase A Rust/headless work before Phase B GUI wiring.
 All agents implementing E2EE trust Phase A state-machine contracts follow
 [docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md](docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md).
 All agents implementing Rust-owned settings Phase A follow
@@ -240,6 +240,19 @@ All agents implementing the i18n GUI wiring follow
   with `ItemsUpdated.Set` at generation `1`. A one-off `InitialItems` emitted
   around the same snapshot refresh can be swallowed by harness timing and leave
   the seed row visible, even though the root `lang`/`dir` update succeeded.
+- File attachment GUI tests must not open a native file dialog. Use the
+  Composer's hidden `input[type=file][aria-label="Attach file input"]` and
+  Playwright `setInputFiles()` with synthetic bytes. The visible button should
+  be located with `getByRole("button", { name: "Attach file", exact: true })`
+  because browsers expose file inputs with button semantics and the input label
+  contains the button label as a prefix.
+- Transaction timeline rows use `timelineItemDomId`, so local echoes render
+  with `data-item-id="txn:<transaction_id>"`. Headless media-progress specs
+  should target that canonical id instead of the raw transaction id.
+- Media GUI rendering is DTO-only. React may display `TimelineItem.media`
+  filename/mimetype/size/dimensions/encrypted flag and
+  `MediaUploadProgress`, but it must not parse Matrix event content, render MXC
+  URIs, store downloaded bytes, or synthesize upload/download lifecycle state.
 
 ## Linux GUI QA Container
 

@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import {
   type FormEvent,
+  type ChangeEvent,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -172,6 +173,9 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       },
       async redactMessage(roomId: string, eventId: string) {
         await invoke("redact_message", { roomId, eventId });
+      },
+      async downloadMedia(roomId: string, eventId: string) {
+        await invoke("download_media", { roomId, eventId });
       }
     }
   : null;
@@ -884,6 +888,24 @@ export function App() {
     setComposerDraft("");
   }
 
+  async function uploadMediaFile(file: File) {
+    const roomId = snapshot?.state.timeline.room_id;
+    if (!roomId || !isTauriRuntime()) {
+      return;
+    }
+
+    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    if (bytes.length === 0) {
+      return;
+    }
+    await invoke("upload_media", {
+      roomId,
+      filename: file.name || "attachment",
+      mimeType: file.type || "application/octet-stream",
+      bytes
+    });
+  }
+
   async function editMessage(message: TimelineMessage) {
     const body = window.prompt(t("timeline.editMessage"), message.body);
     if (body === null || !body.trim()) {
@@ -1147,6 +1169,9 @@ export function App() {
             snapshot={snapshot}
             onCancelReply={() => {
               void cancelComposerReply();
+            }}
+            onAttachFile={(file) => {
+              void uploadMediaFile(file);
             }}
             onComposerDraftChange={setComposerDraft}
             onOpenThread={openThread}
@@ -2248,6 +2273,7 @@ function TimelinePane({
   showSearchResults,
   snapshot,
   onCancelReply,
+  onAttachFile,
   onComposerDraftChange,
   onEditMessage,
   onOpenContextMenu,
@@ -2269,6 +2295,7 @@ function TimelinePane({
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
   onCancelReply: () => void;
+  onAttachFile: (file: File) => void | Promise<void>;
   onComposerDraftChange: (value: string) => void;
   onEditMessage: (message: TimelineMessage) => void;
   onOpenContextMenu: OpenContextMenu;
@@ -2374,6 +2401,7 @@ function TimelinePane({
         roomName={activeRoomName}
         value={composerDraft}
         onCancelReply={onCancelReply}
+        onAttachFile={onAttachFile}
         onSend={onSendText}
         onValueChange={onComposerDraftChange}
       />
@@ -2527,6 +2555,7 @@ export function Composer({
   roomName,
   value,
   onCancelReply,
+  onAttachFile = async () => undefined,
   onSend,
   onValueChange
 }: {
@@ -2536,9 +2565,25 @@ export function Composer({
   roomName: string;
   value: string;
   onCancelReply: () => void;
+  onAttachFile?: (file: File) => void | Promise<void>;
   onSend: () => void | Promise<void>;
   onValueChange: (value: string) => void;
 }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function onAttachFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0] ?? null;
+    event.currentTarget.value = "";
+    if (!file) {
+      return;
+    }
+    try {
+      await onAttachFile(file);
+    } catch {
+      // Upload failure is reported through the Rust-owned operation/event path.
+    }
+  }
+
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (!shouldResolveComposerKeyEvent(event)) {
       return;
@@ -2616,8 +2661,22 @@ export function Composer({
       />
       <div className="composer-footer">
         <div>
-          <button className="icon-button" type="button" aria-label={t("action.add")}>
-            <Plus size={19} />
+          <input
+            ref={fileInputRef}
+            className="composer-file-input"
+            type="file"
+            aria-label={t("composer.attachFileInput")}
+            onChange={(event) => {
+              void onAttachFileChange(event);
+            }}
+          />
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("composer.attachFile")}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Paperclip size={18} />
           </button>
           <button className="icon-button" type="button" aria-label={t("composer.mention")}>
             <AtSign size={18} />

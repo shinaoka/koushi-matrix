@@ -326,6 +326,176 @@ test("add reaction picker invokes toggle_reaction with the selected emoji", asyn
     });
 });
 
+test("attach control invokes upload_media and renders Rust-owned media progress", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("upload_media", () => window.__harness.currentSnapshot());
+    window.__harness.setCommandResponse("download_media", () => window.__harness.currentSnapshot());
+    window.__harness.clearInvocations();
+  });
+
+  const fixtureBytes = Buffer.from("browser-headless media fixture");
+  await page.getByRole("button", { name: "Attach file", exact: true }).click();
+  await page
+    .locator('input[type="file"][aria-label="Attach file input"]')
+    .setInputFiles({
+      name: "media-fixture.txt",
+      mimeType: "text/plain",
+      buffer: fixtureBytes
+    });
+
+  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
+        return args
+          ? {
+              roomId: args.roomId,
+              filename: args.filename,
+              mimeType: args.mimeType,
+              byteCount: Array.isArray(args.bytes) ? args.bytes.length : -1
+            }
+          : null;
+      })
+    )
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      filename: "media-fixture.txt",
+      mimeType: "text/plain",
+      byteCount: fixtureBytes.length
+    });
+
+  const key = roomTimelineKey("@harness-user:example.invalid", "!harness-room:example.invalid");
+  await page.evaluate(({ key }) => {
+    window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        ItemsUpdated: {
+          key,
+          generation: 1,
+          batch_id: 4,
+          diffs: [
+            {
+              PushBack: {
+                item: {
+                  id: { Transaction: { transaction_id: "desktop-media-1" } },
+                  sender: "@harness-user:example.invalid",
+                  body: null,
+                  timestamp_ms: 1_800_000_000_300,
+                  in_reply_to_event_id: null,
+                  thread_root: null,
+                  thread_summary: null,
+                  media: {
+                    kind: "File",
+                    filename: "media-fixture.txt",
+                    source: {
+                      mxc_uri: "mxc://example.invalid/media-fixture",
+                      encrypted: false,
+                      encryption_version: null
+                    },
+                    mimetype: "text/plain",
+                    size: 30,
+                    width: null,
+                    height: null,
+                    thumbnail: null
+                  },
+                  reactions: [],
+                  can_react: false,
+                  is_redacted: false,
+                  can_redact: false,
+                  is_edited: false,
+                  can_edit: false
+                }
+              }
+            }
+          ]
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        MediaUploadProgress: {
+          request_id: null,
+          key,
+          transaction_id: "desktop-media-1",
+          index: 0,
+          progress: { current: 15, total: 30 },
+          source: null
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        ItemsUpdated: {
+          key,
+          generation: 1,
+          batch_id: 5,
+          diffs: [
+            {
+              PushBack: {
+                item: {
+                  id: { Event: { event_id: "$media-event:example.invalid" } },
+                  sender: "@harness-user:example.invalid",
+                  body: null,
+                  timestamp_ms: 1_800_000_000_400,
+                  in_reply_to_event_id: null,
+                  thread_root: null,
+                  thread_summary: null,
+                  media: {
+                    kind: "File",
+                    filename: "downloadable-fixture.txt",
+                    source: {
+                      mxc_uri: "mxc://example.invalid/downloadable-fixture",
+                      encrypted: false,
+                      encryption_version: null
+                    },
+                    mimetype: "text/plain",
+                    size: 30,
+                    width: null,
+                    height: null,
+                    thumbnail: null
+                  },
+                  reactions: [],
+                  can_react: true,
+                  is_redacted: false,
+                  can_redact: false,
+                  is_edited: false,
+                  can_edit: false
+                }
+              }
+            }
+          ]
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  }, { key });
+
+  const mediaRow = page.locator('[data-item-id="txn:desktop-media-1"]');
+  await expect(mediaRow.getByText("media-fixture.txt", { exact: true })).toBeVisible();
+  await expect(mediaRow.getByText("50%", { exact: true })).toBeVisible();
+
+  const downloadableRow = page.locator('[data-event-id="$media-event:example.invalid"]');
+  await expect(downloadableRow.getByText("downloadable-fixture.txt", { exact: true })).toBeVisible();
+  await downloadableRow.getByRole("button", { name: "Download downloadable-fixture.txt" }).click();
+  await expect.poll(() => invocationCount(page, "download_media")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("download_media")[0]?.args)
+    )
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      eventId: "$media-event:example.invalid"
+    });
+});
+
 test("redact message invokes redact_message and shows the redacted placeholder", async ({
   page
 }) => {

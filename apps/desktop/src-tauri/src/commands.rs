@@ -15,8 +15,9 @@ use std::path::PathBuf;
 
 use matrix_desktop_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
-    PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand, SearchScope,
-    SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
+    MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand,
+    SearchScope, SyncCommand, TimelineCommand, TimelineKey, TimelineKind, UploadMediaKind,
+    UploadMediaRequest,
 };
 use matrix_desktop_state::{
     AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
@@ -502,11 +503,7 @@ pub async fn cancel_verification(
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        build_cancel_verification_command(
-            request_id,
-            flow_id,
-            VerificationCancelReason::User,
-        ),
+        build_cancel_verification_command(request_id, flow_id, VerificationCancelReason::User),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -772,6 +769,61 @@ pub async fn send_text(
 }
 
 #[tauri::command]
+pub async fn upload_media(
+    room_id: String,
+    filename: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if bytes.is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let transaction_id = format!(
+        "desktop-media-{}",
+        NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) = build_upload_media_command(
+        request_id,
+        account_key,
+        room_id,
+        transaction_id,
+        filename,
+        mime_type,
+        bytes,
+    ) {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn download_media(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if event_id.trim().is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) = build_download_media_command(request_id, account_key, room_id, event_id)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn edit_message(
     room_id: String,
     event_id: String,
@@ -992,9 +1044,7 @@ where
             .await
             .map_err(|_| timeout_message.to_owned())?;
         match event {
-            Ok(CoreEvent::Room(room_event))
-                if is_success(&room_event, operation_request_id) =>
-            {
+            Ok(CoreEvent::Room(room_event)) if is_success(&room_event, operation_request_id) => {
                 return Ok(());
             }
             Ok(CoreEvent::OperationFailed { request_id, .. })
@@ -1534,6 +1584,66 @@ pub(crate) fn build_send_text_command(
     }))
 }
 
+pub(crate) fn build_upload_media_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    transaction_id: String,
+    filename: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+) -> Option<CoreCommand> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let filename = match filename.trim() {
+        "" => "attachment".to_owned(),
+        value => value.to_owned(),
+    };
+    let mime_type = match mime_type.trim() {
+        "" => "application/octet-stream".to_owned(),
+        value => value.to_owned(),
+    };
+    let kind = if mime_type.to_ascii_lowercase().starts_with("image/") {
+        UploadMediaKind::Image {
+            width: None,
+            height: None,
+        }
+    } else {
+        UploadMediaKind::File
+    };
+
+    Some(CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        transaction_id,
+        request: UploadMediaRequest {
+            filename,
+            mime_type,
+            bytes,
+            kind,
+            caption: None,
+        },
+    }))
+}
+
+pub(crate) fn build_download_media_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+) -> Option<CoreCommand> {
+    if event_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::DownloadMedia {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+        selection: MediaDownloadSelection::File,
+    }))
+}
+
 pub(crate) fn build_edit_message_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -2011,8 +2121,8 @@ async fn read_qa_control_pipe(pipe_path: PathBuf) -> Result<String, String> {
 mod tests {
     use matrix_desktop_core::AccountKey;
     use matrix_desktop_core::{
-        AccountCommand, AppCommand, CoreCommand, PaginationDirection, RoomCommand, SearchCommand,
-        SearchScope, SyncCommand, TimelineCommand,
+        AccountCommand, AppCommand, CoreCommand, MediaDownloadSelection, PaginationDirection,
+        RoomCommand, SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
     };
     use matrix_desktop_state::{
         AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, SessionInfo, SessionState,
@@ -2025,22 +2135,24 @@ mod tests {
     use super::QaControlCommand;
     use super::SearchScopeKind;
     use super::{
-        build_accept_verification_command, build_bootstrap_cross_signing_command,
-        build_cancel_verification_command, build_confirm_sas_verification_command,
-        build_create_room_command, build_create_space_command, build_decline_invite_command,
+        build_accept_invite_command, build_accept_verification_command,
+        build_bootstrap_cross_signing_command, build_cancel_verification_command,
+        build_confirm_sas_verification_command, build_create_room_command,
+        build_create_space_command, build_decline_invite_command, build_download_media_command,
         build_edit_message_command, build_enable_key_backup_command, build_forget_room_command,
         build_invite_user_command, build_leave_room_command, build_logout_command,
-        build_paginate_thread_timeline_backwards_command, build_paginate_timeline_backwards_command,
-        build_redact_message_command, build_reset_identity_command, build_restart_sync_command,
-        build_select_room_command, build_select_space_command, build_send_reply_command,
-        build_send_text_command, build_send_thread_reply_command, build_set_space_child_command,
-        build_set_thread_composer_draft_command, build_submit_identity_reset_oauth_command,
-        build_submit_identity_reset_password_command, build_submit_login_command,
-        build_submit_recovery_command, build_submit_search_command,
+        build_paginate_thread_timeline_backwards_command,
+        build_paginate_timeline_backwards_command, build_redact_message_command,
+        build_reset_identity_command, build_restart_sync_command, build_select_room_command,
+        build_select_space_command, build_send_reply_command, build_send_text_command,
+        build_send_thread_reply_command, build_set_space_child_command,
+        build_set_thread_composer_draft_command, build_start_direct_message_command,
+        build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
+        build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
-        build_accept_invite_command, build_start_direct_message_command, parse_qa_control_pipe_line,
-        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
+        build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
+        qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
     use matrix_desktop_state::RoomSummary;
@@ -2315,6 +2427,92 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_upload_media_command(
+            fake_request_id(25),
+            active_account_key.clone(),
+            room_id.clone(),
+            "desktop-media-1".to_owned(),
+            "report.pdf".to_owned(),
+            "application/pdf".to_owned(),
+            vec![1, 2, 3, 4],
+        )
+        .expect("upload_media should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia {
+                request_id,
+                key,
+                transaction_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(25));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(transaction_id, "desktop-media-1");
+                assert_eq!(request.filename, "report.pdf");
+                assert_eq!(request.mime_type, "application/pdf");
+                assert_eq!(request.bytes, vec![1, 2, 3, 4]);
+                assert_eq!(request.kind, UploadMediaKind::File);
+                assert_eq!(request.caption, None);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_upload_media_command(
+            fake_request_id(26),
+            active_account_key.clone(),
+            room_id.clone(),
+            "desktop-media-2".to_owned(),
+            "photo.png".to_owned(),
+            "image/png".to_owned(),
+            vec![9],
+        )
+        .expect("image upload_media should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia { request, .. }) => {
+                assert_eq!(
+                    request.kind,
+                    UploadMediaKind::Image {
+                        width: None,
+                        height: None
+                    }
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_download_media_command(
+            fake_request_id(27),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$media-event".to_owned(),
+        )
+        .expect("download_media should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::DownloadMedia {
+                request_id,
+                key,
+                event_id,
+                selection,
+            }) => {
+                assert_eq!(request_id, fake_request_id(27));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$media-event");
+                assert_eq!(selection, MediaDownloadSelection::File);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_edit_message_command(
             fake_request_id(11),
             active_account_key.clone(),
@@ -2512,8 +2710,7 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
-        match build_decline_invite_command(fake_request_id(20), "!decline:example.org".to_owned())
-        {
+        match build_decline_invite_command(fake_request_id(20), "!decline:example.org".to_owned()) {
             CoreCommand::Room(RoomCommand::DeclineInvite {
                 request_id,
                 room_id,
@@ -2662,6 +2859,27 @@ mod tests {
                 account_key,
                 room_id,
                 "$event".to_owned(),
+                "\n\t ".to_owned(),
+            )
+            .is_none()
+        );
+        assert!(
+            build_upload_media_command(
+                fake_request_id(17),
+                AccountKey("@alice:example.org".to_owned()),
+                "!room:example.org".to_owned(),
+                "desktop-media-empty".to_owned(),
+                "empty.bin".to_owned(),
+                "application/octet-stream".to_owned(),
+                vec![],
+            )
+            .is_none()
+        );
+        assert!(
+            build_download_media_command(
+                fake_request_id(18),
+                AccountKey("@alice:example.org".to_owned()),
+                "!room:example.org".to_owned(),
                 "\n\t ".to_owned(),
             )
             .is_none()
@@ -2874,10 +3092,7 @@ mod tests {
             CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
                 request_id,
                 flow_id,
-                request:
-                    IdentityResetAuthRequest::UiaaPassword {
-                        password,
-                    },
+                request: IdentityResetAuthRequest::UiaaPassword { password },
             }) => {
                 assert_eq!(*request_id, fake_request_id(31));
                 assert_eq!(*flow_id, 75);
@@ -3237,6 +3452,23 @@ mod tests {
             "sensitive edit body".to_owned(),
         )
         .expect("edit_message should build a command");
+        let upload = build_upload_media_command(
+            fake_request_id(21),
+            AccountKey("@alice:example.org".to_owned()),
+            "!room:example.org".to_owned(),
+            "desktop-media-sensitive".to_owned(),
+            "secret-filename.pdf".to_owned(),
+            "application/pdf".to_owned(),
+            b"secret media bytes".to_vec(),
+        )
+        .expect("upload_media should build a command");
+        let download = build_download_media_command(
+            fake_request_id(22),
+            AccountKey("@alice:example.org".to_owned()),
+            "!room:example.org".to_owned(),
+            "$secret-media-event".to_owned(),
+        )
+        .expect("download_media should build a command");
         let search = build_submit_search_command(
             fake_request_id(20),
             "secret search terms".to_owned(),
@@ -3251,6 +3483,9 @@ mod tests {
             (&recovery, "recovery-123"),
             (&send, "sensitive body"),
             (&edit, "sensitive edit body"),
+            (&upload, "secret-filename.pdf"),
+            (&upload, "secret media bytes"),
+            (&download, "$secret-media-event"),
             (&search, "secret search terms"),
         ] {
             let debug = format!("{command:?}");

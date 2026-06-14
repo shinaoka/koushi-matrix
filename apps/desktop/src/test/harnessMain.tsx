@@ -67,6 +67,9 @@ const transport: TimelineTransport = {
   },
   redactMessage(roomId, eventId) {
     return ipc.invoke("redact_message", { roomId, eventId });
+  },
+  downloadMedia(roomId, eventId) {
+    return ipc.invoke("download_media", { roomId, eventId });
   }
 };
 

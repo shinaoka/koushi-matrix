@@ -762,6 +762,8 @@ mock.setCommandResponse("close_focused_context", () => {
 mock.setCommandResponse("toggle_reaction", () => currentSnapshot);
 mock.setCommandResponse("edit_message", () => currentSnapshot);
 mock.setCommandResponse("redact_message", () => currentSnapshot);
+mock.setCommandResponse("upload_media", () => currentSnapshot);
+mock.setCommandResponse("download_media", () => currentSnapshot);
 mock.setCommandResponse("paginate_timeline_backwards", () => currentSnapshot);
 mock.setCommandResponse("paginate_thread_timeline_backwards", () => currentSnapshot);
 

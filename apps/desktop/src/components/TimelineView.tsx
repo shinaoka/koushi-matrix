@@ -22,7 +22,7 @@
  * the headless test harness (mock IPC).
  */
 
-import { Edit3, MessageCircle, SmilePlus, Trash2 } from "lucide-react";
+import { Download, Edit3, FileText, ImageIcon, MessageCircle, SmilePlus, Trash2 } from "lucide-react";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -37,6 +37,7 @@ import { t } from "../i18n/messages";
 
 import type {
   CoreEventPayload,
+  MediaTransferProgress,
   TimelineItem,
   TimelineKey
 } from "../domain/coreEvents";
@@ -47,6 +48,7 @@ import {
   batchContainsPrepend,
   createTimelineStore,
   getItems,
+  getMediaUploadProgress,
   getKeyState,
   getPaginationState,
   shouldSuppressAutoBackfill,
@@ -74,13 +76,16 @@ export interface TimelineTransport {
   editMessage(roomId: string, eventId: string, body: string): Promise<void>;
   /** Redact a timeline event. */
   redactMessage(roomId: string, eventId: string): Promise<void>;
+  /** Download an event-backed media attachment. */
+  downloadMedia(roomId: string, eventId: string): Promise<void>;
 }
 
 /**
  * Row-level actions surfaced on timeline items. Matrix semantics stay
  * Rust-owned: the row only reports the (roomId, eventId, reactionKey), edit
- * body, or (roomId, eventId) intent; reply targeting, reaction toggles,
- * edits, and redaction all travel through the core transport path.
+ * body, or event-backed media download intent; reply targeting, reaction
+ * toggles, edits, redaction, and download all travel through the core
+ * transport path.
  */
 export interface TimelineRowActionHandlers {
   onReply: (roomId: string, eventId: string) => void;
@@ -88,6 +93,7 @@ export interface TimelineRowActionHandlers {
   onToggleReaction: (roomId: string, eventId: string, reactionKey: string) => void;
   onEdit: (roomId: string, eventId: string, body: string) => void;
   onRedact: (roomId: string, eventId: string) => void;
+  onDownloadMedia: (roomId: string, eventId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +260,12 @@ export function TimelineView({
     },
     [transport]
   );
+  const onDownloadMedia = useCallback(
+    (targetRoomId: string, eventId: string) => {
+      void transport.downloadMedia(targetRoomId, eventId).catch(() => undefined);
+    },
+    [transport]
+  );
 
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
@@ -327,9 +339,11 @@ export function TimelineView({
           onReply={onReply}
           onOpenThread={onOpenThread}
           resolveComposerKeyAction={resolveComposerKeyAction}
+          mediaUploadProgress={mediaUploadProgressForItem(store, timelineKey, item)}
           onToggleReaction={onToggleReaction}
           onEdit={onEdit}
           onRedact={onRedact}
+          onDownloadMedia={onDownloadMedia}
         />
       ))}
     </div>
@@ -342,18 +356,22 @@ export function TimelineItemRow({
   onReply,
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
+  mediaUploadProgress = null,
   onToggleReaction,
   onEdit,
-  onRedact
+  onRedact,
+  onDownloadMedia = () => undefined
 }: {
   item: TimelineItem;
   roomId: string;
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
+  mediaUploadProgress?: MediaTransferProgress | null;
   onToggleReaction: TimelineRowActionHandlers["onToggleReaction"];
   onEdit: TimelineRowActionHandlers["onEdit"];
   onRedact: TimelineRowActionHandlers["onRedact"];
+  onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
 }) {
   const domId = timelineItemDomId(item.id);
   const isLocalEcho = "Transaction" in item.id;
@@ -508,6 +526,12 @@ export function TimelineItemRow({
     }
     onRedact(roomId, eventId);
   }, [eventId, onRedact, roomId]);
+  const submitDownloadMedia = useCallback(() => {
+    if (!eventId) {
+      return;
+    }
+    onDownloadMedia(roomId, eventId);
+  }, [eventId, onDownloadMedia, roomId]);
   const canShowActionButtons = Boolean(eventId) && !isRedacted;
   const canShowReply = canShowActionButtons && item.body !== null;
   const canShowThreadSummary = Boolean(eventId && item.thread_summary);
@@ -551,6 +575,15 @@ export function TimelineItemRow({
       {item.body ?? ""}
     </div>
   );
+  const mediaContent =
+    !isRedacted && item.media ? (
+      <TimelineMediaAttachment
+        media={item.media}
+        progress={mediaUploadProgress}
+        canDownload={Boolean(eventId)}
+        onDownload={submitDownloadMedia}
+      />
+    ) : null;
   return (
     <article
       className="message"
@@ -573,6 +606,7 @@ export function TimelineItemRow({
           ) : null}
         </div>
         {bodyContent}
+        {mediaContent}
         {canShowThreadSummary ? (
           <button
             className="thread-summary-chip"
@@ -702,6 +736,109 @@ export function TimelineItemRow({
       </div>
     </article>
   );
+}
+
+function mediaUploadProgressForItem(
+  store: TimelineStoreState,
+  key: TimelineKey,
+  item: TimelineItem
+): MediaTransferProgress | null {
+  if (!("Transaction" in item.id)) {
+    return null;
+  }
+  return getMediaUploadProgress(store, key, item.id.Transaction.transaction_id);
+}
+
+function TimelineMediaAttachment({
+  media,
+  progress,
+  canDownload,
+  onDownload
+}: {
+  media: NonNullable<TimelineItem["media"]>;
+  progress: MediaTransferProgress | null;
+  canDownload: boolean;
+  onDownload: () => void;
+}) {
+  const metadata = [
+    media.mimetype,
+    formatBytes(media.size),
+    formatDimensions(media.width, media.height)
+  ].filter((value): value is string => Boolean(value));
+  const progressPercent = uploadProgressPercent(progress);
+  const Icon = media.kind === "Image" ? ImageIcon : FileText;
+
+  return (
+    <div
+      className="message-media"
+      data-media-kind={media.kind}
+      data-media-encrypted={media.source.encrypted || undefined}
+    >
+      <Icon className="message-media-icon" size={18} aria-hidden="true" />
+      <div className="message-media-main">
+        <div className="message-media-title" dir="auto">
+          {media.filename}
+        </div>
+        <div className="message-media-meta">
+          {metadata.length > 0 ? <span>{metadata.join(" · ")}</span> : null}
+          {media.source.encrypted ? (
+            <span className="message-media-badge">{t("timeline.encryptedMedia")}</span>
+          ) : null}
+          {progressPercent !== null ? (
+            <span>{t("timeline.mediaUploadProgress", { percent: progressPercent })}</span>
+          ) : null}
+        </div>
+        {progressPercent !== null ? (
+          <div
+            className="message-media-progress"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progressPercent}
+          >
+            <span style={{ width: `${progressPercent}%` }} />
+          </div>
+        ) : null}
+      </div>
+      {canDownload ? (
+        <button
+          className="message-media-download"
+          type="button"
+          aria-label={t("timeline.downloadMedia", { filename: media.filename })}
+          onClick={onDownload}
+        >
+          <Download size={15} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function formatBytes(size: number | null): string | null {
+  if (size === null || !Number.isFinite(size) || size < 0) {
+    return null;
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${Math.round(size / 1024)} KB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDimensions(width: number | null, height: number | null): string | null {
+  if (!width || !height) {
+    return null;
+  }
+  return `${width}x${height}`;
+}
+
+function uploadProgressPercent(progress: MediaTransferProgress | null): number | null {
+  if (!progress || progress.total <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, Math.round((progress.current / progress.total) * 100)));
 }
 
 function formatThreadSummary(

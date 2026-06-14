@@ -1285,6 +1285,90 @@ button {
   background: var(--surface-hover);
 }
 
+.message-media {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-width: min(100%, 260px);
+  max-width: min(100%, 420px);
+  margin-top: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.message-media-icon {
+  color: var(--brand);
+}
+
+.message-media-main {
+  min-width: 0;
+}
+
+.message-media-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-media-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  min-height: 17px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.message-media-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--brand);
+  background: var(--surface);
+}
+
+.message-media-download {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.message-media-download:hover,
+.message-media-download:focus-visible {
+  color: var(--brand-contrast);
+  background: var(--brand);
+}
+
+.message-media-progress {
+  overflow: hidden;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.message-media-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+}
+
 mark {
   padding: 0 2px;
   border-radius: 4px;
@@ -1330,6 +1414,15 @@ mark {
   align-items: center;
   height: 36px;
   padding: 0 8px 8px;
+}
+
+.composer-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .send-button {

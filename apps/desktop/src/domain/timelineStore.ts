@@ -30,6 +30,7 @@
  */
 
 import type {
+  MediaTransferProgress,
   PaginationDirection,
   PaginationState,
   TimelineDiff,
@@ -52,6 +53,7 @@ export interface TimelineKeyState {
   awaitingResync: boolean;
   paginationBackward: PaginationState;
   paginationForward: PaginationState;
+  mediaUploadProgress: Map<string, MediaTransferProgress>;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +75,8 @@ function emptyKeyState(): TimelineKeyState {
     items: [],
     awaitingResync: true,
     paginationBackward: "Idle",
-    paginationForward: "Idle"
+    paginationForward: "Idle",
+    mediaUploadProgress: new Map()
   };
 }
 
@@ -101,8 +104,14 @@ export function applyTimelineEvent(
   if ("ResyncRequired" in event) {
     return applyResyncRequired(store, event.ResyncRequired.key);
   }
-  // SendCompleted does not change the render list (the local echo / remote
-  // echo transitions arrive as diffs).
+  if ("MediaUploadProgress" in event) {
+    return applyMediaUploadProgress(store, event.MediaUploadProgress);
+  }
+  if ("SendCompleted" in event) {
+    return applySendCompleted(store, event.SendCompleted);
+  }
+  // MediaDownloadCompleted does not change the render list; native persistence
+  // is handled by the Rust adapter and future UI state will arrive as events.
   return store;
 }
 
@@ -110,7 +119,12 @@ export function applyTimelineEvent(
 export function applyGlobalResync(store: TimelineStoreState): TimelineStoreState {
   const next = new Map<string, TimelineKeyState>();
   for (const [k, state] of store.keys) {
-    next.set(k, { ...state, items: [], awaitingResync: true });
+    next.set(k, {
+      ...state,
+      items: [],
+      awaitingResync: true,
+      mediaUploadProgress: new Map()
+    });
   }
   return { keys: next };
 }
@@ -132,6 +146,35 @@ function applyInitialItems(
     items: [...payload.items],
     awaitingResync: false
   });
+  return { keys: next };
+}
+
+function applyMediaUploadProgress(
+  store: TimelineStoreState,
+  payload: Extract<TimelineEvent, { MediaUploadProgress: unknown }>["MediaUploadProgress"]
+): TimelineStoreState {
+  const k = keyStr(payload.key);
+  const existing = store.keys.get(k) ?? emptyKeyState();
+  const progress = new Map(existing.mediaUploadProgress);
+  progress.set(payload.transaction_id, payload.progress);
+  const next = new Map(store.keys);
+  next.set(k, { ...existing, mediaUploadProgress: progress });
+  return { keys: next };
+}
+
+function applySendCompleted(
+  store: TimelineStoreState,
+  payload: Extract<TimelineEvent, { SendCompleted: unknown }>["SendCompleted"]
+): TimelineStoreState {
+  const k = keyStr(payload.key);
+  const existing = store.keys.get(k);
+  if (!existing || !existing.mediaUploadProgress.has(payload.transaction_id)) {
+    return store;
+  }
+  const progress = new Map(existing.mediaUploadProgress);
+  progress.delete(payload.transaction_id);
+  const next = new Map(store.keys);
+  next.set(k, { ...existing, mediaUploadProgress: progress });
   return { keys: next };
 }
 
@@ -186,7 +229,12 @@ function applyResyncRequired(
     return store;
   }
   const next = new Map(store.keys);
-  next.set(k, { ...existing, items: [], awaitingResync: true });
+  next.set(k, {
+    ...existing,
+    items: [],
+    awaitingResync: true,
+    mediaUploadProgress: new Map()
+  });
   return { keys: next };
 }
 
@@ -266,6 +314,14 @@ export function getItems(
   key: TimelineKey
 ): TimelineItem[] {
   return store.keys.get(keyStr(key))?.items ?? [];
+}
+
+export function getMediaUploadProgress(
+  store: TimelineStoreState,
+  key: TimelineKey,
+  transactionId: string
+): MediaTransferProgress | null {
+  return store.keys.get(keyStr(key))?.mediaUploadProgress.get(transactionId) ?? null;
 }
 
 export function getPaginationState(

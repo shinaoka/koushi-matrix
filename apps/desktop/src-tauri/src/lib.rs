@@ -751,6 +751,8 @@ pub fn run() {
             commands::paginate_timeline_backwards,
             commands::paginate_thread_timeline_backwards,
             commands::send_text,
+            commands::upload_media,
+            commands::download_media,
             commands::edit_message,
             commands::redact_message,
             commands::leave_room,

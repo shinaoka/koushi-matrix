@@ -27,6 +27,7 @@ import {
   applyTimelineEvent,
   batchContainsPrepend,
   createTimelineStore,
+  getMediaUploadProgress,
   getItems,
   getPaginationState,
   isAwaitingResync,
@@ -470,7 +471,47 @@ describe("timeline store — generation handling", () => {
 });
 
 // ---------------------------------------------------------------------------
-// (3) Prepend batch keeps the anchored item visually stable (scroll anchor)
+// (3) Rust-owned media upload progress is retained per timeline transaction
+// ---------------------------------------------------------------------------
+
+describe("timeline store — media upload progress", () => {
+  test("MediaUploadProgress is stored by transaction id for the matching key", () => {
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [makeLocalEcho("txn-media", "")]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      MediaUploadProgress: {
+        request_id: null,
+        key: KEY,
+        transaction_id: "txn-media",
+        index: 0,
+        progress: { current: 15, total: 30 },
+        source: null
+      }
+    });
+
+    expect(getMediaUploadProgress(store, KEY, "txn-media")).toEqual({
+      current: 15,
+      total: 30
+    });
+    expect(
+      getMediaUploadProgress(
+        store,
+        roomTimelineKey(ACCOUNT_KEY, "!other:example.invalid"),
+        "txn-media"
+      )
+    ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (4) Prepend batch keeps the anchored item visually stable (scroll anchor)
 //     (Logic tier; real-DOM pixel assertion lives in the Playwright spec.)
 // ---------------------------------------------------------------------------
 

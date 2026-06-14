@@ -106,6 +106,12 @@ Focused E2EE trust GUI proof:
 cd apps/desktop && npx playwright test e2e/basic-operations.spec.ts -g "E2EE trust controls"
 ```
 
+Focused media/file GUI proof:
+
+```bash
+npm --prefix apps/desktop run test:ui-headless -- e2e/basic-operations.spec.ts --grep "attach control"
+```
+
 This lane mounts the full React app over mocked Tauri IPC. For E2EE trust Phase
 B, it seeds a Rust-shaped `e2ee_trust` snapshot, drives User Settings controls,
 and asserts that the UI invokes the typed Tauri commands (`accept_verification`,
@@ -114,6 +120,15 @@ and asserts that the UI invokes the typed Tauri commands (`accept_verification`,
 the returned snapshot state, not React-local state. The mocked IPC recorder must
 redact password fields, and visible assertions must avoid verification target
 user/device ids.
+
+For media/file Phase B, the harness uses a plain hidden `<input type="file">`
+and Playwright `setInputFiles()`; do not open a native file dialog in headless
+tests. The GUI proof asserts `upload_media`/`download_media` command names and
+synthetic arg shapes, then injects Rust-shaped `TimelineEvent` payloads to render
+media metadata and progress. Local echo rows use the canonical transaction DOM
+id prefix from `timelineItemDomId`, e.g. `data-item-id="txn:desktop-media-1"`.
+Do not assert on or render MXC URIs, encrypted media keys/hashes, downloaded
+bytes, real filenames, room IDs, or event IDs.
 
 ## matrix.org compatibility lane
 

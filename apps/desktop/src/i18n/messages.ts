@@ -33,6 +33,8 @@ export type MessageId =
   | "auth.signIn"
   | "auth.supportedRecoveryMethods"
   | "auth.usernameOrMatrixId"
+  | "composer.attachFile"
+  | "composer.attachFileInput"
   | "composer.bold"
   | "composer.code"
   | "composer.emoji"
@@ -295,6 +297,9 @@ export type MessageId =
   | "timeline.threadComposer"
   | "timeline.threadPlaceholder"
   | "timeline.unsent"
+  | "timeline.downloadMedia"
+  | "timeline.encryptedMedia"
+  | "timeline.mediaUploadProgress"
   | "timeline.threadReplyCountOne"
   | "timeline.threadReplyCountMany"
   | "timeline.threadRoot"
@@ -441,6 +446,8 @@ const en: Catalog = {
   "auth.signIn": "Sign in",
   "auth.supportedRecoveryMethods": "Supported recovery methods",
   "auth.usernameOrMatrixId": "Username or Matrix ID",
+  "composer.attachFile": "Attach file",
+  "composer.attachFileInput": "Attach file input",
   "composer.bold": "Bold",
   "composer.code": "Code",
   "composer.emoji": "Emoji",
@@ -703,6 +710,9 @@ const en: Catalog = {
   "timeline.threadComposer": "Thread composer",
   "timeline.threadPlaceholder": "Reply",
   "timeline.unsent": "Unsent",
+  "timeline.downloadMedia": "Download {filename}",
+  "timeline.encryptedMedia": "Encrypted",
+  "timeline.mediaUploadProgress": "{percent}%",
   "timeline.threadReplyCountOne": "1 reply",
   "timeline.threadReplyCountMany": "{count} replies",
   "timeline.threadRoot": "Thread root {eventId}",
