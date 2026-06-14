@@ -51,6 +51,11 @@ All agents implementing the i18n GUI wiring follow
   request/SAS state streams and projects `VerificationSasPresented`,
   `VerificationCompleted`, or `VerificationFailed`; GUI code must not infer
   SAS readiness, completion, or cancellation from local React state.
+- SAS mismatch is not a generic UI cancel. Route it as
+  `VerificationCancelReason::Mismatch` so the reducer settles
+  `VerificationFlowState::Failed { kind: Mismatch }` and `AccountActor` calls
+  the SDK `SasVerification::mismatch()` path. Plain user decline/cancel uses
+  `VerificationCancelReason::User` and returns the reducer to `Idle`.
 - Verification observers and SDK handles must be stopped/cancelled on logout,
   account switch, and actor shutdown before dropping the Matrix session.
 - `RestoreKeyBackup` is secret-bearing only at the `CoreCommand::Account`

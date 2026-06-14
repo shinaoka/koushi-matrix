@@ -29,5 +29,6 @@ pub use state::{
     SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState, SettingsState,
     SettingsValues, SpaceSummary, SyncState, TextDirectionPreference, TextRange, ThemePreference,
     ThreadPaneState, TimelinePaneState, TrustOperationFailureKind, TypographySettings,
-    VerificationFlowState, VerificationTarget, room_attention_kind, room_attention_summary,
+    VerificationCancelReason, VerificationFlowState, VerificationTarget, room_attention_kind,
+    room_attention_summary,
 };

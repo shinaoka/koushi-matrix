@@ -281,10 +281,12 @@ stateDiagram-v2
     Accepted --> SasPresented: VerificationSasPresented [matching request_id]
     SasPresented --> SasPresented: VerificationSasPresented [matching request_id]
     SasPresented --> Confirming: VerificationConfirmed [matching request_id]
-    Requested --> Idle: VerificationCancelled [matching request_id]
-    Accepted --> Idle: VerificationCancelled [matching request_id]
-    SasPresented --> Idle: VerificationCancelled [matching request_id]
-    Confirming --> Idle: VerificationCancelled [matching request_id]
+    Requested --> Idle: VerificationCancelled(User) [matching request_id]
+    Accepted --> Idle: VerificationCancelled(User) [matching request_id]
+    SasPresented --> Idle: VerificationCancelled(User) [matching request_id]
+    Confirming --> Idle: VerificationCancelled(User) [matching request_id]
+    SasPresented --> Failed: VerificationCancelled(Mismatch) [matching request_id]
+    Confirming --> Failed: VerificationCancelled(Mismatch) [matching request_id]
     Requested --> Done: VerificationCompleted [matching request_id]
     Accepted --> Done: VerificationCompleted [matching request_id]
     SasPresented --> Done: VerificationCompleted [matching request_id]
@@ -364,6 +366,9 @@ stateDiagram-v2
 - All settle/progress actions are request-correlated. Stale request ids are
   ignored and must not clobber an active verification, cross-signing bootstrap,
   backup enable/restore, or identity reset.
+- Verification cancellation carries a Rust-owned reason. User decline/cancel
+  returns the flow to `Idle`; SAS mismatch sends the SDK's mismatched-SAS
+  cancellation and settles the reducer as `Failed { kind: Mismatch }`.
 - Identity reset is a typed Rust-owned state machine
   (`Idle`, `Resetting`, `AwaitingAuth`, `Failed`), not a nullable pending flag.
   `AwaitingAuth` carries only a request id and coarse auth type

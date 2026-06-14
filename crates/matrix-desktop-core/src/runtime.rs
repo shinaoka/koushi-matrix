@@ -720,9 +720,10 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: request_id.sequence,
             })
         }
-        AccountCommand::CancelVerification { request_id } => {
+        AccountCommand::CancelVerification { request_id, reason } => {
             Some(AppAction::VerificationCancelled {
                 request_id: request_id.sequence,
+                reason: *reason,
             })
         }
         AccountCommand::BootstrapCrossSigning { request_id } => {

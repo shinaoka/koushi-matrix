@@ -422,6 +422,13 @@ pub enum TrustOperationFailureKind {
     Sdk,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationCancelReason {
+    User,
+    Mismatch,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub homeserver: String,

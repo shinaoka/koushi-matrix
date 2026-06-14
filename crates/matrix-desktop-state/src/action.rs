@@ -3,7 +3,8 @@ use std::fmt;
 use crate::state::{
     BasicOperationRequest, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType, LoginFlow,
     RecoveryMethod, RoomSummary, SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch,
-    SettingsValues, SpaceSummary, TrustOperationFailureKind, VerificationTarget,
+    SettingsValues, SpaceSummary, TrustOperationFailureKind, VerificationCancelReason,
+    VerificationTarget,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +77,7 @@ pub enum AppAction {
     },
     VerificationCancelled {
         request_id: u64,
+        reason: VerificationCancelReason,
     },
     VerificationCompleted {
         request_id: u64,

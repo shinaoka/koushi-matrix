@@ -6,7 +6,8 @@ use crate::{
         CrossSigningStatus, E2eeRecoveryState, E2eeTrustState, FocusedContextState,
         IdentityResetState, KeyBackupStatus, NavigationState, PendingComposerSendKind, SasEmoji,
         SearchState, SessionState, SettingsPersistenceState, SyncState, ThreadPaneState,
-        TimelinePaneState, VerificationFlowState, VerificationTarget,
+        TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
+        VerificationFlowState, VerificationTarget,
     },
 };
 
@@ -197,16 +198,35 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
             ]
         }
-        AppAction::VerificationCancelled { request_id } => {
+        AppAction::VerificationCancelled { request_id, reason } => {
             if !verification_is_active(&state.e2ee_trust.verification)
                 || verification_request_id(&state.e2ee_trust.verification) != Some(request_id)
             {
                 return Vec::new();
             }
 
-            state.e2ee_trust.verification = VerificationFlowState::Idle;
+            state.e2ee_trust.verification = match reason {
+                VerificationCancelReason::User => VerificationFlowState::Idle,
+                VerificationCancelReason::Mismatch => {
+                    if !matches!(
+                        state.e2ee_trust.verification,
+                        VerificationFlowState::SasPresented { .. }
+                            | VerificationFlowState::Confirming { .. }
+                    ) {
+                        return Vec::new();
+                    }
+                    let Some(target) = verification_target(&state.e2ee_trust.verification) else {
+                        return Vec::new();
+                    };
+                    VerificationFlowState::Failed {
+                        request_id,
+                        target,
+                        kind: TrustOperationFailureKind::Mismatch,
+                    }
+                }
+            };
             vec![
-                AppEffect::CancelVerification { request_id },
+                AppEffect::CancelVerification { request_id, reason },
                 AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
             ]
         }

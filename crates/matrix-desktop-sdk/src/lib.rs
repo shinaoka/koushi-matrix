@@ -516,6 +516,13 @@ pub async fn confirm_sas_verification(
     Ok(())
 }
 
+pub async fn mismatch_sas_verification(
+    handle: &MatrixSasVerificationHandle,
+) -> Result<(), E2eeTrustError> {
+    handle.inner.mismatch().await?;
+    Ok(())
+}
+
 pub async fn cancel_verification_request(
     handle: &MatrixVerificationRequestHandle,
 ) -> Result<(), E2eeTrustError> {
@@ -566,8 +573,8 @@ mod e2ee_trust_tests {
         cancel_verification_request, complete_identity_reset, confirm_sas_verification,
         cross_signing_status, enable_key_backup, map_backup_state_to_desktop,
         map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
-        map_sdk_sas_emojis_to_desktop, request_device_verification, reset_identity,
-        restore_key_backup, start_sas_verification,
+        map_sdk_sas_emojis_to_desktop, mismatch_sas_verification, request_device_verification,
+        reset_identity, restore_key_backup, start_sas_verification,
     };
 
     #[test]
@@ -639,6 +646,7 @@ mod e2ee_trust_tests {
         let _ = accept_verification_request;
         let _ = start_sas_verification;
         let _ = confirm_sas_verification;
+        let _ = mismatch_sas_verification;
         let _ = cancel_verification_request;
         let _ = cancel_sas_verification;
     }

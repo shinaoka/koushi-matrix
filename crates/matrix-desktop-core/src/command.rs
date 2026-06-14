@@ -4,7 +4,8 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    IdentityResetAuthRequest, LoginRequest, RecoveryRequest, SettingsPatch, VerificationTarget,
+    IdentityResetAuthRequest, LoginRequest, RecoveryRequest, SettingsPatch,
+    VerificationCancelReason, VerificationTarget,
 };
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
@@ -43,7 +44,7 @@ impl CoreCommand {
                 | AccountCommand::RequestVerification { request_id, .. }
                 | AccountCommand::AcceptVerification { request_id }
                 | AccountCommand::ConfirmSasVerification { request_id }
-                | AccountCommand::CancelVerification { request_id }
+                | AccountCommand::CancelVerification { request_id, .. }
                 | AccountCommand::BootstrapCrossSigning { request_id }
                 | AccountCommand::EnableKeyBackup { request_id }
                 | AccountCommand::RestoreKeyBackup { request_id, .. }
@@ -263,6 +264,7 @@ pub enum AccountCommand {
     },
     CancelVerification {
         request_id: RequestId,
+        reason: VerificationCancelReason,
     },
     BootstrapCrossSigning {
         request_id: RequestId,
@@ -356,9 +358,10 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("ConfirmSasVerification")
                 .field("request_id", request_id)
                 .finish(),
-            Self::CancelVerification { request_id } => formatter
+            Self::CancelVerification { request_id, reason } => formatter
                 .debug_struct("CancelVerification")
                 .field("request_id", request_id)
+                .field("reason", reason)
                 .finish(),
             Self::BootstrapCrossSigning { request_id } => formatter
                 .debug_struct("BootstrapCrossSigning")

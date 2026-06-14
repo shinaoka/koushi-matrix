@@ -54,9 +54,12 @@ The device-verification bridge slice wires outgoing device verification to
 public matrix-rust-sdk APIs without GUI changes. `matrix-desktop-sdk` exposes
 opaque verification-request and SAS handles plus private-data-free state/emoji
 DTO mapping; `AccountActor` owns those handles, observes SDK request/SAS state
-streams, and projects reducer actions / `CoreEvent::E2eeTrust` updates.
-Incoming verification request discovery, mismatch-specific cancellation, local
-homeserver verification proof, and all GUI surfaces remain later Phase A/B work.
+streams, and projects reducer actions / `CoreEvent::E2eeTrust` updates. The
+mismatch-cancel slice adds `VerificationCancelReason` so plain user cancel
+returns verification to `Idle`, while SAS mismatch calls the SDK mismatch path
+and settles the reducer as kind-only `Mismatch` failure. Incoming verification
+request discovery, local homeserver verification proof, and all GUI surfaces
+remain later Phase A/B work.
 
 ## Verification
 

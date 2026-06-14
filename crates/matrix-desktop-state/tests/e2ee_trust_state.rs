@@ -1,7 +1,8 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, CrossSigningStatus, E2eeTrustState, IdentityResetAuthType,
     IdentityResetState, KeyBackupStatus, SasEmoji, SessionInfo, SessionState,
-    TrustOperationFailureKind, UiEvent, VerificationFlowState, VerificationTarget, reduce,
+    TrustOperationFailureKind, UiEvent, VerificationCancelReason, VerificationFlowState,
+    VerificationTarget, reduce,
 };
 use serde_json::json;
 
@@ -166,7 +167,10 @@ fn verification_cancel_and_failure_settle_only_the_matching_flow() {
     assert!(
         reduce(
             &mut state,
-            AppAction::VerificationCancelled { request_id: 123 },
+            AppAction::VerificationCancelled {
+                request_id: 123,
+                reason: VerificationCancelReason::User,
+            },
         )
         .is_empty()
     );
@@ -178,10 +182,16 @@ fn verification_cancel_and_failure_settle_only_the_matching_flow() {
     assert_eq!(
         reduce(
             &mut state,
-            AppAction::VerificationCancelled { request_id: 9 },
+            AppAction::VerificationCancelled {
+                request_id: 9,
+                reason: VerificationCancelReason::User,
+            },
         ),
         vec![
-            AppEffect::CancelVerification { request_id: 9 },
+            AppEffect::CancelVerification {
+                request_id: 9,
+                reason: VerificationCancelReason::User,
+            },
             AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
         ]
     );
@@ -207,6 +217,83 @@ fn verification_cancel_and_failure_settle_only_the_matching_flow() {
             request_id: 10,
             target,
             kind: TrustOperationFailureKind::Sdk,
+        }
+    );
+}
+
+#[test]
+fn verification_mismatch_cancel_settles_as_mismatch_failure() {
+    let mut state = ready_state();
+    let target = target();
+    let emojis = sas();
+    reduce(
+        &mut state,
+        AppAction::VerificationRequested {
+            request_id: 11,
+            target: target.clone(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::VerificationSasPresented {
+            request_id: 11,
+            emojis,
+        },
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::VerificationCancelled {
+                request_id: 11,
+                reason: VerificationCancelReason::Mismatch,
+            },
+        ),
+        vec![
+            AppEffect::CancelVerification {
+                request_id: 11,
+                reason: VerificationCancelReason::Mismatch,
+            },
+            AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+        ]
+    );
+    assert_eq!(
+        state.e2ee_trust.verification,
+        VerificationFlowState::Failed {
+            request_id: 11,
+            target,
+            kind: TrustOperationFailureKind::Mismatch,
+        }
+    );
+}
+
+#[test]
+fn verification_mismatch_cancel_is_ignored_before_sas_is_presented() {
+    let mut state = ready_state();
+    let target = target();
+    reduce(
+        &mut state,
+        AppAction::VerificationRequested {
+            request_id: 12,
+            target: target.clone(),
+        },
+    );
+
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::VerificationCancelled {
+                request_id: 12,
+                reason: VerificationCancelReason::Mismatch,
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        state.e2ee_trust.verification,
+        VerificationFlowState::Requested {
+            request_id: 12,
+            target,
         }
     );
 }

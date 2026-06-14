@@ -1,6 +1,8 @@
 use crate::{
     action::{LoginRequest, RecoveryRequest},
-    state::{SearchScope, SessionInfo, SettingsValues, VerificationTarget},
+    state::{
+        SearchScope, SessionInfo, SettingsValues, VerificationCancelReason, VerificationTarget,
+    },
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,6 +26,7 @@ pub enum AppEffect {
     },
     CancelVerification {
         request_id: u64,
+        reason: VerificationCancelReason,
     },
     BootstrapCrossSigning {
         request_id: u64,

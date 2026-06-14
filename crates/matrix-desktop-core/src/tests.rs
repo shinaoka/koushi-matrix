@@ -7,7 +7,7 @@ use matrix_desktop_state::{
     AppAction, AppearanceSettings, AuthSecret, ComposerMode, CrossSigningStatus,
     IdentityResetAuthRequest, LoginRequest, RecoveryRequest, RoomSummary, SasEmoji, SearchState,
     SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState, ThemePreference,
-    VerificationFlowState, VerificationTarget,
+    VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 
 use crate::command::{
@@ -146,7 +146,10 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
         }),
         CoreCommand::Account(AccountCommand::AcceptVerification { request_id }),
         CoreCommand::Account(AccountCommand::ConfirmSasVerification { request_id }),
-        CoreCommand::Account(AccountCommand::CancelVerification { request_id }),
+        CoreCommand::Account(AccountCommand::CancelVerification {
+            request_id,
+            reason: VerificationCancelReason::Mismatch,
+        }),
         CoreCommand::Account(AccountCommand::BootstrapCrossSigning { request_id }),
         CoreCommand::Account(AccountCommand::EnableKeyBackup { request_id }),
         CoreCommand::Account(AccountCommand::RestoreKeyBackup {

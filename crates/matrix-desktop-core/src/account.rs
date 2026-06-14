@@ -34,7 +34,7 @@ use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
     AppAction, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType, IdentityResetState,
     LoginRequest, RecoveryMethod, RecoveryRequest, SessionInfo, TrustOperationFailureKind,
-    VerificationFlowState, VerificationTarget,
+    VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -521,8 +521,8 @@ impl AccountActor {
             AccountCommand::ConfirmSasVerification { request_id } => {
                 self.handle_confirm_sas_verification(request_id).await;
             }
-            AccountCommand::CancelVerification { request_id } => {
-                self.handle_cancel_verification(request_id).await;
+            AccountCommand::CancelVerification { request_id, reason } => {
+                self.handle_cancel_verification(request_id, reason).await;
             }
         }
     }
@@ -642,7 +642,11 @@ impl AccountActor {
         }
     }
 
-    async fn handle_cancel_verification(&mut self, request_id: RequestId) {
+    async fn handle_cancel_verification(
+        &mut self,
+        request_id: RequestId,
+        reason: VerificationCancelReason,
+    ) {
         enum CancelTarget {
             Sas {
                 target: VerificationTarget,
@@ -654,15 +658,17 @@ impl AccountActor {
             },
         }
 
-        let cancel_target = self
+        let sas_target = self
             .sas_verification
             .as_ref()
             .filter(|pending| pending.request_id.sequence == request_id.sequence)
             .map(|pending| CancelTarget::Sas {
                 target: pending.target.clone(),
                 handle: pending.handle.clone(),
-            })
-            .or_else(|| {
+            });
+        let cancel_target = match reason {
+            VerificationCancelReason::Mismatch => sas_target,
+            VerificationCancelReason::User => sas_target.or_else(|| {
                 self.verification_request
                     .as_ref()
                     .filter(|pending| pending.request_id.sequence == request_id.sequence)
@@ -670,11 +676,16 @@ impl AccountActor {
                         target: pending.target.clone(),
                         handle: pending.handle.clone(),
                     })
-            });
+            }),
+        };
 
         let Some(cancel_target) = cancel_target else {
-            self.project_active_or_missing_verification_failure(request_id)
-                .await;
+            if reason == VerificationCancelReason::Mismatch {
+                self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+            } else {
+                self.project_active_or_missing_verification_failure(request_id)
+                    .await;
+            }
             return;
         };
 
@@ -684,9 +695,14 @@ impl AccountActor {
             }
         };
         let result = match cancel_target {
-            CancelTarget::Sas { handle, .. } => {
-                matrix_desktop_sdk::cancel_sas_verification(&handle).await
-            }
+            CancelTarget::Sas { handle, .. } => match reason {
+                VerificationCancelReason::User => {
+                    matrix_desktop_sdk::cancel_sas_verification(&handle).await
+                }
+                VerificationCancelReason::Mismatch => {
+                    matrix_desktop_sdk::mismatch_sas_verification(&handle).await
+                }
+            },
             CancelTarget::Request { handle, .. } => {
                 matrix_desktop_sdk::cancel_verification_request(&handle).await
             }
