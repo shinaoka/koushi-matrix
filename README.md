@@ -12,6 +12,11 @@ Initialize the vendored Matrix SDK submodule before running Cargo commands:
 git submodule update --init --recursive
 ```
 
+The repository commits a top-level `Cargo.lock` for reproducible workspace
+resolution. The first Cargo build still needs network access unless the
+crates.io registry and git dependencies are already present in your Cargo
+cache.
+
 ## Verify
 
 ```bash
