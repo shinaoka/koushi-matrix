@@ -747,7 +747,38 @@ npm --prefix apps/desktop run test -- src/test/tauriIpcMock.test.ts src/domain/s
 git diff --check
 ```
 
-- [ ] **Step 3: Comment on #6**
+### Task 7: Shared composer shortcut resolver foundation
+
+**Files:**
+- Create: `crates/matrix-desktop-state/src/composer_shortcuts.rs`
+- Create: `crates/matrix-desktop-state/tests/composer_shortcut_resolver.rs`
+- Modify: `crates/matrix-desktop-state/src/lib.rs`
+- Modify: `docs/architecture/overview.md`
+- Modify: `docs/architecture/state-machine.md`
+- Modify: `AGENTS.md`
+
+- [x] **Step 1: Write failing Rust resolver tests**
+
+Added a Rust/headless resolver contract for main, thread, and edit composer
+surfaces covering Enter, Shift+Enter, Mod+Enter, autocomplete acceptance,
+disabled sends, IME composition, and Escape cancel.
+
+- [x] **Step 2: Implement pure Rust resolver**
+
+Added `resolve_composer_key_action` and typed, platform-generic key/context
+facts in `matrix-desktop-state`. GUI code remains a future Phase B consumer
+that normalizes DOM/native key input into these facts.
+
+- [x] **Step 3: Sync docs/AGENTS**
+
+Recorded that composer shortcut behavior is Rust-owned and shared across
+composer surfaces; React must not reimplement those semantics as product logic.
+
+---
+
+### Task 8: Issue comment
+
+- [ ] **Step 1: Comment on #6**
 
 Comment with completed Phase A evidence and remaining Phase B scope:
 
@@ -759,10 +790,15 @@ Done:
 - Reducer transitions for load/update/persist success/failure.
 - Non-secret JSON SettingsStore outside credential stores.
 - DTO/TS contract includes settings.
-- Docs updated; settings remain Rust-owned, React is not source of truth.
+- Shared Rust composer shortcut resolver covers main/thread/edit surfaces for
+  Enter, Shift+Enter, Mod+Enter, autocomplete acceptance, disabled sends, IME,
+  and Escape cancel.
+- Docs updated; settings and composer shortcut semantics remain Rust-owned,
+  React is not source of truth.
 
 Verification:
 - cargo test -p matrix-desktop-state settings
+- cargo test -p matrix-desktop-state --test composer_shortcut_resolver
 - cargo test -p matrix-desktop-core settings
 - cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml dto
 - npm --prefix apps/desktop run test -- src/test/tauriIpcMock.test.ts src/domain/shortcuts.test.ts

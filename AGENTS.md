@@ -38,6 +38,10 @@ All agents implementing Rust-owned settings Phase A follow
   GUI work may render it and dispatch `update_settings`, but must not make
   locale, theme, font/emoji, or composer-send shortcut preferences a React or
   localStorage source of truth.
+- Composer key behavior belongs to the Rust-owned resolver in
+  `matrix-desktop-state`, shared by main, thread, and edit composer surfaces.
+  GUI code normalizes DOM/native key input into typed resolver facts and then
+  dispatches/renders the returned action.
 - When `AppState.settings` or any settings enum changes, update the Tauri DTO,
   TypeScript domain types, `browserFakeApi` defaults, `tauriIpcMock`, app
   harness snapshots, and the DTO serialization-contract test in the same

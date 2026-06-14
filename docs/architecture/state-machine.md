@@ -374,6 +374,11 @@ stateDiagram-v2
 - Settings updates are optimistic: the reducer applies the typed patch before
   persistence completes, records the latest saving request id, and ignores stale
   persist completions.
+- Composer send shortcut behavior is resolved by the pure Rust-owned
+  `matrix-desktop-state` composer resolver for main, thread, and edit composer
+  surfaces. GUI code may normalize DOM/native key input into the resolver's
+  typed key facts; it must not reimplement Enter, Shift+Enter, Mod+Enter,
+  autocomplete acceptance, or cancel semantics as product logic.
 - Persist failures do not roll back the in-memory product state. They clear the
   pending save and record a recoverable error so the UI can surface retry/status
   later without inventing product semantics.

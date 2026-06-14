@@ -1,10 +1,15 @@
 pub mod action;
+pub mod composer_shortcuts;
 pub mod effect;
 pub mod reducer;
 pub mod sidebar;
 pub mod state;
 
 pub use action::{AppAction, AuthSecret, LoginRequest, RecoveryRequest};
+pub use composer_shortcuts::{
+    ComposerKey, ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction,
+    ComposerResolverContext, ComposerSurface, resolve_composer_key_action,
+};
 pub use effect::{AppEffect, UiEvent};
 pub use reducer::reduce;
 pub use sidebar::{AccountHomeItem, RoomListItem, SidebarModel, SpaceRailItem, compose_sidebar};
