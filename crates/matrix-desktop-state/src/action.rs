@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::state::{
     BasicOperationRequest, E2eeRecoveryState, LoginFlow, RecoveryMethod, RoomSummary, SearchResult,
-    SearchScope, SessionInfo, SpaceSummary,
+    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -25,6 +25,23 @@ pub enum AppAction {
     },
     LoginDiscoveryFailed {
         homeserver: String,
+        message: String,
+    },
+    SettingsLoaded {
+        values: SettingsValues,
+    },
+    SettingsLoadFailed {
+        message: String,
+    },
+    SettingsUpdateRequested {
+        request_id: u64,
+        patch: SettingsPatch,
+    },
+    SettingsPersisted {
+        request_id: u64,
+    },
+    SettingsPersistFailed {
+        request_id: u64,
         message: String,
     },
     LoginSubmitted(LoginRequest),

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct AppState {
     pub session: SessionState,
     pub auth: AuthDiscoveryState,
+    pub settings: SettingsState,
     pub sync: SyncState,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
@@ -21,6 +22,7 @@ impl Default for AppState {
         Self {
             session: SessionState::SignedOut,
             auth: AuthDiscoveryState::Unknown,
+            settings: SettingsState::default(),
             sync: SyncState::Stopped,
             navigation: NavigationState::default(),
             spaces: Vec::new(),
@@ -33,6 +35,165 @@ impl Default for AppState {
             errors: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SettingsState {
+    pub values: SettingsValues,
+    pub persistence: SettingsPersistenceState,
+}
+
+impl Default for SettingsState {
+    fn default() -> Self {
+        Self {
+            values: SettingsValues::default(),
+            persistence: SettingsPersistenceState::Idle,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SettingsValues {
+    pub locale: LocaleSettings,
+    pub appearance: AppearanceSettings,
+    pub typography: TypographySettings,
+    pub keyboard: KeyboardSettings,
+}
+
+impl SettingsValues {
+    pub fn apply_patch(&mut self, patch: SettingsPatch) {
+        if let Some(locale) = patch.locale {
+            self.locale = locale;
+        }
+        if let Some(appearance) = patch.appearance {
+            self.appearance = appearance;
+        }
+        if let Some(typography) = patch.typography {
+            self.typography = typography;
+        }
+        if let Some(keyboard) = patch.keyboard {
+            self.keyboard = keyboard;
+        }
+    }
+}
+
+impl Default for SettingsValues {
+    fn default() -> Self {
+        Self {
+            locale: LocaleSettings::default(),
+            appearance: AppearanceSettings::default(),
+            typography: TypographySettings::default(),
+            keyboard: KeyboardSettings::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocaleSettings {
+    pub language_tag: Option<String>,
+    pub text_direction: TextDirectionPreference,
+}
+
+impl Default for LocaleSettings {
+    fn default() -> Self {
+        Self {
+            language_tag: None,
+            text_direction: TextDirectionPreference::Auto,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextDirectionPreference {
+    Auto,
+    Ltr,
+    Rtl,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AppearanceSettings {
+    pub theme: ThemePreference,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        Self {
+            theme: ThemePreference::System,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemePreference {
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TypographySettings {
+    pub font: FontPreference,
+    pub emoji: EmojiPreference,
+}
+
+impl Default for TypographySettings {
+    fn default() -> Self {
+        Self {
+            font: FontPreference::System,
+            emoji: EmojiPreference::System,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FontPreference {
+    System,
+    Inter,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EmojiPreference {
+    System,
+    TwemojiColr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct KeyboardSettings {
+    pub composer_send_shortcut: ComposerSendShortcut,
+}
+
+impl Default for KeyboardSettings {
+    fn default() -> Self {
+        Self {
+            composer_send_shortcut: ComposerSendShortcut::Enter,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ComposerSendShortcut {
+    Enter,
+    ModEnter,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SettingsPersistenceState {
+    Idle,
+    Saving { request_id: u64 },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SettingsPatch {
+    pub locale: Option<LocaleSettings>,
+    pub appearance: Option<AppearanceSettings>,
+    pub typography: Option<TypographySettings>,
+    pub keyboard: Option<KeyboardSettings>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

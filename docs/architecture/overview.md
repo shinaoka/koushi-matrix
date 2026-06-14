@@ -44,6 +44,11 @@ Crate responsibilities:
 
 - `matrix-desktop-state` — pure. `AppState`, `AppAction`, `reduce()`,
   serializable snapshot DTOs. No SDK handles, no Tauri, no async.
+- `SettingsState` is serializable Rust product state owned by
+  `matrix-desktop-state` and persisted by `matrix-desktop-core` through a
+  non-secret settings store. React may apply settings to presentation, but it
+  must not be the source of truth for locale, theme, font/emoji choice, or
+  composer send shortcut semantics.
 - `matrix-desktop-sdk` — low-level SDK adapter (login, restore, recovery,
   sync, room, timeline, search primitives). No app state, no QA orchestration.
 - `matrix-desktop-core` — actor lifecycle, command routing, event emission,

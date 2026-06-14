@@ -146,6 +146,15 @@ function defaultSnapshotResponse() {
     state: {
       session: { kind: "signedOut" },
       auth: { kind: "unknown" },
+      settings: {
+        values: {
+          locale: { language_tag: null, text_direction: "auto" },
+          appearance: { theme: "system" },
+          typography: { font: "system", emoji: "system" },
+          keyboard: { composer_send_shortcut: "enter" }
+        },
+        persistence: { kind: "idle" }
+      },
       sync: "stopped",
       navigation: { active_space_id: null, active_room_id: null },
       spaces: [],

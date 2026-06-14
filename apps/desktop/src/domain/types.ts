@@ -16,6 +16,7 @@ export interface SavedSessionInfo {
 export interface AppState {
   session: SessionState;
   auth: AuthDiscoveryState;
+  settings: SettingsState;
   sync: SyncState;
   navigation: NavigationState;
   spaces: SpaceSummary[];
@@ -27,6 +28,56 @@ export interface AppState {
   errors: AppError[];
   basic_operation: BasicOperationState;
 }
+
+export interface SettingsState {
+  values: SettingsValues;
+  persistence: SettingsPersistenceState;
+}
+
+export interface SettingsValues {
+  locale: LocaleSettings;
+  appearance: AppearanceSettings;
+  typography: TypographySettings;
+  keyboard: KeyboardSettings;
+}
+
+export interface SettingsPatch {
+  locale?: LocaleSettings;
+  appearance?: AppearanceSettings;
+  typography?: TypographySettings;
+  keyboard?: KeyboardSettings;
+}
+
+export interface LocaleSettings {
+  language_tag: string | null;
+  text_direction: TextDirectionPreference;
+}
+
+export type TextDirectionPreference = "auto" | "ltr" | "rtl";
+
+export interface AppearanceSettings {
+  theme: ThemePreference;
+}
+
+export type ThemePreference = "system" | "light" | "dark";
+
+export interface TypographySettings {
+  font: FontPreference;
+  emoji: EmojiPreference;
+}
+
+export type FontPreference = "system" | "inter";
+export type EmojiPreference = "system" | "twemojiColr";
+
+export interface KeyboardSettings {
+  composer_send_shortcut: ComposerSendShortcut;
+}
+
+export type ComposerSendShortcut = "enter" | "modEnter";
+
+export type SettingsPersistenceState =
+  | { kind: "idle" }
+  | { kind: "saving"; request_id: number };
 
 export type AuthDiscoveryState =
   | { kind: "unknown" }

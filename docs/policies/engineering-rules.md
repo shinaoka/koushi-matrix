@@ -58,6 +58,13 @@ Rules:
    aggregate unread/highlight counts. They must not include message bodies,
    sender identifiers, room IDs, event IDs, transaction IDs, raw SDK errors,
    or secrets.
+10. Device-local settings are non-secret product state, but they are still a
+   privacy boundary. Settings files may contain only typed preferences such as
+   locale, theme, font/emoji choice, keyboard behavior, and notification
+   policy. They must not contain Matrix credentials, tokens, recovery material,
+   local unlock secrets, SDK/search keys, raw Matrix session JSON,
+   room/event/user IDs, message bodies, attachment filenames, search queries,
+   or raw SDK errors.
 
 ## Logging and Diagnostics
 
@@ -208,3 +215,9 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    defect. Phase-exit docs-sync verifies diagram↔reducer agreement. Design new
    state transitions as explicit guarded state machines (events distinct from
    states, invalid/stale inputs rejected), not ad-hoc field assignments.
+6. For umbrella issue work, each child issue completion must record
+   implementation discoveries in the right place: durable architecture/rule
+   changes in `docs/architecture/`, `REPOSITORY_RULES.md`, or this document;
+   operational setup/failure notes in `AGENTS.md`; and QA scenario contracts in
+   `docs/qa/`. Closing an issue without syncing the learned rule is a process
+   defect.

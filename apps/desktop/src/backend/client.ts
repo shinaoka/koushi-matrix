@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import { createBrowserFakeApi, type DesktopApi } from "./browserFakeApi";
-import type { DesktopSnapshot, SavedSessionInfo, SearchScopeKind } from "../domain/types";
+import type {
+  DesktopSnapshot,
+  SavedSessionInfo,
+  SearchScopeKind,
+  SettingsPatch
+} from "../domain/types";
 
 export function createDesktopApi(): DesktopApi {
   if (isTauriRuntime()) {
@@ -52,6 +57,10 @@ class TauriDesktopApi implements DesktopApi {
 
   async restartSync(): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("restart_sync");
+  }
+
+  async updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("update_settings", { patch });
   }
 
   async selectSpace(spaceId: string | null): Promise<DesktopSnapshot> {

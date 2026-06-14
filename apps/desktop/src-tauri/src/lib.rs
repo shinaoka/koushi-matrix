@@ -733,6 +733,7 @@ pub fn run() {
             commands::submit_recovery,
             commands::logout,
             commands::restart_sync,
+            commands::update_settings,
             commands::select_space,
             commands::select_room,
             commands::select_search_result,

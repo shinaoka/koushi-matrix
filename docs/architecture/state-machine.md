@@ -340,12 +340,45 @@ Theme *appearance* is split deliberately:
   `@media (prefers-color-scheme: dark)` in `styles.css`. No React or Rust state
   participates; nothing is dispatched, nothing is stored.
 - **An explicit user theme choice (`system | light | dark`) is product state**
-  and is therefore Rust-owned. It is deferred to `SettingsState` (Issue #6).
-  When it lands, React applies it by setting `data-theme` / `color-scheme` on
-  the root element; the CSS `:root[data-theme="dark"]` block already exists for
-  this. React must not store the chosen theme as its own product state.
+  and is therefore Rust-owned in `SettingsState`. React applies it by setting
+  `data-theme` / `color-scheme` on the root element; the CSS
+  `:root[data-theme="dark"]` block exists for this. React must not store the
+  chosen theme as its own product state.
 
 Selection, unread, reply, thread, search, and right-panel modes remain
 Rust-owned (`AppState.navigation`, `rooms[].unread_count`/`highlight_count`,
-`timeline.composer.mode`, `thread`, `search`, right-panel mode). The theming
-work changes presentation only and adds no reducer transitions.
+`timeline.composer.mode`, `thread`, `search`, right-panel mode).
+
+## Settings
+
+Settings are Rust-owned product state and are not gated by a Ready session.
+They affect signed-out and signed-in UI surfaces such as language, text
+direction, appearance/theme, font/emoji choice, and composer send shortcut.
+React renders `AppState.settings` and dispatches typed settings commands; it
+must not store these preferences as product state in localStorage or component
+state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Idle: SettingsLoaded
+    Idle --> Idle: SettingsLoadFailed
+    Idle --> Saving: SettingsUpdateRequested
+    Saving --> Saving: SettingsUpdateRequested [replacement]
+    Saving --> Idle: SettingsPersisted [matching request_id]
+    Saving --> Idle: SettingsPersistFailed [matching request_id]
+```
+
+- Settings load failure keeps safe defaults and records a private-data-free
+  recoverable error.
+- Settings updates are optimistic: the reducer applies the typed patch before
+  persistence completes, records the latest saving request id, and ignores stale
+  persist completions.
+- Persist failures do not roll back the in-memory product state. They clear the
+  pending save and record a recoverable error so the UI can surface retry/status
+  later without inventing product semantics.
+- Settings values are non-secret by construction. They must never include
+  access tokens, refresh tokens, passwords, recovery material, SDK store keys,
+  search index keys, local unlock secrets, raw homeserver credentials, raw
+  Matrix session JSON, message bodies, attachment filenames, room IDs, event
+  IDs, user IDs, or raw SDK errors.

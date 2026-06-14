@@ -5,6 +5,7 @@ import type {
   SavedSessionInfo,
   SearchResult,
   SearchScopeKind,
+  SettingsPatch,
   SpaceSummary,
   TimelineMessage
 } from "../domain/types";
@@ -22,6 +23,7 @@ export interface DesktopApi {
   switchAccount(session: SavedSessionInfo): Promise<DesktopSnapshot>;
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
+  updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
   selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
@@ -181,6 +183,15 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.sync = "running";
     }
 
+    return this.getSnapshot();
+  }
+
+  async updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot> {
+    this.snapshot.state.settings.values = applySettingsPatch(
+      this.snapshot.state.settings.values,
+      patch
+    );
+    this.snapshot.state.settings.persistence = { kind: "idle" };
     return this.getSnapshot();
   }
 
@@ -629,6 +640,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         kind: "ready"
       },
       auth: { kind: "unknown" },
+      settings: defaultSettingsState(),
       sync: "running",
       navigation: {
         active_space_id,
@@ -704,6 +716,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
     state: {
       session: { kind: "signedOut" },
       auth: { kind: "unknown" },
+      settings: defaultSettingsState(),
       sync: "stopped",
       navigation: {
         active_space_id: null,
@@ -730,6 +743,30 @@ function createSignedOutSnapshot(): DesktopSnapshot {
     sidebar: emptySidebar(),
     timeline: [],
     thread: null
+  };
+}
+
+function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
+  return {
+    values: {
+      locale: { language_tag: null, text_direction: "auto" },
+      appearance: { theme: "system" },
+      typography: { font: "system", emoji: "system" },
+      keyboard: { composer_send_shortcut: "enter" }
+    },
+    persistence: { kind: "idle" }
+  };
+}
+
+function applySettingsPatch(
+  values: DesktopSnapshot["state"]["settings"]["values"],
+  patch: SettingsPatch
+): DesktopSnapshot["state"]["settings"]["values"] {
+  return {
+    locale: patch.locale ?? values.locale,
+    appearance: patch.appearance ?? values.appearance,
+    typography: patch.typography ?? values.typography,
+    keyboard: patch.keyboard ?? values.keyboard
   };
 }
 

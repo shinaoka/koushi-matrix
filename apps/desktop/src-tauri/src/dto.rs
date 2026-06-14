@@ -12,8 +12,8 @@
 use matrix_desktop_state::{
     AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState,
     FocusedContextState, NavigationState, RecoveryMethod, RoomSummary, SearchMatchField,
-    SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState, SidebarModel,
-    SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
+    SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState, SettingsState,
+    SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,7 @@ impl From<AppState> for FrontendDesktopSnapshot {
 pub struct FrontendAppState {
     pub session: FrontendSessionState,
     pub auth: AuthDiscoveryState,
+    pub settings: SettingsState,
     pub sync: FrontendSyncState,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
@@ -68,6 +69,7 @@ impl From<AppState> for FrontendAppState {
         Self {
             session: state.session.into(),
             auth: state.auth,
+            settings: state.settings,
             sync: state.sync.into(),
             navigation: state.navigation,
             spaces: state.spaces,
@@ -441,6 +443,20 @@ mod tests {
         // basic_operation must be present (default Idle) so the UI can read
         // snapshot.state.basic_operation.kind without crashing.
         assert_eq!(value["state"]["basic_operation"]["kind"], json!("idle"));
+        // settings must be present so React can consume Rust-owned product
+        // preferences instead of owning theme/locale/shortcut state.
+        assert_eq!(
+            value["state"]["settings"]["values"]["appearance"]["theme"],
+            json!("system")
+        );
+        assert_eq!(
+            value["state"]["settings"]["values"]["keyboard"]["composer_send_shortcut"],
+            json!("enter")
+        );
+        assert_eq!(
+            value["state"]["settings"]["persistence"]["kind"],
+            json!("idle")
+        );
         // composer.mode must be present (default Plain) for the same reason.
         assert_eq!(
             value["state"]["timeline"]["composer"]["mode"],

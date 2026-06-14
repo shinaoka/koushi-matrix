@@ -101,6 +101,7 @@ function readySnapshot(
         device_id: DEVICE_ID
       },
       auth: { kind: "unknown" },
+      settings: defaultSettingsState(),
       sync: "running",
       navigation: { active_space_id: null, active_room_id: ROOM_ID },
       spaces,
@@ -142,6 +143,18 @@ function readySnapshot(
     },
     timeline: [],
     thread: null
+  };
+}
+
+function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
+  return {
+    values: {
+      locale: { language_tag: null, text_direction: "auto" },
+      appearance: { theme: "system" },
+      typography: { font: "system", emoji: "system" },
+      keyboard: { composer_send_shortcut: "enter" }
+    },
+    persistence: { kind: "idle" }
   };
 }
 

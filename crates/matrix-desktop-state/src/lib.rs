@@ -9,10 +9,13 @@ pub use effect::{AppEffect, UiEvent};
 pub use reducer::reduce;
 pub use sidebar::{AccountHomeItem, RoomListItem, SidebarModel, SpaceRailItem, compose_sidebar};
 pub use state::{
-    AppError, AppState, AuthDiscoveryState, BasicOperationRequest, BasicOperationState,
-    ComposerMode, ComposerState, E2eeRecoveryState, FocusedContextState, LoginFlow, LoginFlowKind,
-    NavigationState, PendingComposerSendKind, RecoveryMethod, RoomAttentionKind,
-    RoomAttentionSummary, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult,
-    SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, TextRange,
-    ThreadPaneState, TimelinePaneState, room_attention_kind, room_attention_summary,
+    AppError, AppState, AppearanceSettings, AuthDiscoveryState, BasicOperationRequest,
+    BasicOperationState, ComposerMode, ComposerSendShortcut, ComposerState, E2eeRecoveryState,
+    EmojiPreference, FocusedContextState, FontPreference, KeyboardSettings, LocaleSettings,
+    LoginFlow, LoginFlowKind, NavigationState, PendingComposerSendKind, RecoveryMethod,
+    RoomAttentionKind, RoomAttentionSummary, RoomSummary, SearchMatchField, SearchMatchKind,
+    SearchResult, SearchScope, SearchState, SessionInfo, SessionState, SettingsPatch,
+    SettingsPersistenceState, SettingsState, SettingsValues, SpaceSummary, SyncState,
+    TextDirectionPreference, TextRange, ThemePreference, ThreadPaneState, TimelinePaneState,
+    TypographySettings, room_attention_kind, room_attention_summary,
 };

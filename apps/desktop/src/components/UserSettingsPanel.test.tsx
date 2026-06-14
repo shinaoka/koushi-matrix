@@ -42,4 +42,26 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Separate encrypted namespace");
     expect(markup).toContain("OS credential store");
   });
+
+  test("renders saved sessions when the current session is unavailable", () => {
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={null}
+        savedSessions={[
+          {
+            homeserver: "https://matrix.org",
+            user_id: "@second-user:example.invalid",
+            device_id: "SECONDDEVICE"
+          }
+        ]}
+        onOpenKeyboardSettings={() => undefined}
+        onSwitchAccount={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Matrix account");
+    expect(markup).toContain("Not restored");
+    expect(markup).toContain("@second-user:example.invalid");
+    expect(markup).toContain("Switch");
+  });
 });

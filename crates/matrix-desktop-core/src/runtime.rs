@@ -22,6 +22,7 @@ use crate::event::{AppStateSnapshot, CoreEvent};
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
+use crate::settings::SettingsStore;
 use crate::store::StoreActor;
 
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
@@ -76,8 +77,18 @@ impl CoreRuntime {
     fn start_inner(event_capacity: usize, data_dir: PathBuf) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
         let (event_tx, _) = broadcast::channel(event_capacity);
-        let (snapshot_tx, snapshot_rx) = watch::channel(AppState::default());
         let (action_tx, action_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
+        let settings_store = SettingsStore::new(&data_dir);
+
+        let mut initial_state = AppState::default();
+        let settings_action = match settings_store.load() {
+            Ok(values) => AppAction::SettingsLoaded { values },
+            Err(_) => AppAction::SettingsLoadFailed {
+                message: "settings could not be loaded".to_owned(),
+            },
+        };
+        let _ = reduce(&mut initial_state, settings_action);
+        let (snapshot_tx, snapshot_rx) = watch::channel(initial_state.clone());
 
         // Build the store actor (owns the credential store backend).
         let store_actor = StoreActor::new(data_dir);
@@ -91,7 +102,8 @@ impl CoreRuntime {
             action_rx,
             event_tx: event_tx.clone(),
             snapshot_tx,
-            state: AppState::default(),
+            state: initial_state,
+            settings_store,
             account_actor,
         };
         let actor = executor::spawn(actor.run());
@@ -199,6 +211,7 @@ struct AppActor {
     event_tx: broadcast::Sender<CoreEvent>,
     snapshot_tx: watch::Sender<AppStateSnapshot>,
     state: AppState,
+    settings_store: SettingsStore,
     account_actor: AccountActorHandle,
 }
 
@@ -378,6 +391,17 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::UpdateSettings { request_id, patch } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::SettingsUpdateRequested {
+                            request_id: request_id.sequence,
+                            patch,
+                        },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
             },
             CoreCommand::Sync(sync_command) => {
                 // Route to AccountActor (which forwards to SyncActor).
@@ -427,7 +451,7 @@ impl AppActor {
         }
     }
 
-    async fn handle_app_effects(&self, request_id: RequestId, effects: Vec<AppEffect>) {
+    async fn handle_app_effects(&mut self, request_id: RequestId, effects: Vec<AppEffect>) {
         for effect in effects {
             if let AppEffect::OpenThreadTimeline {
                 room_id,
@@ -493,6 +517,24 @@ impl AppActor {
                         },
                     ))
                     .await;
+            } else if let AppEffect::PersistSettings {
+                request_id: effect_request_id,
+                values,
+            } = effect
+            {
+                if effect_request_id != request_id.sequence {
+                    continue;
+                }
+                let action = match self.settings_store.save(&values) {
+                    Ok(()) => AppAction::SettingsPersisted {
+                        request_id: effect_request_id,
+                    },
+                    Err(_) => AppAction::SettingsPersistFailed {
+                        request_id: effect_request_id,
+                        message: "settings could not be saved".to_owned(),
+                    },
+                };
+                let _ = reduce(&mut self.state, action);
             }
         }
     }

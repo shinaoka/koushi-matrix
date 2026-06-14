@@ -4,11 +4,14 @@ use crate::{
     state::{
         AppError, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
         E2eeRecoveryState, FocusedContextState, NavigationState, PendingComposerSendKind,
-        SearchState, SessionState, SyncState, ThreadPaneState, TimelinePaneState,
+        SearchState, SessionState, SettingsPersistenceState, SyncState, ThreadPaneState,
+        TimelinePaneState,
     },
 };
 
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
+const SETTINGS_LOAD_FAILED_MESSAGE: &str = "Settings could not be loaded";
+const SETTINGS_PERSIST_FAILED_MESSAGE: &str = "Settings could not be saved";
 
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     match action {
@@ -163,6 +166,61 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 message,
             };
             vec![AppEffect::EmitUiEvent(UiEvent::AuthChanged)]
+        }
+        AppAction::SettingsLoaded { values } => {
+            state.settings.values = values;
+            state.settings.persistence = SettingsPersistenceState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::SettingsChanged)]
+        }
+        AppAction::SettingsLoadFailed { message: _ } => {
+            state.settings.persistence = SettingsPersistenceState::Idle;
+            state.errors.push(AppError {
+                code: "settings_load_failed".to_owned(),
+                message: SETTINGS_LOAD_FAILED_MESSAGE.to_owned(),
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
+        }
+        AppAction::SettingsUpdateRequested { request_id, patch } => {
+            state.settings.values.apply_patch(patch);
+            state.settings.persistence = SettingsPersistenceState::Saving { request_id };
+            vec![
+                AppEffect::PersistSettings {
+                    request_id,
+                    values: state.settings.values.clone(),
+                },
+                AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+            ]
+        }
+        AppAction::SettingsPersisted { request_id } => {
+            if state.settings.persistence != (SettingsPersistenceState::Saving { request_id }) {
+                return Vec::new();
+            }
+
+            state.settings.persistence = SettingsPersistenceState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::SettingsChanged)]
+        }
+        AppAction::SettingsPersistFailed {
+            request_id,
+            message: _,
+        } => {
+            if state.settings.persistence != (SettingsPersistenceState::Saving { request_id }) {
+                return Vec::new();
+            }
+
+            state.settings.persistence = SettingsPersistenceState::Idle;
+            state.errors.push(AppError {
+                code: "settings_persist_failed".to_owned(),
+                message: SETTINGS_PERSIST_FAILED_MESSAGE.to_owned(),
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
         }
         AppAction::LoginSubmitted(request) => {
             state.session = SessionState::Authenticating {

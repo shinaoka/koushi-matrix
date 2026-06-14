@@ -4,8 +4,9 @@
 use std::time::Duration;
 
 use matrix_desktop_state::{
-    AppAction, AuthSecret, ComposerMode, LoginRequest, RecoveryRequest, RoomSummary, SearchState,
-    SessionInfo, SessionState,
+    AppAction, AppearanceSettings, AuthSecret, ComposerMode, LoginRequest, RecoveryRequest,
+    RoomSummary, SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
+    ThemePreference,
 };
 
 use crate::command::{
@@ -34,6 +35,15 @@ fn fake_request_id() -> RequestId {
     RequestId {
         connection_id: RuntimeConnectionId(999),
         sequence: 1,
+    }
+}
+
+fn dark_theme_settings_patch() -> SettingsPatch {
+    SettingsPatch {
+        appearance: Some(AppearanceSettings {
+            theme: ThemePreference::Dark,
+        }),
+        ..SettingsPatch::default()
     }
 }
 
@@ -247,6 +257,61 @@ async fn search_query_projects_search_state_before_routing() {
         }
         other => panic!("expected search state to project, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn app_update_settings_projects_state_and_persists() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+    let mut connection = runtime.attach();
+    let request_id = connection.next_request_id();
+
+    connection
+        .command(CoreCommand::App(AppCommand::UpdateSettings {
+            request_id,
+            patch: dark_theme_settings_patch(),
+        }))
+        .await
+        .expect("submit settings update");
+
+    let snapshot = executor::timeout(Duration::from_secs(1), async {
+        loop {
+            match connection.recv_event().await.expect("event") {
+                CoreEvent::StateChanged(snapshot)
+                    if snapshot.settings.values.appearance.theme == ThemePreference::Dark =>
+                {
+                    return snapshot;
+                }
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("settings state should change");
+
+    assert_eq!(
+        snapshot.settings.persistence,
+        SettingsPersistenceState::Idle
+    );
+    let persisted = crate::settings::SettingsStore::new(data_dir.path())
+        .load()
+        .expect("load persisted settings");
+    assert_eq!(persisted.appearance.theme, ThemePreference::Dark);
+}
+
+#[test]
+fn settings_store_rejects_corrupt_json_with_defaults() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let settings_dir = data_dir.path().join("settings");
+    std::fs::create_dir_all(&settings_dir).expect("settings dir");
+    std::fs::write(settings_dir.join("settings.json"), "{not-json").expect("write corrupt");
+
+    let store = crate::settings::SettingsStore::new(data_dir.path());
+    let err = store
+        .load()
+        .expect_err("corrupt settings should fail safely");
+
+    assert_eq!(err.kind(), crate::settings::SettingsStoreErrorKind::Corrupt);
 }
 
 #[test]

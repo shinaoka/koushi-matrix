@@ -1,6 +1,6 @@
 use crate::{
     action::{LoginRequest, RecoveryRequest},
-    state::{SearchScope, SessionInfo},
+    state::{SearchScope, SessionInfo, SettingsValues},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -13,6 +13,10 @@ pub enum AppEffect {
     Login(LoginRequest),
     RecoverE2ee(RecoveryRequest),
     PersistSession(SessionInfo),
+    PersistSettings {
+        request_id: u64,
+        values: SettingsValues,
+    },
     ClearSession,
     StartSync,
     StopSync,
@@ -47,6 +51,7 @@ pub enum AppEffect {
 pub enum UiEvent {
     SessionChanged,
     AuthChanged,
+    SettingsChanged,
     RoomListChanged,
     TimelineChanged { room_id: String },
     ThreadChanged,

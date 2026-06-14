@@ -18,7 +18,7 @@ use matrix_desktop_core::{
     PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand, SearchScope,
     SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
 };
-use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest, SessionInfo};
+use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest, SessionInfo, SettingsPatch};
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
 #[cfg(any(debug_assertions, test))]
@@ -410,6 +410,22 @@ pub async fn restart_sync(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(state.inner(), build_restart_sync_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn update_settings(
+    patch: SettingsPatch,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_update_settings_command(request_id, patch),
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -1020,6 +1036,13 @@ pub(crate) fn build_restart_sync_command(
     CoreCommand::Sync(SyncCommand::Restart { request_id })
 }
 
+pub(crate) fn build_update_settings_command(
+    request_id: matrix_desktop_core::RequestId,
+    patch: SettingsPatch,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::UpdateSettings { request_id, patch })
+}
+
 pub(crate) fn build_start_sync_command(request_id: matrix_desktop_core::RequestId) -> CoreCommand {
     CoreCommand::Sync(SyncCommand::Start { request_id })
 }
@@ -1564,6 +1587,10 @@ mod tests {
         SearchScope, SyncCommand, TimelineCommand,
     };
     use matrix_desktop_state::{AppState, AuthSecret, LoginRequest, SessionInfo, SessionState};
+    use matrix_desktop_state::{
+        AppearanceSettings, LocaleSettings, SettingsPatch, TextDirectionPreference,
+        ThemePreference,
+    };
 
     use super::QaControlCommand;
     use super::SearchScopeKind;
@@ -1575,6 +1602,7 @@ mod tests {
         build_restart_sync_command, build_select_room_command, build_select_space_command,
         build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
         build_set_space_child_command, build_set_thread_composer_draft_command,
+        build_update_settings_command,
         build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, parse_qa_control_pipe_line,
@@ -2228,6 +2256,73 @@ mod tests {
         assert!(
             helper_source.contains("event_count: TIMELINE_BACKWARDS_PAGE_EVENT_COUNT"),
             "thread pagination should keep the shared room pagination event count"
+        );
+    }
+
+    #[test]
+    fn update_settings_command_routes_patch_to_app_update_settings() {
+        let command = build_update_settings_command(
+            fake_request_id(23),
+            SettingsPatch {
+                appearance: Some(AppearanceSettings {
+                    theme: ThemePreference::Dark,
+                }),
+                ..SettingsPatch::default()
+            },
+        );
+
+        match command {
+            CoreCommand::App(AppCommand::UpdateSettings { request_id, patch }) => {
+                assert_eq!(request_id, fake_request_id(23));
+                assert_eq!(
+                    patch.appearance.expect("appearance patch").theme,
+                    ThemePreference::Dark
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let debug = format!(
+            "{:?}",
+            build_update_settings_command(
+                fake_request_id(24),
+                SettingsPatch {
+                    locale: Some(LocaleSettings {
+                        language_tag: Some("ja-JP-private".to_owned()),
+                        text_direction: TextDirectionPreference::Auto,
+                    }),
+                    ..SettingsPatch::default()
+                },
+            )
+        );
+        assert!(debug.contains("locale"), "{debug}");
+        assert!(!debug.contains("ja-JP-private"), "{debug}");
+    }
+
+    #[test]
+    fn update_settings_tauri_command_contract_is_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        let command_name = "pub async fn update_settings";
+        let builder_name = "build_update_settings_command";
+        let route_name = "AppCommand::UpdateSettings";
+        let registration_name = "commands::update_settings";
+
+        assert!(
+            commands_source.contains(command_name),
+            "Tauri command should expose update_settings"
+        );
+        assert!(
+            commands_source.contains(builder_name),
+            "Tauri command should keep a testable UpdateSettings builder"
+        );
+        assert!(
+            commands_source.contains(route_name),
+            "Tauri command should route through the Rust settings state machine"
+        );
+        assert!(
+            lib_source.contains(registration_name),
+            "Tauri command should be registered in generate_handler"
         );
     }
 

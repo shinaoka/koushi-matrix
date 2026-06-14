@@ -397,6 +397,7 @@ impl FakeDesktopBackend {
             }
             AppEffect::RestoreSessionFor(_)
             | AppEffect::PersistSession(_)
+            | AppEffect::PersistSettings { .. }
             | AppEffect::StopSync
             | AppEffect::EmitUiEvent(_) => Vec::new(),
             AppEffect::Login(request) => self.login(request),

@@ -29,6 +29,23 @@ follow
 [docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md](docs/superpowers/plans/2026-06-13-roadmap-phases-10-18.md).
 All agents implementing local GUI room/space/reply operations follow
 [docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md](docs/superpowers/plans/2026-06-13-local-gui-basic-operations.md).
+All agents implementing Rust-owned settings Phase A follow
+[docs/superpowers/plans/2026-06-14-rust-owned-settings-phase-a.md](docs/superpowers/plans/2026-06-14-rust-owned-settings-phase-a.md).
+
+## Rust-Owned Settings Notes
+
+- Settings product state lives in `matrix-desktop-state::AppState.settings`.
+  GUI work may render it and dispatch `update_settings`, but must not make
+  locale, theme, font/emoji, or composer-send shortcut preferences a React or
+  localStorage source of truth.
+- When `AppState.settings` or any settings enum changes, update the Tauri DTO,
+  TypeScript domain types, `browserFakeApi` defaults, `tauriIpcMock`, app
+  harness snapshots, and the DTO serialization-contract test in the same
+  change. Headless mock snapshots do not automatically inherit Rust fields.
+- The settings file is a non-secret JSON store under the core data directory
+  (`settings/settings.json`). Do not route it through the credential store and
+  do not add Matrix IDs, message content, raw SDK errors, credentials, tokens,
+  recovery material, SDK store keys, or search-index keys to it.
 
 ## Local Gates Setup
 

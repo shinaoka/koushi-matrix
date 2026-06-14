@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use matrix_desktop_state::{LoginRequest, RecoveryRequest};
+use matrix_desktop_state::{LoginRequest, RecoveryRequest, SettingsPatch};
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
 
@@ -29,7 +29,8 @@ impl CoreCommand {
                 | AppCommand::OpenThread { request_id, .. }
                 | AppCommand::CloseThread { request_id }
                 | AppCommand::OpenFocusedContext { request_id, .. }
-                | AppCommand::CloseFocusedContext { request_id },
+                | AppCommand::CloseFocusedContext { request_id }
+                | AppCommand::UpdateSettings { request_id, .. },
             ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
@@ -116,6 +117,10 @@ pub enum AppCommand {
     CloseFocusedContext {
         request_id: RequestId,
     },
+    UpdateSettings {
+        request_id: RequestId,
+        patch: SettingsPatch,
+    },
 }
 
 impl fmt::Debug for AppCommand {
@@ -178,8 +183,30 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("CloseFocusedContext")
                 .field("request_id", request_id)
                 .finish(),
+            Self::UpdateSettings { request_id, patch } => formatter
+                .debug_struct("UpdateSettings")
+                .field("request_id", request_id)
+                .field("patch_fields", &settings_patch_field_names(patch))
+                .finish(),
         }
     }
+}
+
+fn settings_patch_field_names(patch: &SettingsPatch) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    if patch.locale.is_some() {
+        fields.push("locale");
+    }
+    if patch.appearance.is_some() {
+        fields.push("appearance");
+    }
+    if patch.typography.is_some() {
+        fields.push("typography");
+    }
+    if patch.keyboard.is_some() {
+        fields.push("keyboard");
+    }
+    fields
 }
 
 // LoginRequest and RecoveryRequest redact their own Debug in
