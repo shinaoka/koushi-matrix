@@ -15,6 +15,7 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("sync=running");
     expect(title).toContain("rooms=");
     expect(title).toContain("active_room=true");
+    expect(title).toContain("timeline_room=true");
     expect(title).toContain("timeline_subscribed=true");
     expect(title).toContain("timeline_items=");
     expect(title).toContain("unread=");
@@ -24,6 +25,24 @@ describe("qaWindowTitle", () => {
     expect(title).not.toContain("@");
     expect(title).not.toContain("!");
     expect(title).not.toContain("$");
+  });
+
+  test("distinguishes active navigation from an opened timeline room", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const title = qaWindowTitle({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        timeline: {
+          ...snapshot.state.timeline,
+          room_id: null
+        }
+      }
+    });
+
+    expect(title).toContain("active_room=true");
+    expect(title).toContain("timeline_room=false");
   });
 
   test("includes an optional panel token when provided", async () => {

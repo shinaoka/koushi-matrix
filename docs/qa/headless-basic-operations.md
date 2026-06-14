@@ -198,6 +198,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --ser
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-space --server=conduit --artifact-dir=artifacts/linux-gui-local-create-space --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-invites-dm --server=conduit --artifact-dir=artifacts/linux-gui-local-invites-dm --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --artifact-dir=artifacts/linux-gui-local-media --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
 ```
 
@@ -214,6 +215,17 @@ replying to a real timeline event. They assert the Rust-owned snapshot reacts
 (`rooms`/`spaces` counts grow; a `data-reply="true"` row renders) rather than
 relying on React-only state. These destructive operations stay local-only;
 matrix.org is reserved for the final compatibility gate.
+
+`local-media` writes a synthetic fixture file under the ignored scenario
+artifact directory, sets that path on the Composer's hidden file input through
+WebDriver, falls back to a browser `DataTransfer` file list when WebKit does not
+populate `input.files`, waits for `timeline_room=true`, waits for a Rust-owned
+`TimelineItem.media` row to render in the real Tauri WebView, then clicks the
+rendered Download button and checks the QA title stays error-free. It prints
+only `gui_local_media=ok`; it must not open native file dialogs, use
+real/private filenames, print MXC URIs, expose downloaded bytes, monkeypatch
+Tauri internals from WebDriver, or synthesize upload/download lifecycle state in
+React.
 
 `local-invites-dm` registers a synthetic helper account on the same disposable
 homeserver, has that helper create and invite the QA user to a synthetic room,
@@ -256,6 +268,7 @@ gui_local_create_space=ok
 gui_local_invite_accept=ok
 gui_local_dm_start=ok
 gui_local_reply=ok
+gui_local_media=ok
 gui_local_settings=ok
 gui_local_trust_settings=ok
 ```

@@ -31,6 +31,7 @@ const checks = [
   "scenario local-create-space",
   "scenario local-invites-dm",
   "scenario local-reply",
+  "scenario local-media",
   "scenario local-settings",
   "verify local-settings trust section",
   "verify Xvfb virtual display",
@@ -188,6 +189,10 @@ async function run() {
   }
   if (guiScenario === "local-reply") {
     await runLocalReplyScenario();
+    return;
+  }
+  if (guiScenario === "local-media") {
+    await runLocalMediaScenario();
     return;
   }
   if (guiScenario === "local-settings") {
@@ -503,6 +508,58 @@ async function runLocalReplyScenario() {
   }
 }
 
+async function runLocalMediaScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.timeline_room === true,
+      timeoutMs,
+      "local GUI media timeline room"
+    );
+
+    const baselineMediaRows = await elementCount(session.browser, ".message-media");
+    const filename = `qa-media-${safeTimestamp()}.txt`;
+    const fixturePath = join(session.runDir, filename);
+    writeFileSync(fixturePath, "Matrix Desktop Linux GUI media fixture\n", "utf8");
+    const fileInputSelector = 'input[type="file"][aria-label="Attach file input"]';
+    await setSyntheticFileInput(
+      session.browser,
+      fileInputSelector,
+      fixturePath,
+      filename,
+      "text/plain",
+      "Matrix Desktop Linux GUI media fixture"
+    );
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".message-media",
+      baselineMediaRows,
+      timeoutMs,
+      "local GUI media render"
+    );
+    await waitForDocumentText(session.browser, [filename], timeoutMs, "local GUI media render");
+
+    const downloadButton = await session.browser.$(`button[aria-label="Download ${filename}"]`);
+    await downloadButton.waitForDisplayed({ timeout: timeoutMs });
+    await downloadButton.click();
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.errors === 0,
+      timeoutMs,
+      "local GUI media download"
+    );
+
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_media=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalSettingsScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -624,6 +681,121 @@ async function waitForDocumentText(browser, expectedTexts, timeout, description)
 
 async function elementCount(browser, selector) {
   return browser.execute((cssSelector) => document.querySelectorAll(cssSelector).length, selector);
+}
+
+async function setSyntheticFileInput(browser, selector, fixturePath, filename, mimeType, contents) {
+  await makeFileInputInteractable(browser, selector);
+  const input = await browser.$(selector);
+  try {
+    await input.waitForDisplayed({ timeout: timeoutMs });
+    await input.setValue(fixturePath);
+    const hasNativeFiles = await fileInputHasFiles(browser, selector);
+    if (!hasNativeFiles) {
+      await setSyntheticFileList(browser, selector, filename, mimeType, contents);
+    }
+    await dispatchFileInputChange(browser, selector);
+  } finally {
+    await restoreFileInputPresentation(browser, selector);
+  }
+}
+
+async function fileInputHasFiles(browser, selector) {
+  return browser.execute((cssSelector) => {
+    const input = document.querySelector(cssSelector);
+    return input instanceof HTMLInputElement && (input.files?.length ?? 0) > 0;
+  }, selector);
+}
+
+async function setSyntheticFileList(browser, selector, filename, mimeType, contents) {
+  const result = await browser.execute(
+    (cssSelector, fileName, type, text) => {
+      const input = document.querySelector(cssSelector);
+      if (!(input instanceof HTMLInputElement)) {
+        return { ok: false, reason: "input_missing" };
+      }
+      if (typeof DataTransfer !== "function") {
+        return { ok: false, reason: "data_transfer_unavailable" };
+      }
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([text], fileName, { type }));
+      Object.defineProperty(input, "files", {
+        configurable: true,
+        get() {
+          return transfer.files;
+        }
+      });
+      return { ok: (input.files?.length ?? 0) > 0 };
+    },
+    selector,
+    filename,
+    mimeType,
+    contents
+  );
+  if (!result?.ok) {
+    throw new Error(`synthetic file list unavailable: ${result?.reason ?? "empty"}`);
+  }
+}
+
+async function makeFileInputInteractable(browser, selector) {
+  const result = await browser.execute((cssSelector) => {
+    const input = document.querySelector(cssSelector);
+    if (!(input instanceof HTMLInputElement)) {
+      return { ok: false, reason: "input_missing" };
+    }
+    if (!input.dataset.matrixDesktopQaOriginalStyle) {
+      input.dataset.matrixDesktopQaOriginalStyle = input.getAttribute("style") ?? "";
+    }
+    Object.assign(input.style, {
+      height: "32px",
+      left: "8px",
+      opacity: "1",
+      overflow: "visible",
+      pointerEvents: "auto",
+      position: "fixed",
+      top: "8px",
+      width: "260px",
+      zIndex: "2147483647"
+    });
+    return { ok: true };
+  }, selector);
+  if (!result?.ok) {
+    throw new Error(`file input was not found: ${result?.reason ?? "unknown"}`);
+  }
+}
+
+async function restoreFileInputPresentation(browser, selector) {
+  await browser.execute((cssSelector) => {
+    const input = document.querySelector(cssSelector);
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+    const originalStyle = input.dataset.matrixDesktopQaOriginalStyle;
+    if (originalStyle) {
+      input.setAttribute("style", originalStyle);
+    } else {
+      input.removeAttribute("style");
+    }
+    delete input.dataset.matrixDesktopQaOriginalStyle;
+  }, selector);
+}
+
+async function dispatchFileInputChange(browser, selector) {
+  const result = await browser.execute((cssSelector) => {
+    const input = document.querySelector(cssSelector);
+    if (!(input instanceof HTMLInputElement)) {
+      return { ok: false, reason: "input_missing" };
+    }
+    const fileCount = input.files?.length ?? 0;
+    if (fileCount < 1) {
+      return { ok: false, reason: "file_list_empty" };
+    }
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true };
+  }, selector);
+  if (!result?.ok) {
+    throw new Error(`file input change dispatch failed: ${result?.reason ?? "unknown"}`);
+  }
 }
 
 async function waitForElementCountGreaterThan(browser, selector, baseline, timeout, description) {
@@ -1235,7 +1407,7 @@ function parseQaTitle(title) {
     }
     if (["rooms", "spaces", "timeline_items", "errors", "unread", "badge"].includes(key)) {
       status[key] = Number(value);
-    } else if (["active_room", "timeline_subscribed"].includes(key)) {
+    } else if (["active_room", "timeline_room", "timeline_subscribed"].includes(key)) {
       status[key] = value === "true";
     } else {
       status[key] = value;
@@ -1315,6 +1487,7 @@ function qaStatusIsReady(status, requireRecovered, allowEmptyTimeline = false) {
     status.sync === "running" &&
     status.rooms > 0 &&
     status.active_room === true &&
+    status.timeline_room !== false &&
     status.timeline_subscribed === true &&
     status.errors === 0 &&
     timelineReady

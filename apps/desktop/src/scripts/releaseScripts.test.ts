@@ -301,6 +301,7 @@ describe("desktop release scripts", () => {
       "scenario local-create-space",
       "scenario local-invites-dm",
       "scenario local-reply",
+      "scenario local-media",
       "scenario local-settings",
       "verify local-settings trust section"
     ]) {
@@ -330,11 +331,28 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_invite_accept=ok");
     expect(source).toContain("gui_local_dm_start=ok");
     expect(source).toContain("gui_local_reply=ok");
+    expect(source).toContain("gui_local_media=ok");
     expect(source).toContain("gui_local_settings=ok");
     expect(source).toContain("gui_local_trust_settings=ok");
   });
 
-  test("headless basic operations docs mention the local create and reply GUI scenarios", () => {
+  test("linux GUI media smoke drives the hidden file input without a native dialog", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("setSyntheticFileInput(");
+    expect(source).toContain("makeFileInputInteractable(");
+    expect(source).toContain("dispatchFileInputChange(");
+    expect(source).toContain("DataTransfer");
+    expect(source).toContain(".message-media");
+    expect(source).toContain("Download ${filename}");
+    expect(source).not.toContain("verifyTauriInvokeRecorder(");
+    expect(source).not.toContain("installTauriInvokeRecorder(");
+  });
+
+  test("headless basic operations docs mention the local create, reply, and media GUI scenarios", () => {
     const docs = readFileSync(
       new URL("../../../../docs/qa/headless-basic-operations.md", import.meta.url),
       "utf8"
@@ -344,11 +362,13 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("--scenario=local-create-space");
     expect(docs).toContain("--scenario=local-invites-dm");
     expect(docs).toContain("--scenario=local-reply");
+    expect(docs).toContain("--scenario=local-media");
     expect(docs).toContain("--scenario=local-settings");
     expect(docs).toContain("gui_local_create_room=ok");
     expect(docs).toContain("gui_local_invite_accept=ok");
     expect(docs).toContain("gui_local_dm_start=ok");
     expect(docs).toContain("gui_local_reply=ok");
+    expect(docs).toContain("gui_local_media=ok");
     expect(docs).toContain("gui_local_settings=ok");
     expect(docs).toContain("gui_local_trust_settings=ok");
   });

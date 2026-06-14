@@ -19,6 +19,7 @@ export function qaWindowTitle(
     `rooms=${snapshot.state.rooms.length}`,
     `spaces=${snapshot.state.spaces.length}`,
     `active_room=${Boolean(snapshot.state.navigation.active_room_id)}`,
+    `timeline_room=${Boolean(snapshot.state.timeline.room_id)}`,
     `timeline_subscribed=${snapshot.state.timeline.is_subscribed}`,
     `timeline_items=${snapshot.timeline.length}`,
     `errors=${snapshot.state.errors.length}`,

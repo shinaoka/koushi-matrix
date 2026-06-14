@@ -296,6 +296,13 @@ All agents implementing the i18n GUI wiring follow
   settings section renders in the real Tauri WebView, and waits for
   `aria-pressed="true"` / `data-theme="dark"` from the snapshot-driven UI:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-settings-fast --timeout-ms=180000`
+- Media GUI iteration has a focused virtual-display lane:
+  `--scenario=local-media`. It writes a synthetic fixture file under the
+  scenario artifact directory, sets that path on the Composer's hidden file
+  input, uses a `DataTransfer` fallback when WebKit leaves `input.files` empty,
+  waits for `timeline_room=true` and the Rust-owned `TimelineItem.media` row in
+  the real Tauri WebView, clicks Download, and prints `gui_local_media=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000`
 - When you only need a quick window-state sanity check, use the lane's cheap
   QA title helpers such as `--qa-title-ready` and `--qa-title-send-ready`
   before starting a full scenario run.
@@ -412,6 +419,16 @@ All agents implementing the i18n GUI wiring follow
   reply affordance on `item.body !== null`, so only message rows are replyable.
   A `local-reply` lane must send/target a message and reply to that row, not the
   first event row in a fresh room (whose first events are state events).
+- `local-media` must not use the visible Attach button to open a native file
+  dialog. WebDriver should write an ignored synthetic fixture file in the
+  scenario artifact directory, set that path on
+  `input[type=file][aria-label="Attach file input"]`, fall back to
+  `DataTransfer.files` if WebKit does not populate `input.files`, then wait for
+  `timeline_room=true` and a Rust-owned media row. Do not monkeypatch
+  `window.__TAURI_INTERNALS__` from WebDriver; WebKit driver execution contexts
+  do not provide a reliable app-world command recorder. If the lane fails,
+  inspect the scenario-specific artifact run log; the lane uses synthetic
+  filenames/content only and must not write real/private media data.
 
 ## macOS GUI Smoke Failures
 
