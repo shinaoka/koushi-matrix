@@ -135,6 +135,7 @@ fn secret_bearing_commands_redact_debug() {
 #[test]
 fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
     let request_id = fake_request_id();
+    let flow_id = request_id.sequence;
     let target = VerificationTarget {
         user_id: "@bob:example.test".to_owned(),
         device_id: "BOBDEVICE".to_owned(),
@@ -144,10 +145,17 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
             request_id,
             target: target.clone(),
         }),
-        CoreCommand::Account(AccountCommand::AcceptVerification { request_id }),
-        CoreCommand::Account(AccountCommand::ConfirmSasVerification { request_id }),
+        CoreCommand::Account(AccountCommand::AcceptVerification {
+            request_id,
+            flow_id,
+        }),
+        CoreCommand::Account(AccountCommand::ConfirmSasVerification {
+            request_id,
+            flow_id,
+        }),
         CoreCommand::Account(AccountCommand::CancelVerification {
             request_id,
+            flow_id,
             reason: VerificationCancelReason::Mismatch,
         }),
         CoreCommand::Account(AccountCommand::BootstrapCrossSigning { request_id }),

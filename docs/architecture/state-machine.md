@@ -369,6 +369,12 @@ stateDiagram-v2
 - Verification cancellation carries a Rust-owned reason. User decline/cancel
   returns the flow to `Idle`; SAS mismatch sends the SDK's mismatched-SAS
   cancellation and settles the reducer as `Failed { kind: Mismatch }`.
+- Verification follow-up commands carry both a command `request_id` and a
+  verification `flow_id`. The reducer state's `request_id` field is the flow
+  id used for stale-flow guards; command `request_id` remains only for command
+  submission/failure correlation. Incoming SDK-originated verification requests
+  use a reserved Rust-owned flow-id namespace, so React never synthesizes or
+  owns verification discovery state.
 - Identity reset is a typed Rust-owned state machine
   (`Idle`, `Resetting`, `AwaitingAuth`, `Failed`), not a nullable pending flag.
   `AwaitingAuth` carries only a request id and coarse auth type

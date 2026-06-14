@@ -56,6 +56,10 @@ All agents implementing the i18n GUI wiring follow
   `VerificationFlowState::Failed { kind: Mismatch }` and `AccountActor` calls
   the SDK `SasVerification::mismatch()` path. Plain user decline/cancel uses
   `VerificationCancelReason::User` and returns the reducer to `Idle`.
+- Incoming verification requests are discovered by the Rust `AccountActor`
+  observer, not by GUI code. Follow-up verification commands must pass the
+  Rust-owned `flow_id` from `AppState`; their command `request_id` is separate
+  and is used only for command submission/failure correlation.
 - Verification observers and SDK handles must be stopped/cancelled on logout,
   account switch, and actor shutdown before dropping the Matrix session.
 - `RestoreKeyBackup` is secret-bearing only at the `CoreCommand::Account`

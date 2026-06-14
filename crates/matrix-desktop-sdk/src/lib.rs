@@ -156,6 +156,65 @@ impl MatrixVerificationRequestHandle {
 }
 
 #[derive(Clone)]
+pub struct MatrixIncomingVerificationRequest {
+    target: VerificationTarget,
+    handle: MatrixVerificationRequestHandle,
+}
+
+impl MatrixIncomingVerificationRequest {
+    pub fn target(&self) -> &VerificationTarget {
+        &self.target
+    }
+
+    pub fn handle(&self) -> &MatrixVerificationRequestHandle {
+        &self.handle
+    }
+
+    pub fn into_parts(self) -> (VerificationTarget, MatrixVerificationRequestHandle) {
+        (self.target, self.handle)
+    }
+}
+
+impl fmt::Debug for MatrixIncomingVerificationRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixIncomingVerificationRequest")
+            .field("target", &"VerificationTarget(..)")
+            .field("handle", &self.handle)
+            .finish()
+    }
+}
+
+pub struct MatrixIncomingVerificationRequestObserver {
+    client: matrix_sdk::Client,
+    receiver: tokio::sync::mpsc::Receiver<MatrixIncomingVerificationRequest>,
+    handlers: Vec<matrix_sdk::event_handler::EventHandlerHandle>,
+}
+
+impl MatrixIncomingVerificationRequestObserver {
+    pub async fn recv(&mut self) -> Option<MatrixIncomingVerificationRequest> {
+        self.receiver.recv().await
+    }
+}
+
+impl fmt::Debug for MatrixIncomingVerificationRequestObserver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixIncomingVerificationRequestObserver")
+            .field("pending", &"Receiver(..)")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for MatrixIncomingVerificationRequestObserver {
+    fn drop(&mut self) {
+        for handler in self.handlers.drain(..) {
+            self.client.remove_event_handler(handler);
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct MatrixSasVerificationHandle {
     inner: matrix_sdk::encryption::verification::SasVerification,
 }
@@ -487,6 +546,87 @@ pub async fn request_device_verification(
     Ok(MatrixVerificationRequestHandle { inner })
 }
 
+pub fn observe_incoming_verification_requests(
+    session: &MatrixClientSession,
+) -> MatrixIncomingVerificationRequestObserver {
+    let client = session.client();
+    let (sender, receiver) = tokio::sync::mpsc::channel(32);
+
+    let to_device_client = client.clone();
+    let to_device_sender = sender.clone();
+    let to_device_handler = client.add_event_handler(
+        move |event: matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent| {
+            let client = to_device_client.clone();
+            let sender = to_device_sender.clone();
+            async move {
+                if let Some(request) =
+                    incoming_verification_request_for_flow(&client, &event.sender, event.content.transaction_id.as_str()).await
+                {
+                    let _ = sender.send(request).await;
+                }
+            }
+        },
+    );
+
+    let room_client = client.clone();
+    let room_sender = sender;
+    let room_handler = client.add_event_handler(
+        move |event: matrix_sdk::ruma::events::room::message::OriginalSyncRoomMessageEvent| {
+            let client = room_client.clone();
+            let sender = room_sender.clone();
+            async move {
+                if !matches!(
+                    &event.content.msgtype,
+                    matrix_sdk::ruma::events::room::message::MessageType::VerificationRequest(_)
+                ) {
+                    return;
+                }
+                if let Some(request) = incoming_verification_request_for_flow(
+                    &client,
+                    &event.sender,
+                    event.event_id.as_str(),
+                )
+                .await
+                {
+                    let _ = sender.send(request).await;
+                }
+            }
+        },
+    );
+
+    MatrixIncomingVerificationRequestObserver {
+        client,
+        receiver,
+        handlers: vec![to_device_handler, room_handler],
+    }
+}
+
+async fn incoming_verification_request_for_flow(
+    client: &matrix_sdk::Client,
+    sender: &matrix_sdk::ruma::UserId,
+    flow_id: &str,
+) -> Option<MatrixIncomingVerificationRequest> {
+    let request = client
+        .encryption()
+        .get_verification_request(sender, flow_id)
+        .await?;
+    let matrix_sdk::encryption::verification::VerificationRequestState::Requested {
+        other_device_data,
+        ..
+    } = request.state()
+    else {
+        return None;
+    };
+
+    Some(MatrixIncomingVerificationRequest {
+        target: VerificationTarget {
+            user_id: sender.to_string(),
+            device_id: other_device_data.device_id().to_string(),
+        },
+        handle: MatrixVerificationRequestHandle { inner: request },
+    })
+}
+
 pub async fn accept_verification_request(
     handle: &MatrixVerificationRequestHandle,
 ) -> Result<(), E2eeTrustError> {
@@ -569,12 +709,14 @@ mod e2ee_trust_tests {
 
     use super::{
         E2eeTrustError, MatrixCrossSigningStatus, MatrixIdentityResetAuthType,
+        MatrixIncomingVerificationRequest, MatrixIncomingVerificationRequestObserver,
         accept_verification_request, bootstrap_cross_signing, cancel_sas_verification,
         cancel_verification_request, complete_identity_reset, confirm_sas_verification,
         cross_signing_status, enable_key_backup, map_backup_state_to_desktop,
         map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
-        map_sdk_sas_emojis_to_desktop, mismatch_sas_verification, request_device_verification,
-        reset_identity, restore_key_backup, start_sas_verification,
+        map_sdk_sas_emojis_to_desktop, mismatch_sas_verification,
+        observe_incoming_verification_requests, request_device_verification, reset_identity,
+        restore_key_backup, start_sas_verification,
     };
 
     #[test]
@@ -649,6 +791,9 @@ mod e2ee_trust_tests {
         let _ = mismatch_sas_verification;
         let _ = cancel_verification_request;
         let _ = cancel_sas_verification;
+        let _ = observe_incoming_verification_requests;
+        let _: Option<MatrixIncomingVerificationRequest> = None;
+        let _: Option<MatrixIncomingVerificationRequestObserver> = None;
     }
 
     #[test]

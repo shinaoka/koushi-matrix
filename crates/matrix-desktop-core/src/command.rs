@@ -42,8 +42,8 @@ impl CoreCommand {
                 | AccountCommand::QuerySavedSessions { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
                 | AccountCommand::RequestVerification { request_id, .. }
-                | AccountCommand::AcceptVerification { request_id }
-                | AccountCommand::ConfirmSasVerification { request_id }
+                | AccountCommand::AcceptVerification { request_id, .. }
+                | AccountCommand::ConfirmSasVerification { request_id, .. }
                 | AccountCommand::CancelVerification { request_id, .. }
                 | AccountCommand::BootstrapCrossSigning { request_id }
                 | AccountCommand::EnableKeyBackup { request_id }
@@ -258,12 +258,15 @@ pub enum AccountCommand {
     },
     AcceptVerification {
         request_id: RequestId,
+        flow_id: u64,
     },
     ConfirmSasVerification {
         request_id: RequestId,
+        flow_id: u64,
     },
     CancelVerification {
         request_id: RequestId,
+        flow_id: u64,
         reason: VerificationCancelReason,
     },
     BootstrapCrossSigning {
@@ -350,17 +353,30 @@ impl fmt::Debug for AccountCommand {
                 .field("request_id", request_id)
                 .field("target", &"VerificationTarget(..)")
                 .finish(),
-            Self::AcceptVerification { request_id } => formatter
+            Self::AcceptVerification {
+                request_id,
+                flow_id,
+            } => formatter
                 .debug_struct("AcceptVerification")
                 .field("request_id", request_id)
+                .field("flow_id", flow_id)
                 .finish(),
-            Self::ConfirmSasVerification { request_id } => formatter
+            Self::ConfirmSasVerification {
+                request_id,
+                flow_id,
+            } => formatter
                 .debug_struct("ConfirmSasVerification")
                 .field("request_id", request_id)
+                .field("flow_id", flow_id)
                 .finish(),
-            Self::CancelVerification { request_id, reason } => formatter
+            Self::CancelVerification {
+                request_id,
+                flow_id,
+                reason,
+            } => formatter
                 .debug_struct("CancelVerification")
                 .field("request_id", request_id)
+                .field("flow_id", flow_id)
                 .field("reason", reason)
                 .finish(),
             Self::BootstrapCrossSigning { request_id } => formatter

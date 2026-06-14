@@ -710,22 +710,22 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 target: target.clone(),
             })
         }
-        AccountCommand::AcceptVerification { request_id } => {
+        AccountCommand::AcceptVerification { flow_id, .. } => {
             Some(AppAction::VerificationAccepted {
-                request_id: request_id.sequence,
+                request_id: *flow_id,
             })
         }
-        AccountCommand::ConfirmSasVerification { request_id } => {
+        AccountCommand::ConfirmSasVerification { flow_id, .. } => {
             Some(AppAction::VerificationConfirmed {
-                request_id: request_id.sequence,
+                request_id: *flow_id,
             })
         }
-        AccountCommand::CancelVerification { request_id, reason } => {
-            Some(AppAction::VerificationCancelled {
-                request_id: request_id.sequence,
-                reason: *reason,
-            })
-        }
+        AccountCommand::CancelVerification {
+            flow_id, reason, ..
+        } => Some(AppAction::VerificationCancelled {
+            request_id: *flow_id,
+            reason: *reason,
+        }),
         AccountCommand::BootstrapCrossSigning { request_id } => {
             Some(AppAction::BootstrapCrossSigningRequested {
                 request_id: request_id.sequence,
@@ -983,6 +983,45 @@ mod tests {
             Some(AppAction::RestoreKeyBackupRequested {
                 request_id: 9,
                 version: Some("backup-version-1".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn verification_followup_commands_project_flow_id_not_command_request_id() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 9,
+        };
+        let flow_id = 42;
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::AcceptVerification {
+                request_id,
+                flow_id,
+            }),
+            Some(AppAction::VerificationAccepted {
+                request_id: flow_id,
+            })
+        );
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::ConfirmSasVerification {
+                request_id,
+                flow_id,
+            }),
+            Some(AppAction::VerificationConfirmed {
+                request_id: flow_id,
+            })
+        );
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::CancelVerification {
+                request_id,
+                flow_id,
+                reason: matrix_desktop_state::VerificationCancelReason::User,
+            }),
+            Some(AppAction::VerificationCancelled {
+                request_id: flow_id,
+                reason: matrix_desktop_state::VerificationCancelReason::User,
             })
         );
     }
