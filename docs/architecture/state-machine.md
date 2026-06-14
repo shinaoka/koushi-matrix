@@ -331,3 +331,21 @@ Search timeline display must be treated as a focused result view, not as a norma
 room timeline. It should avoid implying that search results are a complete
 chronological timeline unless the backend explicitly provides enough surrounding
 context and replacement/redaction state to render that context safely.
+
+## Appearance / Theme Ownership
+
+Theme *appearance* is split deliberately:
+
+- **OS-follow theming is presentation-only.** The dark token set is applied by
+  `@media (prefers-color-scheme: dark)` in `styles.css`. No React or Rust state
+  participates; nothing is dispatched, nothing is stored.
+- **An explicit user theme choice (`system | light | dark`) is product state**
+  and is therefore Rust-owned. It is deferred to `SettingsState` (Issue #6).
+  When it lands, React applies it by setting `data-theme` / `color-scheme` on
+  the root element; the CSS `:root[data-theme="dark"]` block already exists for
+  this. React must not store the chosen theme as its own product state.
+
+Selection, unread, reply, thread, search, and right-panel modes remain
+Rust-owned (`AppState.navigation`, `rooms[].unread_count`/`highlight_count`,
+`timeline.composer.mode`, `thread`, `search`, right-panel mode). The theming
+work changes presentation only and adds no reducer transitions.
