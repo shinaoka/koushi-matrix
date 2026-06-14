@@ -756,6 +756,10 @@ pub fn run() {
             commands::download_media,
             commands::edit_message,
             commands::redact_message,
+            commands::send_read_receipt,
+            commands::set_fully_read,
+            commands::set_typing,
+            commands::set_presence,
             commands::leave_room,
             commands::forget_room,
             commands::open_thread,
@@ -1509,13 +1513,12 @@ mod tests {
         assert_eq!(live_signals["kind"], json!("LiveSignals"));
         assert_eq!(live_signals["event"]["kind"], json!("roomSignalsUpdated"));
 
-        let live_presence = serialize_core_event(&CoreEvent::LiveSignals(
-            LiveSignalsEvent::PresenceSet {
+        let live_presence =
+            serialize_core_event(&CoreEvent::LiveSignals(LiveSignalsEvent::PresenceSet {
                 request_id,
                 presence: PresenceKind::Away,
-            },
-        ))
-        .expect("serialize live presence event");
+            }))
+            .expect("serialize live presence event");
         assert_eq!(live_presence["event"]["kind"], json!("presenceSet"));
 
         let actual_contract = json!({

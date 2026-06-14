@@ -10,6 +10,7 @@ import type {
   SearchResult,
   SearchScopeKind,
   SettingsPatch,
+  PresenceKind,
   LocaleSettings,
   LocaleDisplayProfile,
   SpaceSummary,
@@ -49,6 +50,10 @@ export interface DesktopApi {
   closeFocusedContext(): Promise<DesktopSnapshot>;
   paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
   sendText(roomId: string, body: string): Promise<DesktopSnapshot>;
+  sendReadReceipt(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  setFullyRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot>;
+  setPresence(presence: PresenceKind): Promise<DesktopSnapshot>;
   editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
   redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   leaveRoom(roomId: string): Promise<DesktopSnapshot>;
@@ -424,6 +429,48 @@ class BrowserFakeApi implements DesktopApi {
     ];
     this.snapshot.state.timeline.composer.pending_transaction_id = null;
     this.snapshot.state.timeline.composer.draft = "";
+    return this.getSnapshot();
+  }
+
+  async sendReadReceipt(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    const session = this.snapshot.state.session;
+    if (!this.isReady() || !session.user_id || eventId.trim().length === 0) {
+      return this.getSnapshot();
+    }
+    const roomSignals = ensureRoomLiveSignals(this.snapshot, roomId);
+    const existing = roomSignals.receipts_by_event[eventId] ?? [];
+    roomSignals.receipts_by_event[eventId] = [
+      ...existing.filter((receipt) => receipt.user_id !== session.user_id),
+      { user_id: session.user_id, timestamp_ms: Date.now() }
+    ];
+    return this.getSnapshot();
+  }
+
+  async setFullyRead(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    if (!this.isReady() || eventId.trim().length === 0) {
+      return this.getSnapshot();
+    }
+    ensureRoomLiveSignals(this.snapshot, roomId).fully_read_event_id = eventId;
+    return this.getSnapshot();
+  }
+
+  async setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot> {
+    const session = this.snapshot.state.session;
+    if (!this.isReady() || !session.user_id) {
+      return this.getSnapshot();
+    }
+    const roomSignals = ensureRoomLiveSignals(this.snapshot, roomId);
+    const withoutSelf = roomSignals.typing_user_ids.filter((userId) => userId !== session.user_id);
+    roomSignals.typing_user_ids = isTyping ? [...withoutSelf, session.user_id] : withoutSelf;
+    return this.getSnapshot();
+  }
+
+  async setPresence(presence: PresenceKind): Promise<DesktopSnapshot> {
+    const session = this.snapshot.state.session;
+    if (!this.isReady() || !session.user_id) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.live_signals.presence[session.user_id] = presence;
     return this.getSnapshot();
   }
 
@@ -1025,6 +1072,18 @@ function defaultLiveSignalsState(): DesktopSnapshot["state"]["live_signals"] {
     rooms: {},
     presence: {}
   };
+}
+
+function ensureRoomLiveSignals(
+  snapshot: DesktopSnapshot,
+  roomId: string
+): DesktopSnapshot["state"]["live_signals"]["rooms"][string] {
+  snapshot.state.live_signals.rooms[roomId] ??= {
+    receipts_by_event: {},
+    fully_read_event_id: null,
+    typing_user_ids: []
+  };
+  return snapshot.state.live_signals.rooms[roomId];
 }
 
 function defaultLocaleDisplayProfile(): LocaleDisplayProfile {

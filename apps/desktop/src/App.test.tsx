@@ -465,6 +465,9 @@ describe("ContextualRightPanel", () => {
               void timelineKey;
             },
             toggleReaction: async () => undefined,
+            sendReadReceipt: async () => undefined,
+            setFullyRead: async () => undefined,
+            setTyping: async () => undefined,
             editMessage: async () => undefined,
             redactMessage: async () => undefined,
             downloadMedia: async () => undefined
@@ -522,6 +525,9 @@ describe("ContextualRightPanel", () => {
             listenCoreEvents: () => () => undefined,
             paginateBackwards: async () => undefined,
             toggleReaction: async () => undefined,
+            sendReadReceipt: async () => undefined,
+            setFullyRead: async () => undefined,
+            setTyping: async () => undefined,
             editMessage: async () => undefined,
             redactMessage: async () => undefined,
             downloadMedia: async () => undefined
@@ -593,6 +599,9 @@ describe("ContextualRightPanel", () => {
               void timelineKey;
             },
             toggleReaction: async () => undefined,
+            sendReadReceipt: async () => undefined,
+            setFullyRead: async () => undefined,
+            setTyping: async () => undefined,
             editMessage: async () => undefined,
             redactMessage: async () => undefined,
             downloadMedia: async () => undefined

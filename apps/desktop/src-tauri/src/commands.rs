@@ -21,8 +21,8 @@ use matrix_desktop_core::{
 };
 use matrix_desktop_state::{
     AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
-    IdentityResetAuthRequest, LoginRequest, RecoveryRequest, SessionInfo, SettingsPatch,
-    VerificationCancelReason,
+    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, SessionInfo,
+    SettingsPatch, VerificationCancelReason,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -887,6 +887,75 @@ pub async fn toggle_reaction(
 }
 
 #[tauri::command]
+pub async fn send_read_receipt(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) =
+        build_send_read_receipt_command(request_id, account_key, room_id, event_id)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_fully_read(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) = build_set_fully_read_command(request_id, account_key, room_id, event_id)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_typing(
+    room_id: String,
+    is_typing: bool,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_typing_command(request_id, account_key, room_id, is_typing),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_presence(
+    presence: PresenceKind,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_presence_command(request_id, presence),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn leave_room(
     room_id: String,
     app: AppHandle,
@@ -1693,6 +1762,61 @@ pub(crate) fn build_toggle_reaction_command(
     }))
 }
 
+pub(crate) fn build_send_read_receipt_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+) -> Option<CoreCommand> {
+    if event_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+    }))
+}
+
+pub(crate) fn build_set_fully_read_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+) -> Option<CoreCommand> {
+    if event_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SetFullyRead {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+    }))
+}
+
+pub(crate) fn build_set_typing_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    is_typing: bool,
+) -> CoreCommand {
+    CoreCommand::Timeline(TimelineCommand::SetTyping {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        is_typing,
+    })
+}
+
+pub(crate) fn build_set_presence_command(
+    request_id: matrix_desktop_core::RequestId,
+    presence: PresenceKind,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SetPresence {
+        request_id,
+        presence,
+    })
+}
+
 pub(crate) fn build_leave_room_command(
     request_id: matrix_desktop_core::RequestId,
     room_id: String,
@@ -2144,18 +2268,20 @@ mod tests {
         build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_redact_message_command,
         build_reset_identity_command, build_restart_sync_command, build_select_room_command,
-        build_select_space_command, build_send_reply_command, build_send_text_command,
-        build_send_thread_reply_command, build_set_space_child_command,
-        build_set_thread_composer_draft_command, build_start_direct_message_command,
-        build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
-        build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
+        build_select_space_command, build_send_read_receipt_command, build_send_reply_command,
+        build_send_text_command, build_send_thread_reply_command, build_set_fully_read_command,
+        build_set_presence_command, build_set_space_child_command,
+        build_set_thread_composer_draft_command, build_set_typing_command,
+        build_start_direct_message_command, build_submit_identity_reset_oauth_command,
+        build_submit_identity_reset_password_command, build_submit_login_command,
+        build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
         build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
         qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
-    use matrix_desktop_state::RoomSummary;
+    use matrix_desktop_state::{PresenceKind, RoomSummary};
 
     #[test]
     fn qa_login_pipe_payload_maps_to_login_request_without_debugging_secret() {
@@ -2602,6 +2728,93 @@ mod tests {
                 );
                 assert!(!debug.contains("👍"), "{debug}");
                 assert!(!debug.contains("$event"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_send_read_receipt_command(
+            fake_request_id(28),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$receipt-event".to_owned(),
+        )
+        .expect("send_read_receipt should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+                request_id,
+                key,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(28));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$receipt-event");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_fully_read_command(
+            fake_request_id(29),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$fully-read-event".to_owned(),
+        )
+        .expect("set_fully_read should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::SetFullyRead {
+                request_id,
+                key,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(29));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$fully-read-event");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_typing_command(
+            fake_request_id(30),
+            active_account_key.clone(),
+            room_id.clone(),
+            true,
+        ) {
+            CoreCommand::Timeline(TimelineCommand::SetTyping {
+                request_id,
+                key,
+                is_typing,
+            }) => {
+                assert_eq!(request_id, fake_request_id(30));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert!(is_typing);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_presence_command(fake_request_id(31), PresenceKind::Away) {
+            CoreCommand::Account(AccountCommand::SetPresence {
+                request_id,
+                presence,
+            }) => {
+                assert_eq!(request_id, fake_request_id(31));
+                assert_eq!(presence, PresenceKind::Away);
             }
             other => panic!("unexpected command: {other:?}"),
         }

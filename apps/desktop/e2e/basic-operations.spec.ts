@@ -496,6 +496,61 @@ test("attach control invokes upload_media and renders Rust-owned media progress"
     });
 });
 
+test("live signals render from Rust state and dispatch read/typing commands", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        live_signals: {
+          rooms: {
+            "!harness-room:example.invalid": {
+              receipts_by_event: {
+                "$seed-event:example.invalid": [
+                  {
+                    user_id: "@reader:example.invalid",
+                    timestamp_ms: 1_800_000_000_500
+                  }
+                ]
+              },
+              fully_read_event_id: "$seed-event:example.invalid",
+              typing_user_ids: ["@typing-user:example.invalid"]
+            }
+          },
+          presence: {
+            "@harness-user:example.invalid": "online"
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
+  await expect(row.locator(".presence-dot[data-presence='online']")).toBeVisible();
+  await expect(row.getByText("Read by 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("Read up to here", { exact: true })).toBeVisible();
+  await expect(page.getByText("@typing-user:example.invalid is typing", { exact: true })).toBeVisible();
+  await expect.poll(() => invocationCount(page, "send_read_receipt")).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => invocationCount(page, "set_fully_read")).toBeGreaterThanOrEqual(1);
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.getByRole("textbox", { name: "Message composer" }).fill("Typing signal");
+
+  await expect.poll(() => invocationCount(page, "set_typing")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("set_typing")[0]?.args))
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      isTyping: true
+    });
+});
+
 test("redact message invokes redact_message and shows the redacted placeholder", async ({
   page
 }) => {

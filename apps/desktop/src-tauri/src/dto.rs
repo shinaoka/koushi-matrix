@@ -483,7 +483,10 @@ mod tests {
         assert_eq!(value["state"]["live_signals"]["presence"], json!({}));
         // e2ee_trust must be present (default private-data-free unknowns) so
         // later GUI work consumes the Rust-owned trust state machine.
-        assert_eq!(value["state"]["e2ee_trust"]["verification"]["kind"], json!("idle"));
+        assert_eq!(
+            value["state"]["e2ee_trust"]["verification"]["kind"],
+            json!("idle")
+        );
         assert_eq!(
             value["state"]["e2ee_trust"]["cross_signing"]["kind"],
             json!("unknown")

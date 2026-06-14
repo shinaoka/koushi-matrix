@@ -38,6 +38,7 @@ import type {
   SettingsPatch
 } from "../domain/types";
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
+import "../styles.css";
 
 const CORE_EVENT_NAME = "matrix-desktop://event";
 const STATE_EVENT_NAME = "matrix-desktop://state";
@@ -772,6 +773,10 @@ mock.setCommandResponse("edit_message", () => currentSnapshot);
 mock.setCommandResponse("redact_message", () => currentSnapshot);
 mock.setCommandResponse("upload_media", () => currentSnapshot);
 mock.setCommandResponse("download_media", () => currentSnapshot);
+mock.setCommandResponse("send_read_receipt", () => currentSnapshot);
+mock.setCommandResponse("set_fully_read", () => currentSnapshot);
+mock.setCommandResponse("set_typing", () => currentSnapshot);
+mock.setCommandResponse("set_presence", () => currentSnapshot);
 mock.setCommandResponse("paginate_timeline_backwards", () => currentSnapshot);
 mock.setCommandResponse("paginate_thread_timeline_backwards", () => currentSnapshot);
 

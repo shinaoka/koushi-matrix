@@ -168,6 +168,15 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       async toggleReaction(roomId: string, eventId: string, reactionKey: string) {
         await invoke("toggle_reaction", { roomId, eventId, reactionKey });
       },
+      async sendReadReceipt(roomId: string, eventId: string) {
+        await invoke("send_read_receipt", { roomId, eventId });
+      },
+      async setFullyRead(roomId: string, eventId: string) {
+        await invoke("set_fully_read", { roomId, eventId });
+      },
+      async setTyping(roomId: string, isTyping: boolean) {
+        await invoke("set_typing", { roomId, isTyping });
+      },
       async editMessage(roomId: string, eventId: string, body: string) {
         await invoke("edit_message", { roomId, eventId, body });
       },
@@ -264,6 +273,10 @@ export function App() {
   const qaSendPending = useRef(false);
   const qaSendBaselineErrorCount = useRef(0);
   const qaSendBaselineTimelineItems = useRef(0);
+  const typingSignalRef = useRef<{ roomId: string | null; isTyping: boolean }>({
+    roomId: null,
+    isTyping: false
+  });
   const previousAttentionInput = useRef<{
     activeRoomId: string | null;
     rooms: DesktopSnapshot["state"]["rooms"];
@@ -339,6 +352,25 @@ export function App() {
       void refreshSavedSessions();
     }
   }, [rightPanelMode]);
+
+  useEffect(() => {
+    const roomId = snapshot?.state.timeline.room_id ?? null;
+    const isTyping = Boolean(roomId && composerDraft.trim());
+    const previous = typingSignalRef.current;
+
+    if (previous.roomId && previous.roomId !== roomId && previous.isTyping) {
+      void api.setTyping(previous.roomId, false).catch(() => undefined);
+    }
+
+    typingSignalRef.current = { roomId, isTyping };
+    if (!roomId) {
+      return;
+    }
+    if (previous.roomId === roomId && previous.isTyping === isTyping) {
+      return;
+    }
+    void api.setTyping(roomId, isTyping).catch(() => undefined);
+  }, [composerDraft, snapshot?.state.timeline.room_id]);
 
   useEffect(() => {
     const theme = snapshot?.state.settings.values.appearance.theme ?? "system";
@@ -2376,6 +2408,7 @@ function TimelinePane({
               onReply={onReply}
               onOpenThread={onOpenThread}
               resolveComposerKeyAction={resolveComposerKeyAction}
+              liveSignals={snapshot.state.live_signals}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -2904,6 +2937,7 @@ export function ContextualRightPanel({
               suppressPaginationUi={true}
               onReply={onReply}
               resolveComposerKeyAction={onResolveComposerKeyAction}
+              liveSignals={snapshot.state.live_signals}
             />
           </section>
         ) : null}
@@ -2948,6 +2982,7 @@ export function ContextualRightPanel({
             onReply={onReply}
             onOpenThread={() => undefined}
             resolveComposerKeyAction={onResolveComposerKeyAction}
+            liveSignals={snapshot.state.live_signals}
           />
         ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>

@@ -62,6 +62,15 @@ const transport: TimelineTransport = {
   toggleReaction(roomId, eventId, reactionKey) {
     return ipc.invoke("toggle_reaction", { roomId, eventId, reactionKey });
   },
+  sendReadReceipt(roomId, eventId) {
+    return ipc.invoke("send_read_receipt", { roomId, eventId });
+  },
+  setFullyRead(roomId, eventId) {
+    return ipc.invoke("set_fully_read", { roomId, eventId });
+  },
+  setTyping(roomId, isTyping) {
+    return ipc.invoke("set_typing", { roomId, isTyping });
+  },
   editMessage(roomId, eventId, body) {
     return ipc.invoke("edit_message", { roomId, eventId, body });
   },

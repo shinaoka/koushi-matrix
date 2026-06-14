@@ -7,6 +7,7 @@ import type {
   ComposerResolvedAction,
   ComposerResolverOptions,
   ComposerSurface,
+  PresenceKind,
   SavedSessionInfo,
   SearchScopeKind,
   SettingsPatch
@@ -129,6 +130,22 @@ class TauriDesktopApi implements DesktopApi {
 
   async sendText(roomId: string, body: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("send_text", { roomId, body });
+  }
+
+  async sendReadReceipt(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("send_read_receipt", { roomId, eventId });
+  }
+
+  async setFullyRead(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_fully_read", { roomId, eventId });
+  }
+
+  async setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_typing", { roomId, isTyping });
+  }
+
+  async setPresence(presence: PresenceKind): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_presence", { presence });
   }
 
   async editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot> {

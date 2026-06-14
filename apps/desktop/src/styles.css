@@ -638,8 +638,12 @@ button {
 }
 
 .presence-dot {
+  display: inline-flex;
+  flex: 0 0 auto;
   width: 11px;
   height: 11px;
+  min-width: 11px;
+  min-height: 11px;
   border-radius: 50%;
   background: var(--success);
 }
@@ -948,8 +952,18 @@ button {
   background: var(--danger);
 }
 
+.message > .avatar {
+  grid-column: 1;
+  grid-row: 1;
+}
+
 .message-main {
   min-width: 0;
+}
+
+.message > .message-main {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .message-heading {
@@ -957,6 +971,22 @@ button {
   align-items: baseline;
   gap: 8px;
   min-width: 0;
+}
+
+.message-presence {
+  align-self: center;
+  width: 9px;
+  height: 9px;
+  min-width: 9px;
+  min-height: 9px;
+}
+
+.message-presence[data-presence="away"] {
+  background: var(--warning);
+}
+
+.message-presence[data-presence="offline"] {
+  background: var(--text-muted);
 }
 
 .message-edited {
@@ -977,6 +1007,13 @@ button {
   gap: 2px;
   margin-inline-start: auto;
   opacity: 0;
+}
+
+.message > .message-actions {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  justify-self: end;
 }
 
 .message:hover .message-actions,
@@ -1172,6 +1209,59 @@ button {
   display: inline-flex;
   margin-top: 3px;
   color: var(--text-muted);
+  font-style: italic;
+}
+
+.read-marker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  margin: 8px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.read-marker::before,
+.read-marker::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+.message-receipts {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 22px;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.receipt-dots {
+  display: inline-flex;
+  align-items: center;
+  min-width: 28px;
+}
+
+.receipt-dot {
+  width: 15px;
+  height: 15px;
+  margin-inline-end: -5px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+.typing-indicator {
+  min-height: 28px;
+  padding: 6px 12px 10px 54px;
+  color: var(--text-muted);
+  font-size: 13px;
   font-style: italic;
 }
 

@@ -59,7 +59,7 @@ import {
   insertNewlineAtSelection,
   shouldResolveComposerKeyEvent
 } from "../domain/composerKeyEvents";
-import type { ResolveComposerKeyAction } from "../domain/types";
+import type { LiveReadReceipt, LiveSignalsState, PresenceKind, ResolveComposerKeyAction } from "../domain/types";
 
 // ---------------------------------------------------------------------------
 // Transport interface (Tauri IPC, browser fake, or test mock)
@@ -72,6 +72,12 @@ export interface TimelineTransport {
   paginateBackwards(timelineKey: TimelineKey): Promise<void>;
   /** Toggle a reaction on a timeline event. */
   toggleReaction(roomId: string, eventId: string, reactionKey: string): Promise<void>;
+  /** Send a read receipt for a room event. */
+  sendReadReceipt(roomId: string, eventId: string): Promise<void>;
+  /** Advance the fully-read marker for a room event. */
+  setFullyRead(roomId: string, eventId: string): Promise<void>;
+  /** Set typing state for a room. */
+  setTyping(roomId: string, isTyping: boolean): Promise<void>;
   /** Edit a timeline event's message body. */
   editMessage(roomId: string, eventId: string, body: string): Promise<void>;
   /** Redact a timeline event. */
@@ -158,6 +164,7 @@ export function TimelineView({
   onReply,
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
+  liveSignals,
   suppressPaginationUi = false
 }: {
   timelineKey: TimelineKey;
@@ -166,6 +173,7 @@ export function TimelineView({
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
+  liveSignals?: LiveSignalsState;
   suppressPaginationUi?: boolean;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -176,6 +184,7 @@ export function TimelineView({
   const anchorRestorePendingRef = useRef(false);
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
+  const readSignalEventRef = useRef<string | null>(null);
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
 
@@ -237,6 +246,9 @@ export function TimelineView({
   const backwardState = getPaginationState(store, timelineKey, "Backward");
   const isPaginating = backwardState === "Paginating";
   const endReached = backwardState === "EndReached";
+  const roomSignals = liveSignals?.rooms[roomId] ?? null;
+  const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
+  const latestReadableEventId = latestEventBackedItemId(items);
   // Stable, render-visible timeline generation for this key. Bumps when the
   // store replaces the list for a new generation (InitialItems / resync), so
   // tests can poll a concrete attribute instead of sleeping. 0 = no
@@ -266,6 +278,19 @@ export function TimelineView({
     },
     [transport]
   );
+
+  useEffect(() => {
+    if (!latestReadableEventId || roomTimelineRoomId !== roomId) {
+      return;
+    }
+    const signalKey = `${roomId}\u0000${latestReadableEventId}`;
+    if (readSignalEventRef.current === signalKey) {
+      return;
+    }
+    readSignalEventRef.current = signalKey;
+    void transport.sendReadReceipt(roomId, latestReadableEventId).catch(() => undefined);
+    void transport.setFullyRead(roomId, latestReadableEventId).catch(() => undefined);
+  }, [latestReadableEventId, roomId, roomTimelineRoomId, transport]);
 
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
@@ -331,21 +356,40 @@ export function TimelineView({
           {t("timeline.conversationStart")}
         </div>
       ) : null}
-      {items.map((item) => (
-        <TimelineItemRow
-          item={item}
-          key={timelineItemDomId(item.id)}
-          roomId={roomId}
-          onReply={onReply}
-          onOpenThread={onOpenThread}
-          resolveComposerKeyAction={resolveComposerKeyAction}
-          mediaUploadProgress={mediaUploadProgressForItem(store, timelineKey, item)}
-          onToggleReaction={onToggleReaction}
-          onEdit={onEdit}
-          onRedact={onRedact}
-          onDownloadMedia={onDownloadMedia}
-        />
-      ))}
+      {items.map((item) => {
+        const eventId = "Event" in item.id ? item.id.Event.event_id : null;
+        const isFullyReadMarker = Boolean(
+          eventId && roomSignals?.fully_read_event_id === eventId
+        );
+        return (
+          <div className="timeline-item-frame" key={timelineItemDomId(item.id)}>
+            {isFullyReadMarker ? (
+              <div className="read-marker" role="separator">
+                <span>{t("timeline.readMarker")}</span>
+              </div>
+            ) : null}
+            <TimelineItemRow
+              item={item}
+              roomId={roomId}
+              onReply={onReply}
+              onOpenThread={onOpenThread}
+              resolveComposerKeyAction={resolveComposerKeyAction}
+              mediaUploadProgress={mediaUploadProgressForItem(store, timelineKey, item)}
+              onToggleReaction={onToggleReaction}
+              onEdit={onEdit}
+              onRedact={onRedact}
+              onDownloadMedia={onDownloadMedia}
+              presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
+              receipts={eventId ? roomSignals?.receipts_by_event[eventId] ?? [] : []}
+            />
+          </div>
+        );
+      })}
+      {roomSignals && roomSignals.typing_user_ids.length > 0 ? (
+        <div className="typing-indicator" dir="auto">
+          {formatTypingUsers(roomSignals.typing_user_ids)}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -360,7 +404,9 @@ export function TimelineItemRow({
   onToggleReaction,
   onEdit,
   onRedact,
-  onDownloadMedia = () => undefined
+  onDownloadMedia = () => undefined,
+  presence,
+  receipts = []
 }: {
   item: TimelineItem;
   roomId: string;
@@ -372,6 +418,8 @@ export function TimelineItemRow({
   onEdit: TimelineRowActionHandlers["onEdit"];
   onRedact: TimelineRowActionHandlers["onRedact"];
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
+  presence?: PresenceKind;
+  receipts?: LiveReadReceipt[];
 }) {
   const domId = timelineItemDomId(item.id);
   const isLocalEcho = "Transaction" in item.id;
@@ -593,8 +641,18 @@ export function TimelineItemRow({
       data-redacted={isRedacted || undefined}
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
     >
+      <div className="avatar" aria-hidden="true">
+        {senderInitials(item.sender)}
+      </div>
       <div className="message-main">
         <div className="message-heading">
+          {presence ? (
+            <span
+              className="presence-dot message-presence"
+              data-presence={presence}
+              aria-label={presenceLabel(presence)}
+            />
+          ) : null}
           <span className="sender">{item.sender ?? ""}</span>
           {item.is_edited && !isRedacted ? (
             <span className="message-edited">{t("timeline.editedMessage")}</span>
@@ -617,6 +675,16 @@ export function TimelineItemRow({
             <MessageCircle size={13} />
             <span>{threadSummaryText}</span>
           </button>
+        ) : null}
+        {receipts.length > 0 ? (
+          <div className="message-receipts" aria-label={t("timeline.readBy", { count: receipts.length })}>
+            <span className="receipt-dots" aria-hidden="true">
+              {receipts.slice(0, 3).map((receipt) => (
+                <span className="receipt-dot" key={receipt.user_id} />
+              ))}
+            </span>
+            <span>{t("timeline.readBy", { count: receipts.length })}</span>
+          </div>
         ) : null}
         {canShowReactions ? (
           <div className="message-reactions">
@@ -736,6 +804,45 @@ export function TimelineItemRow({
       </div>
     </article>
   );
+}
+
+function latestEventBackedItemId(items: TimelineItem[]): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if ("Event" in item.id) {
+      return item.id.Event.event_id;
+    }
+  }
+  return null;
+}
+
+function formatTypingUsers(userIds: string[]): string {
+  const [firstUser] = userIds;
+  if (userIds.length === 1 && firstUser) {
+    return t("timeline.typingOne", { user: firstUser });
+  }
+  return t("timeline.typingMany", { count: userIds.length });
+}
+
+function presenceLabel(presence: PresenceKind): string {
+  if (presence === "online") {
+    return t("timeline.presenceOnline");
+  }
+  if (presence === "away") {
+    return t("timeline.presenceAway");
+  }
+  return t("timeline.presenceOffline");
+}
+
+function senderInitials(sender: string | null): string {
+  if (!sender) {
+    return "?";
+  }
+  const ascii = sender.match(/[A-Za-z]/g);
+  if (ascii?.length) {
+    return ascii.slice(0, 2).join("").toUpperCase();
+  }
+  return sender.slice(0, 2);
 }
 
 function mediaUploadProgressForItem(

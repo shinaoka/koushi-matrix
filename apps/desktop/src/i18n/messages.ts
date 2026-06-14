@@ -284,10 +284,15 @@ export type MessageId =
   | "timeline.loading"
   | "timeline.messagesTab"
   | "timeline.openingThread"
+  | "timeline.presenceAway"
+  | "timeline.presenceOffline"
+  | "timeline.presenceOnline"
   | "timeline.addReaction"
   | "timeline.reactionSummary"
   | "timeline.reactionPicker"
   | "timeline.reactionOption"
+  | "timeline.readBy"
+  | "timeline.readMarker"
   | "timeline.olderMessages"
   | "timeline.saveEdit"
   | "timeline.cancelEdit"
@@ -306,6 +311,8 @@ export type MessageId =
   | "timeline.threadSummaryWithBody"
   | "timeline.threadSummaryWithPreview"
   | "timeline.threadSummaryWithSender"
+  | "timeline.typingMany"
+  | "timeline.typingOne"
   | "timeline.openThreadSummary"
   | "timeline.viewReplies"
   | "workspace.createSpace"
@@ -697,10 +704,15 @@ const en: Catalog = {
   "timeline.loading": "Loading",
   "timeline.messagesTab": "Messages",
   "timeline.openingThread": "Opening thread",
+  "timeline.presenceAway": "Away",
+  "timeline.presenceOffline": "Offline",
+  "timeline.presenceOnline": "Online",
   "timeline.addReaction": "Add reaction",
   "timeline.reactionSummary": "Reaction {key}, count {count}",
   "timeline.reactionPicker": "Choose reaction",
   "timeline.reactionOption": "React with {emoji}",
+  "timeline.readBy": "Read by {count}",
+  "timeline.readMarker": "Read up to here",
   "timeline.olderMessages": "Older messages",
   "timeline.saveEdit": "Save edit",
   "timeline.cancelEdit": "Cancel edit",
@@ -719,6 +731,8 @@ const en: Catalog = {
   "timeline.threadSummaryWithBody": "{count} · {preview}",
   "timeline.threadSummaryWithPreview": "{count} · {sender}: {preview}",
   "timeline.threadSummaryWithSender": "{count} · {sender}",
+  "timeline.typingMany": "{count} people are typing",
+  "timeline.typingOne": "{user} is typing",
   "timeline.openThreadSummary": "Open thread, {summary}",
   "timeline.viewReplies": "View new replies · {count}",
   "workspace.createSpace": "Create space",

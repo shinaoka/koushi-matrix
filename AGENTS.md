@@ -38,6 +38,8 @@ All agents implementing read receipts, read markers, typing, and presence
 follow
 [docs/superpowers/plans/2026-06-15-live-signals-phase-a.md](docs/superpowers/plans/2026-06-15-live-signals-phase-a.md)
 for Phase A Rust/headless work before Phase B GUI wiring.
+Phase B GUI/browser-headless work for the same issue follows
+[docs/superpowers/plans/2026-06-15-live-signals-phase-b-gui.md](docs/superpowers/plans/2026-06-15-live-signals-phase-b-gui.md).
 All agents implementing E2EE trust Phase A state-machine contracts follow
 [docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md](docs/superpowers/plans/2026-06-14-e2ee-trust-phase-a.md).
 All agents implementing Rust-owned settings Phase A follow
@@ -81,6 +83,22 @@ All agents implementing the i18n GUI wiring follow
   `SyncOnce` on the observer account after `SetTyping` is acknowledged to wake
   the same Rust-owned typing observer. Do not replace this with React polling or
   local UI timers.
+
+## Live Signals Phase B Notes
+
+- The full-app browser harness (`apps/desktop/src/test/appHarnessMain.tsx`)
+  must import `../styles.css`, matching production `main.tsx`. Otherwise
+  visibility/layout assertions can pass against unstyled DOM and miss real
+  production CSS issues.
+- Event-driven `TimelineItemRow` uses the same `.message` grid contract as the
+  legacy snapshot `MessageArticle`: direct child `.avatar`, `.message-main`,
+  and row-level `.message-actions`. Keep direct-child grid placement explicit;
+  pre-placing the actions without placing the main cell can push message
+  content into the 44px avatar column and hide media titles.
+- React may use refs only to suppress duplicate viewport-triggered command
+  dispatches such as mark-read/read-receipt sends. Receipt, read-marker,
+  typing, and presence values themselves remain Rust-owned
+  `AppState.live_signals`.
 
 ## E2EE Trust Phase A Notes
 
