@@ -30,7 +30,6 @@
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
-    "@types/node": "^25.9.2",
     "lucide-react": "^1.17.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
@@ -38,6 +37,7 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@tauri-apps/cli": "^2.11.2",
+    "@types/node": "^25.9.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
