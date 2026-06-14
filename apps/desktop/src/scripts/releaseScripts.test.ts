@@ -300,7 +300,8 @@ describe("desktop release scripts", () => {
       "scenario local-create-room",
       "scenario local-create-space",
       "scenario local-reply",
-      "scenario local-settings"
+      "scenario local-settings",
+      "verify local-settings trust section"
     ]) {
       expect(output).toContain(token);
     }
@@ -327,6 +328,7 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_create_space=ok");
     expect(source).toContain("gui_local_reply=ok");
     expect(source).toContain("gui_local_settings=ok");
+    expect(source).toContain("gui_local_trust_settings=ok");
   });
 
   test("headless basic operations docs mention the local create and reply GUI scenarios", () => {
@@ -342,6 +344,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("gui_local_create_room=ok");
     expect(docs).toContain("gui_local_reply=ok");
     expect(docs).toContain("gui_local_settings=ok");
+    expect(docs).toContain("gui_local_trust_settings=ok");
   });
 
   test("linux GUI smoke resolves relative artifact dirs from the repo root", () => {

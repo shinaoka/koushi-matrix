@@ -30,6 +30,7 @@ const checks = [
   "scenario local-create-space",
   "scenario local-reply",
   "scenario local-settings",
+  "verify local-settings trust section",
   "verify Xvfb virtual display",
   "verify tauri-driver and WebKitWebDriver",
   "verify debug Tauri build",
@@ -469,9 +470,16 @@ async function runLocalSettingsScenario() {
       "dark theme setting"
     );
     await waitForDocumentTheme(session.browser, "dark", timeoutMs);
+    await waitForDocumentText(
+      session.browser,
+      ["Encryption", "Cross-signing", "Key backup", "Identity reset", "Devices"],
+      timeoutMs,
+      "E2EE trust settings section"
+    );
 
     await recordLocalGuiEvidence(session);
     console.log("gui_local_settings=ok");
+    console.log("gui_local_trust_settings=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -523,6 +531,23 @@ async function waitForDocumentTheme(browser, expected, timeout) {
     await sleep(250);
   }
   throw new Error(`document theme did not become ${expected}. Last theme: ${lastTheme}`);
+}
+
+async function waitForDocumentText(browser, expectedTexts, timeout, description) {
+  const startedAt = Date.now();
+  let missing = expectedTexts;
+  while (Date.now() - startedAt < timeout) {
+    const observed = await browser.execute((texts) => {
+      const bodyText = document.body.textContent ?? "";
+      return texts.filter((text) => !bodyText.includes(text));
+    }, expectedTexts);
+    missing = observed;
+    if (missing.length === 0) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} missing expected text: ${missing.join(", ")}`);
 }
 
 async function waitForReplyLanded(browser, baselineMessages, timeout) {

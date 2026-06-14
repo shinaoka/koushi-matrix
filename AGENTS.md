@@ -252,7 +252,8 @@ All agents implementing the i18n GUI wiring follow
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-create-room-fast --timeout-ms=180000`
 - Settings/composer-shortcut GUI changes use the same fast loop with
   `--scenario=local-settings`. This opens the real Settings UI, changes the
-  Rust-owned composer shortcut and theme settings, and waits for
+  Rust-owned composer shortcut and theme settings, verifies the E2EE trust
+  settings section renders in the real Tauri WebView, and waits for
   `aria-pressed="true"` / `data-theme="dark"` from the snapshot-driven UI:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-settings-fast --timeout-ms=180000`
 - When you only need a quick window-state sanity check, use the lane's cheap

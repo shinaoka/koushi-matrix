@@ -173,9 +173,11 @@ relying on React-only state. These destructive operations stay local-only;
 matrix.org is reserved for the final compatibility gate.
 
 `local-settings` opens the real Settings UI, changes the composer send shortcut,
-and switches the theme to dark. It waits for the controls to reflect the
-Rust-owned settings snapshot (`aria-pressed="true"`) and for `data-theme="dark"`
-to be applied from that snapshot, not from localStorage.
+switches the theme to dark, and verifies the E2EE trust settings section renders
+inside the real Tauri WebView. It waits for the controls to reflect the
+Rust-owned settings snapshot (`aria-pressed="true"`), for `data-theme="dark"` to
+be applied from that snapshot, and for the trust section's localized labels to
+appear without seeding React-only state.
 
 For fast iteration, build the debug app once and reuse it with `--skip-build`
 (optionally `--app-binary=PATH`):
@@ -200,4 +202,5 @@ gui_local_create_room=ok
 gui_local_create_space=ok
 gui_local_reply=ok
 gui_local_settings=ok
+gui_local_trust_settings=ok
 ```
