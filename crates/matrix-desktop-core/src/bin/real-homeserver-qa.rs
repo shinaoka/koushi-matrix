@@ -1045,7 +1045,8 @@ async fn run_async_inner(
                 }))
                 .await
                 .map_err(|e| format!("forget QA space command submit failed: {e}"))?;
-            wait_for_room_forgotten(&mut conn2, forget_space_id, space_id, "forget QA space").await?;
+            wait_for_room_forgotten(&mut conn2, forget_space_id, space_id, "forget QA space")
+                .await?;
 
             let line = "real_space_cleanup=ok".to_owned();
             transcript.push(line.clone());
@@ -1760,9 +1761,7 @@ async fn wait_for_space_child_set(
                 child_room_id: ev_child,
             }) if ev_id == request_id => {
                 if ev_space != space_id || ev_child != child_room_id {
-                    return Err(format!(
-                        "{label}: SpaceChildSet IDs mismatch: space={ev_space} child={ev_child}"
-                    ));
+                    return Err(format!("{label}: SpaceChildSet IDs mismatch (redacted)"));
                 }
                 return Ok(());
             }
@@ -1786,20 +1785,15 @@ async fn wait_for_room_list_space_child(
     timeout: Duration,
 ) -> Result<AppState, String> {
     let contains_expected = |snapshot: &AppState| {
-        snapshot
-            .spaces
-            .iter()
-            .any(|space| {
-                space.space_id == space_id
-                    && space.child_room_ids.iter().any(|room_id| room_id == child_room_id)
-            })
-            || snapshot
-                .rooms
-                .iter()
-                .any(|room| {
-                    room.room_id == child_room_id
-                        && room.parent_space_ids.iter().any(|id| id == space_id)
-                })
+        snapshot.spaces.iter().any(|space| {
+            space.space_id == space_id
+                && space
+                    .child_room_ids
+                    .iter()
+                    .any(|room_id| room_id == child_room_id)
+        }) || snapshot.rooms.iter().any(|room| {
+            room.room_id == child_room_id && room.parent_space_ids.iter().any(|id| id == space_id)
+        })
     };
 
     let snapshot = conn.snapshot();
@@ -1810,11 +1804,7 @@ async fn wait_for_room_list_space_child(
     loop {
         let event = tokio::time::timeout(timeout, conn.recv_event())
             .await
-            .map_err(|_| {
-                format!(
-                    "{label}: timed out waiting for space {space_id} to gain child room {child_room_id}"
-                )
-            })?
+            .map_err(|_| format!("{label}: timed out waiting for space-child projection"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -2269,7 +2259,7 @@ async fn poll_search_until_found_or_timeout(
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
-                "{label}: event {expected_event_id} not found in search results after {timeout:?}"
+                "{label}: expected event not found in search results after {timeout:?}"
             ));
         }
 
@@ -2303,10 +2293,7 @@ async fn poll_search_until_found_or_timeout(
 /// interleaved stream are ignored. Always returns (never errors): a missing
 /// index event simply means the caller retries its query.
 #[cfg(any(debug_assertions, test))]
-async fn wait_for_index_update_or_idle(
-    conn: &mut CoreConnection,
-    deadline: tokio::time::Instant,
-) {
+async fn wait_for_index_update_or_idle(conn: &mut CoreConnection, deadline: tokio::time::Instant) {
     // Bound a single idle wait so the retry cadence matches the prior sleep
     // when the index is quiet, while still waking immediately on indexing.
     const IDLE_WAIT: Duration = Duration::from_millis(1000);

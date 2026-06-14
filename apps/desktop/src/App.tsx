@@ -968,8 +968,8 @@ function CreateEntityDialog({
   onValueChange: (value: string) => void;
 }) {
   const isSpace = kind === "space";
-  const title = isSpace ? "スペースを作成" : "ルームを作成";
-  const inputLabel = isSpace ? "Space name" : "Room name";
+  const title = isSpace ? t("dialog.createSpaceTitle") : t("dialog.createRoomTitle");
+  const inputLabel = isSpace ? t("dialog.spaceName") : t("dialog.roomName");
   const submitLabel = isSpace
     ? t("dialog.submitCreateSpace")
     : t("dialog.submitCreateRoom");
@@ -1016,7 +1016,7 @@ function CreateEntityDialog({
             aria-label={t("dialog.cancelCreate")}
             onClick={onCancel}
           >
-            キャンセル
+            {t("action.cancel")}
           </button>
           <button
             className="dialog-button is-primary"
@@ -1024,7 +1024,7 @@ function CreateEntityDialog({
             aria-label={submitLabel}
             disabled={!canSubmit}
           >
-            作成
+            {isSpace ? t("action.createSpace") : t("action.createRoom")}
           </button>
         </div>
       </form>
@@ -1368,7 +1368,7 @@ export function TopBar({
           ref={searchInputRef}
           aria-label={t("workspace.search")}
           value={searchQuery}
-          placeholder={`${activeSpaceName} 内を検索する`}
+          placeholder={t("workspace.searchPlaceholder", { spaceName: activeSpaceName })}
           onChange={(event) => onSearchQueryChange(event.target.value)}
         />
       </label>
@@ -1679,7 +1679,7 @@ function TimelinePane({
             <span>8</span>
           </button>
           <button className="icon-button" type="button" aria-label={t("room.threadToggle")} onClick={onToggleThread}>
-            {snapshot.thread ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}
+            {snapshot.state.thread.kind !== "closed" ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}
           </button>
           <button className="icon-button" type="button" aria-label={t("room.roomInfo")} onClick={onOpenRoomInfo}>
             <MoreVertical size={19} />
@@ -1715,8 +1715,8 @@ function TimelinePane({
               <Clock3 size={15} />
               <span>
                 {snapshot.state.timeline.is_paginating_backwards
-                  ? "読み込み中"
-                  : "以前のメッセージ"}
+                  ? t("timeline.loading")
+                  : t("timeline.olderMessages")}
               </span>
             </button>
           </div>
@@ -1887,7 +1887,7 @@ function MessageArticle({
             type="button"
             onClick={() => onOpenThread(message.room_id, message.event_id)}
           >
-            新しい返信を確認する · {message.reply_count}
+            {t("timeline.viewReplies", { count: message.reply_count })}
           </button>
         ) : null}
       </div>
@@ -1925,7 +1925,7 @@ export function Composer({
     <section className="composer" aria-label={t("composer.messageComposer")}>
       {composerMode.kind === "reply" ? (
         <div className="composer-reply-banner">
-          <span className="composer-reply-label">返信中 (Replying)</span>
+          <span className="composer-reply-label">{t("composer.replying")}</span>
           <button
             className="icon-button"
             type="button"
@@ -1956,7 +1956,7 @@ export function Composer({
       <textarea
         aria-label={t("composer.messageComposer")}
         value={value}
-        placeholder={`${roomName} へのメッセージ`}
+        placeholder={t("composer.placeholder", { roomName })}
         onKeyDown={onComposerKeyDown}
         onChange={(event) => onValueChange(event.target.value)}
       />
@@ -2100,11 +2100,14 @@ export function ContextualRightPanel({
     );
   }
 
-  if (!snapshot.thread) {
+  const threadState = snapshot.state.thread;
+  if (threadState.kind !== "opening" && threadState.kind !== "open") {
     return <aside className="thread-pane" aria-label={t("panel.context")} />;
   }
 
-  const root = snapshot.timeline.find((message) => message.event_id === snapshot.thread?.root_event_id);
+  const rootEventId = threadState.root_event_id ?? snapshot.thread?.root_event_id ?? "";
+  const root = snapshot.timeline.find((message) => message.event_id === rootEventId);
+  const replies = snapshot.thread?.replies ?? [];
 
   return (
     <aside className="thread-pane" aria-label={t("panel.context")}>
@@ -2122,7 +2125,13 @@ export function ContextualRightPanel({
             />
           </div>
         ) : null}
-        {snapshot.thread.replies.map((reply) => (
+        {!root && rootEventId ? (
+          <div className="thread-root-placeholder">{t("timeline.threadRoot", { eventId: rootEventId })}</div>
+        ) : null}
+        {threadState.kind === "opening" ? (
+          <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>
+        ) : null}
+        {replies.map((reply) => (
           <article className="thread-reply" key={reply.event_id}>
             <div className="avatar" aria-hidden="true">
               {initials(reply.sender)}
@@ -2137,8 +2146,8 @@ export function ContextualRightPanel({
           </article>
         ))}
       </section>
-      <section className="thread-composer" aria-label="Thread composer">
-        <textarea placeholder="返信する..." />
+      <section className="thread-composer" aria-label={t("timeline.threadComposer")}>
+        <textarea placeholder={t("timeline.threadPlaceholder")} />
       </section>
     </aside>
   );

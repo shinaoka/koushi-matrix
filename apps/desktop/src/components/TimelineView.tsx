@@ -258,12 +258,12 @@ export function TimelineView({
     >
       {isPaginating ? (
         <div className="timeline-spinner" data-testid="timeline-spinner">
-          読み込み中
+          {t("timeline.loading")}
         </div>
       ) : null}
       {endReached ? (
         <div className="timeline-start" data-testid="timeline-start">
-          会話のはじまり
+          {t("timeline.conversationStart")}
         </div>
       ) : null}
       {items.map((item) => (

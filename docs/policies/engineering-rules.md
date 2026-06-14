@@ -69,6 +69,11 @@ Rules:
    diagnostic switch. They must never reach `AppState`, committed logs,
    normal test fixtures, or release diagnostics.
 3. QA asserts on `CoreEvent` and `AppStateSnapshot`, never on log output.
+4. Real-account and real-homeserver QA output is tokenized before it becomes an
+   artifact. Captured logs must not contain raw Matrix IDs, event IDs,
+   transaction IDs, user IDs, message bodies, search queries, local paths, or raw
+   SDK errors. Producers should avoid formatting those values; wrappers must not
+   write unredacted stdout/stderr and only then discover a leak.
 
 ## Async and Runtime
 
@@ -93,6 +98,14 @@ Rules:
 7. Avoid repeated destructive real-account login cycles while debugging
    automation; reuse the running session and restart only when the script
    or Tauri capability changes require it.
+8. State-critical actor actions are reliable messages, not lossy hints. Do not
+   ignore failed reducer-action sends for transitions that set or clear pending
+   user-visible state. Await the send, retry through the owner, or emit a
+   correlated operation failure that leaves no stuck pending state.
+9. If a reducer returns an `AppEffect` that matters in production, the
+   production runtime executes it or the behavior is redesigned as an explicit
+   `CoreCommand`/actor command. Discarding such effects is allowed only for
+   fixture/demo effects that are documented as non-production.
 
 ## GUI Automation
 

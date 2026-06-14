@@ -1,6 +1,6 @@
 use matrix_desktop_state::{
-    reduce, AppAction, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
-    ComposerState, RoomSummary, SessionInfo, SessionState, TimelinePaneState,
+    AppAction, AppState, BasicOperationRequest, BasicOperationState, ComposerMode, ComposerState,
+    RoomSummary, SessionInfo, SessionState, TimelinePaneState, reduce,
 };
 
 fn ready_state() -> AppState {
@@ -81,7 +81,10 @@ fn basic_operation_tracks_request_and_settles_on_matching_success() {
     assert!(!state.basic_operation.is_idle());
 
     // The correlated completion settles the operation back to Idle.
-    reduce(&mut state, AppAction::BasicOperationSucceeded { request_id: 7 });
+    reduce(
+        &mut state,
+        AppAction::BasicOperationSucceeded { request_id: 7 },
+    );
     assert_eq!(state.basic_operation, BasicOperationState::Idle);
 }
 

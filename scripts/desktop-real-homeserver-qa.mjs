@@ -103,7 +103,6 @@ async function run() {
     }
   );
 
-  // Write all output to the per-run log FIRST, before any checks.
   const logParts = [];
   if (result.stdout) {
     logParts.push("[real-homeserver-qa stdout]\n", result.stdout, "\n");
@@ -111,18 +110,19 @@ async function run() {
   if (result.stderr) {
     logParts.push("[real-homeserver-qa stderr]\n", result.stderr, "\n");
   }
-  writeFileSync(logPath, logParts.join(""), "utf8");
 
   // Script-side redaction check (defence in depth): load the credentials
   // file and verify neither password nor recovery_key appears in the output.
-  // We do this BEFORE checking the exit code so the leak is reported even
-  // if the binary also failed for a different reason.
+  // We do this before writing artifacts or checking the exit code so a failed
+  // run cannot persist private output.
   checkForLeaks(result.stdout, result.stderr, credentialsPath, logPath);
 
   // Matrix identifiers must never appear in real QA output — enforce this even
   // on failure, since a failed run can still leak an id into captured output.
   const combinedOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
   assertNoMatrixIdentifiers(combinedOutput, "real-homeserver-qa");
+
+  writeFileSync(logPath, logParts.join(""), "utf8");
 
   // Now check exit code.
   if (result.status !== 0) {

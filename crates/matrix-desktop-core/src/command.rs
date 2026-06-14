@@ -80,19 +80,25 @@ impl CoreCommand {
 
 #[derive(Debug)]
 pub enum AppCommand {
-    Shutdown { request_id: RequestId },
+    Shutdown {
+        request_id: RequestId,
+    },
     SetComposerReplyTarget {
         request_id: RequestId,
         room_id: String,
         event_id: String,
     },
-    CancelComposerReply { request_id: RequestId },
+    CancelComposerReply {
+        request_id: RequestId,
+    },
     OpenThread {
         request_id: RequestId,
         room_id: String,
         root_event_id: String,
     },
-    CloseThread { request_id: RequestId },
+    CloseThread {
+        request_id: RequestId,
+    },
 }
 
 // LoginRequest and RecoveryRequest redact their own Debug in

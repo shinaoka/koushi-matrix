@@ -215,16 +215,11 @@ impl TimelineManagerActor {
                 transaction_id,
                 body,
             } => {
-                if let Some(room_id) = reducer_room_id(&key) {
-                    let _ = self.action_tx.try_send(vec![AppAction::SendTextSubmitted {
-                        room_id,
-                        transaction_id: transaction_id.clone(),
-                        body: body.clone(),
-                    }]);
-                }
-                self.route_to_actor_or_fail(
+                self.route_send_to_actor_or_fail(
                     request_id,
                     &key,
+                    transaction_id.clone(),
+                    body.clone(),
                     TimelineActorMessage::SendText {
                         request_id,
                         transaction_id,
@@ -240,16 +235,11 @@ impl TimelineManagerActor {
                 in_reply_to_event_id,
                 body,
             } => {
-                if let Some(room_id) = reducer_room_id(&key) {
-                    let _ = self.action_tx.try_send(vec![AppAction::SendTextSubmitted {
-                        room_id,
-                        transaction_id: transaction_id.clone(),
-                        body: body.clone(),
-                    }]);
-                }
-                self.route_to_actor_or_fail(
+                self.route_send_to_actor_or_fail(
                     request_id,
                     &key,
+                    transaction_id.clone(),
+                    body.clone(),
                     TimelineActorMessage::SendReply {
                         request_id,
                         transaction_id,
@@ -291,6 +281,65 @@ impl TimelineManagerActor {
                 )
                 .await;
             }
+        }
+    }
+
+    async fn route_send_to_actor_or_fail(
+        &self,
+        request_id: RequestId,
+        key: &TimelineKey,
+        transaction_id: String,
+        body: String,
+        msg: TimelineActorMessage,
+    ) {
+        let Some(handle) = self.timelines.get(key) else {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::NotSubscribed,
+                },
+            );
+            return;
+        };
+
+        if let Some(room_id) = reducer_room_id(key) {
+            if self
+                .action_tx
+                .send(vec![AppAction::SendTextSubmitted {
+                    room_id,
+                    transaction_id: transaction_id.clone(),
+                    body,
+                }])
+                .await
+                .is_err()
+            {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::QueueOverflow,
+                    },
+                );
+                return;
+            }
+        }
+
+        if !handle.send(msg).await {
+            if let Some(room_id) = reducer_room_id(key) {
+                let _ = self
+                    .action_tx
+                    .send(vec![AppAction::SendTextFailed {
+                        room_id,
+                        transaction_id,
+                        message: "timeline send route closed".to_owned(),
+                    }])
+                    .await;
+            }
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            );
         }
     }
 
@@ -462,12 +511,20 @@ impl TimelineManagerActor {
     }
 
     fn emit_timeline_subscribed_action(&self, key: &TimelineKey) {
-        let TimelineKind::Room { room_id } = &key.kind else {
-            return;
+        let action = match &key.kind {
+            TimelineKind::Room { room_id } => AppAction::TimelineSubscribed {
+                room_id: room_id.clone(),
+            },
+            TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            } => AppAction::ThreadSubscribed {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+            },
+            TimelineKind::Focused { .. } => return,
         };
-        let _ = self.action_tx.try_send(vec![AppAction::TimelineSubscribed {
-            room_id: room_id.clone(),
-        }]);
+        let _ = self.action_tx.try_send(vec![action]);
     }
 }
 
@@ -1672,6 +1729,52 @@ mod tests {
         assert!(
             handle_subscribe_source.contains(room_token),
             "main timeline subscription state should only be marked for room timelines"
+        );
+    }
+
+    #[test]
+    fn send_submission_is_not_reduced_before_actor_route_accepts_it() {
+        let source = include_str!("timeline.rs");
+        let send_text_arm = source
+            .split("TimelineCommand::SendText")
+            .nth(1)
+            .expect("SendText arm should exist")
+            .split("TimelineCommand::SendReply")
+            .next()
+            .expect("SendReply arm should follow SendText");
+
+        if send_text_arm.contains("route_send_to_actor_or_fail") {
+            let helper_source = source
+                .split("async fn route_send_to_actor_or_fail")
+                .nth(1)
+                .expect("send route helper should exist")
+                .split("async fn handle_subscribe")
+                .next()
+                .expect("handle_subscribe should follow the send route helper");
+            let route_lookup_offset = helper_source
+                .find("self.timelines.get")
+                .expect("send route helper should look up the actor before reducing state");
+            let submitted_offset = helper_source
+                .find("SendTextSubmitted")
+                .expect("send route helper should reduce SendTextSubmitted");
+
+            assert!(
+                route_lookup_offset < submitted_offset,
+                "SendTextSubmitted must not be reduced before the actor route is known to exist"
+            );
+            return;
+        }
+
+        let submitted_offset = send_text_arm
+            .find("SendTextSubmitted")
+            .expect("send path should reduce SendTextSubmitted");
+        let route_offset = send_text_arm
+            .find("route_to_actor_or_fail")
+            .expect("send path should route to a timeline actor");
+
+        assert!(
+            route_offset < submitted_offset,
+            "SendTextSubmitted must not be reduced before the actor route is known to exist"
         );
     }
 

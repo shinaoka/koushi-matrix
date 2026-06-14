@@ -210,15 +210,25 @@ pub struct TimelinePaneState {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComposerState {
     pub pending_transaction_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_send_kind: Option<PendingComposerSendKind>,
     pub draft: String,
     pub mode: ComposerMode,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PendingComposerSendKind {
+    Plain,
+    Reply { in_reply_to_event_id: String },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ComposerMode {
     #[default]
     Plain,
-    Reply { in_reply_to_event_id: String },
+    Reply {
+        in_reply_to_event_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -311,8 +321,14 @@ pub enum SearchMatchField {
 pub enum BasicOperationState {
     #[default]
     Idle,
-    CreatingRoom { request_id: u64, name: String },
-    CreatingSpace { request_id: u64, name: String },
+    CreatingRoom {
+        request_id: u64,
+        name: String,
+    },
+    CreatingSpace {
+        request_id: u64,
+        name: String,
+    },
     LinkingSpaceChild {
         request_id: u64,
         space_id: String,
@@ -343,9 +359,16 @@ impl BasicOperationState {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum BasicOperationRequest {
-    CreateRoom { name: String },
-    CreateSpace { name: String },
-    LinkSpaceChild { space_id: String, child_room_id: String },
+    CreateRoom {
+        name: String,
+    },
+    CreateSpace {
+        name: String,
+    },
+    LinkSpaceChild {
+        space_id: String,
+        child_room_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

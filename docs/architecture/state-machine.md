@@ -106,6 +106,15 @@ search state. The reducer emits UI events for any cleared visible panes.
   thread timeline.
 - Thread subscription success must match the current opening room and root event;
   stale thread signals are ignored.
+- Opening a thread is not complete when `ThreadPaneState` changes to `Opening`.
+  The production runtime must also subscribe the corresponding
+  `TimelineKind::Thread { room_id, root_event_id }`. Only the actual thread
+  timeline subscription success may drive `ThreadSubscribed` and move the pane to
+  `Open`.
+- Thread pane identity and open/closed state are Rust-owned `AppState`. Visible
+  thread items are not stored in `AppState`; they flow as `TimelineEvent`
+  batches/diffs keyed by the thread `TimelineKey`. Legacy top-level frontend
+  placeholders such as `snapshot.thread` are not authoritative in production.
 
 ## Composer Reply Mode
 
@@ -126,12 +135,19 @@ stateDiagram-v2
   ignored. Re-selecting while already in `Reply` replaces the target (idempotent).
 - `ComposerReplyCancelled` returns to `Plain`; it is a no-op when already `Plain`
   or when no room is selected.
-- `SendTextFinished { room_id, transaction_id }` clears the matching pending
-  transaction and returns the composer to `Plain`, completing any active reply
-  draft. When the composer is already `Plain`, the mode is unchanged.
+- `SendTextSubmitted { room_id, transaction_id, body }` records one pending
+  transaction only when no send is already pending. The pending state records the
+  submitted composer kind: plain send, or reply send with the reply target that
+  was current at submission time.
+- `SendTextFinished { room_id, transaction_id }` clears only the matching pending
+  transaction. It returns the composer to `Plain` only when the matched pending
+  send was submitted as a reply and the current reply target still equals the
+  captured target. A plain send completion must not clear a reply target selected
+  after submission, and a reply send completion must not clear a newer reply
+  target selected before completion.
 - `SendTextFailed { room_id, transaction_id, message }` clears the pending
-  transaction and records a recoverable error. It preserves `Reply` mode so the
-  user can retry or cancel explicitly.
+  transaction and records a recoverable error. It preserves the current
+  `Reply` mode so the user can retry or cancel explicitly.
 - The reply target is Rust-owned `AppState`, not React-local, so the send path,
   snapshots, and QA can read which event a draft replies to.
 

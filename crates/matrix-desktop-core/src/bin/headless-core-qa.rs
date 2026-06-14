@@ -2165,9 +2165,8 @@ impl SendFlowWaiter {
                 .map(|body| body.contains(&self.expected_body))
                 .unwrap_or(false)
             {
-                if let matrix_desktop_core::event::TimelineItemId::Transaction {
-                    transaction_id,
-                } = &item.id
+                if let matrix_desktop_core::event::TimelineItemId::Transaction { transaction_id } =
+                    &item.id
                 {
                     self.sdk_transaction_id = Some(transaction_id.clone());
                     break;
@@ -2207,8 +2206,7 @@ async fn wait_for_send_flow_completion(
     expected_body: &str,
     label: &str,
 ) -> Result<SendFlowOutcome, String> {
-    let mut waiter =
-        SendFlowWaiter::new(request_id, key.clone(), client_txn_id, expected_body);
+    let mut waiter = SendFlowWaiter::new(request_id, key.clone(), client_txn_id, expected_body);
 
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
@@ -2433,7 +2431,9 @@ async fn wait_for_thread_reply_item(
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for thread reply body {expected_body:?}"))?
+            .map_err(|_| {
+                format!("{label}: timed out waiting for thread reply body {expected_body:?}")
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -2967,17 +2967,15 @@ mod tests {
 
     #[test]
     fn find_timeline_item_with_body_finds_thread_reply_in_one_batch() {
-        let items = vec![
-            matrix_desktop_core::event::TimelineItem {
-                id: matrix_desktop_core::event::TimelineItemId::Synthetic {
-                    synthetic_id: "thread-reply".to_owned(),
-                },
-                sender: Some("@b:test".to_owned()),
-                body: Some("Phase 5 QA thread reply from B".to_owned()),
-                timestamp_ms: None,
-                in_reply_to_event_id: Some("$root:test".to_owned()),
+        let items = vec![matrix_desktop_core::event::TimelineItem {
+            id: matrix_desktop_core::event::TimelineItemId::Synthetic {
+                synthetic_id: "thread-reply".to_owned(),
             },
-        ];
+            sender: Some("@b:test".to_owned()),
+            body: Some("Phase 5 QA thread reply from B".to_owned()),
+            timestamp_ms: None,
+            in_reply_to_event_id: Some("$root:test".to_owned()),
+        }];
 
         assert_eq!(
             find_timeline_item_with_body(&items, "thread reply from B")

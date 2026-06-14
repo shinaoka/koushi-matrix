@@ -90,6 +90,15 @@ conflict is being resolved.
 - React may display state-machine state, but it must not repair product state
   after the fact. If completion of a Matrix operation should clear or advance
   product state, the Rust state machine performs that transition.
+- Reducer effects or command outcomes that are part of production behavior must
+  be executed by the production runtime or replaced by an explicit
+  `CoreCommand`/actor path. Producing an `AppEffect` and then discarding it in a
+  production path is a defect.
+- Actor-to-reducer transitions that settle pending user-visible state are not
+  lossy notifications. They must be delivered reliably or paired with a
+  deterministic failure transition that clears/reports the pending state. Silent
+  `try_send` drops are prohibited for send, reply, thread, room, search,
+  cleanup, recovery, and login state machines.
 
 ## Security Rules
 
@@ -108,6 +117,11 @@ conflict is being resolved.
   screenshots, or QA artifacts. This includes real room names, message bodies,
   attachment names, Matrix IDs, email addresses, institutions, workplaces,
   meeting titles, and local home-directory paths.
+- Real-account and real-homeserver QA must be private-data-free before artifact
+  persistence. Leak checks that run only after writing raw stdout/stderr to a
+  log are insufficient; either redact before write or ensure the producer never
+  formats real Matrix IDs, room/event IDs, message bodies, raw SDK errors, or
+  local paths into the captured stream.
 - Debug output for secret-bearing commands, actions, and errors must redact
   associated values. Enum/action logging may record the case/kind; it must not
   record passwords, tokens, recovery material, message bodies, attachment
@@ -171,6 +185,10 @@ conflict is being resolved.
 - QA scripts must assert scenario-specific success tokens, not only process
   exit code. If a document promises a token, the script enforces it or the
   document is wrong.
+- Real-account and real-homeserver QA diagnostics are tokenized. Failure output
+  may identify the failed step and coarse failure kind, but must not include raw
+  Matrix IDs, transaction IDs, event IDs, room IDs, user IDs, SDK error strings,
+  message bodies, search queries, or local filesystem paths.
 - Real-account and real-homeserver QA must use cleanup guards for every
   resource it creates: sessions/devices, rooms, spaces, memberships, stores,
   search indexes, and background processes. After the first post-login side
@@ -214,6 +232,11 @@ conflict is being resolved.
 - User-visible product text must not be embedded directly in React components,
   Rust core errors, Tauri commands, or tests that model production UI. Use a
   message catalog keyed by stable IDs, with interpolation for dynamic values.
+- English-only product copy is acceptable while the localization system is
+  still small, but it still goes through the catalog. Deferring Japanese or
+  other locale quality does not permit hardcoded English/Japanese strings in
+  product UI, menus, accessibility labels, placeholders, empty states, dialogs,
+  or validation messages.
 - Core and adapters return machine-readable kinds, codes, and structured
   non-secret data. They do not return English/Japanese prose for the UI to
   display, except for debug/test-only diagnostics.

@@ -9,12 +9,24 @@ pub enum CoreFailure {
     /// The credential store is healthy but holds no stored session for the
     /// requested account (restore / switch target). UI: go to login quietly.
     SessionNotFound,
-    LoginFailed { kind: LoginFailureKind },
-    RecoveryFailed { kind: RecoveryFailureKind },
-    SyncFailed { kind: SyncFailureKind },
-    RoomOperationFailed { kind: RoomFailureKind },
-    TimelineOperationFailed { kind: TimelineFailureKind },
-    SearchFailed { kind: SearchFailureKind },
+    LoginFailed {
+        kind: LoginFailureKind,
+    },
+    RecoveryFailed {
+        kind: RecoveryFailureKind,
+    },
+    SyncFailed {
+        kind: SyncFailureKind,
+    },
+    RoomOperationFailed {
+        kind: RoomFailureKind,
+    },
+    TimelineOperationFailed {
+        kind: TimelineFailureKind,
+    },
+    SearchFailed {
+        kind: SearchFailureKind,
+    },
     LocalEncryptionUnavailable,
     StoreUnavailable,
     ShutdownFailed,

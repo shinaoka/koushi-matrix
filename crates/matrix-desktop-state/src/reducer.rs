@@ -3,8 +3,8 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppError, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
-        E2eeRecoveryState, NavigationState, SearchState, SessionState, SyncState, ThreadPaneState,
-        TimelinePaneState,
+        E2eeRecoveryState, NavigationState, PendingComposerSendKind, SearchState, SessionState,
+        SyncState, ThreadPaneState, TimelinePaneState,
     },
 };
 
@@ -471,6 +471,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
 
             state.timeline.composer.pending_transaction_id = Some(transaction_id.clone());
+            state.timeline.composer.pending_send_kind = Some(match &state.timeline.composer.mode {
+                ComposerMode::Plain => PendingComposerSendKind::Plain,
+                ComposerMode::Reply {
+                    in_reply_to_event_id,
+                } => PendingComposerSendKind::Reply {
+                    in_reply_to_event_id: in_reply_to_event_id.clone(),
+                },
+            });
             state.timeline.composer.draft.clear();
             vec![
                 AppEffect::SendText {
@@ -493,8 +501,20 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let pending_send_kind = state.timeline.composer.pending_send_kind.take();
             state.timeline.composer.pending_transaction_id = None;
-            state.timeline.composer.mode = ComposerMode::Plain;
+            if let Some(PendingComposerSendKind::Reply {
+                in_reply_to_event_id,
+            }) = pending_send_kind
+            {
+                if state.timeline.composer.mode
+                    == (ComposerMode::Reply {
+                        in_reply_to_event_id,
+                    })
+                {
+                    state.timeline.composer.mode = ComposerMode::Plain;
+                }
+            }
             vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
         }
         AppAction::SendTextFailed {
@@ -511,6 +531,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
 
             state.timeline.composer.pending_transaction_id = None;
+            state.timeline.composer.pending_send_kind = None;
             state.errors.push(AppError {
                 code: "send_text_failed".to_owned(),
                 message,
@@ -668,7 +689,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.errors.retain(|error| error.code != code);
             vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
         }
-        AppAction::BasicOperationRequested { request_id, request } => {
+        AppAction::BasicOperationRequested {
+            request_id,
+            request,
+        } => {
             // Start transition. Guarded like the composer's pending-transaction
             // rule: a new operation is accepted only from `Idle` and only with a
             // ready session, so an in-flight operation is never clobbered.

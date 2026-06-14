@@ -10,15 +10,15 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use matrix_desktop_state::{AppAction, AppState, reduce};
+use matrix_desktop_state::{AppAction, AppEffect, AppState, SessionState, ThreadPaneState, reduce};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::account::{AccountActorHandle, AccountMessage};
-use crate::command::{AppCommand, CoreCommand};
+use crate::command::{AppCommand, CoreCommand, TimelineCommand};
 use crate::event::{AppStateSnapshot, CoreEvent};
 use crate::executor;
-use crate::failure::CoreFailure;
-use crate::ids::{RequestId, RuntimeConnectionId};
+use crate::failure::{CoreFailure, TimelineFailureKind};
+use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 use crate::store::StoreActor;
 
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
@@ -80,11 +80,8 @@ impl CoreRuntime {
         let store_actor = StoreActor::new(data_dir);
 
         // Spawn AccountActor with shared channels.
-        let account_actor = crate::account::AccountActor::spawn(
-            store_actor,
-            action_tx.clone(),
-            event_tx.clone(),
-        );
+        let account_actor =
+            crate::account::AccountActor::spawn(store_actor, action_tx.clone(), event_tx.clone());
 
         let actor = AppActor {
             command_rx,
@@ -222,10 +219,13 @@ impl AppActor {
                     let Some(actions) = actions else { break };
                     let mut state_changed = false;
                     for action in actions {
-                        // Effects are executed by actors in later phases;
-                        // the reducer remains the single UI state
-                        // transition mechanism.
-                        let _effects = reduce(&mut self.state, action);
+                        // Actor-originated actions are post-side-effect
+                        // projections: the owner actor has already performed
+                        // the corresponding Matrix/store/sync operation.
+                        // AppActor owns AppCommand effects above; replaying
+                        // actor-projection effects here would double-execute
+                        // login, restore, sync, or recovery work.
+                        let _post_projection_effects = reduce(&mut self.state, action);
                         state_changed = true;
                     }
                     if state_changed {
@@ -267,26 +267,26 @@ impl AppActor {
             CoreCommand::App(app_command) => match app_command {
                 AppCommand::Shutdown { .. } => false,
                 AppCommand::SetComposerReplyTarget {
+                    request_id,
                     room_id,
                     event_id,
-                    ..
                 } => {
                     let effects = reduce(
                         &mut self.state,
                         AppAction::ComposerReplyTargetSelected { room_id, event_id },
                     );
-                    let _ = effects;
+                    self.handle_app_effects(request_id, effects).await;
                     true
                 }
-                AppCommand::CancelComposerReply { .. } => {
+                AppCommand::CancelComposerReply { request_id } => {
                     let effects = reduce(&mut self.state, AppAction::ComposerReplyCancelled);
-                    let _ = effects;
+                    self.handle_app_effects(request_id, effects).await;
                     true
                 }
                 AppCommand::OpenThread {
+                    request_id,
                     room_id,
                     root_event_id,
-                    ..
                 } => {
                     let effects = reduce(
                         &mut self.state,
@@ -295,12 +295,20 @@ impl AppActor {
                             root_event_id,
                         },
                     );
-                    let _ = effects;
+                    self.handle_app_effects(request_id, effects).await;
                     true
                 }
-                AppCommand::CloseThread { .. } => {
+                AppCommand::CloseThread { request_id } => {
+                    let thread_key = self.current_thread_timeline_key();
                     let effects = reduce(&mut self.state, AppAction::CloseThread);
-                    let _ = effects;
+                    if let Some(key) = thread_key {
+                        self.send_timeline_command_or_fail(
+                            request_id,
+                            TimelineCommand::Unsubscribe { request_id, key },
+                        )
+                        .await;
+                    }
+                    self.handle_app_effects(request_id, effects).await;
                     true
                 }
             },
@@ -340,6 +348,89 @@ impl AppActor {
                     .await;
                 false
             }
+        }
+    }
+
+    async fn handle_app_effects(&self, request_id: RequestId, effects: Vec<AppEffect>) {
+        for effect in effects {
+            if let AppEffect::OpenThreadTimeline {
+                room_id,
+                root_event_id,
+            } = effect
+            {
+                let Some(account_key) = self.current_account_key() else {
+                    self.emit(CoreEvent::OperationFailed {
+                        request_id,
+                        failure: CoreFailure::SessionRequired,
+                    });
+                    continue;
+                };
+                self.send_timeline_command_or_fail(
+                    request_id,
+                    TimelineCommand::Subscribe {
+                        request_id,
+                        key: TimelineKey {
+                            account_key,
+                            kind: TimelineKind::Thread {
+                                room_id,
+                                root_event_id,
+                            },
+                        },
+                    },
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn send_timeline_command_or_fail(&self, request_id: RequestId, command: TimelineCommand) {
+        if !self
+            .account_actor
+            .send(AccountMessage::TimelineCommand(command))
+            .await
+        {
+            self.emit(CoreEvent::OperationFailed {
+                request_id,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            });
+        }
+    }
+
+    fn current_account_key(&self) -> Option<AccountKey> {
+        match &self.state.session {
+            SessionState::NeedsRecovery { info, .. }
+            | SessionState::Recovering { info, .. }
+            | SessionState::Ready(info)
+            | SessionState::Locked(info) => Some(AccountKey(info.user_id.clone())),
+            SessionState::SignedOut
+            | SessionState::Restoring
+            | SessionState::SwitchingAccount { .. }
+            | SessionState::Authenticating { .. }
+            | SessionState::LoggingOut => None,
+        }
+    }
+
+    fn current_thread_timeline_key(&self) -> Option<TimelineKey> {
+        let account_key = self.current_account_key()?;
+        match &self.state.thread {
+            ThreadPaneState::Opening {
+                room_id,
+                root_event_id,
+            }
+            | ThreadPaneState::Open {
+                room_id,
+                root_event_id,
+                ..
+            } => Some(TimelineKey {
+                account_key,
+                kind: TimelineKind::Thread {
+                    room_id: room_id.clone(),
+                    root_event_id: root_event_id.clone(),
+                },
+            }),
+            ThreadPaneState::Closed => None,
         }
     }
 
@@ -391,5 +482,27 @@ mod tests {
     fn default_data_dir_uses_xdg_like_user_data_path() {
         let dir = default_data_dir_from_home(Some("/tmp/synthetic-home".into())).unwrap();
         assert!(dir.ends_with(".local/share/matrix-desktop"));
+    }
+
+    #[test]
+    fn open_thread_command_must_execute_thread_timeline_effects() {
+        let source = include_str!("runtime.rs");
+        let open_thread_arm = source
+            .split("AppCommand::OpenThread")
+            .nth(1)
+            .expect("OpenThread arm should exist")
+            .split("AppCommand::CloseThread")
+            .next()
+            .expect("CloseThread arm should follow OpenThread");
+
+        assert!(
+            !open_thread_arm.contains("let _ = effects;"),
+            "OpenThread reducer effects are production behavior and must not be discarded"
+        );
+        assert!(
+            open_thread_arm.contains("handle_app_effects")
+                || open_thread_arm.contains("TimelineCommand::Subscribe"),
+            "OpenThread must execute the OpenThreadTimeline effect through the timeline actor"
+        );
     }
 }

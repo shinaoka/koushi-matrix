@@ -55,9 +55,13 @@ pub enum TimelineKind {
 
 /// Monotonic per timeline subscription; bumped on every reset/resync so the
 /// UI can discard diffs from older generations.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 pub struct TimelineGeneration(pub u64);
 
 /// FIFO position of a diff batch within a generation.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 pub struct TimelineBatchId(pub u64);

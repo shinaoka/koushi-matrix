@@ -11,8 +11,8 @@ pub use sidebar::{AccountHomeItem, RoomListItem, SidebarModel, SpaceRailItem, co
 pub use state::{
     AppError, AppState, AuthDiscoveryState, BasicOperationRequest, BasicOperationState,
     ComposerMode, ComposerState, E2eeRecoveryState, LoginFlow, LoginFlowKind, NavigationState,
-    RecoveryMethod, RoomAttentionKind, RoomAttentionSummary, RoomSummary, SearchMatchField,
-    SearchMatchKind, SearchResult, SearchScope, SearchState, SessionInfo, SessionState,
-    SpaceSummary, SyncState, TextRange, ThreadPaneState, TimelinePaneState, room_attention_kind,
-    room_attention_summary,
+    PendingComposerSendKind, RecoveryMethod, RoomAttentionKind, RoomAttentionSummary, RoomSummary,
+    SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionInfo,
+    SessionState, SpaceSummary, SyncState, TextRange, ThreadPaneState, TimelinePaneState,
+    room_attention_kind, room_attention_summary,
 };

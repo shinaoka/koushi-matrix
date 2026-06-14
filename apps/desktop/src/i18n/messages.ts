@@ -23,6 +23,10 @@ export type MessageId =
   | "composer.replying"
   | "composer.cancelReply"
   | "dialog.cancelCreate"
+  | "dialog.createRoomTitle"
+  | "dialog.createSpaceTitle"
+  | "dialog.roomName"
+  | "dialog.spaceName"
   | "dialog.submitCreateRoom"
   | "dialog.submitCreateSpace"
   | "panel.context"
@@ -57,13 +61,21 @@ export type MessageId =
   | "shortcut.cancelReplyOrEdit"
   | "shortcut.sendMessage"
   | "timeline.conversation"
+  | "timeline.conversationStart"
   | "timeline.editMessage"
+  | "timeline.loading"
+  | "timeline.openingThread"
+  | "timeline.olderMessages"
   | "timeline.redactMessage"
   | "timeline.replyToMessage"
+  | "timeline.threadComposer"
+  | "timeline.threadPlaceholder"
+  | "timeline.threadRoot"
   | "timeline.viewReplies"
   | "workspace.createSpace"
   | "workspace.rooms"
   | "workspace.search"
+  | "workspace.searchPlaceholder"
   | "workspace.searchScope"
   | "workspace.spaceInfoSettings"
   | "workspace.userSettings"
@@ -95,6 +107,10 @@ const en: Catalog = {
   "composer.replying": "Replying",
   "composer.cancelReply": "Cancel reply",
   "dialog.cancelCreate": "Cancel create",
+  "dialog.createRoomTitle": "Create room",
+  "dialog.createSpaceTitle": "Create space",
+  "dialog.roomName": "Room name",
+  "dialog.spaceName": "Space name",
   "dialog.submitCreateRoom": "Submit create room",
   "dialog.submitCreateSpace": "Submit create space",
   "panel.context": "Context panel",
@@ -129,25 +145,28 @@ const en: Catalog = {
   "shortcut.cancelReplyOrEdit": "Cancel reply or edit",
   "shortcut.sendMessage": "Send message",
   "timeline.conversation": "Conversation timeline",
+  "timeline.conversationStart": "Start of conversation",
   "timeline.editMessage": "Edit message",
+  "timeline.loading": "Loading",
+  "timeline.openingThread": "Opening thread",
+  "timeline.olderMessages": "Older messages",
   "timeline.redactMessage": "Redact message",
   "timeline.replyToMessage": "Reply to message",
+  "timeline.threadComposer": "Thread composer",
+  "timeline.threadPlaceholder": "Reply",
+  "timeline.threadRoot": "Thread root {eventId}",
   "timeline.viewReplies": "View new replies · {count}",
   "workspace.createSpace": "Create space",
   "workspace.rooms": "Rooms",
   "workspace.search": "Search",
+  "workspace.searchPlaceholder": "Search in {spaceName}",
   "workspace.searchScope": "Search scope",
   "workspace.spaceInfoSettings": "Space info and settings",
   "workspace.userSettings": "User settings",
   "workspace.workspaces": "Workspaces"
 };
 
-const ja: Catalog = {
-  ...en,
-  "composer.placeholder": "{roomName} へのメッセージ",
-  "composer.replying": "返信中",
-  "timeline.viewReplies": "新しい返信を確認する · {count}"
-};
+const ja: Catalog = { ...en };
 
 const pseudo: Catalog = Object.fromEntries(
   Object.entries(en).map(([id, value]) => [id, `[!! ${value} !!]`])

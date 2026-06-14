@@ -1113,12 +1113,7 @@ const en: Catalog = {
   "workspace.workspaces": "Workspaces"
 };
 
-const ja: Catalog = {
-  ...en,
-  "composer.placeholder": "{roomName} へのメッセージ",
-  "composer.replying": "返信中",
-  "timeline.viewReplies": "新しい返信を確認する · {count}"
-};
+const ja: Catalog = { ...en };
 
 const pseudo: Catalog = Object.fromEntries(
   Object.entries(en).map(([id, value]) => [id, `[!! ${value} !!]`])
@@ -1173,10 +1168,10 @@ For context menu and shortcut definitions, store `labelId: MessageId` and resolv
 
 - [ ] **Step 4: Update tests**
 
-Tests that assert role names may keep default English expectations because `t(..., "en")` is default. Add at least one test proving Japanese catalog entries are usable:
+Tests that assert role names may keep default English expectations because `t(..., "en")` is default. Add at least one test proving the Japanese locale intentionally falls back to English until localization is staffed:
 
 ```ts
-expect(t("composer.replying", {}, "ja")).toBe("返信中");
+expect(t("composer.replying", {}, "ja")).toBe("Replying");
 ```
 
 - [ ] **Step 5: Run frontend tests**

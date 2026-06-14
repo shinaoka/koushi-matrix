@@ -159,6 +159,20 @@ describe("desktop release scripts", () => {
     expect(source).toContain("requiredTokensForScenario");
   });
 
+  test("real homeserver QA runner checks private data before writing artifacts", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-real-homeserver-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    const writeLogOffset = source.indexOf("writeFileSync(logPath");
+    const matrixIdCheckOffset = source.indexOf("assertNoMatrixIdentifiers(combinedOutput");
+
+    expect(matrixIdCheckOffset).toBeGreaterThan(-1);
+    expect(writeLogOffset).toBeGreaterThan(-1);
+    expect(matrixIdCheckOffset).toBeLessThan(writeLogOffset);
+  });
+
   test("real homeserver QA binary emits private-data-free tokens (no Matrix ids)", () => {
     const source = readFileSync(
       new URL("../../../../crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs", import.meta.url),
@@ -171,6 +185,11 @@ describe("desktop release scripts", () => {
     expect(source).not.toContain("room_id={");
     expect(source).not.toContain("space_id={");
     expect(source).not.toContain("user={user_id}");
+    expect(source).not.toContain("{expected_event_id}");
+    expect(source).not.toContain("{space_id}");
+    expect(source).not.toContain("{child_room_id}");
+    expect(source).not.toContain("space={ev_space}");
+    expect(source).not.toContain("child={ev_child}");
   });
 
   test("qa token contract helper exposes token and private-data assertions", () => {

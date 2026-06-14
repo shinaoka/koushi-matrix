@@ -211,10 +211,7 @@ pub enum SearchEvent {
     /// Carries only app-owned visible-state identifiers (room/event ids) so
     /// pollers can wake on indexing progress instead of sleeping; the message
     /// body is never included (Security Model — Search).
-    IndexUpdated {
-        room_id: String,
-        event_id: String,
-    },
+    IndexUpdated { room_id: String, event_id: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

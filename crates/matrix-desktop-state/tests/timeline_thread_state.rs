@@ -591,6 +591,7 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
             is_paginating_backwards: false,
             composer: ComposerState {
                 pending_transaction_id: Some("txn1".to_owned()),
+                pending_send_kind: None,
                 draft: "draft".to_owned(),
                 mode: Default::default(),
             },
@@ -673,6 +674,85 @@ fn send_text_finished_clears_reply_mode_for_matching_reply_send() {
 
     assert_eq!(state.timeline.composer.pending_transaction_id, None);
     assert_eq!(state.timeline.composer.mode, ComposerMode::Plain);
+}
+
+#[test]
+fn plain_send_completion_preserves_reply_selected_after_submission() {
+    let mut state = selected_room_state("room-a");
+
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmitted {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-plain".to_owned(),
+            body: "plain body".to_owned(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ComposerReplyTargetSelected {
+            room_id: "room-a".to_owned(),
+            event_id: "$new-reply:example.invalid".to_owned(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SendTextFinished {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-plain".to_owned(),
+        },
+    );
+
+    assert_eq!(state.timeline.composer.pending_transaction_id, None);
+    assert_eq!(
+        state.timeline.composer.mode,
+        ComposerMode::Reply {
+            in_reply_to_event_id: "$new-reply:example.invalid".to_owned()
+        }
+    );
+}
+
+#[test]
+fn reply_send_completion_preserves_newer_reply_target() {
+    let mut state = selected_room_state("room-a");
+    state.timeline.composer.mode = ComposerMode::Reply {
+        in_reply_to_event_id: "$old-root:example.invalid".to_owned(),
+    };
+
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmitted {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-reply".to_owned(),
+            body: "reply body".to_owned(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ComposerReplyTargetSelected {
+            room_id: "room-a".to_owned(),
+            event_id: "$new-root:example.invalid".to_owned(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SendTextFinished {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-reply".to_owned(),
+        },
+    );
+
+    assert_eq!(state.timeline.composer.pending_transaction_id, None);
+    assert_eq!(
+        state.timeline.composer.mode,
+        ComposerMode::Reply {
+            in_reply_to_event_id: "$new-root:example.invalid".to_owned()
+        }
+    );
 }
 
 #[test]

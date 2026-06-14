@@ -105,6 +105,47 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain("search-results");
   });
 
+  test("renders thread panel from Rust-owned state when legacy thread snapshot is null", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { ContextualRightPanel } = await import("./App");
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    snapshot.state.thread = {
+      kind: "open",
+      room_id: snapshot.state.rooms[0]?.room_id,
+      root_event_id: "$root:example.invalid",
+      is_subscribed: true,
+      composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
+    };
+    snapshot.thread = null;
+
+    const markup = renderToStaticMarkup(
+      <ContextualRightPanel
+        activeRoom={snapshot.state.rooms[0] ?? null}
+        activeSpace={snapshot.state.spaces[0] ?? null}
+        activeSpaceName="Home"
+        isRecoveryBusy={false}
+        mode="thread"
+        recoverySecretFilled={false}
+        recoverySecretInputRef={{ current: null }}
+        savedSessions={[]}
+        searchQuery=""
+        searchResults={[]}
+        snapshot={snapshot}
+        onClosePanel={() => undefined}
+        onCloseThread={() => undefined}
+        onOpenKeyboardSettings={() => undefined}
+        onRecoverySecretPresenceChange={() => undefined}
+        onResultSelect={() => undefined}
+        onSubmitRecovery={(event) => event.preventDefault()}
+        onSwitchAccount={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Thread");
+    expect(markup).toContain("$root:example.invalid");
+  });
+
   test("renders encryption recovery as a contextual right panel mode", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { ContextualRightPanel } = await import("./App");

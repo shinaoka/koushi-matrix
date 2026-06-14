@@ -8,12 +8,14 @@ use matrix_desktop_state::{
     SessionState,
 };
 
-use crate::command::{AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, TimelineCommand};
+use crate::command::{
+    AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, TimelineCommand,
+};
 use crate::event::{CoreEvent, PaginationDirection};
+use crate::executor;
 use crate::failure::CoreFailure;
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey};
 use crate::runtime::{CommandSubmitError, CoreConnection, CoreRuntime};
-use crate::executor;
 
 const PASSWORD: &str = "p4ssw0rd-very-secret";
 const RECOVERY: &str = "EsT1 RcVy KeyM ater";
@@ -165,8 +167,7 @@ async fn ready_session_routes_past_appactor_session_gate() {
                 assert!(
                     matches!(
                         failure,
-                        CoreFailure::SessionRequired
-                            | CoreFailure::TimelineOperationFailed { .. }
+                        CoreFailure::SessionRequired | CoreFailure::TimelineOperationFailed { .. }
                     ),
                     "unexpected failure kind: {failure:?}"
                 );
@@ -334,19 +335,21 @@ where
 async fn app_command_sets_and_clears_reply_target() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
-    runtime.inject_actions(vec![
-        AppAction::RestoreSessionSucceeded(session_info()),
-        AppAction::RoomListUpdated {
-            spaces: vec![],
-            rooms: vec![room_summary("!room:example.test")],
-        },
-        AppAction::SelectRoom {
-            room_id: "!room:example.test".to_owned(),
-        },
-        AppAction::TimelineSubscribed {
-            room_id: "!room:example.test".to_owned(),
-        },
-    ]).await;
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+        ])
+        .await;
     wait_for_state(&mut conn, |state| {
         matches!(state.session, SessionState::Ready(_))
             && state.timeline.room_id.as_deref() == Some("!room:example.test")
@@ -370,7 +373,10 @@ async fn app_command_sets_and_clears_reply_target() {
         )
     })
     .await;
-    assert!(matches!(snapshot.timeline.composer.mode, ComposerMode::Reply { .. }));
+    assert!(matches!(
+        snapshot.timeline.composer.mode,
+        ComposerMode::Reply { .. }
+    ));
 
     let cancel_request = conn.next_request_id();
     conn.command(CoreCommand::App(AppCommand::CancelComposerReply {
