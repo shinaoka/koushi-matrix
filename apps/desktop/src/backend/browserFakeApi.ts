@@ -223,6 +223,9 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.locale_profile = resolveLocaleDisplayProfile(
       this.snapshot.state.settings.values.locale
     );
+    this.snapshot.state.typography_profile = resolveTypographyDisplayProfile(
+      this.snapshot.state.settings.values.typography
+    );
     this.snapshot.state.settings.persistence = { kind: "idle" };
     return this.getSnapshot();
   }
@@ -933,6 +936,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       auth: { kind: "unknown" },
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),
+      typography_profile: defaultTypographyDisplayProfile(),
       sync: "running",
       navigation: {
         active_space_id,
@@ -1013,6 +1017,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       auth: { kind: "unknown" },
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),
+      typography_profile: defaultTypographyDisplayProfile(),
       sync: "stopped",
       navigation: {
         active_space_id: null,
@@ -1088,6 +1093,22 @@ function ensureRoomLiveSignals(
 
 function defaultLocaleDisplayProfile(): LocaleDisplayProfile {
   return resolveLocaleDisplayProfile({ language_tag: null, text_direction: "auto" });
+}
+
+function defaultTypographyDisplayProfile(): DesktopSnapshot["state"]["typography_profile"] {
+  return resolveTypographyDisplayProfile({ font: "system", emoji: "system" });
+}
+
+function resolveTypographyDisplayProfile(
+  typography: DesktopSnapshot["state"]["settings"]["values"]["typography"]
+): DesktopSnapshot["state"]["typography_profile"] {
+  return {
+    font: typography.font,
+    emoji: typography.emoji,
+    platform: "linux",
+    font_asset: typography.font === "inter" ? "bundledPreferred" : "systemFallback",
+    emoji_asset: typography.emoji === "twemojiColr" ? "bundledPreferred" : "systemFallback"
+  };
 }
 
 function resolveLocaleDisplayProfile(locale: LocaleSettings): LocaleDisplayProfile {

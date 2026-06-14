@@ -14,7 +14,8 @@ use matrix_desktop_state::{
     E2eeTrustState, FocusedContextState, InvitePreview, LiveSignalsState, LocaleDisplayProfile,
     NavigationState, RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult,
     SearchScope, SearchState, SessionState, SettingsState, SidebarModel, SpaceSummary, SyncState,
-    ThreadPaneState, TimelinePaneState, resolve_locale_display_profile,
+    ThreadPaneState, TimelinePaneState, TypographyDisplayProfile, resolve_locale_display_profile,
+    resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +55,7 @@ pub struct FrontendAppState {
     pub auth: AuthDiscoveryState,
     pub settings: SettingsState,
     pub locale_profile: LocaleDisplayProfile,
+    pub typography_profile: TypographyDisplayProfile,
     pub sync: FrontendSyncState,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
@@ -71,15 +73,21 @@ pub struct FrontendAppState {
 
 impl From<AppState> for FrontendAppState {
     fn from(state: AppState) -> Self {
+        let platform = frontend_display_platform();
         let locale_profile = resolve_locale_display_profile(
             &state.settings.values.locale,
-            frontend_display_platform(),
+            platform,
+        );
+        let typography_profile = resolve_typography_display_profile(
+            &state.settings.values.typography,
+            platform,
         );
         Self {
             session: state.session.into(),
             auth: state.auth,
             settings: state.settings,
             locale_profile,
+            typography_profile,
             sync: state.sync.into(),
             navigation: state.navigation,
             spaces: state.spaces,
@@ -433,8 +441,8 @@ mod tests {
 
     use super::{FrontendDesktopSnapshot, FrontendSyncState};
     use matrix_desktop_state::{
-        AppState, InvitePreview, LocaleSettings, RecoveryMethod, SessionInfo, SessionState,
-        SyncState, TextDirectionPreference,
+        AppState, EmojiPreference, FontPreference, InvitePreview, LocaleSettings, RecoveryMethod,
+        SessionInfo, SessionState, SyncState, TextDirectionPreference, TypographySettings,
     };
 
     fn booted_app_state() -> AppState {
@@ -525,6 +533,18 @@ mod tests {
             value["state"]["locale_profile"]["pseudo_locale"],
             json!("none")
         );
+        // typography_profile must be present so React applies font and emoji
+        // behavior from Rust-owned settings/profile resolution.
+        assert_eq!(value["state"]["typography_profile"]["font"], json!("system"));
+        assert_eq!(value["state"]["typography_profile"]["emoji"], json!("system"));
+        assert_eq!(
+            value["state"]["typography_profile"]["font_asset"],
+            json!("systemFallback")
+        );
+        assert_eq!(
+            value["state"]["typography_profile"]["emoji_asset"],
+            json!("systemFallback")
+        );
         // composer.mode must be present (default Plain) for the same reason.
         assert_eq!(
             value["state"]["timeline"]["composer"]["mode"],
@@ -583,6 +603,36 @@ mod tests {
         );
         assert_ne!(
             value["state"]["locale_profile"]["modifier_labels"]["primary"],
+            json!(null)
+        );
+    }
+
+    #[test]
+    fn frontend_snapshot_typography_profile_follows_rust_owned_typography_settings() {
+        let mut state = booted_app_state();
+        state.settings.values.typography = TypographySettings {
+            font: FontPreference::Inter,
+            emoji: EmojiPreference::TwemojiColr,
+        };
+
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
+            .expect("snapshot should serialize");
+
+        assert_eq!(value["state"]["typography_profile"]["font"], json!("inter"));
+        assert_eq!(
+            value["state"]["typography_profile"]["emoji"],
+            json!("twemojiColr")
+        );
+        assert_eq!(
+            value["state"]["typography_profile"]["font_asset"],
+            json!("bundledPreferred")
+        );
+        assert_eq!(
+            value["state"]["typography_profile"]["emoji_asset"],
+            json!("bundledPreferred")
+        );
+        assert_ne!(
+            value["state"]["typography_profile"]["platform"],
             json!(null)
         );
     }

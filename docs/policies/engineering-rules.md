@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-06-14.
+Last amended: 2026-06-15.
 
 ## Secrets and Private Data
 
@@ -65,6 +65,11 @@ Rules:
    local unlock secrets, SDK/search keys, raw Matrix session JSON,
    room/event/user IDs, message bodies, attachment filenames, search queries,
    or raw SDK errors.
+   Derived display profiles for these settings, including
+   `LocaleDisplayProfile` and `TypographyDisplayProfile`, are also
+   non-secret profile data only. They may carry platform/capability and
+   asset-status tokens, but not account identifiers, content, local paths, raw
+   errors, or credentials.
 11. E2EE trust diagnostics are kind-only. Verification, cross-signing,
    key-backup, and identity-reset commands/events may expose structured state to
    the UI, but normal `Debug`, QA logs, and window-title tokens must redact

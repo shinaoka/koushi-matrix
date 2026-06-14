@@ -774,6 +774,11 @@ stateDiagram-v2
   surfaces. GUI code may normalize DOM/native key input into the resolver's
   typed key facts; it must not reimplement Enter, Shift+Enter, Mod+Enter,
   autocomplete acceptance, or cancel semantics as product logic.
+- Font and emoji display behavior is resolved by
+  `matrix_desktop_state::resolve_typography_display_profile`. GUI code may
+  apply the resulting `TypographyDisplayProfile` tokens to root attributes and
+  CSS variables, but it must not choose Inter/Twemoji/system fallback semantics
+  locally or branch per component/OS.
 - Persist failures do not roll back the in-memory product state. They clear the
   pending save and record a recoverable error so the UI can surface retry/status
   later without inventing product semantics.

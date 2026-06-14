@@ -18,6 +18,7 @@ export interface AppState {
   auth: AuthDiscoveryState;
   settings: SettingsState;
   locale_profile: LocaleDisplayProfile;
+  typography_profile: TypographyDisplayProfile;
   sync: SyncState;
   navigation: NavigationState;
   spaces: SpaceSummary[];
@@ -77,6 +78,16 @@ export type PrimaryModifierLabel = "Cmd" | "Ctrl";
 export interface ModifierLabelProfile {
   primary: PrimaryModifierLabel;
 }
+
+export interface TypographyDisplayProfile {
+  font: FontPreference;
+  emoji: EmojiPreference;
+  platform: DisplayPlatform;
+  font_asset: TypographyAssetStatus;
+  emoji_asset: TypographyAssetStatus;
+}
+
+export type TypographyAssetStatus = "systemFallback" | "bundledPreferred";
 
 export interface AppearanceSettings {
   theme: ThemePreference;

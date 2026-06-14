@@ -119,6 +119,7 @@ function readySnapshot(
       auth: { kind: "unknown" },
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),
+      typography_profile: defaultTypographyDisplayProfile(),
       sync: "running",
       navigation: { active_space_id: null, active_room_id: ROOM_ID },
       spaces,
@@ -209,6 +210,22 @@ function applySettingsPatch(
 
 function defaultLocaleDisplayProfile(): LocaleDisplayProfile {
   return resolveLocaleDisplayProfile({ language_tag: null, text_direction: "auto" });
+}
+
+function defaultTypographyDisplayProfile(): DesktopSnapshot["state"]["typography_profile"] {
+  return resolveTypographyDisplayProfile({ font: "system", emoji: "system" });
+}
+
+function resolveTypographyDisplayProfile(
+  typography: DesktopSnapshot["state"]["settings"]["values"]["typography"]
+): DesktopSnapshot["state"]["typography_profile"] {
+  return {
+    font: typography.font,
+    emoji: typography.emoji,
+    platform: "linux",
+    font_asset: typography.font === "inter" ? "bundledPreferred" : "systemFallback",
+    emoji_asset: typography.emoji === "twemojiColr" ? "bundledPreferred" : "systemFallback"
+  };
 }
 
 function resolveLocaleDisplayProfile(locale: LocaleSettings): LocaleDisplayProfile {
@@ -426,7 +443,8 @@ mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch })
         values,
         persistence: { kind: "idle" }
       },
-      locale_profile: resolveLocaleDisplayProfile(values.locale)
+      locale_profile: resolveLocaleDisplayProfile(values.locale),
+      typography_profile: resolveTypographyDisplayProfile(values.typography)
     }
   });
 });

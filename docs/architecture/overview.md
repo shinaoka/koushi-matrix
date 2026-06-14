@@ -54,6 +54,12 @@ Crate responsibilities:
   composer send shortcut semantics. Locale/display profile resolution is also
   Rust-owned; GUI code consumes the resolved profile and catalog selector
   defined in `docs/architecture/i18n.md` rather than parsing raw language tags.
+  Font/emoji display profile resolution is likewise Rust-owned:
+  `matrix-desktop-state` resolves `TypographyDisplayProfile` from
+  `SettingsValues.typography` and the platform profile, and the frontend may
+  only apply the resulting font, emoji, and asset-status tokens to root
+  attributes/CSS. Inter and Twemoji COLR are bundled-preferred choices with
+  system fallbacks; React must not choose fallback semantics per component.
   Composer key handling uses the pure Rust-owned resolver in
   `matrix-desktop-state`; GUI code supplies typed key facts and
   renders/dispatches the resolved action. Because the resolver may cross an

@@ -115,6 +115,13 @@ function snapshotForPanelMode(
         platform: "linux",
         modifier_labels: { primary: "Ctrl" }
       },
+      typography_profile: {
+        font: "system",
+        emoji: "system",
+        platform: "linux",
+        font_asset: "systemFallback",
+        emoji_asset: "systemFallback"
+      },
       sync: "stopped",
       navigation: { active_space_id: null, active_room_id: null },
       spaces: [],

@@ -48,6 +48,9 @@ All agents implementing the headless i18n substrate follow
 [docs/superpowers/plans/2026-06-14-i18n-substrate-phase-a.md](docs/superpowers/plans/2026-06-14-i18n-substrate-phase-a.md).
 All agents implementing the i18n GUI wiring follow
 [docs/superpowers/plans/2026-06-14-i18n-substrate-phase-b.md](docs/superpowers/plans/2026-06-14-i18n-substrate-phase-b.md).
+All agents implementing cross-platform font/emoji substrate Phase A follow
+[docs/superpowers/plans/2026-06-15-font-emoji-phase-a.md](docs/superpowers/plans/2026-06-15-font-emoji-phase-a.md)
+before any Phase B font asset or CSS wiring.
 
 ## Live Signals Phase A Notes
 
@@ -243,6 +246,14 @@ All agents implementing the i18n GUI wiring follow
   convenience. When it changes, update `apps/desktop/src-tauri/src/dto.rs`,
   `apps/desktop/src/domain/types.ts`, `browserFakeApi`, `tauriIpcMock`, app
   harness snapshots, and the DTO serialization-contract tests together.
+- `TypographyDisplayProfile` follows the same DTO rule. It is resolved in
+  Rust from `SettingsValues.typography` plus the platform profile and exposes
+  only font/emoji preference and asset-status tokens. GUI code may apply those
+  tokens to root attributes/CSS; it must not invent Inter/Twemoji/system
+  fallback behavior per component.
+- Font asset loading is Phase B. Inter and Twemoji COLR are bundled-preferred
+  choices with system fallbacks, and any included font package must update
+  `THIRD_PARTY_NOTICES.md` with version, local path, license, and provenance.
 - Root `lang`/`dir` and active catalog selection come from
   `snapshot.state.locale_profile`. Raw visible strings in React components
   should fail the catalog gate unless they are reviewed structured registry

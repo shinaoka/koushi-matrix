@@ -5,6 +5,7 @@ pub mod locale_profile;
 pub mod reducer;
 pub mod sidebar;
 pub mod state;
+pub mod typography_profile;
 
 pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
 pub use composer_shortcuts::{
@@ -32,4 +33,7 @@ pub use state::{
     ThemePreference, ThreadPaneState, TimelinePaneState, TrustOperationFailureKind,
     TypographySettings, VerificationCancelReason, VerificationFlowState, VerificationTarget,
     room_attention_kind, room_attention_summary,
+};
+pub use typography_profile::{
+    TypographyAssetStatus, TypographyDisplayProfile, resolve_typography_display_profile,
 };
