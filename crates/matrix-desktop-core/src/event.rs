@@ -3,7 +3,9 @@
 
 use std::fmt;
 
-use matrix_desktop_state::{CrossSigningStatus, KeyBackupStatus, VerificationFlowState};
+use matrix_desktop_state::{
+    CrossSigningStatus, IdentityResetState, KeyBackupStatus, VerificationFlowState,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -78,7 +80,7 @@ pub enum E2eeTrustEvent {
     },
     IdentityResetChanged {
         account_key: AccountKey,
-        request_id: Option<RequestId>,
+        state: IdentityResetState,
     },
 }
 
@@ -100,10 +102,10 @@ impl fmt::Debug for E2eeTrustEvent {
                 .field("account_key", &"AccountKey(..)")
                 .field("status", &key_backup_status_name(status))
                 .finish(),
-            Self::IdentityResetChanged { request_id, .. } => formatter
+            Self::IdentityResetChanged { state, .. } => formatter
                 .debug_struct("IdentityResetChanged")
                 .field("account_key", &"AccountKey(..)")
-                .field("request_id", request_id)
+                .field("state", &identity_reset_state_name(state))
                 .finish(),
         }
     }
@@ -140,6 +142,15 @@ fn key_backup_status_name(status: &KeyBackupStatus) -> &'static str {
         KeyBackupStatus::Enabled { .. } => "Enabled",
         KeyBackupStatus::Restoring { .. } => "Restoring",
         KeyBackupStatus::Failed { .. } => "Failed",
+    }
+}
+
+fn identity_reset_state_name(state: &IdentityResetState) -> &'static str {
+    match state {
+        IdentityResetState::Idle => "Idle",
+        IdentityResetState::Resetting { .. } => "Resetting",
+        IdentityResetState::AwaitingAuth { .. } => "AwaitingAuth",
+        IdentityResetState::Failed { .. } => "Failed",
     }
 }
 

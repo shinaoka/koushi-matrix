@@ -481,6 +481,10 @@ mod tests {
             value["state"]["e2ee_trust"]["key_backup"]["kind"],
             json!("unknown")
         );
+        assert_eq!(
+            value["state"]["e2ee_trust"]["identity_reset"]["kind"],
+            json!("idle")
+        );
         // settings must be present so React can consume Rust-owned product
         // preferences instead of owning theme/locale/shortcut state.
         assert_eq!(

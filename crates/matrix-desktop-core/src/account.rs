@@ -32,8 +32,9 @@ use futures_util::StreamExt;
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
-    AppAction, CrossSigningStatus, E2eeRecoveryState, KeyBackupStatus, LoginRequest,
-    RecoveryMethod, RecoveryRequest, SessionInfo, TrustOperationFailureKind, VerificationFlowState,
+    AppAction, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType, IdentityResetState,
+    KeyBackupStatus, LoginRequest, RecoveryMethod, RecoveryRequest, SessionInfo,
+    TrustOperationFailureKind, VerificationFlowState,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -120,6 +121,8 @@ pub struct AccountActor {
     search_actor: Option<SearchActorHandle>,
     /// Recovery-state observer task for the active store-backed session.
     recovery_observer: Option<RecoveryStateObservation>,
+    /// Pending SDK identity reset continuation, held only inside AccountActor.
+    identity_reset_handle: Option<matrix_desktop_sdk::MatrixIdentityResetHandle>,
 }
 
 impl AccountActor {
@@ -148,6 +151,7 @@ impl AccountActor {
             timeline_manager,
             search_actor: None,
             recovery_observer: None,
+            identity_reset_handle: None,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -181,6 +185,7 @@ impl AccountActor {
         self.stop_search_actor().await;
         self.stop_room_actor().await;
         self.stop_sync_actor().await;
+        self.cancel_identity_reset_handle().await;
         // Drop the session handle inside the runtime context
         // (overview.md Async rule 11 — deadpool-runtime panic prevention).
         drop(self.session.take());
@@ -348,6 +353,12 @@ impl AccountActor {
         }
     }
 
+    async fn cancel_identity_reset_handle(&mut self) {
+        if let Some(handle) = self.identity_reset_handle.take() {
+            handle.cancel().await;
+        }
+    }
+
     /// Ordered shutdown of the RoomActor (before sync stop in the shutdown
     /// sequence). The RoomActor is not Option<> since it is always present;
     /// we send Shutdown and the task finishes on its own after processing it.
@@ -395,6 +406,9 @@ impl AccountActor {
             }
             AccountCommand::EnableKeyBackup { request_id } => {
                 self.handle_enable_key_backup(request_id).await;
+            }
+            AccountCommand::ResetIdentity { request_id } => {
+                self.handle_reset_identity(request_id).await;
             }
             AccountCommand::RequestVerification { request_id, target } => {
                 let kind = TrustOperationFailureKind::Sdk;
@@ -457,35 +471,6 @@ impl AccountActor {
                     events,
                 );
             }
-            AccountCommand::ResetIdentity { request_id } => {
-                let kind = TrustOperationFailureKind::Sdk;
-                let events = self
-                    .active_account_key()
-                    .map(|account_key| {
-                        vec![
-                            CoreEvent::E2eeTrust(E2eeTrustEvent::CrossSigningChanged {
-                                account_key: account_key.clone(),
-                                status: CrossSigningStatus::Failed {
-                                    request_id: request_id.sequence,
-                                    kind,
-                                },
-                            }),
-                            CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged {
-                                account_key,
-                                request_id: None,
-                            }),
-                        ]
-                    })
-                    .unwrap_or_default();
-                self.emit_unavailable_trust_operation(
-                    request_id,
-                    vec![AppAction::ResetIdentityFailed {
-                        request_id: request_id.sequence,
-                        kind,
-                    }],
-                    events,
-                );
-            }
         }
     }
 
@@ -529,6 +514,52 @@ impl AccountActor {
         self.reduce(actions);
         for event in events {
             self.emit(event);
+        }
+    }
+
+    async fn handle_reset_identity(&mut self, request_id: RequestId) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.cancel_identity_reset_handle().await;
+                self.reduce(vec![AppAction::ResetIdentityFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+        let account_key = AccountKey(session.info.user_id.clone());
+        match matrix_desktop_sdk::reset_identity(&session).await {
+            Ok(matrix_desktop_sdk::IdentityResetOutcome::Completed) => {
+                self.cancel_identity_reset_handle().await;
+                let (actions, events) = project_reset_identity_completed(request_id, account_key);
+                self.reduce(actions);
+                for event in events {
+                    self.emit(event);
+                }
+            }
+            Ok(matrix_desktop_sdk::IdentityResetOutcome::AuthRequired(handle)) => {
+                let auth_type = handle.desktop_auth_type();
+                self.cancel_identity_reset_handle().await;
+                self.identity_reset_handle = Some(handle);
+                let (actions, events) =
+                    project_reset_identity_auth_required(request_id, account_key, auth_type);
+                self.reduce(actions);
+                for event in events {
+                    self.emit(event);
+                }
+            }
+            Err(error) => {
+                self.cancel_identity_reset_handle().await;
+                let (actions, events) =
+                    project_reset_identity_error(request_id, account_key, error);
+                self.reduce(actions);
+                for event in events {
+                    self.emit(event);
+                }
+            }
         }
     }
 
@@ -691,6 +722,7 @@ impl AccountActor {
         // Phase 3: stop recovery observer and sync. Phases 4-6 add their children here.
         self.stop_recovery_observer().await;
         self.stop_sync_actor().await;
+        self.cancel_identity_reset_handle().await;
         // Drop the SDK handle inside the runtime context (Async rule 11).
         drop(self.session.take());
         self.session_key_id = None;
@@ -854,6 +886,7 @@ impl AccountActor {
         self.stop_recovery_observer().await;
         // Ordered shutdown step 4: stop sync before dropping the session.
         self.stop_sync_actor().await;
+        self.cancel_identity_reset_handle().await;
 
         // Attempt server-side logout (best-effort; local cleanup always happens).
         let _ = matrix_desktop_sdk::logout(&session).await;
@@ -1235,6 +1268,70 @@ fn project_enable_key_backup_result(
             )
         }
     }
+}
+
+fn project_reset_identity_completed(
+    request_id: RequestId,
+    account_key: AccountKey,
+) -> (Vec<AppAction>, Vec<CoreEvent>) {
+    (
+        vec![AppAction::ResetIdentityCompleted {
+            request_id: request_id.sequence,
+        }],
+        vec![CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged {
+            account_key,
+            state: IdentityResetState::Idle,
+        })],
+    )
+}
+
+fn project_reset_identity_auth_required(
+    request_id: RequestId,
+    account_key: AccountKey,
+    auth_type: IdentityResetAuthType,
+) -> (Vec<AppAction>, Vec<CoreEvent>) {
+    let state = IdentityResetState::AwaitingAuth {
+        request_id: request_id.sequence,
+        auth_type,
+    };
+    (
+        vec![AppAction::ResetIdentityAuthRequired {
+            request_id: request_id.sequence,
+            auth_type,
+        }],
+        vec![CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged {
+            account_key,
+            state,
+        })],
+    )
+}
+
+fn project_reset_identity_error(
+    request_id: RequestId,
+    account_key: AccountKey,
+    error: matrix_desktop_sdk::E2eeTrustError,
+) -> (Vec<AppAction>, Vec<CoreEvent>) {
+    let kind = classify_e2ee_trust_error(&error);
+    let state = IdentityResetState::Failed {
+        request_id: request_id.sequence,
+        kind,
+    };
+    (
+        vec![AppAction::ResetIdentityFailed {
+            request_id: request_id.sequence,
+            kind,
+        }],
+        vec![
+            CoreEvent::E2eeTrust(E2eeTrustEvent::CrossSigningChanged {
+                account_key: account_key.clone(),
+                status: CrossSigningStatus::Failed {
+                    request_id: request_id.sequence,
+                    kind,
+                },
+            }),
+            CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged { account_key, state }),
+        ],
+    )
 }
 
 /// Map a `PasswordLoginError` to a coarse `LoginFailureKind` without exposing
@@ -1832,5 +1929,56 @@ mod tests {
                 }
             )]
         ));
+    }
+
+    #[test]
+    fn identity_reset_sdk_results_project_actions_and_typed_events() {
+        let request_id = test_request_id();
+        let account_key = AccountKey("@alice:example.test".to_owned());
+
+        let (actions, events) = project_reset_identity_completed(request_id, account_key.clone());
+        assert_eq!(
+            actions,
+            vec![AppAction::ResetIdentityCompleted {
+                request_id: request_id.sequence,
+            }]
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [CoreEvent::E2eeTrust(
+                crate::event::E2eeTrustEvent::IdentityResetChanged {
+                    state: matrix_desktop_state::IdentityResetState::Idle,
+                    ..
+                }
+            )]
+        ));
+
+        let (actions, events) = project_reset_identity_auth_required(
+            request_id,
+            account_key,
+            matrix_desktop_state::IdentityResetAuthType::Uiaa,
+        );
+        assert_eq!(
+            actions,
+            vec![AppAction::ResetIdentityAuthRequired {
+                request_id: request_id.sequence,
+                auth_type: matrix_desktop_state::IdentityResetAuthType::Uiaa,
+            }]
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [CoreEvent::E2eeTrust(
+                crate::event::E2eeTrustEvent::IdentityResetChanged {
+                    state: matrix_desktop_state::IdentityResetState::AwaitingAuth {
+                        auth_type: matrix_desktop_state::IdentityResetAuthType::Uiaa,
+                        ..
+                    },
+                    ..
+                }
+            )]
+        ));
+
+        let debug = format!("{events:?}");
+        assert!(!debug.contains("@alice:example.test"));
     }
 }

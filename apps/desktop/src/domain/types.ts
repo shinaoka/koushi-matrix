@@ -223,7 +223,7 @@ export interface E2eeTrustState {
   verification: VerificationFlowState;
   cross_signing: CrossSigningStatus;
   key_backup: KeyBackupStatus;
-  identity_reset_request_id: number | null;
+  identity_reset: IdentityResetState;
   devices: DeviceTrustSummary[];
 }
 
@@ -282,6 +282,14 @@ export type KeyBackupStatus =
       total_rooms: number | null;
     }
   | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export type IdentityResetState =
+  | { kind: "idle" }
+  | { kind: "resetting"; request_id: number }
+  | { kind: "awaitingAuth"; request_id: number; auth_type: IdentityResetAuthType }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export type IdentityResetAuthType = "uiaa" | "oauth" | "unknown";
 
 export interface DeviceTrustSummary {
   user_id: string;

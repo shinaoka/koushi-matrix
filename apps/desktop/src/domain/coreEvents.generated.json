@@ -17,6 +17,18 @@
     },
     "kind": "Account"
   },
+  "e2eeTrustIdentityResetChanged": {
+    "event": {
+      "account_key": "@u:example.test",
+      "kind": "identityResetChanged",
+      "state": {
+        "auth_type": "uiaa",
+        "kind": "awaitingAuth",
+        "request_id": 7
+      }
+    },
+    "kind": "E2eeTrust"
+  },
   "e2eeTrustVerificationProgress": {
     "event": {
       "account_key": "@u:example.test",

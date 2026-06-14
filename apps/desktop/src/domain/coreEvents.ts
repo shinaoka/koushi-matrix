@@ -298,6 +298,14 @@ export type KeyBackupStatus =
     }
   | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
 
+export type IdentityResetState =
+  | { kind: "idle" }
+  | { kind: "resetting"; request_id: number }
+  | { kind: "awaitingAuth"; request_id: number; auth_type: IdentityResetAuthType }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export type IdentityResetAuthType = "uiaa" | "oauth" | "unknown";
+
 export type E2eeTrustEvent =
   | {
       kind: "verificationProgress";
@@ -317,7 +325,7 @@ export type E2eeTrustEvent =
   | {
       kind: "identityResetChanged";
       account_key: string;
-      request_id: RequestId | null;
+      state: IdentityResetState;
     };
 
 // ---------------------------------------------------------------------------

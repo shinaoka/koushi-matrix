@@ -1,8 +1,9 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, CrossSigningStatus, E2eeTrustState, KeyBackupStatus, SasEmoji,
-    SessionInfo, SessionState, TrustOperationFailureKind, UiEvent, VerificationFlowState,
-    VerificationTarget, reduce,
+    AppAction, AppEffect, AppState, CrossSigningStatus, E2eeTrustState, IdentityResetAuthType,
+    IdentityResetState, KeyBackupStatus, SasEmoji, SessionInfo, SessionState,
+    TrustOperationFailureKind, UiEvent, VerificationFlowState, VerificationTarget, reduce,
 };
+use serde_json::json;
 
 fn ready_state() -> AppState {
     let mut state = AppState::default();
@@ -357,14 +358,132 @@ fn cross_signing_key_backup_and_reset_identity_are_request_correlated() {
         &mut state,
         AppAction::ResetIdentityRequested { request_id: 24 },
     );
-    assert_eq!(state.e2ee_trust.identity_reset_request_id, Some(24));
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::Resetting { request_id: 24 }
+    );
     reduce(
         &mut state,
         AppAction::ResetIdentityCompleted { request_id: 24 },
     );
-    assert_eq!(state.e2ee_trust.identity_reset_request_id, None);
+    assert_eq!(state.e2ee_trust.identity_reset, IdentityResetState::Idle);
     assert_eq!(state.e2ee_trust.cross_signing, CrossSigningStatus::Missing);
     assert_eq!(state.e2ee_trust.key_backup, KeyBackupStatus::Disabled);
+}
+
+#[test]
+fn identity_reset_auth_required_is_rust_owned_and_request_correlated() {
+    let mut state = ready_state();
+
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityAuthRequired {
+                request_id: 999,
+                auth_type: IdentityResetAuthType::Uiaa,
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(state.e2ee_trust.identity_reset, IdentityResetState::Idle);
+
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityRequested { request_id: 24 },
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::Resetting { request_id: 24 }
+    );
+
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityAuthRequired {
+                request_id: 999,
+                auth_type: IdentityResetAuthType::OAuth,
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::Resetting { request_id: 24 }
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityAuthRequired {
+                request_id: 24,
+                auth_type: IdentityResetAuthType::Uiaa,
+            },
+        ),
+        vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::AwaitingAuth {
+            request_id: 24,
+            auth_type: IdentityResetAuthType::Uiaa,
+        }
+    );
+
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityFailed {
+                request_id: 999,
+                kind: TrustOperationFailureKind::Timeout,
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::AwaitingAuth {
+            request_id: 24,
+            auth_type: IdentityResetAuthType::Uiaa,
+        }
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityFailed {
+            request_id: 24,
+            kind: TrustOperationFailureKind::Forbidden,
+        },
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::Failed {
+            request_id: 24,
+            kind: TrustOperationFailureKind::Forbidden,
+        }
+    );
+    assert_eq!(
+        state.e2ee_trust.cross_signing,
+        CrossSigningStatus::Failed {
+            request_id: 24,
+            kind: TrustOperationFailureKind::Forbidden,
+        }
+    );
+}
+
+#[test]
+fn identity_reset_auth_type_wire_values_are_stable() {
+    assert_eq!(
+        serde_json::to_value(IdentityResetAuthType::Uiaa).unwrap(),
+        json!("uiaa")
+    );
+    assert_eq!(
+        serde_json::to_value(IdentityResetAuthType::OAuth).unwrap(),
+        json!("oauth")
+    );
+    assert_eq!(
+        serde_json::to_value(IdentityResetAuthType::Unknown).unwrap(),
+        json!("unknown")
+    );
 }
 
 #[test]

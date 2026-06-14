@@ -69,7 +69,8 @@ Rules:
    key-backup, and identity-reset commands/events may expose structured state to
    the UI, but normal `Debug`, QA logs, and window-title tokens must redact
    account keys, verification target user/device IDs, backup versions, raw SDK
-   errors, and all key material.
+   errors, identity-reset auth details beyond UIAA/OAuth/unknown, and all key
+   material.
 
 ## Logging and Diagnostics
 

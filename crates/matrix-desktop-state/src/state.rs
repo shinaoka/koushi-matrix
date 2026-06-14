@@ -273,7 +273,7 @@ pub struct E2eeTrustState {
     pub verification: VerificationFlowState,
     pub cross_signing: CrossSigningStatus,
     pub key_backup: KeyBackupStatus,
-    pub identity_reset_request_id: Option<u64>,
+    pub identity_reset: IdentityResetState,
     pub devices: Vec<DeviceTrustSummary>,
 }
 
@@ -365,6 +365,34 @@ pub enum KeyBackupStatus {
         #[serde(rename = "failureKind")]
         kind: TrustOperationFailureKind,
     },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum IdentityResetState {
+    #[default]
+    Idle,
+    Resetting {
+        request_id: u64,
+    },
+    AwaitingAuth {
+        request_id: u64,
+        auth_type: IdentityResetAuthType,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: TrustOperationFailureKind,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentityResetAuthType {
+    Uiaa,
+    #[serde(rename = "oauth")]
+    OAuth,
+    Unknown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

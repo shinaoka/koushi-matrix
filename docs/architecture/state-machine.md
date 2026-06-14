@@ -341,8 +341,12 @@ Identity reset:
 stateDiagram-v2
     [*] --> Idle
     Idle --> Resetting: ResetIdentityRequested
+    Failed --> Resetting: ResetIdentityRequested
+    Resetting --> AwaitingAuth: ResetIdentityAuthRequired [matching request_id]
     Resetting --> Idle: ResetIdentityCompleted [matching request_id]
-    Resetting --> Idle: ResetIdentityFailed [matching request_id]
+    AwaitingAuth --> Idle: ResetIdentityCompleted [matching request_id]
+    Resetting --> Failed: ResetIdentityFailed [matching request_id]
+    AwaitingAuth --> Failed: ResetIdentityFailed [matching request_id]
 ```
 
 - Every transition requires a Ready session unless it is a stale settle signal
@@ -359,6 +363,12 @@ stateDiagram-v2
 - All settle/progress actions are request-correlated. Stale request ids are
   ignored and must not clobber an active verification, cross-signing bootstrap,
   backup enable/restore, or identity reset.
+- Identity reset is a typed Rust-owned state machine
+  (`Idle`, `Resetting`, `AwaitingAuth`, `Failed`), not a nullable pending flag.
+  `AwaitingAuth` carries only a request id and coarse auth type
+  (`uiaa`, `oauth`, or `unknown`). The SDK continuation handle remains private
+  to `AccountActor` and is cancelled when the active account runtime is logged
+  out, switched, or shut down.
 - Failure state carries only `TrustOperationFailureKind` (`cancelled`,
   `mismatch`, `network`, `forbidden`, `timeout`, `sdk`). Raw SDK errors,
   private keys, recovery secrets, room keys, and key-backup secrets never enter

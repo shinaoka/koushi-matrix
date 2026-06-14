@@ -230,6 +230,12 @@ All agents implementing the i18n GUI wiring follow
   `matrix-desktop-state` DTOs and redacts SDK error details in `Debug`. Do not
   let raw SDK trust errors, account keys, verification targets, or backup
   version identifiers leak through normal core events or QA output.
+- Matrix identity reset can complete immediately or return an SDK auth
+  continuation. Model that as Rust-owned `IdentityResetState`
+  (`Idle`, `Resetting`, `AwaitingAuth`, `Failed`), not as React-local state or a
+  nullable request id. `AwaitingAuth` exposes only UIAA/OAuth/unknown auth type;
+  the SDK handle stays inside `AccountActor` and must be cancelled on logout,
+  account switch, and actor shutdown.
 - If an E2EE trust `CoreCommand::Account` operation has already projected
   pending reducer state but the actor cannot complete it (session mismatch,
   unavailable local encryption, or an unimplemented SDK path), the actor must

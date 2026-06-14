@@ -1142,7 +1142,10 @@ mod tests {
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
-        use matrix_desktop_state::{SasEmoji, VerificationFlowState, VerificationTarget};
+        use matrix_desktop_state::{
+            IdentityResetAuthType, IdentityResetState, SasEmoji, VerificationFlowState,
+            VerificationTarget,
+        };
         use serde_json::json;
 
         let request_id = RequestId {
@@ -1327,7 +1330,27 @@ mod tests {
             json!("sasPresented")
         );
 
+        let e2ee_identity_reset = serialize_core_event(&CoreEvent::E2eeTrust(
+            E2eeTrustEvent::IdentityResetChanged {
+                account_key: AccountKey("@u:example.test".to_owned()),
+                state: IdentityResetState::AwaitingAuth {
+                    request_id: request_id.sequence,
+                    auth_type: IdentityResetAuthType::Uiaa,
+                },
+            },
+        ))
+        .expect("serialize identity reset event");
+        assert_eq!(
+            e2ee_identity_reset["event"]["kind"],
+            json!("identityResetChanged")
+        );
+        assert_eq!(
+            e2ee_identity_reset["event"]["state"]["kind"],
+            json!("awaitingAuth")
+        );
+
         let actual_contract = json!({
+            "e2eeTrustIdentityResetChanged": e2ee_identity_reset,
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
             "operationFailedSessionNotFound": failed,

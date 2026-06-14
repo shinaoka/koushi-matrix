@@ -4,9 +4,9 @@ use crate::{
     state::{
         AppError, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
         CrossSigningStatus, E2eeRecoveryState, E2eeTrustState, FocusedContextState,
-        KeyBackupStatus, NavigationState, PendingComposerSendKind, SasEmoji, SearchState,
-        SessionState, SettingsPersistenceState, SyncState, ThreadPaneState, TimelinePaneState,
-        VerificationFlowState, VerificationTarget,
+        IdentityResetState, KeyBackupStatus, NavigationState, PendingComposerSendKind, SasEmoji,
+        SearchState, SessionState, SettingsPersistenceState, SyncState, ThreadPaneState,
+        TimelinePaneState, VerificationFlowState, VerificationTarget,
     },
 };
 
@@ -370,33 +370,52 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
         }
         AppAction::ResetIdentityRequested { request_id } => {
-            if !is_session_ready(state) || state.e2ee_trust.identity_reset_request_id.is_some() {
+            if !is_session_ready(state)
+                || matches!(
+                    state.e2ee_trust.identity_reset,
+                    IdentityResetState::Resetting { .. } | IdentityResetState::AwaitingAuth { .. }
+                )
+            {
                 return Vec::new();
             }
 
-            state.e2ee_trust.identity_reset_request_id = Some(request_id);
+            state.e2ee_trust.identity_reset = IdentityResetState::Resetting { request_id };
             vec![
                 AppEffect::ResetIdentity { request_id },
                 AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
             ]
         }
-        AppAction::ResetIdentityCompleted { request_id } => {
-            if state.e2ee_trust.identity_reset_request_id != Some(request_id) {
+        AppAction::ResetIdentityAuthRequired {
+            request_id,
+            auth_type,
+        } => {
+            if state.e2ee_trust.identity_reset != (IdentityResetState::Resetting { request_id }) {
                 return Vec::new();
             }
 
-            state.e2ee_trust.identity_reset_request_id = None;
+            state.e2ee_trust.identity_reset = IdentityResetState::AwaitingAuth {
+                request_id,
+                auth_type,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
+        AppAction::ResetIdentityCompleted { request_id } => {
+            if !identity_reset_request_matches(&state.e2ee_trust.identity_reset, request_id) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.identity_reset = IdentityResetState::Idle;
             state.e2ee_trust.verification = VerificationFlowState::Idle;
             state.e2ee_trust.cross_signing = CrossSigningStatus::Missing;
             state.e2ee_trust.key_backup = KeyBackupStatus::Disabled;
             vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
         }
         AppAction::ResetIdentityFailed { request_id, kind } => {
-            if state.e2ee_trust.identity_reset_request_id != Some(request_id) {
+            if !identity_reset_request_matches(&state.e2ee_trust.identity_reset, request_id) {
                 return Vec::new();
             }
 
-            state.e2ee_trust.identity_reset_request_id = None;
+            state.e2ee_trust.identity_reset = IdentityResetState::Failed { request_id, kind };
             state.e2ee_trust.cross_signing = CrossSigningStatus::Failed { request_id, kind };
             vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
         }
@@ -1343,6 +1362,18 @@ fn key_backup_restore_request_matches(key_backup: &KeyBackupStatus, request_id: 
     matches!(
         key_backup,
         KeyBackupStatus::Restoring {
+            request_id: current_request_id,
+            ..
+        } if *current_request_id == request_id
+    )
+}
+
+fn identity_reset_request_matches(identity_reset: &IdentityResetState, request_id: u64) -> bool {
+    matches!(
+        identity_reset,
+        IdentityResetState::Resetting {
+            request_id: current_request_id,
+        } | IdentityResetState::AwaitingAuth {
             request_id: current_request_id,
             ..
         } if *current_request_id == request_id

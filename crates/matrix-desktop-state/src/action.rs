@@ -1,9 +1,9 @@
 use std::fmt;
 
 use crate::state::{
-    BasicOperationRequest, CrossSigningStatus, E2eeRecoveryState, LoginFlow, RecoveryMethod,
-    RoomSummary, SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues,
-    SpaceSummary, TrustOperationFailureKind, VerificationTarget,
+    BasicOperationRequest, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType, LoginFlow,
+    RecoveryMethod, RoomSummary, SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch,
+    SettingsValues, SpaceSummary, TrustOperationFailureKind, VerificationTarget,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,6 +120,10 @@ pub enum AppAction {
     },
     ResetIdentityRequested {
         request_id: u64,
+    },
+    ResetIdentityAuthRequired {
+        request_id: u64,
+        auth_type: IdentityResetAuthType,
     },
     ResetIdentityCompleted {
         request_id: u64,

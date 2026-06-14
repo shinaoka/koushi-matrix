@@ -174,7 +174,7 @@ function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
     verification: { kind: "idle" },
     cross_signing: { kind: "unknown" },
     key_backup: { kind: "unknown" },
-    identity_reset_request_id: null,
+    identity_reset: { kind: "idle" },
     devices: []
   };
 }

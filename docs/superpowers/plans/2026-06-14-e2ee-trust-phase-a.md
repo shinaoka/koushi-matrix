@@ -33,8 +33,11 @@ The follow-up SDK bridge slice keeps the same Phase A boundary: production
 `CoreCommand::Account` trust commands project reducer pending state before
 `AccountActor` routing, and `AccountActor` calls `matrix-desktop-sdk`
 private-data-free wrappers for cross-signing bootstrap and key-backup enable.
-Device verification, key-backup restore with real progress/version evidence,
-identity reset, local homeserver QA tokens, and all GUI controls remain outside
+Identity reset now calls the SDK wrapper and projects immediate completion or a
+typed `AwaitingAuth` state with only UIAA/OAuth/unknown auth kind; the SDK
+continuation handle stays inside `AccountActor`. Device verification,
+key-backup restore with real progress/version evidence, identity-reset auth
+continuation, local homeserver QA tokens, and all GUI controls remain outside
 this slice.
 
 ## Verification
