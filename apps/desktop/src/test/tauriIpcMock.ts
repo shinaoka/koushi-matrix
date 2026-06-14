@@ -167,6 +167,7 @@ function defaultSnapshotResponse() {
       navigation: { active_space_id: null, active_room_id: null },
       spaces: [],
       rooms: [],
+      invites: [],
       timeline: {
         room_id: null,
         is_subscribed: false,

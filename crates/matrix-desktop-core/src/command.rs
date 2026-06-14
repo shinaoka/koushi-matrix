@@ -64,6 +64,9 @@ impl CoreCommand {
                 | RoomCommand::CreateSpace { request_id, .. }
                 | RoomCommand::SetSpaceChild { request_id, .. }
                 | RoomCommand::InviteUser { request_id, .. }
+                | RoomCommand::AcceptInvite { request_id, .. }
+                | RoomCommand::DeclineInvite { request_id, .. }
+                | RoomCommand::StartDirectMessage { request_id, .. }
                 | RoomCommand::JoinRoom { request_id, .. }
                 | RoomCommand::LeaveRoom { request_id, .. }
                 | RoomCommand::ForgetRoom { request_id, .. }
@@ -462,6 +465,18 @@ pub enum RoomCommand {
     InviteUser {
         request_id: RequestId,
         room_id: String,
+        user_id: String,
+    },
+    AcceptInvite {
+        request_id: RequestId,
+        room_id: String,
+    },
+    DeclineInvite {
+        request_id: RequestId,
+        room_id: String,
+    },
+    StartDirectMessage {
+        request_id: RequestId,
         user_id: String,
     },
     JoinRoom {

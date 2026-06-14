@@ -810,6 +810,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       },
       spaces,
       rooms,
+      invites: [],
       timeline: {
         room_id: active_room_id,
         is_subscribed: true,
@@ -888,6 +889,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       },
       spaces: [],
       rooms: [],
+      invites: [],
       timeline: {
         room_id: null,
         is_subscribed: false,

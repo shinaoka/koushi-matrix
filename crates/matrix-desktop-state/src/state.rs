@@ -9,6 +9,7 @@ pub struct AppState {
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
     pub rooms: Vec<RoomSummary>,
+    pub invites: Vec<InvitePreview>,
     pub timeline: TimelinePaneState,
     pub thread: ThreadPaneState,
     pub focused_context: FocusedContextState,
@@ -28,6 +29,7 @@ impl Default for AppState {
             navigation: NavigationState::default(),
             spaces: Vec::new(),
             rooms: Vec::new(),
+            invites: Vec::new(),
             timeline: TimelinePaneState::default(),
             thread: ThreadPaneState::Closed,
             focused_context: FocusedContextState::Closed,
@@ -467,6 +469,15 @@ pub struct RoomSummary {
     pub notification_count: u64,
     pub highlight_count: u64,
     pub parent_space_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InvitePreview {
+    pub room_id: String,
+    pub display_name: String,
+    pub topic: Option<String>,
+    pub inviter_display_name: Option<String>,
+    pub is_dm: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

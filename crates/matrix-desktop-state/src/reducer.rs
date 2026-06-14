@@ -756,6 +756,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             effects
         }
+        AppAction::InviteListUpdated { invites } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.invites = invites;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
         AppAction::SelectSpace { space_id } => {
             if !is_session_ready(state) {
                 return Vec::new();
@@ -1544,6 +1552,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.navigation = NavigationState::default();
     state.spaces.clear();
     state.rooms.clear();
+    state.invites.clear();
     state.timeline = Default::default();
     state.thread = ThreadPaneState::Closed;
     state.focused_context = FocusedContextState::Closed;

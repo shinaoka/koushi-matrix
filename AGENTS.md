@@ -126,6 +126,18 @@ All agents implementing the i18n GUI wiring follow
   bounded `SyncOnce` after A creates/invites and after B joins before asserting
   `rooms` vs `spaces`; otherwise a valid space can temporarily appear as a plain
   room and make aggregate lanes flaky.
+- Invite and DM membership state is Rust-owned. `AppState.invites` is projected
+  by `RoomActor` from SDK invited rooms; React must render it and dispatch
+  typed commands (`AcceptInvite`, `DeclineInvite`, `StartDirectMessage`) instead
+  of maintaining local invite lifecycle state. In the SyncService backend, the
+  live room-list entries adapter must use the non-left filter so invited-room
+  diffs wake the projection loop; a joined-only filter leaves
+  `invite_recv=ok` stuck with zero invites even after sync succeeds.
+- The local core QA `invites_dm` scenario proves incoming room/space invite
+  receipt and accept, invite decline, and DM start/invite projection through
+  token-only stdout (`invite_recv=ok`, `invite_accept=ok`,
+  `invite_decline=ok`, `dm_start=ok`). Do not print Matrix room IDs, user IDs,
+  or raw SDK errors for this stage.
 - Run the local proof with the SyncService/probed core leg while iterating:
   `npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000`.
   The runner supports `--core-backend=legacy|both` for non-E2EE backend
@@ -327,8 +339,8 @@ All agents implementing the i18n GUI wiring follow
 - The TypeScript snapshot shape is also hand-maintained in
   `apps/desktop/src/domain/types.ts`, `browserFakeApi.ts`,
   `tauriIpcMock.ts`, and `appHarnessMain.tsx`. When adding Rust `AppState`
-  fields such as `e2ee_trust`, update all mock/default snapshots in the same
-  change and run `npm --prefix apps/desktop run typecheck`.
+  fields such as `e2ee_trust` or `invites`, update all mock/default snapshots
+  in the same change and run `npm --prefix apps/desktop run typecheck`.
 - New `CoreEvent` variants must be wired through the Tauri adapter's
   `serialize_core_event`, TypeScript `coreEvents.ts`, and the checked-in
   `coreEvents.generated.json` contract artifact. The src-tauri

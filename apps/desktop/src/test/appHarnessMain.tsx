@@ -129,6 +129,7 @@ function readySnapshot(
           parent_space_ids: []
         }
       ],
+      invites: [],
       timeline: {
         room_id: ROOM_ID,
         is_subscribed: true,

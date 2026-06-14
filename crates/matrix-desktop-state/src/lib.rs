@@ -22,7 +22,7 @@ pub use state::{
     AppError, AppState, AppearanceSettings, AuthDiscoveryState, BasicOperationRequest,
     BasicOperationState, ComposerMode, ComposerSendShortcut, ComposerState, CrossSigningStatus,
     DeviceTrustLevel, DeviceTrustSummary, E2eeRecoveryState, E2eeTrustState, EmojiPreference,
-    FocusedContextState, FontPreference, IdentityResetAuthType, IdentityResetState,
+    FocusedContextState, FontPreference, IdentityResetAuthType, IdentityResetState, InvitePreview,
     KeyBackupStatus, KeyboardSettings, LocaleSettings, LoginFlow, LoginFlowKind, NavigationState,
     PendingComposerSendKind, RecoveryMethod, RoomAttentionKind, RoomAttentionSummary, RoomSummary,
     SasEmoji, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,

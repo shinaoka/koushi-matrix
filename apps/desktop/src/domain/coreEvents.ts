@@ -215,6 +215,9 @@ export type RoomEvent =
       };
     }
   | { UserInvited: { request_id: RequestId; room_id: string; user_id: string } }
+  | { InviteAccepted: { request_id: RequestId; room_id: string } }
+  | { InviteDeclined: { request_id: RequestId; room_id: string } }
+  | { DirectMessageStarted: { request_id: RequestId; room_id: string } }
   | { RoomJoined: { request_id: RequestId; room_id: string } }
   | { RoomLeft: { request_id: RequestId; room_id: string } }
   | { RoomForgotten: { request_id: RequestId; room_id: string } }

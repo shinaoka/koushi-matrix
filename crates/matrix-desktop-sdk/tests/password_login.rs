@@ -43,6 +43,7 @@ fn room_list_smoke_report_counts_without_private_names() {
                 parent_space_ids: Vec::new(),
             },
         ],
+        ..MatrixRoomListSnapshot::default()
     };
 
     let report = matrix_desktop_sdk::room_list_smoke_report(&snapshot);
@@ -71,6 +72,7 @@ fn real_account_qa_report_counts_without_private_timeline_data() {
             highlight_count: 0,
             parent_space_ids: Vec::new(),
         }],
+        ..MatrixRoomListSnapshot::default()
     };
     let timeline_items = vec![MatrixTimelineItem {
         room_id: "!room:example.invalid".into(),
@@ -107,6 +109,7 @@ fn restored_real_account_qa_report_records_restore_without_private_data() {
             highlight_count: 0,
             parent_space_ids: Vec::new(),
         }],
+        ..MatrixRoomListSnapshot::default()
     };
     let timeline_items = vec![MatrixTimelineItem {
         room_id: "!room:example.invalid".into(),
@@ -142,6 +145,7 @@ fn real_account_qa_report_records_search_without_private_candidate_ids() {
             highlight_count: 0,
             parent_space_ids: Vec::new(),
         }],
+        ..MatrixRoomListSnapshot::default()
     };
     let timeline_items = vec![MatrixTimelineItem {
         room_id: "!room:example.invalid".into(),

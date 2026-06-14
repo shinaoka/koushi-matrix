@@ -159,6 +159,9 @@ pub enum AppAction {
         spaces: Vec<SpaceSummary>,
         rooms: Vec<RoomSummary>,
     },
+    InviteListUpdated {
+        invites: Vec<crate::state::InvitePreview>,
+    },
     SelectSpace {
         space_id: Option<String>,
     },

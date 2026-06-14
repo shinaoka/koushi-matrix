@@ -22,6 +22,7 @@ const checks = [
   "scenario safety",
   "scenario login_sync",
   "scenario e2ee_trust",
+  "scenario invites_dm",
   "scenario room_space",
   "scenario timeline",
   "scenario reply",

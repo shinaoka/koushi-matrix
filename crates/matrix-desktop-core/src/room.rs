@@ -16,9 +16,9 @@
 //! - `Some(Arc<RoomListService>)` on the SyncService backend — the ONE live
 //!   service owned by the running `SyncService` (`sync_service
 //!   .room_list_service()`). The actor subscribes to its `all_rooms()`
-//!   entries stream (`entries_with_dynamic_adapters` with the joined filter)
-//!   and KEEPS CONSUMING it, re-normalizing on each diff batch (Async rule 1:
-//!   actors relay the SDK's observable streams).
+//!   entries stream (`entries_with_dynamic_adapters` with the non-left filter)
+//!   and KEEPS CONSUMING it, re-normalizing on each joined/invited diff batch
+//!   (Async rule 1: actors relay the SDK's observable streams).
 //! - `None` on the LegacySync backend — the actor normalizes from
 //!   `client.joined_rooms()` and relays `client
 //!   .subscribe_to_all_room_updates()` (which fires on the legacy backend
@@ -55,7 +55,9 @@
 use std::sync::Arc;
 
 use matrix_desktop_sdk::{MatrixClientSession, MatrixRoomOperationError};
-use matrix_desktop_state::{AppAction, BasicOperationRequest, RoomSummary, SpaceSummary};
+use matrix_desktop_state::{
+    AppAction, BasicOperationRequest, InvitePreview, RoomSummary, SpaceSummary,
+};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::RoomCommand;
@@ -178,7 +180,7 @@ impl RoomActor {
                     // loop (from an earlier SyncStarted) is stopped before the
                     // replacement is spawned.
                     self.stop_observation().await;
-                    self.session = Some(session);
+                    self.session = Some(session.clone());
                     match room_list_service {
                         Some(service) => {
                             // SyncService backend: relay the live service's
@@ -186,7 +188,7 @@ impl RoomActor {
                             // the current entries) provides the initial
                             // snapshot, so no separate initial refresh is
                             // needed.
-                            self.start_live_observation(service);
+                            self.start_live_observation(session, service);
                         }
                         None => {
                             // LegacySync backend: initial snapshot from
@@ -209,11 +211,13 @@ impl RoomActor {
     /// each diff batch.
     fn start_live_observation(
         &mut self,
+        session: Arc<MatrixClientSession>,
         service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
     ) {
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
         let (refresh_tx, refresh_rx) = mpsc::channel::<()>(8);
         let task = executor::spawn(run_live_room_list_observation(
+            session,
             service,
             self.action_tx.clone(),
             self.event_tx.clone(),
@@ -282,6 +286,24 @@ impl RoomActor {
                 user_id,
             } => {
                 self.handle_invite_user(request_id, room_id, user_id).await;
+            }
+            RoomCommand::AcceptInvite {
+                request_id,
+                room_id,
+            } => {
+                self.handle_accept_invite(request_id, room_id).await;
+            }
+            RoomCommand::DeclineInvite {
+                request_id,
+                room_id,
+            } => {
+                self.handle_decline_invite(request_id, room_id).await;
+            }
+            RoomCommand::StartDirectMessage {
+                request_id,
+                user_id,
+            } => {
+                self.handle_start_direct_message(request_id, user_id).await;
             }
             RoomCommand::JoinRoom {
                 request_id,
@@ -447,6 +469,67 @@ impl RoomActor {
                     room_id,
                     user_id,
                 }));
+                self.refresh_room_list().await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_accept_invite(&self, request_id: RequestId, room_id: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        match matrix_desktop_sdk::join_room_by_id(session, &room_id).await {
+            Ok(joined_room_id) => {
+                self.emit(CoreEvent::Room(RoomEvent::InviteAccepted {
+                    request_id,
+                    room_id: joined_room_id,
+                }));
+                self.refresh_room_list().await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_decline_invite(&self, request_id: RequestId, room_id: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        match matrix_desktop_sdk::leave_room(session, &room_id).await {
+            Ok(declined_room_id) => {
+                self.emit(CoreEvent::Room(RoomEvent::InviteDeclined {
+                    request_id,
+                    room_id: declined_room_id,
+                }));
+                self.refresh_room_list().await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_start_direct_message(&self, request_id: RequestId, user_id: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        match matrix_desktop_sdk::start_direct_message(session, &user_id).await {
+            Ok(room_id) => {
+                self.emit(CoreEvent::Room(RoomEvent::DirectMessageStarted {
+                    request_id,
+                    room_id,
+                }));
+                self.refresh_room_list().await;
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -568,7 +651,11 @@ fn project_room_list_snapshot(
 ) {
     let spaces = normalize_spaces(snapshot);
     let rooms = normalize_rooms(snapshot);
-    let _ = action_tx.try_send(vec![AppAction::RoomListUpdated { spaces, rooms }]);
+    let invites = normalize_invites(snapshot);
+    let _ = action_tx.try_send(vec![
+        AppAction::RoomListUpdated { spaces, rooms },
+        AppAction::InviteListUpdated { invites },
+    ]);
     let _ = event_tx.send(CoreEvent::Room(RoomEvent::RoomListUpdated));
 }
 
@@ -579,24 +666,28 @@ async fn refresh_room_list_from_joined_rooms(
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
-    let snapshot =
-        matrix_desktop_sdk::room_list_snapshot_from_sdk_rooms(session.client().joined_rooms())
-            .await;
+    let snapshot = matrix_desktop_sdk::room_list_snapshot_from_sdk_rooms_with_invites(
+        session,
+        session.client().joined_rooms(),
+    )
+    .await;
     project_room_list_snapshot(&snapshot, action_tx, event_tx);
 }
 
 /// SyncService-path observation loop (Async rule 1: relay the SDK's
 /// observable streams). Subscribes to the live `RoomListService`'s
 /// `all_rooms()` entries stream (`entries_with_dynamic_adapters` with the
-/// joined filter — the same shape the live service drives with its
+/// non-left filter — the same shape the live service drives with its
 /// `required_state`, including `m.room.create` for space classification) and
 /// KEEPS CONSUMING it: the current entry vector is maintained by applying
-/// each `VectorDiff` batch, and every batch triggers a re-normalization.
+/// each `VectorDiff` batch, and every joined/invited batch triggers a
+/// re-normalization.
 /// The first batch (a Reset with the current entries) doubles as the initial
 /// snapshot. A refresh request (operation-triggered) re-normalizes from the
 /// current entries without touching the service. Exits on the oneshot stop
 /// signal or when the stream ends.
 async fn run_live_room_list_observation(
+    session: Arc<MatrixClientSession>,
     service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
@@ -611,7 +702,7 @@ async fn run_live_room_list_observation(
     let (entries, entries_controller) =
         all_rooms.entries_with_dynamic_adapters(ROOM_LIST_ENTRIES_LIMIT);
     entries_controller.set_filter(Box::new(
-        matrix_sdk_ui::room_list_service::filters::new_filter_joined(),
+        matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
     ));
     let mut entries = Box::pin(entries);
 
@@ -626,7 +717,7 @@ async fn run_live_room_list_observation(
                 // Operation-triggered refresh: drain coalesced requests, then
                 // re-normalize from the live service's CURRENT entries.
                 while refresh_rx.try_recv().is_ok() {}
-                normalize_and_project_entries(&current, &action_tx, &event_tx).await;
+                normalize_and_project_entries(&session, &current, &action_tx, &event_tx).await;
             }
             maybe_diffs = entries.next() => match maybe_diffs {
                 None => break,
@@ -634,7 +725,7 @@ async fn run_live_room_list_observation(
                     for diff in diffs {
                         diff.apply(&mut current);
                     }
-                    normalize_and_project_entries(&current, &action_tx, &event_tx).await;
+                    normalize_and_project_entries(&session, &current, &action_tx, &event_tx).await;
                 }
             },
         }
@@ -643,6 +734,7 @@ async fn run_live_room_list_observation(
 
 /// Normalize the live service's current entries and project the result.
 async fn normalize_and_project_entries(
+    session: &MatrixClientSession,
     current: &eyeball_im::Vector<matrix_sdk_ui::room_list_service::RoomListItem>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
@@ -653,7 +745,8 @@ async fn normalize_and_project_entries(
     for item in current.iter() {
         rooms.push(item.clone().into_inner());
     }
-    let snapshot = matrix_desktop_sdk::room_list_snapshot_from_sdk_rooms(rooms).await;
+    let snapshot =
+        matrix_desktop_sdk::room_list_snapshot_from_sdk_rooms_with_invites(session, rooms).await;
     project_room_list_snapshot(&snapshot, action_tx, event_tx);
 }
 
@@ -737,6 +830,21 @@ fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec
         .collect()
 }
 
+/// Convert `MatrixRoomListSnapshot` invites into Rust-owned invite previews.
+fn normalize_invites(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec<InvitePreview> {
+    snapshot
+        .invites
+        .iter()
+        .map(|invite| InvitePreview {
+            room_id: invite.room_id.clone(),
+            display_name: invite.display_name.clone(),
+            topic: invite.topic.clone(),
+            inviter_display_name: invite.inviter_display_name.clone(),
+            is_dm: invite.is_dm,
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Error classification (never raw SDK text in public events)
 // ---------------------------------------------------------------------------
@@ -770,7 +878,9 @@ pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailu
 
 #[cfg(test)]
 pub mod tests {
-    use matrix_desktop_sdk::{MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace};
+    use matrix_desktop_sdk::{
+        MatrixInvitePreview, MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace,
+    };
     use tokio::sync::{broadcast, mpsc};
 
     use super::*;
@@ -859,6 +969,7 @@ pub mod tests {
                     parent_space_ids: vec![],
                 },
             ],
+            ..MatrixRoomListSnapshot::default()
         };
         let spaces = normalize_spaces(&snapshot);
         assert_eq!(spaces.len(), 1);
@@ -874,6 +985,7 @@ pub mod tests {
                 display_name: "Empty Space".to_owned(),
             }],
             rooms: vec![],
+            ..MatrixRoomListSnapshot::default()
         };
         let spaces = normalize_spaces(&snapshot);
         assert_eq!(spaces.len(), 1);
@@ -895,6 +1007,7 @@ pub mod tests {
                 highlight_count: 1,
                 parent_space_ids: vec![],
             }],
+            ..MatrixRoomListSnapshot::default()
         };
         let rooms = normalize_rooms(&snapshot);
         assert_eq!(rooms.len(), 1);
@@ -918,6 +1031,7 @@ pub mod tests {
                 highlight_count: 0,
                 parent_space_ids: vec!["!space:example.test".to_owned()],
             }],
+            ..MatrixRoomListSnapshot::default()
         };
         let rooms = normalize_rooms(&snapshot);
         assert_eq!(rooms.len(), 1);
@@ -925,6 +1039,28 @@ pub mod tests {
         assert_eq!(rooms[0].parent_space_ids, vec!["!space:example.test"]);
         assert_eq!(rooms[0].notification_count, 0);
         assert_eq!(rooms[0].highlight_count, 0);
+    }
+
+    #[test]
+    fn normalize_invites_preserves_preview_fields() {
+        let snapshot = MatrixRoomListSnapshot {
+            invites: vec![MatrixInvitePreview {
+                room_id: "!invite:example.test".to_owned(),
+                display_name: "Project invite".to_owned(),
+                topic: Some("Project topic".to_owned()),
+                inviter_display_name: Some("Inviter".to_owned()),
+                is_dm: true,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+        let invites = normalize_invites(&snapshot);
+
+        assert_eq!(invites.len(), 1);
+        assert_eq!(invites[0].room_id, "!invite:example.test");
+        assert_eq!(invites[0].display_name, "Project invite");
+        assert_eq!(invites[0].topic.as_deref(), Some("Project topic"));
+        assert_eq!(invites[0].inviter_display_name.as_deref(), Some("Inviter"));
+        assert!(invites[0].is_dm);
     }
 
     // --- SelectSpace / SelectRoom projection ---

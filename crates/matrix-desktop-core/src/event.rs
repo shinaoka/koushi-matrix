@@ -196,6 +196,18 @@ pub enum RoomEvent {
         room_id: String,
         user_id: String,
     },
+    InviteAccepted {
+        request_id: RequestId,
+        room_id: String,
+    },
+    InviteDeclined {
+        request_id: RequestId,
+        room_id: String,
+    },
+    DirectMessageStarted {
+        request_id: RequestId,
+        room_id: String,
+    },
     RoomJoined {
         request_id: RequestId,
         room_id: String,

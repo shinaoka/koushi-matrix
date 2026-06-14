@@ -85,6 +85,7 @@ enum QaScenario {
     Safety,
     LoginSync,
     E2eeTrust,
+    InvitesDm,
     RoomSpace,
     Timeline,
     Reply,
@@ -98,6 +99,7 @@ enum QaStage {
     Safety,
     LoginSync,
     E2eeTrust,
+    InvitesDm,
     RoomSpace,
     Timeline,
     Reply,
@@ -183,6 +185,7 @@ impl QaScenario {
             "safety" => Ok(Self::Safety),
             "login_sync" => Ok(Self::LoginSync),
             "e2ee_trust" => Ok(Self::E2eeTrust),
+            "invites_dm" => Ok(Self::InvitesDm),
             "room_space" => Ok(Self::RoomSpace),
             "timeline" => Ok(Self::Timeline),
             "reply" => Ok(Self::Reply),
@@ -190,7 +193,7 @@ impl QaScenario {
             "edit_redact_search" => Ok(Self::EditRedactSearch),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, room_space, timeline, reply, thread, edit_redact_search, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, reply, thread, edit_redact_search, restore_cleanup; got {other}"
             )),
         }
     }
@@ -206,6 +209,10 @@ impl QaScenario {
                     QaStage::Safety | QaStage::LoginSync | QaStage::E2eeTrust
                 )
             }
+            Self::InvitesDm => matches!(
+                stage,
+                QaStage::Safety | QaStage::LoginSync | QaStage::InvitesDm
+            ),
             Self::RoomSpace => matches!(
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace
@@ -262,6 +269,12 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::Safety => &["safety=ok"],
         QaStage::LoginSync => &["login_sync=ok"],
         QaStage::E2eeTrust => &["e2ee_trust=ok"],
+        QaStage::InvitesDm => &[
+            "invite_recv=ok",
+            "invite_accept=ok",
+            "invite_decline=ok",
+            "dm_start=ok",
+        ],
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Timeline => &["timeline=ok"],
         QaStage::Reply => &["reply=ok"],
@@ -280,6 +293,10 @@ fn implemented_final_tokens() -> Vec<&'static str> {
     vec![
         "safety=ok",
         "login_sync=ok",
+        "invite_recv=ok",
+        "invite_accept=ok",
+        "invite_decline=ok",
+        "dm_start=ok",
         "room_space=ok",
         "timeline=ok",
         "reply=ok",
@@ -299,6 +316,9 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::LoginSync => vec![QaStage::Safety, QaStage::LoginSync],
         QaScenario::E2eeTrust => {
             vec![QaStage::Safety, QaStage::LoginSync, QaStage::E2eeTrust]
+        }
+        QaScenario::InvitesDm => {
+            vec![QaStage::Safety, QaStage::LoginSync, QaStage::InvitesDm]
         }
         QaScenario::RoomSpace => vec![QaStage::Safety, QaStage::LoginSync, QaStage::RoomSpace],
         QaScenario::Timeline => vec![
@@ -340,6 +360,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::All => vec![
             QaStage::Safety,
             QaStage::LoginSync,
+            QaStage::InvitesDm,
             QaStage::RoomSpace,
             QaStage::Timeline,
             QaStage::Reply,
@@ -365,6 +386,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         }
         QaScenario::RoomSpace
         | QaScenario::E2eeTrust
+        | QaScenario::InvitesDm
         | QaScenario::Timeline
         | QaScenario::Reply
         | QaScenario::Thread
@@ -464,6 +486,165 @@ async fn cleanup_after_login_sync(
 
     println!("restore_cleanup=ok");
     Ok("restore_cleanup=ok".to_owned())
+}
+
+async fn run_invites_dm_stage(
+    config: &QaConfig,
+    conn_a: &mut CoreConnection,
+    data_dir_b: std::path::PathBuf,
+) -> Result<(), String> {
+    let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
+    let mut conn_b = runtime_b.attach();
+
+    let login_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id: login_b_id,
+            request: matrix_desktop_state::LoginRequest {
+                homeserver: config.homeserver.clone(),
+                username: config.user_b.clone(),
+                password: AuthSecret::new(config.password_b.clone()),
+                device_display_name: Some(DEVICE_B.to_owned()),
+            },
+        }))
+        .await
+        .map_err(|e| format!("invites_dm: submit login B failed: {e}"))?;
+
+    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "invites_dm login B").await?;
+    wait_for_ready_snapshot(&mut conn_b, "invites_dm session B Ready").await?;
+    start_sync_for_qa(&mut conn_b, "invites_dm sync B").await?;
+
+    let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
+
+    let accept_room_id = create_room_for_qa(
+        conn_a,
+        "QA Invite Accept Room",
+        false,
+        "invites_dm create accept room",
+    )
+    .await?;
+    invite_user_for_qa(
+        conn_a,
+        &accept_room_id,
+        &user_b_full_id,
+        "invites_dm invite B to room",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn_b, "invites_dm sync B for room invite").await?;
+    wait_for_invite_in_snapshot(
+        &mut conn_b,
+        &accept_room_id,
+        Some(false),
+        "invites_dm wait for room invite",
+    )
+    .await?;
+    println!("invite_recv=ok");
+
+    accept_invite_for_qa(
+        &mut conn_b,
+        &accept_room_id,
+        "invites_dm accept room invite",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn_b, "invites_dm sync B after room accept").await?;
+    wait_for_room_in_room_list(
+        &mut conn_b,
+        &accept_room_id,
+        "invites_dm room list after room accept",
+    )
+    .await?;
+
+    let accept_space_id = create_space_for_qa(
+        conn_a,
+        "QA Invite Accept Space",
+        "invites_dm create accept space",
+    )
+    .await?;
+    invite_user_for_qa(
+        conn_a,
+        &accept_space_id,
+        &user_b_full_id,
+        "invites_dm invite B to space",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn_b, "invites_dm sync B for space invite").await?;
+    wait_for_invite_in_snapshot(
+        &mut conn_b,
+        &accept_space_id,
+        Some(false),
+        "invites_dm wait for space invite",
+    )
+    .await?;
+    accept_invite_for_qa(
+        &mut conn_b,
+        &accept_space_id,
+        "invites_dm accept space invite",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn_b, "invites_dm sync B after space accept").await?;
+    wait_for_space_in_space_list(
+        &mut conn_b,
+        &accept_space_id,
+        "invites_dm space list after space accept",
+    )
+    .await?;
+    println!("invite_accept=ok");
+
+    let decline_room_id = create_room_for_qa(
+        conn_a,
+        "QA Invite Decline Room",
+        false,
+        "invites_dm create decline room",
+    )
+    .await?;
+    invite_user_for_qa(
+        conn_a,
+        &decline_room_id,
+        &user_b_full_id,
+        "invites_dm invite B to decline room",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn_b, "invites_dm sync B for decline invite").await?;
+    wait_for_invite_in_snapshot(
+        &mut conn_b,
+        &decline_room_id,
+        Some(false),
+        "invites_dm wait for decline invite",
+    )
+    .await?;
+    decline_invite_for_qa(
+        &mut conn_b,
+        &decline_room_id,
+        "invites_dm decline room invite",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn_b, "invites_dm sync B after decline").await?;
+    wait_for_invite_absent(
+        &mut conn_b,
+        &decline_room_id,
+        "invites_dm wait for declined invite removal",
+    )
+    .await?;
+    println!("invite_decline=ok");
+
+    let dm_room_id =
+        start_direct_message_for_qa(conn_a, &user_b_full_id, "invites_dm start direct message")
+            .await?;
+    sync_once_for_qa(conn_a, "invites_dm sync A after DM start").await?;
+    wait_for_dm_room_in_room_list(conn_a, &dm_room_id, "invites_dm A room list after DM start")
+        .await?;
+    sync_once_for_qa(&mut conn_b, "invites_dm sync B for DM invite").await?;
+    wait_for_invite_in_snapshot(
+        &mut conn_b,
+        &dm_room_id,
+        Some(true),
+        "invites_dm wait for DM invite",
+    )
+    .await?;
+    println!("dm_start=ok");
+
+    cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "invites_dm cleanup B").await?;
+    Ok(())
 }
 
 async fn run_e2ee_trust_stage(
@@ -577,28 +758,38 @@ async fn run_e2ee_trust_stage(
 }
 
 async fn cleanup_e2ee_secondary_device(
+    conn: CoreConnection,
+    runtime: CoreRuntime,
+    account_key: AccountKey,
+) -> Result<(), String> {
+    cleanup_logged_in_runtime(conn, runtime, account_key, "cleanup secondary device").await
+}
+
+async fn cleanup_logged_in_runtime(
     mut conn: CoreConnection,
     runtime: CoreRuntime,
     account_key: AccountKey,
+    label: &str,
 ) -> Result<(), String> {
     let sync_stop_id = conn.next_request_id();
     conn.command(CoreCommand::Sync(SyncCommand::Stop {
         request_id: sync_stop_id,
     }))
     .await
-    .map_err(|e| format!("submit sync stop A2: {e}"))?;
-    wait_for_sync_stopped(&mut conn, sync_stop_id, "sync stop A2").await?;
+    .map_err(|e| format!("{label}: submit sync stop failed: {e}"))?;
+    wait_for_sync_stopped(&mut conn, sync_stop_id, label).await?;
 
     let logout_id = conn.next_request_id();
     conn.command(CoreCommand::Account(AccountCommand::Logout {
         request_id: logout_id,
     }))
     .await
-    .map_err(|e| format!("submit logout A2: {e}"))?;
-    wait_for_logged_out(&mut conn, logout_id, &account_key, "logout A2").await?;
+    .map_err(|e| format!("{label}: submit logout failed: {e}"))?;
+    wait_for_logged_out(&mut conn, logout_id, &account_key, label).await?;
 
     drop(conn);
     drop(runtime);
+    tokio::time::sleep(Duration::from_millis(500)).await;
     Ok(())
 }
 
@@ -776,6 +967,15 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     if scenario == QaScenario::E2eeTrust {
         run_e2ee_trust_stage(&config, &mut conn_a, &account_key_a).await?;
+    }
+
+    if scenario.should_run_stage(QaStage::InvitesDm) {
+        run_invites_dm_stage(&config, &mut conn_a, data_dir_b.clone()).await?;
+    }
+
+    if scenario == QaScenario::InvitesDm {
+        cleanup_after_login_sync(conn_a, runtime_a, data_dir_a, account_key_a).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
     }
 
     if !scenario.should_run_stage(QaStage::RoomSpace) {
@@ -1678,6 +1878,100 @@ fn room_list_summary(snapshot: &AppState) -> String {
     format!("rooms={rooms} spaces={spaces} dms={dms} unread_rooms={unread}")
 }
 
+async fn create_room_for_qa(
+    conn: &mut CoreConnection,
+    name: &str,
+    encrypted: bool,
+    label: &str,
+) -> Result<String, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::CreateRoom {
+        request_id,
+        name: name.to_owned(),
+        encrypted,
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit room create failed: {e}"))?;
+    wait_for_room_created(conn, request_id, label).await
+}
+
+async fn create_space_for_qa(
+    conn: &mut CoreConnection,
+    name: &str,
+    label: &str,
+) -> Result<String, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::CreateSpace {
+        request_id,
+        name: name.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit space create failed: {e}"))?;
+    wait_for_space_created(conn, request_id, label).await
+}
+
+async fn invite_user_for_qa(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    user_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::InviteUser {
+        request_id,
+        room_id: room_id.to_owned(),
+        user_id: user_id.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit invite failed: {e}"))?;
+    wait_for_user_invited_ack(conn, request_id, label).await
+}
+
+async fn accept_invite_for_qa(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::AcceptInvite {
+        request_id,
+        room_id: room_id.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit accept invite failed: {e}"))?;
+    wait_for_invite_accepted(conn, request_id, room_id, label).await
+}
+
+async fn decline_invite_for_qa(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::DeclineInvite {
+        request_id,
+        room_id: room_id.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit decline invite failed: {e}"))?;
+    wait_for_invite_declined(conn, request_id, room_id, label).await
+}
+
+async fn start_direct_message_for_qa(
+    conn: &mut CoreConnection,
+    user_id: &str,
+    label: &str,
+) -> Result<String, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::StartDirectMessage {
+        request_id,
+        user_id: user_id.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit start DM failed: {e}"))?;
+    wait_for_direct_message_started(conn, request_id, label).await
+}
+
 // ---------------------------------------------------------------------------
 // Event waiter helpers (Phase 4 additions)
 // ---------------------------------------------------------------------------
@@ -1807,6 +2101,127 @@ async fn wait_for_user_invited(
                 }
                 return Ok(());
             }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Wait for `RoomEvent::UserInvited` by request_id without exposing IDs in
+/// failure text. Used by private-data-free invite QA.
+async fn wait_for_user_invited_ack(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::UserInvited"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::UserInvited {
+                request_id: ev_id, ..
+            }) if ev_id == request_id => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_invite_accepted(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    expected_room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::InviteAccepted"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::InviteAccepted {
+                request_id: ev_id,
+                room_id,
+            }) if ev_id == request_id => {
+                if room_id != expected_room_id {
+                    return Err(format!("{label}: accepted invite room mismatch"));
+                }
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_invite_declined(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    expected_room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::InviteDeclined"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::InviteDeclined {
+                request_id: ev_id,
+                room_id,
+            }) if ev_id == request_id => {
+                if room_id != expected_room_id {
+                    return Err(format!("{label}: declined invite room mismatch"));
+                }
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_direct_message_started(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<String, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::DirectMessageStarted"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::DirectMessageStarted {
+                request_id: ev_id,
+                room_id,
+            }) if ev_id == request_id => return Ok(room_id),
             CoreEvent::OperationFailed {
                 request_id: ev_id,
                 failure,
@@ -1950,6 +2365,195 @@ async fn wait_for_room_in_room_list(
             }
             CoreEvent::StateChanged(snapshot) => {
                 if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_space_in_space_list(
+    conn: &mut CoreConnection,
+    expected_space_id: &str,
+    label: &str,
+) -> Result<AppState, String> {
+    let contains_expected = |snapshot: &AppState| {
+        snapshot
+            .spaces
+            .iter()
+            .any(|s| s.space_id == expected_space_id)
+    };
+
+    let snapshot = conn.snapshot();
+    if contains_expected(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: timed out waiting for space list to include the expected space \
+                     (have {} spaces)",
+                    snapshot.spaces.len()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_dm_room_in_room_list(
+    conn: &mut CoreConnection,
+    expected_room_id: &str,
+    label: &str,
+) -> Result<AppState, String> {
+    let contains_expected = |snapshot: &AppState| {
+        snapshot
+            .rooms
+            .iter()
+            .any(|room| room.room_id == expected_room_id && room.is_dm)
+    };
+
+    let snapshot = conn.snapshot();
+    if contains_expected(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: timed out waiting for DM room in room list \
+                     (have {} rooms)",
+                    snapshot.rooms.len()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_invite_in_snapshot(
+    conn: &mut CoreConnection,
+    expected_room_id: &str,
+    expected_is_dm: Option<bool>,
+    label: &str,
+) -> Result<AppState, String> {
+    let contains_expected = |snapshot: &AppState| {
+        snapshot.invites.iter().any(|invite| {
+            invite.room_id == expected_room_id
+                && expected_is_dm.is_none_or(|expected| invite.is_dm == expected)
+        })
+    };
+
+    let snapshot = conn.snapshot();
+    if contains_expected(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: timed out waiting for invite snapshot \
+                     (have {} invites)",
+                    snapshot.invites.len()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_invite_absent(
+    conn: &mut CoreConnection,
+    expected_room_id: &str,
+    label: &str,
+) -> Result<AppState, String> {
+    let is_absent = |snapshot: &AppState| {
+        !snapshot
+            .invites
+            .iter()
+            .any(|invite| invite.room_id == expected_room_id)
+    };
+
+    let snapshot = conn.snapshot();
+    if is_absent(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: timed out waiting for invite removal \
+                     (have {} invites)",
+                    snapshot.invites.len()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if is_absent(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if is_absent(&snapshot) {
                     return Ok(snapshot);
                 }
             }
@@ -4391,6 +4995,10 @@ mod tests {
             QaScenario::RoomSpace
         );
         assert_eq!(
+            QaScenario::from_env_value("invites_dm").unwrap(),
+            QaScenario::InvitesDm
+        );
+        assert_eq!(
             QaScenario::from_env_value("timeline").unwrap(),
             QaScenario::Timeline
         );
@@ -4430,6 +5038,7 @@ mod tests {
             QaScenario::Safety,
             QaScenario::LoginSync,
             QaScenario::RoomSpace,
+            QaScenario::InvitesDm,
             QaScenario::Timeline,
             QaScenario::Reply,
             QaScenario::Thread,
@@ -4888,9 +5497,15 @@ mod tests {
         assert!(QaScenario::LoginSync.should_run_stage(QaStage::Safety));
         assert!(QaScenario::LoginSync.should_run_stage(QaStage::LoginSync));
         assert!(!QaScenario::LoginSync.should_run_stage(QaStage::RoomSpace));
+        assert!(!QaScenario::LoginSync.should_run_stage(QaStage::InvitesDm));
+
+        assert!(QaScenario::InvitesDm.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::InvitesDm.should_run_stage(QaStage::InvitesDm));
+        assert!(!QaScenario::InvitesDm.should_run_stage(QaStage::RoomSpace));
 
         assert!(QaScenario::RoomSpace.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::RoomSpace.should_run_stage(QaStage::RoomSpace));
+        assert!(!QaScenario::RoomSpace.should_run_stage(QaStage::InvitesDm));
         assert!(!QaScenario::RoomSpace.should_run_stage(QaStage::E2eeTrust));
         assert!(!QaScenario::RoomSpace.should_run_stage(QaStage::Timeline));
 
@@ -4918,6 +5533,7 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::Safety));
         assert!(QaScenario::All.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::All.should_run_stage(QaStage::E2eeTrust));
+        assert!(QaScenario::All.should_run_stage(QaStage::InvitesDm));
         assert!(QaScenario::All.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
@@ -4933,6 +5549,10 @@ mod tests {
             &[
                 "safety=ok",
                 "login_sync=ok",
+                "invite_recv=ok",
+                "invite_accept=ok",
+                "invite_decline=ok",
+                "dm_start=ok",
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
@@ -4961,6 +5581,18 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "restore_cleanup=ok"
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::InvitesDm),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "invite_recv=ok",
+                "invite_accept=ok",
+                "invite_decline=ok",
+                "dm_start=ok",
+                "restore_cleanup=ok",
             ]
         );
         assert_eq!(
@@ -5032,6 +5664,10 @@ mod tests {
             &[
                 "safety=ok",
                 "login_sync=ok",
+                "invite_recv=ok",
+                "invite_accept=ok",
+                "invite_decline=ok",
+                "dm_start=ok",
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",

@@ -1356,6 +1356,7 @@ pub enum MatrixSearchError {
 pub struct MatrixRoomListSnapshot {
     pub spaces: Vec<MatrixRoomListSpace>,
     pub rooms: Vec<MatrixRoomListRoom>,
+    pub invites: Vec<MatrixInvitePreview>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1441,6 +1442,15 @@ pub struct MatrixRoomListRoom {
     pub notification_count: u64,
     pub highlight_count: u64,
     pub parent_space_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixInvitePreview {
+    pub room_id: String,
+    pub display_name: String,
+    pub topic: Option<String>,
+    pub inviter_display_name: Option<String>,
+    pub is_dm: bool,
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -1890,6 +1900,20 @@ pub async fn invite_user_to_room(
         .map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
+pub async fn start_direct_message(
+    session: &MatrixClientSession,
+    user_id: &str,
+) -> Result<String, MatrixRoomOperationError> {
+    let user_id = matrix_sdk::ruma::UserId::parse(user_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidUserId)?;
+    let room = session
+        .client()
+        .create_dm(&user_id)
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?;
+    Ok(room.room_id().to_string())
+}
+
 pub async fn join_room_by_id(
     session: &MatrixClientSession,
     room_id: &str,
@@ -2030,6 +2054,19 @@ pub async fn room_list_snapshot_from_sdk_rooms(
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
 ) -> MatrixRoomListSnapshot {
     matrix_room_list_snapshot_from_rooms(rooms).await
+}
+
+/// Normalize joined rooms from the caller's source of truth plus invited rooms
+/// from the base client. The live `RoomListService` path remains the owner of
+/// joined-room entries; invites are projected from `client.invited_rooms()`
+/// because the live entries adapter is intentionally joined-filtered.
+pub async fn room_list_snapshot_from_sdk_rooms_with_invites(
+    session: &MatrixClientSession,
+    rooms: impl IntoIterator<Item = matrix_sdk::Room>,
+) -> MatrixRoomListSnapshot {
+    let mut snapshot = matrix_room_list_snapshot_from_rooms(rooms).await;
+    snapshot.invites = matrix_invite_previews_from_rooms(session.client().invited_rooms()).await;
+    snapshot
 }
 
 /// One-shot room list snapshot that constructs a DISPOSABLE
@@ -2507,6 +2544,41 @@ async fn matrix_room_list_snapshot_from_rooms(
         ));
     }
     snapshot
+}
+
+async fn matrix_invite_previews_from_rooms(
+    rooms: impl IntoIterator<Item = matrix_sdk::Room>,
+) -> Vec<MatrixInvitePreview> {
+    let mut invites = Vec::new();
+    for room in rooms {
+        if room.state() != matrix_sdk::RoomState::Invited {
+            continue;
+        }
+
+        let display_name = room
+            .display_name()
+            .await
+            .ok()
+            .map(|name| name.to_string())
+            .or_else(|| room.name())
+            .unwrap_or_else(|| "Invite".to_owned());
+        let inviter_display_name = room
+            .invite_details()
+            .await
+            .ok()
+            .and_then(|details| details.inviter)
+            .and_then(|inviter| inviter.display_name().map(ToOwned::to_owned));
+        let is_dm = room.is_direct().await.unwrap_or(false);
+
+        invites.push(MatrixInvitePreview {
+            room_id: room.room_id().to_string(),
+            display_name,
+            topic: room.topic(),
+            inviter_display_name,
+            is_dm,
+        });
+    }
+    invites
 }
 
 fn room_attention_unread_count(

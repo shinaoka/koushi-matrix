@@ -28,6 +28,10 @@ Required success tokens:
 ```text
 safety=ok
 login_sync=ok
+invite_recv=ok
+invite_accept=ok
+invite_decline=ok
+dm_start=ok
 room_space=ok
 timeline=ok
 reply=ok
@@ -43,6 +47,15 @@ restore_cleanup=ok
 `thread_summary=ok` is a strict Phase 11 signal: local core QA fails if the
 server/SDK path does not surface a root `thread_summary` for the threaded
 reply.
+
+`invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, and `dm_start=ok`
+are the Phase A invite/DM state-machine proof. The core lane proves incoming
+room/space invite projection into Rust-owned `AppState.invites`, accept/decline
+commands, and direct-message creation/invite projection through
+`CoreCommand`/`CoreEvent` only. This stage must not print Matrix room IDs, user
+IDs, invite display names, or raw SDK errors. The SyncService room-list observer
+must consume non-left entries so invited-room diffs wake the Rust projection
+loop; joined-only observation can leave the invite snapshot stale.
 
 `e2ee_trust=ok` is the Phase A E2EE trust signal. The core lane proves
 cross-signing bootstrap, encrypted seed-room backup upload, passphrase-backed
@@ -65,6 +78,7 @@ Focused local proof:
 
 ```bash
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=invites_dm --core --core-backend=probed --timeout-ms=240000
 ```
 
 ## Headless browser IPC-contract lane

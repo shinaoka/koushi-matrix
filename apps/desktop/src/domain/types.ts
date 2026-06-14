@@ -22,6 +22,7 @@ export interface AppState {
   navigation: NavigationState;
   spaces: SpaceSummary[];
   rooms: RoomSummary[];
+  invites: InvitePreview[];
   timeline: TimelinePaneState;
   thread: ThreadPaneState;
   focused_context: FocusedContextState;
@@ -190,6 +191,14 @@ export interface RoomSummary {
   notification_count?: number;
   highlight_count?: number;
   parent_space_ids: string[];
+}
+
+export interface InvitePreview {
+  room_id: string;
+  display_name: string;
+  topic: string | null;
+  inviter_display_name: string | null;
+  is_dm: boolean;
 }
 
 export interface TimelinePaneState {

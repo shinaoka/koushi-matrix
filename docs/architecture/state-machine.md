@@ -96,6 +96,44 @@ search state. The reducer emits UI events for any cleared visible panes.
 - Selecting a room closes any open thread pane and emits a timeline subscription
   effect.
 
+## Invites And Direct Messages
+
+Incoming invite state is Rust-owned in `AppState.invites`. React may render the
+invite list and submit commands, but it must not synthesize invite receipt,
+acceptance, decline, or DM-start lifecycle state locally.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Empty
+    Empty --> Listed: InviteListUpdated(non_empty)
+    Listed --> Listed: InviteListUpdated(replace_snapshot)
+    Listed --> Empty: InviteListUpdated(empty)
+    Listed --> Empty: LogoutRequested/LogoutFinished/SessionCleared
+```
+
+- `InviteListUpdated { invites }` is accepted only when the session is Ready.
+  It replaces the whole invite snapshot and emits `RoomListChanged`; duplicate
+  or stale SDK deliveries must be folded into the next Rust-owned snapshot.
+- `InvitePreview` carries room id for command correlation plus display name,
+  optional topic, optional inviter display name, and `is_dm`. GUI code must
+  treat those fields as render data, not as a local membership state machine.
+- `AcceptInvite` joins the invited room/space and emits
+  `RoomEvent::InviteAccepted`; `DeclineInvite` leaves/forgets the invite and
+  emits `RoomEvent::InviteDeclined`; `StartDirectMessage` creates a direct room
+  through the SDK and emits `RoomEvent::DirectMessageStarted`. These commands
+  carry normal request ids; GUI pending/settle feedback must come from Rust
+  events/snapshots.
+- `RoomActor` owns projection for both sync backends. On the SyncService path,
+  the single live `RoomListService` entries adapter uses the non-left filter so
+  invited-room diffs wake projection. Joined rooms/spaces are still normalized
+  from `RoomState::Joined`; invite previews are normalized from
+  `client.invited_rooms()`. A joined-only adapter is incorrect because invite
+  receipt can sync successfully without any joined-room diff.
+- The local core `invites_dm` QA scenario is the Phase A proof:
+  `invite_recv=ok invite_accept=ok invite_decline=ok dm_start=ok`. Its output
+  must remain private-data-free; do not print Matrix room IDs, user IDs, invite
+  names, or raw SDK errors for this stage.
+
 ## Timeline And Thread
 
 - The main timeline has one selected room.

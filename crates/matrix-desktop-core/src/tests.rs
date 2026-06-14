@@ -214,6 +214,27 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
 }
 
 #[test]
+fn invite_and_dm_room_commands_are_correlated() {
+    let request_id = fake_request_id();
+    for command in [
+        CoreCommand::Room(RoomCommand::AcceptInvite {
+            request_id,
+            room_id: "!invite:example.test".to_owned(),
+        }),
+        CoreCommand::Room(RoomCommand::DeclineInvite {
+            request_id,
+            room_id: "!invite:example.test".to_owned(),
+        }),
+        CoreCommand::Room(RoomCommand::StartDirectMessage {
+            request_id,
+            user_id: "@bob:example.test".to_owned(),
+        }),
+    ] {
+        assert_eq!(command.request_id(), request_id);
+    }
+}
+
+#[test]
 fn e2ee_trust_events_are_typed_and_debug_redacts_identifiers() {
     let target = VerificationTarget {
         user_id: "@bob:example.test".to_owned(),

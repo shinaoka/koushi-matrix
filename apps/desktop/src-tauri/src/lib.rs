@@ -1314,6 +1314,25 @@ mod tests {
             json!("!r:example.test")
         );
 
+        let room_invite_accepted =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::InviteAccepted {
+                request_id,
+                room_id: "!r:example.test".to_owned(),
+            }))
+            .expect("serialize");
+        let room_invite_declined =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::InviteDeclined {
+                request_id,
+                room_id: "!r:example.test".to_owned(),
+            }))
+            .expect("serialize");
+        let room_direct_message_started =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::DirectMessageStarted {
+                request_id,
+                room_id: "!dm:example.test".to_owned(),
+            }))
+            .expect("serialize");
+
         let e2ee_trust = serialize_core_event(&CoreEvent::E2eeTrust(
             E2eeTrustEvent::VerificationProgress {
                 account_key: AccountKey("@u:example.test".to_owned()),
@@ -1362,6 +1381,9 @@ mod tests {
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
             "operationFailedSessionNotFound": failed,
+            "roomDirectMessageStarted": room_direct_message_started,
+            "roomInviteAccepted": room_invite_accepted,
+            "roomInviteDeclined": room_invite_declined,
             "roomLeft": room_left,
             "timelineInitialItems": initial,
             "timelineItemsUpdated": updated,

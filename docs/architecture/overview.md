@@ -143,14 +143,18 @@ An in-process actor system in `matrix-desktop-core`:
   login/restore/recovery/logout, account switch, child shutdown.
 - `SyncActor` — continuous sync lifecycle
   (starting/running/reconnecting/failed/stopped).
-- `RoomActor` — room list normalization (`SpaceSummary`/`RoomSummary`),
-  create/invite/join/space operations, unread counts, DM classification.
+- `RoomActor` — room list normalization
+  (`SpaceSummary`/`RoomSummary`/`InvitePreview`), create/invite/join/space
+  operations, invite accept/decline, DM start, unread counts, and DM
+  classification.
   On the sliding-sync backend it consumes the one `RoomListService` owned by
   the running `SyncService`; constructing additional ad-hoc
   `RoomListService` instances is prohibited — they are not driven by the
   sync loop, race it, and return entries without the `required_state`
   (e.g. `m.room.create` for space classification) the live service
-  requests.
+  requests. Its live entries adapter uses a non-left filter so invited-room
+  diffs also wake Rust-owned invite projection; joined-only observation leaves
+  `AppState.invites` stale.
 - `TimelineActor` (per room/thread timeline) — subscription, diffs,
   pagination, send/edit/redaction relay. Room live timelines use
   `TimelineFocus::Live { hide_threaded_events: true }` so threaded replies
@@ -370,7 +374,9 @@ stream), and the runtime must relay that model, not fight it.
    on the `LegacySync` backend, `RoomActor` must normalize the room list from
    legacy sync state (`Client::rooms()` plus sync updates) instead. Because the
    local QA matrix includes homeservers without MSC4186, this legacy room-list
-   path is a fully implemented, QA-gated product path, not a stub.
+   path is a fully implemented, QA-gated product path, not a stub. Invite
+   projection is part of the same contract: both sync backends must produce
+   `AppState.invites` from SDK invited rooms, not from React-local state.
 10. **Backpressure is defined, not accidental.** The event channel policy is
     explicit: state snapshots are latest-wins (watch semantics, coalesced to
     at most one `StateChanged` per batch), discrete events use bounded
@@ -542,9 +548,10 @@ primary correctness gate.
    rejection, state transitions with fake ports, normalization, reducer.
 2. **Local homeserver QA** — disposable Conduit/Tuwunel servers, synthetic
    users, a core QA binary speaking `CoreCommand`/`CoreEvent` (never direct
-   SDK wrapper calls). Covers login, sync, room/space create, invite/join,
-   bidirectional messaging, room list, logout cleanup, and stdout/stderr
-   redaction. It records and asserts the selected sync backend
+   SDK wrapper calls). Covers login, sync, room/space create, invite receipt,
+   invite accept/decline, DM start, bidirectional messaging, room list, logout
+   cleanup, and stdout/stderr redaction. It records and asserts the selected
+   sync backend
    (`SyncService` or `LegacySync`) so server capability gaps are visible,
    and runs an additional forced-`LegacySync` leg (debug/test-only backend
    override) so both sync backends stay covered locally.

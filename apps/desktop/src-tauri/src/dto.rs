@@ -11,10 +11,10 @@
 
 use matrix_desktop_state::{
     AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState, DisplayPlatform,
-    E2eeTrustState, FocusedContextState, LocaleDisplayProfile, NavigationState, RecoveryMethod,
-    RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
-    SessionState, SettingsState, SidebarModel, SpaceSummary, SyncState, ThreadPaneState,
-    TimelinePaneState, resolve_locale_display_profile,
+    E2eeTrustState, FocusedContextState, InvitePreview, LocaleDisplayProfile, NavigationState,
+    RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope,
+    SearchState, SessionState, SettingsState, SidebarModel, SpaceSummary, SyncState,
+    ThreadPaneState, TimelinePaneState, resolve_locale_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +58,7 @@ pub struct FrontendAppState {
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
     pub rooms: Vec<RoomSummary>,
+    pub invites: Vec<InvitePreview>,
     pub timeline: TimelinePaneState,
     pub thread: FrontendThreadPaneState,
     pub focused_context: FocusedContextState,
@@ -82,6 +83,7 @@ impl From<AppState> for FrontendAppState {
             navigation: state.navigation,
             spaces: state.spaces,
             rooms: state.rooms,
+            invites: state.invites,
             timeline: state.timeline,
             thread: state.thread.into(),
             focused_context: state.focused_context,
@@ -429,8 +431,8 @@ mod tests {
 
     use super::{FrontendDesktopSnapshot, FrontendSyncState};
     use matrix_desktop_state::{
-        AppState, LocaleSettings, RecoveryMethod, SessionInfo, SessionState, SyncState,
-        TextDirectionPreference,
+        AppState, InvitePreview, LocaleSettings, RecoveryMethod, SessionInfo, SessionState,
+        SyncState, TextDirectionPreference,
     };
 
     fn booted_app_state() -> AppState {
@@ -457,6 +459,9 @@ mod tests {
             json!("https://matrix.org")
         );
         assert_eq!(value["state"]["sync"], json!("running"));
+        // invites must be present even when empty; React must not synthesize
+        // invite state outside the Rust-owned state machine.
+        assert_eq!(value["state"]["invites"], json!([]));
         // Phase 7: timeline is always [] (items flow as diffs)
         assert_eq!(value["timeline"], json!([]));
         // Phase 7: the legacy top-level thread is always null...
@@ -515,6 +520,34 @@ mod tests {
         assert_eq!(
             value["state"]["timeline"]["composer"]["mode"],
             json!("Plain")
+        );
+    }
+
+    #[test]
+    fn frontend_snapshot_serializes_invite_previews() {
+        let mut state = booted_app_state();
+        state.invites.push(InvitePreview {
+            room_id: "!invite:matrix.org".to_owned(),
+            display_name: "Project invite".to_owned(),
+            topic: Some("Project topic".to_owned()),
+            inviter_display_name: Some("Inviter".to_owned()),
+            is_dm: true,
+        });
+
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
+            .expect("snapshot should serialize");
+
+        assert_eq!(
+            value["state"]["invites"],
+            json!([
+                {
+                    "room_id": "!invite:matrix.org",
+                    "display_name": "Project invite",
+                    "topic": "Project topic",
+                    "inviter_display_name": "Inviter",
+                    "is_dm": true
+                }
+            ])
         );
     }
 

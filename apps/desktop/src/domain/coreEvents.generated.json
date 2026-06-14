@@ -58,6 +58,42 @@
       "sequence": 7
     }
   },
+  "roomDirectMessageStarted": {
+    "event": {
+      "DirectMessageStarted": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "room_id": "!dm:example.test"
+      }
+    },
+    "kind": "Room"
+  },
+  "roomInviteAccepted": {
+    "event": {
+      "InviteAccepted": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Room"
+  },
+  "roomInviteDeclined": {
+    "event": {
+      "InviteDeclined": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Room"
+  },
   "roomLeft": {
     "event": {
       "RoomLeft": {
