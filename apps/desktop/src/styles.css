@@ -600,8 +600,9 @@ button {
 
 .nav-item.is-active,
 .room-item.is-active {
-  color: var(--brand-contrast);
-  background: var(--brand);
+  color: var(--brand-hover);
+  background: var(--brand-weak);
+  box-shadow: inset 3px 0 0 0 var(--brand);
 }
 
 .nav-label,

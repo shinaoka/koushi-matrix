@@ -54,4 +54,10 @@ describe("styles.css token system", () => {
       expect(css).not.toContain(legacy);
     }
   });
+
+  test("selected room row has a brand left bar", () => {
+    expect(css).toMatch(
+      /\.room-item\.is-active[^}]*box-shadow|\.room-item\.is-active[^}]*border-inline-start/
+    );
+  });
 });
