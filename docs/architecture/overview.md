@@ -518,15 +518,15 @@ architectural invariants:
   Rust-owned reducer state and typed `CoreCommand`/`CoreEvent` surface.
   Production `CoreCommand::Account` trust commands project reducer pending
   state before routing to `AccountActor`, so GUI work observes Rust-owned
-  progress rather than inventing pending/settle semantics. The first SDK-backed
-  actor slice wires cross-signing bootstrap, key-backup enable, and identity
-  reset through `matrix-desktop-sdk` private-data-free wrappers. Identity reset
-  auth-required outcomes are reducer-owned typed state with UIAA/OAuth/unknown
-  auth kinds; the SDK continuation handle is held only by `AccountActor`, and
-  continuation submission is projected through the reducer before the actor
-  calls the SDK handle. Device verification, key-backup restore,
-  local-homeserver proof, and GUI rendering remain incomplete until the
-  follow-up phases land. No design doc may claim
+  progress rather than inventing pending/settle semantics. SDK-backed actor
+  slices wire cross-signing bootstrap, key-backup enable/restore, identity
+  reset, and outgoing device verification through `matrix-desktop-sdk`
+  private-data-free wrappers. Identity reset and verification continuation
+  handles are held only by `AccountActor`; SDK request/SAS streams settle the
+  reducer with typed actions and expose only private-data-free DTOs such as SAS
+  emojis. Local homeserver proof, incoming verification request discovery, and
+  GUI rendering remain incomplete until the follow-up phases land. No design
+  doc may claim
   E2EE trust UX completeness until those phases prove device verification,
   cross-signing trust, backed-up room-key restore, and identity reset
   headlessly before GUI wiring.

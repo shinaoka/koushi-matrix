@@ -34,7 +34,7 @@ use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
     AppAction, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType, IdentityResetState,
     LoginRequest, RecoveryMethod, RecoveryRequest, SessionInfo, TrustOperationFailureKind,
-    VerificationFlowState,
+    VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -63,6 +63,16 @@ pub enum AccountMessage {
     RoomCommand(RoomCommand),
     TimelineCommand(TimelineCommand),
     SearchCommand(SearchCommand),
+    VerificationRequestProgress {
+        request_id: RequestId,
+        target: VerificationTarget,
+        state: matrix_desktop_sdk::MatrixVerificationRequestState,
+    },
+    SasVerificationProgress {
+        request_id: RequestId,
+        target: VerificationTarget,
+        state: matrix_desktop_sdk::MatrixSasState,
+    },
     Shutdown,
 }
 
@@ -90,6 +100,23 @@ struct RecoveryStateObservation {
     task: crate::executor::JoinHandle<()>,
 }
 
+struct VerificationObservation {
+    stop_tx: oneshot::Sender<()>,
+    task: crate::executor::JoinHandle<()>,
+}
+
+struct PendingVerificationRequest {
+    request_id: RequestId,
+    target: VerificationTarget,
+    handle: matrix_desktop_sdk::MatrixVerificationRequestHandle,
+}
+
+struct PendingSasVerification {
+    request_id: RequestId,
+    target: VerificationTarget,
+    handle: matrix_desktop_sdk::MatrixSasVerificationHandle,
+}
+
 /// The account actor's internal state.
 pub struct AccountActor {
     /// Active store-backed session, if any.
@@ -104,6 +131,9 @@ pub struct AccountActor {
     event_tx: broadcast::Sender<CoreEvent>,
     /// Message inbox.
     command_rx: mpsc::Receiver<AccountMessage>,
+    /// Sender clone used by SDK observation tasks to report actor-owned
+    /// verification progress back into this actor's mailbox.
+    self_tx: mpsc::Sender<AccountMessage>,
     /// SyncActor child handle (Phase 3). Present only when a store-backed
     /// session exists. Created on first login/restore; destroyed on logout /
     /// account switch.
@@ -123,6 +153,16 @@ pub struct AccountActor {
     recovery_observer: Option<RecoveryStateObservation>,
     /// Pending SDK identity reset continuation, held only inside AccountActor.
     identity_reset_handle: Option<matrix_desktop_sdk::MatrixIdentityResetHandle>,
+    /// Pending SDK verification request continuation, held only inside
+    /// AccountActor and never projected into AppState.
+    verification_request: Option<PendingVerificationRequest>,
+    /// Pending SDK SAS continuation, held only inside AccountActor and never
+    /// projected into AppState.
+    sas_verification: Option<PendingSasVerification>,
+    /// SDK verification request observer task for the active flow.
+    verification_request_observer: Option<VerificationObservation>,
+    /// SDK SAS observer task for the active flow.
+    sas_verification_observer: Option<VerificationObservation>,
 }
 
 impl AccountActor {
@@ -146,12 +186,17 @@ impl AccountActor {
             action_tx,
             event_tx,
             command_rx,
+            self_tx: tx.clone(),
             sync_actor: None,
             room_actor,
             timeline_manager,
             search_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
+            verification_request: None,
+            sas_verification: None,
+            verification_request_observer: None,
+            sas_verification_observer: None,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -176,6 +221,22 @@ impl AccountActor {
                 AccountMessage::SearchCommand(search_command) => {
                     self.route_search_command(search_command).await;
                 }
+                AccountMessage::VerificationRequestProgress {
+                    request_id,
+                    target,
+                    state,
+                } => {
+                    self.handle_verification_request_progress(request_id, target, state)
+                        .await;
+                }
+                AccountMessage::SasVerificationProgress {
+                    request_id,
+                    target,
+                    state,
+                } => {
+                    self.handle_sas_verification_progress(request_id, target, state)
+                        .await;
+                }
             }
         }
         // Ordered shutdown (overview.md Async rule 12):
@@ -185,6 +246,7 @@ impl AccountActor {
         self.stop_search_actor().await;
         self.stop_room_actor().await;
         self.stop_sync_actor().await;
+        self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
         // Drop the session handle inside the runtime context
         // (overview.md Async rule 11 — deadpool-runtime panic prevention).
@@ -359,6 +421,31 @@ impl AccountActor {
         }
     }
 
+    async fn stop_verification_request_observer(&mut self) {
+        if let Some(observation) = self.verification_request_observer.take() {
+            let _ = observation.stop_tx.send(());
+            let _ = observation.task.await;
+        }
+    }
+
+    async fn stop_sas_verification_observer(&mut self) {
+        if let Some(observation) = self.sas_verification_observer.take() {
+            let _ = observation.stop_tx.send(());
+            let _ = observation.task.await;
+        }
+    }
+
+    async fn cancel_verification_handles(&mut self) {
+        self.stop_verification_request_observer().await;
+        self.stop_sas_verification_observer().await;
+        if let Some(pending) = self.sas_verification.take() {
+            let _ = matrix_desktop_sdk::cancel_sas_verification(&pending.handle).await;
+        }
+        if let Some(pending) = self.verification_request.take() {
+            let _ = matrix_desktop_sdk::cancel_verification_request(&pending.handle).await;
+        }
+    }
+
     /// Ordered shutdown of the RoomActor (before sync stop in the shutdown
     /// sequence). The RoomActor is not Option<> since it is always present;
     /// we send Shutdown and the task finishes on its own after processing it.
@@ -426,42 +513,498 @@ impl AccountActor {
                     .await;
             }
             AccountCommand::RequestVerification { request_id, target } => {
-                let kind = TrustOperationFailureKind::Sdk;
-                let events = self
-                    .active_account_key()
-                    .map(|account_key| {
-                        CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress {
-                            account_key,
-                            state: VerificationFlowState::Failed {
-                                request_id: request_id.sequence,
-                                target,
-                                kind,
-                            },
-                        })
+                self.handle_request_verification(request_id, target).await;
+            }
+            AccountCommand::AcceptVerification { request_id } => {
+                self.handle_accept_verification(request_id).await;
+            }
+            AccountCommand::ConfirmSasVerification { request_id } => {
+                self.handle_confirm_sas_verification(request_id).await;
+            }
+            AccountCommand::CancelVerification { request_id } => {
+                self.handle_cancel_verification(request_id).await;
+            }
+        }
+    }
+
+    async fn handle_request_verification(
+        &mut self,
+        request_id: RequestId,
+        target: VerificationTarget,
+    ) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::VerificationFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        self.cancel_verification_handles().await;
+        match matrix_desktop_sdk::request_device_verification(&session, &target).await {
+            Ok(handle) => {
+                self.verification_request = Some(PendingVerificationRequest {
+                    request_id,
+                    target: target.clone(),
+                    handle: handle.clone(),
+                });
+                self.observe_verification_request(request_id, target.clone(), handle.clone());
+                self.reduce(vec![AppAction::VerificationRequested {
+                    request_id: request_id.sequence,
+                    target: target.clone(),
+                }]);
+                self.emit_verification_progress(VerificationFlowState::Requested {
+                    request_id: request_id.sequence,
+                    target,
+                });
+                self.project_verification_request_state(request_id, handle.state())
+                    .await;
+            }
+            Err(error) => {
+                self.project_verification_failure(
+                    request_id,
+                    target,
+                    classify_e2ee_trust_error(&error),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn handle_accept_verification(&mut self, request_id: RequestId) {
+        let Some(pending) = self
+            .verification_request
+            .as_ref()
+            .filter(|pending| pending.request_id.sequence == request_id.sequence)
+        else {
+            self.project_active_or_missing_verification_failure(request_id)
+                .await;
+            return;
+        };
+        let target = pending.target.clone();
+        let handle = pending.handle.clone();
+
+        match matrix_desktop_sdk::start_sas_verification(&handle).await {
+            Ok(Some(sas)) => {
+                self.store_sas_verification(request_id, target, sas).await;
+            }
+            Ok(None) => {
+                if let Err(error) = matrix_desktop_sdk::accept_verification_request(&handle).await {
+                    self.project_verification_failure(
+                        request_id,
+                        target,
+                        classify_e2ee_trust_error(&error),
+                    )
+                    .await;
+                }
+            }
+            Err(error) => {
+                self.project_verification_failure(
+                    request_id,
+                    target,
+                    classify_e2ee_trust_error(&error),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn handle_confirm_sas_verification(&mut self, request_id: RequestId) {
+        let Some(pending) = self
+            .sas_verification
+            .as_ref()
+            .filter(|pending| pending.request_id.sequence == request_id.sequence)
+        else {
+            self.project_active_or_missing_verification_failure(request_id)
+                .await;
+            return;
+        };
+        let target = pending.target.clone();
+        let handle = pending.handle.clone();
+
+        match matrix_desktop_sdk::confirm_sas_verification(&handle).await {
+            Ok(()) => {
+                self.project_sas_state(request_id, target, handle.state())
+                    .await;
+            }
+            Err(error) => {
+                self.project_verification_failure(
+                    request_id,
+                    target,
+                    classify_e2ee_trust_error(&error),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn handle_cancel_verification(&mut self, request_id: RequestId) {
+        enum CancelTarget {
+            Sas {
+                target: VerificationTarget,
+                handle: matrix_desktop_sdk::MatrixSasVerificationHandle,
+            },
+            Request {
+                target: VerificationTarget,
+                handle: matrix_desktop_sdk::MatrixVerificationRequestHandle,
+            },
+        }
+
+        let cancel_target = self
+            .sas_verification
+            .as_ref()
+            .filter(|pending| pending.request_id.sequence == request_id.sequence)
+            .map(|pending| CancelTarget::Sas {
+                target: pending.target.clone(),
+                handle: pending.handle.clone(),
+            })
+            .or_else(|| {
+                self.verification_request
+                    .as_ref()
+                    .filter(|pending| pending.request_id.sequence == request_id.sequence)
+                    .map(|pending| CancelTarget::Request {
+                        target: pending.target.clone(),
+                        handle: pending.handle.clone(),
                     })
-                    .into_iter()
-                    .collect();
-                self.emit_unavailable_trust_operation(
-                    request_id,
-                    vec![AppAction::VerificationFailed {
-                        request_id: request_id.sequence,
-                        kind,
-                    }],
-                    events,
-                );
+            });
+
+        let Some(cancel_target) = cancel_target else {
+            self.project_active_or_missing_verification_failure(request_id)
+                .await;
+            return;
+        };
+
+        let target = match &cancel_target {
+            CancelTarget::Sas { target, .. } | CancelTarget::Request { target, .. } => {
+                target.clone()
             }
-            AccountCommand::AcceptVerification { request_id }
-            | AccountCommand::ConfirmSasVerification { request_id }
-            | AccountCommand::CancelVerification { request_id } => {
-                self.emit_unavailable_trust_operation(
-                    request_id,
-                    vec![AppAction::VerificationFailed {
-                        request_id: request_id.sequence,
-                        kind: TrustOperationFailureKind::Sdk,
-                    }],
-                    Vec::new(),
-                );
+        };
+        let result = match cancel_target {
+            CancelTarget::Sas { handle, .. } => {
+                matrix_desktop_sdk::cancel_sas_verification(&handle).await
             }
+            CancelTarget::Request { handle, .. } => {
+                matrix_desktop_sdk::cancel_verification_request(&handle).await
+            }
+        };
+
+        self.stop_verification_request_observer().await;
+        self.stop_sas_verification_observer().await;
+        self.verification_request = None;
+        self.sas_verification = None;
+
+        if let Err(error) = result {
+            self.project_verification_failure(
+                request_id,
+                target,
+                classify_e2ee_trust_error(&error),
+            )
+            .await;
+        }
+    }
+
+    fn observe_verification_request(
+        &mut self,
+        request_id: RequestId,
+        target: VerificationTarget,
+        handle: matrix_desktop_sdk::MatrixVerificationRequestHandle,
+    ) {
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let mut states = handle.changes();
+        let tx = self.self_tx.clone();
+        let task = crate::executor::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    state = states.next() => {
+                        let Some(state) = state else { break };
+                        let terminal = matches!(
+                            state,
+                            matrix_desktop_sdk::MatrixVerificationRequestState::Done
+                                | matrix_desktop_sdk::MatrixVerificationRequestState::Cancelled
+                                | matrix_desktop_sdk::MatrixVerificationRequestState::UnsupportedMethod
+                        );
+                        if tx
+                            .send(AccountMessage::VerificationRequestProgress {
+                                request_id,
+                                target: target.clone(),
+                                state,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        if terminal {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        self.verification_request_observer = Some(VerificationObservation { stop_tx, task });
+    }
+
+    fn observe_sas_verification(
+        &mut self,
+        request_id: RequestId,
+        target: VerificationTarget,
+        handle: matrix_desktop_sdk::MatrixSasVerificationHandle,
+    ) {
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let mut states = handle.changes();
+        let tx = self.self_tx.clone();
+        let task = crate::executor::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    state = states.next() => {
+                        let Some(state) = state else { break };
+                        let terminal = matches!(
+                            state,
+                            matrix_desktop_sdk::MatrixSasState::Done
+                                | matrix_desktop_sdk::MatrixSasState::Cancelled
+                                | matrix_desktop_sdk::MatrixSasState::UnsupportedShortAuth
+                        );
+                        if tx
+                            .send(AccountMessage::SasVerificationProgress {
+                                request_id,
+                                target: target.clone(),
+                                state,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        if terminal {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        self.sas_verification_observer = Some(VerificationObservation { stop_tx, task });
+    }
+
+    async fn handle_verification_request_progress(
+        &mut self,
+        request_id: RequestId,
+        _target: VerificationTarget,
+        state: matrix_desktop_sdk::MatrixVerificationRequestState,
+    ) {
+        if !self
+            .verification_request
+            .as_ref()
+            .is_some_and(|pending| pending.request_id.sequence == request_id.sequence)
+        {
+            return;
+        }
+        self.project_verification_request_state(request_id, state)
+            .await;
+    }
+
+    async fn handle_sas_verification_progress(
+        &mut self,
+        request_id: RequestId,
+        target: VerificationTarget,
+        state: matrix_desktop_sdk::MatrixSasState,
+    ) {
+        if !self
+            .sas_verification
+            .as_ref()
+            .is_some_and(|pending| pending.request_id.sequence == request_id.sequence)
+        {
+            return;
+        }
+        self.project_sas_state(request_id, target, state).await;
+    }
+
+    async fn project_verification_request_state(
+        &mut self,
+        request_id: RequestId,
+        state: matrix_desktop_sdk::MatrixVerificationRequestState,
+    ) {
+        match state {
+            matrix_desktop_sdk::MatrixVerificationRequestState::Created
+            | matrix_desktop_sdk::MatrixVerificationRequestState::Requested => {}
+            matrix_desktop_sdk::MatrixVerificationRequestState::Ready => {
+                self.reduce(vec![AppAction::VerificationAccepted {
+                    request_id: request_id.sequence,
+                }]);
+            }
+            matrix_desktop_sdk::MatrixVerificationRequestState::SasStarted(sas) => {
+                let Some(target) = self
+                    .verification_request
+                    .as_ref()
+                    .filter(|pending| pending.request_id.sequence == request_id.sequence)
+                    .map(|pending| pending.target.clone())
+                else {
+                    return;
+                };
+                self.store_sas_verification(request_id, target, sas).await;
+            }
+            matrix_desktop_sdk::MatrixVerificationRequestState::Done => {
+                self.project_verification_completed(request_id).await;
+            }
+            matrix_desktop_sdk::MatrixVerificationRequestState::Cancelled
+            | matrix_desktop_sdk::MatrixVerificationRequestState::UnsupportedMethod => {
+                self.project_active_or_missing_verification_failure(request_id)
+                    .await;
+            }
+        }
+    }
+
+    async fn store_sas_verification(
+        &mut self,
+        request_id: RequestId,
+        target: VerificationTarget,
+        handle: matrix_desktop_sdk::MatrixSasVerificationHandle,
+    ) {
+        self.stop_sas_verification_observer().await;
+        self.sas_verification = Some(PendingSasVerification {
+            request_id,
+            target: target.clone(),
+            handle: handle.clone(),
+        });
+        self.observe_sas_verification(request_id, target.clone(), handle.clone());
+        self.project_sas_state(request_id, target, handle.state())
+            .await;
+    }
+
+    async fn project_sas_state(
+        &mut self,
+        request_id: RequestId,
+        target: VerificationTarget,
+        state: matrix_desktop_sdk::MatrixSasState,
+    ) {
+        match state {
+            matrix_desktop_sdk::MatrixSasState::Created
+            | matrix_desktop_sdk::MatrixSasState::Started
+            | matrix_desktop_sdk::MatrixSasState::Accepted => {}
+            matrix_desktop_sdk::MatrixSasState::SasPresented { emojis } => {
+                self.reduce(vec![AppAction::VerificationSasPresented {
+                    request_id: request_id.sequence,
+                    emojis: emojis.clone(),
+                }]);
+                self.emit_verification_progress(VerificationFlowState::SasPresented {
+                    request_id: request_id.sequence,
+                    target,
+                    emojis,
+                });
+            }
+            matrix_desktop_sdk::MatrixSasState::Confirmed => {}
+            matrix_desktop_sdk::MatrixSasState::Done => {
+                self.project_verification_completed(request_id).await;
+            }
+            matrix_desktop_sdk::MatrixSasState::Cancelled
+            | matrix_desktop_sdk::MatrixSasState::UnsupportedShortAuth => {
+                self.project_verification_failure(
+                    request_id,
+                    target,
+                    TrustOperationFailureKind::Sdk,
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn project_verification_completed(&mut self, request_id: RequestId) {
+        let target = self
+            .sas_verification
+            .as_ref()
+            .filter(|pending| pending.request_id.sequence == request_id.sequence)
+            .map(|pending| pending.target.clone())
+            .or_else(|| {
+                self.verification_request
+                    .as_ref()
+                    .filter(|pending| pending.request_id.sequence == request_id.sequence)
+                    .map(|pending| pending.target.clone())
+            });
+        let Some(target) = target else {
+            return;
+        };
+
+        self.stop_verification_request_observer().await;
+        self.stop_sas_verification_observer().await;
+        self.verification_request = None;
+        self.sas_verification = None;
+        self.reduce(vec![AppAction::VerificationCompleted {
+            request_id: request_id.sequence,
+        }]);
+        self.emit_verification_progress(VerificationFlowState::Done {
+            request_id: request_id.sequence,
+            target,
+        });
+    }
+
+    async fn project_active_or_missing_verification_failure(&mut self, request_id: RequestId) {
+        let target = self
+            .sas_verification
+            .as_ref()
+            .filter(|pending| pending.request_id.sequence == request_id.sequence)
+            .map(|pending| pending.target.clone())
+            .or_else(|| {
+                self.verification_request
+                    .as_ref()
+                    .filter(|pending| pending.request_id.sequence == request_id.sequence)
+                    .map(|pending| pending.target.clone())
+            });
+        match target {
+            Some(target) => {
+                self.project_verification_failure(
+                    request_id,
+                    target,
+                    TrustOperationFailureKind::Sdk,
+                )
+                .await
+            }
+            None => {
+                self.reduce(vec![AppAction::VerificationFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                let failure = if self.session.is_some() {
+                    CoreFailure::LocalEncryptionUnavailable
+                } else {
+                    CoreFailure::SessionRequired
+                };
+                self.emit_failure(request_id, failure);
+            }
+        }
+    }
+
+    async fn project_verification_failure(
+        &mut self,
+        request_id: RequestId,
+        target: VerificationTarget,
+        kind: TrustOperationFailureKind,
+    ) {
+        self.stop_verification_request_observer().await;
+        self.stop_sas_verification_observer().await;
+        self.verification_request = None;
+        self.sas_verification = None;
+        self.reduce(vec![AppAction::VerificationFailed {
+            request_id: request_id.sequence,
+            kind,
+        }]);
+        self.emit_verification_progress(VerificationFlowState::Failed {
+            request_id: request_id.sequence,
+            target,
+            kind,
+        });
+    }
+
+    fn emit_verification_progress(&self, state: VerificationFlowState) {
+        if let Some(account_key) = self.active_account_key() {
+            self.emit(CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress {
+                account_key,
+                state,
+            }));
         }
     }
 
@@ -792,6 +1335,7 @@ impl AccountActor {
         // Phase 3: stop recovery observer and sync. Phases 4-6 add their children here.
         self.stop_recovery_observer().await;
         self.stop_sync_actor().await;
+        self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
         // Drop the SDK handle inside the runtime context (Async rule 11).
         drop(self.session.take());
@@ -956,6 +1500,7 @@ impl AccountActor {
         self.stop_recovery_observer().await;
         // Ordered shutdown step 4: stop sync before dropping the session.
         self.stop_sync_actor().await;
+        self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
 
         // Attempt server-side logout (best-effort; local cleanup always happens).
@@ -1105,25 +1650,6 @@ impl AccountActor {
         self.session
             .as_ref()
             .map(|session| AccountKey(session.info.user_id.clone()))
-    }
-
-    fn emit_unavailable_trust_operation(
-        &self,
-        request_id: RequestId,
-        actions: Vec<AppAction>,
-        events: Vec<CoreEvent>,
-    ) {
-        let failure = if self.session.is_some() {
-            CoreFailure::LocalEncryptionUnavailable
-        } else {
-            CoreFailure::SessionRequired
-        };
-
-        self.reduce(actions);
-        for event in events {
-            self.emit(event);
-        }
-        self.emit_failure(request_id, failure);
     }
 
     fn reduce(&self, actions: Vec<AppAction>) {

@@ -42,6 +42,17 @@ All agents implementing the i18n GUI wiring follow
 
 ## E2EE Trust Phase A Notes
 
+- Device verification SDK handles are actor-private resources. Keep
+  `VerificationRequest` and `SasVerification` wrapped in
+  `matrix-desktop-sdk` opaque handles and store them only inside
+  `AccountActor`; snapshots, Tauri DTOs, TypeScript types, and React state get
+  only `VerificationFlowState` plus private-data-free SAS emoji DTOs.
+- Verification progress is Rust-owned. `AccountActor` listens to SDK
+  request/SAS state streams and projects `VerificationSasPresented`,
+  `VerificationCompleted`, or `VerificationFailed`; GUI code must not infer
+  SAS readiness, completion, or cancellation from local React state.
+- Verification observers and SDK handles must be stopped/cancelled on logout,
+  account switch, and actor shutdown before dropping the Matrix session.
 - `RestoreKeyBackup` is secret-bearing only at the `CoreCommand::Account`
   boundary. Its reducer projection, `AppEffect`, `CoreEvent`, Tauri DTO, and
   React state must never carry the recovery secret.

@@ -2,8 +2,8 @@ use futures_util::{Stream, StreamExt};
 pub use matrix_desktop_state::E2eeRecoveryState;
 use matrix_desktop_state::{
     CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType, KeyBackupStatus,
-    LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, RoomAttentionSummary, SessionInfo,
-    room_attention_summary,
+    LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, RoomAttentionSummary, SasEmoji,
+    SessionInfo, VerificationTarget, room_attention_summary,
 };
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::room::ParentSpace;
@@ -127,6 +127,89 @@ impl fmt::Debug for IdentityResetOutcome {
     }
 }
 
+#[derive(Clone)]
+pub struct MatrixVerificationRequestHandle {
+    inner: matrix_sdk::encryption::verification::VerificationRequest,
+}
+
+impl fmt::Debug for MatrixVerificationRequestHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixVerificationRequestHandle")
+            .field("flow_id", &"FlowId(..)")
+            .finish_non_exhaustive()
+    }
+}
+
+impl MatrixVerificationRequestHandle {
+    pub fn flow_id(&self) -> &str {
+        self.inner.flow_id()
+    }
+
+    pub fn state(&self) -> MatrixVerificationRequestState {
+        map_sdk_verification_request_state(self.inner.state())
+    }
+
+    pub fn changes(&self) -> MatrixVerificationRequestStateStream {
+        Box::pin(self.inner.changes().map(map_sdk_verification_request_state))
+    }
+}
+
+#[derive(Clone)]
+pub struct MatrixSasVerificationHandle {
+    inner: matrix_sdk::encryption::verification::SasVerification,
+}
+
+impl fmt::Debug for MatrixSasVerificationHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixSasVerificationHandle")
+            .field("flow_id", &"FlowId(..)")
+            .finish_non_exhaustive()
+    }
+}
+
+impl MatrixSasVerificationHandle {
+    pub fn state(&self) -> MatrixSasState {
+        map_sdk_sas_state(self.inner.state())
+    }
+
+    pub fn changes(&self) -> MatrixSasStateStream {
+        Box::pin(self.inner.changes().map(map_sdk_sas_state))
+    }
+
+    pub fn emojis(&self) -> Option<Vec<SasEmoji>> {
+        self.inner.emoji().map(map_sdk_sas_emojis_to_desktop)
+    }
+}
+
+pub type MatrixVerificationRequestStateStream =
+    Pin<Box<dyn Stream<Item = MatrixVerificationRequestState> + Send>>;
+pub type MatrixSasStateStream = Pin<Box<dyn Stream<Item = MatrixSasState> + Send>>;
+
+#[derive(Clone, Debug)]
+pub enum MatrixVerificationRequestState {
+    Created,
+    Requested,
+    Ready,
+    SasStarted(MatrixSasVerificationHandle),
+    Done,
+    Cancelled,
+    UnsupportedMethod,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MatrixSasState {
+    Created,
+    Started,
+    Accepted,
+    SasPresented { emojis: Vec<SasEmoji> },
+    Confirmed,
+    Done,
+    Cancelled,
+    UnsupportedShortAuth,
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct KeyBackupRestoreSummary {
     pub version: Option<String>,
@@ -213,6 +296,60 @@ fn map_sdk_identity_reset_auth_type(
             MatrixIdentityResetAuthType::OAuth
         }
     }
+}
+
+fn map_sdk_verification_request_state(
+    state: matrix_sdk::encryption::verification::VerificationRequestState,
+) -> MatrixVerificationRequestState {
+    use matrix_sdk::encryption::verification::{
+        Verification, VerificationRequestState as SdkVerificationRequestState,
+    };
+
+    match state {
+        SdkVerificationRequestState::Created { .. } => MatrixVerificationRequestState::Created,
+        SdkVerificationRequestState::Requested { .. } => MatrixVerificationRequestState::Requested,
+        SdkVerificationRequestState::Ready { .. } => MatrixVerificationRequestState::Ready,
+        SdkVerificationRequestState::Transitioned { verification } => match verification {
+            Verification::SasV1(inner) => {
+                MatrixVerificationRequestState::SasStarted(MatrixSasVerificationHandle { inner })
+            }
+            #[allow(unreachable_patterns)]
+            _ => MatrixVerificationRequestState::UnsupportedMethod,
+        },
+        SdkVerificationRequestState::Done => MatrixVerificationRequestState::Done,
+        SdkVerificationRequestState::Cancelled(_) => MatrixVerificationRequestState::Cancelled,
+    }
+}
+
+fn map_sdk_sas_state(state: matrix_sdk::encryption::verification::SasState) -> MatrixSasState {
+    use matrix_sdk::encryption::verification::SasState as SdkSasState;
+
+    match state {
+        SdkSasState::Created { .. } => MatrixSasState::Created,
+        SdkSasState::Started { .. } => MatrixSasState::Started,
+        SdkSasState::Accepted { .. } => MatrixSasState::Accepted,
+        SdkSasState::KeysExchanged { emojis, .. } => match emojis {
+            Some(emojis) => MatrixSasState::SasPresented {
+                emojis: map_sdk_sas_emojis_to_desktop(emojis.emojis),
+            },
+            None => MatrixSasState::UnsupportedShortAuth,
+        },
+        SdkSasState::Confirmed => MatrixSasState::Confirmed,
+        SdkSasState::Done { .. } => MatrixSasState::Done,
+        SdkSasState::Cancelled(_) => MatrixSasState::Cancelled,
+    }
+}
+
+pub fn map_sdk_sas_emojis_to_desktop(
+    emojis: [matrix_sdk::encryption::verification::Emoji; 7],
+) -> Vec<SasEmoji> {
+    emojis
+        .into_iter()
+        .map(|emoji| SasEmoji {
+            symbol: emoji.symbol.to_owned(),
+            description: emoji.description.to_owned(),
+        })
+        .collect()
 }
 
 pub async fn cross_signing_status(
@@ -327,6 +464,72 @@ pub async fn complete_identity_reset(
     handle.reset(session, request).await
 }
 
+pub async fn request_device_verification(
+    session: &MatrixClientSession,
+    target: &VerificationTarget,
+) -> Result<MatrixVerificationRequestHandle, E2eeTrustError> {
+    let user_id = matrix_sdk::ruma::OwnedUserId::try_from(target.user_id.as_str())
+        .map_err(|_| E2eeTrustError::Sdk("invalid verification user id".to_owned()))?;
+    let device_id = matrix_sdk::ruma::OwnedDeviceId::from(target.device_id.as_str());
+    let device = session
+        .client()
+        .encryption()
+        .get_device(&user_id, &device_id)
+        .await
+        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?
+        .ok_or_else(|| E2eeTrustError::Sdk("verification target device not found".to_owned()))?;
+
+    let inner = device
+        .request_verification_with_methods(vec![
+            matrix_sdk::ruma::events::key::verification::VerificationMethod::SasV1,
+        ])
+        .await?;
+    Ok(MatrixVerificationRequestHandle { inner })
+}
+
+pub async fn accept_verification_request(
+    handle: &MatrixVerificationRequestHandle,
+) -> Result<(), E2eeTrustError> {
+    handle
+        .inner
+        .accept_with_methods(vec![
+            matrix_sdk::ruma::events::key::verification::VerificationMethod::SasV1,
+        ])
+        .await?;
+    Ok(())
+}
+
+pub async fn start_sas_verification(
+    handle: &MatrixVerificationRequestHandle,
+) -> Result<Option<MatrixSasVerificationHandle>, E2eeTrustError> {
+    Ok(handle
+        .inner
+        .start_sas()
+        .await?
+        .map(|inner| MatrixSasVerificationHandle { inner }))
+}
+
+pub async fn confirm_sas_verification(
+    handle: &MatrixSasVerificationHandle,
+) -> Result<(), E2eeTrustError> {
+    handle.inner.confirm().await?;
+    Ok(())
+}
+
+pub async fn cancel_verification_request(
+    handle: &MatrixVerificationRequestHandle,
+) -> Result<(), E2eeTrustError> {
+    handle.inner.cancel().await?;
+    Ok(())
+}
+
+pub async fn cancel_sas_verification(
+    handle: &MatrixSasVerificationHandle,
+) -> Result<(), E2eeTrustError> {
+    handle.inner.cancel().await?;
+    Ok(())
+}
+
 pub fn map_backup_state_to_desktop(
     state: matrix_sdk::encryption::backups::BackupState,
 ) -> KeyBackupStatus {
@@ -352,14 +555,19 @@ pub fn map_backup_state_to_desktop(
 
 #[cfg(test)]
 mod e2ee_trust_tests {
-    use matrix_desktop_state::{CrossSigningStatus, IdentityResetAuthType, KeyBackupStatus};
+    use matrix_desktop_state::{
+        CrossSigningStatus, IdentityResetAuthType, KeyBackupStatus, SasEmoji,
+    };
     use matrix_sdk::encryption::backups::BackupState;
 
     use super::{
         E2eeTrustError, MatrixCrossSigningStatus, MatrixIdentityResetAuthType,
-        bootstrap_cross_signing, complete_identity_reset, cross_signing_status, enable_key_backup,
-        map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
-        map_identity_reset_auth_type_to_desktop, reset_identity, restore_key_backup,
+        accept_verification_request, bootstrap_cross_signing, cancel_sas_verification,
+        cancel_verification_request, complete_identity_reset, confirm_sas_verification,
+        cross_signing_status, enable_key_backup, map_backup_state_to_desktop,
+        map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
+        map_sdk_sas_emojis_to_desktop, request_device_verification, reset_identity,
+        restore_key_backup, start_sas_verification,
     };
 
     #[test]
@@ -427,6 +635,80 @@ mod e2ee_trust_tests {
         let _ = restore_key_backup;
         let _ = reset_identity;
         let _ = complete_identity_reset;
+        let _ = request_device_verification;
+        let _ = accept_verification_request;
+        let _ = start_sas_verification;
+        let _ = confirm_sas_verification;
+        let _ = cancel_verification_request;
+        let _ = cancel_sas_verification;
+    }
+
+    #[test]
+    fn sas_emojis_map_to_desktop_dto_without_sdk_types() {
+        let emojis = [
+            matrix_sdk::encryption::verification::Emoji {
+                symbol: "🐶",
+                description: "Dog",
+            },
+            matrix_sdk::encryption::verification::Emoji {
+                symbol: "🐱",
+                description: "Cat",
+            },
+            matrix_sdk::encryption::verification::Emoji {
+                symbol: "🦁",
+                description: "Lion",
+            },
+            matrix_sdk::encryption::verification::Emoji {
+                symbol: "🐎",
+                description: "Horse",
+            },
+            matrix_sdk::encryption::verification::Emoji {
+                symbol: "🦄",
+                description: "Unicorn",
+            },
+            matrix_sdk::encryption::verification::Emoji {
+                symbol: "🐷",
+                description: "Pig",
+            },
+            matrix_sdk::encryption::verification::Emoji {
+                symbol: "🐘",
+                description: "Elephant",
+            },
+        ];
+
+        assert_eq!(
+            map_sdk_sas_emojis_to_desktop(emojis),
+            vec![
+                SasEmoji {
+                    symbol: "🐶".to_owned(),
+                    description: "Dog".to_owned(),
+                },
+                SasEmoji {
+                    symbol: "🐱".to_owned(),
+                    description: "Cat".to_owned(),
+                },
+                SasEmoji {
+                    symbol: "🦁".to_owned(),
+                    description: "Lion".to_owned(),
+                },
+                SasEmoji {
+                    symbol: "🐎".to_owned(),
+                    description: "Horse".to_owned(),
+                },
+                SasEmoji {
+                    symbol: "🦄".to_owned(),
+                    description: "Unicorn".to_owned(),
+                },
+                SasEmoji {
+                    symbol: "🐷".to_owned(),
+                    description: "Pig".to_owned(),
+                },
+                SasEmoji {
+                    symbol: "🐘".to_owned(),
+                    description: "Elephant".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]

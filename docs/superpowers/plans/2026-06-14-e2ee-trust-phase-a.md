@@ -50,6 +50,14 @@ joined-room hydration set, not a backup-wide exhaustive import. True all-session
 backup-wide restore remains a later SDK API/patch decision and must be proven
 with local homeserver QA before #13 closure.
 
+The device-verification bridge slice wires outgoing device verification to
+public matrix-rust-sdk APIs without GUI changes. `matrix-desktop-sdk` exposes
+opaque verification-request and SAS handles plus private-data-free state/emoji
+DTO mapping; `AccountActor` owns those handles, observes SDK request/SAS state
+streams, and projects reducer actions / `CoreEvent::E2eeTrust` updates.
+Incoming verification request discovery, mismatch-specific cancellation, local
+homeserver verification proof, and all GUI surfaces remain later Phase A/B work.
+
 ## Verification
 
 Run at minimum:

@@ -395,6 +395,12 @@ stateDiagram-v2
   progress, cross-signing status, key-backup status, and identity reset. The
   event payload is structured for UI consumption; event `Debug` redacts account
   keys and verification targets so QA output remains private-data-free.
+- Device verification SDK handles are not reducer state. `AccountActor` owns
+  the opaque `matrix-desktop-sdk` verification-request and SAS handles, observes
+  their SDK state streams, and projects only reducer actions / typed
+  `CoreEvent::E2eeTrust` updates. The frontend receives SAS emoji DTOs only
+  after Rust observes `KeysExchanged`; React must not decide SAS readiness,
+  completion, cancellation, or mismatch semantics locally.
 - `AccountActor` SDK results settle the reducer with kind-only actions and emit
   typed `CoreEvent::E2eeTrust` updates. The SDK wrapper maps Matrix SDK
   cross-signing and backup states to app DTOs before they cross the
