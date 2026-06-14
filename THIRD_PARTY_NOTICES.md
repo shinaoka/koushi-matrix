@@ -20,4 +20,3 @@ Notes:
 ## Current Entries
 
 No third-party source code has been copied or closely adapted yet.
-
