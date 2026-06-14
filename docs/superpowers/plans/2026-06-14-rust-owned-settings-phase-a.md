@@ -778,7 +778,7 @@ composer surfaces; React must not reimplement those semantics as product logic.
 
 ### Task 8: Issue comment
 
-- [ ] **Step 1: Comment on #6**
+- [x] **Step 1: Comment on #6**
 
 Comment with completed Phase A evidence and remaining Phase B scope:
 
