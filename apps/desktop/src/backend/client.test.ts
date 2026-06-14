@@ -23,4 +23,30 @@ describe("TauriDesktopApi", () => {
       patch: { appearance: { theme: "dark" } }
     });
   });
+
+  test("passes composer resolver facts to the Rust resolver command", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.resolveComposerKeyAction(
+      "main",
+      {
+        key: "enter",
+        modifiers: { ctrl: false, meta: true, shift: false, alt: false },
+        is_composing: false
+      },
+      { autocomplete_open: false, send_enabled: true }
+    );
+
+    expect(invoke).toHaveBeenCalledWith("resolve_composer_key_action", {
+      surface: "main",
+      keyEvent: {
+        key: "enter",
+        modifiers: { ctrl: false, meta: true, shift: false, alt: false },
+        is_composing: false
+      },
+      autocompleteOpen: false,
+      sendEnabled: true
+    });
+  });
 });

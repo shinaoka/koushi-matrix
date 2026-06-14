@@ -79,6 +79,40 @@ export type SettingsPersistenceState =
   | { kind: "idle" }
   | { kind: "saving"; request_id: number };
 
+export type ComposerSurface = "main" | "thread" | "edit";
+export type ComposerKey = "enter" | "escape" | "other";
+
+export interface ComposerKeyModifiers {
+  ctrl: boolean;
+  meta: boolean;
+  shift: boolean;
+  alt: boolean;
+}
+
+export interface ComposerKeyEvent {
+  key: ComposerKey;
+  modifiers: ComposerKeyModifiers;
+  is_composing: boolean;
+}
+
+export interface ComposerResolverOptions {
+  autocomplete_open: boolean;
+  send_enabled: boolean;
+}
+
+export type ComposerResolvedAction =
+  | "send"
+  | "insertNewline"
+  | "acceptAutocomplete"
+  | "cancel"
+  | "ignore";
+
+export type ResolveComposerKeyAction = (
+  surface: ComposerSurface,
+  keyEvent: ComposerKeyEvent,
+  options: ComposerResolverOptions
+) => Promise<ComposerResolvedAction>;
+
 export type AuthDiscoveryState =
   | { kind: "unknown" }
   | { kind: "discovering"; homeserver: string }

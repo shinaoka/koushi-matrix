@@ -1,7 +1,25 @@
 import { t } from "../i18n/messages";
-import { keyboardShortcutGroups, type KeyboardShortcut } from "../domain/shortcuts";
+import {
+  formatModShortcut,
+  keyboardShortcutGroups,
+  type KeyboardShortcut,
+  type ShortcutLabelProfile
+} from "../domain/shortcuts";
+import type { ComposerSendShortcut, SettingsPatch, SettingsState } from "../domain/types";
 
-export function KeyboardSettingsPanel() {
+export function KeyboardSettingsPanel({
+  labelProfile,
+  settings,
+  onUpdateSettings
+}: {
+  labelProfile?: ShortcutLabelProfile;
+  settings: SettingsState;
+  onUpdateSettings: (patch: SettingsPatch) => void;
+}) {
+  const selectedSendShortcut = settings.values.keyboard.composer_send_shortcut;
+  const isSaving = settings.persistence.kind === "saving";
+  const modEnterLabel = `${formatModShortcut("Enter", labelProfile)} sends`;
+
   return (
     <section className="settings-panel keyboard-settings" aria-labelledby="keyboard-settings-title">
       <header className="settings-panel-header">
@@ -10,6 +28,26 @@ export function KeyboardSettingsPanel() {
           <p>Element-compatible shortcuts for implemented desktop actions.</p>
         </div>
       </header>
+      <section className="settings-section" aria-label="Composer send shortcut">
+        <div className="settings-section-heading">
+          <h3>Composer send shortcut</h3>
+          {isSaving ? <span className="settings-save-state">Saving</span> : null}
+        </div>
+        <div className="segmented-control" role="group" aria-label="Composer send shortcut">
+          <ComposerShortcutButton
+            label="Enter sends"
+            selected={selectedSendShortcut === "enter"}
+            value="enter"
+            onSelect={onUpdateSettings}
+          />
+          <ComposerShortcutButton
+            label={modEnterLabel}
+            selected={selectedSendShortcut === "modEnter"}
+            value="modEnter"
+            onSelect={onUpdateSettings}
+          />
+        </div>
+      </section>
       <div className="shortcut-groups">
         {keyboardShortcutGroups.map((group) => (
           <section className="shortcut-group" key={group.category}>
@@ -23,6 +61,33 @@ export function KeyboardSettingsPanel() {
         ))}
       </div>
     </section>
+  );
+}
+
+function ComposerShortcutButton({
+  label,
+  selected,
+  value,
+  onSelect
+}: {
+  label: string;
+  selected: boolean;
+  value: ComposerSendShortcut;
+  onSelect: (patch: SettingsPatch) => void;
+}) {
+  return (
+    <button
+      className={`segmented-control-option ${selected ? "is-selected" : ""}`}
+      type="button"
+      aria-pressed={selected}
+      onClick={() => {
+        if (!selected) {
+          onSelect({ keyboard: { composer_send_shortcut: value } });
+        }
+      }}
+    >
+      {label}
+    </button>
   );
 }
 

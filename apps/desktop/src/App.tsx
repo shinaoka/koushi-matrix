@@ -67,8 +67,14 @@ import {
 } from "./domain/contextMenus";
 import {
   shortcutActionFromMenuPayload,
+  defaultShortcutLabelProfile,
   shortcutIdForKeyboardEvent
 } from "./domain/shortcuts";
+import {
+  composerKeyEventFromDom,
+  insertNewlineAtSelection,
+  shouldResolveComposerKeyEvent
+} from "./domain/composerKeyEvents";
 import {
   restoreTimelineAnchor,
   timelinePaginationAnchorEventId
@@ -101,10 +107,12 @@ import {
 import type {
   ComposerMode,
   DesktopSnapshot,
+  ResolveComposerKeyAction,
   RoomListItem,
   SavedSessionInfo,
   SearchResult,
   SearchScopeKind,
+  SettingsPatch,
   TimelineMessage
 } from "./domain/types";
 
@@ -183,6 +191,8 @@ type ActiveContextMenu = {
   target: ContextMenuTarget;
   items: ContextMenuItem[];
 };
+
+const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "ignore";
 
 /**
  * React-local view of the composer mode. Matrix semantics (the reply target)
@@ -312,6 +322,15 @@ export function App() {
       void refreshSavedSessions();
     }
   }, [rightPanelMode]);
+
+  useEffect(() => {
+    const theme = snapshot?.state.settings.values.appearance.theme ?? "system";
+    if (theme === "system") {
+      delete document.documentElement.dataset.theme;
+      return;
+    }
+    document.documentElement.dataset.theme = theme;
+  }, [snapshot?.state.settings.values.appearance.theme]);
 
   useEffect(() => {
     if (!snapshot) {
@@ -615,6 +634,16 @@ export function App() {
       setIsBusy(false);
     }
   }
+
+  async function updateSettings(patch: SettingsPatch) {
+    setSnapshot(await api.updateSettings(patch));
+  }
+
+  const resolveComposerKeyAction: ResolveComposerKeyAction = (
+    surface,
+    keyEvent,
+    options
+  ) => api.resolveComposerKeyAction(surface, keyEvent, options);
 
   async function selectSpace(spaceId: string | null) {
     setSnapshot(await api.selectSpace(spaceId));
@@ -944,6 +973,7 @@ export function App() {
           activeRoomName={activeRoom?.display_name ?? "No room"}
           composerDraft={composerDraft}
           composerMode={composerModeProp(snapshot.state.timeline.composer.mode)}
+          resolveComposerKeyAction={resolveComposerKeyAction}
           searchQuery={searchQuery}
           searchResults={searchResults}
           showSearchResults={effectiveRightPanelMode !== "search"}
@@ -1017,6 +1047,10 @@ export function App() {
           }}
           onThreadReplySend={(roomId, rootEventId, body) => {
             void sendThreadReply(roomId, rootEventId, body);
+          }}
+          onResolveComposerKeyAction={resolveComposerKeyAction}
+          onUpdateSettings={(patch) => {
+            void updateSettings(patch);
           }}
         />
       </div>
@@ -1723,6 +1757,7 @@ function TimelinePane({
   activeRoomName,
   composerDraft,
   composerMode,
+  resolveComposerKeyAction,
   searchQuery,
   searchResults,
   showSearchResults,
@@ -1743,6 +1778,7 @@ function TimelinePane({
   activeRoomName: string;
   composerDraft: string;
   composerMode: ComposerModeProp;
+  resolveComposerKeyAction: ResolveComposerKeyAction;
   searchQuery: string;
   searchResults: SearchResult[];
   showSearchResults: boolean;
@@ -1827,6 +1863,7 @@ function TimelinePane({
               transport={tauriTimelineTransport}
               onReply={onReply}
               onOpenThread={onOpenThread}
+              resolveComposerKeyAction={resolveComposerKeyAction}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -1848,6 +1885,7 @@ function TimelinePane({
       <Composer
         composerMode={composerMode}
         isSending={Boolean(snapshot.state.timeline.composer.pending_transaction_id)}
+        resolveComposerKeyAction={resolveComposerKeyAction}
         roomName={activeRoomName}
         value={composerDraft}
         onCancelReply={onCancelReply}
@@ -1996,6 +2034,7 @@ function MessageArticle({
 export function Composer({
   composerMode,
   isSending,
+  resolveComposerKeyAction = ignoreComposerKeyAction,
   roomName,
   value,
   onCancelReply,
@@ -2004,19 +2043,47 @@ export function Composer({
 }: {
   composerMode: ComposerModeProp;
   isSending: boolean;
+  resolveComposerKeyAction?: ResolveComposerKeyAction;
   roomName: string;
   value: string;
   onCancelReply: () => void;
-  onSend: () => void;
+  onSend: () => void | Promise<void>;
   onValueChange: (value: string) => void;
 }) {
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      if (!isSending) {
-        onSend();
-      }
+    if (!shouldResolveComposerKeyEvent(event)) {
+      return;
     }
+
+    const keyEvent = composerKeyEventFromDom(event);
+    const textarea = event.currentTarget;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    event.preventDefault();
+
+    void resolveComposerKeyAction("main", keyEvent, {
+      autocomplete_open: false,
+      send_enabled: !isSending && value.trim().length > 0
+    })
+      .then((action) => {
+        if (action === "send") {
+          void onSend();
+          return;
+        }
+        if (action === "insertNewline") {
+          const nextValue = insertNewlineAtSelection(value, selectionStart, selectionEnd);
+          onValueChange(nextValue.value);
+          requestAnimationFrame(() => {
+            textarea.selectionStart = nextValue.cursor;
+            textarea.selectionEnd = nextValue.cursor;
+          });
+          return;
+        }
+        if (action === "cancel" && composerMode.kind === "reply") {
+          onCancelReply();
+        }
+      })
+      .catch(() => undefined);
   }
 
   return (
@@ -2105,6 +2172,8 @@ export function ContextualRightPanel({
   onResultSelect,
   onSubmitRecovery,
   onSwitchAccount,
+  onResolveComposerKeyAction = ignoreComposerKeyAction,
+  onUpdateSettings = () => undefined,
   onThreadComposerDraftChange,
   onThreadReplySend
 }: {
@@ -2128,6 +2197,8 @@ export function ContextualRightPanel({
   onResultSelect: (roomId: string, eventId: string) => void;
   onSubmitRecovery: (event: FormEvent<HTMLFormElement>) => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
+  onResolveComposerKeyAction?: ResolveComposerKeyAction;
+  onUpdateSettings?: (patch: SettingsPatch) => void;
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
   onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
 }) {
@@ -2155,7 +2226,11 @@ export function ContextualRightPanel({
     return (
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("panel.keyboard")} onClose={onClosePanel} />
-        <KeyboardSettingsPanel />
+        <KeyboardSettingsPanel
+          labelProfile={defaultShortcutLabelProfile()}
+          settings={snapshot.state.settings}
+          onUpdateSettings={onUpdateSettings}
+        />
       </aside>
     );
   }
@@ -2167,7 +2242,9 @@ export function ContextualRightPanel({
         <UserSettingsPanel
           currentSession={currentSavedSession(snapshot)}
           savedSessions={savedSessions}
+          settings={snapshot.state.settings}
           onOpenKeyboardSettings={onOpenKeyboardSettings}
+          onUpdateSettings={onUpdateSettings}
           onSwitchAccount={onSwitchAccount}
         />
       </aside>
@@ -2226,6 +2303,7 @@ export function ContextualRightPanel({
               transport={focusedTimelineTransport}
               suppressPaginationUi={true}
               onReply={onReply}
+              resolveComposerKeyAction={onResolveComposerKeyAction}
             />
           </section>
         ) : null}
@@ -2269,6 +2347,7 @@ export function ContextualRightPanel({
             transport={timelineTransport}
             onReply={onReply}
             onOpenThread={() => undefined}
+            resolveComposerKeyAction={onResolveComposerKeyAction}
           />
         ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>
@@ -2277,6 +2356,7 @@ export function ContextualRightPanel({
       <ThreadComposer
         draft={threadDraft}
         isSending={threadSendPending}
+        resolveComposerKeyAction={onResolveComposerKeyAction}
         canEdit={threadState.kind === "open" && Boolean(threadRoomId && rootEventId && threadComposer)}
         onDraftChange={(draft) => {
           if (threadRoomId && rootEventId) {
@@ -2297,24 +2377,49 @@ function ThreadComposer({
   canEdit,
   draft,
   isSending,
+  resolveComposerKeyAction,
   onDraftChange,
   onSend
 }: {
   canEdit: boolean;
   draft: string;
   isSending: boolean;
+  resolveComposerKeyAction: ResolveComposerKeyAction;
   onDraftChange: (draft: string) => void;
-  onSend: () => void;
+  onSend: () => void | Promise<void>;
 }) {
   const canSend = canEdit && !isSending && draft.trim().length > 0;
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      if (canSend) {
-        onSend();
-      }
+    if (!shouldResolveComposerKeyEvent(event)) {
+      return;
     }
+
+    const keyEvent = composerKeyEventFromDom(event);
+    const textarea = event.currentTarget;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    event.preventDefault();
+
+    void resolveComposerKeyAction("thread", keyEvent, {
+      autocomplete_open: false,
+      send_enabled: canSend
+    })
+      .then((action) => {
+        if (action === "send") {
+          void onSend();
+          return;
+        }
+        if (action === "insertNewline") {
+          const nextDraft = insertNewlineAtSelection(draft, selectionStart, selectionEnd);
+          onDraftChange(nextDraft.value);
+          requestAnimationFrame(() => {
+            textarea.selectionStart = nextDraft.cursor;
+            textarea.selectionEnd = nextDraft.cursor;
+          });
+        }
+      })
+      .catch(() => undefined);
   }
 
   return (

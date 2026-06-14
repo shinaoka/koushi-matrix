@@ -734,6 +734,7 @@ pub fn run() {
             commands::logout,
             commands::restart_sync,
             commands::update_settings,
+            commands::resolve_composer_key_action,
             commands::select_space,
             commands::select_room,
             commands::select_search_result,

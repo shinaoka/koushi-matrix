@@ -50,7 +50,11 @@ Crate responsibilities:
   must not be the source of truth for locale, theme, font/emoji choice, or
   composer send shortcut semantics. Composer key handling uses the pure
   Rust-owned resolver in `matrix-desktop-state`; GUI code supplies typed key
-  facts and renders/dispatches the resolved action.
+  facts and renders/dispatches the resolved action. Because the resolver may
+  cross an async transport boundary, GUI code captures key facts and textarea
+  selection synchronously, prevents default only for resolver-owned keys, and
+  applies newline/send/cancel only from the returned action. Resolver failures
+  are no-ops; React must not fall back to local send semantics.
 - `matrix-desktop-sdk` — low-level SDK adapter (login, restore, recovery,
   sync, room, timeline, search primitives). No app state, no QA orchestration.
 - `matrix-desktop-core` — actor lifecycle, command routing, event emission,

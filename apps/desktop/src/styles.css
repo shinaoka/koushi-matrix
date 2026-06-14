@@ -1453,6 +1453,52 @@ mark {
   text-transform: uppercase;
 }
 
+.settings-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-save-state {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.segmented-control {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.segmented-control-option {
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.segmented-control-option:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.segmented-control-option.is-selected {
+  color: var(--brand-contrast);
+  background: var(--brand);
+}
+
 .settings-detail-list {
   overflow: hidden;
   border: 1px solid var(--line);

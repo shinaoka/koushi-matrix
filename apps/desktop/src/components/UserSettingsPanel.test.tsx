@@ -4,6 +4,16 @@ import { describe, expect, test } from "vitest";
 import { UserSettingsPanel } from "./UserSettingsPanel";
 
 describe("UserSettingsPanel", () => {
+  const settings = {
+    values: {
+      locale: { language_tag: null, text_direction: "auto" },
+      appearance: { theme: "dark" },
+      typography: { font: "system", emoji: "system" },
+      keyboard: { composer_send_shortcut: "enter" }
+    },
+    persistence: { kind: "idle" }
+  } as const;
+
   test("renders account switch entries and keyboard settings access", () => {
     const markup = renderToStaticMarkup(
       <UserSettingsPanel
@@ -24,7 +34,9 @@ describe("UserSettingsPanel", () => {
             device_id: "SECONDDEVICE"
           }
         ]}
+        settings={settings}
         onOpenKeyboardSettings={() => undefined}
+        onUpdateSettings={() => undefined}
         onSwitchAccount={() => undefined}
       />
     );
@@ -39,6 +51,9 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Homeserver");
     expect(markup).toContain("Device");
     expect(markup).toContain("Local store");
+    expect(markup).toContain("Appearance");
+    expect(markup).toContain("Dark");
+    expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain("Separate encrypted namespace");
     expect(markup).toContain("OS credential store");
   });
@@ -54,7 +69,9 @@ describe("UserSettingsPanel", () => {
             device_id: "SECONDDEVICE"
           }
         ]}
+        settings={settings}
         onOpenKeyboardSettings={() => undefined}
+        onUpdateSettings={() => undefined}
         onSwitchAccount={() => undefined}
       />
     );

@@ -25,8 +25,13 @@ import { emit } from "@tauri-apps/api/event";
 import type { CoreEventPayload, TimelineItem } from "../domain/coreEvents";
 import { roomTimelineKey } from "../domain/coreEvents";
 import type {
+  ComposerKeyEvent,
+  ComposerResolverOptions,
+  ComposerResolvedAction,
   ComposerMode,
-  DesktopSnapshot
+  ComposerSurface,
+  DesktopSnapshot,
+  SettingsPatch
 } from "../domain/types";
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
 
@@ -158,6 +163,49 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
   };
 }
 
+function applySettingsPatch(
+  values: DesktopSnapshot["state"]["settings"]["values"],
+  patch: SettingsPatch
+): DesktopSnapshot["state"]["settings"]["values"] {
+  return {
+    locale: patch.locale ?? values.locale,
+    appearance: patch.appearance ?? values.appearance,
+    typography: patch.typography ?? values.typography,
+    keyboard: patch.keyboard ?? values.keyboard
+  };
+}
+
+function resolveComposerKeyActionFromSettings(
+  sendShortcut: DesktopSnapshot["state"]["settings"]["values"]["keyboard"]["composer_send_shortcut"],
+  surface: ComposerSurface,
+  keyEvent: ComposerKeyEvent,
+  options: ComposerResolverOptions
+): ComposerResolvedAction {
+  void surface;
+  if (keyEvent.is_composing) {
+    return "ignore";
+  }
+  if (keyEvent.key === "escape") {
+    return "cancel";
+  }
+  if (keyEvent.key !== "enter") {
+    return "ignore";
+  }
+  if (keyEvent.modifiers.shift || keyEvent.modifiers.alt) {
+    return "insertNewline";
+  }
+  if (options.autocomplete_open) {
+    return "acceptAutocomplete";
+  }
+  const wantsSend =
+    sendShortcut === "enter" ||
+    (sendShortcut === "modEnter" && (keyEvent.modifiers.ctrl || keyEvent.modifiers.meta));
+  if (!wantsSend) {
+    return "insertNewline";
+  }
+  return options.send_enabled ? "send" : "ignore";
+}
+
 // A reply-mode composer snapshot (composer.mode = Reply) used as the
 // set_composer_reply_target response so the App's local `sendText` dispatch
 // sees reply mode and routes to send_reply.
@@ -223,6 +271,42 @@ function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch }) =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      settings: {
+        ...currentSnapshot.state.settings,
+        values: applySettingsPatch(currentSnapshot.state.settings.values, patch),
+        persistence: { kind: "idle" }
+      }
+    }
+  })
+);
+mock.setCommandResponse(
+  "resolve_composer_key_action",
+  ({
+    surface,
+    keyEvent,
+    autocompleteOpen,
+    sendEnabled
+  }: {
+    surface: ComposerSurface;
+    keyEvent: ComposerKeyEvent;
+    autocompleteOpen: boolean;
+    sendEnabled: boolean;
+  }) =>
+    resolveComposerKeyActionFromSettings(
+      currentSnapshot.state.settings.values.keyboard.composer_send_shortcut,
+      surface,
+      keyEvent,
+      {
+        autocomplete_open: autocompleteOpen,
+        send_enabled: sendEnabled
+      }
+    )
+);
 mock.setCommandResponse("create_room", () => setCurrentSnapshot(afterCreateRoomSnapshot()));
 mock.setCommandResponse("create_space", () => setCurrentSnapshot(afterCreateSpaceSnapshot()));
 // Clicking reply records set_composer_reply_target AND returns a reply-mode

@@ -25,6 +25,7 @@
 import { Edit3, MessageCircle, SmilePlus, Trash2 } from "lucide-react";
 import {
   type FormEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -51,6 +52,12 @@ import {
   shouldSuppressAutoBackfill,
   type TimelineStoreState
 } from "../domain/timelineStore";
+import {
+  composerKeyEventFromDom,
+  insertNewlineAtSelection,
+  shouldResolveComposerKeyEvent
+} from "../domain/composerKeyEvents";
+import type { ResolveComposerKeyAction } from "../domain/types";
 
 // ---------------------------------------------------------------------------
 // Transport interface (Tauri IPC, browser fake, or test mock)
@@ -132,6 +139,8 @@ function cssEscape(value: string): string {
 const AUTO_BACKFILL_THRESHOLD_PX = 80;
 const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
+const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "ignore";
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -142,6 +151,7 @@ export function TimelineView({
   transport,
   onReply,
   onOpenThread = () => undefined,
+  resolveComposerKeyAction = ignoreComposerKeyAction,
   suppressPaginationUi = false
 }: {
   timelineKey: TimelineKey;
@@ -149,6 +159,7 @@ export function TimelineView({
   transport: TimelineTransport;
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
+  resolveComposerKeyAction?: ResolveComposerKeyAction;
   suppressPaginationUi?: boolean;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -311,6 +322,7 @@ export function TimelineView({
           roomId={roomId}
           onReply={onReply}
           onOpenThread={onOpenThread}
+          resolveComposerKeyAction={resolveComposerKeyAction}
           onToggleReaction={onToggleReaction}
           onEdit={onEdit}
           onRedact={onRedact}
@@ -325,6 +337,7 @@ export function TimelineItemRow({
   roomId,
   onReply,
   onOpenThread = () => undefined,
+  resolveComposerKeyAction = ignoreComposerKeyAction,
   onToggleReaction,
   onEdit,
   onRedact
@@ -333,6 +346,7 @@ export function TimelineItemRow({
   roomId: string;
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
+  resolveComposerKeyAction?: ResolveComposerKeyAction;
   onToggleReaction: TimelineRowActionHandlers["onToggleReaction"];
   onEdit: TimelineRowActionHandlers["onEdit"];
   onRedact: TimelineRowActionHandlers["onRedact"];
@@ -416,6 +430,52 @@ export function TimelineItemRow({
     [closeEditForm, editDraft, eventId, onEdit, roomId]
   );
 
+  const onEditKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (!shouldResolveComposerKeyEvent(event)) {
+        return;
+      }
+
+      const keyEvent = composerKeyEventFromDom(event);
+      const textarea = event.currentTarget;
+      const selectionStart = textarea.selectionStart;
+      const selectionEnd = textarea.selectionEnd;
+      event.preventDefault();
+
+      void resolveComposerKeyAction("edit", keyEvent, {
+        autocomplete_open: false,
+        send_enabled: Boolean(eventId && editDraft.trim())
+      })
+        .then((action) => {
+          if (action === "send") {
+            if (eventId && editDraft.trim()) {
+              onEdit(roomId, eventId, editDraft.trim());
+              closeEditForm();
+            }
+            return;
+          }
+          if (action === "insertNewline") {
+            const nextDraft = insertNewlineAtSelection(
+              editDraft,
+              selectionStart,
+              selectionEnd
+            );
+            setEditDraft(nextDraft.value);
+            requestAnimationFrame(() => {
+              textarea.selectionStart = nextDraft.cursor;
+              textarea.selectionEnd = nextDraft.cursor;
+            });
+            return;
+          }
+          if (action === "cancel") {
+            closeEditForm();
+          }
+        })
+        .catch(() => undefined);
+    },
+    [closeEditForm, editDraft, eventId, onEdit, resolveComposerKeyAction, roomId]
+  );
+
   const submitReaction = useCallback(
     (reactionKey: string) => {
       if (!eventId) {
@@ -467,6 +527,7 @@ export function TimelineItemRow({
         className="message-edit-body"
         value={editDraft}
         onChange={(event) => setEditDraft(event.target.value)}
+        onKeyDown={onEditKeyDown}
       />
       <div className="message-edit-actions">
         <button className="message-edit-button" type="submit">

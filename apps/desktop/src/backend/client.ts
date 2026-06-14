@@ -3,6 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { createBrowserFakeApi, type DesktopApi } from "./browserFakeApi";
 import type {
   DesktopSnapshot,
+  ComposerKeyEvent,
+  ComposerResolvedAction,
+  ComposerResolverOptions,
+  ComposerSurface,
   SavedSessionInfo,
   SearchScopeKind,
   SettingsPatch
@@ -61,6 +65,19 @@ class TauriDesktopApi implements DesktopApi {
 
   async updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("update_settings", { patch });
+  }
+
+  async resolveComposerKeyAction(
+    surface: ComposerSurface,
+    keyEvent: ComposerKeyEvent,
+    options: ComposerResolverOptions
+  ): Promise<ComposerResolvedAction> {
+    return invoke<ComposerResolvedAction>("resolve_composer_key_action", {
+      surface,
+      keyEvent,
+      autocompleteOpen: options.autocomplete_open,
+      sendEnabled: options.send_enabled
+    });
   }
 
   async selectSpace(spaceId: string | null): Promise<DesktopSnapshot> {

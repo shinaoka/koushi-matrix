@@ -9,6 +9,7 @@ export type ShortcutCategory =
 export type ShortcutParity = "same" | "adapted" | "deferred" | "notApplicable";
 export type ShortcutPlatform = "all" | "macos" | "windows" | "linux";
 export type NativeMenuArea = "app" | "edit" | "view" | "window" | "help";
+export type ShortcutPlatformProfile = "macos" | "windows" | "linux";
 
 export interface KeyboardShortcut {
   id: string;
@@ -48,6 +49,11 @@ export interface KeyboardEventLike {
   metaKey: boolean;
   shiftKey: boolean;
   altKey: boolean;
+}
+
+export interface ShortcutLabelProfile {
+  platform: ShortcutPlatformProfile;
+  modLabel: "Cmd" | "Ctrl";
 }
 
 const shortcuts: KeyboardShortcut[] = [
@@ -481,6 +487,28 @@ export function shortcutActionFromMenuPayload(payload: unknown): string | null {
 
   const shortcut = shortcutById(payload);
   return shortcut?.implemented ? shortcut.id : null;
+}
+
+export function defaultShortcutLabelProfile(): ShortcutLabelProfile {
+  const platform =
+    typeof navigator === "undefined"
+      ? ""
+      : ((navigator as Navigator & { userAgentData?: { platform?: string } })
+          .userAgentData?.platform ?? navigator.platform);
+  if (/mac/i.test(platform)) {
+    return { platform: "macos", modLabel: "Cmd" };
+  }
+  if (/win/i.test(platform)) {
+    return { platform: "windows", modLabel: "Ctrl" };
+  }
+  return { platform: "linux", modLabel: "Ctrl" };
+}
+
+export function formatModShortcut(
+  suffix: string,
+  profile: ShortcutLabelProfile = defaultShortcutLabelProfile()
+): string {
+  return `${profile.modLabel}+${suffix}`;
 }
 
 function normalizedKey(key: string): string {

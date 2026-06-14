@@ -1,6 +1,10 @@
 import { composeSidebar, roomIsInScope, textRangeUtf16 } from "../domain/desktopModel";
 import type {
   DesktopSnapshot,
+  ComposerKeyEvent,
+  ComposerResolvedAction,
+  ComposerResolverOptions,
+  ComposerSurface,
   RoomSummary,
   SavedSessionInfo,
   SearchResult,
@@ -24,6 +28,11 @@ export interface DesktopApi {
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
   updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
+  resolveComposerKeyAction(
+    surface: ComposerSurface,
+    keyEvent: ComposerKeyEvent,
+    options: ComposerResolverOptions
+  ): Promise<ComposerResolvedAction>;
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
   selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
@@ -193,6 +202,19 @@ class BrowserFakeApi implements DesktopApi {
     );
     this.snapshot.state.settings.persistence = { kind: "idle" };
     return this.getSnapshot();
+  }
+
+  async resolveComposerKeyAction(
+    surface: ComposerSurface,
+    keyEvent: ComposerKeyEvent,
+    options: ComposerResolverOptions
+  ): Promise<ComposerResolvedAction> {
+    void surface;
+    return resolveComposerKeyActionFromSettings(
+      this.snapshot.state.settings.values.keyboard.composer_send_shortcut,
+      keyEvent,
+      options
+    );
   }
 
   async selectRoom(roomId: string): Promise<DesktopSnapshot> {
@@ -768,6 +790,35 @@ function applySettingsPatch(
     typography: patch.typography ?? values.typography,
     keyboard: patch.keyboard ?? values.keyboard
   };
+}
+
+function resolveComposerKeyActionFromSettings(
+  sendShortcut: DesktopSnapshot["state"]["settings"]["values"]["keyboard"]["composer_send_shortcut"],
+  keyEvent: ComposerKeyEvent,
+  options: ComposerResolverOptions
+): ComposerResolvedAction {
+  if (keyEvent.is_composing) {
+    return "ignore";
+  }
+  if (keyEvent.key === "escape") {
+    return "cancel";
+  }
+  if (keyEvent.key !== "enter") {
+    return "ignore";
+  }
+  if (keyEvent.modifiers.shift || keyEvent.modifiers.alt) {
+    return "insertNewline";
+  }
+  if (options.autocomplete_open) {
+    return "acceptAutocomplete";
+  }
+  const wantsSend =
+    sendShortcut === "enter" ||
+    (sendShortcut === "modEnter" && (keyEvent.modifiers.ctrl || keyEvent.modifiers.meta));
+  if (!wantsSend) {
+    return "insertNewline";
+  }
+  return options.send_enabled ? "send" : "ignore";
 }
 
 function emptySidebar() {

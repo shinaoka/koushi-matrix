@@ -110,6 +110,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-send --server=con
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --artifact-dir=artifacts/linux-gui-local-create-room --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-space --server=conduit --artifact-dir=artifacts/linux-gui-local-create-space --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
 ```
 
 `local-login` proves the Linux client can boot against a disposable local
@@ -125,6 +126,11 @@ replying to a real timeline event. They assert the Rust-owned snapshot reacts
 (`rooms`/`spaces` counts grow; a `data-reply="true"` row renders) rather than
 relying on React-only state. These destructive operations stay local-only;
 matrix.org is reserved for the final compatibility gate.
+
+`local-settings` opens the real Settings UI, changes the composer send shortcut,
+and switches the theme to dark. It waits for the controls to reflect the
+Rust-owned settings snapshot (`aria-pressed="true"`) and for `data-theme="dark"`
+to be applied from that snapshot, not from localStorage.
 
 For fast iteration, build the debug app once and reuse it with `--skip-build`
 (optionally `--app-binary=PATH`):
@@ -148,4 +154,5 @@ gui_local_send=ok
 gui_local_create_room=ok
 gui_local_create_space=ok
 gui_local_reply=ok
+gui_local_settings=ok
 ```

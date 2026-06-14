@@ -29,6 +29,7 @@ const checks = [
   "scenario local-create-room",
   "scenario local-create-space",
   "scenario local-reply",
+  "scenario local-settings",
   "verify Xvfb virtual display",
   "verify tauri-driver and WebKitWebDriver",
   "verify debug Tauri build",
@@ -180,6 +181,10 @@ async function run() {
   }
   if (guiScenario === "local-reply") {
     await runLocalReplyScenario();
+    return;
+  }
+  if (guiScenario === "local-settings") {
+    await runLocalSettingsScenario();
     return;
   }
   throw new Error(`unsupported --scenario: ${guiScenario}`);
@@ -425,6 +430,53 @@ async function runLocalReplyScenario() {
   }
 }
 
+async function runLocalSettingsScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const keyboardSettings = await session.browser.$('button[aria-label="Keyboard settings"]');
+    await keyboardSettings.waitForDisplayed({ timeout: timeoutMs });
+    await keyboardSettings.click();
+    const modEnterButtonSelector =
+      "//button[normalize-space()='Ctrl+Enter sends' or normalize-space()='Cmd+Enter sends']";
+    const modEnterButton = await session.browser.$(modEnterButtonSelector);
+    await modEnterButton.waitForDisplayed({ timeout: timeoutMs });
+    await modEnterButton.click();
+    await waitForElementAttribute(
+      session.browser,
+      modEnterButtonSelector,
+      "aria-pressed",
+      "true",
+      timeoutMs,
+      "composer shortcut setting"
+    );
+
+    const userSettings = await session.browser.$('button[aria-label="User settings"]');
+    await userSettings.waitForDisplayed({ timeout: timeoutMs });
+    await userSettings.click();
+    const darkThemeButton = await session.browser.$("//button[normalize-space()='Dark']");
+    await darkThemeButton.waitForDisplayed({ timeout: timeoutMs });
+    await darkThemeButton.click();
+    await waitForElementAttribute(
+      session.browser,
+      "//button[normalize-space()='Dark']",
+      "aria-pressed",
+      "true",
+      timeoutMs,
+      "dark theme setting"
+    );
+    await waitForDocumentTheme(session.browser, "dark", timeoutMs);
+
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_settings=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function waitForQaTitle(browser, predicate, timeout, description) {
   const startedAt = Date.now();
   let lastTitle = "";
@@ -440,6 +492,37 @@ async function waitForQaTitle(browser, predicate, timeout, description) {
     await sleep(250);
   }
   throw new Error(`${description} did not reach its expected state. Last title: ${lastTitle}`);
+}
+
+async function waitForElementAttribute(browser, selector, attribute, expected, timeout, description) {
+  const startedAt = Date.now();
+  let lastValue = "";
+  while (Date.now() - startedAt < timeout) {
+    const element = await browser.$(selector);
+    if (await element.isExisting()) {
+      lastValue = (await element.getAttribute(attribute)) ?? "";
+      if (lastValue === expected) {
+        return;
+      }
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not reach ${attribute}=${expected}. Last value: ${lastValue}`
+  );
+}
+
+async function waitForDocumentTheme(browser, expected, timeout) {
+  const startedAt = Date.now();
+  let lastTheme = "";
+  while (Date.now() - startedAt < timeout) {
+    lastTheme = await browser.execute(() => document.documentElement.dataset.theme ?? "");
+    if (lastTheme === expected) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`document theme did not become ${expected}. Last theme: ${lastTheme}`);
 }
 
 async function waitForReplyLanded(browser, baselineMessages, timeout) {

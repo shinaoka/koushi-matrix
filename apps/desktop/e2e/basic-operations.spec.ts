@@ -570,6 +570,20 @@ test("thread composer drafts and sends through thread reply commands only", asyn
 
   await expect
     .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("resolve_composer_key_action")[0]?.args)
+    )
+    .toEqual({
+      surface: "thread",
+      keyEvent: {
+        key: "enter",
+        modifiers: { ctrl: false, meta: false, shift: false, alt: false },
+        is_composing: false
+      },
+      autocompleteOpen: false,
+      sendEnabled: true
+    });
+  await expect
+    .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("send_thread_reply")[0]?.args)
     )
     .toEqual({
@@ -625,4 +639,86 @@ test("reply send does not repair product state by cancelling reply mode", async 
 
   await expect.poll(() => invocationCount(page, "send_reply")).toBeGreaterThanOrEqual(1);
   expect(await invocationCount(page, "cancel_composer_reply")).toBe(0);
+});
+
+test("keyboard settings update composer send shortcut through Rust-owned commands", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page.getByRole("button", { name: "Keyboard settings" }).click();
+  await expect(page.getByText("Composer send shortcut")).toBeVisible();
+  await page.getByRole("button", { name: /^(Ctrl|Cmd)\+Enter sends$/ }).click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        keyboard: { composer_send_shortcut: "modEnter" }
+      }
+    });
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("Shortcut-controlled body");
+  await composer.press("Enter");
+
+  await expect.poll(() => invocationCount(page, "resolve_composer_key_action")).toBeGreaterThanOrEqual(1);
+  expect(await invocationCount(page, "send_text")).toBe(0);
+
+  await composer.press("Control+Enter");
+
+  await expect.poll(() => invocationCount(page, "send_text")).toBeGreaterThanOrEqual(1);
+});
+
+test("edit composer respects the Rust-owned composer shortcut resolver", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.getByRole("button", { name: "Keyboard settings" }).click();
+  await page.getByRole("button", { name: /^(Ctrl|Cmd)\+Enter sends$/ }).click();
+
+  const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
+  await row.hover();
+  await page.getByRole("button", { name: t("timeline.editMessage") }).first().click();
+  const editBody = page.getByRole("textbox", { name: t("timeline.editBody") });
+  await expect(editBody).toBeVisible();
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await editBody.fill("Resolver edited body");
+  await editBody.press("Enter");
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("resolve_composer_key_action")[0]?.args)
+    )
+    .toEqual({
+      surface: "edit",
+      keyEvent: {
+        key: "enter",
+        modifiers: { ctrl: false, meta: false, shift: false, alt: false },
+        is_composing: false
+      },
+      autocompleteOpen: false,
+      sendEnabled: true
+    });
+  expect(await invocationCount(page, "edit_message")).toBe(0);
+
+  await editBody.press("Control+Enter");
+
+  await expect.poll(() => invocationCount(page, "edit_message")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("edit_message")[0]?.args)
+    )
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      eventId: "$seed-event:example.invalid",
+      body: "Resolver edited body"
+    });
 });

@@ -7,7 +7,8 @@ import {
   shortcutConflictAudit,
   shortcutActionFromMenuPayload,
   shortcutIdForKeyboardEvent,
-  shortcutById
+  shortcutById,
+  formatModShortcut
 } from "./shortcuts";
 
 describe("shortcut registry", () => {
@@ -112,6 +113,18 @@ describe("shortcut registry", () => {
         altKey: false
       })
     ).toBe("toggleRightPanel");
+  });
+
+  test("formats modifier labels through explicit platform profiles", () => {
+    expect(formatModShortcut("Enter", { platform: "macos", modLabel: "Cmd" })).toBe(
+      "Cmd+Enter"
+    );
+    expect(
+      formatModShortcut("Enter", { platform: "windows", modLabel: "Ctrl" })
+    ).toBe("Ctrl+Enter");
+    expect(formatModShortcut("Enter", { platform: "linux", modLabel: "Ctrl" })).toBe(
+      "Ctrl+Enter"
+    );
   });
 
   test("accepts native menu payloads only for registered implemented actions", () => {

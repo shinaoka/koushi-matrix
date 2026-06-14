@@ -120,6 +120,11 @@ All agents implementing Rust-owned settings Phase A follow
   `--app-binary=PATH`) so each scenario trial skips the full Tauri rebuild:
   `npm --prefix apps/desktop run tauri build -- --debug --no-bundle`, then
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-create-room-fast --timeout-ms=180000`
+- Settings/composer-shortcut GUI changes use the same fast loop with
+  `--scenario=local-settings`. This opens the real Settings UI, changes the
+  Rust-owned composer shortcut and theme settings, and waits for
+  `aria-pressed="true"` / `data-theme="dark"` from the snapshot-driven UI:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-settings-fast --timeout-ms=180000`
 - When you only need a quick window-state sanity check, use the lane's cheap
   QA title helpers such as `--qa-title-ready` and `--qa-title-send-ready`
   before starting a full scenario run.

@@ -1,19 +1,26 @@
 import { Keyboard, RefreshCcw, ShieldCheck, SlidersHorizontal, UserRound } from "lucide-react";
 
 import { t } from "../i18n/messages";
-import type { SavedSessionInfo } from "../domain/types";
+import type { SettingsPatch, SettingsState, ThemePreference, SavedSessionInfo } from "../domain/types";
 
 export function UserSettingsPanel({
   currentSession,
   savedSessions,
+  settings,
   onOpenKeyboardSettings,
+  onUpdateSettings,
   onSwitchAccount
 }: {
   currentSession: SavedSessionInfo | null;
   savedSessions: SavedSessionInfo[];
+  settings: SettingsState;
   onOpenKeyboardSettings: () => void;
+  onUpdateSettings: (patch: SettingsPatch) => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
 }) {
+  const selectedTheme = settings.values.appearance.theme;
+  const isSaving = settings.persistence.kind === "saving";
+
   return (
     <section className="settings-panel user-settings-panel" aria-labelledby="user-settings-title">
       <header className="settings-panel-header">
@@ -68,6 +75,33 @@ export function UserSettingsPanel({
         </div>
       </section>
 
+      <section className="settings-section" aria-label="Appearance">
+        <div className="settings-section-heading">
+          <h3>Appearance</h3>
+          {isSaving ? <span className="settings-save-state">Saving</span> : null}
+        </div>
+        <div className="segmented-control" role="group" aria-label="Theme">
+          <ThemeButton
+            label="System"
+            selected={selectedTheme === "system"}
+            value="system"
+            onSelect={onUpdateSettings}
+          />
+          <ThemeButton
+            label="Light"
+            selected={selectedTheme === "light"}
+            value="light"
+            onSelect={onUpdateSettings}
+          />
+          <ThemeButton
+            label="Dark"
+            selected={selectedTheme === "dark"}
+            value="dark"
+            onSelect={onUpdateSettings}
+          />
+        </div>
+      </section>
+
       <section className="settings-section" aria-label={t("settings.security")}>
         <h3>{t("settings.security")}</h3>
         <div className="settings-detail-list">
@@ -107,6 +141,33 @@ export function UserSettingsPanel({
         </div>
       </section>
     </section>
+  );
+}
+
+function ThemeButton({
+  label,
+  selected,
+  value,
+  onSelect
+}: {
+  label: string;
+  selected: boolean;
+  value: ThemePreference;
+  onSelect: (patch: SettingsPatch) => void;
+}) {
+  return (
+    <button
+      className={`segmented-control-option ${selected ? "is-selected" : ""}`}
+      type="button"
+      aria-pressed={selected}
+      onClick={() => {
+        if (!selected) {
+          onSelect({ appearance: { theme: value } });
+        }
+      }}
+    >
+      {label}
+    </button>
   );
 }
 

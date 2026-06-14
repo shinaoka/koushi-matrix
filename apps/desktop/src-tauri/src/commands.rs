@@ -18,7 +18,10 @@ use matrix_desktop_core::{
     PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand, SearchScope,
     SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
 };
-use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest, SessionInfo, SettingsPatch};
+use matrix_desktop_state::{
+    AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
+    LoginRequest, RecoveryRequest, SessionInfo, SettingsPatch,
+};
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
 #[cfg(any(debug_assertions, test))]
@@ -428,6 +431,26 @@ pub async fn update_settings(
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn resolve_composer_key_action(
+    surface: ComposerSurface,
+    key_event: ComposerKeyEvent,
+    autocomplete_open: bool,
+    send_enabled: bool,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<ComposerResolvedAction, String> {
+    let snapshot = state.connection.lock().await.snapshot();
+    Ok(matrix_desktop_state::resolve_composer_key_action(
+        key_event,
+        ComposerResolverContext {
+            surface,
+            send_shortcut: snapshot.settings.values.keyboard.composer_send_shortcut,
+            autocomplete_open,
+            send_enabled,
+        },
+    ))
 }
 
 #[tauri::command]
@@ -1588,8 +1611,7 @@ mod tests {
     };
     use matrix_desktop_state::{AppState, AuthSecret, LoginRequest, SessionInfo, SessionState};
     use matrix_desktop_state::{
-        AppearanceSettings, LocaleSettings, SettingsPatch, TextDirectionPreference,
-        ThemePreference,
+        AppearanceSettings, LocaleSettings, SettingsPatch, TextDirectionPreference, ThemePreference,
     };
 
     use super::QaControlCommand;
@@ -1602,12 +1624,11 @@ mod tests {
         build_restart_sync_command, build_select_room_command, build_select_space_command,
         build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
         build_set_space_child_command, build_set_thread_composer_draft_command,
-        build_update_settings_command,
         build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
-        build_switch_account_command, build_toggle_reaction_command, parse_qa_control_pipe_line,
-        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
-        resolve_search_scope_from_active_room,
+        build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
+        parse_qa_control_pipe_line, parse_qa_login_pipe_payload, qa_recovery_prompt_is_available,
+        qa_window_title_string, resolve_search_scope_from_active_room,
     };
     use matrix_desktop_state::RoomSummary;
 
@@ -2319,6 +2340,33 @@ mod tests {
         assert!(
             commands_source.contains(route_name),
             "Tauri command should route through the Rust settings state machine"
+        );
+        assert!(
+            lib_source.contains(registration_name),
+            "Tauri command should be registered in generate_handler"
+        );
+    }
+
+    #[test]
+    fn composer_key_resolver_command_contract_is_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        let command_name = "pub async fn resolve_composer_key_action";
+        let route_name = "matrix_desktop_state::resolve_composer_key_action";
+        let settings_token = "settings.values.keyboard.composer_send_shortcut";
+        let registration_name = "commands::resolve_composer_key_action";
+
+        assert!(
+            commands_source.contains(command_name),
+            "Tauri command should expose resolve_composer_key_action"
+        );
+        assert!(
+            commands_source.contains(route_name),
+            "Tauri command should route through the Rust-owned resolver"
+        );
+        assert!(
+            commands_source.contains(settings_token),
+            "resolver should derive the send shortcut from Rust-owned settings"
         );
         assert!(
             lib_source.contains(registration_name),
