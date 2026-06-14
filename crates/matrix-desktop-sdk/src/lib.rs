@@ -1,8 +1,8 @@
 use futures_util::{Stream, StreamExt};
 pub use matrix_desktop_state::E2eeRecoveryState;
 use matrix_desktop_state::{
-    LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, RoomAttentionSummary, SessionInfo,
-    room_attention_summary,
+    CrossSigningStatus, KeyBackupStatus, LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest,
+    RoomAttentionSummary, SessionInfo, room_attention_summary,
 };
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::room::ParentSpace;
@@ -31,6 +31,190 @@ pub struct LoginDiscovery {
 }
 
 pub type E2eeRecoveryStateStream = Pin<Box<dyn Stream<Item = E2eeRecoveryState> + Send>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MatrixCrossSigningStatus {
+    pub has_master: bool,
+    pub has_self_signing: bool,
+    pub has_user_signing: bool,
+}
+
+#[derive(Clone, Eq, Error, PartialEq)]
+pub enum E2eeTrustError {
+    #[error("Matrix encryption is not initialized")]
+    NoOlmMachine,
+    #[error("Matrix SDK trust operation failed")]
+    Sdk(String),
+}
+
+impl fmt::Debug for E2eeTrustError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoOlmMachine => formatter.write_str("NoOlmMachine"),
+            Self::Sdk(_) => formatter.write_str("Sdk(..)"),
+        }
+    }
+}
+
+impl From<matrix_sdk::Error> for E2eeTrustError {
+    fn from(error: matrix_sdk::Error) -> Self {
+        match error {
+            matrix_sdk::Error::NoOlmMachine => Self::NoOlmMachine,
+            other => Self::Sdk(other.to_string()),
+        }
+    }
+}
+
+impl From<matrix_sdk::encryption::recovery::RecoveryError> for E2eeTrustError {
+    fn from(error: matrix_sdk::encryption::recovery::RecoveryError) -> Self {
+        Self::Sdk(error.to_string())
+    }
+}
+
+pub fn map_cross_signing_status_to_desktop(
+    status: Option<MatrixCrossSigningStatus>,
+) -> CrossSigningStatus {
+    match status {
+        None => CrossSigningStatus::Missing,
+        Some(status) if status.has_master && status.has_self_signing && status.has_user_signing => {
+            CrossSigningStatus::Trusted
+        }
+        Some(_) => CrossSigningStatus::NotTrusted,
+    }
+}
+
+pub async fn cross_signing_status(
+    session: &MatrixClientSession,
+) -> Result<CrossSigningStatus, E2eeTrustError> {
+    let status = session
+        .client()
+        .encryption()
+        .cross_signing_status()
+        .await
+        .map(|status| MatrixCrossSigningStatus {
+            has_master: status.has_master,
+            has_self_signing: status.has_self_signing,
+            has_user_signing: status.has_user_signing,
+        });
+    Ok(map_cross_signing_status_to_desktop(status))
+}
+
+pub async fn bootstrap_cross_signing(
+    session: &MatrixClientSession,
+) -> Result<CrossSigningStatus, E2eeTrustError> {
+    session
+        .client()
+        .encryption()
+        .bootstrap_cross_signing(None)
+        .await?;
+    cross_signing_status(session).await
+}
+
+pub async fn enable_key_backup(
+    session: &MatrixClientSession,
+) -> Result<KeyBackupStatus, E2eeTrustError> {
+    let encryption = session.client().encryption();
+    encryption.recovery().enable_backup().await?;
+    Ok(map_backup_state_to_desktop(encryption.backups().state()))
+}
+
+pub fn map_backup_state_to_desktop(
+    state: matrix_sdk::encryption::backups::BackupState,
+) -> KeyBackupStatus {
+    use matrix_sdk::encryption::backups::BackupState;
+
+    match state {
+        BackupState::Unknown => KeyBackupStatus::Unknown,
+        BackupState::Creating | BackupState::Enabling | BackupState::Resuming => {
+            KeyBackupStatus::Enabling { request_id: 0 }
+        }
+        BackupState::Enabled => KeyBackupStatus::Enabled {
+            version: "available".to_owned(),
+        },
+        BackupState::Downloading => KeyBackupStatus::Restoring {
+            request_id: 0,
+            version: None,
+            restored_rooms: 0,
+            total_rooms: None,
+        },
+        BackupState::Disabling => KeyBackupStatus::Disabled,
+    }
+}
+
+#[cfg(test)]
+mod e2ee_trust_tests {
+    use matrix_desktop_state::{CrossSigningStatus, KeyBackupStatus};
+    use matrix_sdk::encryption::backups::BackupState;
+
+    use super::{
+        E2eeTrustError, MatrixCrossSigningStatus, bootstrap_cross_signing, cross_signing_status,
+        enable_key_backup, map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
+    };
+
+    #[test]
+    fn cross_signing_status_maps_to_private_data_free_desktop_status() {
+        assert_eq!(
+            map_cross_signing_status_to_desktop(None),
+            CrossSigningStatus::Missing
+        );
+        assert_eq!(
+            map_cross_signing_status_to_desktop(Some(MatrixCrossSigningStatus {
+                has_master: true,
+                has_self_signing: true,
+                has_user_signing: true,
+            })),
+            CrossSigningStatus::Trusted
+        );
+        assert_eq!(
+            map_cross_signing_status_to_desktop(Some(MatrixCrossSigningStatus {
+                has_master: true,
+                has_self_signing: false,
+                has_user_signing: true,
+            })),
+            CrossSigningStatus::NotTrusted
+        );
+    }
+
+    #[test]
+    fn key_backup_state_maps_to_private_data_free_desktop_status() {
+        assert_eq!(
+            map_backup_state_to_desktop(BackupState::Unknown),
+            KeyBackupStatus::Unknown
+        );
+        assert_eq!(
+            map_backup_state_to_desktop(BackupState::Enabled),
+            KeyBackupStatus::Enabled {
+                version: "available".to_owned(),
+            }
+        );
+        assert_eq!(
+            map_backup_state_to_desktop(BackupState::Downloading),
+            KeyBackupStatus::Restoring {
+                request_id: 0,
+                version: None,
+                restored_rooms: 0,
+                total_rooms: None,
+            }
+        );
+    }
+
+    #[test]
+    fn e2ee_trust_error_debug_redacts_sdk_details() {
+        let error = E2eeTrustError::Sdk("raw matrix sdk error with @alice:example.test".to_owned());
+        let debug = format!("{error:?}");
+
+        assert!(!debug.contains("@alice:example.test"));
+        assert!(!debug.contains("raw matrix sdk error"));
+        assert!(debug.contains("Sdk"));
+    }
+
+    #[test]
+    fn e2ee_trust_public_async_api_is_exposed() {
+        let _ = cross_signing_status;
+        let _ = bootstrap_cross_signing;
+        let _ = enable_key_backup;
+    }
+}
 
 #[derive(Clone)]
 pub struct MatrixClientStoreConfig {

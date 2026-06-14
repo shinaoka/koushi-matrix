@@ -368,10 +368,24 @@ stateDiagram-v2
   `CancelVerification`, `BootstrapCrossSigning`, `EnableKeyBackup`,
   `RestoreKeyBackup`, and `ResetIdentity`. These commands are ready-session
   gated and redact verification targets / backup versions in `Debug`.
+- Production `CoreCommand::Account` trust commands are projected through the
+  reducer before actor routing. This is required even though the SDK work
+  happens in `AccountActor`: pending state such as `Bootstrapping`,
+  `Enabling`, and `Resetting` must be Rust-owned `AppState`, not React-local
+  state inferred after button clicks.
 - `CoreEvent::E2eeTrust` owns the typed event surface for verification
   progress, cross-signing status, key-backup status, and identity reset. The
   event payload is structured for UI consumption; event `Debug` redacts account
   keys and verification targets so QA output remains private-data-free.
+- `AccountActor` SDK results settle the reducer with kind-only actions and emit
+  typed `CoreEvent::E2eeTrust` updates. The SDK wrapper maps Matrix SDK
+  cross-signing and backup states to app DTOs before they cross the
+  core/state boundary. Until a public SDK backup-version accessor is used, an
+  enabled backup may be surfaced as a private-data-free `available` version
+  sentinel; local-homeserver proof must tighten this before issue closure.
+- Actor-side unavailable paths must also settle any already-projected pending
+  trust state with the matching reducer failure action. `OperationFailed`
+  alone is a transport error signal; it is not a state-machine transition.
 - The fixture/demo backend reports E2EE trust effects as unavailable until the
   `AccountActor` SDK implementation lands. It must not silently discard those
   effects.

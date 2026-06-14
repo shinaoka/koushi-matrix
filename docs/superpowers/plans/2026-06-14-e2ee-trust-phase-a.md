@@ -25,9 +25,17 @@ Canon consulted:
 
 ## Phase Boundary
 
-This slice does not call Matrix SDK verification or key-backup APIs yet and
-does not add React controls. It establishes the Rust-owned state and typed
+The first slice did not call Matrix SDK verification or key-backup APIs and did
+not add React controls. It established the Rust-owned state and typed
 command/event surface that later AccountActor and GUI work must consume.
+
+The follow-up SDK bridge slice keeps the same Phase A boundary: production
+`CoreCommand::Account` trust commands project reducer pending state before
+`AccountActor` routing, and `AccountActor` calls `matrix-desktop-sdk`
+private-data-free wrappers for cross-signing bootstrap and key-backup enable.
+Device verification, key-backup restore with real progress/version evidence,
+identity reset, local homeserver QA tokens, and all GUI controls remain outside
+this slice.
 
 ## Verification
 
@@ -35,6 +43,7 @@ Run at minimum:
 
 ```bash
 cargo test -p matrix-desktop-state --test e2ee_trust_state
+cargo test -p matrix-desktop-sdk e2ee_trust_tests
 cargo test -p matrix-desktop-core
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml dto::tests
 ```

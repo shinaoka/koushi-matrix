@@ -32,12 +32,13 @@ use futures_util::StreamExt;
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
-    AppAction, E2eeRecoveryState, LoginRequest, RecoveryMethod, RecoveryRequest, SessionInfo,
+    AppAction, CrossSigningStatus, E2eeRecoveryState, KeyBackupStatus, LoginRequest,
+    RecoveryMethod, RecoveryRequest, SessionInfo, TrustOperationFailureKind, VerificationFlowState,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
-use crate::event::{AccountEvent, CoreEvent};
+use crate::event::{AccountEvent, CoreEvent, E2eeTrustEvent};
 use crate::failure::{CoreFailure, LoginFailureKind};
 use crate::ids::{AccountKey, RequestId};
 use crate::room::{RoomActorHandle, RoomMessage};
@@ -389,16 +390,145 @@ impl AccountActor {
             } => {
                 self.handle_submit_recovery(request_id, request).await;
             }
-            AccountCommand::RequestVerification { request_id, .. }
-            | AccountCommand::AcceptVerification { request_id }
-            | AccountCommand::ConfirmSasVerification { request_id }
-            | AccountCommand::CancelVerification { request_id }
-            | AccountCommand::BootstrapCrossSigning { request_id }
-            | AccountCommand::EnableKeyBackup { request_id }
-            | AccountCommand::RestoreKeyBackup { request_id, .. }
-            | AccountCommand::ResetIdentity { request_id } => {
-                self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+            AccountCommand::BootstrapCrossSigning { request_id } => {
+                self.handle_bootstrap_cross_signing(request_id).await;
             }
+            AccountCommand::EnableKeyBackup { request_id } => {
+                self.handle_enable_key_backup(request_id).await;
+            }
+            AccountCommand::RequestVerification { request_id, target } => {
+                let kind = TrustOperationFailureKind::Sdk;
+                let events = self
+                    .active_account_key()
+                    .map(|account_key| {
+                        CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress {
+                            account_key,
+                            state: VerificationFlowState::Failed {
+                                request_id: request_id.sequence,
+                                target,
+                                kind,
+                            },
+                        })
+                    })
+                    .into_iter()
+                    .collect();
+                self.emit_unavailable_trust_operation(
+                    request_id,
+                    vec![AppAction::VerificationFailed {
+                        request_id: request_id.sequence,
+                        kind,
+                    }],
+                    events,
+                );
+            }
+            AccountCommand::AcceptVerification { request_id }
+            | AccountCommand::ConfirmSasVerification { request_id }
+            | AccountCommand::CancelVerification { request_id } => {
+                self.emit_unavailable_trust_operation(
+                    request_id,
+                    vec![AppAction::VerificationFailed {
+                        request_id: request_id.sequence,
+                        kind: TrustOperationFailureKind::Sdk,
+                    }],
+                    Vec::new(),
+                );
+            }
+            AccountCommand::RestoreKeyBackup { request_id, .. } => {
+                let kind = TrustOperationFailureKind::Sdk;
+                let events = self
+                    .active_account_key()
+                    .map(|account_key| {
+                        CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                            account_key,
+                            status: KeyBackupStatus::Failed {
+                                request_id: request_id.sequence,
+                                kind,
+                            },
+                        })
+                    })
+                    .into_iter()
+                    .collect();
+                self.emit_unavailable_trust_operation(
+                    request_id,
+                    vec![AppAction::KeyBackupFailed {
+                        request_id: request_id.sequence,
+                        kind,
+                    }],
+                    events,
+                );
+            }
+            AccountCommand::ResetIdentity { request_id } => {
+                let kind = TrustOperationFailureKind::Sdk;
+                let events = self
+                    .active_account_key()
+                    .map(|account_key| {
+                        vec![
+                            CoreEvent::E2eeTrust(E2eeTrustEvent::CrossSigningChanged {
+                                account_key: account_key.clone(),
+                                status: CrossSigningStatus::Failed {
+                                    request_id: request_id.sequence,
+                                    kind,
+                                },
+                            }),
+                            CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged {
+                                account_key,
+                                request_id: None,
+                            }),
+                        ]
+                    })
+                    .unwrap_or_default();
+                self.emit_unavailable_trust_operation(
+                    request_id,
+                    vec![AppAction::ResetIdentityFailed {
+                        request_id: request_id.sequence,
+                        kind,
+                    }],
+                    events,
+                );
+            }
+        }
+    }
+
+    async fn handle_bootstrap_cross_signing(&self, request_id: RequestId) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::BootstrapCrossSigningFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+        let account_key = AccountKey(session.info.user_id.clone());
+        let result = matrix_desktop_sdk::bootstrap_cross_signing(&session).await;
+        let (actions, events) =
+            project_bootstrap_cross_signing_result(request_id, account_key, result);
+        self.reduce(actions);
+        for event in events {
+            self.emit(event);
+        }
+    }
+
+    async fn handle_enable_key_backup(&self, request_id: RequestId) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::KeyBackupFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+        let account_key = AccountKey(session.info.user_id.clone());
+        let result = matrix_desktop_sdk::enable_key_backup(&session).await;
+        let (actions, events) = project_enable_key_backup_result(request_id, account_key, result);
+        self.reduce(actions);
+        for event in events {
+            self.emit(event);
         }
     }
 
@@ -868,6 +998,31 @@ impl AccountActor {
         });
     }
 
+    fn active_account_key(&self) -> Option<AccountKey> {
+        self.session
+            .as_ref()
+            .map(|session| AccountKey(session.info.user_id.clone()))
+    }
+
+    fn emit_unavailable_trust_operation(
+        &self,
+        request_id: RequestId,
+        actions: Vec<AppAction>,
+        events: Vec<CoreEvent>,
+    ) {
+        let failure = if self.session.is_some() {
+            CoreFailure::LocalEncryptionUnavailable
+        } else {
+            CoreFailure::SessionRequired
+        };
+
+        self.reduce(actions);
+        for event in events {
+            self.emit(event);
+        }
+        self.emit_failure(request_id, failure);
+    }
+
     fn reduce(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.try_send(actions);
     }
@@ -965,6 +1120,119 @@ fn classify_recovery_error(
             } else {
                 RecoveryFailureKind::Server
             }
+        }
+    }
+}
+
+fn classify_e2ee_trust_error(
+    error: &matrix_desktop_sdk::E2eeTrustError,
+) -> TrustOperationFailureKind {
+    match error {
+        matrix_desktop_sdk::E2eeTrustError::NoOlmMachine => TrustOperationFailureKind::Sdk,
+        matrix_desktop_sdk::E2eeTrustError::Sdk(message) => {
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("timeout") {
+                TrustOperationFailureKind::Timeout
+            } else if lower.contains("forbidden")
+                || lower.contains("m_forbidden")
+                || lower.contains("401")
+                || lower.contains("403")
+            {
+                TrustOperationFailureKind::Forbidden
+            } else if lower.contains("network")
+                || lower.contains("connection")
+                || lower.contains("connect")
+            {
+                TrustOperationFailureKind::Network
+            } else {
+                TrustOperationFailureKind::Sdk
+            }
+        }
+    }
+}
+
+fn project_bootstrap_cross_signing_result(
+    request_id: RequestId,
+    account_key: AccountKey,
+    result: Result<matrix_desktop_state::CrossSigningStatus, matrix_desktop_sdk::E2eeTrustError>,
+) -> (Vec<AppAction>, Vec<CoreEvent>) {
+    match result {
+        Ok(status) => (
+            vec![AppAction::CrossSigningStatusChanged {
+                status: status.clone(),
+            }],
+            vec![CoreEvent::E2eeTrust(E2eeTrustEvent::CrossSigningChanged {
+                account_key,
+                status,
+            })],
+        ),
+        Err(error) => {
+            let kind = classify_e2ee_trust_error(&error);
+            let status = matrix_desktop_state::CrossSigningStatus::Failed {
+                request_id: request_id.sequence,
+                kind,
+            };
+            (
+                vec![AppAction::BootstrapCrossSigningFailed {
+                    request_id: request_id.sequence,
+                    kind,
+                }],
+                vec![CoreEvent::E2eeTrust(E2eeTrustEvent::CrossSigningChanged {
+                    account_key,
+                    status,
+                })],
+            )
+        }
+    }
+}
+
+fn project_enable_key_backup_result(
+    request_id: RequestId,
+    account_key: AccountKey,
+    result: Result<matrix_desktop_state::KeyBackupStatus, matrix_desktop_sdk::E2eeTrustError>,
+) -> (Vec<AppAction>, Vec<CoreEvent>) {
+    match result {
+        Ok(matrix_desktop_state::KeyBackupStatus::Enabled { version }) => {
+            let status = matrix_desktop_state::KeyBackupStatus::Enabled {
+                version: version.clone(),
+            };
+            (
+                vec![AppAction::KeyBackupEnabled {
+                    request_id: request_id.sequence,
+                    version,
+                }],
+                vec![CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                    account_key,
+                    status,
+                })],
+            )
+        }
+        Ok(status) => (
+            vec![AppAction::KeyBackupFailed {
+                request_id: request_id.sequence,
+                kind: TrustOperationFailureKind::Sdk,
+            }],
+            vec![CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                account_key,
+                status,
+            })],
+        ),
+        Err(error) => {
+            let kind = classify_e2ee_trust_error(&error);
+            let status = matrix_desktop_state::KeyBackupStatus::Failed {
+                request_id: request_id.sequence,
+                kind,
+            };
+            (
+                vec![AppAction::KeyBackupFailed {
+                    request_id: request_id.sequence,
+                    kind,
+                }],
+                vec![CoreEvent::E2eeTrust(E2eeTrustEvent::KeyBackupChanged {
+                    account_key,
+                    status,
+                })],
+            )
         }
     }
 }
@@ -1422,5 +1690,147 @@ mod tests {
             }
             other => panic!("expected OperationFailed(SessionRequired), got {other:?}"),
         }
+    }
+
+    /// Network-free: E2EE trust commands are ready-session operations. Without
+    /// an active store-backed session they must fail as SessionRequired, not as
+    /// local-encryption unavailable. LocalEncryptionUnavailable is reserved for
+    /// store/key initialization failure, not for command gating.
+    #[tokio::test]
+    async fn e2ee_trust_commands_without_session_emit_session_required() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::BootstrapCrossSigning { request_id }
+                ))
+                .await
+        );
+
+        let actions = action_rx.recv().await.expect("trust failure action batch");
+        assert_eq!(
+            actions,
+            vec![AppAction::BootstrapCrossSigningFailed {
+                request_id: request_id.sequence,
+                kind: matrix_desktop_state::TrustOperationFailureKind::Sdk,
+            }]
+        );
+
+        match event_rx.recv().await.expect("event") {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, CoreFailure::SessionRequired);
+            }
+            other => panic!("expected OperationFailed(SessionRequired), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn e2ee_trust_error_classification_is_kind_only() {
+        assert_eq!(
+            classify_e2ee_trust_error(&matrix_desktop_sdk::E2eeTrustError::NoOlmMachine),
+            matrix_desktop_state::TrustOperationFailureKind::Sdk
+        );
+        assert_eq!(
+            classify_e2ee_trust_error(&matrix_desktop_sdk::E2eeTrustError::Sdk(
+                "timeout while talking to @alice:example.test".to_owned()
+            )),
+            matrix_desktop_state::TrustOperationFailureKind::Timeout
+        );
+        assert_eq!(
+            classify_e2ee_trust_error(&matrix_desktop_sdk::E2eeTrustError::Sdk(
+                "M_FORBIDDEN".to_owned()
+            )),
+            matrix_desktop_state::TrustOperationFailureKind::Forbidden
+        );
+    }
+
+    #[test]
+    fn e2ee_trust_sdk_results_project_actions_and_typed_events() {
+        let request_id = test_request_id();
+        let account_key = AccountKey("@alice:example.test".to_owned());
+
+        let (actions, events) = project_bootstrap_cross_signing_result(
+            request_id,
+            account_key.clone(),
+            Ok(matrix_desktop_state::CrossSigningStatus::Trusted),
+        );
+        assert_eq!(
+            actions,
+            vec![AppAction::CrossSigningStatusChanged {
+                status: matrix_desktop_state::CrossSigningStatus::Trusted,
+            }]
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [CoreEvent::E2eeTrust(
+                crate::event::E2eeTrustEvent::CrossSigningChanged {
+                    status: matrix_desktop_state::CrossSigningStatus::Trusted,
+                    ..
+                }
+            )]
+        ));
+
+        let (actions, events) = project_bootstrap_cross_signing_result(
+            request_id,
+            account_key,
+            Err(matrix_desktop_sdk::E2eeTrustError::Sdk(
+                "timeout from @alice:example.test".to_owned(),
+            )),
+        );
+        assert_eq!(
+            actions,
+            vec![AppAction::BootstrapCrossSigningFailed {
+                request_id: request_id.sequence,
+                kind: matrix_desktop_state::TrustOperationFailureKind::Timeout,
+            }]
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [CoreEvent::E2eeTrust(
+                crate::event::E2eeTrustEvent::CrossSigningChanged {
+                    status: matrix_desktop_state::CrossSigningStatus::Failed {
+                        kind: matrix_desktop_state::TrustOperationFailureKind::Timeout,
+                        ..
+                    },
+                    ..
+                }
+            )]
+        ));
+        let debug = format!("{events:?}");
+        assert!(!debug.contains("@alice:example.test"));
+        assert!(!debug.contains("timeout from"));
+
+        let (actions, events) = project_enable_key_backup_result(
+            request_id,
+            AccountKey("@alice:example.test".to_owned()),
+            Ok(matrix_desktop_state::KeyBackupStatus::Enabled {
+                version: "available".to_owned(),
+            }),
+        );
+        assert_eq!(
+            actions,
+            vec![AppAction::KeyBackupEnabled {
+                request_id: request_id.sequence,
+                version: "available".to_owned(),
+            }]
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [CoreEvent::E2eeTrust(
+                crate::event::E2eeTrustEvent::KeyBackupChanged {
+                    status: matrix_desktop_state::KeyBackupStatus::Enabled { .. },
+                    ..
+                }
+            )]
+        ));
     }
 }

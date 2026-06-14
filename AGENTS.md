@@ -221,6 +221,21 @@ All agents implementing the i18n GUI wiring follow
   AccountActor SDK implementation lands. The fixture/demo backend should return
   typed unavailable/failure actions for trust effects and must not silently
   discard them.
+- In production, `CoreCommand::Account` E2EE trust commands must be projected
+  through the reducer before `AccountActor` routing. If this is skipped, the
+  GUI can only infer pending trust state locally, violating the Rust-owned state
+  machine rule.
+- `matrix-desktop-sdk` is the SDK-facing boundary for E2EE trust operations.
+  It maps SDK cross-signing/backup states into private-data-free
+  `matrix-desktop-state` DTOs and redacts SDK error details in `Debug`. Do not
+  let raw SDK trust errors, account keys, verification targets, or backup
+  version identifiers leak through normal core events or QA output.
+- If an E2EE trust `CoreCommand::Account` operation has already projected
+  pending reducer state but the actor cannot complete it (session mismatch,
+  unavailable local encryption, or an unimplemented SDK path), the actor must
+  also send the matching reducer failure action. An `OperationFailed` event
+  alone leaves Rust-owned pending state stuck and pushes recovery semantics
+  toward the GUI.
 - WebDriver `waitForDisplayed`/`click` does NOT reveal hover-gated controls.
   Timeline row actions (`.message-action` inside `.message-actions`) are
   `opacity:0` until `.message:hover`/`:focus-within`, so a direct

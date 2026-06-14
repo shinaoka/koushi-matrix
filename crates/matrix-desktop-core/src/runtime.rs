@@ -17,7 +17,9 @@ use matrix_desktop_state::{
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::account::{AccountActorHandle, AccountMessage};
-use crate::command::{AppCommand, CoreCommand, SearchCommand, SearchScope, TimelineCommand};
+use crate::command::{
+    AccountCommand, AppCommand, CoreCommand, SearchCommand, SearchScope, TimelineCommand,
+};
 use crate::event::{AppStateSnapshot, CoreEvent};
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -271,6 +273,10 @@ impl AppActor {
 
         match command {
             CoreCommand::Account(account_command) => {
+                let effects = account_command_projected_action(&account_command)
+                    .map(|action| reduce(&mut self.state, action))
+                    .unwrap_or_default();
+                let projected_state_changed = !effects.is_empty();
                 // Route to AccountActor; it will produce AppActions and
                 // CoreEvents. AppActor does not immediately know the result —
                 // it observes it via the action channel.
@@ -278,7 +284,7 @@ impl AppActor {
                     .account_actor
                     .send(AccountMessage::Command(account_command))
                     .await;
-                false
+                projected_state_changed
             }
             CoreCommand::App(app_command) => match app_command {
                 AppCommand::Shutdown { .. } => false,
@@ -693,6 +699,59 @@ fn map_core_search_scope_to_state(scope: SearchScope) -> AppSearchScope {
     match scope {
         SearchScope::Global => AppSearchScope::AllRooms,
         SearchScope::Room { room_id } => AppSearchScope::CurrentRoom { room_id },
+    }
+}
+
+fn account_command_projected_action(command: &AccountCommand) -> Option<AppAction> {
+    match command {
+        AccountCommand::RequestVerification { request_id, target } => {
+            Some(AppAction::VerificationRequested {
+                request_id: request_id.sequence,
+                target: target.clone(),
+            })
+        }
+        AccountCommand::AcceptVerification { request_id } => {
+            Some(AppAction::VerificationAccepted {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::ConfirmSasVerification { request_id } => {
+            Some(AppAction::VerificationConfirmed {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::CancelVerification { request_id } => {
+            Some(AppAction::VerificationCancelled {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::BootstrapCrossSigning { request_id } => {
+            Some(AppAction::BootstrapCrossSigningRequested {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::EnableKeyBackup { request_id } => {
+            Some(AppAction::EnableKeyBackupRequested {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::RestoreKeyBackup {
+            request_id,
+            version,
+        } => Some(AppAction::RestoreKeyBackupRequested {
+            request_id: request_id.sequence,
+            version: version.clone(),
+        }),
+        AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
+            request_id: request_id.sequence,
+        }),
+        AccountCommand::LoginPassword { .. }
+        | AccountCommand::RestoreSession { .. }
+        | AccountCommand::RestoreLastSession { .. }
+        | AccountCommand::QuerySavedSessions { .. }
+        | AccountCommand::SubmitRecovery { .. }
+        | AccountCommand::Logout { .. }
+        | AccountCommand::SwitchAccount { .. } => None,
     }
 }
 

@@ -512,10 +512,15 @@ architectural invariants:
   replacement event is not indexed as a standalone message.
 - **Device verification, cross-signing, key backup, and identity reset** are
   release-blocking E2EE trust work. Issue #13 Phase A establishes the
-  Rust-owned reducer state and typed `CoreCommand`/`CoreEvent` surface; SDK
-  actor implementation, local-homeserver proof, and GUI rendering remain
-  incomplete until the follow-up phases land. No design doc may claim E2EE
-  trust UX completeness until those phases prove device verification,
+  Rust-owned reducer state and typed `CoreCommand`/`CoreEvent` surface.
+  Production `CoreCommand::Account` trust commands project reducer pending
+  state before routing to `AccountActor`, so GUI work observes Rust-owned
+  progress rather than inventing pending/settle semantics. The first SDK-backed
+  actor slice wires cross-signing bootstrap and key-backup enable through
+  `matrix-desktop-sdk` private-data-free wrappers; device verification,
+  key-backup restore, identity reset, local-homeserver proof, and GUI rendering
+  remain incomplete until the follow-up phases land. No design doc may claim
+  E2EE trust UX completeness until those phases prove device verification,
   cross-signing trust, backed-up room-key restore, and identity reset
   headlessly before GUI wiring.
 
