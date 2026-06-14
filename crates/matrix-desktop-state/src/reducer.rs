@@ -399,6 +399,20 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             };
             vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
         }
+        AppAction::ResetIdentityAuthSubmitted { request_id } => {
+            if !matches!(
+                state.e2ee_trust.identity_reset,
+                IdentityResetState::AwaitingAuth {
+                    request_id: current_request_id,
+                    ..
+                } if current_request_id == request_id
+            ) {
+                return Vec::new();
+            }
+
+            state.e2ee_trust.identity_reset = IdentityResetState::Resetting { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+        }
         AppAction::ResetIdentityCompleted { request_id } => {
             if !identity_reset_request_matches(&state.e2ee_trust.identity_reset, request_id) {
                 return Vec::new();

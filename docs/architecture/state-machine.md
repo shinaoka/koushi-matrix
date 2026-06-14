@@ -343,6 +343,7 @@ stateDiagram-v2
     Idle --> Resetting: ResetIdentityRequested
     Failed --> Resetting: ResetIdentityRequested
     Resetting --> AwaitingAuth: ResetIdentityAuthRequired [matching request_id]
+    AwaitingAuth --> Resetting: ResetIdentityAuthSubmitted [matching request_id]
     Resetting --> Idle: ResetIdentityCompleted [matching request_id]
     AwaitingAuth --> Idle: ResetIdentityCompleted [matching request_id]
     Resetting --> Failed: ResetIdentityFailed [matching request_id]
@@ -368,7 +369,9 @@ stateDiagram-v2
   `AwaitingAuth` carries only a request id and coarse auth type
   (`uiaa`, `oauth`, or `unknown`). The SDK continuation handle remains private
   to `AccountActor` and is cancelled when the active account runtime is logged
-  out, switched, or shut down.
+  out, switched, or shut down. Auth continuation submission is also a
+  `CoreCommand::Account` path projected through the reducer before actor
+  routing; React must not call SDK/UIAA/OAuth continuation logic directly.
 - Failure state carries only `TrustOperationFailureKind` (`cancelled`,
   `mismatch`, `network`, `forbidden`, `timeout`, `sdk`). Raw SDK errors,
   private keys, recovery secrets, room keys, and key-backup secrets never enter

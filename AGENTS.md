@@ -235,7 +235,10 @@ All agents implementing the i18n GUI wiring follow
   (`Idle`, `Resetting`, `AwaitingAuth`, `Failed`), not as React-local state or a
   nullable request id. `AwaitingAuth` exposes only UIAA/OAuth/unknown auth type;
   the SDK handle stays inside `AccountActor` and must be cancelled on logout,
-  account switch, and actor shutdown.
+  account switch, and actor shutdown. Auth continuation submission must be a
+  `CoreCommand::Account` path that projects `ResetIdentityAuthSubmitted`
+  through the reducer before actor routing; the GUI must not own SDK/UIAA/OAuth
+  continuation semantics.
 - If an E2EE trust `CoreCommand::Account` operation has already projected
   pending reducer state but the actor cannot complete it (session mismatch,
   unavailable local encryption, or an unimplemented SDK path), the actor must

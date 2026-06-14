@@ -3,7 +3,9 @@
 
 use std::fmt;
 
-use matrix_desktop_state::{LoginRequest, RecoveryRequest, SettingsPatch, VerificationTarget};
+use matrix_desktop_state::{
+    IdentityResetAuthRequest, LoginRequest, RecoveryRequest, SettingsPatch, VerificationTarget,
+};
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
 
@@ -46,6 +48,7 @@ impl CoreCommand {
                 | AccountCommand::EnableKeyBackup { request_id }
                 | AccountCommand::RestoreKeyBackup { request_id, .. }
                 | AccountCommand::ResetIdentity { request_id }
+                | AccountCommand::SubmitIdentityResetAuth { request_id, .. }
                 | AccountCommand::Logout { request_id }
                 | AccountCommand::SwitchAccount { request_id, .. } => *request_id,
             },
@@ -274,6 +277,10 @@ pub enum AccountCommand {
     ResetIdentity {
         request_id: RequestId,
     },
+    SubmitIdentityResetAuth {
+        request_id: RequestId,
+        request: IdentityResetAuthRequest,
+    },
     Logout {
         request_id: RequestId,
     },
@@ -295,6 +302,7 @@ impl AccountCommand {
                 | Self::EnableKeyBackup { .. }
                 | Self::RestoreKeyBackup { .. }
                 | Self::ResetIdentity { .. }
+                | Self::SubmitIdentityResetAuth { .. }
         )
     }
 }
@@ -370,6 +378,14 @@ impl fmt::Debug for AccountCommand {
             Self::ResetIdentity { request_id } => formatter
                 .debug_struct("ResetIdentity")
                 .field("request_id", request_id)
+                .finish(),
+            Self::SubmitIdentityResetAuth {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("SubmitIdentityResetAuth")
+                .field("request_id", request_id)
+                .field("request", request)
                 .finish(),
             Self::Logout { request_id } => formatter
                 .debug_struct("Logout")

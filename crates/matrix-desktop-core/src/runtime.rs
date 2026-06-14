@@ -745,6 +745,11 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
             request_id: request_id.sequence,
         }),
+        AccountCommand::SubmitIdentityResetAuth { request_id, .. } => {
+            Some(AppAction::ResetIdentityAuthSubmitted {
+                request_id: request_id.sequence,
+            })
+        }
         AccountCommand::LoginPassword { .. }
         | AccountCommand::RestoreSession { .. }
         | AccountCommand::RestoreLastSession { .. }
@@ -939,6 +944,22 @@ mod tests {
         assert!(
             replacement_offset < effects_offset,
             "OpenFocusedContext must unsubscribe a different existing focused timeline before subscribing the replacement"
+        );
+    }
+
+    #[test]
+    fn identity_reset_auth_command_projects_pending_state_before_routing() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 7,
+        };
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::SubmitIdentityResetAuth {
+                request_id,
+                request: matrix_desktop_state::IdentityResetAuthRequest::OAuthApproved,
+            }),
+            Some(AppAction::ResetIdentityAuthSubmitted { request_id: 7 })
         );
     }
 

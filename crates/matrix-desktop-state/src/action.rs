@@ -125,6 +125,9 @@ pub enum AppAction {
         request_id: u64,
         auth_type: IdentityResetAuthType,
     },
+    ResetIdentityAuthSubmitted {
+        request_id: u64,
+    },
     ResetIdentityCompleted {
         request_id: u64,
     },
@@ -330,5 +333,23 @@ impl fmt::Debug for RecoveryRequest {
             .debug_struct("RecoveryRequest")
             .field("secret", &self.secret)
             .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub enum IdentityResetAuthRequest {
+    OAuthApproved,
+    UiaaPassword { password: AuthSecret },
+}
+
+impl fmt::Debug for IdentityResetAuthRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OAuthApproved => formatter.write_str("OAuthApproved"),
+            Self::UiaaPassword { password } => formatter
+                .debug_struct("UiaaPassword")
+                .field("password", password)
+                .finish(),
+        }
     }
 }

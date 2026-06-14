@@ -4,9 +4,10 @@
 use std::time::Duration;
 
 use matrix_desktop_state::{
-    AppAction, AppearanceSettings, AuthSecret, ComposerMode, CrossSigningStatus, LoginRequest,
-    RecoveryRequest, RoomSummary, SasEmoji, SearchState, SessionInfo, SessionState, SettingsPatch,
-    SettingsPersistenceState, ThemePreference, VerificationFlowState, VerificationTarget,
+    AppAction, AppearanceSettings, AuthSecret, ComposerMode, CrossSigningStatus,
+    IdentityResetAuthRequest, LoginRequest, RecoveryRequest, RoomSummary, SasEmoji, SearchState,
+    SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState, ThemePreference,
+    VerificationFlowState, VerificationTarget,
 };
 
 use crate::command::{
@@ -64,6 +65,12 @@ fn secret_bearing_commands_redact_debug() {
             secret: AuthSecret::new(RECOVERY),
         },
     });
+    let identity_reset_auth = CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
+        request_id: fake_request_id(),
+        request: IdentityResetAuthRequest::UiaaPassword {
+            password: AuthSecret::new(PASSWORD),
+        },
+    });
     let key = TimelineKey::room(AccountKey("acc".to_owned()), "!room:example.test");
     let send = CoreCommand::Timeline(TimelineCommand::SendText {
         request_id: fake_request_id(),
@@ -98,6 +105,7 @@ fn secret_bearing_commands_redact_debug() {
     for (command, secrets) in [
         (&login, vec![PASSWORD, "alice-login-name", "Alice Laptop"]),
         (&recovery, vec![RECOVERY]),
+        (&identity_reset_auth, vec![PASSWORD]),
         (&send, vec![BODY]),
         (&toggle_reaction, vec!["👍", "$evt"]),
         (&edit, vec![BODY]),
@@ -138,6 +146,10 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
             version: Some("backup-version-1".to_owned()),
         }),
         CoreCommand::Account(AccountCommand::ResetIdentity { request_id }),
+        CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
+            request_id,
+            request: IdentityResetAuthRequest::OAuthApproved,
+        }),
     ];
 
     for command in commands {

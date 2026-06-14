@@ -6,7 +6,7 @@ pub mod reducer;
 pub mod sidebar;
 pub mod state;
 
-pub use action::{AppAction, AuthSecret, LoginRequest, RecoveryRequest};
+pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
 pub use composer_shortcuts::{
     ComposerKey, ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction,
     ComposerResolverContext, ComposerSurface, resolve_composer_key_action,

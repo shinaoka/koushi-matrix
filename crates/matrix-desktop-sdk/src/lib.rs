@@ -1,8 +1,9 @@
 use futures_util::{Stream, StreamExt};
 pub use matrix_desktop_state::E2eeRecoveryState;
 use matrix_desktop_state::{
-    CrossSigningStatus, IdentityResetAuthType, KeyBackupStatus, LoginFlow, LoginFlowKind,
-    LoginRequest, RecoveryRequest, RoomAttentionSummary, SessionInfo, room_attention_summary,
+    CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType, KeyBackupStatus,
+    LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, RoomAttentionSummary, SessionInfo,
+    room_attention_summary,
 };
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::room::ParentSpace;
@@ -71,6 +72,41 @@ impl MatrixIdentityResetHandle {
 
     pub async fn cancel(&self) {
         self.inner.cancel().await;
+    }
+
+    pub async fn reset(
+        &self,
+        session: &MatrixClientSession,
+        request: &IdentityResetAuthRequest,
+    ) -> Result<(), E2eeTrustError> {
+        let auth = match request {
+            IdentityResetAuthRequest::OAuthApproved => None,
+            IdentityResetAuthRequest::UiaaPassword { password } => {
+                let matrix_sdk::encryption::CrossSigningResetAuthType::Uiaa(uiaa) =
+                    self.inner.auth_type()
+                else {
+                    return Err(E2eeTrustError::Sdk(
+                        "identity reset auth type mismatch".to_owned(),
+                    ));
+                };
+                let identifier = matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
+                    matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(
+                        session.info.user_id.clone(),
+                    ),
+                );
+                let mut password_auth = matrix_sdk::ruma::api::client::uiaa::Password::new(
+                    identifier,
+                    password.expose_secret().to_owned(),
+                );
+                password_auth.session.clone_from(&uiaa.session);
+                Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
+                    password_auth,
+                ))
+            }
+        };
+
+        self.inner.reset(auth).await?;
+        Ok(())
     }
 }
 
@@ -215,6 +251,14 @@ pub async fn reset_identity(
     })
 }
 
+pub async fn complete_identity_reset(
+    session: &MatrixClientSession,
+    handle: &MatrixIdentityResetHandle,
+    request: &IdentityResetAuthRequest,
+) -> Result<(), E2eeTrustError> {
+    handle.reset(session, request).await
+}
+
 pub fn map_backup_state_to_desktop(
     state: matrix_sdk::encryption::backups::BackupState,
 ) -> KeyBackupStatus {
@@ -245,7 +289,7 @@ mod e2ee_trust_tests {
 
     use super::{
         E2eeTrustError, MatrixCrossSigningStatus, MatrixIdentityResetAuthType,
-        bootstrap_cross_signing, cross_signing_status, enable_key_backup,
+        bootstrap_cross_signing, complete_identity_reset, cross_signing_status, enable_key_backup,
         map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
         map_identity_reset_auth_type_to_desktop, reset_identity,
     };
@@ -313,6 +357,7 @@ mod e2ee_trust_tests {
         let _ = bootstrap_cross_signing;
         let _ = enable_key_backup;
         let _ = reset_identity;
+        let _ = complete_identity_reset;
     }
 
     #[test]

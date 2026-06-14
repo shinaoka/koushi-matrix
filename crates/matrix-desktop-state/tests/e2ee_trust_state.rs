@@ -471,6 +471,58 @@ fn identity_reset_auth_required_is_rust_owned_and_request_correlated() {
 }
 
 #[test]
+fn identity_reset_auth_submission_returns_to_resetting_only_for_matching_flow() {
+    let mut state = ready_state();
+
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityAuthSubmitted { request_id: 24 },
+        )
+        .is_empty()
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityRequested { request_id: 24 },
+    );
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityAuthRequired {
+            request_id: 24,
+            auth_type: IdentityResetAuthType::OAuth,
+        },
+    );
+
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityAuthSubmitted { request_id: 99 },
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::AwaitingAuth {
+            request_id: 24,
+            auth_type: IdentityResetAuthType::OAuth,
+        }
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityAuthSubmitted { request_id: 24 },
+        ),
+        vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::Resetting { request_id: 24 }
+    );
+}
+
+#[test]
 fn identity_reset_auth_type_wire_values_are_stable() {
     assert_eq!(
         serde_json::to_value(IdentityResetAuthType::Uiaa).unwrap(),

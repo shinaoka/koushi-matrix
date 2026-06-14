@@ -35,10 +35,11 @@ The follow-up SDK bridge slice keeps the same Phase A boundary: production
 private-data-free wrappers for cross-signing bootstrap and key-backup enable.
 Identity reset now calls the SDK wrapper and projects immediate completion or a
 typed `AwaitingAuth` state with only UIAA/OAuth/unknown auth kind; the SDK
-continuation handle stays inside `AccountActor`. Device verification,
-key-backup restore with real progress/version evidence, identity-reset auth
-continuation, local homeserver QA tokens, and all GUI controls remain outside
-this slice.
+continuation handle stays inside `AccountActor`. The continuation slice adds
+`SubmitIdentityResetAuth` so OAuth approval and UIAA password submission
+also project through the reducer before the actor calls the SDK handle. Device
+verification, key-backup restore with real progress/version evidence, local
+homeserver QA tokens, and all GUI controls remain outside this slice.
 
 ## Verification
 

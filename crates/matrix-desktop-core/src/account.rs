@@ -410,6 +410,13 @@ impl AccountActor {
             AccountCommand::ResetIdentity { request_id } => {
                 self.handle_reset_identity(request_id).await;
             }
+            AccountCommand::SubmitIdentityResetAuth {
+                request_id,
+                request,
+            } => {
+                self.handle_submit_identity_reset_auth(request_id, request)
+                    .await;
+            }
             AccountCommand::RequestVerification { request_id, target } => {
                 let kind = TrustOperationFailureKind::Sdk;
                 let events = self
@@ -470,6 +477,56 @@ impl AccountActor {
                     }],
                     events,
                 );
+            }
+        }
+    }
+
+    async fn handle_submit_identity_reset_auth(
+        &mut self,
+        request_id: RequestId,
+        request: matrix_desktop_state::IdentityResetAuthRequest,
+    ) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.cancel_identity_reset_handle().await;
+                self.reduce(vec![AppAction::ResetIdentityFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+        let account_key = AccountKey(session.info.user_id.clone());
+        let result = match self.identity_reset_handle.as_ref() {
+            Some(handle) => {
+                matrix_desktop_sdk::complete_identity_reset(&session, handle, &request).await
+            }
+            None => Err(matrix_desktop_sdk::E2eeTrustError::Sdk(
+                "identity reset auth continuation missing".to_owned(),
+            )),
+        };
+
+        drop(request);
+
+        match result {
+            Ok(()) => {
+                self.identity_reset_handle = None;
+                let (actions, events) = project_reset_identity_completed(request_id, account_key);
+                self.reduce(actions);
+                for event in events {
+                    self.emit(event);
+                }
+            }
+            Err(error) => {
+                self.cancel_identity_reset_handle().await;
+                let (actions, events) =
+                    project_reset_identity_error(request_id, account_key, error);
+                self.reduce(actions);
+                for event in events {
+                    self.emit(event);
+                }
             }
         }
     }
@@ -1813,6 +1870,46 @@ mod tests {
         assert_eq!(
             actions,
             vec![AppAction::BootstrapCrossSigningFailed {
+                request_id: request_id.sequence,
+                kind: matrix_desktop_state::TrustOperationFailureKind::Sdk,
+            }]
+        );
+
+        match event_rx.recv().await.expect("event") {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, CoreFailure::SessionRequired);
+            }
+            other => panic!("expected OperationFailed(SessionRequired), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_reset_auth_without_session_settles_pending_state() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::SubmitIdentityResetAuth {
+                        request_id,
+                        request: matrix_desktop_state::IdentityResetAuthRequest::OAuthApproved,
+                    }
+                ))
+                .await
+        );
+
+        let actions = action_rx.recv().await.expect("trust failure action batch");
+        assert_eq!(
+            actions,
+            vec![AppAction::ResetIdentityFailed {
                 request_id: request_id.sequence,
                 kind: matrix_desktop_state::TrustOperationFailureKind::Sdk,
             }]
