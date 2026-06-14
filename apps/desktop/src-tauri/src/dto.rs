@@ -12,10 +12,10 @@
 use matrix_desktop_state::{
     AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState, DisplayPlatform,
     E2eeTrustState, FocusedContextState, InvitePreview, LiveSignalsState, LocaleDisplayProfile,
-    NavigationState, RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult,
-    SearchScope, SearchState, SessionState, SettingsState, SidebarModel, SpaceSummary, SyncState,
-    ThreadPaneState, TimelinePaneState, TypographyDisplayProfile, resolve_locale_display_profile,
-    resolve_typography_display_profile,
+    NavigationState, ProfileState, RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind,
+    SearchResult, SearchScope, SearchState, SessionState, SettingsState, SidebarModel,
+    SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState, TypographyDisplayProfile,
+    resolve_locale_display_profile, resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +56,7 @@ pub struct FrontendAppState {
     pub settings: SettingsState,
     pub locale_profile: LocaleDisplayProfile,
     pub typography_profile: TypographyDisplayProfile,
+    pub profile: ProfileState,
     pub sync: FrontendSyncState,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
@@ -74,20 +75,17 @@ pub struct FrontendAppState {
 impl From<AppState> for FrontendAppState {
     fn from(state: AppState) -> Self {
         let platform = frontend_display_platform();
-        let locale_profile = resolve_locale_display_profile(
-            &state.settings.values.locale,
-            platform,
-        );
-        let typography_profile = resolve_typography_display_profile(
-            &state.settings.values.typography,
-            platform,
-        );
+        let locale_profile =
+            resolve_locale_display_profile(&state.settings.values.locale, platform);
+        let typography_profile =
+            resolve_typography_display_profile(&state.settings.values.typography, platform);
         Self {
             session: state.session.into(),
             auth: state.auth,
             settings: state.settings,
             locale_profile,
             typography_profile,
+            profile: state.profile,
             sync: state.sync.into(),
             navigation: state.navigation,
             spaces: state.spaces,
@@ -441,8 +439,10 @@ mod tests {
 
     use super::{FrontendDesktopSnapshot, FrontendSyncState};
     use matrix_desktop_state::{
-        AppState, EmojiPreference, FontPreference, InvitePreview, LocaleSettings, RecoveryMethod,
-        SessionInfo, SessionState, SyncState, TextDirectionPreference, TypographySettings,
+        AppState, AvatarImage, AvatarThumbnailState, EmojiPreference, FontPreference,
+        InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod, RoomSummary, SessionInfo,
+        SessionState, SpaceSummary, SyncState, TextDirectionPreference, TypographySettings,
+        UserProfile,
     };
 
     fn booted_app_state() -> AppState {
@@ -535,8 +535,14 @@ mod tests {
         );
         // typography_profile must be present so React applies font and emoji
         // behavior from Rust-owned settings/profile resolution.
-        assert_eq!(value["state"]["typography_profile"]["font"], json!("system"));
-        assert_eq!(value["state"]["typography_profile"]["emoji"], json!("system"));
+        assert_eq!(
+            value["state"]["typography_profile"]["font"],
+            json!("system")
+        );
+        assert_eq!(
+            value["state"]["typography_profile"]["emoji"],
+            json!("system")
+        );
         assert_eq!(
             value["state"]["typography_profile"]["font_asset"],
             json!("systemFallback")
@@ -545,6 +551,15 @@ mod tests {
             value["state"]["typography_profile"]["emoji_asset"],
             json!("systemFallback")
         );
+        // profile must be present so React displays and submits profile updates
+        // from the Rust-owned profile state machine, never local component state.
+        assert_eq!(
+            value["state"]["profile"]["own"]["display_name"],
+            json!(null)
+        );
+        assert_eq!(value["state"]["profile"]["own"]["avatar"], json!(null));
+        assert_eq!(value["state"]["profile"]["users"], json!({}));
+        assert_eq!(value["state"]["profile"]["update"]["kind"], json!("idle"));
         // composer.mode must be present (default Plain) for the same reason.
         assert_eq!(
             value["state"]["timeline"]["composer"]["mode"],
@@ -558,6 +573,7 @@ mod tests {
         state.invites.push(InvitePreview {
             room_id: "!invite:matrix.org".to_owned(),
             display_name: "Project invite".to_owned(),
+            avatar: None,
             topic: Some("Project topic".to_owned()),
             inviter_display_name: Some("Inviter".to_owned()),
             is_dm: true,
@@ -572,11 +588,96 @@ mod tests {
                 {
                     "room_id": "!invite:matrix.org",
                     "display_name": "Project invite",
+                    "avatar": null,
                     "topic": "Project topic",
                     "inviter_display_name": "Inviter",
                     "is_dm": true
                 }
             ])
+        );
+    }
+
+    #[test]
+    fn frontend_snapshot_serializes_profile_and_summary_avatars() {
+        let mut state = booted_app_state();
+        let ready_avatar = AvatarImage {
+            mxc_uri: "mxc://matrix.org/avatar".to_owned(),
+            thumbnail: AvatarThumbnailState::Ready {
+                source_url: "asset://avatar".to_owned(),
+                width: Some(64),
+                height: Some(64),
+                mime_type: Some("image/png".to_owned()),
+            },
+        };
+        let room_avatar = AvatarImage {
+            mxc_uri: "mxc://matrix.org/room".to_owned(),
+            thumbnail: AvatarThumbnailState::NotRequested,
+        };
+        state.profile.own = OwnProfile {
+            display_name: Some("Alice".to_owned()),
+            avatar: Some(ready_avatar.clone()),
+        };
+        state.profile.users.insert(
+            "@bob:matrix.org".to_owned(),
+            UserProfile {
+                user_id: "@bob:matrix.org".to_owned(),
+                display_name: Some("Bob".to_owned()),
+                avatar: Some(ready_avatar),
+            },
+        );
+        state.spaces.push(SpaceSummary {
+            space_id: "!space:matrix.org".to_owned(),
+            display_name: "Space".to_owned(),
+            avatar: Some(room_avatar.clone()),
+            child_room_ids: vec![],
+        });
+        state.rooms.push(RoomSummary {
+            room_id: "!room:matrix.org".to_owned(),
+            display_name: "Room".to_owned(),
+            avatar: Some(room_avatar),
+            is_dm: false,
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            parent_space_ids: vec![],
+        });
+
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
+            .expect("snapshot should serialize");
+
+        assert_eq!(
+            value["state"]["profile"]["own"],
+            json!({
+                "display_name": "Alice",
+                "avatar": {
+                    "mxc_uri": "mxc://matrix.org/avatar",
+                    "thumbnail": {
+                        "kind": "ready",
+                        "source_url": "asset://avatar",
+                        "width": 64,
+                        "height": 64,
+                        "mime_type": "image/png"
+                    }
+                }
+            })
+        );
+        assert_eq!(
+            value["state"]["profile"]["users"]["@bob:matrix.org"]["avatar"]["thumbnail"]["kind"],
+            json!("ready")
+        );
+        assert_eq!(
+            value["state"]["spaces"][0]["avatar"],
+            json!({
+                "mxc_uri": "mxc://matrix.org/room",
+                "thumbnail": { "kind": "notRequested" }
+            })
+        );
+        assert_eq!(
+            value["state"]["rooms"][0]["avatar"],
+            json!({
+                "mxc_uri": "mxc://matrix.org/room",
+                "thumbnail": { "kind": "notRequested" }
+            })
         );
     }
 

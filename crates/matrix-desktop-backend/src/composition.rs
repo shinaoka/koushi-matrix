@@ -37,6 +37,7 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
         .map(|space| SpaceSummary {
             space_id: space.space_id,
             display_name: space.display_name,
+            avatar: None,
             child_room_ids: Vec::new(),
         })
         .collect::<Vec<_>>();
@@ -63,6 +64,7 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
             RoomSummary {
                 room_id: room.room_id,
                 display_name: room.display_name,
+                avatar: None,
                 is_dm: room.is_dm,
                 unread_count: room.unread_count,
                 notification_count: room.notification_count,

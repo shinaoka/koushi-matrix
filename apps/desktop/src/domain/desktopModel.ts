@@ -44,6 +44,7 @@ export function composeSidebar(
     space_rail: spaces.map((space) => ({
       space_id: space.space_id,
       display_name: space.display_name,
+      avatar: space.avatar,
       unread_count: space.child_room_ids
         .map((roomId) => rooms.find((room) => room.room_id === roomId))
         .filter(roomExists)
@@ -94,6 +95,7 @@ function roomListItem(room: RoomSummary): RoomListItem {
   return {
     room_id: room.room_id,
     display_name: room.display_name,
+    avatar: room.avatar,
     unread_count: room.unread_count
   };
 }

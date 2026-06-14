@@ -563,6 +563,82 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
         }
+        AppAction::OwnProfileUpdated { profile } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.profile.own = profile;
+            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+        }
+        AppAction::UserProfilesUpdated { profiles } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.profile.users = profiles
+                .into_iter()
+                .map(|profile| (profile.user_id.clone(), profile))
+                .collect();
+            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+        }
+        AppAction::ProfileUpdateRequested {
+            request_id,
+            request,
+        } => {
+            if !is_session_ready(state) || !state.profile.update.is_idle() {
+                return Vec::new();
+            }
+
+            state.profile.update = match request {
+                crate::state::ProfileUpdateRequest::SetDisplayName { display_name } => {
+                    crate::state::ProfileUpdateState::SettingDisplayName {
+                        request_id,
+                        display_name,
+                    }
+                }
+                crate::state::ProfileUpdateRequest::SetAvatar {
+                    mime_type,
+                    byte_count,
+                } => crate::state::ProfileUpdateState::SettingAvatar {
+                    request_id,
+                    mime_type,
+                    byte_count,
+                },
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+        }
+        AppAction::ProfileUpdateSucceeded {
+            request_id,
+            profile,
+        } => {
+            if state.profile.update.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+
+            state.profile.update = crate::state::ProfileUpdateState::Idle;
+            state.profile.own = profile;
+            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+        }
+        AppAction::ProfileUpdateFailed {
+            request_id,
+            message,
+        } => {
+            if state.profile.update.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+
+            state.profile.update = crate::state::ProfileUpdateState::Idle;
+            state.errors.push(AppError {
+                code: "profile_update_failed".to_owned(),
+                message,
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
+        }
         AppAction::LoginSubmitted(request) => {
             state.session = SessionState::Authenticating {
                 homeserver: request.homeserver.clone(),
@@ -1620,11 +1696,13 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_search = state.search != SearchState::Closed;
     let had_e2ee_trust = state.e2ee_trust != E2eeTrustState::default();
     let had_live_signals = state.live_signals != Default::default();
+    let had_profile = state.profile != Default::default();
 
     state.navigation = NavigationState::default();
     state.spaces.clear();
     state.rooms.clear();
     state.invites.clear();
+    state.profile = Default::default();
     state.timeline = Default::default();
     state.thread = ThreadPaneState::Closed;
     state.focused_context = FocusedContextState::Closed;
@@ -1647,6 +1725,9 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_live_signals {
         effects.push(AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged));
+    }
+    if had_profile {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ProfileChanged));
     }
     effects
 }

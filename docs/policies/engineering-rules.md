@@ -84,6 +84,13 @@ Rules:
    keys/hashes, room IDs, event IDs, or raw SDK errors. Download effects emit
    byte counts or app-owned handles only; downloaded bytes stay in Rust-owned
    effects or platform ports.
+13. Profile/avatar diagnostics are metadata-minimized. Display names and avatar
+   bytes may cross only the typed command or snapshot boundaries needed for the
+   UI; normal `Debug`, QA logs, errors, window-title tokens, and issue evidence
+   must not expose real display names, avatar MXC URIs, avatar bytes, local
+   thumbnail paths, encrypted media keys/hashes, or raw SDK errors. React must
+   render avatar images only from Rust/platform-owned ready source URLs and must
+   fall back to generated initials for MXC, loading, or failed thumbnail states.
 
 ## Logging and Diagnostics
 

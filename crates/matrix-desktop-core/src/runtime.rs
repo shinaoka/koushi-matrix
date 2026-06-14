@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, SearchScope as AppSearchScope, SessionState, ThreadPaneState,
-    reduce,
+    AppAction, AppEffect, AppState, ProfileUpdateRequest, SearchScope as AppSearchScope,
+    SessionState, ThreadPaneState, reduce,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -752,6 +752,25 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: *flow_id,
             })
         }
+        AccountCommand::SetDisplayName {
+            request_id,
+            display_name,
+        } => Some(AppAction::ProfileUpdateRequested {
+            request_id: request_id.sequence,
+            request: ProfileUpdateRequest::SetDisplayName {
+                display_name: display_name.clone(),
+            },
+        }),
+        AccountCommand::SetAvatar {
+            request_id,
+            request,
+        } => Some(AppAction::ProfileUpdateRequested {
+            request_id: request_id.sequence,
+            request: ProfileUpdateRequest::SetAvatar {
+                mime_type: request.mime_type.clone(),
+                byte_count: request.bytes.len() as u64,
+            },
+        }),
         AccountCommand::LoginPassword { .. }
         | AccountCommand::RestoreSession { .. }
         | AccountCommand::RestoreLastSession { .. }
@@ -988,6 +1007,48 @@ mod tests {
             Some(AppAction::RestoreKeyBackupRequested {
                 request_id: 9,
                 version: Some("backup-version-1".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn profile_commands_project_pending_state_without_display_name_or_avatar_bytes() {
+        let display_request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 13,
+        };
+        let avatar_request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 14,
+        };
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::SetDisplayName {
+                request_id: display_request_id,
+                display_name: Some("Private Display".to_owned()),
+            }),
+            Some(AppAction::ProfileUpdateRequested {
+                request_id: 13,
+                request: ProfileUpdateRequest::SetDisplayName {
+                    display_name: Some("Private Display".to_owned()),
+                },
+            })
+        );
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::SetAvatar {
+                request_id: avatar_request_id,
+                request: crate::command::SetAvatarRequest {
+                    mime_type: "image/png".to_owned(),
+                    bytes: vec![1, 2, 3, 4],
+                },
+            }),
+            Some(AppAction::ProfileUpdateRequested {
+                request_id: 14,
+                request: ProfileUpdateRequest::SetAvatar {
+                    mime_type: "image/png".to_owned(),
+                    byte_count: 4,
+                },
             })
         );
     }

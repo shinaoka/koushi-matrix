@@ -1,6 +1,7 @@
-import { type FormEvent, type ReactNode, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   Check,
+  Image,
   KeyRound,
   Keyboard,
   RefreshCcw,
@@ -26,6 +27,7 @@ import type {
   SavedSessionInfo,
   SettingsPatch,
   SettingsState,
+  ProfileState,
   ThemePreference,
   TrustOperationFailureKind,
   VerificationFlowState
@@ -35,9 +37,12 @@ export function UserSettingsPanel({
   currentSession,
   savedSessions,
   settings,
+  profile,
   e2eeTrust,
   onOpenKeyboardSettings,
   onUpdateSettings,
+  onSetDisplayName,
+  onSetAvatar,
   onBootstrapCrossSigning,
   onEnableKeyBackup,
   onAcceptVerification,
@@ -51,9 +56,12 @@ export function UserSettingsPanel({
   currentSession: SavedSessionInfo | null;
   savedSessions: SavedSessionInfo[];
   settings: SettingsState;
+  profile: ProfileState;
   e2eeTrust: E2eeTrustState;
   onOpenKeyboardSettings: () => void;
   onUpdateSettings: (patch: SettingsPatch) => void;
+  onSetDisplayName: (displayName: string | null) => void;
+  onSetAvatar: (file: File) => void;
   onBootstrapCrossSigning: () => void;
   onEnableKeyBackup: () => void;
   onAcceptVerification: (flowId: number) => void;
@@ -68,6 +76,34 @@ export function UserSettingsPanel({
   const selectedFont = settings.values.typography.font;
   const selectedEmoji = settings.values.typography.emoji;
   const isSaving = settings.persistence.kind === "saving";
+  const [displayNameDraft, setDisplayNameDraft] = useState(profile.own.display_name ?? "");
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const profileBusy = profile.update.kind !== "idle";
+  const displayNameBusy = profile.update.kind === "settingDisplayName";
+  const avatarBusy = profile.update.kind === "settingAvatar";
+  const profileAvatarUrl = avatarSourceUrl(profile.own.avatar);
+  const profileInitial = profile.own.display_name?.charAt(0).toUpperCase()
+    || accountInitial(currentSession?.user_id ?? "");
+
+  useEffect(() => {
+    setDisplayNameDraft(profile.own.display_name ?? "");
+  }, [profile.own.display_name]);
+
+  function submitDisplayName(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (profileBusy) {
+      return;
+    }
+    const trimmed = displayNameDraft.trim();
+    onSetDisplayName(trimmed.length > 0 ? trimmed : null);
+  }
+
+  function selectAvatarFile(file: File | null) {
+    if (!file || avatarBusy) {
+      return;
+    }
+    onSetAvatar(file);
+  }
 
   return (
     <section className="settings-panel user-settings-panel" aria-labelledby="user-settings-title">
@@ -112,6 +148,64 @@ export function UserSettingsPanel({
           </span>
         </button>
       </div>
+
+      <section className="settings-section" aria-label={t("settings.profile")}>
+        <h3>{t("settings.profile")}</h3>
+        <div className="profile-settings">
+          <div className="profile-settings-avatar" aria-hidden="true">
+            {profileAvatarUrl ? (
+              <img src={profileAvatarUrl} />
+            ) : (
+              <span>{profileInitial}</span>
+            )}
+          </div>
+          <form className="profile-settings-form" onSubmit={submitDisplayName}>
+            <label className="profile-settings-field">
+              <span>{t("settings.profileDisplayName")}</span>
+              <input
+                type="text"
+                value={displayNameDraft}
+                placeholder={t("settings.profileDisplayNamePlaceholder")}
+                disabled={profileBusy}
+                onChange={(event) => setDisplayNameDraft(event.currentTarget.value)}
+              />
+            </label>
+            <div className="profile-settings-actions">
+              <button
+                className="profile-settings-action"
+                type="submit"
+                disabled={profileBusy}
+              >
+                <Check size={14} />
+                <span>
+                  {displayNameBusy ? t("settings.profileSavingDisplayName") : t("settings.profileUpdate")}
+                </span>
+              </button>
+              <input
+                ref={avatarInputRef}
+                className="sr-only"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                onChange={(event) => {
+                  selectAvatarFile(event.currentTarget.files?.[0] ?? null);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <button
+                className="profile-settings-action"
+                type="button"
+                disabled={profileBusy}
+                onClick={() => avatarInputRef.current?.click()}
+              >
+                <Image size={14} />
+                <span>
+                  {avatarBusy ? t("settings.profileSavingAvatar") : t("settings.profileUploadAvatar")}
+                </span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
 
       <section className="settings-section" aria-label={t("settings.session")}>
         <h3>{t("settings.session")}</h3>
@@ -920,6 +1014,13 @@ function sessionMatches(left: SavedSessionInfo | null, right: SavedSessionInfo):
 
 function sessionKey(session: SavedSessionInfo): string {
   return `${session.homeserver}|${session.user_id}|${session.device_id}`;
+}
+
+function avatarSourceUrl(avatar: ProfileState["own"]["avatar"]): string | null {
+  if (avatar?.thumbnail.kind !== "ready") {
+    return null;
+  }
+  return avatar.thumbnail.source_url;
 }
 
 function accountInitial(userId: string): string {

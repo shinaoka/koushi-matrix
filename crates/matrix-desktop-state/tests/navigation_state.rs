@@ -1,6 +1,7 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, RoomSummary, SessionInfo, SessionState, SpaceSummary,
-    ThreadPaneState, TimelinePaneState, UiEvent, compose_sidebar, reduce,
+    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, RoomSummary, SessionInfo,
+    SessionState, SpaceSummary, ThreadPaneState, TimelinePaneState, UiEvent, compose_sidebar,
+    reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -18,10 +19,18 @@ fn ready_state() -> AppState {
     }
 }
 
+fn avatar(mxc_uri: &str) -> AvatarImage {
+    AvatarImage {
+        mxc_uri: mxc_uri.to_owned(),
+        thumbnail: AvatarThumbnailState::NotRequested,
+    }
+}
+
 fn spaces() -> Vec<SpaceSummary> {
     vec![SpaceSummary {
         space_id: "space-a".to_owned(),
         display_name: "Space A".to_owned(),
+        avatar: None,
         child_room_ids: vec!["room-a".to_owned(), "dm-a".to_owned()],
     }]
 }
@@ -31,6 +40,7 @@ fn rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
+            avatar: None,
             is_dm: false,
             unread_count: 5,
             notification_count: 5,
@@ -40,6 +50,7 @@ fn rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "dm-a".to_owned(),
             display_name: "Alice".to_owned(),
+            avatar: None,
             is_dm: true,
             unread_count: 3,
             notification_count: 3,
@@ -49,6 +60,7 @@ fn rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "global-room".to_owned(),
             display_name: "Global Room".to_owned(),
+            avatar: None,
             is_dm: false,
             unread_count: 2,
             notification_count: 2,
@@ -149,6 +161,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
             rooms: vec![RoomSummary {
                 room_id: "global-room".to_owned(),
                 display_name: "Global Room".to_owned(),
+                avatar: None,
                 is_dm: false,
                 unread_count: 0,
                 notification_count: 0,
@@ -181,12 +194,14 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
         spaces: vec![SpaceSummary {
             space_id: "space-a".to_owned(),
             display_name: "Space A".to_owned(),
+            avatar: None,
             child_room_ids: vec!["room-a".to_owned()],
         }],
         rooms: vec![
             RoomSummary {
                 room_id: "room-a".to_owned(),
                 display_name: "Room A".to_owned(),
+                avatar: None,
                 is_dm: false,
                 unread_count: 5,
                 notification_count: 5,
@@ -196,6 +211,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             RoomSummary {
                 room_id: "room-b".to_owned(),
                 display_name: "Room B".to_owned(),
+                avatar: None,
                 is_dm: false,
                 unread_count: 2,
                 notification_count: 2,
@@ -228,12 +244,14 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             spaces: vec![SpaceSummary {
                 space_id: "space-a".to_owned(),
                 display_name: "Space A".to_owned(),
+                avatar: None,
                 child_room_ids: vec!["room-b".to_owned()],
             }],
             rooms: vec![
                 RoomSummary {
                     room_id: "room-a".to_owned(),
                     display_name: "Room A".to_owned(),
+                    avatar: None,
                     is_dm: false,
                     unread_count: 5,
                     notification_count: 5,
@@ -243,6 +261,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 RoomSummary {
                     room_id: "room-b".to_owned(),
                     display_name: "Room B".to_owned(),
+                    avatar: None,
                     is_dm: false,
                     unread_count: 2,
                     notification_count: 2,
@@ -280,11 +299,13 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
         spaces: vec![SpaceSummary {
             space_id: "space-a".to_owned(),
             display_name: "Space A".to_owned(),
+            avatar: None,
             child_room_ids: vec!["room-a".to_owned()],
         }],
         rooms: vec![RoomSummary {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
+            avatar: None,
             is_dm: false,
             unread_count: 5,
             notification_count: 5,
@@ -310,11 +331,13 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             spaces: vec![SpaceSummary {
                 space_id: "space-a".to_owned(),
                 display_name: "Space A".to_owned(),
+                avatar: None,
                 child_room_ids: vec!["room-b".to_owned()],
             }],
             rooms: vec![RoomSummary {
                 room_id: "room-b".to_owned(),
                 display_name: "Room B".to_owned(),
+                avatar: None,
                 is_dm: false,
                 unread_count: 2,
                 notification_count: 2,
@@ -370,6 +393,7 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
             spaces: vec![SpaceSummary {
                 space_id: "space-a".to_owned(),
                 display_name: "Space A".to_owned(),
+                avatar: None,
                 child_room_ids: vec!["room-a".to_owned()],
             }],
             rooms: rooms(),
@@ -481,6 +505,62 @@ fn account_home_lists_all_non_dm_rooms_and_keeps_dms_global() {
     );
     assert_eq!(sidebar.space_unread_count, 7);
     assert_eq!(sidebar.dm_unread_count, 3);
+}
+
+#[test]
+fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
+    let spaces = vec![SpaceSummary {
+        space_id: "space-a".to_owned(),
+        display_name: "Space A".to_owned(),
+        avatar: Some(avatar("mxc://example.invalid/space-a")),
+        child_room_ids: vec!["room-a".to_owned(), "dm-a".to_owned()],
+    }];
+    let rooms = vec![
+        RoomSummary {
+            room_id: "room-a".to_owned(),
+            display_name: "Room A".to_owned(),
+            avatar: Some(avatar("mxc://example.invalid/room-a")),
+            is_dm: false,
+            unread_count: 5,
+            notification_count: 5,
+            highlight_count: 1,
+            parent_space_ids: vec!["space-a".to_owned()],
+        },
+        RoomSummary {
+            room_id: "dm-a".to_owned(),
+            display_name: "Alice".to_owned(),
+            avatar: Some(avatar("mxc://example.invalid/dm-a")),
+            is_dm: true,
+            unread_count: 3,
+            notification_count: 3,
+            highlight_count: 0,
+            parent_space_ids: vec!["space-a".to_owned()],
+        },
+    ];
+
+    let sidebar = compose_sidebar(Some("space-a"), &spaces, &rooms);
+
+    assert_eq!(
+        sidebar.space_rail[0]
+            .avatar
+            .as_ref()
+            .map(|avatar| avatar.mxc_uri.as_str()),
+        Some("mxc://example.invalid/space-a")
+    );
+    assert_eq!(
+        sidebar.space_rooms[0]
+            .avatar
+            .as_ref()
+            .map(|avatar| avatar.mxc_uri.as_str()),
+        Some("mxc://example.invalid/room-a")
+    );
+    assert_eq!(
+        sidebar.global_dms[0]
+            .avatar
+            .as_ref()
+            .map(|avatar| avatar.mxc_uri.as_str()),
+        Some("mxc://example.invalid/dm-a")
+    );
 }
 
 #[test]

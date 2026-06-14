@@ -3209,6 +3209,7 @@ dependencies = [
  "matrix-desktop-state",
  "matrix-sdk",
  "matrix-sdk-ui",
+ "mime",
  "reqwest",
  "serde",
  "serde_json",

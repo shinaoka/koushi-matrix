@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::{RoomSummary, SpaceSummary};
+use crate::state::{AvatarImage, RoomSummary, SpaceSummary};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SidebarModel {
@@ -26,6 +26,7 @@ pub struct AccountHomeItem {
 pub struct SpaceRailItem {
     pub space_id: String,
     pub display_name: String,
+    pub avatar: Option<AvatarImage>,
     pub unread_count: u64,
     pub is_active: bool,
 }
@@ -34,6 +35,7 @@ pub struct SpaceRailItem {
 pub struct RoomListItem {
     pub room_id: String,
     pub display_name: String,
+    pub avatar: Option<AvatarImage>,
     pub unread_count: u64,
 }
 
@@ -52,6 +54,7 @@ pub fn compose_sidebar(
         .map(|space| SpaceRailItem {
             space_id: space.space_id.clone(),
             display_name: space.display_name.clone(),
+            avatar: space.avatar.clone(),
             unread_count: space_unread_count(space, &rooms_by_id),
             is_active: active_space_id == Some(space.space_id.as_str()),
         })
@@ -117,6 +120,7 @@ fn room_list_item(room: &RoomSummary) -> RoomListItem {
     RoomListItem {
         room_id: room.room_id.clone(),
         display_name: room.display_name.clone(),
+        avatar: room.avatar.clone(),
         unread_count: room.unread_count,
     }
 }

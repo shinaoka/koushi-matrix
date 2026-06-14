@@ -17,6 +17,7 @@ fn invite_preview(room_id: &str, is_dm: bool) -> InvitePreview {
     InvitePreview {
         room_id: room_id.to_owned(),
         display_name: "Invite preview".to_owned(),
+        avatar: None,
         topic: Some("Project room".to_owned()),
         inviter_display_name: Some("Inviter".to_owned()),
         is_dm,

@@ -760,6 +760,8 @@ pub fn run() {
             commands::set_fully_read,
             commands::set_typing,
             commands::set_presence,
+            commands::set_display_name,
+            commands::set_avatar,
             commands::leave_room,
             commands::forget_room,
             commands::open_thread,
@@ -1413,6 +1415,12 @@ mod tests {
             listed["event"]["SavedSessionsListed"]["sessions"][0]["device_id"],
             json!("DEV")
         );
+        let profile_updated =
+            serialize_core_event(&CoreEvent::Account(AccountEvent::ProfileUpdated {
+                request_id,
+                account_key: AccountKey("@u:example.test".to_owned()),
+            }))
+            .expect("serialize profile update event");
 
         // OperationFailed: unit failures are strings
         let failed = serialize_core_event(&CoreEvent::OperationFailed {
@@ -1523,6 +1531,7 @@ mod tests {
 
         let actual_contract = json!({
             "e2eeTrustIdentityResetChanged": e2ee_identity_reset,
+            "accountProfileUpdated": profile_updated,
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
             "liveSignalsPresenceSet": live_presence,

@@ -103,6 +103,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
     const invite = {
       room_id: "!invite-seed:example.invalid",
       display_name: "Seeded Invite",
+      avatar: null,
       topic: "Synthetic invite topic",
       inviter_display_name: "Synthetic Inviter",
       is_dm: false
@@ -119,6 +120,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
       const joinedRoom = {
         room_id: "!joined-from-invite:example.invalid",
         display_name: "Seeded Invite",
+        avatar: null,
         is_dm: false,
         unread_count: 0,
         parent_space_ids: []
@@ -146,6 +148,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
             {
               room_id: joinedRoom.room_id,
               display_name: joinedRoom.display_name,
+              avatar: null,
               unread_count: 0
             }
           ]
@@ -159,6 +162,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
       const dmRoom = {
         room_id: "!dm-started:example.invalid",
         display_name: String(userId),
+        avatar: null,
         is_dm: true,
         unread_count: 0,
         parent_space_ids: []
@@ -185,6 +189,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
             {
               room_id: dmRoom.room_id,
               display_name: dmRoom.display_name,
+              avatar: null,
               unread_count: 0
             }
           ]
@@ -1299,6 +1304,136 @@ test("typography settings dispatch Rust-owned update_settings patches", async ({
   await expect
     .poll(() => page.evaluate(() => document.documentElement.dataset.emojiFont))
     .toBe("twemojiColr");
+});
+
+test("profile settings dispatch Rust-owned commands and avatars render from profile state", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const avatar = {
+      mxc_uri: "mxc://example.invalid/avatar-user",
+      thumbnail: {
+        kind: "ready",
+        source_url:
+          "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+        width: 1,
+        height: 1,
+        mime_type: "image/gif"
+      }
+    };
+    const next = {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        profile: {
+          ...snapshot.state.profile,
+          users: {
+            ...snapshot.state.profile.users,
+            "@avatar-user:example.invalid": {
+              user_id: "@avatar-user:example.invalid",
+              display_name: "Avatar User",
+              avatar
+            }
+          }
+        },
+        rooms: snapshot.state.rooms.map((room) =>
+          room.room_id === "!harness-room:example.invalid" ? { ...room, avatar } : room
+        )
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        space_rooms: snapshot.sidebar.space_rooms.map((room) =>
+          room.room_id === "!harness-room:example.invalid" ? { ...room, avatar } : room
+        )
+      }
+    };
+    window.__harness.setSnapshot(next);
+    window.__harness.pushStateChanged();
+  });
+
+  const key = roomTimelineKey("@harness-user:example.invalid", "!harness-room:example.invalid");
+  await page.evaluate(({ key }) => {
+    window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        ItemsUpdated: {
+          key,
+          generation: 1,
+          batch_id: 22,
+          diffs: [
+            {
+              PushBack: {
+                item: {
+                  id: { Event: { event_id: "$avatar-event:example.invalid" } },
+                  sender: "@avatar-user:example.invalid",
+                  body: "Avatar-backed message",
+                  timestamp_ms: 1_800_000_000_900,
+                  in_reply_to_event_id: null,
+                  thread_root: null,
+                  thread_summary: null,
+                  media: null,
+                  is_redacted: false,
+                  can_redact: false,
+                  is_edited: false,
+                  can_edit: false,
+                  reactions: []
+                }
+              }
+            }
+          ]
+        }
+      }
+    });
+  }, { key });
+
+  const avatarRow = page.locator('[data-event-id="$avatar-event:example.invalid"]');
+  await expect(avatarRow.getByText("Avatar-backed message")).toBeVisible();
+  await expect(avatarRow.locator(".avatar img")).toHaveAttribute(
+    "src",
+    /data:image\/gif;base64/
+  );
+  await expect(page.locator('[data-testid="room-item"] img').first()).toHaveAttribute(
+    "src",
+    /data:image\/gif;base64/
+  );
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.getByRole("button", { name: "User settings" }).click();
+  await page.getByLabel("Display name").fill("Alice Profile");
+  await page.getByRole("button", { name: "Update" }).click();
+  await expect.poll(() => invocationCount(page, "set_display_name")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_display_name")[0]?.args)
+    )
+    .toEqual({ displayName: "Alice Profile" });
+  await expect(page.getByLabel("Display name")).toHaveValue("Alice Profile");
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  const fileChooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Upload" }).click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles({
+    name: "avatar.png",
+    mimeType: "image/png",
+    buffer: Buffer.from([137, 80, 78, 71])
+  });
+  await expect.poll(() => invocationCount(page, "set_avatar")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const args = window.__harness.invocationsOf("set_avatar")[0]?.args;
+        return args
+          ? {
+              mimeType: args.mimeType,
+              byteCount: Array.isArray(args.bytes) ? args.bytes.length : -1
+            }
+          : null;
+      })
+    )
+    .toEqual({ mimeType: "image/png", byteCount: 4 });
 });
 
 test("E2EE trust controls dispatch Rust-owned commands and render snapshot updates", async ({

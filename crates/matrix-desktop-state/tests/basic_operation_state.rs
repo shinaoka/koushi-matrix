@@ -13,6 +13,7 @@ fn ready_state() -> AppState {
         rooms: vec![RoomSummary {
             room_id: "!room:localhost".to_owned(),
             display_name: "QA Seed Room".to_owned(),
+            avatar: None,
             is_dm: false,
             unread_count: 0,
             notification_count: 0,

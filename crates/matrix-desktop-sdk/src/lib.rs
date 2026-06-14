@@ -1431,12 +1431,14 @@ impl std::fmt::Display for RealAccountQaReport {
 pub struct MatrixRoomListSpace {
     pub space_id: String,
     pub display_name: String,
+    pub avatar_mxc_uri: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatrixRoomListRoom {
     pub room_id: String,
     pub display_name: String,
+    pub avatar_mxc_uri: Option<String>,
     pub is_dm: bool,
     pub unread_count: u64,
     pub notification_count: u64,
@@ -1448,6 +1450,7 @@ pub struct MatrixRoomListRoom {
 pub struct MatrixInvitePreview {
     pub room_id: String,
     pub display_name: String,
+    pub avatar_mxc_uri: Option<String>,
     pub topic: Option<String>,
     pub inviter_display_name: Option<String>,
     pub is_dm: bool,
@@ -1456,6 +1459,44 @@ pub struct MatrixInvitePreview {
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum MatrixRoomListError {
     #[error("Matrix room list failed")]
+    Sdk,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixOwnProfile {
+    pub display_name: Option<String>,
+    pub avatar_mxc_uri: Option<String>,
+}
+
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum MatrixProfileError {
+    #[error("Matrix profile mime type is invalid")]
+    InvalidMimeType,
+    #[error("Matrix profile operation failed")]
+    Sdk(MatrixProfileFailureKind),
+}
+
+impl MatrixProfileError {
+    pub fn failure_kind(&self) -> MatrixProfileFailureKind {
+        match self {
+            Self::InvalidMimeType => MatrixProfileFailureKind::InvalidMimeType,
+            Self::Sdk(kind) => *kind,
+        }
+    }
+
+    fn from_sdk_error(error: matrix_sdk::Error) -> Self {
+        if std::env::var_os("MATRIX_DESKTOP_DEBUG_SDK_ERROR").is_some() {
+            eprintln!("raw matrix profile operation error: {error:?}");
+        }
+        Self::Sdk(matrix_profile_failure_kind(&error))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixProfileFailureKind {
+    Forbidden,
+    Network,
+    InvalidMimeType,
     Sdk,
 }
 
@@ -1805,6 +1846,42 @@ pub async fn logout(session: &MatrixClientSession) -> Result<(), PasswordLoginEr
         .logout()
         .await
         .map_err(|error| PasswordLoginError::Sdk(error.to_string()))
+}
+
+pub async fn get_own_profile(
+    session: &MatrixClientSession,
+) -> Result<MatrixOwnProfile, MatrixProfileError> {
+    matrix_own_profile_from_session(session).await
+}
+
+pub async fn set_display_name(
+    session: &MatrixClientSession,
+    display_name: Option<&str>,
+) -> Result<MatrixOwnProfile, MatrixProfileError> {
+    session
+        .client()
+        .account()
+        .set_display_name(display_name)
+        .await
+        .map_err(MatrixProfileError::from_sdk_error)?;
+    matrix_own_profile_from_session(session).await
+}
+
+pub async fn set_avatar(
+    session: &MatrixClientSession,
+    mime_type: &str,
+    bytes: Vec<u8>,
+) -> Result<MatrixOwnProfile, MatrixProfileError> {
+    let mime = mime_type
+        .parse::<mime::Mime>()
+        .map_err(|_| MatrixProfileError::InvalidMimeType)?;
+    session
+        .client()
+        .account()
+        .upload_avatar(&mime, bytes)
+        .await
+        .map_err(MatrixProfileError::from_sdk_error)?;
+    matrix_own_profile_from_session(session).await
 }
 
 pub async fn send_text_message(
@@ -2518,6 +2595,7 @@ async fn matrix_room_list_snapshot_from_rooms(
             snapshot.spaces.push(MatrixRoomListSpace {
                 space_id: room_id,
                 display_name,
+                avatar_mxc_uri: room.avatar_url().map(|uri| uri.to_string()),
             });
             continue;
         }
@@ -2536,6 +2614,7 @@ async fn matrix_room_list_snapshot_from_rooms(
         snapshot.rooms.push(matrix_room_list_room_from_counts(
             room_id,
             display_name,
+            room.avatar_url().map(|uri| uri.to_string()),
             room.is_dm(),
             notification_count,
             highlight_count,
@@ -2573,6 +2652,7 @@ async fn matrix_invite_previews_from_rooms(
         invites.push(MatrixInvitePreview {
             room_id: room.room_id().to_string(),
             display_name,
+            avatar_mxc_uri: room.avatar_url().map(|uri| uri.to_string()),
             topic: room.topic(),
             inviter_display_name,
             is_dm,
@@ -2597,6 +2677,7 @@ fn room_attention_unread_count(
 fn matrix_room_list_room_from_counts(
     room_id: String,
     display_name: String,
+    avatar_mxc_uri: Option<String>,
     is_dm: bool,
     notification_count: u64,
     highlight_count: u64,
@@ -2606,6 +2687,7 @@ fn matrix_room_list_room_from_counts(
     MatrixRoomListRoom {
         room_id,
         display_name,
+        avatar_mxc_uri,
         is_dm,
         unread_count,
         notification_count,
@@ -2626,6 +2708,46 @@ pub fn room_attention_summary_from_room(room: &matrix_sdk::Room) -> Option<RoomA
         room.num_unread_messages(),
         room.is_marked_unread(),
     )
+}
+
+async fn matrix_own_profile_from_session(
+    session: &MatrixClientSession,
+) -> Result<MatrixOwnProfile, MatrixProfileError> {
+    let account = session.client().account();
+    let display_name = account
+        .get_display_name()
+        .await
+        .map_err(MatrixProfileError::from_sdk_error)?;
+    let avatar_mxc_uri = account
+        .get_avatar_url()
+        .await
+        .map_err(MatrixProfileError::from_sdk_error)?
+        .map(|uri| uri.to_string());
+    Ok(MatrixOwnProfile {
+        display_name,
+        avatar_mxc_uri,
+    })
+}
+
+fn matrix_profile_failure_kind(error: &matrix_sdk::Error) -> MatrixProfileFailureKind {
+    match error {
+        matrix_sdk::Error::Http(error) => {
+            if error
+                .as_client_api_error()
+                .is_some_and(|error| error.status_code.as_u16() == 403)
+                || matches!(
+                    error.client_api_error_kind(),
+                    Some(matrix_sdk::ruma::api::error::ErrorKind::Forbidden)
+                )
+            {
+                MatrixProfileFailureKind::Forbidden
+            } else {
+                MatrixProfileFailureKind::Sdk
+            }
+        }
+        matrix_sdk::Error::Timeout => MatrixProfileFailureKind::Network,
+        _ => MatrixProfileFailureKind::Sdk,
+    }
 }
 
 async fn matrix_parent_space_ids(room: &matrix_sdk::Room) -> Vec<String> {
@@ -2777,6 +2899,7 @@ mod tests {
         let room = matrix_room_list_room_from_counts(
             "!room:example.invalid".to_owned(),
             "Room".to_owned(),
+            None,
             true,
             4,
             2,

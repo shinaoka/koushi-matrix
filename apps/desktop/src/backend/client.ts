@@ -148,6 +148,14 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("set_presence", { presence });
   }
 
+  async setDisplayName(displayName: string | null): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_display_name", { displayName });
+  }
+
+  async setAvatar(mimeType: string, bytes: number[]): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_avatar", { mimeType, bytes });
+  }
+
   async editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("edit_message", { roomId, eventId, body });
   }

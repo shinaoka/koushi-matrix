@@ -245,7 +245,8 @@ export type AccountEvent =
   | { RecoveryRequired: { account_key: string } }
   | { RecoveryCompleted: { request_id: RequestId; account_key: string } }
   | { LoggedOut: { request_id: RequestId; account_key: string } }
-  | { AccountSwitched: { request_id: RequestId; account_key: string } };
+  | { AccountSwitched: { request_id: RequestId; account_key: string } }
+  | { ProfileUpdated: { request_id: RequestId; account_key: string } };
 
 export type SyncBackendKind = "SyncService" | "LegacySync";
 

@@ -12,6 +12,7 @@ describe("SpaceInfoPanel", () => {
           {
             room_id: "!room-alpha:example.invalid",
             display_name: "Alpha Room",
+            avatar: null,
             is_dm: false,
             parent_space_ids: ["!space-work:example.invalid"],
             unread_count: 8
@@ -19,6 +20,7 @@ describe("SpaceInfoPanel", () => {
           {
             room_id: "!room-beta:example.invalid",
             display_name: "Beta Room",
+            avatar: null,
             is_dm: false,
             parent_space_ids: ["!space-work:example.invalid"],
             unread_count: 2
@@ -26,6 +28,7 @@ describe("SpaceInfoPanel", () => {
           {
             room_id: "!dm-alice:example.invalid",
             display_name: "Alice",
+            avatar: null,
             is_dm: true,
             parent_space_ids: ["!space-work:example.invalid"],
             unread_count: 4
@@ -34,6 +37,7 @@ describe("SpaceInfoPanel", () => {
         space={{
           space_id: "!space-work:example.invalid",
           display_name: "Synthetic Workspace",
+          avatar: null,
           child_room_ids: ["!room-alpha:example.invalid", "!room-beta:example.invalid"]
         }}
       />
@@ -67,6 +71,7 @@ describe("SpaceInfoPanel", () => {
           {
             room_id: "!room-alpha:example.invalid",
             display_name: "Alpha Room",
+            avatar: null,
             is_dm: false,
             parent_space_ids: [],
             unread_count: 8
@@ -74,6 +79,7 @@ describe("SpaceInfoPanel", () => {
           {
             room_id: "!dm-alice:example.invalid",
             display_name: "Alice",
+            avatar: null,
             is_dm: true,
             parent_space_ids: [],
             unread_count: 4

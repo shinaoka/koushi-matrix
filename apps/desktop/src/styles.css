@@ -126,6 +126,17 @@ button {
   cursor: pointer;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .boot-screen {
   display: grid;
   place-items: center;
@@ -518,6 +529,30 @@ button {
   background: var(--brand);
 }
 
+.workspace-button-avatar {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  overflow: hidden;
+  border-radius: 50%;
+  color: var(--brand-contrast);
+  background: var(--brand);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.workspace-button-avatar.is-space {
+  border-radius: 8px;
+}
+
+.workspace-button-avatar img,
+.room-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .workspace-button[data-count]::after {
   position: absolute;
   inset-inline-end: -2px;
@@ -657,6 +692,19 @@ button {
   text-align: end;
 }
 
+.room-avatar {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  overflow: hidden;
+  border-radius: 50%;
+  color: var(--brand-contrast);
+  background: var(--brand);
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .presence-dot {
   display: inline-flex;
   flex: 0 0 auto;
@@ -704,6 +752,26 @@ button {
   gap: 10px;
   font-size: 21px;
   font-weight: 850;
+}
+
+.channel-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border-radius: 50%;
+  color: var(--brand-contrast);
+  background: var(--brand);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.channel-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .channel-title h1,
@@ -845,9 +913,19 @@ button {
   place-items: center;
   width: 34px;
   height: 34px;
-  border-radius: var(--r-sm);
-  color: var(--brand-hover);
-  background: var(--brand-weak);
+  overflow: hidden;
+  border-radius: 50%;
+  color: var(--brand-contrast);
+  background: var(--brand);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.invite-row-icon img,
+.invite-preview-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .invite-row-main {
@@ -961,11 +1039,18 @@ button {
   place-items: center;
   width: 40px;
   height: 40px;
-  border-radius: 8px;
+  overflow: hidden;
+  border-radius: 50%;
   color: var(--brand-contrast);
   font-size: 14px;
   font-weight: 800;
   background: var(--brand);
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .avatar.bot {
@@ -2348,6 +2433,84 @@ kbd {
 .user-settings-panel {
   display: grid;
   gap: 18px;
+}
+
+.profile-settings {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.profile-settings-avatar {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  overflow: hidden;
+  border-radius: 50%;
+  color: var(--brand-contrast);
+  background: var(--brand);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.profile-settings-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-settings-form {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.profile-settings-field {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.profile-settings-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+}
+
+.profile-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profile-settings-action {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.profile-settings-action:disabled,
+.profile-settings-field input:disabled {
+  opacity: 0.62;
+  cursor: default;
 }
 
 .account-switcher h3 {

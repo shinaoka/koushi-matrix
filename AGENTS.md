@@ -54,6 +54,29 @@ before any Phase B font asset or CSS wiring.
 Phase B GUI/browser-headless work for the same issue follows
 [docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md](docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md).
 
+## User Profiles Phase Notes
+
+- Own-profile state, per-user profile cache, room avatars, and space avatars
+  are Rust-owned DTOs. React renders them and dispatches `set_display_name` /
+  `set_avatar`; do not add React-local profile success/failure semantics.
+- `SetAvatar` may carry image bytes only through the typed command boundary.
+  Debug output, QA logs, screenshots, issue comments, and docs examples must not
+  contain real avatar bytes, real avatar MXC URIs, local thumbnail paths, or raw
+  SDK errors.
+- `AvatarImage.mxc_uri` is metadata, not a render URL. GUI code renders an
+  `<img>` only for `AvatarThumbnailState::Ready.source_url`; otherwise it uses
+  the colored-initial fallback. This keeps the current #15 media contract intact
+  because timeline `download_media` emits byte counts only.
+- When adding or changing `AppState.profile` or avatar fields, update the
+  hand-maintained Tauri DTO (`apps/desktop/src-tauri/src/dto.rs`), TypeScript
+  domain types, browser fake API, Tauri IPC mock, app harness snapshots, and DTO
+  serialization-contract tests in the same change. Browser fakes do not inherit
+  Rust snapshot fields automatically.
+- Profile update completion settles a user-visible pending state. Actor code
+  must deliver `ProfileUpdateSucceeded` / `ProfileUpdateFailed` reliably via
+  the action channel, not as a best-effort notification that can leave settings
+  controls stuck in a saving state.
+
 ## Live Signals Phase A Notes
 
 - `AppState.live_signals` is the Rust-owned source of truth for read receipts,

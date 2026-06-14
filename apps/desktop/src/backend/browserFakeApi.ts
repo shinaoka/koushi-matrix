@@ -54,6 +54,8 @@ export interface DesktopApi {
   setFullyRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot>;
   setPresence(presence: PresenceKind): Promise<DesktopSnapshot>;
+  setDisplayName(displayName: string | null): Promise<DesktopSnapshot>;
+  setAvatar(mimeType: string, bytes: number[]): Promise<DesktopSnapshot>;
   editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
   redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   leaveRoom(roomId: string): Promise<DesktopSnapshot>;
@@ -477,6 +479,41 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async setDisplayName(displayName: string | null): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+    const normalized = displayName?.trim() ? displayName.trim() : null;
+    const requestId = this.nextRequestId();
+    this.snapshot.state.profile.update = {
+      kind: "settingDisplayName",
+      request_id: requestId,
+      display_name: normalized
+    };
+    this.snapshot.state.profile.own.display_name = normalized;
+    this.snapshot.state.profile.update = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async setAvatar(mimeType: string, bytes: number[]): Promise<DesktopSnapshot> {
+    if (!this.isReady() || bytes.length === 0) {
+      return this.getSnapshot();
+    }
+    const requestId = this.nextRequestId();
+    this.snapshot.state.profile.update = {
+      kind: "settingAvatar",
+      request_id: requestId,
+      mime_type: mimeType,
+      byte_count: bytes.length
+    };
+    this.snapshot.state.profile.own.avatar = {
+      mxc_uri: "mxc://browser.fake/profile-avatar",
+      thumbnail: { kind: "notRequested" }
+    };
+    this.snapshot.state.profile.update = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
   async editMessage(
     roomId: string,
     eventId: string,
@@ -617,6 +654,7 @@ class BrowserFakeApi implements DesktopApi {
     const newRoom: RoomSummary = {
       room_id: newRoomId,
       display_name: name,
+      avatar: null,
       is_dm: false,
       unread_count: 0,
       parent_space_ids: []
@@ -641,6 +679,7 @@ class BrowserFakeApi implements DesktopApi {
     const newSpace: SpaceSummary = {
       space_id: newSpaceId,
       display_name: name,
+      avatar: null,
       child_room_ids: []
     };
     this.snapshot.state.spaces = [...this.snapshot.state.spaces, newSpace];
@@ -695,6 +734,7 @@ class BrowserFakeApi implements DesktopApi {
     const joinedRoom: RoomSummary = {
       room_id: roomId,
       display_name: invite.display_name,
+      avatar: invite.avatar,
       is_dm: invite.is_dm,
       unread_count: 0,
       parent_space_ids: []
@@ -738,6 +778,7 @@ class BrowserFakeApi implements DesktopApi {
     const newRoom: RoomSummary = {
       room_id: newRoomId,
       display_name: trimmedUserId,
+      avatar: null,
       is_dm: true,
       unread_count: 0,
       parent_space_ids: []
@@ -878,6 +919,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.focused_context = { kind: "closed" };
     this.snapshot.state.search = { kind: "closed" };
     this.snapshot.state.basic_operation = { kind: "idle" };
+    this.snapshot.state.profile = defaultProfileState(null);
     this.snapshot.state.e2ee_trust = defaultE2eeTrustState();
     this.snapshot.sidebar = emptySidebar();
     this.snapshot.timeline = [];
@@ -937,6 +979,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),
       typography_profile: defaultTypographyDisplayProfile(),
+      profile: defaultProfileState(session.user_id),
       sync: "running",
       navigation: {
         active_space_id,
@@ -1018,6 +1061,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),
       typography_profile: defaultTypographyDisplayProfile(),
+      profile: defaultProfileState(null),
       sync: "stopped",
       navigation: {
         active_space_id: null,
@@ -1076,6 +1120,17 @@ function defaultLiveSignalsState(): DesktopSnapshot["state"]["live_signals"] {
   return {
     rooms: {},
     presence: {}
+  };
+}
+
+function defaultProfileState(userId: string | null | undefined): DesktopSnapshot["state"]["profile"] {
+  return {
+    own: {
+      display_name: userId ? "Demo User" : null,
+      avatar: null
+    },
+    users: {},
+    update: { kind: "idle" }
   };
 }
 
@@ -1349,11 +1404,13 @@ const spaces: SpaceSummary[] = [
   {
     space_id: "!space-alpha:example.invalid",
     display_name: "Synthetic Workspace",
+    avatar: null,
     child_room_ids: ["!room-alpha:example.invalid", "!room-planning:example.invalid"]
   },
   {
     space_id: "!space-beta:example.invalid",
     display_name: "Synthetic Lab",
+    avatar: null,
     child_room_ids: ["!room-search:example.invalid"]
   }
 ];
@@ -1362,6 +1419,7 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!room-alpha:example.invalid",
     display_name: "synthetic-room",
+    avatar: null,
     is_dm: false,
     unread_count: 8,
     parent_space_ids: ["!space-alpha:example.invalid"]
@@ -1369,6 +1427,7 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!room-planning:example.invalid",
     display_name: "planning-room",
+    avatar: null,
     is_dm: false,
     unread_count: 2,
     parent_space_ids: ["!space-alpha:example.invalid"]
@@ -1376,6 +1435,7 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!room-search:example.invalid",
     display_name: "matrix-sdk-search",
+    avatar: null,
     is_dm: false,
     unread_count: 1,
     parent_space_ids: ["!space-beta:example.invalid"]
@@ -1383,6 +1443,7 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!dm-member-1:example.invalid",
     display_name: "Member 1",
+    avatar: null,
     is_dm: true,
     unread_count: 1,
     parent_space_ids: []
@@ -1390,6 +1451,7 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!dm-member-2:example.invalid",
     display_name: "Member 2",
+    avatar: null,
     is_dm: true,
     unread_count: 0,
     parent_space_ids: []

@@ -2,9 +2,10 @@ use std::fmt;
 
 use crate::state::{
     BasicOperationRequest, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType,
-    LiveEventReceipts, LiveRoomSignalUpdate, LoginFlow, PresenceKind, RecoveryMethod, RoomSummary,
-    SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
-    TrustOperationFailureKind, VerificationCancelReason, VerificationTarget,
+    LiveEventReceipts, LiveRoomSignalUpdate, LoginFlow, OwnProfile, PresenceKind,
+    ProfileUpdateRequest, RecoveryMethod, RoomSummary, SasEmoji, SearchResult, SearchScope,
+    SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, TrustOperationFailureKind,
+    UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,6 +44,24 @@ pub enum AppAction {
         request_id: u64,
     },
     SettingsPersistFailed {
+        request_id: u64,
+        message: String,
+    },
+    OwnProfileUpdated {
+        profile: OwnProfile,
+    },
+    UserProfilesUpdated {
+        profiles: Vec<UserProfile>,
+    },
+    ProfileUpdateRequested {
+        request_id: u64,
+        request: ProfileUpdateRequest,
+    },
+    ProfileUpdateSucceeded {
+        request_id: u64,
+        profile: OwnProfile,
+    },
+    ProfileUpdateFailed {
         request_id: u64,
         message: String,
     },

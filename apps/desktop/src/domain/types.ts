@@ -19,6 +19,7 @@ export interface AppState {
   settings: SettingsState;
   locale_profile: LocaleDisplayProfile;
   typography_profile: TypographyDisplayProfile;
+  profile: ProfileState;
   sync: SyncState;
   navigation: NavigationState;
   spaces: SpaceSummary[];
@@ -189,15 +190,58 @@ export interface NavigationState {
   active_room_id: string | null;
 }
 
+export interface ProfileState {
+  own: OwnProfile;
+  users: Record<string, UserProfile>;
+  update: ProfileUpdateState;
+}
+
+export interface OwnProfile {
+  display_name: string | null;
+  avatar: AvatarImage | null;
+}
+
+export interface UserProfile {
+  user_id: string;
+  display_name: string | null;
+  avatar: AvatarImage | null;
+}
+
+export interface AvatarImage {
+  mxc_uri: string;
+  thumbnail: AvatarThumbnailState;
+}
+
+export type AvatarThumbnailState =
+  | { kind: "notRequested" }
+  | { kind: "loading"; request_id: number }
+  | {
+      kind: "ready";
+      source_url: string;
+      width: number | null;
+      height: number | null;
+      mime_type: string | null;
+    }
+  | { kind: "failed"; request_id: number; failureKind: AvatarThumbnailFailureKind };
+
+export type AvatarThumbnailFailureKind = "network" | "forbidden" | "unsupported" | "sdk";
+
+export type ProfileUpdateState =
+  | { kind: "idle" }
+  | { kind: "settingDisplayName"; request_id: number; display_name: string | null }
+  | { kind: "settingAvatar"; request_id: number; mime_type: string; byte_count: number };
+
 export interface SpaceSummary {
   space_id: string;
   display_name: string;
+  avatar: AvatarImage | null;
   child_room_ids: string[];
 }
 
 export interface RoomSummary {
   room_id: string;
   display_name: string;
+  avatar: AvatarImage | null;
   is_dm: boolean;
   unread_count: number;
   notification_count?: number;
@@ -208,6 +252,7 @@ export interface RoomSummary {
 export interface InvitePreview {
   room_id: string;
   display_name: string;
+  avatar: AvatarImage | null;
   topic: string | null;
   inviter_display_name: string | null;
   is_dm: boolean;
@@ -436,6 +481,7 @@ export interface AccountHomeItem {
 export interface SpaceRailItem {
   space_id: string;
   display_name: string;
+  avatar: AvatarImage | null;
   unread_count: number;
   is_active: boolean;
 }
@@ -443,6 +489,7 @@ export interface SpaceRailItem {
 export interface RoomListItem {
   room_id: string;
   display_name: string;
+  avatar: AvatarImage | null;
   unread_count: number;
 }
 
