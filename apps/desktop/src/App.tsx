@@ -42,7 +42,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { createDesktopApi } from "./backend/client";
-import { t } from "./i18n/messages";
+import { setActiveLocaleProfile, t } from "./i18n/messages";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   TimelineView,
@@ -67,7 +67,7 @@ import {
 } from "./domain/contextMenus";
 import {
   shortcutActionFromMenuPayload,
-  defaultShortcutLabelProfile,
+  type ShortcutLabelProfile,
   shortcutIdForKeyboardEvent
 } from "./domain/shortcuts";
 import {
@@ -107,6 +107,7 @@ import {
 import type {
   ComposerMode,
   DesktopSnapshot,
+  LocaleDisplayProfile,
   ResolveComposerKeyAction,
   RoomListItem,
   SavedSessionInfo,
@@ -331,6 +332,23 @@ export function App() {
     }
     document.documentElement.dataset.theme = theme;
   }, [snapshot?.state.settings.values.appearance.theme]);
+
+  useEffect(() => {
+    if (!snapshot) {
+      return;
+    }
+
+    const profile = snapshot.state.locale_profile;
+    document.documentElement.lang = profile.lang;
+    document.documentElement.dir = profile.dir;
+    document.documentElement.dataset.catalogLocale = profile.catalog_locale;
+    document.documentElement.dataset.pseudoLocale = profile.pseudo_locale;
+  }, [
+    snapshot?.state.locale_profile.lang,
+    snapshot?.state.locale_profile.dir,
+    snapshot?.state.locale_profile.catalog_locale,
+    snapshot?.state.locale_profile.pseudo_locale
+  ]);
 
   useEffect(() => {
     if (!snapshot) {
@@ -742,7 +760,7 @@ export function App() {
   }
 
   async function editMessage(message: TimelineMessage) {
-    const body = window.prompt("Edit message", message.body);
+    const body = window.prompt(t("timeline.editMessage"), message.body);
     if (body === null || !body.trim()) {
       return;
     }
@@ -903,6 +921,11 @@ export function App() {
     return <div className="boot-screen">matrix-desktop</div>;
   }
 
+  setActiveLocaleProfile(
+    snapshot.state.locale_profile.catalog_locale,
+    snapshot.state.locale_profile.pseudo_locale
+  );
+
   if (sessionKind !== "ready" && !recoveryRequired) {
     return (
       <AuthScreen
@@ -936,7 +959,7 @@ export function App() {
   return (
     <div className="desktop">
       <TopBar
-        activeSpaceName={activeSpace?.display_name ?? "Matrix"}
+        activeSpaceName={activeSpace?.display_name ?? t("auth.matrixAccount")}
         isBusy={isBusy}
         searchInputRef={searchInputRef}
         searchQuery={searchQuery}
@@ -970,7 +993,7 @@ export function App() {
           onSelectRoom={selectRoom}
         />
         <TimelinePane
-          activeRoomName={activeRoom?.display_name ?? "No room"}
+          activeRoomName={activeRoom?.display_name ?? t("room.noRoomSelected")}
           composerDraft={composerDraft}
           composerMode={composerModeProp(snapshot.state.timeline.composer.mode)}
           resolveComposerKeyAction={resolveComposerKeyAction}
@@ -1189,13 +1212,13 @@ function RecoveryPanel({
             <ShieldCheck size={23} />
           </div>
           <div>
-            <h1>Encryption Recovery</h1>
-            <p>{session.user_id ?? "Matrix account"}</p>
+            <h1>{t("auth.encryptionRecovery")}</h1>
+            <p dir="auto">{session.user_id ?? t("auth.matrixAccount")}</p>
           </div>
         </div>
         <div className="recovery-summary">
           <KeyRound size={18} />
-          <div className="recovery-methods" aria-label="Supported recovery methods">
+          <div className="recovery-methods" aria-label={t("auth.supportedRecoveryMethods")}>
             {(session.recovery_methods ?? ["recoveryKey", "securityPhrase"]).map((method) => (
               <span className="recovery-chip" key={method}>
                 {recoveryMethodLabel(method)}
@@ -1204,7 +1227,7 @@ function RecoveryPanel({
           </div>
         </div>
         <label className="auth-field">
-          <span>Recovery key or security phrase</span>
+          <span>{t("auth.recoverySecret")}</span>
           <input
             autoComplete="off"
             name="recoverySecret"
@@ -1220,7 +1243,7 @@ function RecoveryPanel({
           </div>
         ) : null}
         <button className="auth-submit" disabled={isBusy || !secretFilled} type="submit">
-          {isBusy ? "Recovering" : "Recover"}
+          {isBusy ? t("action.recovering") : t("action.recover")}
         </button>
       </form>
     </section>
@@ -1269,7 +1292,7 @@ function AuthScreen({
             <Hash size={22} />
           </div>
           <div>
-            <h1>Matrix Desktop</h1>
+            <h1>{t("auth.matrixDesktop")}</h1>
             <p>{sessionLabel(snapshot.state.session.kind)}</p>
           </div>
         </div>
@@ -1290,12 +1313,12 @@ function AuthScreen({
             type="button"
             onClick={onDiscoverLoginMethods}
           >
-            Check login methods
+            {t("auth.checkLoginMethods")}
           </button>
           <div className="auth-flows">{authDiscoveryLabel(auth)}</div>
         </div>
         <label className="auth-field">
-          <span>Username or Matrix ID</span>
+          <span>{t("auth.usernameOrMatrixId")}</span>
           <input
             autoComplete="username"
             name="username"
@@ -1305,7 +1328,7 @@ function AuthScreen({
           />
         </label>
         <label className="auth-field">
-          <span>Password</span>
+          <span>{t("auth.password")}</span>
           <input
             autoComplete="current-password"
             name="password"
@@ -1316,7 +1339,7 @@ function AuthScreen({
           />
         </label>
         <label className="auth-field">
-          <span>Device name</span>
+          <span>{t("auth.deviceName")}</span>
           <input
             autoComplete="off"
             name="deviceName"
@@ -1341,7 +1364,7 @@ function AuthScreen({
           }
           type="submit"
         >
-          {isBusy ? "Connecting" : "Continue"}
+          {isBusy ? t("auth.connecting") : t("auth.continue")}
         </button>
       </form>
     </main>
@@ -1351,34 +1374,34 @@ function AuthScreen({
 function authDiscoveryLabel(auth: DesktopSnapshot["state"]["auth"]) {
   switch (auth.kind) {
     case "discovering":
-      return "Checking";
+      return t("auth.checking");
     case "ready": {
       const labels = auth.flows.map((flow) =>
         typeof flow.kind === "string" ? flow.kind : "unknown"
       );
-      return labels.length ? labels.join(" / ") : "No login methods";
+      return labels.length ? labels.join(" / ") : t("auth.noLoginMethods");
     }
     case "failed":
       return auth.message;
     case "unknown":
     default:
-      return "Not checked";
+      return t("auth.notChecked");
   }
 }
 
 function sessionLabel(kind: DesktopSnapshot["state"]["session"]["kind"]) {
   switch (kind) {
     case "authenticating":
-      return "Connecting";
+      return t("auth.connecting");
     case "needsRecovery":
-      return "Encryption recovery";
+      return t("auth.encryptionRecovery");
     case "recovering":
-      return "Recovering";
+      return t("action.recovering");
     case "locked":
-      return "Session locked";
+      return t("auth.sessionLocked");
     case "signedOut":
     default:
-      return "Sign in";
+      return t("auth.signIn");
   }
 }
 
@@ -1387,9 +1410,9 @@ function recoveryMethodLabel(
 ) {
   switch (method) {
     case "recoveryKey":
-      return "Recovery key";
+      return t("auth.recoveryKey");
     case "securityPhrase":
-      return "Security phrase";
+      return t("auth.securityPhrase");
   }
 }
 
@@ -1407,26 +1430,26 @@ function syncStatePresentation(sync: DesktopSnapshot["state"]["sync"]): SyncPres
       case "starting":
         return {
           state: "starting",
-          label: "Starting",
+          label: t("sync.starting"),
           detail: null,
-          ariaLabel: "Sync starting",
+          ariaLabel: t("sync.starting"),
           restartable: false
         };
       case "running":
         return {
           state: "running",
-          label: "Running",
+          label: t("sync.running"),
           detail: null,
-          ariaLabel: "Sync running",
+          ariaLabel: t("sync.running"),
           restartable: false
         };
       case "stopped":
       default:
         return {
           state: "stopped",
-          label: "Stopped",
+          label: t("sync.stopped"),
           detail: null,
-          ariaLabel: "Sync stopped",
+          ariaLabel: t("sync.stopped"),
           restartable: true
         };
     }
@@ -1435,18 +1458,20 @@ function syncStatePresentation(sync: DesktopSnapshot["state"]["sync"]): SyncPres
   if ("reconnecting" in sync) {
     return {
       state: "reconnecting",
-      label: "Reconnecting",
+      label: t("sync.reconnecting"),
       detail: sync.reconnecting,
-      ariaLabel: sync.reconnecting ? `Sync reconnecting: ${sync.reconnecting}` : "Sync reconnecting",
+      ariaLabel: sync.reconnecting
+        ? t("sync.reconnectingWithReason", { reason: sync.reconnecting })
+        : t("sync.reconnecting"),
       restartable: true
     };
   }
 
   return {
     state: "failed",
-    label: "Failed",
+    label: t("sync.failed"),
     detail: sync.failed,
-    ariaLabel: sync.failed ? `Sync failed: ${sync.failed}` : "Sync failed",
+    ariaLabel: sync.failed ? t("sync.failedWithReason", { reason: sync.failed }) : t("sync.failed"),
     restartable: true
   };
 }
@@ -1489,7 +1514,7 @@ export function TopBar({
         <button className="icon-button" type="button" aria-label={t("action.forward")}>
           ›
         </button>
-        <button className="icon-button" type="button" aria-label="History">
+        <button className="icon-button" type="button" aria-label={t("action.history")}>
           <Clock3 size={18} />
         </button>
       </div>
@@ -1499,6 +1524,7 @@ export function TopBar({
           ref={searchInputRef}
           aria-label={t("workspace.search")}
           value={searchQuery}
+          dir="auto"
           placeholder={t("workspace.searchPlaceholder", { spaceName: activeSpaceName })}
           onChange={(event) => onSearchQueryChange(event.target.value)}
         />
@@ -1509,10 +1535,10 @@ export function TopBar({
         value={searchScope}
         onChange={(event) => onSearchScopeChange(event.target.value as SearchScopeKind)}
       >
-        <option value="allRooms">All</option>
-        <option value="currentSpace">Space</option>
-        <option value="currentRoom">Room</option>
-        <option value="dms">DM</option>
+        <option value="allRooms">{t("search.scopeAll")}</option>
+        <option value="currentSpace">{t("search.scopeSpace")}</option>
+        <option value="currentRoom">{t("search.scopeRoom")}</option>
+        <option value="dms">{t("search.scopeDm")}</option>
       </select>
       <div className="top-actions">
         <div
@@ -1542,7 +1568,7 @@ export function TopBar({
         <button
           className="icon-button"
           type="button"
-          aria-label="Keyboard settings"
+          aria-label={t("settings.keyboard")}
           onClick={onOpenKeyboardSettings}
         >
           <HelpCircle size={18} />
@@ -1593,7 +1619,7 @@ export function WorkspaceRail({
               )
             }
           >
-            {initials(space.display_name)}
+            <span dir="auto">{initials(space.display_name)}</span>
           </button>
         ))}
       </div>
@@ -1638,7 +1664,7 @@ function Sidebar({
   return (
     <aside className="sidebar" aria-label={t("workspace.rooms")}>
       <div className="workspace-header">
-        <div className="workspace-name">
+        <div className="workspace-name" dir="auto">
           {snapshot.sidebar.space_rail.find((space) => space.is_active)?.display_name ??
             snapshot.sidebar.account_home.display_name}
         </div>
@@ -1663,10 +1689,10 @@ function Sidebar({
         <NavButton
           active={snapshot.sidebar.account_home.is_active}
           icon={<Home size={18} />}
-          label="Home"
+          label={t("workspace.home")}
         />
-        <NavButton icon={<MessageCircle size={18} />} label="Threads" />
-        <NavButton icon={<Bell size={18} />} label="Invites" />
+        <NavButton icon={<MessageCircle size={18} />} label={t("workspace.threads")} />
+        <NavButton icon={<Bell size={18} />} label={t("workspace.invites")} />
         <SectionTitle label={t("workspace.rooms")} />
         {snapshot.sidebar.space_rooms.map((room) => (
           <RoomButton
@@ -1678,7 +1704,7 @@ function Sidebar({
             onSelectRoom={onSelectRoom}
           />
         ))}
-        <SectionTitle label="People" />
+        <SectionTitle label={t("workspace.people")} />
         {snapshot.sidebar.global_dms.map((room) => (
           <RoomButton
             activeRoomId={activeRoomId}
@@ -1747,7 +1773,7 @@ function RoomButton({
       }
     >
       {icon}
-      <span className="room-name">{room.display_name}</span>
+      <span className="room-name" dir="auto">{room.display_name}</span>
       <span className="room-count">{room.unread_count || ""}</span>
     </button>
   );
@@ -1821,7 +1847,7 @@ function TimelinePane({
       </header>
       <nav className="tabs" aria-label={t("room.tabs")}>
         <button className="tab is-active" type="button">
-          Messages
+          {t("timeline.messagesTab")}
         </button>
       </nav>
       <section className="timeline-scroll">
@@ -1914,8 +1940,11 @@ function SearchResults({
   return (
     <section className="search-results">
       <div className="search-results-header">
-        <span>
-          {results.length} result{results.length === 1 ? "" : "s"} for "{query}"
+        <span dir="auto">
+          {t(results.length === 1 ? "search.resultCountOne" : "search.resultCountMany", {
+            count: results.length,
+            query
+          })}
         </span>
       </div>
       <div className="result-list">
@@ -1929,15 +1958,16 @@ function SearchResults({
                 type="button"
                 onClick={() => onResultSelect(result.room_id, result.event_id)}
               >
-                <span>{highlight(result.snippet, result.highlights)}</span>
+                <span dir="auto">{highlight(result.snippet, result.highlights)}</span>
                 <span className="result-meta">
-                  {room?.display_name ?? result.room_id} · {matchFieldLabel(result.match_field)}
+                  <span dir="auto">{room?.display_name ?? result.room_id}</span> ·{" "}
+                  {matchFieldLabel(result.match_field)}
                 </span>
               </button>
             );
           })
         ) : (
-          <div className="empty-results">No exact matches</div>
+          <div className="empty-results">{t("search.noExactMatches")}</div>
         )}
       </div>
     </section>
@@ -1987,7 +2017,7 @@ function MessageArticle({
       </div>
       <div className="message-main">
         <div className="message-heading">
-          <span className="sender">{message.sender}</span>
+          <span className="sender" dir="auto">{message.sender}</span>
           <span className="time">{formatTime(message.timestamp_ms)}</span>
           {canManage ? (
             <span className="message-actions">
@@ -2010,11 +2040,11 @@ function MessageArticle({
             </span>
           ) : null}
         </div>
-        <div className="message-body">{highlightQueryLines(message.body, query)}</div>
+        <div className="message-body" dir="auto">{highlightQueryLines(message.body, query)}</div>
         {message.attachment_filename ? (
           <div className="attachment">
             <Paperclip size={16} />
-            <span>{highlightQueryLines(message.attachment_filename, query)}</span>
+            <span dir="auto">{highlightQueryLines(message.attachment_filename, query)}</span>
           </div>
         ) : null}
         {message.reply_count ? (
@@ -2227,7 +2257,7 @@ export function ContextualRightPanel({
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("panel.keyboard")} onClose={onClosePanel} />
         <KeyboardSettingsPanel
-          labelProfile={defaultShortcutLabelProfile()}
+          labelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.locale_profile)}
           settings={snapshot.state.settings}
           onUpdateSettings={onUpdateSettings}
         />
@@ -2459,7 +2489,7 @@ function PanelHeader({
   return (
     <header className="thread-header">
       <div className="thread-title">{title}</div>
-      <button className="icon-button" type="button" aria-label="More">
+      <button className="icon-button" type="button" aria-label={t("action.more")}>
         <MoreHorizontal size={19} />
       </button>
       {showClose ? (
@@ -2480,6 +2510,15 @@ function currentSavedSession(snapshot: DesktopSnapshot): SavedSessionInfo | null
     homeserver: session.homeserver,
     user_id: session.user_id,
     device_id: session.device_id
+  };
+}
+
+function shortcutLabelProfileFromLocaleProfile(
+  profile: LocaleDisplayProfile
+): ShortcutLabelProfile {
+  return {
+    platform: profile.platform,
+    modLabel: profile.modifier_labels.primary
   };
 }
 
@@ -2547,9 +2586,9 @@ function utf16OffsetToCodePointIndex(value: string, offset: number): number {
 function matchFieldLabel(field: SearchResult["match_field"]): string {
   switch (field) {
     case "messageBody":
-      return "message";
+      return t("search.matchMessage");
     case "attachmentFileName":
-      return "attachment filename";
+      return t("search.matchAttachmentFileName");
   }
 }
 

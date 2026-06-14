@@ -1,10 +1,12 @@
+import type { MessageId } from "../i18n/messages";
+
 export type ShortcutCategory =
-  | "Composer"
-  | "Room"
-  | "Room List"
-  | "Navigation"
-  | "Autocomplete"
-  | "Accessibility";
+  | "composer"
+  | "room"
+  | "roomList"
+  | "navigation"
+  | "autocomplete"
+  | "accessibility";
 
 export type ShortcutParity = "same" | "adapted" | "deferred" | "notApplicable";
 export type ShortcutPlatform = "all" | "macos" | "windows" | "linux";
@@ -14,18 +16,19 @@ export type ShortcutPlatformProfile = "macos" | "windows" | "linux";
 export interface KeyboardShortcut {
   id: string;
   category: ShortcutCategory;
-  label: string;
+  labelMessageId: MessageId;
   keys: string[];
   parity: ShortcutParity;
   implemented: boolean;
   platforms?: ShortcutPlatform[];
   nativeMenu?: NativeMenuArea;
   accelerator?: string;
-  note?: string;
+  noteMessageId?: MessageId;
 }
 
 export interface KeyboardShortcutGroup {
   category: ShortcutCategory;
+  categoryMessageId: MessageId;
   shortcuts: KeyboardShortcut[];
 }
 
@@ -59,169 +62,169 @@ export interface ShortcutLabelProfile {
 const shortcuts: KeyboardShortcut[] = [
   {
     id: "sendMessage",
-    category: "Composer",
-    label: "Send message",
+    category: "composer",
+    labelMessageId: "shortcut.sendMessage",
     keys: ["Enter"],
     parity: "same",
     implemented: true
   },
   {
     id: "newLine",
-    category: "Composer",
-    label: "New line",
+    category: "composer",
+    labelMessageId: "shortcut.newLine",
     keys: ["Shift", "Enter"],
     parity: "same",
     implemented: true
   },
   {
     id: "formatBold",
-    category: "Composer",
-    label: "Bold",
+    category: "composer",
+    labelMessageId: "shortcut.formatBold",
     keys: ["Ctrl/Cmd", "B"],
     parity: "same",
     implemented: false
   },
   {
     id: "formatItalics",
-    category: "Composer",
-    label: "Italics",
+    category: "composer",
+    labelMessageId: "shortcut.formatItalics",
     keys: ["Ctrl/Cmd", "I"],
     parity: "same",
     implemented: false
   },
   {
     id: "formatLink",
-    category: "Composer",
-    label: "Insert link",
+    category: "composer",
+    labelMessageId: "shortcut.formatLink",
     keys: ["Ctrl/Cmd", "Shift", "L"],
     parity: "same",
     implemented: false
   },
   {
     id: "formatCode",
-    category: "Composer",
-    label: "Code",
+    category: "composer",
+    labelMessageId: "shortcut.formatCode",
     keys: ["Ctrl/Cmd", "E"],
     parity: "same",
     implemented: false
   },
   {
     id: "cancelReplyOrEdit",
-    category: "Composer",
-    label: "Cancel reply or edit",
+    category: "composer",
+    labelMessageId: "shortcut.cancelReplyOrEdit",
     keys: ["Esc"],
     parity: "same",
     implemented: true
   },
   {
     id: "uploadFile",
-    category: "Room",
-    label: "Upload file",
+    category: "room",
+    labelMessageId: "shortcut.uploadFile",
     keys: ["Ctrl/Cmd", "Shift", "U"],
     parity: "deferred",
     implemented: false,
-    note: "Upload UI is not implemented yet."
+    noteMessageId: "shortcut.noteUploadUiDeferred"
   },
   {
     id: "searchInRoom",
-    category: "Room",
-    label: "Search in room",
+    category: "room",
+    labelMessageId: "shortcut.searchInRoom",
     keys: ["Ctrl/Cmd", "F"],
     parity: "same",
     implemented: true
   },
   {
     id: "jumpToOldestUnread",
-    category: "Room",
-    label: "Jump to oldest unread",
+    category: "room",
+    labelMessageId: "shortcut.jumpToOldestUnread",
     keys: ["Shift", "PageUp"],
     parity: "same",
     implemented: false
   },
   {
     id: "scrollTimelineUp",
-    category: "Room",
-    label: "Scroll timeline up",
+    category: "room",
+    labelMessageId: "shortcut.scrollTimelineUp",
     keys: ["PageUp"],
     parity: "same",
     implemented: false
   },
   {
     id: "scrollTimelineDown",
-    category: "Room",
-    label: "Scroll timeline down",
+    category: "room",
+    labelMessageId: "shortcut.scrollTimelineDown",
     keys: ["PageDown"],
     parity: "same",
     implemented: false
   },
   {
     id: "jumpToFirstMessage",
-    category: "Room",
-    label: "Jump to first message",
+    category: "room",
+    labelMessageId: "shortcut.jumpToFirstMessage",
     keys: ["Ctrl", "Home"],
     parity: "same",
     implemented: false
   },
   {
     id: "jumpToLatestMessage",
-    category: "Room",
-    label: "Jump to latest message",
+    category: "room",
+    labelMessageId: "shortcut.jumpToLatestMessage",
     keys: ["Ctrl", "End"],
     parity: "same",
     implemented: false
   },
   {
     id: "selectRoomInRoomList",
-    category: "Room List",
-    label: "Select room",
+    category: "roomList",
+    labelMessageId: "shortcut.selectRoomInRoomList",
     keys: ["Enter"],
     parity: "same",
     implemented: true
   },
   {
     id: "previousRoomInList",
-    category: "Room List",
-    label: "Previous room in list",
+    category: "roomList",
+    labelMessageId: "shortcut.previousRoomInList",
     keys: ["ArrowUp"],
     parity: "same",
     implemented: true
   },
   {
     id: "nextRoomInList",
-    category: "Room List",
-    label: "Next room in list",
+    category: "roomList",
+    labelMessageId: "shortcut.nextRoomInList",
     keys: ["ArrowDown"],
     parity: "same",
     implemented: true
   },
   {
     id: "collapseRoomListSection",
-    category: "Room List",
-    label: "Collapse section",
+    category: "roomList",
+    labelMessageId: "shortcut.collapseRoomListSection",
     keys: ["ArrowLeft"],
     parity: "same",
     implemented: false
   },
   {
     id: "expandRoomListSection",
-    category: "Room List",
-    label: "Expand section",
+    category: "roomList",
+    labelMessageId: "shortcut.expandRoomListSection",
     keys: ["ArrowRight"],
     parity: "same",
     implemented: false
   },
   {
     id: "filterRooms",
-    category: "Navigation",
-    label: "Find rooms",
+    category: "navigation",
+    labelMessageId: "shortcut.filterRooms",
     keys: ["Ctrl/Cmd", "K"],
     parity: "same",
     implemented: true
   },
   {
     id: "toggleRightPanel",
-    category: "Navigation",
-    label: "Toggle right panel",
+    category: "navigation",
+    labelMessageId: "shortcut.toggleRightPanel",
     keys: ["Ctrl/Cmd", "."],
     parity: "same",
     implemented: true,
@@ -230,16 +233,16 @@ const shortcuts: KeyboardShortcut[] = [
   },
   {
     id: "toggleSpacePanel",
-    category: "Navigation",
-    label: "Toggle space panel",
+    category: "navigation",
+    labelMessageId: "shortcut.toggleSpacePanel",
     keys: ["Ctrl/Cmd", "Shift", "D"],
     parity: "same",
     implemented: false
   },
   {
     id: "showKeyboardSettings",
-    category: "Navigation",
-    label: "Keyboard settings",
+    category: "navigation",
+    labelMessageId: "shortcut.showKeyboardSettings",
     keys: ["Ctrl/Cmd", "/"],
     parity: "same",
     implemented: true,
@@ -248,8 +251,8 @@ const shortcuts: KeyboardShortcut[] = [
   },
   {
     id: "openUserSettings",
-    category: "Navigation",
-    label: "User settings",
+    category: "navigation",
+    labelMessageId: "shortcut.openUserSettings",
     keys: ["Cmd", ","],
     platforms: ["macos"],
     parity: "same",
@@ -259,49 +262,49 @@ const shortcuts: KeyboardShortcut[] = [
   },
   {
     id: "goHome",
-    category: "Navigation",
-    label: "Go home",
+    category: "navigation",
+    labelMessageId: "shortcut.goHome",
     keys: ["Ctrl", "Alt", "H"],
     parity: "adapted",
     implemented: true,
-    note: "macOS uses Ctrl+Shift+H in Element; this prototype keeps one cross-platform row."
+    noteMessageId: "shortcut.noteGoHomeAdapted"
   },
   {
     id: "selectPreviousRoom",
-    category: "Navigation",
-    label: "Previous room",
+    category: "navigation",
+    labelMessageId: "shortcut.selectPreviousRoom",
     keys: ["Alt", "ArrowUp"],
     parity: "same",
     implemented: false
   },
   {
     id: "selectNextRoom",
-    category: "Navigation",
-    label: "Next room",
+    category: "navigation",
+    labelMessageId: "shortcut.selectNextRoom",
     keys: ["Alt", "ArrowDown"],
     parity: "same",
     implemented: false
   },
   {
     id: "selectPreviousUnreadRoom",
-    category: "Navigation",
-    label: "Previous unread room",
+    category: "navigation",
+    labelMessageId: "shortcut.selectPreviousUnreadRoom",
     keys: ["Alt", "Shift", "ArrowUp"],
     parity: "same",
     implemented: false
   },
   {
     id: "selectNextUnreadRoom",
-    category: "Navigation",
-    label: "Next unread room",
+    category: "navigation",
+    labelMessageId: "shortcut.selectNextUnreadRoom",
     keys: ["Alt", "Shift", "ArrowDown"],
     parity: "same",
     implemented: false
   },
   {
     id: "previousVisitedRoomOrSpace",
-    category: "Navigation",
-    label: "Back",
+    category: "navigation",
+    labelMessageId: "shortcut.previousVisitedRoomOrSpace",
     keys: ["Cmd", "["],
     platforms: ["macos"],
     parity: "same",
@@ -311,8 +314,8 @@ const shortcuts: KeyboardShortcut[] = [
   },
   {
     id: "nextVisitedRoomOrSpace",
-    category: "Navigation",
-    label: "Forward",
+    category: "navigation",
+    labelMessageId: "shortcut.nextVisitedRoomOrSpace",
     keys: ["Cmd", "]"],
     platforms: ["macos"],
     parity: "same",
@@ -322,79 +325,88 @@ const shortcuts: KeyboardShortcut[] = [
   },
   {
     id: "cancelAutocomplete",
-    category: "Autocomplete",
-    label: "Cancel autocomplete",
+    category: "autocomplete",
+    labelMessageId: "shortcut.cancelAutocomplete",
     keys: ["Esc"],
     parity: "same",
     implemented: false
   },
   {
     id: "nextAutocompleteSelection",
-    category: "Autocomplete",
-    label: "Next autocomplete option",
+    category: "autocomplete",
+    labelMessageId: "shortcut.nextAutocompleteSelection",
     keys: ["ArrowDown"],
     parity: "same",
     implemented: false
   },
   {
     id: "previousAutocompleteSelection",
-    category: "Autocomplete",
-    label: "Previous autocomplete option",
+    category: "autocomplete",
+    labelMessageId: "shortcut.previousAutocompleteSelection",
     keys: ["ArrowUp"],
     parity: "same",
     implemented: false
   },
   {
     id: "closeDialogOrMenu",
-    category: "Accessibility",
-    label: "Close dialog or menu",
+    category: "accessibility",
+    labelMessageId: "shortcut.closeDialogOrMenu",
     keys: ["Esc"],
     parity: "same",
     implemented: true
   },
   {
     id: "activateButton",
-    category: "Accessibility",
-    label: "Activate focused control",
+    category: "accessibility",
+    labelMessageId: "shortcut.activateButton",
     keys: ["Enter"],
     parity: "same",
     implemented: true
   },
   {
     id: "nextLandmark",
-    category: "Accessibility",
-    label: "Next landmark",
+    category: "accessibility",
+    labelMessageId: "shortcut.nextLandmark",
     keys: ["F6"],
     parity: "same",
     implemented: false
   },
   {
     id: "previousLandmark",
-    category: "Accessibility",
-    label: "Previous landmark",
+    category: "accessibility",
+    labelMessageId: "shortcut.previousLandmark",
     keys: ["Shift", "F6"],
     parity: "same",
     implemented: false
   },
   {
     id: "toggleMicrophone",
-    category: "Accessibility",
-    label: "Toggle microphone in call",
+    category: "accessibility",
+    labelMessageId: "shortcut.toggleMicrophone",
     keys: ["Ctrl/Cmd", "D"],
     parity: "deferred",
     implemented: false,
-    note: "Calls are out of scope for this milestone."
+    noteMessageId: "shortcut.noteCallsDeferred"
   }
 ];
 
 const categoryOrder: ShortcutCategory[] = [
-  "Composer",
-  "Room",
-  "Room List",
-  "Navigation",
-  "Autocomplete",
-  "Accessibility"
+  "composer",
+  "room",
+  "roomList",
+  "navigation",
+  "autocomplete",
+  "accessibility"
 ];
+
+const categoryMessageIds: Record<ShortcutCategory, MessageId> = {
+  composer: "shortcut.categoryComposer",
+  room: "shortcut.categoryRoom",
+  roomList: "shortcut.categoryRoomList",
+  navigation: "shortcut.categoryNavigation",
+  autocomplete: "shortcut.categoryAutocomplete",
+  accessibility: "shortcut.categoryAccessibility"
+};
 
 const globalKeyboardHandlerIds = [
   "showKeyboardSettings",
@@ -407,6 +419,7 @@ const globalKeyboardHandlerIds = [
 export const keyboardShortcutGroups: KeyboardShortcutGroup[] = categoryOrder.map(
   (category) => ({
     category,
+    categoryMessageId: categoryMessageIds[category],
     shortcuts: shortcuts.filter((shortcut) => shortcut.category === category)
   })
 );
@@ -437,7 +450,7 @@ export function menuAccelerators(): NativeMenuAccelerator[] {
 export function shortcutConflictAudit(): ShortcutConflictAudit {
   return {
     adaptedWithoutReason: shortcuts
-      .filter((shortcut) => shortcut.parity === "adapted" && !shortcut.note?.trim())
+      .filter((shortcut) => shortcut.parity === "adapted" && !shortcut.noteMessageId)
       .map((shortcut) => shortcut.id),
     duplicateAccelerators: duplicates(
       menuAccelerators().map((shortcut) => shortcut.accelerator)

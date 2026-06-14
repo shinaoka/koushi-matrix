@@ -564,7 +564,7 @@ export function TimelineItemRow({
           ) : null}
           {isLocalEcho ? (
             <span className="message-send-state" data-send-state="unsent">
-              Unsent
+              {t("timeline.unsent")}
             </span>
           ) : null}
         </div>

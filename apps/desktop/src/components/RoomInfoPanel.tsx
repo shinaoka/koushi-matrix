@@ -17,7 +17,7 @@ export function RoomInfoPanel({
         <header className="settings-panel-header">
           <div>
             <h2 id="room-info-title">{t("room.roomInfo")}</h2>
-            <p>No room selected</p>
+            <p>{t("room.noRoomSelected")}</p>
           </div>
         </header>
       </section>
@@ -30,50 +30,50 @@ export function RoomInfoPanel({
     <section className="settings-panel room-info-panel" aria-labelledby="room-info-title">
       <header className="settings-panel-header">
         <div>
-          <h2 id="room-info-title">{room.display_name}</h2>
-          <p>{room.room_id}</p>
+          <h2 id="room-info-title" dir="auto">{room.display_name}</h2>
+          <p dir="auto">{room.room_id}</p>
         </div>
       </header>
 
-      <div className="settings-summary-grid" aria-label="Room summary">
-        <SummaryTile label="Type" value={room.is_dm ? "Direct message" : "Room"} />
-        <SummaryTile label="Unread" value={String(room.unread_count)} />
-        <SummaryTile label="Spaces" value={parentSpaces.length ? String(parentSpaces.length) : "No Spaces"} />
+      <div className="settings-summary-grid" aria-label={t("room.summary")}>
+        <SummaryTile label={t("room.type")} value={room.is_dm ? t("room.directMessage") : t("search.scopeRoom")} />
+        <SummaryTile label={t("room.unread")} value={String(room.unread_count)} />
+        <SummaryTile label={t("room.spaces")} value={parentSpaces.length ? String(parentSpaces.length) : t("room.noSpaces")} />
       </div>
 
-      <section className="settings-section" aria-label="Spaces">
-        <h3>Spaces</h3>
+      <section className="settings-section" aria-label={t("room.spaces")}>
+        <h3>{t("room.spaces")}</h3>
         <div className="settings-detail-list">
           {parentSpaces.length ? (
             parentSpaces.map((space) => (
               <div className="settings-detail-row" key={space.space_id}>
-                <span>{space.display_name}</span>
-                <small>{space.space_id}</small>
+                <span dir="auto">{space.display_name}</span>
+                <small dir="auto">{space.space_id}</small>
               </div>
             ))
           ) : (
             <div className="settings-detail-row">
-              <span>No Spaces</span>
+              <span>{t("room.noSpaces")}</span>
             </div>
           )}
         </div>
       </section>
 
-      <section className="settings-section" aria-label="Room settings">
-        <h3>Room settings</h3>
+      <section className="settings-section" aria-label={t("room.roomSettings")}>
+        <h3>{t("room.roomSettings")}</h3>
         <div className="settings-detail-list">
-          <DetailRow label="Timeline" value="Subscribed" />
-          <DetailRow label="Search index" value="Exact verified results" />
-          <DetailRow label="DM list" value={room.is_dm ? "Global DM list" : "Room scoped"} />
+          <DetailRow label={t("room.timeline")} value={t("room.subscribed")} />
+          <DetailRow label={t("room.searchIndex")} value={t("room.exactVerifiedResults")} />
+          <DetailRow label={t("room.dmList")} value={room.is_dm ? t("room.globalDmList") : t("room.roomScoped")} />
         </div>
       </section>
 
       <SettingsEntryList
         entries={[
-          { icon: <Users size={16} />, label: "People" },
-          { icon: <FileText size={16} />, label: "Files" },
-          { icon: <Bell size={16} />, label: "Notifications" },
-          { icon: <Settings size={16} />, label: "Room settings" }
+          { icon: <Users size={16} />, label: t("room.people") },
+          { icon: <FileText size={16} />, label: t("room.files") },
+          { icon: <Bell size={16} />, label: t("room.notifications") },
+          { icon: <Settings size={16} />, label: t("room.roomSettings") }
         ]}
       />
     </section>

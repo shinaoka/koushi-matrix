@@ -134,6 +134,10 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    display (Linux Xvfb + `tauri-driver`; not available on macOS). The goal
    is that agents carry GUI design and testing as far as headless/virtual
    harnesses allow; only macOS-specific native behavior remains attended.
+   i18n GUI work must also prove the Rust-resolved `LocaleDisplayProfile`
+   reaches the DOM root (`lang`, `dir`, catalog, pseudo mode), remote/user text
+   keeps `dir="auto"`, pseudo/CJK/RTL samples do not overflow the shell, and
+   raw user-facing strings/logical-CSS contracts are covered by headless tests.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

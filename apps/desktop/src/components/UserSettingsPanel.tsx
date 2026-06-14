@@ -26,7 +26,7 @@ export function UserSettingsPanel({
       <header className="settings-panel-header">
         <div>
           <h2 id="user-settings-title">{t("panel.userSettings")}</h2>
-          <p>{currentSession?.user_id ?? t("settings.matrixAccount")}</p>
+          <p dir="auto">{currentSession?.user_id ?? t("settings.matrixAccount")}</p>
         </div>
       </header>
 
@@ -71,30 +71,30 @@ export function UserSettingsPanel({
           <DetailRow label={t("settings.homeserver")} value={currentSession?.homeserver ?? t("settings.notRestored")} />
           <DetailRow label={t("settings.userId")} value={currentSession?.user_id ?? t("settings.notRestored")} />
           <DetailRow label={t("settings.device")} value={currentSession?.device_id ?? t("settings.notRestored")} />
-          <DetailRow label="Local store" value={t("settings.localStore")} />
+          <DetailRow label={t("settings.localStoreLabel")} value={t("settings.localStore")} />
         </div>
       </section>
 
-      <section className="settings-section" aria-label="Appearance">
+      <section className="settings-section" aria-label={t("settings.appearance")}>
         <div className="settings-section-heading">
-          <h3>Appearance</h3>
-          {isSaving ? <span className="settings-save-state">Saving</span> : null}
+          <h3>{t("settings.appearance")}</h3>
+          {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
         </div>
-        <div className="segmented-control" role="group" aria-label="Theme">
+        <div className="segmented-control" role="group" aria-label={t("settings.theme")}>
           <ThemeButton
-            label="System"
+            label={t("settings.themeSystem")}
             selected={selectedTheme === "system"}
             value="system"
             onSelect={onUpdateSettings}
           />
           <ThemeButton
-            label="Light"
+            label={t("settings.themeLight")}
             selected={selectedTheme === "light"}
             value="light"
             onSelect={onUpdateSettings}
           />
           <ThemeButton
-            label="Dark"
+            label={t("settings.themeDark")}
             selected={selectedTheme === "dark"}
             value="dark"
             onSelect={onUpdateSettings}
@@ -105,13 +105,13 @@ export function UserSettingsPanel({
       <section className="settings-section" aria-label={t("settings.security")}>
         <h3>{t("settings.security")}</h3>
         <div className="settings-detail-list">
-          <DetailRow label="Session secret" value={t("settings.sessionSecret")} />
-          <DetailRow label="Search index" value={t("settings.searchIndex")} />
+          <DetailRow label={t("settings.sessionSecretLabel")} value={t("settings.sessionSecret")} />
+          <DetailRow label={t("settings.searchIndex")} value={t("settings.searchIndex")} />
         </div>
       </section>
 
       <section className="account-switcher" aria-label={t("settings.accountSwitcher")}>
-        <h3>Accounts</h3>
+        <h3>{t("settings.accounts")}</h3>
         <div className="account-switcher-list">
           {savedSessions.map((session) => {
             const isCurrent = sessionMatches(currentSession, session);
@@ -121,8 +121,8 @@ export function UserSettingsPanel({
                   {accountInitial(session.user_id)}
                 </div>
                 <div className="account-switcher-main">
-                  <div className="account-switcher-user">{session.user_id}</div>
-                  <div className="account-switcher-meta">
+                  <div className="account-switcher-user" dir="auto">{session.user_id}</div>
+                  <div className="account-switcher-meta" dir="auto">
                     {session.homeserver} / {session.device_id}
                   </div>
                 </div>

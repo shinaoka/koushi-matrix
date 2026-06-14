@@ -10,10 +10,11 @@
 //! References: overview.md "Async rule 4" — timeline items never in AppState.
 
 use matrix_desktop_state::{
-    AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState,
-    FocusedContextState, NavigationState, RecoveryMethod, RoomSummary, SearchMatchField,
-    SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState, SettingsState,
-    SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
+    AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState, DisplayPlatform,
+    FocusedContextState, LocaleDisplayProfile, NavigationState, RecoveryMethod, RoomSummary,
+    SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState,
+    SettingsState, SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
+    resolve_locale_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +53,7 @@ pub struct FrontendAppState {
     pub session: FrontendSessionState,
     pub auth: AuthDiscoveryState,
     pub settings: SettingsState,
+    pub locale_profile: LocaleDisplayProfile,
     pub sync: FrontendSyncState,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
@@ -66,10 +68,15 @@ pub struct FrontendAppState {
 
 impl From<AppState> for FrontendAppState {
     fn from(state: AppState) -> Self {
+        let locale_profile = resolve_locale_display_profile(
+            &state.settings.values.locale,
+            frontend_display_platform(),
+        );
         Self {
             session: state.session.into(),
             auth: state.auth,
             settings: state.settings,
+            locale_profile,
             sync: state.sync.into(),
             navigation: state.navigation,
             spaces: state.spaces,
@@ -81,6 +88,21 @@ impl From<AppState> for FrontendAppState {
             basic_operation: state.basic_operation,
             errors: state.errors,
         }
+    }
+}
+
+fn frontend_display_platform() -> DisplayPlatform {
+    #[cfg(target_os = "macos")]
+    {
+        DisplayPlatform::Macos
+    }
+    #[cfg(target_os = "windows")]
+    {
+        DisplayPlatform::Windows
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        DisplayPlatform::Linux
     }
 }
 
@@ -404,7 +426,10 @@ mod tests {
     use serde_json::json;
 
     use super::{FrontendDesktopSnapshot, FrontendSyncState};
-    use matrix_desktop_state::{AppState, RecoveryMethod, SessionInfo, SessionState, SyncState};
+    use matrix_desktop_state::{
+        AppState, LocaleSettings, RecoveryMethod, SessionInfo, SessionState, SyncState,
+        TextDirectionPreference,
+    };
 
     fn booted_app_state() -> AppState {
         AppState {
@@ -457,10 +482,49 @@ mod tests {
             value["state"]["settings"]["persistence"]["kind"],
             json!("idle")
         );
+        // locale_profile must be present so React applies root lang/dir and
+        // catalog selection from Rust-owned settings/profile resolution.
+        assert_eq!(value["state"]["locale_profile"]["lang"], json!("en"));
+        assert_eq!(value["state"]["locale_profile"]["dir"], json!("ltr"));
+        assert_eq!(
+            value["state"]["locale_profile"]["catalog_locale"],
+            json!("en")
+        );
+        assert_eq!(
+            value["state"]["locale_profile"]["pseudo_locale"],
+            json!("none")
+        );
         // composer.mode must be present (default Plain) for the same reason.
         assert_eq!(
             value["state"]["timeline"]["composer"]["mode"],
             json!("Plain")
+        );
+    }
+
+    #[test]
+    fn frontend_snapshot_locale_profile_follows_rust_owned_locale_settings() {
+        let mut state = booted_app_state();
+        state.settings.values.locale = LocaleSettings {
+            language_tag: Some("ar-XB".to_owned()),
+            text_direction: TextDirectionPreference::Auto,
+        };
+
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
+            .expect("snapshot should serialize");
+
+        assert_eq!(value["state"]["locale_profile"]["lang"], json!("ar-XB"));
+        assert_eq!(value["state"]["locale_profile"]["dir"], json!("rtl"));
+        assert_eq!(
+            value["state"]["locale_profile"]["catalog_locale"],
+            json!("pseudo")
+        );
+        assert_eq!(
+            value["state"]["locale_profile"]["pseudo_locale"],
+            json!("bidi")
+        );
+        assert_ne!(
+            value["state"]["locale_profile"]["modifier_labels"]["primary"],
+            json!(null)
         );
     }
 

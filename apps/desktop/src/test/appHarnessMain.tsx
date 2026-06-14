@@ -31,11 +31,14 @@ import type {
   ComposerMode,
   ComposerSurface,
   DesktopSnapshot,
+  LocaleDisplayProfile,
+  LocaleSettings,
   SettingsPatch
 } from "../domain/types";
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
 
 const CORE_EVENT_NAME = "matrix-desktop://event";
+const STATE_EVENT_NAME = "matrix-desktop://state";
 
 // Identity used across the ready snapshot, timeline key, and CoreEvents.
 const HOMESERVER = "https://harness.example.invalid";
@@ -60,6 +63,7 @@ interface AppHarnessControl {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   setCommandResponse(command: string, response: any): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
+  pushStateChanged(): void;
   replyModeSnapshot(): DesktopSnapshot;
 }
 
@@ -107,6 +111,7 @@ function readySnapshot(
       },
       auth: { kind: "unknown" },
       settings: defaultSettingsState(),
+      locale_profile: defaultLocaleDisplayProfile(),
       sync: "running",
       navigation: { active_space_id: null, active_room_id: ROOM_ID },
       spaces,
@@ -173,6 +178,85 @@ function applySettingsPatch(
     typography: patch.typography ?? values.typography,
     keyboard: patch.keyboard ?? values.keyboard
   };
+}
+
+function defaultLocaleDisplayProfile(): LocaleDisplayProfile {
+  return resolveLocaleDisplayProfile({ language_tag: null, text_direction: "auto" });
+}
+
+function resolveLocaleDisplayProfile(locale: LocaleSettings): LocaleDisplayProfile {
+  const parsed = parseLocale(locale.language_tag);
+  const pseudoLocale = parsed?.pseudo_locale ?? "none";
+  const catalogLocale =
+    pseudoLocale === "accented" || pseudoLocale === "bidi"
+      ? "pseudo"
+      : parsed?.language === "ja"
+        ? "ja"
+        : "en";
+  const lang =
+    pseudoLocale === "accented"
+      ? "en-XA"
+      : pseudoLocale === "bidi"
+        ? "ar-XB"
+        : catalogLocale === "ja"
+          ? "ja"
+          : "en";
+  const dir =
+    locale.text_direction === "ltr" || locale.text_direction === "rtl"
+      ? locale.text_direction
+      : pseudoLocale === "bidi" || parsed?.direction === "rtl"
+        ? "rtl"
+        : "ltr";
+
+  return {
+    lang,
+    dir,
+    catalog_locale: catalogLocale,
+    pseudo_locale: pseudoLocale,
+    platform: "linux",
+    modifier_labels: { primary: "Ctrl" }
+  };
+}
+
+function parseLocale(
+  rawTag: string | null
+): {
+  language: "en" | "ja" | "rtl";
+  direction: "ltr" | "rtl";
+  pseudo_locale: "none" | "accented" | "bidi";
+} | null {
+  const normalized = rawTag?.trim().replaceAll("_", "-");
+  if (!normalized) {
+    return null;
+  }
+  const [primaryRaw, ...rest] = normalized.split("-");
+  const primary = primaryRaw.toLowerCase();
+  if (
+    !/^[a-z]{2,3}$/.test(primary) ||
+    rest.some((subtag) => subtag.toLowerCase() === "x")
+  ) {
+    return null;
+  }
+  if (!rest.every((subtag) => /^[a-z0-9]{1,8}$/i.test(subtag))) {
+    return null;
+  }
+  const pseudo_locale =
+    normalized.toLowerCase() === "en-xa"
+      ? "accented"
+      : normalized.toLowerCase() === "ar-xb"
+        ? "bidi"
+        : "none";
+
+  if (primary === "en") {
+    return { language: "en", direction: "ltr", pseudo_locale };
+  }
+  if (primary === "ja") {
+    return { language: "ja", direction: "ltr", pseudo_locale };
+  }
+  if (["ar", "dv", "fa", "he", "ps", "sd", "ug", "ur", "yi"].includes(primary)) {
+    return { language: "rtl", direction: "rtl", pseudo_locale };
+  }
+  return null;
 }
 
 function resolveComposerKeyActionFromSettings(
@@ -271,19 +355,21 @@ function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
-mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch }) =>
-  setCurrentSnapshot({
+mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch }) => {
+  const values = applySettingsPatch(currentSnapshot.state.settings.values, patch);
+  return setCurrentSnapshot({
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
       settings: {
         ...currentSnapshot.state.settings,
-        values: applySettingsPatch(currentSnapshot.state.settings.values, patch),
+        values,
         persistence: { kind: "idle" }
-      }
+      },
+      locale_profile: resolveLocaleDisplayProfile(values.locale)
     }
-  })
-);
+  });
+});
 mock.setCommandResponse(
   "resolve_composer_key_action",
   ({
@@ -503,6 +589,9 @@ const harnessControl: AppHarnessControl = {
   setCommandResponse: (command, response) =>
     mock.setCommandResponse(command, response),
   pushCoreEvent: (event) => emit(CORE_EVENT_NAME, event),
+  pushStateChanged: () => {
+    void emit(STATE_EVENT_NAME, "stateChanged");
+  },
   replyModeSnapshot
 };
 (window as unknown as { __harness: AppHarnessControl }).__harness =

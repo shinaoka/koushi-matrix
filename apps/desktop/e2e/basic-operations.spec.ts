@@ -615,6 +615,114 @@ test("submitting the composer in reply mode invokes send_reply, not send_text", 
   expect(await invocationCount(page, "send_text")).toBe(0);
 });
 
+test("Rust-owned locale profile applies root lang and dir", async ({ page }) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.replyModeSnapshot();
+    snapshot.state.locale_profile = {
+      lang: "ar-XB",
+      dir: "rtl",
+      catalog_locale: "pseudo",
+      pseudo_locale: "bidi",
+      platform: "linux",
+      modifier_labels: { primary: "Ctrl" }
+    };
+    window.__harness.setCommandResponse("get_snapshot", snapshot);
+    window.__harness.pushStateChanged();
+  });
+
+  await expect.poll(() => page.evaluate(() => document.documentElement.lang)).toBe("ar-XB");
+  await expect.poll(() => page.evaluate(() => document.documentElement.dir)).toBe("rtl");
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.dataset.catalogLocale))
+    .toBe("pseudo");
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.dataset.pseudoLocale))
+    .toBe("bidi");
+});
+
+test("pseudo RTL profile with CJK and combining samples does not overflow shell", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  const longRoomName = "Cafe\u0301 日本語 العربية Very Long Synthetic Room Label For Pseudo Locale";
+  await page.evaluate((roomName) => {
+    const snapshot = window.__harness.replyModeSnapshot();
+    snapshot.state.locale_profile = {
+      lang: "ar-XB",
+      dir: "rtl",
+      catalog_locale: "pseudo",
+      pseudo_locale: "bidi",
+      platform: "linux",
+      modifier_labels: { primary: "Ctrl" }
+    };
+    snapshot.state.rooms[0].display_name = roomName;
+    snapshot.sidebar.space_rooms[0].display_name = roomName;
+    snapshot.state.spaces[0].display_name = "日本語 Space العربية";
+    snapshot.sidebar.space_rail[0].display_name = "日本語 Space العربية";
+    window.__harness.setCommandResponse("get_snapshot", snapshot);
+    window.__harness.pushStateChanged();
+  }, longRoomName);
+
+  await page.evaluate(async () => {
+    await window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        ItemsUpdated: {
+          key: {
+            account_key: "@harness-user:example.invalid",
+            kind: { Room: { room_id: "!harness-room:example.invalid" } }
+          },
+          generation: 1,
+          batch_id: 4,
+          diffs: [
+            {
+              Set: {
+                index: 0,
+                item: {
+                  id: { Event: { event_id: "$seed-event:example.invalid" } },
+                  sender: "@rtl-user:example.invalid",
+                  body: "Cafe\u0301 日本語 العربية long pseudo locale sample",
+                  timestamp_ms: 1_800_000_000_000,
+                  in_reply_to_event_id: null,
+                  thread_root: null,
+                  thread_summary: null,
+                  can_react: true,
+                  is_redacted: false,
+                  can_redact: false,
+                  is_edited: false,
+                  can_edit: true,
+                  reactions: [
+                    {
+                      key: "日本語",
+                      count: 1,
+                      reacted_by_me: false,
+                      my_reaction_event_id: null,
+                      sender_preview: ["@rtl-user:example.invalid"]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  });
+
+  await expect.poll(() => page.evaluate(() => document.documentElement.dir)).toBe("rtl");
+  await expect(page.locator(".room-name").first()).toHaveAttribute("dir", "auto");
+  await expect(page.locator(".message-body").first()).toHaveAttribute("dir", "auto");
+  await expect(page.getByText("Cafe\u0301 日本語 العربية long pseudo locale sample")).toBeVisible();
+  await expect(page.locator(".reaction-pill-key", { hasText: "日本語" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2))
+    .toBe(true);
+});
+
 test("reply send does not repair product state by cancelling reply mode", async ({
   page
 }) => {

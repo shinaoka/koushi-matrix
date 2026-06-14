@@ -25,14 +25,14 @@ export function SpaceInfoPanel({
     <section className="settings-panel space-info-panel" aria-labelledby="space-info-title">
       <header className="settings-panel-header">
         <div>
-          <h2 id="space-info-title">{title}</h2>
-          <p>{space?.space_id ?? "All rooms"}</p>
+          <h2 id="space-info-title" dir="auto">{title}</h2>
+          <p dir="auto">{space?.space_id ?? t("space.allRooms")}</p>
         </div>
       </header>
 
-      <div className="settings-summary-grid" aria-label="Space summary">
+      <div className="settings-summary-grid" aria-label={t("space.summary")}>
         <SummaryTile label={t("workspace.rooms")} value={String(childRooms.length)} />
-        <SummaryTile label="Unread" value={String(unreadTotal)} />
+        <SummaryTile label={t("room.unread")} value={String(unreadTotal)} />
       </div>
 
       <section className="settings-section" aria-label={t("workspace.rooms")}>
@@ -40,29 +40,29 @@ export function SpaceInfoPanel({
         <div className="settings-detail-list">
           {childRooms.map((room) => (
             <div className="settings-detail-row" key={room.room_id}>
-              <span>{room.display_name}</span>
-              <small>{room.unread_count ? `${room.unread_count} unread` : room.room_id}</small>
+              <span dir="auto">{room.display_name}</span>
+              <small dir="auto">{room.unread_count ? t("room.unreadCount", { count: room.unread_count }) : room.room_id}</small>
             </div>
           ))}
         </div>
       </section>
 
-      <section className="settings-section" aria-label="Space preferences">
-        <h3>Space preferences</h3>
+      <section className="settings-section" aria-label={t("space.spacePreferences")}>
+        <h3>{t("space.spacePreferences")}</h3>
         <div className="settings-detail-list">
-          <DetailRow label="Room membership" value={space ? "Child rooms" : "All rooms"} />
-          <DetailRow label="Direct messages" value="Global DM list" />
-          <DetailRow label="Notifications" value={unreadTotal ? `${unreadTotal} unread` : "No unread"} />
+          <DetailRow label={t("space.roomMembership")} value={space ? t("space.childRooms") : t("space.allRooms")} />
+          <DetailRow label={t("space.directMessages")} value={t("room.globalDmList")} />
+          <DetailRow label={t("room.notifications")} value={unreadTotal ? t("room.unreadCount", { count: unreadTotal }) : t("space.noUnread")} />
         </div>
       </section>
 
       <SettingsEntryList
         entries={[
-          { icon: <Home size={16} />, label: "Home" },
-          { icon: <SlidersHorizontal size={16} />, label: "Preferences" },
-          { icon: <Settings size={16} />, label: "Space settings" },
-          { icon: <MailPlus size={16} />, label: "Invite" },
-          { icon: <Bell size={16} />, label: "Notifications" }
+          { icon: <Home size={16} />, label: t("space.home") },
+          { icon: <SlidersHorizontal size={16} />, label: t("space.preferences") },
+          { icon: <Settings size={16} />, label: t("space.spaceSettings") },
+          { icon: <MailPlus size={16} />, label: t("space.invite") },
+          { icon: <Bell size={16} />, label: t("room.notifications") }
         ]}
       />
     </section>

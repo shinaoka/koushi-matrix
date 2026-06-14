@@ -365,14 +365,15 @@ button {
 .top-search svg {
   position: absolute;
   top: 50%;
-  left: 12px;
+  inset-inline-start: 12px;
   transform: translateY(-50%);
 }
 
 .top-search input {
   width: 100%;
   height: 30px;
-  padding: 0 12px 0 38px;
+  padding-block: 0;
+  padding-inline: 38px 12px;
   border: 1px solid rgb(255 255 255 / 16%);
   border-radius: 6px;
   outline: none;
@@ -499,7 +500,7 @@ button {
 
 .workspace-button[data-count]::after {
   position: absolute;
-  right: -2px;
+  inset-inline-end: -2px;
   bottom: -2px;
   min-width: 18px;
   height: 18px;
@@ -531,7 +532,7 @@ button {
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--line);
+  border-inline-end: 1px solid var(--line);
   background: var(--sidebar);
 }
 
@@ -587,9 +588,10 @@ button {
   width: 100%;
   min-height: 34px;
   padding: 5px 8px;
+  border-inline-start: 3px solid transparent;
   border-radius: 6px;
   color: var(--text-muted);
-  text-align: left;
+  text-align: start;
   background: transparent;
 }
 
@@ -600,9 +602,9 @@ button {
 
 .nav-item.is-active,
 .room-item.is-active {
+  border-inline-start-color: var(--brand);
   color: var(--brand-hover);
   background: var(--brand-weak);
-  box-shadow: inset 3px 0 0 0 var(--brand);
 }
 
 .nav-label,
@@ -615,7 +617,7 @@ button {
 .room-count {
   min-width: 20px;
   font-size: 12px;
-  text-align: right;
+  text-align: end;
 }
 
 .presence-dot {
@@ -736,7 +738,7 @@ button {
   width: 100%;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
-  text-align: left;
+  text-align: start;
   background: transparent;
 }
 
@@ -836,7 +838,7 @@ button {
 .message-actions {
   display: inline-flex;
   gap: 2px;
-  margin-left: auto;
+  margin-inline-start: auto;
   opacity: 0;
 }
 
@@ -868,7 +870,7 @@ button {
 .reaction-picker {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
+  inset-inline-end: 0;
   z-index: 40;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -919,7 +921,7 @@ button {
   min-height: 34px;
   padding: 0 12px;
   color: var(--text);
-  text-align: left;
+  text-align: start;
   background: transparent;
   font-size: 13px;
   font-weight: 700;
@@ -1054,7 +1056,7 @@ button {
   color: var(--text-muted);
   background: var(--surface-hover);
   appearance: none;
-  text-align: left;
+  text-align: start;
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
@@ -1103,7 +1105,7 @@ button {
   appearance: none;
   font-size: 12px;
   font-weight: 760;
-  text-align: left;
+  text-align: start;
 }
 
 .thread-summary-chip span {
@@ -1217,8 +1219,8 @@ mark {
   border-bottom: 1px solid var(--line);
   color: var(--text-faint);
   background: var(--surface-hover);
-  border-top-left-radius: 8px;
-  border-top-right-radius: 8px;
+  border-start-start-radius: 8px;
+  border-start-end-radius: 8px;
 }
 
 .composer-reply-label {
@@ -1298,7 +1300,7 @@ mark {
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
-  border-left: 1px solid var(--line);
+  border-inline-start: 1px solid var(--line);
   background: var(--brand-weak);
 }
 
@@ -1649,7 +1651,7 @@ kbd {
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--text);
-  text-align: left;
+  text-align: start;
   background: var(--surface);
 }
 

@@ -59,4 +59,21 @@ describe("BrowserFakeApi settings preview", () => {
       )
     ).resolves.toBe("send");
   });
+
+  test("updates the Rust-shaped locale display profile from locale settings", async () => {
+    const api = createBrowserFakeApi();
+
+    const snapshot = await api.updateSettings({
+      locale: { language_tag: "ar-XB", text_direction: "auto" }
+    });
+
+    expect(snapshot.state.locale_profile).toMatchObject({
+      lang: "ar-XB",
+      dir: "rtl",
+      catalog_locale: "pseudo",
+      pseudo_locale: "bidi",
+      platform: "linux",
+      modifier_labels: { primary: "Ctrl" }
+    });
+  });
 });

@@ -155,6 +155,14 @@ function defaultSnapshotResponse() {
         },
         persistence: { kind: "idle" }
       },
+      locale_profile: {
+        lang: "en",
+        dir: "ltr",
+        catalog_locale: "en",
+        pseudo_locale: "none",
+        platform: "linux",
+        modifier_labels: { primary: "Ctrl" }
+      },
       sync: "stopped",
       navigation: { active_space_id: null, active_room_id: null },
       spaces: [],

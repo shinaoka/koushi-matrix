@@ -14,24 +14,32 @@ import {
 describe("shortcut registry", () => {
   test("keeps Element-like keyboard settings categories in display order", () => {
     expect(keyboardShortcutGroups.map((group) => group.category)).toEqual([
-      "Composer",
-      "Room",
-      "Room List",
-      "Navigation",
-      "Autocomplete",
-      "Accessibility"
+      "composer",
+      "room",
+      "roomList",
+      "navigation",
+      "autocomplete",
+      "accessibility"
+    ]);
+    expect(keyboardShortcutGroups.map((group) => group.categoryMessageId)).toEqual([
+      "shortcut.categoryComposer",
+      "shortcut.categoryRoom",
+      "shortcut.categoryRoomList",
+      "shortcut.categoryNavigation",
+      "shortcut.categoryAutocomplete",
+      "shortcut.categoryAccessibility"
     ]);
   });
 
   test("records Element-compatible settings and navigation shortcuts", () => {
     expect(shortcutById("showKeyboardSettings")).toMatchObject({
-      label: "Keyboard settings",
+      labelMessageId: "shortcut.showKeyboardSettings",
       keys: ["Ctrl/Cmd", "/"],
       parity: "same",
       implemented: true
     });
     expect(shortcutById("openUserSettings")).toMatchObject({
-      label: "User settings",
+      labelMessageId: "shortcut.openUserSettings",
       keys: ["Cmd", ","],
       platforms: ["macos"],
       parity: "same"

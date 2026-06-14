@@ -1,5 +1,15 @@
+import { readdirSync, readFileSync } from "node:fs";
+import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
-import { catalogs, pseudoLocalize, t, type Locale } from "./messages";
+import { contextMenuItems } from "../domain/contextMenus";
+import { elementShortcutParity, keyboardShortcutGroups } from "../domain/shortcuts";
+import {
+  catalogs,
+  pseudoLocalize,
+  setActiveLocaleProfile,
+  t,
+  type Locale
+} from "./messages";
 
 describe("i18n message catalog", () => {
   test("all locales expose the same message ids", () => {
@@ -58,4 +68,88 @@ describe("i18n message catalog", () => {
       t("workspace.searchPlaceholder", { spaceName: "Synthetic Space" }, "en").length
     );
   });
+
+  test("active Rust-owned locale profile selects bidi pseudo catalog rendering", () => {
+    setActiveLocaleProfile("pseudo", "bidi");
+    try {
+      const label = t("action.send");
+
+      expect(label).toContain("\u202e");
+      expect(label).toContain("\u202c");
+      expect(label).not.toBe(t("action.send", {}, "en"));
+    } finally {
+      setActiveLocaleProfile("en", "none");
+    }
+  });
+
+  test("product components do not embed raw user-visible strings", () => {
+    const componentUrls = [
+      new URL("../App.tsx", import.meta.url),
+      ...readdirSync(new URL("../components", import.meta.url))
+        .filter((name) => name.endsWith(".tsx"))
+        .map((name) => new URL(`../components/${name}`, import.meta.url))
+    ];
+    const findings: string[] = [];
+
+    for (const url of componentUrls) {
+      const source = readFileSync(url, "utf8");
+      const file = url.pathname.split("/").slice(-2).join("/");
+      const sourceFile = ts.createSourceFile(
+        file,
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TSX
+      );
+
+      function visit(node: ts.Node): void {
+        if (ts.isJsxText(node)) {
+          const text = node.getText(sourceFile).trim().replace(/\s+/g, " ");
+          if (text && text !== "matrix-desktop" && /[A-Za-z]/.test(text)) {
+            findings.push(`${file}:${lineNumberAt(sourceFile, node)}: literal JSX text "${text}"`);
+          }
+        }
+
+        if (
+          ts.isJsxAttribute(node) &&
+          ["aria-label", "placeholder", "title", "alt"].includes(node.name.getText(sourceFile)) &&
+          node.initializer &&
+          ts.isStringLiteral(node.initializer)
+        ) {
+          findings.push(
+            `${file}:${lineNumberAt(sourceFile, node)}: literal ${node.name.getText(sourceFile)} "${node.initializer.text}"`
+          );
+        }
+
+        ts.forEachChild(node, visit);
+      }
+
+      visit(sourceFile);
+    }
+
+    expect(findings).toEqual([]);
+  });
+
+  test("structured UI registries reference catalog ids, not prose", () => {
+    const messageIds = new Set(Object.keys(catalogs.en));
+    const ids = [
+      ...keyboardShortcutGroups.map((group) => group.categoryMessageId),
+      ...elementShortcutParity().flatMap((shortcut) => [
+        shortcut.labelMessageId,
+        ...(shortcut.noteMessageId ? [shortcut.noteMessageId] : [])
+      ]),
+      ...contextMenuItems({ kind: "message", canManage: true, hasThread: true }).map(
+        (item) => item.labelMessageId
+      ),
+      ...contextMenuItems({ kind: "room" }).map((item) => item.labelMessageId),
+      ...contextMenuItems({ kind: "space" }).map((item) => item.labelMessageId),
+      ...contextMenuItems({ kind: "account" }).map((item) => item.labelMessageId)
+    ];
+
+    expect(ids.every((id) => messageIds.has(id))).toBe(true);
+  });
 });
+
+function lineNumberAt(sourceFile: ts.SourceFile, node: ts.Node): number {
+  return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+}

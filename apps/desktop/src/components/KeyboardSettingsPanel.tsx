@@ -18,24 +18,26 @@ export function KeyboardSettingsPanel({
 }) {
   const selectedSendShortcut = settings.values.keyboard.composer_send_shortcut;
   const isSaving = settings.persistence.kind === "saving";
-  const modEnterLabel = `${formatModShortcut("Enter", labelProfile)} sends`;
+  const modEnterLabel = t("shortcut.modEnterSends", {
+    shortcut: formatModShortcut("Enter", labelProfile)
+  });
 
   return (
     <section className="settings-panel keyboard-settings" aria-labelledby="keyboard-settings-title">
       <header className="settings-panel-header">
         <div>
           <h2 id="keyboard-settings-title">{t("panel.keyboard")}</h2>
-          <p>Element-compatible shortcuts for implemented desktop actions.</p>
+          <p>{t("settings.keyboardDescription")}</p>
         </div>
       </header>
-      <section className="settings-section" aria-label="Composer send shortcut">
+      <section className="settings-section" aria-label={t("shortcut.composerSendShortcut")}>
         <div className="settings-section-heading">
-          <h3>Composer send shortcut</h3>
-          {isSaving ? <span className="settings-save-state">Saving</span> : null}
+          <h3>{t("shortcut.composerSendShortcut")}</h3>
+          {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
         </div>
-        <div className="segmented-control" role="group" aria-label="Composer send shortcut">
+        <div className="segmented-control" role="group" aria-label={t("shortcut.composerSendShortcut")}>
           <ComposerShortcutButton
-            label="Enter sends"
+            label={t("shortcut.enterSends")}
             selected={selectedSendShortcut === "enter"}
             value="enter"
             onSelect={onUpdateSettings}
@@ -51,7 +53,7 @@ export function KeyboardSettingsPanel({
       <div className="shortcut-groups">
         {keyboardShortcutGroups.map((group) => (
           <section className="shortcut-group" key={group.category}>
-            <h3>{group.category}</h3>
+            <h3>{t(group.categoryMessageId)}</h3>
             <div className="shortcut-table">
               {group.shortcuts.map((shortcut) => (
                 <ShortcutRow key={shortcut.id} shortcut={shortcut} />
@@ -92,18 +94,35 @@ function ComposerShortcutButton({
 }
 
 function ShortcutRow({ shortcut }: { shortcut: KeyboardShortcut }) {
+  const label = t(shortcut.labelMessageId);
+  const note = shortcut.noteMessageId ? t(shortcut.noteMessageId) : null;
   return (
     <div className="shortcut-row">
       <div className="shortcut-label">
-        <span>{shortcut.label}</span>
-        {shortcut.note ? <small>{shortcut.note}</small> : null}
+        <span>{label}</span>
+        {note ? <small>{note}</small> : null}
       </div>
-      <div className="shortcut-keys" aria-label={`${shortcut.label} shortcut`}>
+      <div className="shortcut-keys" aria-label={t("shortcut.shortcutKeys", { label })}>
         {shortcut.keys.map((key) => (
           <kbd key={key}>{key}</kbd>
         ))}
       </div>
-      <span className={`shortcut-status ${shortcut.parity}`}>{shortcut.parity}</span>
+      <span className={`shortcut-status ${shortcut.parity}`}>
+        {shortcutParityLabel(shortcut.parity)}
+      </span>
     </div>
   );
+}
+
+function shortcutParityLabel(parity: KeyboardShortcut["parity"]): string {
+  switch (parity) {
+    case "adapted":
+      return t("shortcut.parityAdapted");
+    case "deferred":
+      return t("shortcut.parityDeferred");
+    case "notApplicable":
+      return t("shortcut.parityNotApplicable");
+    case "same":
+      return t("shortcut.paritySame");
+  }
 }

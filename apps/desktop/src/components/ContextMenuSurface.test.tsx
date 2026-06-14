@@ -8,8 +8,8 @@ describe("ContextMenuSurface", () => {
     const markup = renderToStaticMarkup(
       <ContextMenuSurface
         items={[
-          { id: "openThread", label: "Reply in thread" },
-          { id: "redactMessage", label: "Redact", destructive: true }
+          { id: "openThread", labelMessageId: "context.openThread" },
+          { id: "redactMessage", labelMessageId: "context.redactMessage", destructive: true }
         ]}
         x={120}
         y={80}

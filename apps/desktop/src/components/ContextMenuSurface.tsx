@@ -1,4 +1,5 @@
 import type { ContextMenuActionId, ContextMenuItem } from "../domain/contextMenus";
+import { t } from "../i18n/messages";
 
 const MENU_WIDTH = 184;
 const MENU_ITEM_HEIGHT = 34;
@@ -75,7 +76,7 @@ export function ContextMenuSurface({
             type="button"
             onClick={() => onAction(item.id)}
           >
-            {item.label}
+            {t(item.labelMessageId)}
           </button>
         ))}
       </div>

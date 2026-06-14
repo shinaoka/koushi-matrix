@@ -10,6 +10,8 @@ import type {
   SearchResult,
   SearchScopeKind,
   SettingsPatch,
+  LocaleSettings,
+  LocaleDisplayProfile,
   SpaceSummary,
   TimelineMessage
 } from "../domain/types";
@@ -199,6 +201,9 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.settings.values = applySettingsPatch(
       this.snapshot.state.settings.values,
       patch
+    );
+    this.snapshot.state.locale_profile = resolveLocaleDisplayProfile(
+      this.snapshot.state.settings.values.locale
     );
     this.snapshot.state.settings.persistence = { kind: "idle" };
     return this.getSnapshot();
@@ -663,6 +668,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       },
       auth: { kind: "unknown" },
       settings: defaultSettingsState(),
+      locale_profile: defaultLocaleDisplayProfile(),
       sync: "running",
       navigation: {
         active_space_id,
@@ -739,6 +745,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       session: { kind: "signedOut" },
       auth: { kind: "unknown" },
       settings: defaultSettingsState(),
+      locale_profile: defaultLocaleDisplayProfile(),
       sync: "stopped",
       navigation: {
         active_space_id: null,
@@ -778,6 +785,78 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
     },
     persistence: { kind: "idle" }
   };
+}
+
+function defaultLocaleDisplayProfile(): LocaleDisplayProfile {
+  return resolveLocaleDisplayProfile({ language_tag: null, text_direction: "auto" });
+}
+
+function resolveLocaleDisplayProfile(locale: LocaleSettings): LocaleDisplayProfile {
+  const parsed = parseLocale(locale.language_tag);
+  const pseudoLocale = parsed?.pseudo_locale ?? "none";
+  const catalogLocale =
+    pseudoLocale === "accented" || pseudoLocale === "bidi"
+      ? "pseudo"
+      : parsed?.language === "ja"
+        ? "ja"
+        : "en";
+  const lang =
+    pseudoLocale === "accented"
+      ? "en-XA"
+      : pseudoLocale === "bidi"
+        ? "ar-XB"
+        : catalogLocale === "ja"
+          ? "ja"
+          : "en";
+  const dir =
+    locale.text_direction === "ltr" || locale.text_direction === "rtl"
+      ? locale.text_direction
+      : pseudoLocale === "bidi" || parsed?.direction === "rtl"
+        ? "rtl"
+        : "ltr";
+
+  return {
+    lang,
+    dir,
+    catalog_locale: catalogLocale,
+    pseudo_locale: pseudoLocale,
+    platform: "linux",
+    modifier_labels: { primary: "Ctrl" }
+  };
+}
+
+function parseLocale(
+  rawTag: string | null
+): { language: "en" | "ja" | "rtl"; direction: "ltr" | "rtl"; pseudo_locale: "none" | "accented" | "bidi" } | null {
+  const normalized = rawTag?.trim().replaceAll("_", "-");
+  if (!normalized) {
+    return null;
+  }
+  const [primaryRaw, ...rest] = normalized.split("-");
+  const primary = primaryRaw.toLowerCase();
+  if (!/^[a-z]{2,3}$/.test(primary) || rest.some((subtag) => subtag.toLowerCase() === "x")) {
+    return null;
+  }
+  if (!rest.every((subtag) => /^[a-z0-9]{1,8}$/i.test(subtag))) {
+    return null;
+  }
+  const pseudo_locale =
+    normalized.toLowerCase() === "en-xa"
+      ? "accented"
+      : normalized.toLowerCase() === "ar-xb"
+        ? "bidi"
+        : "none";
+
+  if (primary === "en") {
+    return { language: "en", direction: "ltr", pseudo_locale };
+  }
+  if (primary === "ja") {
+    return { language: "ja", direction: "ltr", pseudo_locale };
+  }
+  if (["ar", "dv", "fa", "he", "ps", "sd", "ug", "ur", "yi"].includes(primary)) {
+    return { language: "rtl", direction: "rtl", pseudo_locale };
+  }
+  return null;
 }
 
 function applySettingsPatch(

@@ -35,6 +35,8 @@ All agents implementing Rust-owned settings Phase A follow
 [docs/superpowers/plans/2026-06-14-rust-owned-settings-phase-a.md](docs/superpowers/plans/2026-06-14-rust-owned-settings-phase-a.md).
 All agents implementing the headless i18n substrate follow
 [docs/superpowers/plans/2026-06-14-i18n-substrate-phase-a.md](docs/superpowers/plans/2026-06-14-i18n-substrate-phase-a.md).
+All agents implementing the i18n GUI wiring follow
+[docs/superpowers/plans/2026-06-14-i18n-substrate-phase-b.md](docs/superpowers/plans/2026-06-14-i18n-substrate-phase-b.md).
 
 ## Rust-Owned Settings Notes
 
@@ -47,6 +49,14 @@ All agents implementing the headless i18n substrate follow
   consume the resulting `lang`, `dir`, catalog locale, pseudo-locale mode,
   platform, and modifier labels, but must not parse raw language tags or own
   fallback locale rules.
+- `LocaleDisplayProfile` is a snapshot contract field, not a browser-only
+  convenience. When it changes, update `apps/desktop/src-tauri/src/dto.rs`,
+  `apps/desktop/src/domain/types.ts`, `browserFakeApi`, `tauriIpcMock`, app
+  harness snapshots, and the DTO serialization-contract tests together.
+- Root `lang`/`dir` and active catalog selection come from
+  `snapshot.state.locale_profile`. Raw visible strings in React components
+  should fail the catalog gate unless they are reviewed structured registry
+  data or synthetic fixture content.
 - Composer key behavior belongs to the Rust-owned resolver in
   `matrix-desktop-state`, shared by main, thread, and edit composer surfaces.
   GUI code normalizes DOM/native key input into typed resolver facts and then
@@ -92,6 +102,11 @@ All agents implementing the headless i18n substrate follow
   the reply lifecycle (or have the App refresh from owned state, not a static
   mock). The `reply send does not repair product state by cancelling reply mode`
   regression added in that remediation passes deterministically in isolation.
+- For i18n headless tests that first push a locale/profile snapshot and then
+  mutate the event-driven timeline, prefer updating the already-seeded room row
+  with `ItemsUpdated.Set` at generation `1`. A one-off `InitialItems` emitted
+  around the same snapshot refresh can be swallowed by harness timing and leave
+  the seed row visible, even though the root `lang`/`dir` update succeeded.
 
 ## Linux GUI QA Container
 

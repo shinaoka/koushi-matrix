@@ -55,9 +55,15 @@ describe("styles.css token system", () => {
     }
   });
 
-  test("selected room row has a brand left bar", () => {
-    expect(css).toMatch(
-      /\.room-item\.is-active[^}]*box-shadow|\.room-item\.is-active[^}]*border-inline-start/
+  test("selected room row uses a logical brand start bar", () => {
+    expect(css).toMatch(/border-inline-start-color:\s*var\(--brand\)/);
+    expect(css).not.toContain("box-shadow: inset 3px 0 0 0 var(--brand)");
+  });
+
+  test("locale-sensitive layout uses logical properties instead of physical left/right declarations", () => {
+    expect(css).not.toMatch(
+      /\b(?:left|right|margin-left|margin-right|padding-left|padding-right|border-left|border-right|inset-left|inset-right)\s*:/
     );
+    expect(css).not.toMatch(/text-align:\s*(?:left|right)\b/);
   });
 });

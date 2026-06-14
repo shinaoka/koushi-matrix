@@ -1,3 +1,5 @@
+import type { MessageId } from "../i18n/messages";
+
 export type ContextMenuKind = "message" | "room" | "space" | "account";
 
 export type ContextMenuActionId =
@@ -15,7 +17,7 @@ export type ContextMenuActionId =
 
 export interface ContextMenuItem {
   id: ContextMenuActionId;
-  label: string;
+  labelMessageId: MessageId;
   destructive?: boolean;
 }
 
@@ -40,30 +42,34 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
     case "message": {
       const items: ContextMenuItem[] = [];
       if (request.hasThread) {
-        items.push({ id: "openThread", label: "Reply in thread" });
+        items.push({ id: "openThread", labelMessageId: "context.openThread" });
       }
       if (request.canManage) {
-        items.push({ id: "editMessage", label: "Edit" });
-        items.push({ id: "redactMessage", label: "Redact", destructive: true });
+        items.push({ id: "editMessage", labelMessageId: "context.editMessage" });
+        items.push({
+          id: "redactMessage",
+          labelMessageId: "context.redactMessage",
+          destructive: true
+        });
       }
       return items;
     }
     case "room":
       return [
-        { id: "selectRoom", label: "Open" },
-        { id: "openRoomInfo", label: "Room info" },
-        { id: "searchInRoom", label: "Search in room" }
+        { id: "selectRoom", labelMessageId: "context.selectRoom" },
+        { id: "openRoomInfo", labelMessageId: "context.openRoomInfo" },
+        { id: "searchInRoom", labelMessageId: "context.searchInRoom" }
       ];
     case "space":
       return [
-        { id: "selectSpace", label: "Open Space" },
-        { id: "openSpaceInfo", label: "Space info" }
+        { id: "selectSpace", labelMessageId: "context.selectSpace" },
+        { id: "openSpaceInfo", labelMessageId: "context.openSpaceInfo" }
       ];
     case "account":
       return [
-        { id: "openUserSettings", label: "User settings" },
-        { id: "openKeyboardSettings", label: "Keyboard shortcuts" },
-        { id: "switchAccount", label: "Switch account" }
+        { id: "openUserSettings", labelMessageId: "context.openUserSettings" },
+        { id: "openKeyboardSettings", labelMessageId: "context.openKeyboardSettings" },
+        { id: "switchAccount", labelMessageId: "context.switchAccount" }
       ];
   }
 }

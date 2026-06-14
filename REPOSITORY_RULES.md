@@ -248,6 +248,10 @@ conflict is being resolved.
   `LocaleDisplayProfile` (`lang`, `dir`, catalog locale, pseudo-locale mode,
   platform, and modifier labels) and must not branch on raw persisted locale
   tags in feature components.
+- `LocaleDisplayProfile` is part of the snapshot contract. Changes to it must
+  update the Tauri DTO, TypeScript domain types, browser fake snapshots, Tauri
+  IPC mocks, app harness snapshots, and DTO serialization-contract tests
+  together.
 - QA tokens, protocol enum variants, log kinds, CSS class names, data-testid
   values, and synthetic fixture message bodies are not localized. Tests should
   prefer roles, stable test IDs, message IDs, or semantic state over localized
@@ -255,6 +259,10 @@ conflict is being resolved.
 - A new feature that adds user-visible text adds or updates catalog entries,
   at least one default locale, and a pseudo-locale or missing-translation test
   before wiring the text into the UI.
+- Locale-sensitive layout uses CSS logical properties by default. Unreviewed
+  physical left/right spacing, borders, positioning, or text alignment in the
+  desktop shell is a defect unless the physical direction is intentional and
+  documented.
 
 ## Documentation And Work Records
 

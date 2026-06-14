@@ -17,6 +17,7 @@ export interface AppState {
   session: SessionState;
   auth: AuthDiscoveryState;
   settings: SettingsState;
+  locale_profile: LocaleDisplayProfile;
   sync: SyncState;
   navigation: NavigationState;
   spaces: SpaceSummary[];
@@ -54,6 +55,25 @@ export interface LocaleSettings {
 }
 
 export type TextDirectionPreference = "auto" | "ltr" | "rtl";
+
+export interface LocaleDisplayProfile {
+  lang: string;
+  dir: LocaleDirection;
+  catalog_locale: CatalogLocale;
+  pseudo_locale: LocalePseudoMode;
+  platform: DisplayPlatform;
+  modifier_labels: ModifierLabelProfile;
+}
+
+export type LocaleDirection = "ltr" | "rtl";
+export type CatalogLocale = "en" | "ja" | "pseudo";
+export type LocalePseudoMode = "none" | "accented" | "bidi";
+export type DisplayPlatform = "macos" | "windows" | "linux";
+export type PrimaryModifierLabel = "Cmd" | "Ctrl";
+
+export interface ModifierLabelProfile {
+  primary: PrimaryModifierLabel;
+}
 
 export interface AppearanceSettings {
   theme: ThemePreference;
