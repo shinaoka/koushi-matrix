@@ -102,6 +102,11 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Local store");
     expect(markup).toContain("Appearance");
     expect(markup).toContain("Dark");
+    expect(markup).toContain("Typography");
+    expect(markup).toContain("UI font");
+    expect(markup).toContain("Emoji font");
+    expect(markup).toContain("Inter");
+    expect(markup).toContain("Twemoji COLR");
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain("Separate encrypted namespace");
     expect(markup).toContain("OS credential store");

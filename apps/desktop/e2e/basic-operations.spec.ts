@@ -1197,6 +1197,110 @@ test("keyboard settings update composer send shortcut through Rust-owned command
   await expect.poll(() => invocationCount(page, "send_text")).toBeGreaterThanOrEqual(1);
 });
 
+test("typography profile applies bundled font and emoji tokens from Rust snapshot", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const base = window.__harness.currentSnapshot();
+    const values = {
+      ...base.state.settings.values,
+      typography: { font: "inter" as const, emoji: "twemojiColr" as const }
+    };
+    window.__harness.setSnapshot({
+      ...base,
+      state: {
+        ...base.state,
+        settings: {
+          ...base.state.settings,
+          values
+        },
+        typography_profile: {
+          font: "inter",
+          emoji: "twemojiColr",
+          platform: "linux",
+          font_asset: "bundledPreferred",
+          emoji_asset: "bundledPreferred"
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.dataset.uiFont))
+    .toBe("inter");
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.dataset.emojiFont))
+    .toBe("twemojiColr");
+
+  const typography = await page.evaluate(async () => {
+    await document.fonts.load('14px "Inter"', "English 日本語");
+    await document.fonts.load('14px "Twemoji"', "🐶👍");
+    await document.fonts.ready;
+    const rootStyle = getComputedStyle(document.documentElement);
+    const messageBody = document.querySelector(".message-body");
+    const reactionKey = document.querySelector(".reaction-pill-key");
+    return {
+      fontUi: rootStyle.getPropertyValue("--font-ui"),
+      fontEmoji: rootStyle.getPropertyValue("--font-emoji"),
+      interLoaded: document.fonts.check('14px "Inter"', "English 日本語"),
+      twemojiLoaded: document.fonts.check('14px "Twemoji"', "🐶👍"),
+      messageFont: messageBody ? getComputedStyle(messageBody).fontFamily : "",
+      reactionFont: reactionKey ? getComputedStyle(reactionKey).fontFamily : ""
+    };
+  });
+
+  expect(typography.fontUi).toContain("Inter");
+  expect(typography.fontEmoji).toContain("Twemoji");
+  expect(typography.interLoaded).toBe(true);
+  expect(typography.twemojiLoaded).toBe(true);
+  expect(typography.messageFont).toContain("Inter");
+  expect(typography.reactionFont).toContain("Twemoji");
+});
+
+test("typography settings dispatch Rust-owned update_settings patches", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page.getByRole("button", { name: "User settings" }).click();
+  await expect(page.getByText("Typography")).toBeVisible();
+
+  await page.getByRole("button", { name: "Inter" }).click();
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        typography: { font: "inter", emoji: "system" }
+      }
+    });
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.dataset.uiFont))
+    .toBe("inter");
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.getByRole("button", { name: "Twemoji COLR" }).click();
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        typography: { font: "inter", emoji: "twemojiColr" }
+      }
+    });
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.dataset.emojiFont))
+    .toBe("twemojiColr");
+});
+
 test("E2EE trust controls dispatch Rust-owned commands and render snapshot updates", async ({
   page
 }) => {

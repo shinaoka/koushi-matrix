@@ -51,6 +51,8 @@ All agents implementing the i18n GUI wiring follow
 All agents implementing cross-platform font/emoji substrate Phase A follow
 [docs/superpowers/plans/2026-06-15-font-emoji-phase-a.md](docs/superpowers/plans/2026-06-15-font-emoji-phase-a.md)
 before any Phase B font asset or CSS wiring.
+Phase B GUI/browser-headless work for the same issue follows
+[docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md](docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md).
 
 ## Live Signals Phase A Notes
 
@@ -254,6 +256,17 @@ before any Phase B font asset or CSS wiring.
 - Font asset loading is Phase B. Inter and Twemoji COLR are bundled-preferred
   choices with system fallbacks, and any included font package must update
   `THIRD_PARTY_NOTICES.md` with version, local path, license, and provenance.
+  The current Twemoji COLR package (`twemoji-colr-font@15.0.3`) is pinned but
+  npm marks it deprecated; do not upgrade or replace it without checking the
+  rendered family name, license stack (package/font/artwork), and browser
+  COLR/CPAL behavior.
+- Keep the root font stack as a single resolved custom property, e.g.
+  `font-family: var(--font-ui)`. A 2026-06-15 Phase B attempt used
+  `font-family: var(--font-ui), var(--font-emoji)` with list-valued variables;
+  headless Chromium rendered the page, but Playwright `locator.click()` hung at
+  the actionability "visible, enabled and stable" step for ordinary buttons.
+  Fold emoji fallbacks into `--font-ui` / `--font-message` instead of chaining
+  list-valued font variables at the declaration site.
 - Root `lang`/`dir` and active catalog selection come from
   `snapshot.state.locale_profile`. Raw visible strings in React components
   should fail the catalog gate unless they are reviewed structured registry

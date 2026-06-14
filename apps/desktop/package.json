@@ -28,11 +28,13 @@
     "qa:release-gates": "node ../../scripts/desktop-release-gate-check.mjs"
   },
   "dependencies": {
+    "@fontsource/inter": "5.2.8",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "lucide-react": "^1.17.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "twemoji-colr-font": "15.0.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

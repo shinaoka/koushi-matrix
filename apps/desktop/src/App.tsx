@@ -403,6 +403,23 @@ export function App() {
       return;
     }
 
+    const profile = snapshot.state.typography_profile;
+    document.documentElement.dataset.uiFont = profile.font;
+    document.documentElement.dataset.emojiFont = profile.emoji;
+    document.documentElement.dataset.fontAsset = profile.font_asset;
+    document.documentElement.dataset.emojiAsset = profile.emoji_asset;
+  }, [
+    snapshot?.state.typography_profile.font,
+    snapshot?.state.typography_profile.emoji,
+    snapshot?.state.typography_profile.font_asset,
+    snapshot?.state.typography_profile.emoji_asset
+  ]);
+
+  useEffect(() => {
+    if (!snapshot) {
+      return;
+    }
+
     if (searchTimer.current) {
       window.clearTimeout(searchTimer.current);
     }

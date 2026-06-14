@@ -127,6 +127,9 @@ export type MessageId =
   | "settings.accountSwitcher"
   | "settings.current"
   | "settings.device"
+  | "settings.emojiFont"
+  | "settings.fontInter"
+  | "settings.fontSystem"
   | "settings.general"
   | "settings.homeserver"
   | "settings.keyboard"
@@ -149,6 +152,9 @@ export type MessageId =
   | "settings.themeDark"
   | "settings.themeLight"
   | "settings.themeSystem"
+  | "settings.twemojiColr"
+  | "settings.typography"
+  | "settings.uiFont"
   | "trust.acceptVerification"
   | "trust.closeVerification"
   | "trust.confirmSas"
@@ -547,6 +553,9 @@ const en: Catalog = {
   "settings.accountSwitcher": "Account switcher",
   "settings.current": "Current",
   "settings.device": "Device",
+  "settings.emojiFont": "Emoji font",
+  "settings.fontInter": "Inter",
+  "settings.fontSystem": "System",
   "settings.general": "General",
   "settings.homeserver": "Homeserver",
   "settings.keyboard": "Keyboard",
@@ -569,6 +578,9 @@ const en: Catalog = {
   "settings.themeDark": "Dark",
   "settings.themeLight": "Light",
   "settings.themeSystem": "System",
+  "settings.twemojiColr": "Twemoji COLR",
+  "settings.typography": "Typography",
+  "settings.uiFont": "UI font",
   "trust.acceptVerification": "Accept",
   "trust.closeVerification": "Close",
   "trust.confirmSas": "Confirm",
