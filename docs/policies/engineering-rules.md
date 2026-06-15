@@ -88,6 +88,14 @@ Rules:
    thread chips. Core producers may update it from remote live thread timeline
    events; backfill/prepend diffs and the current user's own messages must not
    create notification markers.
+   GUI thread indicators such as the Threads nav badge/markers render only the
+   Rust-owned `notification_count`, `highlight_count`, and
+   `live_event_marker_count` fields from `AppState.thread_attention`; they must
+   not be derived from room-list totals, `TimelineItem.thread_summary`, or
+   visible thread rows. Notification sound policy is the Rust-owned
+   `SettingsValues.notifications.sound` value; React may pass that DTO to the
+   native adapter so sound is skipped, but it must not keep a separate
+   notification preference or mutate native attention state.
 10. Device-local settings are non-secret product state, but they are still a
    privacy boundary. Settings files may contain only typed preferences such as
    locale, theme, font/emoji choice, keyboard behavior, and notification

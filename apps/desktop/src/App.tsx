@@ -544,7 +544,8 @@ export function App() {
     void dispatchDesktopAttentionTransientEffects(
       getCurrentWindow(),
       candidate,
-      snapshot.state.native_attention.summary.capabilities
+      snapshot.state.native_attention.summary.capabilities,
+      snapshot.state.settings.values.notifications
     );
     void sendDesktopAttentionNotification(candidate, tauriNotificationTransport);
   }, [
@@ -2344,6 +2345,10 @@ function Sidebar({
   onSelectRoom: (roomId: string) => void;
 }) {
   const sections = roomListSections(snapshot.sidebar);
+  const threadAttention =
+    snapshot.state.thread_attention.kind === "tracking"
+      ? snapshot.state.thread_attention
+      : null;
   return (
     <aside className="sidebar" aria-label={t("workspace.rooms")}>
       <div className="workspace-header">
@@ -2382,7 +2387,13 @@ function Sidebar({
           icon={<Home size={18} />}
           label={t("workspace.home")}
         />
-        <NavButton icon={<MessageCircle size={18} />} label={t("workspace.threads")} />
+        <NavButton
+          count={threadAttention?.notification_count ?? 0}
+          icon={<MessageCircle size={18} />}
+          label={t("workspace.threads")}
+          liveCount={threadAttention?.live_event_marker_count ?? 0}
+          mentionCount={threadAttention?.highlight_count ?? 0}
+        />
         <NavButton
           active={activeView === "explore"}
           icon={<Compass size={18} />}
@@ -2484,18 +2495,24 @@ function NavButton({
   count = 0,
   icon,
   label,
+  liveCount = 0,
+  mentionCount = 0,
   onClick
 }: {
   active?: boolean;
   count?: number;
   icon: ReactNode;
   label: string;
+  liveCount?: number;
+  mentionCount?: number;
   onClick?: () => void;
 }) {
   return (
     <button
       className={`nav-item ${active ? "is-active" : ""}`}
       data-count={count || undefined}
+      data-live-count={liveCount || undefined}
+      data-mention-count={mentionCount || undefined}
       type="button"
       aria-label={label}
       onClick={onClick}

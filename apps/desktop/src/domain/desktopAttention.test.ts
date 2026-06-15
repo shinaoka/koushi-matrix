@@ -246,6 +246,35 @@ describe("desktop notification candidate", () => {
     expect(windowMock.requestUserAttention).toHaveBeenCalledWith(2);
   });
 
+  test("keeps Rust-owned notification sound settings out of transient sound routing", async () => {
+    const windowMock = {
+      playAttentionSound: vi.fn().mockResolvedValue(undefined),
+      requestUserAttention: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await dispatchDesktopAttentionTransientEffects(
+      windowMock,
+      {
+        roomDisplayName: "Announcements",
+        kind: "mention",
+        unreadCount: 2,
+        highlightCount: 1
+      },
+      {
+        notifications: "available",
+        badge: "available",
+        overlay_icon: "unavailable",
+        sound: "available",
+        tray: "available",
+        activation: "available"
+      },
+      { sound: false }
+    );
+
+    expect(windowMock.playAttentionSound).not.toHaveBeenCalled();
+    expect(windowMock.requestUserAttention).toHaveBeenCalledWith(2);
+  });
+
   test("swallows transient sound and activation failures", async () => {
     const windowMock = {
       playAttentionSound: vi.fn().mockRejectedValue(new Error("sound failed")),

@@ -694,6 +694,27 @@ button {
   background: var(--danger);
 }
 
+.nav-item[data-mention-count] .nav-label::after,
+.nav-item[data-live-count] .nav-label::before {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-inline-start: 6px;
+  border-radius: var(--r-pill);
+  content: "";
+  vertical-align: middle;
+}
+
+.nav-item[data-mention-count] .nav-label::after {
+  background: var(--mention);
+}
+
+.nav-item[data-live-count] .nav-label::before {
+  margin-inline-end: 2px;
+  margin-inline-start: 0;
+  background: var(--unread);
+}
+
 .nav-label,
 .room-name {
   overflow: hidden;

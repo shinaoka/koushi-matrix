@@ -228,6 +228,10 @@ stateDiagram-v2
 - The tracking state carries `notification_count`, `highlight_count`, and
   `live_event_marker_count`. Equal updates produce no UI event; changed counts
   emit `ThreadChanged` so the pane can re-render from the Rust snapshot.
+- GUI thread indicators, including the Threads nav badge/markers, render those
+  three fields directly from `AppState.thread_attention`. They must not be
+  derived from room-list unread totals, timeline row `thread_summary` chips, or
+  visible thread rows.
 - The current producer increments `notification_count` and
   `live_event_marker_count` from remote live `PushBack` message diffs in the
   open thread timeline. Backfill/prepend diffs and the current user's own
@@ -1243,6 +1247,10 @@ stateDiagram-v2
   snapshot state. Transient sound and activation effects are scoped to a
   Rust-owned notification candidate; they must not fire again merely because a
   later snapshot still has unread or badge state.
+- Notification sound policy is `SettingsValues.notifications.sound`. React may
+  pass that Rust-owned setting into transient adapter routing to skip sound, but
+  must not keep a separate notification preference or alter
+  `NativeAttentionState` locally.
 - Space attention for the workspace rail is projected by Rust
   `SidebarModel.space_rail`; React renders those unread/highlight counts without
   recomputing child-room state. Timeline thread summary chips render

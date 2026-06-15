@@ -1,6 +1,7 @@
 import type {
   NativeAttentionCapabilities,
   NativeAttentionState,
+  NotificationSettings,
   RoomAttentionKind
 } from "./types";
 
@@ -34,6 +35,8 @@ export interface DesktopAttentionTransientLike {
   playAttentionSound?(): Promise<void>;
   requestUserAttention?(requestType: typeof DESKTOP_ATTENTION_REQUEST_TYPE): Promise<void>;
 }
+
+export type DesktopAttentionTransientPolicy = Pick<NotificationSettings, "sound">;
 
 export function desktopAttentionSummary(attention: NativeAttentionState): DesktopAttentionSummary {
   const unreadTotal = attention.summary.unread_count;
@@ -85,15 +88,17 @@ export async function applyDesktopAttentionToWindow(
 export async function dispatchDesktopAttentionTransientEffects(
   transport: DesktopAttentionTransientLike,
   candidate: DesktopAttentionNotificationCandidate | null,
-  capabilities?: NativeAttentionCapabilities
+  capabilities?: NativeAttentionCapabilities,
+  policy?: DesktopAttentionTransientPolicy
 ): Promise<void> {
   if (!candidate) {
     return;
   }
 
   const operations: Promise<void>[] = [];
+  const soundEnabled = policy?.sound ?? true;
 
-  if (capabilities?.sound === "available" && transport.playAttentionSound) {
+  if (soundEnabled && capabilities?.sound === "available" && transport.playAttentionSound) {
     operations.push(transport.playAttentionSound());
   }
 

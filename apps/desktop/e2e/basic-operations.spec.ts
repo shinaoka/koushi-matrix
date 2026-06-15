@@ -1244,6 +1244,186 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
   );
 });
 
+test("notification attention snapshot drives room, space, thread, and click routing headlessly", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const plainTags = { favourite: null, low_priority: null };
+    const lowPriorityTags = { favourite: null, low_priority: { order: null } };
+    const rooms = [
+      {
+        room_id: "!attention-room:example.invalid",
+        display_name: "Attention Room",
+        avatar: null,
+        is_dm: false,
+        tags: plainTags,
+        unread_count: 4,
+        notification_count: 4,
+        highlight_count: 1,
+        parent_space_ids: ["!attention-space:example.invalid"]
+      },
+      {
+        room_id: "!quiet-low:example.invalid",
+        display_name: "Quiet Low Priority",
+        avatar: null,
+        is_dm: false,
+        tags: lowPriorityTags,
+        unread_count: 8,
+        notification_count: 8,
+        highlight_count: 0,
+        parent_space_ids: ["!attention-space:example.invalid"]
+      }
+    ];
+    const toRoomListItem = (room: (typeof rooms)[number]) => ({
+      room_id: room.room_id,
+      display_name: room.display_name,
+      avatar: room.avatar,
+      tags: room.tags,
+      unread_count: room.unread_count,
+      notification_count: room.notification_count,
+      highlight_count: room.highlight_count
+    });
+    const next = {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        navigation: {
+          ...snapshot.state.navigation,
+          active_room_id: "!quiet-low:example.invalid",
+          active_space_id: "!attention-space:example.invalid"
+        },
+        rooms,
+        spaces: [
+          {
+            space_id: "!attention-space:example.invalid",
+            display_name: "Attention Space",
+            avatar: null,
+            child_room_ids: rooms.map((room) => room.room_id)
+          }
+        ],
+        timeline: {
+          ...snapshot.state.timeline,
+          room_id: "!quiet-low:example.invalid",
+          is_subscribed: true
+        },
+        thread_attention: {
+          kind: "tracking",
+          room_id: "!attention-room:example.invalid",
+          root_event_id: "$attention-thread:example.invalid",
+          notification_count: 2,
+          highlight_count: 1,
+          live_event_marker_count: 3
+        },
+        native_attention: {
+          summary: {
+            unread_count: 4,
+            highlight_count: 1,
+            badge_count: 4,
+            candidate: {
+              room_display_name: "Attention Room",
+              kind: "mention",
+              unread_count: 4,
+              highlight_count: 1
+            },
+            capabilities: {
+              notifications: "available",
+              badge: "available",
+              overlay_icon: "unavailable",
+              sound: "available",
+              tray: "available",
+              activation: "available"
+            }
+          },
+          dispatch: { kind: "idle" }
+        }
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        active_space_id: "!attention-space:example.invalid",
+        account_home: {
+          ...snapshot.sidebar.account_home,
+          is_active: false
+        },
+        space_rail: [
+          {
+            space_id: "!attention-space:example.invalid",
+            display_name: "Attention Space",
+            avatar: null,
+            unread_count: 4,
+            highlight_count: 1,
+            is_active: true
+          }
+        ],
+        space_rooms: rooms.map(toRoomListItem),
+        global_dms: [],
+        space_unread_count: 4,
+        dm_unread_count: 0,
+        space_highlight_count: 1,
+        dm_highlight_count: 0
+      }
+    };
+    window.__harness.setSnapshot(next);
+    window.__harness.setCommandResponse("select_room", ({ roomId }) => {
+      const current = window.__harness.currentSnapshot();
+      const updated = {
+        ...current,
+        state: {
+          ...current.state,
+          navigation: {
+            ...current.state.navigation,
+            active_room_id: String(roomId)
+          },
+          timeline: {
+            ...current.state.timeline,
+            room_id: String(roomId),
+            is_subscribed: true
+          }
+        }
+      };
+      window.__harness.setSnapshot(updated);
+      return updated;
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  await expect(page.locator('[data-room-section="rooms"]')).toBeVisible();
+  await expect(page.locator('[data-room-section="low-priority"]')).toBeVisible();
+  const attentionRoom = page.getByRole("button", { name: "Attention Room" });
+  const lowPriorityRoom = page.getByRole("button", { name: "Quiet Low Priority" });
+  await expect(attentionRoom.locator(".room-count")).toHaveText("4");
+  await expect(attentionRoom.locator(".room-mention-dot")).toBeVisible();
+  await expect(lowPriorityRoom.locator(".room-count")).toHaveText("8");
+  const attentionSpace = page.getByRole("button", { name: "Attention Space" });
+  await expect(attentionSpace).toHaveAttribute("data-count", "4");
+  await expect(attentionSpace).toHaveAttribute(
+    "data-mention-count",
+    "1"
+  );
+  await expect(page.getByRole("button", { name: "Threads" })).toHaveAttribute("data-count", "2");
+  await expect(page.getByRole("button", { name: "Threads" })).toHaveAttribute(
+    "data-mention-count",
+    "1"
+  );
+  await expect(page.getByRole("button", { name: "Threads" })).toHaveAttribute(
+    "data-live-count",
+    "3"
+  );
+  await expect(page).toHaveTitle("matrix-desktop · 4 unread");
+
+  await attentionRoom.click();
+  await expect.poll(() => invocationCount(page, "select_room")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("select_room")[0]?.args)
+    )
+    .toEqual({ roomId: "!attention-room:example.invalid" });
+  await expect(attentionRoom).toHaveClass(/is-active/);
+});
+
 test("mention autocomplete inserts a pill and sends typed mention intent", async ({
   page
 }) => {

@@ -206,6 +206,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   derive indicator counts. The current core producer counts only remote live
   thread timeline message diffs; backfill/prepend diffs and the current user's
   own messages are ignored.
+- GUI thread indicators, including the Threads nav badge/markers, render only
+  `AppState.thread_attention.notification_count`, `highlight_count`, and
+  `live_event_marker_count`. Do not derive them from room-list totals,
+  `TimelineItem.thread_summary`, or visible thread rows.
+- Notification sound policy is Rust-owned `SettingsValues.notifications.sound`.
+  React may pass that DTO value into native adapter routing so sound is skipped,
+  but it must not create an independent notification preference or mutate
+  native attention state locally.
 - Candidate projection uses private-data-minimized room labels and counts only.
   It must not expose message bodies, sender IDs, room IDs, event IDs,
   transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,
