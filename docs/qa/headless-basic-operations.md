@@ -50,6 +50,14 @@ dm_start=ok
 room_space=ok
 timeline=ok
 reply=ok
+reply_quote=ok
+pin_event=ok
+pinned_state=ok
+unpin_event=ok
+mention_send=ok
+markdown_send=ok
+slash_command=ok
+ime_guard=ok
 thread_hidden=ok
 thread_summary=ok
 thread_recv=ok
@@ -74,6 +82,19 @@ restore_cleanup=ok
 `thread_summary=ok` is a strict Phase 11 signal: local core QA fails if the
 server/SDK path does not surface a root `thread_summary` for the threaded
 reply.
+
+`reply_quote=ok`, `pin_event=ok`, `pinned_state=ok`, and `unpin_event=ok` are
+the Phase A message-interaction proof. The core lane projects reply quote DTOs
+and routes pin/unpin through Rust-owned room state before any GUI affordance is
+considered.
+
+`mention_send=ok`, `markdown_send=ok`, `slash_command=ok`, and `ime_guard=ok`
+are the Phase A composer-semantics proof. The core lane sends typed
+`MentionIntent` data through `TimelineCommand::SendText`, builds markdown/html
+and `/me` emote content in Rust before SDK send, and verifies composing Enter
+resolves to `CommitImeCandidate` rather than send or autocomplete acceptance.
+The composer stage prints only these tokens and must not print mentioned Matrix
+IDs, message bodies, raw SDK errors, or composer transaction/event IDs.
 
 `send_media=ok` and `recv_media=ok` are the Phase A media/file state-machine
 signals. The core lane sends a synthetic file through
@@ -149,6 +170,7 @@ npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=invites_dm --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=media --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=live_signals --core --core-backend=probed --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=send_queue --core --core-backend=both --timeout-ms=240000
 ```
 
@@ -166,7 +188,6 @@ clear_badge=ok
 ja_catalog=ok
 cjk_normalize=ok
 cjk_collation=ok
-ime_guard=ok
 joined_room_restore=ok
 ```
 

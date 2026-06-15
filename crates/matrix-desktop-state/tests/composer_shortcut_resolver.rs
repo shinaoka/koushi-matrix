@@ -8,6 +8,7 @@ fn key_event(key: ComposerKey) -> ComposerKeyEvent {
         key,
         modifiers: ComposerKeyModifiers::default(),
         is_composing: false,
+        selection: None,
     }
 }
 
@@ -17,6 +18,7 @@ fn enter_with(mut modifiers: ComposerKeyModifiers) -> ComposerKeyEvent {
         key: ComposerKey::Enter,
         modifiers,
         is_composing: false,
+        selection: None,
     }
 }
 
@@ -30,7 +32,7 @@ fn context(surface: ComposerSurface) -> ComposerResolverContext {
 }
 
 #[test]
-fn enter_mode_sends_plain_enter_on_every_composer_surface() {
+fn composer_enter_mode_sends_plain_enter_on_every_surface() {
     for surface in [
         ComposerSurface::Main,
         ComposerSurface::Thread,
@@ -44,7 +46,7 @@ fn enter_mode_sends_plain_enter_on_every_composer_surface() {
 }
 
 #[test]
-fn shift_enter_always_inserts_newline() {
+fn composer_shift_enter_always_inserts_newline() {
     let mut event = key_event(ComposerKey::Enter);
     event.modifiers.shift = true;
 
@@ -55,7 +57,7 @@ fn shift_enter_always_inserts_newline() {
 }
 
 #[test]
-fn mod_enter_mode_keeps_plain_enter_as_newline_and_sends_on_platform_modifier() {
+fn composer_mod_enter_mode_keeps_plain_enter_as_newline_and_sends_on_platform_modifier() {
     let mut plain_context = context(ComposerSurface::Main);
     plain_context.send_shortcut = ComposerSendShortcut::ModEnter;
     assert_eq!(
@@ -91,7 +93,7 @@ fn mod_enter_mode_keeps_plain_enter_as_newline_and_sends_on_platform_modifier() 
 }
 
 #[test]
-fn autocomplete_acceptance_precedes_send_shortcut() {
+fn composer_autocomplete_acceptance_precedes_send_shortcut() {
     let mut open_context = context(ComposerSurface::Main);
     open_context.autocomplete_open = true;
 
@@ -102,24 +104,24 @@ fn autocomplete_acceptance_precedes_send_shortcut() {
 }
 
 #[test]
-fn disabled_send_or_ime_composition_never_submits() {
+fn composer_disabled_send_or_ime_composition_never_submits() {
     let mut disabled_context = context(ComposerSurface::Main);
     disabled_context.send_enabled = false;
     assert_eq!(
         resolve_composer_key_action(key_event(ComposerKey::Enter), disabled_context),
-        ComposerResolvedAction::Ignore
+        ComposerResolvedAction::Noop
     );
 
     let mut composing = key_event(ComposerKey::Enter);
     composing.is_composing = true;
     assert_eq!(
         resolve_composer_key_action(composing, context(ComposerSurface::Main)),
-        ComposerResolvedAction::Ignore
+        ComposerResolvedAction::CommitImeCandidate
     );
 }
 
 #[test]
-fn escape_cancels_reply_or_edit_modes() {
+fn composer_escape_cancels_reply_or_edit_modes() {
     assert_eq!(
         resolve_composer_key_action(
             key_event(ComposerKey::Escape),

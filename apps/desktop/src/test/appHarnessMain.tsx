@@ -372,13 +372,13 @@ function resolveComposerKeyActionFromSettings(
 ): ComposerResolvedAction {
   void surface;
   if (keyEvent.is_composing) {
-    return "ignore";
+    return "commitImeCandidate";
   }
   if (keyEvent.key === "escape") {
     return "cancel";
   }
   if (keyEvent.key !== "enter") {
-    return "ignore";
+    return "noop";
   }
   if (keyEvent.modifiers.shift || keyEvent.modifiers.alt) {
     return "insertNewline";
@@ -392,7 +392,7 @@ function resolveComposerKeyActionFromSettings(
   if (!wantsSend) {
     return "insertNewline";
   }
-  return options.send_enabled ? "send" : "ignore";
+  return options.send_enabled ? "send" : "noop";
 }
 
 // A reply-mode composer snapshot (composer.mode = Reply) used as the

@@ -33,7 +33,8 @@ describe("TauriDesktopApi", () => {
       {
         key: "enter",
         modifiers: { ctrl: false, meta: true, shift: false, alt: false },
-        is_composing: false
+        is_composing: false,
+        selection: { start: 1, end: 3 }
       },
       { autocomplete_open: false, send_enabled: true }
     );
@@ -43,7 +44,8 @@ describe("TauriDesktopApi", () => {
       keyEvent: {
         key: "enter",
         modifiers: { ctrl: false, meta: true, shift: false, alt: false },
-        is_composing: false
+        is_composing: false,
+        selection: { start: 1, end: 3 }
       },
       autocompleteOpen: false,
       sendEnabled: true

@@ -131,10 +131,16 @@ export interface ComposerKeyModifiers {
   alt: boolean;
 }
 
+export interface ComposerSelection {
+  start: number;
+  end: number;
+}
+
 export interface ComposerKeyEvent {
   key: ComposerKey;
   modifiers: ComposerKeyModifiers;
   is_composing: boolean;
+  selection: ComposerSelection | null;
 }
 
 export interface ComposerResolverOptions {
@@ -147,7 +153,8 @@ export type ComposerResolvedAction =
   | "insertNewline"
   | "acceptAutocomplete"
   | "cancel"
-  | "ignore";
+  | "commitImeCandidate"
+  | "noop";
 
 export type ResolveComposerKeyAction = (
   surface: ComposerSurface,

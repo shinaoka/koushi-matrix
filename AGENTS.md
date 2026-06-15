@@ -412,6 +412,19 @@ Phase B GUI/browser-headless work for the same issue follows
   `matrix-desktop-state`, shared by main, thread, and edit composer surfaces.
   GUI code normalizes DOM/native key input into typed resolver facts and then
   dispatches/renders the returned action.
+- Composer send semantics also stay Rust-owned. `MentionIntent`,
+  markdown/html formatting, `/me` slash-command emote conversion, and
+  unsupported slash-command failures are derived in Rust/core before SDK send.
+  React may pass typed draft/key/selection facts, but it must not synthesize
+  `m.mentions`, formatted bodies, slash-command dispatch, or a local fallback
+  send path when the resolver returns `noop` or `commitImeCandidate`.
+  Because the resolver crosses an async IPC boundary, GUI key handlers must not
+  call `preventDefault()` for `is_composing` key events; native IME commit owns
+  that browser default while Rust still owns the product action (`CommitImeCandidate`).
+- The focused local composer QA lane is:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000`.
+  Required private-data-free tokens are `mention_send=ok`,
+  `markdown_send=ok`, `slash_command=ok`, and `ime_guard=ok`.
 - When `AppState.settings` or any settings enum changes, update the Tauri DTO,
   TypeScript domain types, `browserFakeApi` defaults, `tauriIpcMock`, app
   harness snapshots, and the DTO serialization-contract test in the same

@@ -52,16 +52,19 @@ use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_state::{
-    AppAction, LiveEventReceipts, LiveReadReceipt, ReplyQuote, ReplyQuoteState,
+    AppAction, ComposerSendIntent, FormattedMessageDraft, LiveEventReceipts, LiveReadReceipt,
+    MentionIntent, ReplyQuote, ReplyQuoteState, SlashCommandIntent, resolve_composer_send_intent,
 };
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
+use matrix_sdk::ruma::UserId;
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
+use matrix_sdk::ruma::events::Mentions;
 use matrix_sdk::ruma::events::room::message::{
-    AddMentions, MessageType, ReplyWithinThread, RoomMessageEventContentWithoutRelation,
-    TextMessageEventContent,
+    AddMentions, MessageType, ReplyWithinThread, RoomMessageEventContent,
+    RoomMessageEventContentWithoutRelation, TextMessageEventContent,
 };
 use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
@@ -228,7 +231,12 @@ impl TimelineManagerActor {
                 key,
                 transaction_id,
                 body,
+                mentions,
             } => {
+                if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
+                    self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+                    return;
+                }
                 self.route_send_to_actor_or_fail(
                     request_id,
                     &key,
@@ -239,6 +247,7 @@ impl TimelineManagerActor {
                         request_id,
                         transaction_id,
                         body,
+                        mentions,
                     },
                 )
                 .await;
@@ -249,7 +258,12 @@ impl TimelineManagerActor {
                 transaction_id,
                 in_reply_to_event_id,
                 body,
+                mentions,
             } => {
+                if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
+                    self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+                    return;
+                }
                 self.route_send_to_actor_or_fail(
                     request_id,
                     &key,
@@ -261,6 +275,7 @@ impl TimelineManagerActor {
                         transaction_id,
                         in_reply_to_event_id,
                         body,
+                        mentions,
                     },
                 )
                 .await;
@@ -801,6 +816,93 @@ fn send_failed_action(
     }
 }
 
+fn validate_composer_body_for_timeline_send(body: &str) -> Result<(), TimelineFailureKind> {
+    match resolve_composer_send_intent(body, MentionIntent::default()) {
+        ComposerSendIntent::LocalFailure { .. }
+        | ComposerSendIntent::SlashCommand {
+            command:
+                SlashCommandIntent::Join { .. }
+                | SlashCommandIntent::Invite { .. }
+                | SlashCommandIntent::PlainText { .. }
+                | SlashCommandIntent::Unsupported { .. },
+        } => Err(TimelineFailureKind::UnsupportedSlashCommand),
+        ComposerSendIntent::Message { .. }
+        | ComposerSendIntent::SlashCommand {
+            command: SlashCommandIntent::Me { .. },
+        } => Ok(()),
+    }
+}
+
+fn build_room_message_content_from_composer_body(
+    body: &str,
+    mentions: MentionIntent,
+) -> Result<RoomMessageEventContent, TimelineFailureKind> {
+    build_room_message_content_without_relation_from_composer_body(body, mentions)
+        .map(|content| content.with_relation(None))
+}
+
+fn build_room_message_content_without_relation_from_composer_body(
+    body: &str,
+    mentions: MentionIntent,
+) -> Result<RoomMessageEventContentWithoutRelation, TimelineFailureKind> {
+    match resolve_composer_send_intent(body, mentions) {
+        ComposerSendIntent::Message { draft } => {
+            Ok(without_relation_content_from_formatted_draft(draft, false))
+        }
+        ComposerSendIntent::SlashCommand {
+            command: SlashCommandIntent::Me { body },
+        } => Ok(without_relation_content_from_formatted_draft(
+            matrix_desktop_state::build_formatted_message_draft(body, MentionIntent::default()),
+            true,
+        )),
+        ComposerSendIntent::SlashCommand { .. } | ComposerSendIntent::LocalFailure { .. } => {
+            Err(TimelineFailureKind::UnsupportedSlashCommand)
+        }
+    }
+}
+
+fn without_relation_content_from_formatted_draft(
+    draft: FormattedMessageDraft,
+    emote: bool,
+) -> RoomMessageEventContentWithoutRelation {
+    let mut content = match (emote, draft.formatted_body) {
+        (true, Some(formatted_body)) => {
+            RoomMessageEventContentWithoutRelation::emote_html(draft.plain_body, formatted_body)
+        }
+        (true, None) => RoomMessageEventContentWithoutRelation::emote_plain(draft.plain_body),
+        (false, Some(formatted_body)) => {
+            RoomMessageEventContentWithoutRelation::text_html(draft.plain_body, formatted_body)
+        }
+        (false, None) => RoomMessageEventContentWithoutRelation::text_plain(draft.plain_body),
+    };
+
+    if let Some(mentions) = ruma_mentions_from_intent(&draft.mentions) {
+        content = content.add_mentions(mentions);
+    }
+    content
+}
+
+fn ruma_mentions_from_intent(intent: &MentionIntent) -> Option<Mentions> {
+    let user_ids = intent
+        .user_ids()
+        .into_iter()
+        .filter_map(|user_id| UserId::parse(user_id).ok().map(Into::into))
+        .collect::<Vec<_>>();
+    let mentions_room = intent.mentions_room();
+
+    if user_ids.is_empty() && !mentions_room {
+        return None;
+    }
+
+    let mut mentions = if user_ids.is_empty() {
+        Mentions::new()
+    } else {
+        Mentions::with_user_ids(user_ids)
+    };
+    mentions.room = mentions_room;
+    Some(mentions)
+}
+
 // ---------------------------------------------------------------------------
 // Individual TimelineActor
 // ---------------------------------------------------------------------------
@@ -815,12 +917,14 @@ enum TimelineActorMessage {
         request_id: RequestId,
         transaction_id: String,
         body: String,
+        mentions: MentionIntent,
     },
     SendReply {
         request_id: RequestId,
         transaction_id: String,
         in_reply_to_event_id: String,
         body: String,
+        mentions: MentionIntent,
     },
     RetrySend {
         request_id: RequestId,
@@ -1065,8 +1169,9 @@ impl TimelineActor {
                 request_id,
                 transaction_id,
                 body,
+                mentions,
             } => {
-                self.handle_send_text(request_id, transaction_id, body)
+                self.handle_send_text(request_id, transaction_id, body, mentions)
                     .await;
             }
             TimelineActorMessage::SendReply {
@@ -1074,9 +1179,16 @@ impl TimelineActor {
                 transaction_id,
                 in_reply_to_event_id,
                 body,
+                mentions,
             } => {
-                self.handle_send_reply(request_id, transaction_id, in_reply_to_event_id, body)
-                    .await;
+                self.handle_send_reply(
+                    request_id,
+                    transaction_id,
+                    in_reply_to_event_id,
+                    body,
+                    mentions,
+                )
+                .await;
             }
             TimelineActorMessage::RetrySend {
                 request_id,
@@ -1231,6 +1343,7 @@ impl TimelineActor {
         request_id: RequestId,
         client_txn_id: String,
         body: String,
+        mentions: MentionIntent,
     ) {
         let room_id_str = match &self.key.kind {
             TimelineKind::Room { room_id }
@@ -1269,8 +1382,14 @@ impl TimelineActor {
         // SDK-generated txn_id returned by send_queue().send(). The SendHandle
         // gives us the SDK txn_id; we store client_txn_id → sdk_txn_id here so
         // the SentEvent handler can emit SendCompleted with the client's txn_id.
-        let content =
-            matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(&body);
+        let content = match build_room_message_content_from_composer_body(&body, mentions) {
+            Ok(content) => content,
+            Err(kind) => {
+                self.emit_send_failed_action(&client_txn_id);
+                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+                return;
+            }
+        };
         let content = matrix_sdk::ruma::events::AnyMessageLikeEventContent::RoomMessage(content);
 
         match room.send_queue().send(content).await {
@@ -1315,6 +1434,7 @@ impl TimelineActor {
         client_txn_id: String,
         in_reply_to_event_id: String,
         body: String,
+        mentions: MentionIntent,
     ) {
         let room_id_str = match &self.key.kind {
             TimelineKind::Room { room_id }
@@ -1362,7 +1482,15 @@ impl TimelineActor {
             return;
         }
 
-        let content = RoomMessageEventContentWithoutRelation::text_plain(&body);
+        let content =
+            match build_room_message_content_without_relation_from_composer_body(&body, mentions) {
+                Ok(content) => content,
+                Err(kind) => {
+                    self.emit_send_failed_action(&client_txn_id);
+                    self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+                    return;
+                }
+            };
         let reply = Reply {
             event_id: reply_event_id,
             enforce_thread: match &self.key.kind {
@@ -3399,7 +3527,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
-    use matrix_desktop_state::{AppAction, SessionInfo, SessionState};
+    use matrix_desktop_state::{
+        AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState,
+    };
+    use matrix_sdk::ruma::events::room::message::MessageType;
     use matrix_sdk::ruma::{OwnedUserId, uint};
     use matrix_sdk_ui::timeline::{ReactionInfo, ReactionStatus, ReactionsByKeyBySender};
     use tokio::sync::broadcast;
@@ -3457,6 +3588,73 @@ mod tests {
         );
 
         reactions
+    }
+
+    #[test]
+    fn composer_core_builds_markdown_send_content_with_mentions() {
+        let content = build_room_message_content_from_composer_body(
+            "hello **Alice**",
+            MentionIntent {
+                targets: vec![MentionTarget::User {
+                    user_id: "@alice:example.test".to_owned(),
+                    display_label: "Alice".to_owned(),
+                }],
+            },
+        )
+        .expect("content");
+
+        match &content.msgtype {
+            MessageType::Text(text) => {
+                assert_eq!(text.body, "hello **Alice**");
+                assert_eq!(
+                    text.formatted
+                        .as_ref()
+                        .map(|formatted| formatted.body.as_str()),
+                    Some("hello <strong>Alice</strong>")
+                );
+            }
+            other => panic!("expected text content, got {other:?}"),
+        }
+
+        let mentions = content.mentions.expect("mentions");
+        assert!(
+            mentions
+                .user_ids
+                .iter()
+                .any(|user_id| user_id.as_str() == "@alice:example.test")
+        );
+    }
+
+    #[test]
+    fn composer_core_builds_me_slash_command_as_emote_content() {
+        let content = build_room_message_content_from_composer_body(
+            "/me waves **hello**",
+            MentionIntent::default(),
+        )
+        .expect("content");
+
+        match &content.msgtype {
+            MessageType::Emote(emote) => {
+                assert_eq!(emote.body, "waves **hello**");
+                assert_eq!(
+                    emote
+                        .formatted
+                        .as_ref()
+                        .map(|formatted| formatted.body.as_str()),
+                    Some("waves <strong>hello</strong>")
+                );
+            }
+            other => panic!("expected emote content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn composer_core_rejects_unknown_slash_command_locally() {
+        assert_eq!(
+            build_room_message_content_from_composer_body("/shrug nope", MentionIntent::default(),)
+                .expect_err("unsupported slash command should fail before SDK send"),
+            TimelineFailureKind::UnsupportedSlashCommand
+        );
     }
 
     fn focused_key() -> TimelineKey {
@@ -3935,6 +4133,7 @@ mod tests {
             key: room_key(),
             transaction_id: "txn-unsubscribed".to_owned(),
             body: "hello".to_owned(),
+            mentions: MentionIntent::default(),
         }))
         .await
         .expect("submit");
@@ -4327,6 +4526,7 @@ mod tests {
             key: room_key(),
             transaction_id: "txn-vis".to_owned(),
             body: "very-private-body".to_owned(),
+            mentions: MentionIntent::default(),
         };
         let debug = format!("{cmd:?}");
         assert!(

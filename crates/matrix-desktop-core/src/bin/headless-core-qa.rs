@@ -55,10 +55,13 @@ use matrix_desktop_core::failure::CoreFailure;
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{
-    AppState, AuthSecret, CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType,
-    IdentityResetState, KeyBackupStatus, PresenceKind, RecoveryRequest, ReplyQuoteState, SasEmoji,
-    SessionInfo, SessionState, TrustOperationFailureKind, VerificationFlowState,
-    VerificationTarget,
+    AppState, AuthSecret, ComposerKey, ComposerKeyEvent, ComposerKeyModifiers,
+    ComposerResolvedAction, ComposerResolverContext, ComposerSelection, ComposerSendShortcut,
+    ComposerSurface, CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType,
+    IdentityResetState, KeyBackupStatus, MentionIntent, MentionTarget, PresenceKind,
+    RecoveryRequest, ReplyQuoteState, SasEmoji, SessionInfo, SessionState,
+    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
+    resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -96,6 +99,7 @@ enum QaScenario {
     InvitesDm,
     RoomSpace,
     Timeline,
+    Composer,
     Reply,
     Media,
     LiveSignals,
@@ -113,6 +117,7 @@ enum QaStage {
     InvitesDm,
     RoomSpace,
     Timeline,
+    Composer,
     Reply,
     Media,
     LiveSignals,
@@ -202,6 +207,7 @@ impl QaScenario {
             "invites_dm" => Ok(Self::InvitesDm),
             "room_space" => Ok(Self::RoomSpace),
             "timeline" => Ok(Self::Timeline),
+            "composer" => Ok(Self::Composer),
             "reply" => Ok(Self::Reply),
             "media" => Ok(Self::Media),
             "live_signals" => Ok(Self::LiveSignals),
@@ -210,7 +216,7 @@ impl QaScenario {
             "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
             )),
         }
     }
@@ -238,12 +244,21 @@ impl QaScenario {
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace | QaStage::Timeline
             ),
+            Self::Composer => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::Composer
+            ),
             Self::Reply => matches!(
                 stage,
                 QaStage::Safety
                     | QaStage::LoginSync
                     | QaStage::RoomSpace
                     | QaStage::Timeline
+                    | QaStage::Composer
                     | QaStage::Reply
             ),
             Self::Media => matches!(
@@ -322,6 +337,12 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         ],
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Timeline => &["timeline=ok"],
+        QaStage::Composer => &[
+            "mention_send=ok",
+            "markdown_send=ok",
+            "slash_command=ok",
+            "ime_guard=ok",
+        ],
         QaStage::Reply => &[
             "reply=ok",
             "reply_quote=ok",
@@ -365,6 +386,10 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "dm_start=ok",
         "room_space=ok",
         "timeline=ok",
+        "mention_send=ok",
+        "markdown_send=ok",
+        "slash_command=ok",
+        "ime_guard=ok",
         "reply=ok",
         "reply_quote=ok",
         "pin_event=ok",
@@ -409,11 +434,19 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::RoomSpace,
             QaStage::Timeline,
         ],
+        QaScenario::Composer => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::Composer,
+        ],
         QaScenario::Reply => vec![
             QaStage::Safety,
             QaStage::LoginSync,
             QaStage::RoomSpace,
             QaStage::Timeline,
+            QaStage::Composer,
             QaStage::Reply,
         ],
         QaScenario::Media => vec![
@@ -466,6 +499,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::InvitesDm,
             QaStage::RoomSpace,
             QaStage::Timeline,
+            QaStage::Composer,
             QaStage::Reply,
             QaStage::Media,
             QaStage::LiveSignals,
@@ -494,6 +528,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::E2eeTrust
         | QaScenario::InvitesDm
         | QaScenario::Timeline
+        | QaScenario::Composer
         | QaScenario::Reply
         | QaScenario::Media
         | QaScenario::LiveSignals
@@ -1533,6 +1568,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             key: key_a.clone(),
             transaction_id: txn1.clone(),
             body: "Phase 5 QA message 1".to_owned(),
+            mentions: MentionIntent::default(),
         }))
         .await
         .map_err(|e| format!("submit send1: {e}"))?;
@@ -1568,6 +1604,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             key: key_a.clone(),
             transaction_id: txn2.clone(),
             body: "Phase 5 QA message 2".to_owned(),
+            mentions: MentionIntent::default(),
         }))
         .await
         .map_err(|e| format!("submit send2: {e}"))?;
@@ -1692,6 +1729,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             .await?;
     println!("paginate={paginate_result}");
 
+    if scenario.should_run_stage(QaStage::Composer) {
+        run_composer_stage(&mut conn_a, &key_a, &account_key_b.0).await?;
+    }
+
     if scenario.should_run_stage(QaStage::LiveSignals) {
         run_live_signals_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, &event1_id).await?;
     }
@@ -1710,6 +1751,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
                 transaction_id: txn_b_reply.clone(),
                 in_reply_to_event_id: event1_id.clone(),
                 body: "Phase 5 QA reply from B".to_owned(),
+                mentions: MentionIntent::default(),
             }))
             .await
             .map_err(|e| format!("submit B reply: {e}"))?;
@@ -1827,6 +1869,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
                 transaction_id: txn_b_thread_reply.clone(),
                 in_reply_to_event_id: event1_id.clone(),
                 body: THREAD_REPLY_BODY.to_owned(),
+                mentions: MentionIntent::default(),
             }))
             .await
             .map_err(|e| format!("submit B thread reply: {e}"))?;
@@ -2031,6 +2074,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             key: key_a_search.clone(),
             transaction_id: txn_search.clone(),
             body: SEARCH_BODY.to_owned(),
+            mentions: MentionIntent::default(),
         }))
         .await
         .map_err(|e| format!("submit search send: {e}"))?;
@@ -3483,6 +3527,7 @@ async fn seed_encrypted_room_key_for_qa(
         key: key.clone(),
         transaction_id: transaction_id.clone(),
         body: E2EE_KEY_BACKUP_SEED_BODY.to_owned(),
+        mentions: MentionIntent::default(),
     }))
     .await
     .map_err(|e| format!("{label}: submit encrypted backup seed send failed: {e}"))?;
@@ -4865,6 +4910,7 @@ async fn send_text_expect_local_echo(
         key: key.clone(),
         transaction_id: client_transaction_id.to_owned(),
         body: body.to_owned(),
+        mentions: MentionIntent::default(),
     }))
     .await
     .map_err(|e| format!("{label}: submit SendText failed: {e}"))?;
@@ -5594,6 +5640,106 @@ async fn run_live_signals_stage(
     .await?;
     println!("presence=ok");
     println!("live_signals=ok");
+
+    Ok(())
+}
+
+async fn run_composer_stage(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    mentioned_user_id: &str,
+) -> Result<(), String> {
+    let ime_action = resolve_composer_key_action(
+        ComposerKeyEvent {
+            key: ComposerKey::Enter,
+            modifiers: ComposerKeyModifiers::default(),
+            is_composing: true,
+            selection: Some(ComposerSelection { start: 0, end: 0 }),
+        },
+        ComposerResolverContext {
+            surface: ComposerSurface::Main,
+            send_shortcut: ComposerSendShortcut::Enter,
+            autocomplete_open: true,
+            send_enabled: true,
+        },
+    );
+    if ime_action != ComposerResolvedAction::CommitImeCandidate {
+        return Err(format!("composer IME guard mismatch: {ime_action:?}"));
+    }
+
+    let mention_txn = "qa-composer-mention-txn";
+    let mention_body = "Composer mention QA";
+    let mention_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id: mention_id,
+        key: key.clone(),
+        transaction_id: mention_txn.to_owned(),
+        body: mention_body.to_owned(),
+        mentions: MentionIntent {
+            targets: vec![MentionTarget::User {
+                user_id: mentioned_user_id.to_owned(),
+                display_label: "Synthetic mention".to_owned(),
+            }],
+        },
+    }))
+    .await
+    .map_err(|e| format!("composer mention send submit failed: {e}"))?;
+    wait_for_send_flow_completion(
+        conn,
+        mention_id,
+        key,
+        mention_txn,
+        mention_body,
+        "composer mention send",
+    )
+    .await?;
+    println!("mention_send=ok");
+
+    let markdown_txn = "qa-composer-markdown-txn";
+    let markdown_body = "Composer **markdown** QA";
+    let markdown_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id: markdown_id,
+        key: key.clone(),
+        transaction_id: markdown_txn.to_owned(),
+        body: markdown_body.to_owned(),
+        mentions: MentionIntent::default(),
+    }))
+    .await
+    .map_err(|e| format!("composer markdown send submit failed: {e}"))?;
+    wait_for_send_flow_completion(
+        conn,
+        markdown_id,
+        key,
+        markdown_txn,
+        markdown_body,
+        "composer markdown send",
+    )
+    .await?;
+    println!("markdown_send=ok");
+
+    let slash_txn = "qa-composer-slash-txn";
+    let slash_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id: slash_id,
+        key: key.clone(),
+        transaction_id: slash_txn.to_owned(),
+        body: "/me composer slash command".to_owned(),
+        mentions: MentionIntent::default(),
+    }))
+    .await
+    .map_err(|e| format!("composer slash send submit failed: {e}"))?;
+    wait_for_send_flow_completion(
+        conn,
+        slash_id,
+        key,
+        slash_txn,
+        "composer slash command",
+        "composer slash command",
+    )
+    .await?;
+    println!("slash_command=ok");
+    println!("ime_guard=ok");
 
     Ok(())
 }
@@ -6470,7 +6616,7 @@ mod tests {
     use matrix_desktop_core::event::ThreadSummaryDto;
 
     #[test]
-    fn parses_all_scenarios_from_env_value() {
+    fn parses_all_scenarios_from_env_value_including_composer() {
         assert_eq!(QaScenario::from_env_value("all").unwrap(), QaScenario::All);
         assert_eq!(
             QaScenario::from_env_value("safety").unwrap(),
@@ -6495,6 +6641,10 @@ mod tests {
         assert_eq!(
             QaScenario::from_env_value("reply").unwrap(),
             QaScenario::Reply
+        );
+        assert_eq!(
+            QaScenario::from_env_value("composer").unwrap(),
+            QaScenario::Composer
         );
         assert_eq!(
             QaScenario::from_env_value("media").unwrap(),
@@ -6543,6 +6693,7 @@ mod tests {
             QaScenario::InvitesDm,
             QaScenario::Timeline,
             QaScenario::Reply,
+            QaScenario::Composer,
             QaScenario::Media,
             QaScenario::LiveSignals,
             QaScenario::Thread,
@@ -7141,6 +7292,10 @@ mod tests {
                 "dm_start=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "mention_send=ok",
+                "markdown_send=ok",
+                "slash_command=ok",
+                "ime_guard=ok",
                 "reply=ok",
                 "reply_quote=ok",
                 "pin_event=ok",
@@ -7170,11 +7325,25 @@ mod tests {
     }
 
     #[test]
-    fn final_tokens_follow_the_requested_scenario() {
+    fn final_tokens_follow_the_requested_scenario_including_composer() {
         assert_eq!(final_tokens_for_scenario(QaScenario::Safety), ["safety=ok"]);
         assert_eq!(
             final_tokens_for_scenario(QaScenario::LoginSync),
             ["safety=ok", "login_sync=ok", "restore_cleanup=ok"]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::Composer),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "mention_send=ok",
+                "markdown_send=ok",
+                "slash_command=ok",
+                "ime_guard=ok",
+                "restore_cleanup=ok",
+            ]
         );
         assert_eq!(
             final_tokens_for_scenario(QaScenario::RoomSpace),
@@ -7214,6 +7383,10 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "mention_send=ok",
+                "markdown_send=ok",
+                "slash_command=ok",
+                "ime_guard=ok",
                 "reply=ok",
                 "reply_quote=ok",
                 "pin_event=ok",
@@ -7307,6 +7480,10 @@ mod tests {
                 "dm_start=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "mention_send=ok",
+                "markdown_send=ok",
+                "slash_command=ok",
+                "ime_guard=ok",
                 "reply=ok",
                 "reply_quote=ok",
                 "pin_event=ok",

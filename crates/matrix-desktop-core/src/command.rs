@@ -5,8 +5,8 @@ use std::fmt;
 
 use matrix_desktop_state::{
     DirectoryQuery, IdentityResetAuthRequest, JapaneseCatalogProfile, LocalEncryptionHealth,
-    LoginRequest, NativeAttentionSummary, PresenceKind, RecoveryRequest, RoomTagKind,
-    SettingsPatch, VerificationCancelReason, VerificationTarget,
+    LoginRequest, MentionIntent, NativeAttentionSummary, PresenceKind, RecoveryRequest,
+    RoomTagKind, SettingsPatch, VerificationCancelReason, VerificationTarget,
 };
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
@@ -839,6 +839,7 @@ pub enum TimelineCommand {
         key: TimelineKey,
         transaction_id: String,
         body: String,
+        mentions: MentionIntent,
     },
     SendReply {
         request_id: RequestId,
@@ -846,6 +847,7 @@ pub enum TimelineCommand {
         transaction_id: String,
         in_reply_to_event_id: String,
         body: String,
+        mentions: MentionIntent,
     },
     RetrySend {
         request_id: RequestId,
@@ -955,6 +957,7 @@ impl fmt::Debug for TimelineCommand {
                 .field("key", key)
                 .field("transaction_id", transaction_id)
                 .field("body", &"MessageBody(..)")
+                .field("mentions", &"MentionIntent(..)")
                 .finish(),
             Self::SendReply {
                 request_id,
@@ -968,6 +971,7 @@ impl fmt::Debug for TimelineCommand {
                 .field("transaction_id", transaction_id)
                 .field("in_reply_to_event_id", &"EventId(..)")
                 .field("body", &"MessageBody(..)")
+                .field("mentions", &"MentionIntent(..)")
                 .finish(),
             Self::RetrySend { request_id, .. } => formatter
                 .debug_struct("RetrySend")
@@ -1118,6 +1122,8 @@ impl fmt::Debug for SearchCommand {
 
 #[cfg(test)]
 mod tests {
+    use matrix_desktop_state::{MentionIntent, MentionTarget};
+
     use super::*;
 
     fn fake_rid(seq: u64) -> RequestId {
@@ -1128,6 +1134,29 @@ mod tests {
     }
 
     #[test]
+    fn send_text_debug_redacts_body_and_mentions() {
+        let command = TimelineCommand::SendText {
+            request_id: fake_rid(6),
+            key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test"),
+            transaction_id: "txn-text".to_owned(),
+            body: "secret text body".to_owned(),
+            mentions: MentionIntent {
+                targets: vec![MentionTarget::User {
+                    user_id: "@alice:example.test".to_owned(),
+                    display_label: "Alice".to_owned(),
+                }],
+            },
+        };
+
+        let debug = format!("{command:?}");
+        assert!(debug.contains("SendText"), "{debug}");
+        assert!(debug.contains("txn-text"), "{debug}");
+        assert!(!debug.contains("secret text body"), "{debug}");
+        assert!(!debug.contains("@alice:example.test"), "{debug}");
+        assert!(!debug.contains("Alice"), "{debug}");
+    }
+
+    #[test]
     fn send_reply_debug_redacts_body_and_event_ids() {
         let command = TimelineCommand::SendReply {
             request_id: fake_rid(7),
@@ -1135,6 +1164,7 @@ mod tests {
             transaction_id: "txn-reply".to_owned(),
             in_reply_to_event_id: "$event:test".to_owned(),
             body: "secret reply body".to_owned(),
+            mentions: MentionIntent::default(),
         };
 
         let debug = format!("{command:?}");

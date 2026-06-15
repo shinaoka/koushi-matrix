@@ -25,7 +25,8 @@ describe("BrowserFakeApi settings preview", () => {
         {
           key: "enter",
           modifiers: { ctrl: false, meta: false, shift: false, alt: false },
-          is_composing: false
+          is_composing: false,
+          selection: null
         },
         { autocomplete_open: false, send_enabled: true }
       )
@@ -41,7 +42,8 @@ describe("BrowserFakeApi settings preview", () => {
         {
           key: "enter",
           modifiers: { ctrl: false, meta: false, shift: false, alt: false },
-          is_composing: false
+          is_composing: false,
+          selection: null
         },
         { autocomplete_open: false, send_enabled: true }
       )
@@ -53,11 +55,42 @@ describe("BrowserFakeApi settings preview", () => {
         {
           key: "enter",
           modifiers: { ctrl: true, meta: false, shift: false, alt: false },
-          is_composing: false
+          is_composing: false,
+          selection: null
         },
         { autocomplete_open: false, send_enabled: true }
       )
     ).resolves.toBe("send");
+  });
+
+  test("composer resolver mirrors Rust IME and no-op actions", async () => {
+    const api = createBrowserFakeApi();
+
+    await expect(
+      api.resolveComposerKeyAction(
+        "main",
+        {
+          key: "enter",
+          modifiers: { ctrl: false, meta: false, shift: false, alt: false },
+          is_composing: true,
+          selection: { start: 0, end: 0 }
+        },
+        { autocomplete_open: true, send_enabled: true }
+      )
+    ).resolves.toBe("commitImeCandidate");
+
+    await expect(
+      api.resolveComposerKeyAction(
+        "edit",
+        {
+          key: "enter",
+          modifiers: { ctrl: false, meta: false, shift: false, alt: false },
+          is_composing: false,
+          selection: null
+        },
+        { autocomplete_open: false, send_enabled: false }
+      )
+    ).resolves.toBe("noop");
   });
 
   test("updates the Rust-shaped locale display profile from locale settings", async () => {

@@ -61,6 +61,7 @@ export type TimelineFailureKind =
   | "InvalidReactionState"
   | "InvalidSendTarget"
   | "InvalidSendState"
+  | "UnsupportedSlashCommand"
   | "Forbidden"
   | "Network"
   | "Timeout"

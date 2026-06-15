@@ -793,6 +793,7 @@ describe("desktop release scripts", () => {
       "scenario login_sync",
       "scenario room_space",
       "scenario timeline",
+      "scenario composer",
       "scenario reply",
       "scenario media",
       "scenario thread",

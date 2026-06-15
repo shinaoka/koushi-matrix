@@ -1847,6 +1847,7 @@ pub(crate) fn build_send_text_command(
         key: build_timeline_key(account_key, room_id),
         transaction_id,
         body,
+        mentions: matrix_desktop_state::MentionIntent::default(),
     }))
 }
 
@@ -2281,6 +2282,7 @@ pub(crate) fn build_send_reply_command(
         transaction_id,
         in_reply_to_event_id,
         body,
+        mentions: matrix_desktop_state::MentionIntent::default(),
     }))
 }
 
@@ -2321,6 +2323,7 @@ pub(crate) fn build_send_thread_reply_command(
         transaction_id,
         in_reply_to_event_id: root_event_id,
         body,
+        mentions: matrix_desktop_state::MentionIntent::default(),
     }))
 }
 
@@ -2885,8 +2888,10 @@ mod tests {
                 key,
                 transaction_id: route_transaction_id,
                 body: route_body,
+                mentions,
             }) => {
                 assert_eq!(request_id, fake_request_id(10));
+                assert_eq!(mentions, matrix_desktop_state::MentionIntent::default());
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -3577,8 +3582,10 @@ mod tests {
                 transaction_id,
                 in_reply_to_event_id,
                 body,
+                mentions,
             }) => {
                 assert_eq!(request_id, fake_request_id(23));
+                assert_eq!(mentions, matrix_desktop_state::MentionIntent::default());
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -3609,8 +3616,10 @@ mod tests {
                 transaction_id,
                 in_reply_to_event_id,
                 body,
+                mentions,
             }) => {
                 assert_eq!(request_id, fake_request_id(24));
+                assert_eq!(mentions, matrix_desktop_state::MentionIntent::default());
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,

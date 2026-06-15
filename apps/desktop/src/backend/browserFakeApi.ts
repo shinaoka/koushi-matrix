@@ -1465,13 +1465,13 @@ function resolveComposerKeyActionFromSettings(
   options: ComposerResolverOptions
 ): ComposerResolvedAction {
   if (keyEvent.is_composing) {
-    return "ignore";
+    return "commitImeCandidate";
   }
   if (keyEvent.key === "escape") {
     return "cancel";
   }
   if (keyEvent.key !== "enter") {
-    return "ignore";
+    return "noop";
   }
   if (keyEvent.modifiers.shift || keyEvent.modifiers.alt) {
     return "insertNewline";
@@ -1485,7 +1485,7 @@ function resolveComposerKeyActionFromSettings(
   if (!wantsSend) {
     return "insertNewline";
   }
-  return options.send_enabled ? "send" : "ignore";
+  return options.send_enabled ? "send" : "noop";
 }
 
 function emptySidebar() {

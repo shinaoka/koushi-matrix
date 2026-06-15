@@ -996,7 +996,15 @@ stateDiagram-v2
   When `is_composing` is true, Enter-like keys are treated as IME commit input
   and must not send, insert a product newline, accept autocomplete, or close a
   composer. React must not fall back to local send behavior if the Rust resolver
-  fails.
+  fails. Because the resolver crosses async IPC, GUI handlers must not prevent
+  the native browser default for `is_composing` key events; candidate commit is
+  the platform/editor default, while Rust still owns the app-level action.
+- Composer send intent is also Rust-owned. GUI code may pass typed draft,
+  mention, and selection facts only; Rust builds the final message content:
+  `MentionIntent` becomes Matrix `m.mentions`, supported markdown becomes a
+  plain body plus safe HTML formatted body, `/me` becomes an emote message, and
+  unsupported slash commands fail locally as `UnsupportedSlashCommand` before
+  a submitted composer transaction clears draft state.
 - CJK policy updates carry a generation or request id. Stale profile/search
   results for an older locale/settings generation are ignored.
 - Failure behavior falls back to safe default display/search policy with a

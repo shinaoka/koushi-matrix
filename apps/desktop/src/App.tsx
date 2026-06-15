@@ -76,6 +76,7 @@ import {
 import {
   composerKeyEventFromDom,
   insertNewlineAtSelection,
+  shouldLetNativeImeHandleComposerKeyEvent,
   shouldResolveComposerKeyEvent
 } from "./domain/composerKeyEvents";
 import {
@@ -232,7 +233,7 @@ type InviteUserDialogState = {
   title: string;
 } | null;
 
-const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "ignore";
+const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 
 /**
  * React-local view of the composer mode. Matrix semantics (the reply target)
@@ -2709,16 +2710,24 @@ export function Composer({
       return;
     }
 
-    const keyEvent = composerKeyEventFromDom(event);
     const textarea = event.currentTarget;
     const selectionStart = textarea.selectionStart;
     const selectionEnd = textarea.selectionEnd;
-    event.preventDefault();
-
-    void resolveComposerKeyAction("main", keyEvent, {
+    const keyEvent = composerKeyEventFromDom(event, {
+      start: selectionStart,
+      end: selectionEnd
+    });
+    const resolverOptions = {
       autocomplete_open: false,
       send_enabled: !isSending && value.trim().length > 0
-    })
+    };
+    if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
+      void resolveComposerKeyAction("main", keyEvent, resolverOptions).catch(() => undefined);
+      return;
+    }
+    event.preventDefault();
+
+    void resolveComposerKeyAction("main", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
           void onSend();
@@ -3126,16 +3135,24 @@ function ThreadComposer({
       return;
     }
 
-    const keyEvent = composerKeyEventFromDom(event);
     const textarea = event.currentTarget;
     const selectionStart = textarea.selectionStart;
     const selectionEnd = textarea.selectionEnd;
-    event.preventDefault();
-
-    void resolveComposerKeyAction("thread", keyEvent, {
+    const keyEvent = composerKeyEventFromDom(event, {
+      start: selectionStart,
+      end: selectionEnd
+    });
+    const resolverOptions = {
       autocomplete_open: false,
       send_enabled: canSend
-    })
+    };
+    if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
+      void resolveComposerKeyAction("thread", keyEvent, resolverOptions).catch(() => undefined);
+      return;
+    }
+    event.preventDefault();
+
+    void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
           void onSend();

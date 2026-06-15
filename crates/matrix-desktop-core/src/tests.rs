@@ -6,8 +6,8 @@ use std::time::Duration;
 use matrix_desktop_state::{
     AppAction, AppearanceSettings, AuthSecret, ComposerMode, CrossSigningStatus,
     IdentityResetAuthRequest, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
-    LoginRequest, PresenceKind, RecoveryRequest, RoomSummary, RoomTagKind, RoomTags, SasEmoji,
-    SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
+    LoginRequest, MentionIntent, PresenceKind, RecoveryRequest, RoomSummary, RoomTagKind, RoomTags,
+    SasEmoji, SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
     ThemePreference, VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 
@@ -94,6 +94,7 @@ fn secret_bearing_commands_redact_debug() {
         key: key.clone(),
         transaction_id: "txn-1".to_owned(),
         body: BODY.to_owned(),
+        mentions: MentionIntent::default(),
     });
     let toggle_reaction = CoreCommand::Timeline(TimelineCommand::ToggleReaction {
         request_id: fake_request_id(),

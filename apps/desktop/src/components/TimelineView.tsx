@@ -67,6 +67,7 @@ import {
 import {
   composerKeyEventFromDom,
   insertNewlineAtSelection,
+  shouldLetNativeImeHandleComposerKeyEvent,
   shouldResolveComposerKeyEvent
 } from "../domain/composerKeyEvents";
 import type {
@@ -185,7 +186,7 @@ function cssEscape(value: string): string {
 const AUTO_BACKFILL_THRESHOLD_PX = 80;
 const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
-const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "ignore";
+const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 const ignoreSendQueueAction = () => undefined;
 
 // ---------------------------------------------------------------------------
@@ -618,16 +619,24 @@ export function TimelineItemRow({
         return;
       }
 
-      const keyEvent = composerKeyEventFromDom(event);
       const textarea = event.currentTarget;
       const selectionStart = textarea.selectionStart;
       const selectionEnd = textarea.selectionEnd;
-      event.preventDefault();
-
-      void resolveComposerKeyAction("edit", keyEvent, {
+      const keyEvent = composerKeyEventFromDom(event, {
+        start: selectionStart,
+        end: selectionEnd
+      });
+      const resolverOptions = {
         autocomplete_open: false,
         send_enabled: Boolean(eventId && editDraft.trim())
-      })
+      };
+      if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
+        void resolveComposerKeyAction("edit", keyEvent, resolverOptions).catch(() => undefined);
+        return;
+      }
+      event.preventDefault();
+
+      void resolveComposerKeyAction("edit", keyEvent, resolverOptions)
         .then((action) => {
           if (action === "send") {
             if (eventId && editDraft.trim()) {

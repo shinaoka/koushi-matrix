@@ -9,8 +9,11 @@ pub mod typography_profile;
 
 pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
 pub use composer_shortcuts::{
-    ComposerKey, ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction,
-    ComposerResolverContext, ComposerSurface, resolve_composer_key_action,
+    ComposerKey, ComposerKeyEvent, ComposerKeyFacts, ComposerKeyModifiers, ComposerResolvedAction,
+    ComposerResolverContext, ComposerSelection, ComposerSendIntent, ComposerSurface,
+    FormattedMessageDraft, MentionIntent, MentionTarget, SlashCommandIntent,
+    build_formatted_message_draft, parse_slash_command, resolve_composer_key_action,
+    resolve_composer_send_intent,
 };
 pub use effect::{AppEffect, UiEvent};
 pub use locale_profile::{

@@ -66,7 +66,15 @@ Crate responsibilities:
   async transport boundary, GUI code captures key facts and textarea selection
   synchronously, prevents default only for resolver-owned keys, and applies
   newline/send/cancel only from the returned action. Resolver failures are
-  no-ops; React must not fall back to local send semantics.
+  no-ops; React must not fall back to local send semantics. Composition key
+  events keep the native browser default so IME candidate commits are not
+  blocked by the async resolver boundary; Rust still owns the returned product
+  action (`CommitImeCandidate`). Composer send payload semantics are also owned
+  by Rust/core: intentional mentions are typed `MentionIntent` data,
+  markdown/html and `/me` emote conversion are built before SDK send, and
+  unsupported slash commands fail locally with structured private-data-free
+  failure kinds. React does not construct `m.mentions`, formatted bodies, or
+  slash-command dispatch.
   Core Batch A0 ownership also lives in this crate: local encryption /
   credential-store health, native attention candidates and capabilities,
   Japanese/CJK display/search policy, and backup restore scope are
