@@ -234,6 +234,7 @@ function defaultNativeAttentionState(): DesktopSnapshot["state"]["native_attenti
       capabilities: {
         notifications: "unknown",
         badge: "unknown",
+        overlay_icon: "unknown",
         sound: "unknown",
         tray: "unknown",
         activation: "unknown"

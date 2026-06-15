@@ -4382,6 +4382,7 @@ fn native_attention_available_capabilities() -> NativeAttentionCapabilities {
     NativeAttentionCapabilities {
         notifications: NativeAttentionCapability::Available,
         badge: NativeAttentionCapability::Available,
+        overlay_icon: NativeAttentionCapability::Available,
         sound: NativeAttentionCapability::Available,
         tray: NativeAttentionCapability::Available,
         activation: NativeAttentionCapability::Available,

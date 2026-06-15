@@ -952,6 +952,7 @@ describe("Tauri state refresh wiring", () => {
     expect(source).toContain("rightPanelMode");
     expect(source).toContain("qaSendStatus");
     expect(source).toContain("getCurrentWindow()");
+    expect(source).toContain("snapshot?.state.native_attention.summary.capabilities");
     expect(source).toContain("document.title = title");
     expect(source).toContain("desktopAttentionWindowTitle");
   });

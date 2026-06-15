@@ -213,6 +213,7 @@ function defaultSnapshotResponse() {
           capabilities: {
             notifications: "unknown",
             badge: "unknown",
+            overlay_icon: "unknown",
             sound: "unknown",
             tray: "unknown",
             activation: "unknown"

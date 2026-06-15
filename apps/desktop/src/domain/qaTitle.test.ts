@@ -72,6 +72,7 @@ describe("qaWindowTitle", () => {
             capabilities: {
               notifications: "available",
               badge: "available",
+              overlay_icon: "unknown",
               sound: "unknown",
               tray: "unknown",
               activation: "unknown"

@@ -32,6 +32,7 @@ fn available_capabilities() -> NativeAttentionCapabilities {
     NativeAttentionCapabilities {
         notifications: NativeAttentionCapability::Available,
         badge: NativeAttentionCapability::Available,
+        overlay_icon: NativeAttentionCapability::Available,
         sound: NativeAttentionCapability::Available,
         tray: NativeAttentionCapability::Available,
         activation: NativeAttentionCapability::Available,
@@ -50,6 +51,9 @@ fn native_attention_capabilities_are_resolved_from_platform_profile() {
     assert_eq!(macos.badge, NativeAttentionCapability::Available);
     assert_eq!(windows.badge, NativeAttentionCapability::Available);
     assert_eq!(linux.badge, NativeAttentionCapability::Unknown);
+    assert_eq!(macos.overlay_icon, NativeAttentionCapability::Unavailable);
+    assert_eq!(windows.overlay_icon, NativeAttentionCapability::Available);
+    assert_eq!(linux.overlay_icon, NativeAttentionCapability::Unavailable);
     assert_eq!(macos.sound, NativeAttentionCapability::Available);
     assert_eq!(windows.sound, NativeAttentionCapability::Available);
     assert_eq!(linux.sound, NativeAttentionCapability::Available);

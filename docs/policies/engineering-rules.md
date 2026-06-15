@@ -70,7 +70,9 @@ Rules:
    state or surface as React rendering failures. Platform capability profiles
    for native attention are resolved in Rust from the shared `DisplayPlatform`
    model before reaching React; React components and notification helpers must
-   not add their own macOS/Linux/Windows capability branches.
+   not add their own macOS/Linux/Windows capability branches. Windows taskbar
+   overlay routing uses the Rust-owned `overlay_icon` capability field, not
+   React-side OS detection.
 10. Device-local settings are non-secret product state, but they are still a
    privacy boundary. Settings files may contain only typed preferences such as
    locale, theme, font/emoji choice, keyboard behavior, and notification

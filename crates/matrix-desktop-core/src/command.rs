@@ -1694,6 +1694,7 @@ mod tests {
                     capabilities: NativeAttentionCapabilities {
                         notifications: NativeAttentionCapability::Available,
                         badge: NativeAttentionCapability::Available,
+                        overlay_icon: NativeAttentionCapability::Unknown,
                         sound: NativeAttentionCapability::Unknown,
                         tray: NativeAttentionCapability::Unavailable,
                         activation: NativeAttentionCapability::Unknown,

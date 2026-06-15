@@ -522,7 +522,8 @@ export function App() {
     void applyDesktopAttentionToWindow(
       getCurrentWindow(),
       title,
-      safeAttentionSummary.badgeCount
+      safeAttentionSummary.badgeCount,
+      snapshot?.state.native_attention.summary.capabilities
     );
   }, [snapshot, rightPanelMode, qaSendStatus, safeAttentionSummary.badgeCount, safeAttentionSummary.qaTitleToken]);
 

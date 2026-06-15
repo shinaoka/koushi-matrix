@@ -686,6 +686,7 @@ export type RoomAttentionKind = "mention" | "dm" | "message";
 export interface NativeAttentionCapabilities {
   notifications: NativeAttentionCapability;
   badge: NativeAttentionCapability;
+  overlay_icon: NativeAttentionCapability;
   sound: NativeAttentionCapability;
   tray: NativeAttentionCapability;
   activation: NativeAttentionCapability;

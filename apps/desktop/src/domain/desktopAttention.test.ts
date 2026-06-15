@@ -4,7 +4,8 @@ import {
   applyDesktopAttentionToWindow,
   desktopAttentionNotificationCandidate,
   desktopAttentionSummary,
-  desktopAttentionWindowTitle
+  desktopAttentionWindowTitle,
+  WINDOWS_ATTENTION_OVERLAY_ICON_PATH
 } from "./desktopAttention";
 import type { NativeAttentionState } from "./types";
 
@@ -21,6 +22,7 @@ function nativeAttentionState(
       capabilities: {
         notifications: "unknown",
         badge: "unknown",
+        overlay_icon: "unknown",
         sound: "unknown",
         tray: "unknown",
         activation: "unknown"
@@ -170,6 +172,44 @@ describe("desktop notification candidate", () => {
 
     expect(windowMock.setTitle).toHaveBeenCalledWith("matrix-desktop · 5 unread");
     expect(windowMock.setBadgeCount).toHaveBeenCalledWith(5);
+  });
+
+  test("routes Windows overlay icon through the native attention capability DTO", async () => {
+    const windowMock = {
+      setTitle: vi.fn().mockResolvedValue(undefined),
+      setBadgeCount: vi.fn().mockResolvedValue(undefined),
+      setOverlayIcon: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop · 3 unread", 3, {
+      notifications: "available",
+      badge: "unknown",
+      overlay_icon: "available",
+      sound: "available",
+      tray: "unknown",
+      activation: "unknown"
+    });
+
+    expect(windowMock.setOverlayIcon).toHaveBeenCalledWith(WINDOWS_ATTENTION_OVERLAY_ICON_PATH);
+  });
+
+  test("clears Windows overlay icon through the native attention capability DTO", async () => {
+    const windowMock = {
+      setTitle: vi.fn().mockResolvedValue(undefined),
+      setBadgeCount: vi.fn().mockResolvedValue(undefined),
+      setOverlayIcon: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop", 0, {
+      notifications: "available",
+      badge: "unknown",
+      overlay_icon: "available",
+      sound: "available",
+      tray: "unknown",
+      activation: "unknown"
+    });
+
+    expect(windowMock.setOverlayIcon).toHaveBeenCalledWith(undefined);
   });
 
   test("swallows native title and badge failures without rejecting", async () => {

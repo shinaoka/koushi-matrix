@@ -1625,6 +1625,7 @@ fn native_attention_suppression_reason(
 pub struct NativeAttentionCapabilities {
     pub notifications: NativeAttentionCapability,
     pub badge: NativeAttentionCapability,
+    pub overlay_icon: NativeAttentionCapability,
     pub sound: NativeAttentionCapability,
     pub tray: NativeAttentionCapability,
     pub activation: NativeAttentionCapability,
@@ -1641,6 +1642,12 @@ pub fn native_attention_capabilities_for_platform(
     NativeAttentionCapabilities {
         notifications: NativeAttentionCapability::Available,
         badge,
+        overlay_icon: match platform {
+            DisplayPlatform::Windows => NativeAttentionCapability::Available,
+            DisplayPlatform::Macos | DisplayPlatform::Linux => {
+                NativeAttentionCapability::Unavailable
+            }
+        },
         sound: NativeAttentionCapability::Available,
         tray: NativeAttentionCapability::Unknown,
         activation: NativeAttentionCapability::Unknown,

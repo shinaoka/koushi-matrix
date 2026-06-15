@@ -1,6 +1,11 @@
-import type { NativeAttentionState, RoomAttentionKind } from "./types";
+import type {
+  NativeAttentionCapabilities,
+  NativeAttentionState,
+  RoomAttentionKind
+} from "./types";
 
 export type DesktopAttentionKind = "mention" | "dm" | "message" | "none";
+export const WINDOWS_ATTENTION_OVERLAY_ICON_PATH = "src-tauri/icons/icon.png";
 
 export interface DesktopAttentionSummary {
   unreadTotal: number;
@@ -20,6 +25,7 @@ export interface DesktopAttentionNotificationCandidate {
 export interface DesktopWindowLike {
   setTitle(title: string): Promise<void>;
   setBadgeCount(count?: number): Promise<void>;
+  setOverlayIcon?(icon?: string): Promise<void>;
 }
 
 export function desktopAttentionSummary(attention: NativeAttentionState): DesktopAttentionSummary {
@@ -46,12 +52,23 @@ export function desktopAttentionWindowTitle(
 export async function applyDesktopAttentionToWindow(
   windowLike: DesktopWindowLike,
   title: string,
-  badgeCount: number
+  badgeCount: number,
+  capabilities?: NativeAttentionCapabilities
 ): Promise<void> {
-  await Promise.allSettled([
+  const operations = [
     windowLike.setTitle(title),
     windowLike.setBadgeCount(badgeCount > 0 ? badgeCount : undefined)
-  ]);
+  ];
+
+  if (capabilities?.overlay_icon === "available" && windowLike.setOverlayIcon) {
+    operations.push(
+      windowLike.setOverlayIcon(
+        badgeCount > 0 ? WINDOWS_ATTENTION_OVERLAY_ICON_PATH : undefined
+      )
+    );
+  }
+
+  await Promise.allSettled(operations);
 }
 
 export function desktopAttentionNotificationCandidate(

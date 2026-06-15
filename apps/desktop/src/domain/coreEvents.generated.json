@@ -194,6 +194,7 @@
           "activation": "available",
           "badge": "available",
           "notifications": "available",
+          "overlay_icon": "unknown",
           "sound": "unavailable",
           "tray": "unknown"
         },

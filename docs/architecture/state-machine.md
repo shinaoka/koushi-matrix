@@ -1189,6 +1189,8 @@ stateDiagram-v2
 - Platform capability updates use the shared Rust `DisplayPlatform` model.
   React receives the resulting `NativeAttentionCapabilities` DTO and must not
   branch on macOS/Linux/Windows notification semantics locally.
+- Windows taskbar overlay icon routing is represented by the
+  `overlay_icon` capability, separate from generic badge count capability.
 - The Phase A core projection is `native_attention_state_from_rooms`. It
   aggregates unread/highlight counts from eligible rooms, excludes low-priority
   and muted rooms, prefers `mention` over `dm` over `message` candidates,

@@ -177,6 +177,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   the shared `DisplayPlatform` model before reaching React. Add macOS/Linux/Win
   capability differences there; do not scatter platform branches through React
   components or notification helpers.
+- Windows taskbar overlay support is modeled as the Rust-owned
+  `NativeAttentionCapabilities.overlay_icon` field. React adapter code may call
+  `setOverlayIcon` only from that DTO capability, never from direct OS sniffing.
 - Candidate projection uses private-data-minimized room labels and counts only.
   It must not expose message bodies, sender IDs, room IDs, event IDs,
   transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,
