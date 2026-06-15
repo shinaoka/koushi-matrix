@@ -21,9 +21,11 @@ import type {
   DeviceTrustLevel,
   E2eeTrustState,
   EmojiPreference,
+  DisplayPlatform,
   FontPreference,
   IdentityResetState,
   KeyBackupStatus,
+  LocalEncryptionState,
   SavedSessionInfo,
   SettingsPatch,
   SettingsState,
@@ -39,6 +41,8 @@ export function UserSettingsPanel({
   settings,
   profile,
   e2eeTrust,
+  localEncryption,
+  platform,
   onOpenKeyboardSettings,
   onUpdateSettings,
   onSetDisplayName,
@@ -51,6 +55,8 @@ export function UserSettingsPanel({
   onResetIdentity,
   onSubmitIdentityResetPassword,
   onSubmitIdentityResetOAuth,
+  onProbeLocalEncryption,
+  onOpenRecovery,
   onSwitchAccount
 }: {
   currentSession: SavedSessionInfo | null;
@@ -58,6 +64,8 @@ export function UserSettingsPanel({
   settings: SettingsState;
   profile: ProfileState;
   e2eeTrust: E2eeTrustState;
+  localEncryption: LocalEncryptionState;
+  platform: DisplayPlatform;
   onOpenKeyboardSettings: () => void;
   onUpdateSettings: (patch: SettingsPatch) => void;
   onSetDisplayName: (displayName: string | null) => void;
@@ -70,6 +78,8 @@ export function UserSettingsPanel({
   onResetIdentity: () => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onSubmitIdentityResetOAuth: (flowId: number) => void;
+  onProbeLocalEncryption: () => void;
+  onOpenRecovery: () => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
 }) {
   const selectedTheme = settings.values.appearance.theme;
@@ -287,10 +297,12 @@ export function UserSettingsPanel({
 
       <section className="settings-section" aria-label={t("settings.security")}>
         <h3>{t("settings.security")}</h3>
-        <div className="settings-detail-list">
-          <DetailRow label={t("settings.sessionSecretLabel")} value={t("settings.sessionSecret")} />
-          <DetailRow label={t("settings.searchIndex")} value={t("settings.searchIndex")} />
-        </div>
+        <SecuritySection
+          localEncryption={localEncryption}
+          platform={platform}
+          onOpenRecovery={onOpenRecovery}
+          onProbeLocalEncryption={onProbeLocalEncryption}
+        />
       </section>
 
       <TrustSection
@@ -336,6 +348,76 @@ export function UserSettingsPanel({
         </div>
       </section>
     </section>
+  );
+}
+
+function SecuritySection({
+  localEncryption,
+  platform,
+  onOpenRecovery,
+  onProbeLocalEncryption
+}: {
+  localEncryption: LocalEncryptionState;
+  platform: DisplayPlatform;
+  onOpenRecovery: () => void;
+  onProbeLocalEncryption: () => void;
+}) {
+  const status = localEncryptionStatus(localEncryption);
+  const canReset =
+    localEncryption.kind === "missingCredential" ||
+    localEncryption.kind === "resetRequired" ||
+    localEncryption.kind === "resetting";
+
+  return (
+    <>
+      <div className="settings-detail-list">
+        <DetailRow
+          label={t("settings.credentialStore")}
+          value={credentialStoreLabel(platform)}
+        />
+        <DetailRow label={t("settings.searchIndex")} value={t("settings.searchIndex")} />
+      </div>
+      <div className="trust-status-list">
+        <TrustStatusRow
+          icon={status.icon}
+          label={t("settings.localEncryption")}
+          value={status.label}
+          tone={status.tone}
+          action={
+            <TrustActionButton
+              icon={<RefreshCcw size={14} />}
+              label={t("settings.checkLocalEncryption")}
+              disabled={localEncryption.kind === "probing"}
+              onClick={onProbeLocalEncryption}
+            />
+          }
+        />
+        {canReset ? (
+          <TrustStatusRow
+            icon={<RotateCcw size={16} />}
+            label={t("settings.localData")}
+            value={t("settings.localDataResetAvailable")}
+            tone={localEncryption.kind === "resetting" ? "progress" : "danger"}
+            action={
+              <>
+                <TrustActionButton
+                  icon={<KeyRound size={14} />}
+                  label={t("settings.openRecovery")}
+                  variant="secondary"
+                  onClick={onOpenRecovery}
+                />
+                <TrustActionButton
+                  icon={<RotateCcw size={14} />}
+                  label={t("settings.resetLocalData")}
+                  disabled
+                  onClick={() => undefined}
+                />
+              </>
+            }
+          />
+        ) : null}
+      </div>
+    </>
   );
 }
 
@@ -530,6 +612,74 @@ function VerificationDialog({
   );
 }
 
+function credentialStoreLabel(platform: DisplayPlatform): string {
+  switch (platform) {
+    case "macos":
+      return t("settings.credentialStoreMacos");
+    case "windows":
+      return t("settings.credentialStoreWindows");
+    case "linux":
+      return t("settings.credentialStoreLinux");
+  }
+}
+
+function localEncryptionStatus(state: LocalEncryptionState): {
+  label: string;
+  tone: TrustTone;
+  icon: ReactNode;
+} {
+  switch (state.kind) {
+    case "healthy":
+      return {
+        label: t("settings.localEncryptionHealthy"),
+        tone: "good",
+        icon: <ShieldCheck size={16} />
+      };
+    case "probing":
+      return {
+        label: t("settings.localEncryptionChecking"),
+        tone: "progress",
+        icon: <RefreshCcw size={16} />
+      };
+    case "unavailable":
+      return {
+        label: t("settings.localEncryptionUnavailable"),
+        tone: "danger",
+        icon: <ShieldX size={16} />
+      };
+    case "lockedOrInaccessible":
+      return {
+        label: t("settings.localEncryptionLocked"),
+        tone: "warning",
+        icon: <ShieldAlert size={16} />
+      };
+    case "missingCredential":
+      return {
+        label: t("settings.localEncryptionMissing"),
+        tone: "danger",
+        icon: <ShieldX size={16} />
+      };
+    case "resetRequired":
+      return {
+        label: t("settings.localEncryptionResetRequired"),
+        tone: "danger",
+        icon: <ShieldX size={16} />
+      };
+    case "resetting":
+      return {
+        label: t("settings.localEncryptionResetting"),
+        tone: "progress",
+        icon: <RefreshCcw size={16} />
+      };
+    case "unknown":
+      return {
+        label: t("settings.localEncryptionUnknown"),
+        tone: "neutral",
+        icon: <ShieldQuestion size={16} />
+      };
+  }
+}
+
 function TrustStatusRow({
   icon,
   label,
@@ -560,16 +710,23 @@ function TrustStatusRow({
 function TrustActionButton({
   icon,
   label,
+  disabled = false,
   variant = "primary",
   onClick
 }: {
   icon: ReactNode;
   label: string;
+  disabled?: boolean;
   variant?: "primary" | "secondary";
   onClick: () => void;
 }) {
   return (
-    <button className={`trust-action-button ${variant}`} type="button" onClick={onClick}>
+    <button
+      className={`trust-action-button ${variant}`}
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+    >
       {icon}
       <span>{label}</span>
     </button>

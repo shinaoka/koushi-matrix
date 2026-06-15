@@ -232,6 +232,13 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    until a later Rust-owned snapshot does so. Linux Activity GUI QA output is
    limited to private-data-free tokens and must not print room IDs, event IDs,
    message bodies, pagination cursors, or raw SDK errors.
+   Settings/Security GUI tests must render Rust-shaped
+   `AppState.local_encryption` snapshots and Rust-owned platform profiles.
+   React may display the coarse health state, show recovery/reset affordances,
+   and dispatch `probe_local_encryption_health`, but it must not read
+   OS/keyring errors, infer fail-open behavior, locally repair health after a
+   click, or map reset-local-data to logout/cleanup until a typed Rust reset
+   command exists.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

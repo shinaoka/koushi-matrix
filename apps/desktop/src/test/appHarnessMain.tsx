@@ -525,6 +525,15 @@ mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch })
     }
   });
 });
+mock.setCommandResponse("probe_local_encryption_health", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      local_encryption: { kind: "healthy" }
+    }
+  })
+);
 mock.setCommandResponse("bootstrap_cross_signing", () =>
   setCurrentSnapshot({
     ...currentSnapshot,

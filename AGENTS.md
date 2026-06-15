@@ -114,8 +114,16 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 ## Credential Health QA
 
 - Local-encryption / credential-store health is Rust-owned
-  `AppState.local_encryption`; GUI code must dispatch typed probe/reset
-  commands and render the snapshot, not infer OS/keyring semantics.
+  `AppState.local_encryption`; GUI code must dispatch typed probe commands
+  (and a typed reset command once one exists) and render the snapshot, not
+  infer OS/keyring semantics.
+- Browser-headless Settings/Security GUI tests seed Rust-shaped
+  `AppState.local_encryption` snapshots and Linux/macOS/Windows platform
+  profiles. React may render the coarse status, show recovery/reset
+  affordances, and dispatch `probe_local_encryption_health`; it must not read
+  OS/keyring errors, infer fail-open behavior, locally change health after a
+  click, or route reset-local-data through logout/cleanup until a typed Rust
+  reset command exists.
 - Fast Tier 1 checks are:
   `cargo test -p matrix-desktop-state --test local_encryption_state`,
   `cargo test -p matrix-desktop-key credential_backend`, and

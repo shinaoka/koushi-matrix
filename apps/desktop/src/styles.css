@@ -3000,6 +3000,9 @@ kbd {
 }
 
 .trust-status-action {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
   grid-column: 2;
   justify-self: start;
 }

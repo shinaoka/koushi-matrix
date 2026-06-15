@@ -844,6 +844,10 @@ export function App() {
     setSnapshot(await api.enableKeyBackup());
   }
 
+  async function probeLocalEncryptionHealth() {
+    setSnapshot(await api.probeLocalEncryptionHealth());
+  }
+
   async function acceptVerification(flowId: number) {
     setSnapshot(await api.acceptVerification(flowId));
   }
@@ -1535,6 +1539,12 @@ export function App() {
           }}
           onOpenKeyboardSettings={() => {
             void setRightPanelModeClosingFocusedContext("keyboardSettings");
+          }}
+          onOpenRecovery={() => {
+            void setRightPanelModeClosingFocusedContext("recovery");
+          }}
+          onProbeLocalEncryption={() => {
+            void probeLocalEncryptionHealth();
           }}
           onInviteUser={openInviteUserDialog}
           onModerateMember={(roomId, targetUserId, action, reason) => {
@@ -3806,6 +3816,8 @@ export function ContextualRightPanel({
   onCloseThread,
   onClosePanel,
   onOpenKeyboardSettings,
+  onOpenRecovery,
+  onProbeLocalEncryption,
   onInviteUser = () => undefined,
   onModerateMember = () => undefined,
   onUpdateMemberRole = () => undefined,
@@ -3845,6 +3857,8 @@ export function ContextualRightPanel({
   onCloseThread: () => void;
   onClosePanel: () => void;
   onOpenKeyboardSettings: () => void;
+  onOpenRecovery: () => void;
+  onProbeLocalEncryption: () => void;
   onInviteUser?: (roomId: string, title: string) => void;
   onModerateMember?: (
     roomId: string,
@@ -3918,6 +3932,8 @@ export function ContextualRightPanel({
         <UserSettingsPanel
           currentSession={currentSavedSession(snapshot)}
           e2eeTrust={snapshot.state.e2ee_trust}
+          localEncryption={snapshot.state.local_encryption}
+          platform={snapshot.state.locale_profile.platform}
           profile={snapshot.state.profile}
           savedSessions={savedSessions}
           settings={snapshot.state.settings}
@@ -3926,7 +3942,9 @@ export function ContextualRightPanel({
           onCancelVerification={onCancelVerification}
           onConfirmSasVerification={onConfirmSasVerification}
           onEnableKeyBackup={onEnableKeyBackup}
+          onOpenRecovery={onOpenRecovery}
           onOpenKeyboardSettings={onOpenKeyboardSettings}
+          onProbeLocalEncryption={onProbeLocalEncryption}
           onResetIdentity={onResetIdentity}
           onSetAvatar={onSetAvatar}
           onSetDisplayName={onSetDisplayName}

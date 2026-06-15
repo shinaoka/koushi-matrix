@@ -243,6 +243,13 @@ joined_room_restore=ok
 `LocalEncryptionState` transitions and kind-only credential-store failure
 projection. The headless lane runs under the debug/test file credential-store
 guard and must refuse to touch the OS keychain.
+For Settings/Security Phase B, the browser-headless harness seeds Rust-shaped
+`AppState.local_encryption` snapshots and Linux/macOS/Windows platform profiles.
+It proves credential-store label/status rendering, recovery/reset affordance
+visibility, and `probe_local_encryption_health` dispatch. React must not read
+OS/keyring errors, infer fail-open behavior, repair health locally after a
+click, or route reset-local-data through logout/cleanup while no typed Rust
+reset command exists.
 `notification_candidate=ok`, `badge_state=ok`, `suppress_focus=ok`, and
 `clear_badge=ok` prove Rust-owned native attention candidates and platform
 capability mapping without message bodies or identifiers.

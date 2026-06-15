@@ -73,7 +73,9 @@ describe("UserSettingsPanel", () => {
     onCancelVerification: () => undefined,
     onConfirmSasVerification: () => undefined,
     onEnableKeyBackup: () => undefined,
+    onOpenRecovery: () => undefined,
     onOpenKeyboardSettings: () => undefined,
+    onProbeLocalEncryption: () => undefined,
     onResetIdentity: () => undefined,
     onSetAvatar: () => undefined,
     onSetDisplayName: () => undefined,
@@ -92,6 +94,8 @@ describe("UserSettingsPanel", () => {
           device_id: "FAKEDEVICE"
         }}
         e2eeTrust={e2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
         savedSessions={[
           {
             homeserver: "https://matrix.org",
@@ -133,7 +137,8 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Twemoji COLR");
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain("Separate encrypted namespace");
-    expect(markup).toContain("OS credential store");
+    expect(markup).toContain("Secret Service");
+    expect(markup).toContain("Protected");
     expect(markup).toContain("Encryption");
     expect(markup).toContain("Device verification");
     expect(markup).toContain("Compare emoji");
@@ -150,6 +155,8 @@ describe("UserSettingsPanel", () => {
       <UserSettingsPanel
         currentSession={null}
         e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "unknown" }}
+        platform="linux"
         savedSessions={[
           {
             homeserver: "https://matrix.org",

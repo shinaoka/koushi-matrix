@@ -207,6 +207,11 @@ export type MessageId =
   | "settings.appearance"
   | "settings.accountSwitcher"
   | "settings.current"
+  | "settings.checkLocalEncryption"
+  | "settings.credentialStore"
+  | "settings.credentialStoreLinux"
+  | "settings.credentialStoreMacos"
+  | "settings.credentialStoreWindows"
   | "settings.device"
   | "settings.emojiFont"
   | "settings.fontInter"
@@ -217,8 +222,20 @@ export type MessageId =
   | "settings.keyboardDescription"
   | "settings.localStore"
   | "settings.localStoreLabel"
+  | "settings.localData"
+  | "settings.localDataResetAvailable"
+  | "settings.localEncryption"
+  | "settings.localEncryptionChecking"
+  | "settings.localEncryptionHealthy"
+  | "settings.localEncryptionLocked"
+  | "settings.localEncryptionMissing"
+  | "settings.localEncryptionResetRequired"
+  | "settings.localEncryptionResetting"
+  | "settings.localEncryptionUnavailable"
+  | "settings.localEncryptionUnknown"
   | "settings.matrixAccount"
   | "settings.notRestored"
+  | "settings.openRecovery"
   | "settings.preferences"
   | "settings.profile"
   | "settings.profileAvatar"
@@ -231,6 +248,7 @@ export type MessageId =
   | "settings.searchIndex"
   | "settings.security"
   | "settings.securityPrivacy"
+  | "settings.resetLocalData"
   | "settings.session"
   | "settings.sessionSecretLabel"
   | "settings.sessionSecret"
@@ -755,6 +773,11 @@ const en: Catalog = {
   "settings.appearance": "Appearance",
   "settings.accountSwitcher": "Account switcher",
   "settings.current": "Current",
+  "settings.checkLocalEncryption": "Check local encryption",
+  "settings.credentialStore": "Credential store",
+  "settings.credentialStoreLinux": "Secret Service",
+  "settings.credentialStoreMacos": "macOS Keychain",
+  "settings.credentialStoreWindows": "Windows Credential Manager",
   "settings.device": "Device",
   "settings.emojiFont": "Emoji font",
   "settings.fontInter": "Inter",
@@ -763,10 +786,22 @@ const en: Catalog = {
   "settings.homeserver": "Homeserver",
   "settings.keyboard": "Keyboard",
   "settings.keyboardDescription": "Element-compatible shortcuts for implemented desktop actions.",
+  "settings.localData": "Local data",
+  "settings.localDataResetAvailable": "Recovery or local reset available",
+  "settings.localEncryption": "Local encryption",
+  "settings.localEncryptionChecking": "Checking",
+  "settings.localEncryptionHealthy": "Protected",
+  "settings.localEncryptionLocked": "Credential store locked",
+  "settings.localEncryptionMissing": "Credential missing",
+  "settings.localEncryptionResetRequired": "Reset local data required",
+  "settings.localEncryptionResetting": "Resetting local data",
+  "settings.localEncryptionUnavailable": "Credential store unavailable",
+  "settings.localEncryptionUnknown": "Not checked",
   "settings.localStore": "Separate encrypted namespace",
   "settings.localStoreLabel": "Local store",
   "settings.matrixAccount": "Matrix account",
   "settings.notRestored": "Not restored",
+  "settings.openRecovery": "Open recovery",
   "settings.preferences": "Preferences",
   "settings.profile": "Profile",
   "settings.profileAvatar": "Avatar",
@@ -779,6 +814,7 @@ const en: Catalog = {
   "settings.searchIndex": "Encrypted local index",
   "settings.security": "Security",
   "settings.securityPrivacy": "Security & Privacy",
+  "settings.resetLocalData": "Reset local data",
   "settings.session": "Session",
   "settings.sessionSecretLabel": "Session secret",
   "settings.sessionSecret": "OS credential store",
@@ -1213,6 +1249,11 @@ const ja: Catalog = {
   "settings.appearance": "外観",
   "settings.accountSwitcher": "アカウント切り替え",
   "settings.current": "現在",
+  "settings.checkLocalEncryption": "ローカル暗号化を確認",
+  "settings.credentialStore": "資格情報ストア",
+  "settings.credentialStoreLinux": "Linux Secret Service",
+  "settings.credentialStoreMacos": "macOSキーチェーン",
+  "settings.credentialStoreWindows": "Windows資格情報マネージャー",
   "settings.device": "デバイス",
   "settings.emojiFont": "絵文字フォント",
   "settings.fontSystem": "システム",
@@ -1220,10 +1261,22 @@ const ja: Catalog = {
   "settings.homeserver": "ホームサーバー",
   "settings.keyboard": "キーボード",
   "settings.keyboardDescription": "実装済みデスクトップ操作用のElement互換ショートカットです。",
+  "settings.localData": "ローカルデータ",
+  "settings.localDataResetAvailable": "リカバリーまたはローカルリセットを利用できます",
+  "settings.localEncryption": "ローカル暗号化",
+  "settings.localEncryptionChecking": "確認中",
+  "settings.localEncryptionHealthy": "保護されています",
+  "settings.localEncryptionLocked": "資格情報ストアがロックされています",
+  "settings.localEncryptionMissing": "資格情報が見つかりません",
+  "settings.localEncryptionResetRequired": "ローカルデータのリセットが必要です",
+  "settings.localEncryptionResetting": "ローカルデータをリセット中",
+  "settings.localEncryptionUnavailable": "資格情報ストアを利用できません",
+  "settings.localEncryptionUnknown": "未確認",
   "settings.localStore": "分離された暗号化名前空間",
   "settings.localStoreLabel": "ローカルストア",
   "settings.matrixAccount": "Matrixアカウント",
   "settings.notRestored": "未復元",
+  "settings.openRecovery": "リカバリーを開く",
   "settings.preferences": "環境設定",
   "settings.profile": "プロフィール",
   "settings.profileAvatar": "アバター",
@@ -1236,6 +1289,7 @@ const ja: Catalog = {
   "settings.searchIndex": "暗号化ローカルインデックス",
   "settings.security": "セキュリティ",
   "settings.securityPrivacy": "セキュリティとプライバシー",
+  "settings.resetLocalData": "ローカルデータをリセット",
   "settings.session": "セッション",
   "settings.sessionSecretLabel": "セッションシークレット",
   "settings.sessionSecret": "OS資格情報ストア",

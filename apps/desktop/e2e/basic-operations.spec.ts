@@ -34,6 +34,8 @@
  *      Rust-shaped snapshots before rendering settings or membership changes.
  *  14. Drive Activity Recent/Unread streams from Rust-owned snapshots, dispatch
  *      focused-context and mark-read commands, and wait for Rust to remove rows.
+ *  15. Render Settings/Security local-encryption health from Rust-owned
+ *      snapshots and dispatch credential health probes only through Tauri IPC.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -3035,6 +3037,82 @@ test("profile settings dispatch Rust-owned commands and avatars render from prof
       })
     )
     .toEqual({ mimeType: "image/png", byteCount: 4 });
+});
+
+test("Security settings render local encryption health and dispatch probe commands", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("probe_local_encryption_health", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          local_encryption: { kind: "healthy" as const }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        locale_profile: { ...snapshot.state.locale_profile, platform: "linux" },
+        typography_profile: { ...snapshot.state.typography_profile, platform: "linux" },
+        local_encryption: { kind: "healthy" }
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "User settings" }).click();
+  await expect(page.getByRole("heading", { name: "Security" })).toBeVisible();
+  await expect(page.getByText("Secret Service")).toBeVisible();
+  await expect(page.getByText("Protected")).toBeVisible();
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        locale_profile: { ...snapshot.state.locale_profile, platform: "macos" },
+        typography_profile: { ...snapshot.state.typography_profile, platform: "macos" },
+        local_encryption: { kind: "lockedOrInaccessible" }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await expect(page.getByText("macOS Keychain")).toBeVisible();
+  await expect(page.getByText("Credential store locked")).toBeVisible();
+
+  await page.getByRole("button", { name: "Check local encryption" }).click();
+  await expect.poll(() => invocationCount(page, "probe_local_encryption_health")).toBe(1);
+  await expect(page.getByText("Protected")).toBeVisible();
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        locale_profile: { ...snapshot.state.locale_profile, platform: "windows" },
+        typography_profile: { ...snapshot.state.typography_profile, platform: "windows" },
+        local_encryption: { kind: "resetRequired" }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await expect(page.getByText("Windows Credential Manager")).toBeVisible();
+  await expect(page.getByText("Reset local data required")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open recovery" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reset local data" })).toBeVisible();
 });
 
 test("E2EE trust controls dispatch Rust-owned commands and render snapshot updates", async ({
