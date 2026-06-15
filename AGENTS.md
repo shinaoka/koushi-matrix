@@ -107,6 +107,33 @@ Phase B GUI/browser-headless work for the same issue follows
   React-only section membership while wiring context menus or browser-headless
   tests.
 
+## Outbound Send Queue Phase A Notes
+
+- Retry/cancel is driven by SDK `SendHandle`, not by a direct
+  `RoomSendQueue::retry(transaction_id)` API. `TimelineActor` must keep a
+  transaction-id keyed handle registry initialized from
+  `RoomSendQueue::subscribe()` local echoes and updated by
+  `RoomSendQueueUpdate::NewLocalEvent`.
+- Recoverable SDK send errors disable the room send queue. `RetrySend` must
+  call `room.send_queue().set_enabled(true)` before `SendHandle::unwedge()`;
+  successful `CancelSend` must also re-enable the room queue after
+  `SendHandle::abort()` so successors are not stranded behind a removed failed
+  item.
+- `TimelineItem.send_state` is a Rust-owned DTO projection. React may render it
+  and dispatch `retry_send` / `cancel_send`, but must not infer send legality
+  from `TimelineItemId::Transaction` or repair queue state locally.
+- `RoomSendQueueUpdate::SendError` carries raw SDK errors. Project only coarse
+  recoverable/unrecoverable status into DTOs and QA tokens; do not print raw SDK
+  errors, transaction ids, Matrix ids, or message bodies in QA output.
+- The `headless-core-qa` `send_queue` scenario injects offline failure through
+  a stdlib TCP proxy inside the Rust QA binary and must be run with
+  `--features qa-bin`; plain `cargo test` does not compile that binary. Verify
+  both SyncService and LegacySync legs when changing retry/cancel semantics.
+- New timeline item DTO fields must keep
+  `apps/desktop/src/domain/coreEvents.ts`,
+  `apps/desktop/src/domain/coreEvents.generated.json`, and
+  `apps/desktop/src-tauri/src/lib.rs`'s core-event wire contract test in sync.
+
 ## Live Signals Phase A Notes
 
 - `AppState.live_signals` is the Rust-owned source of truth for read receipts,

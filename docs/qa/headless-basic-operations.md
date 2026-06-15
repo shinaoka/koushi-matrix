@@ -47,6 +47,11 @@ typing=ok
 presence=ok
 live_signals=ok
 edit_redact_search=ok
+send_fail=ok
+resend=ok
+cancel_send=ok
+fifo=ok
+unsent_restart=ok
 e2ee_trust=ok
 restore_cleanup=ok
 ```
@@ -76,6 +81,15 @@ debug/test `SyncOnce` on the observer account after `SetTyping` is acknowledged
 because local sliding-sync typing delivery does not reliably wake the SDK room
 typing observer. That nudge is part of the headless QA harness only; product
 sync policy remains Rust-owned.
+
+`send_fail=ok`, `resend=ok`, `cancel_send=ok`, `fifo=ok`, and
+`unsent_restart=ok` are the Phase A outbound send-queue proof. The core lane
+inserts a local TCP proxy between the Rust runtime and the disposable
+homeserver, drops proxy traffic to create recoverable SDK send failures, then
+proves Rust-owned `TimelineItem.send_state`, guarded retry/cancel commands,
+FIFO completion, and unsent local-echo survival across runtime restart. This
+stage must not print Matrix room IDs, event IDs, SDK transaction IDs, message
+bodies, raw SDK errors, or proxy connection details.
 
 `invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, and `dm_start=ok`
 are the Phase A invite/DM state-machine proof. The core lane proves incoming
@@ -110,6 +124,7 @@ npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=invites_dm --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=media --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=live_signals --core --core-backend=probed --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=send_queue --core --core-backend=both --timeout-ms=240000
 ```
 
 ## Headless browser IPC-contract lane

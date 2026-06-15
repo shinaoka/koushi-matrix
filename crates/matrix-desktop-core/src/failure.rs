@@ -72,6 +72,8 @@ pub enum TimelineFailureKind {
     InvalidDirection,
     InvalidReactionTarget,
     InvalidReactionState,
+    InvalidSendTarget,
+    InvalidSendState,
     NotSubscribed,
     Forbidden,
     Network,

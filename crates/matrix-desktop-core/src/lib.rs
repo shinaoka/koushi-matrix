@@ -31,7 +31,7 @@ pub use event::{
     PaginationDirection, PaginationState, ReactionGroup, RoomEvent, SearchEvent, SearchResultItem,
     SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
     TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
-    TimelineResyncReason,
+    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
 };
 pub use failure::{
     CoreFailure, LoginFailureKind, ProfileFailureKind, RecoveryFailureKind, RoomFailureKind,

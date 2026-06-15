@@ -59,6 +59,8 @@ export type TimelineFailureKind =
   | "NotSubscribed"
   | "InvalidReactionTarget"
   | "InvalidReactionState"
+  | "InvalidSendTarget"
+  | "InvalidSendState"
   | "Forbidden"
   | "Network"
   | "Timeout"
@@ -111,6 +113,14 @@ export interface TimelineMedia {
   thumbnail: TimelineMediaThumbnail | null;
 }
 
+export type TimelineSendFailureReason = "recoverable" | "unrecoverable";
+
+export type TimelineSendState =
+  | { kind: "sending" }
+  | { kind: "notSent"; reason: TimelineSendFailureReason }
+  | { kind: "cancelled" }
+  | { kind: "sent" };
+
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
@@ -126,6 +136,7 @@ export interface TimelineItem {
   can_redact: boolean;
   is_edited: boolean;
   can_edit: boolean;
+  send_state?: TimelineSendState | null;
 }
 
 export interface ThreadSummaryDto {

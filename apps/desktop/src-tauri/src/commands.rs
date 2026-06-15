@@ -769,6 +769,42 @@ pub async fn send_text(
 }
 
 #[tauri::command]
+pub async fn retry_send(
+    room_id: String,
+    transaction_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) =
+        build_retry_send_command(request_id, account_key, room_id, transaction_id)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn cancel_send(
+    room_id: String,
+    transaction_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) =
+        build_cancel_send_command(request_id, account_key, room_id, transaction_id)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn upload_media(
     room_id: String,
     filename: String,
@@ -1780,6 +1816,38 @@ pub(crate) fn build_send_text_command(
     }))
 }
 
+pub(crate) fn build_retry_send_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    transaction_id: String,
+) -> Option<CoreCommand> {
+    if transaction_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::RetrySend {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        transaction_id,
+    }))
+}
+
+pub(crate) fn build_cancel_send_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    transaction_id: String,
+) -> Option<CoreCommand> {
+    if transaction_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::CancelSend {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        transaction_id,
+    }))
+}
+
 pub(crate) fn build_upload_media_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -2475,23 +2543,23 @@ mod tests {
     use super::SearchScopeKind;
     use super::{
         build_accept_invite_command, build_accept_verification_command,
-        build_bootstrap_cross_signing_command, build_cancel_verification_command,
-        build_confirm_sas_verification_command, build_create_room_command,
-        build_create_space_command, build_decline_invite_command, build_download_media_command,
-        build_edit_message_command, build_enable_key_backup_command, build_forget_room_command,
-        build_invite_user_command, build_leave_room_command, build_logout_command,
-        build_paginate_thread_timeline_backwards_command,
+        build_bootstrap_cross_signing_command, build_cancel_send_command,
+        build_cancel_verification_command, build_confirm_sas_verification_command,
+        build_create_room_command, build_create_space_command, build_decline_invite_command,
+        build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
+        build_forget_room_command, build_invite_user_command, build_leave_room_command,
+        build_logout_command, build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_redact_message_command,
-        build_redact_reaction_command, build_remove_room_tag_command,
-        build_reset_identity_command, build_restart_sync_command, build_select_room_command,
+        build_redact_reaction_command, build_remove_room_tag_command, build_reset_identity_command,
+        build_restart_sync_command, build_retry_send_command, build_select_room_command,
         build_select_space_command, build_send_reaction_command, build_send_read_receipt_command,
         build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
         build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
         build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
         build_set_thread_composer_draft_command, build_set_typing_command,
-        build_start_direct_message_command,
-        build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
-        build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
+        build_start_direct_message_command, build_submit_identity_reset_oauth_command,
+        build_submit_identity_reset_password_command, build_submit_login_command,
+        build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
         build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
@@ -2773,6 +2841,76 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+
+        match build_retry_send_command(
+            fake_request_id(31),
+            active_account_key.clone(),
+            room_id.clone(),
+            "sdk-txn-1".to_owned(),
+        )
+        .expect("retry_send should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::RetrySend {
+                request_id,
+                key,
+                transaction_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(31));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(transaction_id, "sdk-txn-1");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_cancel_send_command(
+            fake_request_id(32),
+            active_account_key.clone(),
+            room_id.clone(),
+            "sdk-txn-2".to_owned(),
+        )
+        .expect("cancel_send should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::CancelSend {
+                request_id,
+                key,
+                transaction_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(32));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(transaction_id, "sdk-txn-2");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        assert!(
+            build_retry_send_command(
+                fake_request_id(33),
+                active_account_key.clone(),
+                room_id.clone(),
+                " \t".to_owned()
+            )
+            .is_none()
+        );
+        assert!(
+            build_cancel_send_command(
+                fake_request_id(34),
+                active_account_key.clone(),
+                room_id.clone(),
+                "\n".to_owned()
+            )
+            .is_none()
+        );
 
         match build_upload_media_command(
             fake_request_id(25),
@@ -3563,6 +3701,37 @@ mod tests {
                 "pub async fn redact_reaction",
                 "build_redact_reaction_command",
                 "commands::redact_reaction",
+            ),
+        ] {
+            assert!(
+                commands_source.contains(command_name),
+                "Tauri command should expose {command_name}"
+            );
+            assert!(
+                commands_source.contains(route_name),
+                "Tauri command should route through {route_name}"
+            );
+            assert!(
+                lib_source.contains(registration_name),
+                "Tauri command should register {registration_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn send_queue_tauri_command_contracts_are_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        for (command_name, route_name, registration_name) in [
+            (
+                "pub async fn retry_send",
+                "build_retry_send_command",
+                "commands::retry_send",
+            ),
+            (
+                "pub async fn cancel_send",
+                "build_cancel_send_command",
+                "commands::cancel_send",
             ),
         ] {
             assert!(

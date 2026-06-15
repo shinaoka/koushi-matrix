@@ -101,6 +101,23 @@ describe("TauriDesktopApi", () => {
     });
   });
 
+  test("passes send queue actions to Rust-owned timeline commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.retrySend("!room:example.invalid", "txn-retry");
+    await api.cancelSend("!room:example.invalid", "txn-cancel");
+
+    expect(invoke).toHaveBeenCalledWith("retry_send", {
+      roomId: "!room:example.invalid",
+      transactionId: "txn-retry"
+    });
+    expect(invoke).toHaveBeenCalledWith("cancel_send", {
+      roomId: "!room:example.invalid",
+      transactionId: "txn-cancel"
+    });
+  });
+
   test("passes profile actions to Rust-owned account commands", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

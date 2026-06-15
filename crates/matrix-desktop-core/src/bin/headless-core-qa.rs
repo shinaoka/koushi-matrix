@@ -32,7 +32,14 @@
 //!
 //! SDK handles are dropped inside the Tokio runtime context (overview.md Async rule 11).
 
+use std::io;
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::process::ExitCode;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use matrix_desktop_core::command::{
@@ -42,7 +49,7 @@ use matrix_desktop_core::command::{
 use matrix_desktop_core::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection,
     PaginationState, RoomEvent, SearchEvent, SyncBackendKind, SyncEvent, TimelineDiff,
-    TimelineEvent, TimelineItem, TimelineItemId,
+    TimelineEvent, TimelineItem, TimelineItemId, TimelineSendState,
 };
 use matrix_desktop_core::failure::CoreFailure;
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -93,6 +100,7 @@ enum QaScenario {
     LiveSignals,
     Thread,
     EditRedactSearch,
+    SendQueue,
     RestoreCleanup,
 }
 
@@ -109,6 +117,7 @@ enum QaStage {
     LiveSignals,
     Thread,
     EditRedactSearch,
+    SendQueue,
     RestoreCleanup,
 }
 
@@ -197,9 +206,10 @@ impl QaScenario {
             "live_signals" => Ok(Self::LiveSignals),
             "thread" => Ok(Self::Thread),
             "edit_redact_search" => Ok(Self::EditRedactSearch),
+            "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, reply, media, live_signals, thread, edit_redact_search, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
             )),
         }
     }
@@ -268,6 +278,14 @@ impl QaScenario {
                     | QaStage::Timeline
                     | QaStage::EditRedactSearch
             ),
+            Self::SendQueue => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::SendQueue
+            ),
             Self::RestoreCleanup => matches!(
                 stage,
                 QaStage::Safety
@@ -281,7 +299,7 @@ impl QaScenario {
     }
 
     fn suppress_matrix_identifiers(self) -> bool {
-        matches!(self, Self::LiveSignals)
+        matches!(self, Self::LiveSignals | Self::SendQueue)
     }
 }
 
@@ -319,6 +337,13 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "thread_paginate=end_reached",
         ],
         QaStage::EditRedactSearch => &["edit_redact_search=ok"],
+        QaStage::SendQueue => &[
+            "send_fail=ok",
+            "resend=ok",
+            "cancel_send=ok",
+            "fifo=ok",
+            "unsent_restart=ok",
+        ],
         QaStage::RestoreCleanup => &["restore_cleanup=ok"],
     }
 }
@@ -346,6 +371,11 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "presence=ok",
         "live_signals=ok",
         "edit_redact_search=ok",
+        "send_fail=ok",
+        "resend=ok",
+        "cancel_send=ok",
+        "fifo=ok",
+        "unsent_restart=ok",
         "e2ee_trust=ok",
         "restore_cleanup=ok",
     ]
@@ -404,6 +434,13 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Timeline,
             QaStage::EditRedactSearch,
         ],
+        QaScenario::SendQueue => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::SendQueue,
+        ],
         QaScenario::RestoreCleanup => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -423,6 +460,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::LiveSignals,
             QaStage::Thread,
             QaStage::EditRedactSearch,
+            QaStage::SendQueue,
             QaStage::E2eeTrust,
             QaStage::RestoreCleanup,
         ],
@@ -450,6 +488,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::LiveSignals
         | QaScenario::Thread
         | QaScenario::EditRedactSearch
+        | QaScenario::SendQueue
         | QaScenario::RestoreCleanup => {
             let mut tokens = stages_for_scenario(scenario)
                 .into_iter()
@@ -850,6 +889,200 @@ async fn cleanup_logged_in_runtime(
     drop(runtime);
     tokio::time::sleep(Duration::from_millis(500)).await;
     Ok(())
+}
+
+async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
+    let proxy = QaTcpProxy::start(&config.homeserver)?;
+    let data_dir = qa_data_dir("send_queue");
+    let runtime = CoreRuntime::start_with_data_dir(data_dir.clone());
+    let mut conn = runtime.attach();
+
+    let login_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
+        request_id: login_id,
+        request: matrix_desktop_state::LoginRequest {
+            homeserver: proxy.homeserver_url(),
+            username: config.user_a.clone(),
+            password: AuthSecret::new(config.password_a.clone()),
+            device_display_name: Some("Matrix Desktop Core QA Send Queue".to_owned()),
+        },
+    }))
+    .await
+    .map_err(|e| format!("send_queue: submit login failed: {e}"))?;
+
+    let account_key = wait_for_logged_in(&mut conn, login_id, "send_queue login").await?;
+    wait_for_ready_snapshot(&mut conn, "send_queue Ready").await?;
+    start_sync_for_qa(&mut conn, "send_queue sync").await?;
+
+    let room_id = create_room_for_qa(
+        &mut conn,
+        "QA Send Queue Room",
+        false,
+        "send_queue create room",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn, "send_queue sync after room create").await?;
+    wait_for_room_in_room_list(&mut conn, &room_id, "send_queue room list").await?;
+
+    let key = TimelineKey::room(account_key.clone(), room_id.clone());
+    let subscribe_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+        request_id: subscribe_id,
+        key: key.clone(),
+    }))
+    .await
+    .map_err(|e| format!("send_queue: submit subscribe failed: {e}"))?;
+    wait_for_initial_items(&mut conn, &key, subscribe_id, "send_queue subscribe").await?;
+
+    proxy.disable();
+    let first = send_text_expect_local_echo(
+        &mut conn,
+        &key,
+        "qa-send-queue-first",
+        "QA send queue first offline",
+        "send_queue first offline",
+    )
+    .await?;
+    wait_for_timeline_send_state(
+        &mut conn,
+        &key,
+        &first.sdk_transaction_id,
+        |state| matches!(state, TimelineSendState::NotSent { .. }),
+        "send_queue first not_sent",
+    )
+    .await?;
+    println!("send_fail=ok");
+
+    let second = send_text_expect_local_echo(
+        &mut conn,
+        &key,
+        "qa-send-queue-second",
+        "QA send queue second offline",
+        "send_queue second offline",
+    )
+    .await?;
+
+    proxy.enable();
+    let retry_id = retry_send_queue_item(
+        &mut conn,
+        &key,
+        &first.sdk_transaction_id,
+        "send_queue retry first",
+    )
+    .await?;
+    wait_for_send_completions_in_order(
+        &mut conn,
+        &key,
+        retry_id,
+        &first,
+        &second,
+        "send_queue fifo retry",
+    )
+    .await?;
+    println!("resend=ok");
+    println!("fifo=ok");
+
+    proxy.disable();
+    let cancel = send_text_expect_local_echo(
+        &mut conn,
+        &key,
+        "qa-send-queue-cancel",
+        "QA send queue cancel offline",
+        "send_queue cancel offline",
+    )
+    .await?;
+    let cancel_id = cancel_send_queue_item(
+        &mut conn,
+        &key,
+        &cancel.sdk_transaction_id,
+        "send_queue cancel",
+    )
+    .await?;
+    wait_for_cancelled_or_removed_send(
+        &mut conn,
+        &key,
+        cancel_id,
+        &cancel.sdk_transaction_id,
+        "send_queue cancel removed",
+    )
+    .await?;
+    println!("cancel_send=ok");
+
+    let _restart = send_text_expect_local_echo(
+        &mut conn,
+        &key,
+        "qa-send-queue-restart",
+        "QA send queue restart offline",
+        "send_queue restart offline",
+    )
+    .await?;
+
+    stop_sync_for_qa(&mut conn, "send_queue stop before restart").await?;
+    drop(conn);
+    drop(runtime);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let runtime = CoreRuntime::start_with_data_dir(data_dir);
+    let mut conn = runtime.attach();
+    let restore_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::RestoreSession {
+        request_id: restore_id,
+        account_key: account_key.clone(),
+    }))
+    .await
+    .map_err(|e| format!("send_queue: submit restore failed: {e}"))?;
+    wait_for_session_restored(&mut conn, restore_id, &account_key, "send_queue restore").await?;
+    wait_for_ready_snapshot(&mut conn, "send_queue restored Ready").await?;
+
+    let subscribe_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+        request_id: subscribe_id,
+        key: key.clone(),
+    }))
+    .await
+    .map_err(|e| format!("send_queue: submit restore subscribe failed: {e}"))?;
+    let initial = wait_for_initial_items(
+        &mut conn,
+        &key,
+        subscribe_id,
+        "send_queue restored subscribe",
+    )
+    .await?;
+    let restored = find_timeline_item_with_body(&initial, "QA send queue restart offline")
+        .ok_or_else(|| "send_queue restored local echo missing after restart".to_owned())?;
+    let restored_txn = match restored.id {
+        TimelineItemId::Transaction { transaction_id } => transaction_id,
+        TimelineItemId::Event { .. } => {
+            println!("unsent_restart=ok");
+            cleanup_logged_in_runtime(conn, runtime, account_key, "send_queue cleanup").await?;
+            return Ok(());
+        }
+        TimelineItemId::Synthetic { .. } => {
+            return Err("send_queue restored item had synthetic id".to_owned());
+        }
+    };
+
+    proxy.enable();
+    let retry_already_sent =
+        if matches!(restored.send_state, Some(TimelineSendState::NotSent { .. })) {
+            retry_send_queue_item(&mut conn, &key, &restored_txn, "send_queue retry restored")
+                .await?;
+            true
+        } else {
+            false
+        };
+    wait_for_event_item_with_body_or_retry_not_sent(
+        &mut conn,
+        &key,
+        &restored_txn,
+        "QA send queue restart offline",
+        retry_already_sent,
+        "send_queue restored sent",
+    )
+    .await?;
+    println!("unsent_restart=ok");
+
+    cleanup_logged_in_runtime(conn, runtime, account_key, "send_queue cleanup").await
 }
 
 async fn cleanup_after_full_flow(
@@ -1682,6 +1915,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     // on the same FIFO-ordered connection, so the actor is dropped first and
     // the following request-id-scoped wait provides the real synchronization.
     println!("timeline=ok");
+
+    if scenario.should_run_stage(QaStage::SendQueue) {
+        run_send_queue_stage(&config).await?;
+    }
 
     if !scenario.should_run_stage(QaStage::EditRedactSearch) {
         cleanup_after_full_flow(
@@ -2944,6 +3181,7 @@ async fn wait_for_operation_failed(
                     | AccountEvent::SessionRestored { request_id: id, .. }
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }
+                    | AccountEvent::ProfileUpdated { request_id: id, .. }
                     | AccountEvent::LoggedOut { request_id: id, .. }
                     | AccountEvent::AccountSwitched { request_id: id, .. } => *id == request_id,
                     AccountEvent::RecoveryRequired { .. } => false,
@@ -4056,6 +4294,152 @@ impl QaConfig {
     }
 }
 
+struct QaTcpProxy {
+    listen_addr: SocketAddr,
+    enabled: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+    active_streams: Arc<Mutex<Vec<TcpStream>>>,
+    accept_thread: Option<JoinHandle<()>>,
+}
+
+impl QaTcpProxy {
+    fn start(target_homeserver: &str) -> Result<Self, String> {
+        let target = parse_http_homeserver_addr(target_homeserver)?;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("send_queue proxy bind failed: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("send_queue proxy nonblocking setup failed: {e}"))?;
+        let listen_addr = listener
+            .local_addr()
+            .map_err(|e| format!("send_queue proxy local_addr failed: {e}"))?;
+        let enabled = Arc::new(AtomicBool::new(true));
+        let running = Arc::new(AtomicBool::new(true));
+        let active_streams = Arc::new(Mutex::new(Vec::new()));
+
+        let thread_enabled = enabled.clone();
+        let thread_running = running.clone();
+        let thread_streams = active_streams.clone();
+        let accept_thread = thread::spawn(move || {
+            while thread_running.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((client, _)) => {
+                        if !thread_enabled.load(Ordering::SeqCst) {
+                            let _ = client.shutdown(Shutdown::Both);
+                            continue;
+                        }
+                        match TcpStream::connect_timeout(&target, Duration::from_secs(2)) {
+                            Ok(server) => {
+                                spawn_proxy_pair(client, server, thread_streams.clone());
+                            }
+                            Err(_) => {
+                                let _ = client.shutdown(Shutdown::Both);
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => {
+                        if thread_running.load(Ordering::SeqCst) {
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            listen_addr,
+            enabled,
+            running,
+            active_streams,
+            accept_thread: Some(accept_thread),
+        })
+    }
+
+    fn homeserver_url(&self) -> String {
+        format!("http://{}", self.listen_addr)
+    }
+
+    fn disable(&self) {
+        self.enabled.store(false, Ordering::SeqCst);
+        shutdown_active_streams(&self.active_streams);
+    }
+
+    fn enable(&self) {
+        self.enabled.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for QaTcpProxy {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+        shutdown_active_streams(&self.active_streams);
+        let _ = TcpStream::connect(self.listen_addr);
+        if let Some(thread) = self.accept_thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn parse_http_homeserver_addr(homeserver: &str) -> Result<SocketAddr, String> {
+    let without_scheme = homeserver.strip_prefix("http://").ok_or_else(|| {
+        format!("send_queue proxy requires a local http:// homeserver, got {homeserver}")
+    })?;
+    let authority = without_scheme
+        .split_once('/')
+        .map(|(authority, _)| authority)
+        .unwrap_or(without_scheme);
+    authority
+        .to_socket_addrs()
+        .map_err(|e| format!("send_queue proxy could not resolve {authority}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("send_queue proxy could not resolve {authority}"))
+}
+
+fn spawn_proxy_pair(
+    mut client_read: TcpStream,
+    mut server_read: TcpStream,
+    active_streams: Arc<Mutex<Vec<TcpStream>>>,
+) {
+    let Ok(mut client_write) = client_read.try_clone() else {
+        let _ = client_read.shutdown(Shutdown::Both);
+        let _ = server_read.shutdown(Shutdown::Both);
+        return;
+    };
+    let Ok(mut server_write) = server_read.try_clone() else {
+        let _ = client_read.shutdown(Shutdown::Both);
+        let _ = server_read.shutdown(Shutdown::Both);
+        return;
+    };
+    if let Ok(mut streams) = active_streams.lock() {
+        if let Ok(stream) = client_read.try_clone() {
+            streams.push(stream);
+        }
+        if let Ok(stream) = server_read.try_clone() {
+            streams.push(stream);
+        }
+    }
+
+    thread::spawn(move || {
+        let _ = io::copy(&mut client_read, &mut server_write);
+        let _ = server_write.shutdown(Shutdown::Both);
+    });
+    thread::spawn(move || {
+        let _ = io::copy(&mut server_read, &mut client_write);
+        let _ = client_write.shutdown(Shutdown::Both);
+    });
+}
+
+fn shutdown_active_streams(active_streams: &Arc<Mutex<Vec<TcpStream>>>) {
+    if let Ok(mut streams) = active_streams.lock() {
+        for stream in streams.drain(..) {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+}
+
 /// Fail when an expected backend is configured and the observed one differs.
 fn assert_expected_backend(
     expected: Option<&str>,
@@ -4160,6 +4544,13 @@ struct SendFlowOutcome {
     sdk_transaction_id: String,
     send_transaction_id: String,
     event_id: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct SendQueueLocalEcho {
+    request_id: RequestId,
+    client_transaction_id: String,
+    sdk_transaction_id: String,
 }
 
 #[derive(Debug)]
@@ -4296,6 +4687,368 @@ async fn wait_for_send_flow_completion(
         if waiter.is_complete() {
             return waiter.finish();
         }
+    }
+}
+
+async fn send_text_expect_local_echo(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    client_transaction_id: &str,
+    body: &str,
+    label: &str,
+) -> Result<SendQueueLocalEcho, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+        request_id,
+        key: key.clone(),
+        transaction_id: client_transaction_id.to_owned(),
+        body: body.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit SendText failed: {e}"))?;
+
+    let sdk_transaction_id =
+        wait_for_local_echo_transaction(conn, key, request_id, body, label).await?;
+    Ok(SendQueueLocalEcho {
+        request_id,
+        client_transaction_id: client_transaction_id.to_owned(),
+        sdk_transaction_id,
+    })
+}
+
+async fn wait_for_local_echo_transaction(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    request_id: RequestId,
+    expected_body: &str,
+    label: &str,
+) -> Result<String, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for local echo"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                let mut found = None;
+                visit_timeline_diff_items(&diffs, |item| {
+                    if timeline_item_body_matches(item, expected_body)
+                        && let Some(transaction_id) = timeline_item_transaction_id(item)
+                    {
+                        found = Some(transaction_id.to_owned());
+                    }
+                    Ok(())
+                })?;
+                if let Some(transaction_id) = found {
+                    return Ok(transaction_id);
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: send command failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_timeline_send_state(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    sdk_transaction_id: &str,
+    matches_state: impl Fn(&TimelineSendState) -> bool,
+    label: &str,
+) -> Result<TimelineSendState, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for send state"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                for item in &items {
+                    if timeline_item_transaction_id(item) == Some(sdk_transaction_id)
+                        && let Some(state) = item.send_state.as_ref()
+                        && matches_state(state)
+                    {
+                        return Ok(state.clone());
+                    }
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                let mut found = None;
+                visit_timeline_diff_items(&diffs, |item| {
+                    if timeline_item_transaction_id(item) == Some(sdk_transaction_id)
+                        && let Some(state) = item.send_state.as_ref()
+                        && matches_state(state)
+                    {
+                        found = Some(state.clone());
+                    }
+                    Ok(())
+                })?;
+                if let Some(state) = found {
+                    return Ok(state);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn retry_send_queue_item(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    sdk_transaction_id: &str,
+    label: &str,
+) -> Result<RequestId, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::RetrySend {
+        request_id,
+        key: key.clone(),
+        transaction_id: sdk_transaction_id.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit RetrySend failed: {e}"))?;
+    Ok(request_id)
+}
+
+async fn cancel_send_queue_item(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    sdk_transaction_id: &str,
+    label: &str,
+) -> Result<RequestId, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::CancelSend {
+        request_id,
+        key: key.clone(),
+        transaction_id: sdk_transaction_id.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit CancelSend failed: {e}"))?;
+    Ok(request_id)
+}
+
+async fn wait_for_send_completions_in_order(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    retry_request_id: RequestId,
+    first: &SendQueueLocalEcho,
+    second: &SendQueueLocalEcho,
+    label: &str,
+) -> Result<(), String> {
+    let mut first_completed = false;
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for ordered SendCompleted events"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id,
+                key: ref ev_key,
+                transaction_id,
+                ..
+            }) if ev_key == key && request_id == first.request_id => {
+                if transaction_id != first.client_transaction_id {
+                    return Err(format!(
+                        "{label}: first completion transaction mismatch: {transaction_id}"
+                    ));
+                }
+                first_completed = true;
+            }
+            CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id,
+                key: ref ev_key,
+                transaction_id,
+                ..
+            }) if ev_key == key && request_id == second.request_id => {
+                if !first_completed {
+                    return Err(format!(
+                        "{label}: later queued send completed before the failed predecessor"
+                    ));
+                }
+                if transaction_id != second.client_transaction_id {
+                    return Err(format!(
+                        "{label}: second completion transaction mismatch: {transaction_id}"
+                    ));
+                }
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } if request_id == retry_request_id
+                || request_id == first.request_id
+                || request_id == second.request_id =>
+            {
+                return Err(format!("{label}: operation failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_cancelled_or_removed_send(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    cancel_request_id: RequestId,
+    sdk_transaction_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for cancel"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                let mut cancelled = false;
+                for diff in &diffs {
+                    match diff {
+                        TimelineDiff::Remove { .. } => return Ok(()),
+                        TimelineDiff::PushBack { item }
+                        | TimelineDiff::PushFront { item }
+                        | TimelineDiff::Insert { item, .. }
+                        | TimelineDiff::Set { item, .. }
+                            if timeline_item_transaction_id(item) == Some(sdk_transaction_id)
+                                && matches!(
+                                    item.send_state,
+                                    Some(TimelineSendState::Cancelled)
+                                ) =>
+                        {
+                            cancelled = true;
+                        }
+                        TimelineDiff::Reset { items } => {
+                            if items.iter().all(|item| {
+                                timeline_item_transaction_id(item) != Some(sdk_transaction_id)
+                            }) {
+                                cancelled = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if cancelled {
+                    return Ok(());
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } if request_id == cancel_request_id => {
+                return Err(format!("{label}: cancel failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_event_item_with_body_or_retry_not_sent(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    sdk_transaction_id: &str,
+    expected_body: &str,
+    mut retry_sent: bool,
+    label: &str,
+) -> Result<TimelineItem, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for restored send completion"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                for item in items {
+                    if timeline_item_body_matches(&item, expected_body)
+                        && matches!(item.id, TimelineItemId::Event { .. })
+                    {
+                        return Ok(item);
+                    }
+                    if !retry_sent
+                        && timeline_item_transaction_id(&item) == Some(sdk_transaction_id)
+                        && matches!(item.send_state, Some(TimelineSendState::NotSent { .. }))
+                    {
+                        retry_send_queue_item(conn, key, sdk_transaction_id, label).await?;
+                        retry_sent = true;
+                    }
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                let mut found = None;
+                let mut should_retry = false;
+                visit_timeline_diff_items(&diffs, |item| {
+                    if timeline_item_body_matches(item, expected_body)
+                        && matches!(item.id, TimelineItemId::Event { .. })
+                    {
+                        found = Some(item.clone());
+                    }
+                    if !retry_sent
+                        && timeline_item_transaction_id(item) == Some(sdk_transaction_id)
+                        && matches!(
+                            item.send_state.as_ref(),
+                            Some(TimelineSendState::NotSent { .. })
+                        )
+                    {
+                        should_retry = true;
+                    }
+                    Ok(())
+                })?;
+                if let Some(item) = found {
+                    return Ok(item);
+                }
+                if should_retry {
+                    retry_send_queue_item(conn, key, sdk_transaction_id, label).await?;
+                    retry_sent = true;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn timeline_item_body_matches(item: &TimelineItem, expected_body: &str) -> bool {
+    item.body
+        .as_ref()
+        .map(|body| body.contains(expected_body))
+        .unwrap_or(false)
+}
+
+fn timeline_item_transaction_id(item: &TimelineItem) -> Option<&str> {
+    match &item.id {
+        TimelineItemId::Transaction { transaction_id } => Some(transaction_id.as_str()),
+        TimelineItemId::Event { .. } | TimelineItemId::Synthetic { .. } => None,
     }
 }
 
@@ -5602,6 +6355,10 @@ mod tests {
             QaScenario::RestoreCleanup
         );
         assert_eq!(
+            QaScenario::from_env_value("send_queue").unwrap(),
+            QaScenario::SendQueue
+        );
+        assert_eq!(
             QaScenario::from_env_value("e2ee_trust").unwrap(),
             QaScenario::E2eeTrust
         );
@@ -5628,6 +6385,7 @@ mod tests {
             QaScenario::LiveSignals,
             QaScenario::Thread,
             QaScenario::EditRedactSearch,
+            QaScenario::SendQueue,
             QaScenario::RestoreCleanup,
             QaScenario::E2eeTrust,
         ] {
@@ -5641,8 +6399,9 @@ mod tests {
     }
 
     #[test]
-    fn live_signals_scenario_suppresses_matrix_identifiers() {
+    fn privacy_sensitive_scenarios_suppress_matrix_identifiers() {
         assert!(QaScenario::LiveSignals.suppress_matrix_identifiers());
+        assert!(QaScenario::SendQueue.suppress_matrix_identifiers());
         assert!(!QaScenario::Timeline.suppress_matrix_identifiers());
         assert!(!QaScenario::All.suppress_matrix_identifiers());
     }
@@ -5667,6 +6426,7 @@ mod tests {
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
+                send_state: None,
             },
             matrix_desktop_core::event::TimelineItem {
                 id: matrix_desktop_core::event::TimelineItemId::Event {
@@ -5685,6 +6445,7 @@ mod tests {
                 can_redact: false,
                 is_edited: false,
                 can_edit: true,
+                send_state: None,
             },
         ];
 
@@ -5714,6 +6475,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            send_state: None,
         }];
 
         assert!(thread_initial_items_need_paginate_backfill(
@@ -5741,6 +6503,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            send_state: None,
         }];
 
         assert!(!thread_initial_items_need_paginate_backfill(
@@ -5779,6 +6542,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            send_state: None,
         }
     }
 
@@ -5993,6 +6757,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            send_state: None,
         }];
 
         assert_eq!(
@@ -6022,6 +6787,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            send_state: None,
         }];
 
         assert!(find_timeline_item_with_body(&items, "thread reply from B").is_none());
@@ -6078,6 +6844,7 @@ mod tests {
                         can_redact: false,
                         is_edited: false,
                         can_edit: false,
+                        send_state: None,
                     },
                 }],
             }))
@@ -6160,7 +6927,35 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::LiveSignals));
         assert!(QaScenario::All.should_run_stage(QaStage::Thread));
         assert!(QaScenario::All.should_run_stage(QaStage::EditRedactSearch));
+        assert!(QaScenario::All.should_run_stage(QaStage::SendQueue));
         assert!(QaScenario::All.should_run_stage(QaStage::RestoreCleanup));
+    }
+
+    #[test]
+    fn send_queue_scenario_runs_after_timeline_and_reports_private_tokens() {
+        assert!(QaScenario::SendQueue.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::SendQueue.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::SendQueue.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::SendQueue.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::SendQueue.should_run_stage(QaStage::SendQueue));
+        assert!(!QaScenario::SendQueue.should_run_stage(QaStage::Reply));
+        assert!(!QaScenario::SendQueue.should_run_stage(QaStage::EditRedactSearch));
+
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::SendQueue),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "send_fail=ok",
+                "resend=ok",
+                "cancel_send=ok",
+                "fifo=ok",
+                "unsent_restart=ok",
+                "restore_cleanup=ok",
+            ]
+        );
     }
 
     #[test]
@@ -6189,6 +6984,11 @@ mod tests {
                 "presence=ok",
                 "live_signals=ok",
                 "edit_redact_search=ok",
+                "send_fail=ok",
+                "resend=ok",
+                "cancel_send=ok",
+                "fifo=ok",
+                "unsent_restart=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
             ][..]
@@ -6338,6 +7138,11 @@ mod tests {
                 "presence=ok",
                 "live_signals=ok",
                 "edit_redact_search=ok",
+                "send_fail=ok",
+                "resend=ok",
+                "cancel_send=ok",
+                "fifo=ok",
+                "unsent_restart=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
             ][..]

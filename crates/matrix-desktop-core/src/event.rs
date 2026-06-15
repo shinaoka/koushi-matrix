@@ -583,6 +583,26 @@ impl fmt::Debug for TimelineItemId {
     }
 }
 
+/// Rust-owned outbound send state for timeline local echoes.
+///
+/// This is a coarse public DTO: raw SDK errors stay in Rust logs/failures and
+/// never cross the webview boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TimelineSendState {
+    Sending,
+    NotSent { reason: TimelineSendFailureReason },
+    Cancelled,
+    Sent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimelineSendFailureReason {
+    Recoverable,
+    Unrecoverable,
+}
+
 /// Timeline item DTO. Phase 5 concretizes content kinds from the SDK
 /// projection; the identity contract is stable from Phase 1.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -610,6 +630,8 @@ pub struct TimelineItem {
     pub is_edited: bool,
     #[serde(default)]
     pub can_edit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_state: Option<TimelineSendState>,
 }
 
 impl fmt::Debug for TimelineItem {
@@ -633,6 +655,7 @@ impl fmt::Debug for TimelineItem {
             .field("can_redact", &self.can_redact)
             .field("is_edited", &self.is_edited)
             .field("can_edit", &self.can_edit)
+            .field("send_state", &self.send_state)
             .finish()
     }
 }
@@ -792,6 +815,7 @@ mod tests {
             can_redact: true,
             is_edited: true,
             can_edit: true,
+            send_state: None,
         };
 
         let value = serde_json::to_value(&item).expect("timeline item serializes");
@@ -823,6 +847,44 @@ mod tests {
                 "latest_timestamp_ms": 1456
             })
         );
+    }
+
+    #[test]
+    fn timeline_item_serializes_outbound_send_state_without_raw_error() {
+        let item = TimelineItem {
+            id: TimelineItemId::Transaction {
+                transaction_id: "txn-send-state".to_owned(),
+            },
+            sender: Some("@alice:example.invalid".to_owned()),
+            body: Some("hello".to_owned()),
+            timestamp_ms: Some(1_234),
+            in_reply_to_event_id: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            send_state: Some(TimelineSendState::NotSent {
+                reason: TimelineSendFailureReason::Recoverable,
+            }),
+        };
+
+        let value = serde_json::to_value(&item).expect("timeline item serializes");
+
+        assert_eq!(
+            value["send_state"],
+            json!({
+                "kind": "notSent",
+                "reason": "recoverable"
+            })
+        );
+        let debug = format!("{item:?}");
+        assert!(debug.contains("NotSent"), "{debug}");
+        assert!(!debug.contains("hello"), "{debug}");
     }
 
     #[test]
@@ -867,6 +929,7 @@ mod tests {
             can_redact: true,
             is_edited: false,
             can_edit: false,
+            send_state: None,
         };
 
         let value = serde_json::to_value(&item).expect("timeline item serializes");
