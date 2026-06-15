@@ -12,11 +12,13 @@ media/file sends and downloads, and other destructive Matrix operations are
 iterated only against disposable local Conduit/Tuwunel homeservers. matrix.org
 is a final compatibility gate, not a GUI development or retry loop.
 
-## Local headless lane
+## Local homeserver binary search path
 
 Local homeserver runners start `conduit` and `tuwunel` by command name, using
 the sanitized child process `PATH`. They do not probe a hidden absolute-path
-list. Put disposable QA binaries in front of `PATH` before local runs:
+list. The effective search order is the child process `PATH` order after any
+agent-added prepends. Put disposable QA binaries in front of `PATH` before
+local runs:
 
 ```text
 /tmp/matrix-desktop-local-qa-bin        host fast lane, preferred
@@ -28,6 +30,8 @@ existing PATH entries                   searched after the QA bin directories
 
 The paths are operational search locations only; they are not product state,
 not secrets, and not committed artifacts.
+
+## Local headless lane
 
 Run:
 

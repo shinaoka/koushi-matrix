@@ -517,6 +517,9 @@ Phase B GUI/browser-headless work for the same issue follows
 - Local homeserver QA runners resolve `conduit` and `tuwunel` from the child
   process `PATH`; they do not maintain a separate absolute-path probe list.
   Prepend local QA binary directories before running headless/local GUI lanes.
+- The canonical durable search-path list lives in
+  [docs/qa/headless-basic-operations.md](docs/qa/headless-basic-operations.md#local-homeserver-binary-search-path);
+  keep this operational note in sync when changing it.
 - Search path list for local homeserver binaries:
   - Host fast lane, preferred:
     `/tmp/matrix-desktop-local-qa-bin`
