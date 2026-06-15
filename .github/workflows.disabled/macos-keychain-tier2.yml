@@ -1,3 +1,5 @@
+# Disabled 2026-06-16: hosted macOS Keychain CI is paused after failed runs.
+# Move this file back to `.github/workflows/` only after the lane is re-enabled.
 name: macOS Keychain Tier 2
 
 on:

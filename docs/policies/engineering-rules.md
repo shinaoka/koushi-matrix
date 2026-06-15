@@ -140,10 +140,12 @@ Rules:
    persistence and returns the app to a local signed-out snapshot. React must
    not implement local-data cleanup through a UI-only logout path. macOS Tier 2
    Keychain evidence must run only through the env-gated temporary-keychain
-   test, either manually on a real macOS session or through the manual
-   `macos-keychain-tier2.yml` workflow. That lane must not use the debug/test
-   file credential store, must not require the private vendored Matrix SDK
-   submodule, and its output remains private-data-free.
+   test on a real macOS session. The previous manual
+   `macos-keychain-tier2.yml` workflow is temporarily disabled and preserved
+   under `.github/workflows.disabled/`; do not dispatch it until it is
+   deliberately re-enabled. Any re-enabled lane must not use the debug/test file
+   credential store, must not require the private vendored Matrix SDK submodule,
+   and its output remains private-data-free.
 13. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
    filename, caption, mimetype, dimensions, and bytes when sending media, and
    `TimelineItem.media` may expose safe render metadata. Normal `Debug`, QA

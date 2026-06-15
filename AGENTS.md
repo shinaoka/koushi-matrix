@@ -179,17 +179,19 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000`.
   It runs under the debug/test file credential-store guard and must refuse to
   touch the OS keychain.
-- macOS Tier 2 real-Keychain proof is opt-in. Prefer the committed manual
-  GitHub Actions lane:
-  `gh workflow run macos-keychain-tier2.yml --ref main`; inspect it with
-  `gh run list --workflow macos-keychain-tier2.yml --limit 1` and
-  `gh run watch <run-id> --exit-status`. Consent dialogs, Touch ID, locked
-  login-keychain UX, and signed-build ACL behavior remain attended-only. Keep
-  this workflow key-crate-only: it copies `crates/matrix-desktop-key` to
-  `$RUNNER_TEMP` and runs `cargo test --manifest-path` there, so it must not
-  require the private vendored Matrix SDK submodule. For a manual macOS session
-  without an initialized vendor submodule, use the same temp-copy pattern before
-  setting `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`. The test treats
+- macOS Tier 2 real-Keychain proof is opt-in. The previous manual GitHub
+  Actions lane is disabled for now: the preserved recipe lives at
+  `.github/workflows.disabled/macos-keychain-tier2.yml`, and GitHub also has the
+  workflow disabled manually. Do not run `gh workflow run
+  macos-keychain-tier2.yml` until that file is deliberately moved back under
+  `.github/workflows/` and re-enabled. Use a manual macOS session instead.
+  Consent dialogs, Touch ID, locked login-keychain UX, and signed-build ACL
+  behavior remain attended-only. Keep any future workflow key-crate-only: it
+  copies `crates/matrix-desktop-key` to `$RUNNER_TEMP` and runs
+  `cargo test --manifest-path` there, so it must not require the private
+  vendored Matrix SDK submodule. For a manual macOS session without an
+  initialized vendor submodule, use the same temp-copy pattern before setting
+  `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`. The test treats
   `security set-key-partition-list` as best-effort on hosted runners; the
   pass/fail proof is the real backend set/get/delete plus missing-credential
   mapping after delete. The test temporarily makes the throwaway keychain the
