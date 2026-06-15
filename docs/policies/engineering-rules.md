@@ -205,6 +205,10 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    Room-list section tests must prove tag-driven movement from Rust-shaped
    `RoomSummary.tags` snapshots, not from React-local menu state after
    `set_room_tag` or `remove_room_tag` is clicked.
+   Room-list shell tests must also prove Element-aligned section order,
+   section counts, unread badges, and mention dots from Rust-shaped
+   `SidebarModel` fields (`unread_count` / `highlight_count`), not from local
+   React-derived notification state.
    Composer mention GUI tests must use Rust-shaped `ProfileState.users` member
    profiles for autocomplete candidates. React may render the popover/pills and
    pass a typed `MentionIntent`, but it must not synthesize Matrix

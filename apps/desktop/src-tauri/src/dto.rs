@@ -689,9 +689,9 @@ mod tests {
             avatar: Some(room_avatar),
             is_dm: false,
             tags: RoomTags::default(),
-            unread_count: 0,
-            notification_count: 0,
-            highlight_count: 0,
+            unread_count: 2,
+            notification_count: 2,
+            highlight_count: 1,
             parent_space_ids: vec![],
         });
 
@@ -732,6 +732,9 @@ mod tests {
                 "thumbnail": { "kind": "notRequested" }
             })
         );
+        assert_eq!(value["sidebar"]["account_home"]["highlight_count"], json!(1));
+        assert_eq!(value["sidebar"]["space_rooms"][0]["highlight_count"], json!(1));
+        assert_eq!(value["sidebar"]["space_highlight_count"], json!(1));
     }
 
     #[test]

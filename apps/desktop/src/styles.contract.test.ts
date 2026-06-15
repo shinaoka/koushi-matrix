@@ -31,6 +31,7 @@ describe("styles.css token system", () => {
       "--text-faint",
       "--line",
       "--unread",
+      "--mention",
       "--danger",
       "--success",
       "--warning"

@@ -790,11 +790,14 @@ export interface SidebarModel {
   global_dms: RoomListItem[];
   space_unread_count: number;
   dm_unread_count: number;
+  space_highlight_count: number;
+  dm_highlight_count: number;
 }
 
 export interface AccountHomeItem {
   display_name: string;
   unread_count: number;
+  highlight_count: number;
   is_active: boolean;
 }
 
@@ -803,6 +806,7 @@ export interface SpaceRailItem {
   display_name: string;
   avatar: AvatarImage | null;
   unread_count: number;
+  highlight_count: number;
   is_active: boolean;
 }
 
@@ -812,6 +816,7 @@ export interface RoomListItem {
   avatar: AvatarImage | null;
   tags: RoomTags;
   unread_count: number;
+  highlight_count: number;
 }
 
 export interface TimelineMessage {

@@ -240,12 +240,14 @@ function defaultSnapshotResponse() {
     },
     sidebar: {
       active_space_id: null,
-      account_home: { display_name: "Home", unread_count: 0, is_active: true },
+      account_home: { display_name: "Home", unread_count: 0, highlight_count: 0, is_active: true },
       space_rail: [],
       space_rooms: [],
       global_dms: [],
       space_unread_count: 0,
-      dm_unread_count: 0
+      dm_unread_count: 0,
+      space_highlight_count: 0,
+      dm_highlight_count: 0
     },
     timeline: [],
     thread: null

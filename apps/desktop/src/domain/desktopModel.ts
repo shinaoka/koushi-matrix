@@ -51,6 +51,9 @@ export function composeSidebar(
       unread_count: rooms
         .filter((room) => !room.is_dm)
         .reduce((sum, room) => sum + room.unread_count, 0),
+      highlight_count: rooms
+        .filter((room) => !room.is_dm)
+        .reduce((sum, room) => sum + (room.highlight_count ?? 0), 0),
       is_active: activeSpaceId === null
     },
     space_rail: spaces.map((space) => ({
@@ -61,12 +64,18 @@ export function composeSidebar(
         .map((roomId) => rooms.find((room) => room.room_id === roomId))
         .filter(roomExists)
         .reduce((sum, room) => sum + room.unread_count, 0),
+      highlight_count: space.child_room_ids
+        .map((roomId) => rooms.find((room) => room.room_id === roomId))
+        .filter(roomExists)
+        .reduce((sum, room) => sum + (room.highlight_count ?? 0), 0),
       is_active: space.space_id === activeSpaceId
     })),
     space_rooms: spaceRooms,
     global_dms: globalDms,
     space_unread_count: spaceRooms.reduce((sum, room) => sum + room.unread_count, 0),
-    dm_unread_count: globalDms.reduce((sum, room) => sum + room.unread_count, 0)
+    dm_unread_count: globalDms.reduce((sum, room) => sum + room.unread_count, 0),
+    space_highlight_count: spaceRooms.reduce((sum, room) => sum + room.highlight_count, 0),
+    dm_highlight_count: globalDms.reduce((sum, room) => sum + room.highlight_count, 0)
   };
 }
 
@@ -109,7 +118,8 @@ function roomListItem(room: RoomSummary): RoomListItem {
     display_name: room.display_name,
     avatar: room.avatar,
     tags: room.tags,
-    unread_count: room.unread_count
+    unread_count: room.unread_count,
+    highlight_count: room.highlight_count ?? 0
   };
 }
 

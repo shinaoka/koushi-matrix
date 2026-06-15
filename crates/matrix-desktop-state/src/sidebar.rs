@@ -13,12 +13,15 @@ pub struct SidebarModel {
     pub global_dms: Vec<RoomListItem>,
     pub space_unread_count: u64,
     pub dm_unread_count: u64,
+    pub space_highlight_count: u64,
+    pub dm_highlight_count: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountHomeItem {
     pub display_name: String,
     pub unread_count: u64,
+    pub highlight_count: u64,
     pub is_active: bool,
 }
 
@@ -28,6 +31,7 @@ pub struct SpaceRailItem {
     pub display_name: String,
     pub avatar: Option<AvatarImage>,
     pub unread_count: u64,
+    pub highlight_count: u64,
     pub is_active: bool,
 }
 
@@ -38,6 +42,7 @@ pub struct RoomListItem {
     pub avatar: Option<AvatarImage>,
     pub tags: RoomTags,
     pub unread_count: u64,
+    pub highlight_count: u64,
 }
 
 pub fn compose_sidebar(
@@ -57,6 +62,7 @@ pub fn compose_sidebar(
             display_name: space.display_name.clone(),
             avatar: space.avatar.clone(),
             unread_count: space_unread_count(space, &rooms_by_id),
+            highlight_count: space_highlight_count(space, &rooms_by_id),
             is_active: active_space_id == Some(space.space_id.as_str()),
         })
         .collect();
@@ -67,6 +73,11 @@ pub fn compose_sidebar(
             .iter()
             .filter(|room| !room.is_dm)
             .map(|room| room.unread_count)
+            .sum(),
+        highlight_count: rooms
+            .iter()
+            .filter(|room| !room.is_dm)
+            .map(|room| room.highlight_count)
             .sum(),
         is_active: active_space_id.is_none(),
     };
@@ -101,6 +112,8 @@ pub fn compose_sidebar(
         account_home,
         space_unread_count: unread_count(&space_rooms),
         dm_unread_count: unread_count(&global_dms),
+        space_highlight_count: highlight_count(&space_rooms),
+        dm_highlight_count: highlight_count(&global_dms),
         space_rail,
         space_rooms,
         global_dms,
@@ -117,6 +130,16 @@ fn space_unread_count(space: &SpaceSummary, rooms_by_id: &HashMap<&str, &RoomSum
         .sum()
 }
 
+fn space_highlight_count(space: &SpaceSummary, rooms_by_id: &HashMap<&str, &RoomSummary>) -> u64 {
+    space
+        .child_room_ids
+        .iter()
+        .filter_map(|room_id| rooms_by_id.get(room_id.as_str()).copied())
+        .filter(|room| !room.is_dm)
+        .map(|room| room.highlight_count)
+        .sum()
+}
+
 fn room_list_item(room: &RoomSummary) -> RoomListItem {
     RoomListItem {
         room_id: room.room_id.clone(),
@@ -124,9 +147,14 @@ fn room_list_item(room: &RoomSummary) -> RoomListItem {
         avatar: room.avatar.clone(),
         tags: room.tags.clone(),
         unread_count: room.unread_count,
+        highlight_count: room.highlight_count,
     }
 }
 
 fn unread_count(rooms: &[RoomListItem]) -> u64 {
     rooms.iter().map(|room| room.unread_count).sum()
+}
+
+fn highlight_count(rooms: &[RoomListItem]) -> u64 {
+    rooms.iter().map(|room| room.highlight_count).sum()
 }

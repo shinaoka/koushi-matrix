@@ -264,6 +264,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `matrix-desktop-state::sidebar::RoomListItem`, `apps/desktop/src-tauri/src/dto.rs`,
   `apps/desktop/src/domain/types.ts`, `browserFakeApi.ts`,
   `appHarnessMain.tsx`, and any Rust/TS fixtures that construct `RoomSummary`.
+- Sidebar shell affordances (section counts, unread badges, mention dots) render
+  `SidebarModel` fields such as `unread_count` / `highlight_count`. When a
+  sidebar projection field changes, update Rust `compose_sidebar`, the Tauri DTO
+  serialization-contract test, `types.ts`, browser fake snapshots,
+  `tauriIpcMock`, app harness snapshots, and browser-headless shell tests
+  together.
 - New tag command/event variants must keep all three IPC surfaces in sync:
   `serialize_core_event`, `apps/desktop/src/domain/coreEvents.ts`, and
   `apps/desktop/src/domain/coreEvents.generated.json`. Verify with

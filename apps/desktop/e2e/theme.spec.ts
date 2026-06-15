@@ -7,9 +7,6 @@ async function railBackground(page: import("@playwright/test").Page): Promise<st
   });
 }
 
-// The app sets no explicit data-theme yet (an explicit user choice is deferred to
-// Rust SettingsState, Issue #6), so the dark token set must be driven purely by
-// the OS color scheme via @media (prefers-color-scheme: dark).
 test("the space rail follows the OS color scheme", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/");
@@ -23,4 +20,61 @@ test("the space rail follows the OS color scheme", async ({ page }) => {
   expect(light).toBe("rgb(22, 33, 62)");
   expect(dark).toBe("rgb(10, 17, 31)");
   expect(light).not.toBe(dark);
+});
+
+test("explicit Rust-owned theme selection sets the root data-theme", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/appHarness.html");
+  await expect(page.getByRole("navigation", { name: "Workspaces" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe(
+    undefined
+  );
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        settings: {
+          ...snapshot.state.settings,
+          values: {
+            ...snapshot.state.settings.values,
+            appearance: { theme: "dark" }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe(
+    "dark"
+  );
+  await expect
+    .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
+    .toBe("dark");
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        settings: {
+          ...snapshot.state.settings,
+          values: {
+            ...snapshot.state.settings.values,
+            appearance: { theme: "light" }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe(
+    "light"
+  );
+  await expect
+    .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
+    .toBe("light");
 });

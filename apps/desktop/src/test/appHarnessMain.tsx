@@ -106,6 +106,7 @@ function readySnapshot(
       display_name: SPACE_NAME,
       avatar: null,
       unread_count: 0,
+      highlight_count: 0,
       is_active: false
     },
     ...(overrides.extraRailItems ?? [])
@@ -138,6 +139,8 @@ function readySnapshot(
           is_dm: false,
           tags: { favourite: null, low_priority: null },
           unread_count: 0,
+          notification_count: 0,
+          highlight_count: 0,
           parent_space_ids: []
         }
       ],
@@ -169,7 +172,7 @@ function readySnapshot(
     },
     sidebar: {
       active_space_id: null,
-      account_home: { display_name: "Home", unread_count: 0, is_active: true },
+      account_home: { display_name: "Home", unread_count: 0, highlight_count: 0, is_active: true },
       space_rail: railItems,
       space_rooms: [
         {
@@ -177,12 +180,15 @@ function readySnapshot(
           display_name: ROOM_NAME,
           avatar: null,
           tags: { favourite: null, low_priority: null },
-          unread_count: 0
+          unread_count: 0,
+          highlight_count: 0
         }
       ],
       global_dms: [],
       space_unread_count: 0,
-      dm_unread_count: 0
+      dm_unread_count: 0,
+      space_highlight_count: 0,
+      dm_highlight_count: 0
     },
     timeline: [],
     thread: null
@@ -448,6 +454,8 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     is_dm: false,
     tags: { favourite: null, low_priority: null },
     unread_count: 0,
+    notification_count: 0,
+    highlight_count: 0,
     parent_space_ids: []
   });
   snapshot.state.navigation.active_room_id = newRoomId;
@@ -457,7 +465,8 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     display_name: "Created Room",
     avatar: null,
     tags: { favourite: null, low_priority: null },
-    unread_count: 0
+    unread_count: 0,
+    highlight_count: 0
   });
   return snapshot;
 }
@@ -478,6 +487,7 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
     display_name: "Created Space",
     avatar: null,
     unread_count: 0,
+    highlight_count: 0,
     is_active: true
   });
   return snapshot;

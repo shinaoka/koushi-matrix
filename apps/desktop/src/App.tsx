@@ -2058,6 +2058,7 @@ export function WorkspaceRail({
         <button
           className={`workspace-button ${snapshot.sidebar.account_home.is_active ? "is-active" : ""}`}
           data-count={snapshot.sidebar.account_home.unread_count || undefined}
+          data-mention-count={snapshot.sidebar.account_home.highlight_count || undefined}
           type="button"
           aria-label={snapshot.sidebar.account_home.display_name}
           onClick={() => onSelectSpace(null)}
@@ -2068,6 +2069,7 @@ export function WorkspaceRail({
           <button
             className={`workspace-button ${space.is_active ? "is-active" : ""}`}
             data-count={space.unread_count || undefined}
+            data-mention-count={space.highlight_count || undefined}
             key={space.space_id}
             type="button"
             aria-label={space.display_name}
@@ -2190,20 +2192,20 @@ function Sidebar({
         />
         <RoomSection
           activeRoomId={activeRoomId}
-          id="rooms"
-          kind="room"
-          label={t("workspace.rooms")}
-          rooms={sections.rooms}
+          id="people"
+          kind="dm"
+          label={t("workspace.people")}
+          rooms={sections.people}
           showWhenEmpty={true}
           onOpenContextMenu={onOpenContextMenu}
           onSelectRoom={onSelectRoom}
         />
         <RoomSection
           activeRoomId={activeRoomId}
-          id="people"
-          kind="dm"
-          label={t("workspace.people")}
-          rooms={sections.people}
+          id="rooms"
+          kind="room"
+          label={t("workspace.rooms")}
+          rooms={sections.rooms}
           showWhenEmpty={true}
           onOpenContextMenu={onOpenContextMenu}
           onSelectRoom={onSelectRoom}
@@ -2247,7 +2249,7 @@ function RoomSection({
 
   return (
     <section className="room-section" data-room-section={id} aria-label={label}>
-      <SectionTitle label={label} />
+      <SectionTitle count={rooms.length} label={label} />
       {rooms.map((room) => (
         <RoomButton
           activeRoomId={activeRoomId}
@@ -2289,11 +2291,14 @@ function NavButton({
   );
 }
 
-function SectionTitle({ label }: { label: string }) {
+function SectionTitle({ count, label }: { count: number; label: string }) {
   return (
     <div className="section-title">
-      <span>{label}</span>
-      <Plus size={15} />
+      <span className="section-title-label">{label}</span>
+      <span className="section-title-meta">
+        <span className="section-count">{count}</span>
+        <Plus size={15} />
+      </span>
     </div>
   );
 }
@@ -2311,9 +2316,11 @@ function RoomButton({
   onOpenContextMenu: OpenContextMenu;
   onSelectRoom: (roomId: string) => void;
 }) {
+  const mentionCount = room.highlight_count || 0;
   return (
     <button
       className={`room-item ${room.room_id === activeRoomId ? "is-active" : ""}`}
+      data-mention-count={mentionCount || undefined}
       data-room-kind={kind}
       data-testid="room-item"
       type="button"
@@ -2332,7 +2339,10 @@ function RoomButton({
         fallback={initials(room.display_name)}
       />
       <span className="room-name" dir="auto">{room.display_name}</span>
-      <span className="room-count">{room.unread_count || ""}</span>
+      <span className="room-trailing">
+        {mentionCount > 0 ? <span className="room-mention-dot" aria-hidden="true" /> : null}
+        <span className="room-count">{room.unread_count || ""}</span>
+      </span>
     </button>
   );
 }

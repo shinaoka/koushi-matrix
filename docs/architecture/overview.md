@@ -190,9 +190,10 @@ An in-process actor system in `matrix-desktop-core`:
   requests. Its live entries adapter uses a non-left filter so invited-room
   diffs also wake Rust-owned invite projection; joined-only observation leaves
   `AppState.invites` stale. Room tags are projected into
-  `RoomSummary.tags` by the same Rust-owned room-list normalization path;
-  React must not derive favourite or low-priority membership from local UI
-  state.
+  `RoomSummary.tags` by the same Rust-owned room-list normalization path, and
+  sidebar unread/mention affordances consume Rust-owned unread/highlight counts
+  from `SidebarModel`. React must not derive favourite, low-priority, unread,
+  or mention membership from local UI state.
 - `TimelineActor` (per room/thread/focused timeline) — subscription, diffs,
   pagination, send/edit/redaction relay, reaction annotation projection and
   guarded send/redact relay, media/file projection, upload progress,

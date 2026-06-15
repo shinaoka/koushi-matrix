@@ -220,6 +220,8 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
         is_dm: false,
         tags: { favourite: null, low_priority: null },
         unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
         parent_space_ids: []
       };
       const next = {
@@ -247,7 +249,8 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
               display_name: joinedRoom.display_name,
               avatar: null,
               tags: { favourite: null, low_priority: null },
-              unread_count: 0
+              unread_count: 0,
+              highlight_count: 0
             }
           ]
         }
@@ -264,6 +267,8 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
         is_dm: true,
         tags: { favourite: null, low_priority: null },
         unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
         parent_space_ids: []
       };
       const next = {
@@ -290,7 +295,8 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
               display_name: dmRoom.display_name,
               avatar: null,
               tags: { favourite: null, low_priority: null },
-              unread_count: 0
+              unread_count: 0,
+              highlight_count: 0
             }
           ]
         }
@@ -486,6 +492,138 @@ test("room tag context menu dispatches typed commands and waits for Rust section
 
   await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
   await expect(favouritesSection).toHaveCount(0);
+});
+
+test("room sections follow Element-aligned order and render Rust-owned counts", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const favouriteTags = { favourite: { order: null }, low_priority: null };
+    const plainTags = { favourite: null, low_priority: null };
+    const lowPriorityTags = { favourite: null, low_priority: { order: null } };
+    const rooms = [
+      {
+        room_id: "!favourite-room:example.invalid",
+        display_name: "Favourite Room",
+        avatar: null,
+        is_dm: false,
+        tags: favouriteTags,
+        unread_count: 1,
+        notification_count: 1,
+        highlight_count: 1,
+        parent_space_ids: []
+      },
+      {
+        room_id: "!plain-room:example.invalid",
+        display_name: "Plain Room",
+        avatar: null,
+        is_dm: false,
+        tags: plainTags,
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        parent_space_ids: []
+      },
+      {
+        room_id: "!low-room:example.invalid",
+        display_name: "Low Priority Room",
+        avatar: null,
+        is_dm: false,
+        tags: lowPriorityTags,
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        parent_space_ids: []
+      },
+      {
+        room_id: "!dm-room:example.invalid",
+        display_name: "Direct Person",
+        avatar: null,
+        is_dm: true,
+        tags: plainTags,
+        unread_count: 2,
+        notification_count: 2,
+        highlight_count: 0,
+        parent_space_ids: []
+      }
+    ];
+    const toRoomListItem = (room: (typeof rooms)[number]) => ({
+      room_id: room.room_id,
+      display_name: room.display_name,
+      avatar: room.avatar,
+      tags: room.tags,
+      unread_count: room.unread_count,
+      notification_count: room.notification_count,
+      highlight_count: room.highlight_count
+    });
+
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        rooms,
+        navigation: {
+          ...snapshot.state.navigation,
+          active_room_id: "!plain-room:example.invalid"
+        },
+        timeline: {
+          ...snapshot.state.timeline,
+          room_id: "!plain-room:example.invalid"
+        }
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        account_home: {
+          ...snapshot.sidebar.account_home,
+          unread_count: 1,
+          highlight_count: 1
+        },
+        space_rail: snapshot.sidebar.space_rail.map((space) => ({
+          ...space,
+          unread_count: 1,
+          highlight_count: 1
+        })),
+        space_rooms: rooms.filter((room) => !room.is_dm).map(toRoomListItem),
+        global_dms: rooms.filter((room) => room.is_dm).map(toRoomListItem),
+        space_unread_count: 1,
+        dm_unread_count: 2,
+        space_highlight_count: 1,
+        dm_highlight_count: 0
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(page.locator('[data-room-section="favourites"]')).toBeVisible();
+  await expect(page.locator('[data-room-section="people"]')).toBeVisible();
+  await expect(page.locator('[data-room-section="rooms"]')).toBeVisible();
+  await expect(page.locator('[data-room-section="low-priority"]')).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.locator(".sidebar .room-section").evaluateAll((sections) =>
+        sections.map((section) => section.getAttribute("data-room-section"))
+      )
+    )
+    .toEqual(["favourites", "people", "rooms", "low-priority"]);
+
+  for (const id of ["favourites", "people", "rooms", "low-priority"]) {
+    await expect(page.locator(`[data-room-section="${id}"] .section-count`)).toHaveText("1");
+  }
+
+  const favouriteRoom = page
+    .locator('[data-room-section="favourites"]')
+    .getByRole("button", { name: "Favourite Room" });
+  await expect(favouriteRoom).toHaveAttribute("data-mention-count", "1");
+  await expect(favouriteRoom.locator(".room-mention-dot")).toBeVisible();
+  await expect(favouriteRoom.locator(".room-count")).toHaveText("1");
+  await expect(page.locator(".workspace-rail .workspace-button").first()).toHaveAttribute(
+    "data-mention-count",
+    "1"
+  );
 });
 
 test("mention autocomplete inserts a pill and sends typed mention intent", async ({

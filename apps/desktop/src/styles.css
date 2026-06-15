@@ -29,6 +29,7 @@
   --text-faint: #93A0B4;
   --line: #E3E8F0;
   --unread: #2D6FEF;
+  --mention: #E5484D;
   --danger: #E5484D;
   --success: #1A9E6C;
   --warning: #C98A1B;
@@ -66,6 +67,7 @@
     --text-faint: #5B6B82;
     --line: #1E2A40;
     --unread: #5C8DF6;
+    --mention: #F2575C;
     --danger: #F2575C;
     --success: #34B988;
     --warning: #E0A53A;
@@ -88,6 +90,7 @@
   --text-faint: #5B6B82;
   --line: #1E2A40;
   --unread: #5C8DF6;
+  --mention: #F2575C;
   --danger: #F2575C;
   --success: #34B988;
   --warning: #E0A53A;
@@ -556,7 +559,7 @@ button {
 .workspace-button[data-count]::after {
   position: absolute;
   inset-inline-end: -2px;
-  bottom: -2px;
+  inset-block-end: -2px;
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
@@ -566,7 +569,19 @@ button {
   color: var(--brand-contrast);
   font-size: 11px;
   line-height: 14px;
-  background: var(--danger);
+  background: var(--unread);
+}
+
+.workspace-button[data-mention-count]::before {
+  position: absolute;
+  inset-block-start: -2px;
+  inset-inline-end: -2px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--rail);
+  border-radius: 999px;
+  content: "";
+  background: var(--mention);
 }
 
 .user-presence {
@@ -686,10 +701,40 @@ button {
   white-space: nowrap;
 }
 
+.room-trailing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 20px;
+}
+
+.room-mention-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--mention);
+}
+
 .room-count {
   min-width: 20px;
   font-size: 12px;
-  text-align: end;
+  text-align: center;
+}
+
+.room-count:not(:empty) {
+  min-width: 20px;
+  height: 18px;
+  padding-inline: 6px;
+  border-radius: var(--r-pill);
+  color: var(--brand-contrast);
+  font-weight: 800;
+  line-height: 18px;
+  background: var(--unread);
+}
+
+.room-count:empty {
+  display: none;
 }
 
 .room-avatar {
@@ -720,12 +765,36 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   height: 32px;
   margin-top: 12px;
-  padding: 0 8px;
+  padding-block: 0;
+  padding-inline: 8px;
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 800;
+}
+
+.section-title-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-title-meta {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.section-count {
+  min-width: 1.5em;
+  text-align: end;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
 }
 
 .main-pane {
