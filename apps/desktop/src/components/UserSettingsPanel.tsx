@@ -56,6 +56,7 @@ export function UserSettingsPanel({
   onSubmitIdentityResetPassword,
   onSubmitIdentityResetOAuth,
   onProbeLocalEncryption,
+  onResetLocalData,
   onOpenRecovery,
   onSwitchAccount
 }: {
@@ -79,6 +80,7 @@ export function UserSettingsPanel({
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onSubmitIdentityResetOAuth: (flowId: number) => void;
   onProbeLocalEncryption: () => void;
+  onResetLocalData: () => void;
   onOpenRecovery: () => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
 }) {
@@ -302,6 +304,7 @@ export function UserSettingsPanel({
           platform={platform}
           onOpenRecovery={onOpenRecovery}
           onProbeLocalEncryption={onProbeLocalEncryption}
+          onResetLocalData={onResetLocalData}
         />
       </section>
 
@@ -355,12 +358,14 @@ function SecuritySection({
   localEncryption,
   platform,
   onOpenRecovery,
-  onProbeLocalEncryption
+  onProbeLocalEncryption,
+  onResetLocalData
 }: {
   localEncryption: LocalEncryptionState;
   platform: DisplayPlatform;
   onOpenRecovery: () => void;
   onProbeLocalEncryption: () => void;
+  onResetLocalData: () => void;
 }) {
   const status = localEncryptionStatus(localEncryption);
   const canReset =
@@ -409,8 +414,8 @@ function SecuritySection({
                 <TrustActionButton
                   icon={<RotateCcw size={14} />}
                   label={t("settings.resetLocalData")}
-                  disabled
-                  onClick={() => undefined}
+                  disabled={localEncryption.kind === "resetting"}
+                  onClick={onResetLocalData}
                 />
               </>
             }

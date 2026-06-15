@@ -745,6 +745,7 @@ pub fn run() {
             commands::restart_sync,
             commands::update_settings,
             commands::probe_local_encryption_health,
+            commands::reset_local_data,
             commands::bootstrap_cross_signing,
             commands::enable_key_backup,
             commands::accept_verification,

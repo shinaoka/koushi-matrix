@@ -18,6 +18,7 @@ describe("ContextualRightPanel", () => {
     onEnableKeyBackup: () => undefined,
     onOpenRecovery: () => undefined,
     onProbeLocalEncryption: () => undefined,
+    onResetLocalData: () => undefined,
     onResetIdentity: () => undefined,
     onSubmitIdentityResetOAuth: () => undefined,
     onSubmitIdentityResetPassword: () => undefined

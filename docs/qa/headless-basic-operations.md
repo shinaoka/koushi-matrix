@@ -246,10 +246,11 @@ guard and must refuse to touch the OS keychain.
 For Settings/Security Phase B, the browser-headless harness seeds Rust-shaped
 `AppState.local_encryption` snapshots and Linux/macOS/Windows platform profiles.
 It proves credential-store label/status rendering, recovery/reset affordance
-visibility, and `probe_local_encryption_health` dispatch. React must not read
-OS/keyring errors, infer fail-open behavior, repair health locally after a
-click, or route reset-local-data through logout/cleanup while no typed Rust
-reset command exists.
+visibility, and `probe_local_encryption_health` / `reset_local_data` dispatch.
+React must not read OS/keyring errors, infer fail-open behavior, repair health
+locally after a click, or clean stores through a React-local logout path. The
+typed Rust reset command is the only GUI path for clearing current-account local
+persistence and returning to a local signed-out snapshot.
 `notification_candidate=ok`, `badge_state=ok`, `suppress_focus=ok`, and
 `clear_badge=ok` prove Rust-owned native attention candidates and platform
 capability mapping without message bodies or identifiers.

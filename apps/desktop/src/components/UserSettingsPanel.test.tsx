@@ -76,6 +76,7 @@ describe("UserSettingsPanel", () => {
     onOpenRecovery: () => undefined,
     onOpenKeyboardSettings: () => undefined,
     onProbeLocalEncryption: () => undefined,
+    onResetLocalData: () => undefined,
     onResetIdentity: () => undefined,
     onSetAvatar: () => undefined,
     onSetDisplayName: () => undefined,

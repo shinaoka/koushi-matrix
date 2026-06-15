@@ -453,6 +453,17 @@ pub async fn probe_local_encryption_health(
 }
 
 #[tauri::command]
+pub async fn reset_local_data(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_reset_local_data_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn bootstrap_cross_signing(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
@@ -2025,6 +2036,12 @@ pub(crate) fn build_probe_local_encryption_health_command(
     CoreCommand::Account(AccountCommand::ProbeLocalEncryptionHealth { request_id })
 }
 
+pub(crate) fn build_reset_local_data_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ResetLocalData { request_id })
+}
+
 pub(crate) fn build_open_activity_command(
     request_id: matrix_desktop_core::RequestId,
 ) -> CoreCommand {
@@ -3149,8 +3166,8 @@ mod tests {
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_probe_local_encryption_health_command,
         build_query_directory_command, build_redact_message_command, build_redact_reaction_command,
-        build_remove_room_tag_command, build_reset_identity_command, build_restart_sync_command,
-        build_retry_send_command, build_select_room_command, build_select_space_command,
+        build_remove_room_tag_command, build_reset_identity_command, build_reset_local_data_command,
+        build_restart_sync_command, build_retry_send_command, build_select_room_command, build_select_space_command,
         build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
         build_send_text_command, build_send_thread_reply_command, build_set_avatar_command,
         build_set_display_name_command, build_set_fully_read_command, build_set_presence_command,
@@ -4896,6 +4913,16 @@ mod tests {
     }
 
     #[test]
+    fn reset_local_data_command_routes_to_account_state_machine() {
+        match build_reset_local_data_command(fake_request_id(48)) {
+            CoreCommand::Account(AccountCommand::ResetLocalData { request_id }) => {
+                assert_eq!(request_id, fake_request_id(48));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
     fn credential_health_tauri_command_contract_is_present() {
         let commands_source = include_str!("commands.rs");
         let lib_source = include_str!("lib.rs");
@@ -4915,6 +4942,33 @@ mod tests {
         assert!(
             commands_source.contains(route_name),
             "Tauri command should route through the Rust credential health state machine"
+        );
+        assert!(
+            lib_source.contains(registration_name),
+            "Tauri command should be registered in generate_handler"
+        );
+    }
+
+    #[test]
+    fn reset_local_data_tauri_command_contract_is_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        let command_name = "pub async fn reset_local_data";
+        let builder_name = "build_reset_local_data_command";
+        let route_name = "AccountCommand::ResetLocalData";
+        let registration_name = "commands::reset_local_data";
+
+        assert!(
+            commands_source.contains(command_name),
+            "Tauri command should expose reset_local_data"
+        );
+        assert!(
+            commands_source.contains(builder_name),
+            "Tauri command should keep a testable local data reset builder"
+        );
+        assert!(
+            commands_source.contains(route_name),
+            "Tauri command should route through the Rust local-encryption state machine"
         );
         assert!(
             lib_source.contains(registration_name),

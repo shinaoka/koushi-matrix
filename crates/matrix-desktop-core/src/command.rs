@@ -51,6 +51,7 @@ impl CoreCommand {
                 | AccountCommand::RestoreLastSession { request_id }
                 | AccountCommand::QuerySavedSessions { request_id }
                 | AccountCommand::ProbeLocalEncryptionHealth { request_id }
+                | AccountCommand::ResetLocalData { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
                 | AccountCommand::RequestVerification { request_id, .. }
                 | AccountCommand::AcceptVerification { request_id, .. }
@@ -386,6 +387,9 @@ pub enum AccountCommand {
     ProbeLocalEncryptionHealth {
         request_id: RequestId,
     },
+    ResetLocalData {
+        request_id: RequestId,
+    },
     SubmitRecovery {
         request_id: RequestId,
         request: RecoveryRequest,
@@ -465,6 +469,7 @@ impl AccountCommand {
                 | Self::SetDisplayName { .. }
                 | Self::SetAvatar { .. }
                 | Self::ProbeLocalEncryptionHealth { .. }
+                | Self::ResetLocalData { .. }
         )
     }
 }
@@ -515,6 +520,10 @@ impl fmt::Debug for AccountCommand {
                 .finish(),
             Self::ProbeLocalEncryptionHealth { request_id } => formatter
                 .debug_struct("ProbeLocalEncryptionHealth")
+                .field("request_id", request_id)
+                .finish(),
+            Self::ResetLocalData { request_id } => formatter
+                .debug_struct("ResetLocalData")
                 .field("request_id", request_id)
                 .finish(),
             Self::SubmitRecovery {

@@ -1102,6 +1102,13 @@ stateDiagram-v2
   completions and duplicate completions are ignored; logout, lock, and account
   switch clear any account-specific health state before another account can
   observe it.
+- `reset_local_data` is a typed Rust command. `AccountActor` stops
+  session-owned children, drops the current SDK session handle inside the Tokio
+  runtime context, asks `StoreActor` to clear the current account's session
+  JSON, saved-session index entry, last-session pointer, unlock secret, and
+  local store/search directories, then projects `ResetLocalDataCompleted` plus
+  a local signed-out snapshot. React never maps this action to a UI-only logout
+  or store cleanup path.
 - Failure behavior is fail-closed. Public state stores only kind-only failure
   data; raw OS/keyring errors, local paths, keys, and recovery material never
   enter `AppState`, `CoreEvent`, `Debug`, or QA tokens.

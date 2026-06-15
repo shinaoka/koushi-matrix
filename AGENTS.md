@@ -114,20 +114,24 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 ## Credential Health QA
 
 - Local-encryption / credential-store health is Rust-owned
-  `AppState.local_encryption`; GUI code must dispatch typed probe commands
-  (and a typed reset command once one exists) and render the snapshot, not
-  infer OS/keyring semantics.
+  `AppState.local_encryption`; GUI code must dispatch typed
+  `probe_local_encryption_health` / `reset_local_data` commands and render the
+  snapshot, not infer OS/keyring semantics.
 - Browser-headless Settings/Security GUI tests seed Rust-shaped
   `AppState.local_encryption` snapshots and Linux/macOS/Windows platform
   profiles. React may render the coarse status, show recovery/reset
-  affordances, and dispatch `probe_local_encryption_health`; it must not read
-  OS/keyring errors, infer fail-open behavior, locally change health after a
-  click, or route reset-local-data through logout/cleanup until a typed Rust
-  reset command exists.
+  affordances, and dispatch `probe_local_encryption_health` /
+  `reset_local_data`; it must not read OS/keyring errors, infer fail-open
+  behavior, locally change health after a click, or clean stores through any
+  React-local logout path. `reset_local_data` is owned by Rust
+  `AccountActor`/`StoreActor`, clears current-account local persistence, and
+  returns the app to a local signed-out snapshot.
 - Fast Tier 1 checks are:
   `cargo test -p matrix-desktop-state --test local_encryption_state`,
-  `cargo test -p matrix-desktop-key credential_backend`, and
-  `cargo test -p matrix-desktop-core store_actor_probe_maps_credential_backend_health_without_raw_errors`.
+  `cargo test -p matrix-desktop-key credential_backend`,
+  `cargo test -p matrix-desktop-core store_actor_probe_maps_credential_backend_health_without_raw_errors`,
+  and
+  `cargo test -p matrix-desktop-core reset_local_data_clears_current_account_persistence_and_signs_out_locally`.
 - The local headless proof is
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000`.
   It runs under the debug/test file credential-store guard and must refuse to

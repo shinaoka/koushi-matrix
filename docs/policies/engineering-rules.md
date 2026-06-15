@@ -92,7 +92,10 @@ Rules:
    abstraction and the StoreActor path; GUI code may only dispatch typed probe
    or reset commands and render `AppState.local_encryption`. Debug/test file
    credential stores remain behind debug/test-only cfg, and release builds must
-   ignore those environment variables.
+   ignore those environment variables. `reset_local_data` is a Rust-owned
+   AccountActor/StoreActor operation: it clears current-account local
+   persistence and returns the app to a local signed-out snapshot. React must
+   not implement local-data cleanup through a UI-only logout path.
 13. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
    filename, caption, mimetype, dimensions, and bytes when sending media, and
    `TimelineItem.media` may expose safe render metadata. Normal `Debug`, QA
@@ -235,10 +238,9 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    Settings/Security GUI tests must render Rust-shaped
    `AppState.local_encryption` snapshots and Rust-owned platform profiles.
    React may display the coarse health state, show recovery/reset affordances,
-   and dispatch `probe_local_encryption_health`, but it must not read
-   OS/keyring errors, infer fail-open behavior, locally repair health after a
-   click, or map reset-local-data to logout/cleanup until a typed Rust reset
-   command exists.
+   and dispatch `probe_local_encryption_health` / `reset_local_data`, but it
+   must not read OS/keyring errors, infer fail-open behavior, locally repair
+   health after a click, or clean stores through React-local logout/cleanup.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

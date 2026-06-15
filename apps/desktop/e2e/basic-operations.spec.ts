@@ -3112,7 +3112,24 @@ test("Security settings render local encryption health and dispatch probe comman
   await expect(page.getByText("Windows Credential Manager")).toBeVisible();
   await expect(page.getByText("Reset local data required")).toBeVisible();
   await expect(page.getByRole("button", { name: "Open recovery" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Reset local data" })).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("reset_local_data", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          local_encryption: { kind: "unknown" as const }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+  });
+  await page.getByRole("button", { name: "Reset local data" }).click();
+  await expect.poll(() => invocationCount(page, "reset_local_data")).toBe(1);
+  await expect(page.getByText("Not checked")).toBeVisible();
 });
 
 test("E2EE trust controls dispatch Rust-owned commands and render snapshot updates", async ({

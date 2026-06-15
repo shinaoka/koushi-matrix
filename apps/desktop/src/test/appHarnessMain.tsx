@@ -534,6 +534,17 @@ mock.setCommandResponse("probe_local_encryption_health", () =>
     }
   })
 );
+mock.setCommandResponse("reset_local_data", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      session: { kind: "signedOut" },
+      sync: "stopped",
+      local_encryption: { kind: "unknown" }
+    }
+  })
+);
 mock.setCommandResponse("bootstrap_cross_signing", () =>
   setCurrentSnapshot({
     ...currentSnapshot,

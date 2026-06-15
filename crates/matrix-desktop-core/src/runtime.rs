@@ -464,6 +464,12 @@ impl AppActor {
                     .map(|action| reduce(&mut self.state, action))
                     .unwrap_or_default();
                 let projected_state_changed = !effects.is_empty();
+                let should_route =
+                    !matches!(&account_command, AccountCommand::ResetLocalData { .. })
+                        || projected_state_changed;
+                if !should_route {
+                    return false;
+                }
                 // Route to AccountActor; it will produce AppActions and
                 // CoreEvents. AppActor does not immediately know the result —
                 // it observes it via the action channel.
@@ -1084,6 +1090,9 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: request_id.sequence,
             })
         }
+        AccountCommand::ResetLocalData { request_id } => Some(AppAction::ResetLocalDataRequested {
+            request_id: request_id.sequence,
+        }),
         AccountCommand::SubmitIdentityResetAuth { flow_id, .. } => {
             Some(AppAction::ResetIdentityAuthSubmitted {
                 request_id: *flow_id,
@@ -1345,6 +1354,19 @@ mod tests {
                 request_id: 9,
                 version: Some("backup-version-1".to_owned()),
             })
+        );
+    }
+
+    #[test]
+    fn reset_local_data_command_projects_resetting_state_before_routing() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 17,
+        };
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::ResetLocalData { request_id }),
+            Some(AppAction::ResetLocalDataRequested { request_id: 17 })
         );
     }
 

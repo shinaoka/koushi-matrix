@@ -848,6 +848,10 @@ export function App() {
     setSnapshot(await api.probeLocalEncryptionHealth());
   }
 
+  async function resetLocalData() {
+    setSnapshot(await api.resetLocalData());
+  }
+
   async function acceptVerification(flowId: number) {
     setSnapshot(await api.acceptVerification(flowId));
   }
@@ -1545,6 +1549,9 @@ export function App() {
           }}
           onProbeLocalEncryption={() => {
             void probeLocalEncryptionHealth();
+          }}
+          onResetLocalData={() => {
+            void resetLocalData();
           }}
           onInviteUser={openInviteUserDialog}
           onModerateMember={(roomId, targetUserId, action, reason) => {
@@ -3818,6 +3825,7 @@ export function ContextualRightPanel({
   onOpenKeyboardSettings,
   onOpenRecovery,
   onProbeLocalEncryption,
+  onResetLocalData,
   onInviteUser = () => undefined,
   onModerateMember = () => undefined,
   onUpdateMemberRole = () => undefined,
@@ -3859,6 +3867,7 @@ export function ContextualRightPanel({
   onOpenKeyboardSettings: () => void;
   onOpenRecovery: () => void;
   onProbeLocalEncryption: () => void;
+  onResetLocalData: () => void;
   onInviteUser?: (roomId: string, title: string) => void;
   onModerateMember?: (
     roomId: string,
@@ -3945,6 +3954,7 @@ export function ContextualRightPanel({
           onOpenRecovery={onOpenRecovery}
           onOpenKeyboardSettings={onOpenKeyboardSettings}
           onProbeLocalEncryption={onProbeLocalEncryption}
+          onResetLocalData={onResetLocalData}
           onResetIdentity={onResetIdentity}
           onSetAvatar={onSetAvatar}
           onSetDisplayName={onSetDisplayName}

@@ -552,6 +552,9 @@ impl AccountActor {
             AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
                 self.handle_probe_local_encryption_health(request_id);
             }
+            AccountCommand::ResetLocalData { request_id } => {
+                self.handle_reset_local_data(request_id).await;
+            }
             AccountCommand::Logout { request_id } => {
                 self.handle_logout(request_id).await;
             }
@@ -2042,6 +2045,33 @@ impl AccountActor {
         ));
     }
 
+    async fn handle_reset_local_data(&mut self, request_id: RequestId) {
+        let Some(key_id) = self.session_key_id.take() else {
+            self.reduce(vec![AppAction::ResetLocalDataFailed {
+                request_id: request_id.sequence,
+            }]);
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        self.stop_recovery_observer().await;
+        self.stop_incoming_verification_observer().await;
+        self.stop_timeline_actor().await;
+        self.stop_search_actor().await;
+        self.stop_sync_actor().await;
+        self.cancel_verification_handles().await;
+        self.cancel_identity_reset_handle().await;
+
+        drop(self.session.take());
+        self.clear_account_persistence(&key_id);
+        self.reduce(vec![
+            AppAction::ResetLocalDataCompleted {
+                request_id: request_id.sequence,
+            },
+            AppAction::LogoutFinished,
+        ]);
+    }
+
     fn reduce(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.try_send(actions);
     }
@@ -2730,6 +2760,130 @@ mod tests {
             }
             other => panic!("expected SavedSessionsListed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn reset_local_data_clears_current_account_persistence_and_signs_out_locally() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let key_id = SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@reset-user:example.test".to_owned(),
+            device_id: "RESETDEVICE".to_owned(),
+        };
+        let store = StoreActor::with_backend(
+            CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+                cred_dir.path(),
+            )),
+            data_dir.path(),
+        );
+        let store_config = store
+            .account_store_config(&key_id)
+            .expect("seed local unlock secret");
+        let account_root = store_config
+            .store_config
+            .path()
+            .parent()
+            .expect("store path should have account root")
+            .to_path_buf();
+        std::fs::create_dir_all(store_config.store_config.path()).expect("create store dir");
+        std::fs::write(
+            store_config.store_config.path().join("sentinel"),
+            b"local data",
+        )
+        .expect("write local store sentinel");
+        store
+            .credential_backend()
+            .save_matrix_session(&key_id, &StoredMatrixSession::new("{\"redacted\":true}"))
+            .expect("seed session");
+        store
+            .credential_backend()
+            .remember_saved_session(&key_id)
+            .expect("seed saved-session index");
+        store
+            .credential_backend()
+            .save_last_session(&key_id)
+            .expect("seed last-session pointer");
+        assert_eq!(
+            store.probe_local_encryption_health(&key_id),
+            matrix_desktop_state::LocalEncryptionHealth::Healthy
+        );
+
+        let (action_tx, mut action_rx) = mpsc::channel(16);
+        let (event_tx, _) = broadcast::channel(16);
+        let (self_tx, command_rx) = mpsc::channel(16);
+        let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
+        let timeline_manager =
+            crate::timeline::TimelineManagerActor::spawn(action_tx.clone(), event_tx.clone());
+        let mut actor = AccountActor {
+            session: None,
+            session_key_id: Some(key_id.clone()),
+            store,
+            action_tx,
+            event_tx,
+            command_rx,
+            self_tx,
+            sync_actor: None,
+            room_actor,
+            timeline_manager,
+            search_actor: None,
+            recovery_observer: None,
+            identity_reset_handle: None,
+            verification_request: None,
+            sas_verification: None,
+            verification_request_observer: None,
+            sas_verification_observer: None,
+            incoming_verification_observer: None,
+            next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
+        };
+        let request_id = test_request_id();
+
+        actor.handle_reset_local_data(request_id).await;
+
+        let actions = action_rx.recv().await.expect("reset actions");
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [
+                    AppAction::ResetLocalDataCompleted { request_id: 1 },
+                    AppAction::LogoutFinished,
+                ]
+            ),
+            "reset must complete and locally sign out, got {actions:?}"
+        );
+        assert!(!account_root.exists(), "account root should be removed");
+
+        let check_backend = CredentialStoreBackend::FileDir(
+            crate::store::FileCredentialStore::new(cred_dir.path()),
+        );
+        assert!(matrix_desktop_key::is_missing_credential_error(
+            &check_backend
+                .load_matrix_session(&key_id)
+                .expect_err("matrix session should be deleted")
+        ));
+        assert!(
+            check_backend
+                .load_saved_sessions()
+                .expect("saved-session index")
+                .sessions()
+                .is_empty()
+        );
+        assert_eq!(
+            check_backend
+                .load_last_session()
+                .expect("last-session pointer"),
+            None
+        );
+        let check_store = StoreActor::with_backend(
+            CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+                cred_dir.path(),
+            )),
+            data_dir.path(),
+        );
+        assert_eq!(
+            check_store.probe_local_encryption_health(&key_id),
+            matrix_desktop_state::LocalEncryptionHealth::MissingCredential
+        );
     }
 
     /// Recovery-state observation must emit the reducer-legal state change
