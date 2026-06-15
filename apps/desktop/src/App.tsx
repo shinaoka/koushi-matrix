@@ -67,6 +67,7 @@ import {
 import { KeyboardSettingsPanel } from "./components/KeyboardSettingsPanel";
 import { RoomInfoPanel } from "./components/RoomInfoPanel";
 import { SpaceInfoPanel } from "./components/SpaceInfoPanel";
+import { Tooltip } from "./components/Tooltip";
 import { UserSettingsPanel } from "./components/UserSettingsPanel";
 import {
   type ContextMenuActionId,
@@ -2261,41 +2262,52 @@ export function WorkspaceRail({
         >
           <Clock3 size={20} />
         </button>
-        <button
-          className={`workspace-button ${
-            activeView === "timeline" && snapshot.sidebar.account_home.is_active ? "is-active" : ""
-          }`}
-          data-count={snapshot.sidebar.account_home.unread_count || undefined}
-          data-mention-count={snapshot.sidebar.account_home.highlight_count || undefined}
-          type="button"
-          aria-label={snapshot.sidebar.account_home.display_name}
-          onClick={() => onSelectSpace(null)}
-        >
-          <Home size={20} />
-        </button>
+        <Tooltip label={snapshot.sidebar.account_home.display_name}>
+          {(tooltipProps) => (
+            <button
+              className={`workspace-button ${
+                activeView === "timeline" && snapshot.sidebar.account_home.is_active
+                  ? "is-active"
+                  : ""
+              }`}
+              data-count={snapshot.sidebar.account_home.unread_count || undefined}
+              data-mention-count={snapshot.sidebar.account_home.highlight_count || undefined}
+              type="button"
+              aria-label={snapshot.sidebar.account_home.display_name}
+              onClick={() => onSelectSpace(null)}
+              {...tooltipProps}
+            >
+              <Home size={20} />
+            </button>
+          )}
+        </Tooltip>
         {snapshot.sidebar.space_rail.map((space) => (
-          <button
-            className={`workspace-button ${space.is_active ? "is-active" : ""}`}
-            data-count={space.unread_count || undefined}
-            data-mention-count={space.highlight_count || undefined}
-            key={space.space_id}
-            type="button"
-            aria-label={space.display_name}
-            onClick={() => onSelectSpace(space.space_id)}
-            onContextMenu={(event) =>
-              onOpenContextMenu(
-                event,
-                { kind: "space", spaceId: space.space_id },
-                contextMenuItems({ kind: "space" })
-              )
-            }
-        >
-            <EntityAvatar
-              avatar={space.avatar}
-              className="workspace-button-avatar is-space"
-              fallback={initials(space.display_name)}
-            />
-          </button>
+          <Tooltip label={space.display_name} key={space.space_id}>
+            {(tooltipProps) => (
+              <button
+                className={`workspace-button ${space.is_active ? "is-active" : ""}`}
+                data-count={space.unread_count || undefined}
+                data-mention-count={space.highlight_count || undefined}
+                type="button"
+                aria-label={space.display_name}
+                onClick={() => onSelectSpace(space.space_id)}
+                onContextMenu={(event) =>
+                  onOpenContextMenu(
+                    event,
+                    { kind: "space", spaceId: space.space_id },
+                    contextMenuItems({ kind: "space" })
+                  )
+                }
+                {...tooltipProps}
+              >
+                <EntityAvatar
+                  avatar={space.avatar}
+                  className="workspace-button-avatar is-space"
+                  fallback={initials(space.display_name)}
+                />
+              </button>
+            )}
+          </Tooltip>
         ))}
       </div>
       <div className="rail-footer">

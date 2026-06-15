@@ -39,6 +39,30 @@
   --r-lg: 12px;
   --r-pill: 999px;
 
+  --shell-rail-width: 72px;
+  --shell-rail-width-compact: 56px;
+  --workspace-rail-padding-block: 12px;
+  --workspace-rail-padding-inline: 10px;
+  --workspace-rail-padding-block-compact: 8px;
+  --workspace-rail-padding-inline-compact: 6px;
+  --workspace-control-size: 44px;
+  --workspace-control-size-compact: 38px;
+  --workspace-avatar-size: 30px;
+  --workspace-item-gap: 10px;
+  --workspace-badge-size: 18px;
+  --workspace-badge-offset: -2px;
+  --workspace-badge-padding-inline: 5px;
+  --workspace-badge-border-width: 2px;
+  --workspace-mention-dot-size: 9px;
+  --tooltip-offset-inline: 10px;
+  --tooltip-min-inline-size: 160px;
+  --tooltip-max-inline-size: 260px;
+  --tooltip-max-viewport-inline-size: 70vw;
+  --tooltip-padding-block: 7px;
+  --tooltip-padding-inline: 9px;
+  --tooltip-font-size: 12px;
+  --tooltip-z-index: 40;
+
   font-family: var(--font-ui);
 }
 
@@ -485,19 +509,19 @@ button {
 
 .app-grid {
   display: grid;
-  grid-template-columns: 72px 318px minmax(420px, 1fr) 390px;
+  grid-template-columns: var(--shell-rail-width) 318px minmax(420px, 1fr) 390px;
   min-height: 0;
 }
 
 .app-grid.thread-closed {
-  grid-template-columns: 72px 318px minmax(420px, 1fr) 0;
+  grid-template-columns: var(--shell-rail-width) 318px minmax(420px, 1fr) 0;
 }
 
 .workspace-rail {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
-  padding: 12px 10px;
+  padding: var(--workspace-rail-padding-block) var(--workspace-rail-padding-inline);
   color: var(--brand-contrast);
   background: var(--rail);
 }
@@ -506,8 +530,49 @@ button {
 .rail-footer {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--workspace-item-gap);
   align-items: center;
+}
+
+.tooltip-host {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+
+.tooltip-bubble {
+  position: absolute;
+  z-index: var(--tooltip-z-index);
+  inset-block-start: 50%;
+  inset-inline-start: calc(100% + var(--tooltip-offset-inline));
+  min-width: var(--tooltip-min-inline-size);
+  max-width: min(var(--tooltip-max-inline-size), var(--tooltip-max-viewport-inline-size));
+  padding: var(--tooltip-padding-block) var(--tooltip-padding-inline);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgb(15 27 45 / 18%);
+  font-size: var(--tooltip-font-size);
+  font-weight: 700;
+  line-height: 1.35;
+  opacity: 0;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease, visibility 120ms ease;
+  visibility: hidden;
+}
+
+.tooltip-bubble.is-open {
+  opacity: 1;
+  visibility: visible;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip-bubble {
+    transition: none;
+  }
 }
 
 .workspace-button,
@@ -515,9 +580,9 @@ button {
 .user-presence {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 8px;
+  width: var(--workspace-control-size);
+  height: var(--workspace-control-size);
+  border-radius: var(--r-md);
   color: var(--brand-contrast);
   background: rgb(255 255 255 / 16%);
 }
@@ -535,8 +600,8 @@ button {
 .workspace-button-avatar {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: var(--workspace-avatar-size);
+  height: var(--workspace-avatar-size);
   overflow: hidden;
   border-radius: 50%;
   color: var(--brand-contrast);
@@ -546,7 +611,7 @@ button {
 }
 
 .workspace-button-avatar.is-space {
-  border-radius: 8px;
+  border-radius: var(--r-md);
 }
 
 .workspace-button-avatar img,
@@ -558,28 +623,30 @@ button {
 
 .workspace-button[data-count]::after {
   position: absolute;
-  inset-inline-end: -2px;
-  inset-block-end: -2px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border: 2px solid var(--rail);
-  border-radius: 999px;
+  inset-inline-end: var(--workspace-badge-offset);
+  inset-block-end: var(--workspace-badge-offset);
+  min-width: var(--workspace-badge-size);
+  height: var(--workspace-badge-size);
+  padding: 0 var(--workspace-badge-padding-inline);
+  border: var(--workspace-badge-border-width) solid var(--rail);
+  border-radius: var(--r-pill);
   content: attr(data-count);
   color: var(--brand-contrast);
   font-size: 11px;
-  line-height: 14px;
+  line-height: calc(
+    var(--workspace-badge-size) - (var(--workspace-badge-border-width) * 2)
+  );
   background: var(--unread);
 }
 
 .workspace-button[data-mention-count]::before {
   position: absolute;
-  inset-block-start: -2px;
-  inset-inline-end: -2px;
-  width: 9px;
-  height: 9px;
-  border: 2px solid var(--rail);
-  border-radius: 999px;
+  inset-block-start: var(--workspace-badge-offset);
+  inset-inline-end: var(--workspace-badge-offset);
+  width: var(--workspace-mention-dot-size);
+  height: var(--workspace-mention-dot-size);
+  border: var(--workspace-badge-border-width) solid var(--rail);
+  border-radius: var(--r-pill);
   content: "";
   background: var(--mention);
 }
@@ -3649,18 +3716,19 @@ kbd {
 
   .app-grid,
   .app-grid.thread-closed {
-    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-columns: var(--shell-rail-width-compact) minmax(0, 1fr);
   }
 
   .workspace-rail {
-    padding: 8px 6px;
+    padding: var(--workspace-rail-padding-block-compact)
+      var(--workspace-rail-padding-inline-compact);
   }
 
   .workspace-button,
   .rail-action,
   .user-presence {
-    width: 38px;
-    height: 38px;
+    width: var(--workspace-control-size-compact);
+    height: var(--workspace-control-size-compact);
   }
 
   .sidebar,
@@ -3670,7 +3738,7 @@ kbd {
 
   .app-grid.right-panel-open .thread-pane {
     position: fixed;
-    inset: 44px 0 0 56px;
+    inset: 44px 0 0 var(--shell-rail-width-compact);
     z-index: 20;
     display: grid;
     box-shadow: -18px 0 38px rgb(0 0 0 / 24%);

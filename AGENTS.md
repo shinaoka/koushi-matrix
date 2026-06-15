@@ -65,6 +65,41 @@ before any Phase B font asset or CSS wiring.
 Phase B GUI/browser-headless work for the same issue follows
 [docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md](docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md).
 
+## DeepSeek Agent Evaluation Notes
+
+- This local environment defines `claude-deepseek` as an interactive bash
+  alias, not as a non-interactive `PATH` executable. Invoke it through
+  `bash -ic 'claude-deepseek ...'`; do not call `claude` directly when the
+  task is explicitly evaluating DeepSeek.
+- The alias currently sets DeepSeek V4 Pro as the main Claude Code model and
+  `CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash` for implementation
+  subagents. Main GPT agents still own umbrella coordination, canon docs,
+  final review decisions, commits, pushes, and issue closure.
+- For bounded one-shot reviews, prefer stdin with print mode, for example:
+  `printf '%s\n' "$PROMPT" | timeout 600s bash -ic 'claude-deepseek -p --no-session-persistence --max-budget-usd 2 --tools ""'`.
+  Passing the prompt as a trailing argv can be swallowed by `--tools ""`; stdin
+  avoided that failure in this environment.
+- Do not use very short timeouts for real reviews. A simple smoke prompt
+  returned in about four seconds, while a diff review took over a minute. Use a
+  5-10 minute timeout for implementation/review evaluation unless the user asks
+  for a hard shorter limit.
+- Set a realistic review budget. `$0.50` handled a small #65 diff review after
+  waiting, but `$2+` is a better default for full diff reviews. Keep prompts
+  scoped and private-data-free.
+- When reviewing uncommitted work, include untracked new files explicitly.
+  `git diff -- path/to/new-file` is empty for untracked files, and the
+  reviewer may correctly report that the core file is missing from the review.
+- Review prompts must ask DeepSeek to check consistency with the rule canon:
+  `REPOSITORY_RULES.md`, `docs/architecture/overview.md`,
+  `docs/architecture/state-machine.md` when reducers change,
+  `docs/policies/engineering-rules.md`, `AGENTS.md`, and the relevant dated
+  implementation plan. External review findings are suggestions to verify, not
+  automatic orders.
+- If a `claude-deepseek` process appears hung, inspect process groups first
+  (`ps -eo pid,ppid,pgid,stat,etime,cmd | rg 'claude|deepseek'`) and terminate
+  only the process group for that trial. Do not kill unrelated existing Claude
+  sessions.
+
 ## Out of Scope (deferred)
 
 Real-time and recorded audio/video are deferred for now and are intentionally
@@ -491,6 +526,17 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   must import `../styles.css`, matching production `main.tsx`. Otherwise
   visibility/layout assertions can pass against unstyled DOM and miss real
   production CSS issues.
+- GUI-only tooltips are presentation state only when their displayed text
+  already comes from Rust-owned snapshots, such as `space.display_name`.
+  Prefer the reusable `Tooltip` component over native `title=` for styled,
+  testable tooltips: it must expose `role="tooltip"`, add
+  `aria-describedby` only while open, open on hover/focus, and dismiss on
+  mouse-leave/blur/Escape.
+- Do not add ad hoc `px` literals in TSX for fixed GUI geometry. Repeated or
+  semantic dimensions for rails, icon buttons, badges, avatars, counters, and
+  tooltip placement belong in named CSS custom properties. Keeping `px` behind
+  a token is acceptable for deliberately fixed-format controls; text-driven
+  layout should prefer logical properties and scalable units where practical.
 - Event-driven `TimelineItemRow` uses the same `.message` grid contract as the
   legacy snapshot `MessageArticle`: direct child `.avatar`, `.message-main`,
   and row-level `.message-actions`. Keep direct-child grid placement explicit;

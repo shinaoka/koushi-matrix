@@ -1437,6 +1437,42 @@ test("notification attention snapshot drives room, space, thread, and click rout
   await expect(attentionRoom).toHaveClass(/is-active/);
 });
 
+test("workspace rail space and account buttons show reusable tooltips on hover and focus", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  const rail = page.getByRole("navigation", { name: "Workspaces" });
+  const spaceButton = rail.getByRole("button", { name: "Harness Space" });
+  const accountButton = rail.getByRole("button", { name: "Home" });
+
+  await spaceButton.hover();
+  const spaceTooltip = page.getByRole("tooltip", { name: "Harness Space" });
+  await expect(spaceTooltip).toBeVisible();
+  const tooltipId = await spaceTooltip.getAttribute("id");
+  if (!tooltipId) {
+    throw new Error("workspace tooltip id missing");
+  }
+  await expect(spaceButton).toHaveAttribute("aria-describedby", tooltipId);
+
+  await page.keyboard.press("Escape");
+  await expect(spaceTooltip).toBeHidden();
+  await expect(spaceButton).not.toHaveAttribute("aria-describedby", /.+/);
+
+  await accountButton.hover();
+  const accountTooltip = page.getByRole("tooltip", { name: "Home" });
+  await expect(accountTooltip).toBeVisible();
+
+  await page.getByRole("main", { name: "Conversation timeline" }).hover();
+  await expect(accountTooltip).toBeHidden();
+
+  await spaceButton.focus();
+  await expect(spaceTooltip).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(spaceTooltip).toBeHidden();
+  await expect(spaceButton).not.toHaveAttribute("aria-describedby", /.+/);
+});
+
 test("mention autocomplete inserts a pill and sends typed mention intent", async ({
   page
 }) => {

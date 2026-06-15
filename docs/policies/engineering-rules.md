@@ -294,6 +294,16 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    and dispatch `probe_local_encryption_health` / `reset_local_data`, but it
    must not read OS/keyring errors, infer fail-open behavior, locally repair
    health after a click, or clean stores through React-local logout/cleanup.
+   GUI-only tooltips may own hover/focus timing, placement, and Escape
+   dismissal in React only when the visible label comes from an existing
+   Rust-owned snapshot field. Styled reusable tooltips must use
+   `role="tooltip"` and `aria-describedby`; do not use native `title=` for
+   product surfaces that need deterministic headless coverage.
+   Fixed-format GUI geometry such as rails, icon buttons, badges, avatars,
+   counters, and tooltip offsets should use named CSS custom properties or
+   existing design tokens. Hard-coded `px` values are acceptable only behind a
+   named token for deliberately fixed controls; avoid scattered `px` literals
+   in TSX presentation code.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.
