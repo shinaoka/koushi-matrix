@@ -62,10 +62,10 @@ use matrix_sdk::ruma::events::room::message::{
     TextMessageEventContent,
 };
 use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
-use matrix_sdk::send_queue::RoomSendQueueUpdate;
+use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
 use matrix_sdk_ui::timeline::{
-    ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineEventItemId, TimelineFocus,
-    TimelineItem as SdkTimelineItem, TimelineItemKind,
+    EventSendState as SdkEventSendState, ReactionStatus, ReactionsByKeyBySender, Timeline,
+    TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemKind,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -76,6 +76,7 @@ use crate::event::{
     CoreEvent, LiveSignalsEvent, MediaTransferProgress, PaginationDirection, PaginationState,
     ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
     TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
+    TimelineSendFailureReason, TimelineSendState,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -256,6 +257,36 @@ impl TimelineManagerActor {
                         transaction_id,
                         in_reply_to_event_id,
                         body,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::RetrySend {
+                request_id,
+                key,
+                transaction_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::RetrySend {
+                        request_id,
+                        transaction_id,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::CancelSend {
+                request_id,
+                key,
+                transaction_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::CancelSend {
+                        request_id,
+                        transaction_id,
                     },
                 )
                 .await;
@@ -787,6 +818,14 @@ enum TimelineActorMessage {
         in_reply_to_event_id: String,
         body: String,
     },
+    RetrySend {
+        request_id: RequestId,
+        transaction_id: String,
+    },
+    CancelSend {
+        request_id: RequestId,
+        transaction_id: String,
+    },
     UploadAndSendMedia {
         request_id: RequestId,
         transaction_id: String,
@@ -877,6 +916,10 @@ struct TimelineActor {
     next_batch_id: TimelineBatchId,
     /// Correlates send queue completions across the enqueue / SentEvent race.
     send_completion: SendCompletionTracker,
+    /// SDK transaction id -> Rust-owned outbound send state.
+    send_statuses: HashMap<String, TimelineSendState>,
+    /// SDK transaction id -> SDK send handle used for retry/cancel.
+    send_handles: HashMap<String, SendHandle>,
     /// Current account user id, used to project reaction ownership.
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
     /// event_id → SDK transaction id for events this actor sent. Used to
@@ -920,6 +963,8 @@ impl TimelineActor {
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
+        let mut send_statuses = HashMap::new();
+        let mut send_handles = HashMap::new();
 
         // Emit InitialItems (generation 0).
         let generation = TimelineGeneration(0);
@@ -944,7 +989,12 @@ impl TimelineActor {
         if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             if let Some(room) = session.client().get_room(&room_id) {
                 let sq_tx = actor_tx.clone();
-                executor::spawn(run_send_queue_monitor(sq_tx, room.clone()));
+                if let Ok((local_echoes, update_rx)) = room.send_queue().subscribe().await {
+                    for echo in &local_echoes {
+                        remember_local_echo(&mut send_statuses, &mut send_handles, echo);
+                    }
+                    executor::spawn(run_send_queue_monitor(sq_tx, update_rx));
+                }
 
                 let (typing_guard, typing_rx) = room.subscribe_to_typing_notifications();
                 let typing_tx = actor_tx.clone();
@@ -978,6 +1028,8 @@ impl TimelineActor {
             generation,
             next_batch_id: TimelineBatchId(0),
             send_completion: SendCompletionTracker::default(),
+            send_statuses,
+            send_handles,
             own_user_id,
             sent_event_txns: HashMap::new(),
             media_sources,
@@ -1021,6 +1073,18 @@ impl TimelineActor {
             } => {
                 self.handle_send_reply(request_id, transaction_id, in_reply_to_event_id, body)
                     .await;
+            }
+            TimelineActorMessage::RetrySend {
+                request_id,
+                transaction_id,
+            } => {
+                self.handle_retry_send(request_id, transaction_id).await;
+            }
+            TimelineActorMessage::CancelSend {
+                request_id,
+                transaction_id,
+            } => {
+                self.handle_cancel_send(request_id, transaction_id).await;
             }
             TimelineActorMessage::UploadAndSendMedia {
                 request_id,
@@ -1208,6 +1272,12 @@ impl TimelineActor {
         match room.send_queue().send(content).await {
             Ok(handle) => {
                 let sdk_txn_id = handle.transaction_id().to_string();
+                remember_send_handle(
+                    &mut self.send_statuses,
+                    &mut self.send_handles,
+                    &handle,
+                    TimelineSendState::Sending,
+                );
                 if let Some((client_txn_id, request_id, event_id)) = self
                     .send_completion
                     .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
@@ -1315,6 +1385,12 @@ impl TimelineActor {
         match self.timeline.send(content.into()).await {
             Ok(handle) => {
                 let sdk_txn_id = handle.transaction_id().to_string();
+                remember_send_handle(
+                    &mut self.send_statuses,
+                    &mut self.send_handles,
+                    &handle,
+                    TimelineSendState::Sending,
+                );
                 if let Some((client_txn_id, request_id, event_id)) = self
                     .send_completion
                     .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
@@ -1338,6 +1414,80 @@ impl TimelineActor {
                 );
             }
         }
+    }
+
+    async fn handle_retry_send(&mut self, request_id: RequestId, transaction_id: String) {
+        if let Err(kind) = validate_retry_send(self.send_statuses.get(&transaction_id)) {
+            self.emit_timeline_failure(request_id, kind);
+            return;
+        }
+
+        let Some(handle) = self.send_handles.get(&transaction_id).cloned() else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+
+        let Some(room) = self.sdk_room_for_key() else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+        room.send_queue().set_enabled(true);
+
+        match handle.unwedge().await {
+            Ok(()) => {
+                self.send_statuses
+                    .insert(transaction_id, TimelineSendState::Sending);
+            }
+            Err(err) => {
+                self.emit_timeline_failure(request_id, classify_send_queue_error(&err));
+            }
+        }
+    }
+
+    async fn handle_cancel_send(&mut self, request_id: RequestId, transaction_id: String) {
+        if let Err(kind) = validate_cancel_send(self.send_statuses.get(&transaction_id)) {
+            self.emit_timeline_failure(request_id, kind);
+            return;
+        }
+
+        let Some(handle) = self.send_handles.get(&transaction_id).cloned() else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+
+        match handle.abort().await {
+            Ok(true) => {
+                self.send_statuses
+                    .insert(transaction_id.clone(), TimelineSendState::Cancelled);
+                self.send_handles.remove(&transaction_id);
+                if let Some(room) = self.sdk_room_for_key() {
+                    room.send_queue().set_enabled(true);
+                }
+                if let Some((client_txn_id, _request_id, settles_composer)) =
+                    self.send_completion.record_cancelled_event(&transaction_id)
+                {
+                    if settles_composer {
+                        self.emit_send_finished_action(&client_txn_id);
+                    }
+                }
+            }
+            Ok(false) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
+            }
+            Err(_) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::Sdk);
+            }
+        }
+    }
+
+    fn sdk_room_for_key(&self) -> Option<matrix_sdk::Room> {
+        let room_id_str = match &self.key.kind {
+            TimelineKind::Room { room_id }
+            | TimelineKind::Thread { room_id, .. }
+            | TimelineKind::Focused { room_id, .. } => room_id,
+        };
+        let room_id = matrix_sdk::ruma::RoomId::parse(room_id_str).ok()?;
+        self.session.client().get_room(&room_id)
     }
 
     async fn handle_upload_and_send_media(
@@ -1408,6 +1558,12 @@ impl TimelineActor {
         {
             Ok(handle) => {
                 let sdk_txn_id = handle.transaction_id().to_string();
+                remember_send_handle(
+                    &mut self.send_statuses,
+                    &mut self.send_handles,
+                    &handle,
+                    TimelineSendState::Sending,
+                );
                 if let Some((client_txn_id, request_id, event_id)) = self
                     .send_completion
                     .remember_pending_send(sdk_txn_id, client_txn_id, request_id, false)
@@ -1800,7 +1956,13 @@ impl TimelineActor {
 
         let core_diffs: Vec<TimelineDiff> = diffs
             .into_iter()
-            .map(|diff| sdk_vector_diff_to_timeline_diff(diff, self.own_user_id.as_deref()))
+            .map(|diff| {
+                sdk_vector_diff_to_timeline_diff(
+                    diff,
+                    self.own_user_id.as_deref(),
+                    &self.send_statuses,
+                )
+            })
             .collect();
 
         let batch_id = self.next_batch_id;
@@ -2037,12 +2199,59 @@ impl TimelineActor {
 
     fn handle_send_queue_update(&mut self, update: RoomSendQueueUpdate) {
         match update {
+            RoomSendQueueUpdate::NewLocalEvent(echo) => {
+                remember_local_echo(&mut self.send_statuses, &mut self.send_handles, &echo);
+            }
+            RoomSendQueueUpdate::CancelledLocalEvent { transaction_id } => {
+                let sdk_txn_str = transaction_id.to_string();
+                self.send_statuses
+                    .insert(sdk_txn_str.clone(), TimelineSendState::Cancelled);
+                self.send_handles.remove(&sdk_txn_str);
+                if let Some((client_txn_id, _request_id, settles_composer)) =
+                    self.send_completion.record_cancelled_event(&sdk_txn_str)
+                {
+                    if settles_composer {
+                        self.emit_send_finished_action(&client_txn_id);
+                    }
+                }
+            }
+            RoomSendQueueUpdate::ReplacedLocalEvent { transaction_id, .. } => {
+                self.send_statuses
+                    .insert(transaction_id.to_string(), TimelineSendState::Sending);
+            }
+            RoomSendQueueUpdate::SendError {
+                transaction_id,
+                is_recoverable,
+                ..
+            } => {
+                let sdk_txn_str = transaction_id.to_string();
+                self.send_statuses.insert(
+                    sdk_txn_str.clone(),
+                    TimelineSendState::NotSent {
+                        reason: send_failure_reason(is_recoverable),
+                    },
+                );
+                if let Some((client_txn_id, _request_id, settles_composer)) =
+                    self.send_completion.record_send_error(&sdk_txn_str)
+                {
+                    if settles_composer {
+                        self.emit_send_failed_action(&client_txn_id);
+                    }
+                }
+            }
+            RoomSendQueueUpdate::RetryEvent { transaction_id } => {
+                self.send_statuses
+                    .insert(transaction_id.to_string(), TimelineSendState::Sending);
+            }
             RoomSendQueueUpdate::SentEvent {
                 transaction_id,
                 event_id,
             } => {
                 // The SDK fires SentEvent with its own txn_id; look up the client txn_id.
                 let sdk_txn_str = transaction_id.to_string();
+                self.send_statuses
+                    .insert(sdk_txn_str.clone(), TimelineSendState::Sent);
+                self.send_handles.remove(&sdk_txn_str);
                 self.sent_event_txns
                     .insert(event_id.to_string(), transaction_id.clone());
                 if let Some((client_txn_id, request_id, event_id, settles_composer)) = self
@@ -2067,6 +2276,8 @@ impl TimelineActor {
                 progress,
             } => {
                 let sdk_txn_str = related_to.to_string();
+                self.send_statuses
+                    .insert(sdk_txn_str.clone(), TimelineSendState::Sending);
                 let pending = self.send_completion.pending_send(&sdk_txn_str);
                 let (transaction_id, request_id) = pending
                     .map(|(client_txn_id, request_id)| (client_txn_id.to_owned(), Some(request_id)))
@@ -2084,11 +2295,6 @@ impl TimelineActor {
                     source: file.as_ref().map(timeline_media_source_from_sdk),
                 }));
             }
-            RoomSendQueueUpdate::NewLocalEvent(_)
-            | RoomSendQueueUpdate::CancelledLocalEvent { .. }
-            | RoomSendQueueUpdate::ReplacedLocalEvent { .. }
-            | RoomSendQueueUpdate::SendError { .. }
-            | RoomSendQueueUpdate::RetryEvent { .. } => {}
         }
     }
 
@@ -2110,7 +2316,13 @@ impl TimelineActor {
         let (current_items, _) = self.timeline.subscribe().await;
         let items: Vec<TimelineItem> = current_items
             .iter()
-            .map(|item| sdk_item_to_timeline_item(item, self.own_user_id.as_deref()))
+            .map(|item| {
+                sdk_item_to_timeline_item_with_send_states(
+                    item,
+                    self.own_user_id.as_deref(),
+                    &self.send_statuses,
+                )
+            })
             .collect();
 
         self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
@@ -2259,12 +2471,8 @@ async fn run_diff_relay(
 
 async fn run_send_queue_monitor(
     actor_tx: mpsc::Sender<TimelineActorMessage>,
-    room: matrix_sdk::Room,
+    mut update_rx: tokio::sync::broadcast::Receiver<RoomSendQueueUpdate>,
 ) {
-    let Ok((_local_echoes, mut update_rx)) = room.send_queue().subscribe().await else {
-        return;
-    };
-
     loop {
         match update_rx.recv().await {
             Ok(update) => {
@@ -2396,18 +2604,27 @@ pub fn sdk_item_to_timeline_item(
     item: &Arc<SdkTimelineItem>,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
 ) -> TimelineItem {
+    sdk_item_to_timeline_item_with_send_states(item, own_user_id, &HashMap::new())
+}
+
+fn sdk_item_to_timeline_item_with_send_states(
+    item: &Arc<SdkTimelineItem>,
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
+    send_statuses: &HashMap<String, TimelineSendState>,
+) -> TimelineItem {
     use matrix_sdk_ui::timeline::{TimelineItemKind, VirtualTimelineItem};
 
     match &item.kind() {
         TimelineItemKind::Event(event_item) => {
             // Stable identity: remote event_id when known, otherwise transaction_id.
+            let transaction_id = event_item.transaction_id().map(|txn_id| txn_id.to_string());
             let id = if let Some(event_id) = event_item.event_id() {
                 TimelineItemId::Event {
                     event_id: event_id.to_string(),
                 }
-            } else if let Some(txn_id) = event_item.transaction_id() {
+            } else if let Some(txn_id) = transaction_id.as_ref() {
                 TimelineItemId::Transaction {
-                    transaction_id: txn_id.to_string(),
+                    transaction_id: txn_id.clone(),
                 }
             } else {
                 // Fallback: use the internal unique_id as a synthetic id.
@@ -2473,6 +2690,10 @@ pub fn sdk_item_to_timeline_item(
                 .as_message()
                 .map(|message| message.is_edited())
                 .unwrap_or(false);
+            let send_state = transaction_id
+                .as_deref()
+                .and_then(|txn_id| send_statuses.get(txn_id).cloned())
+                .or_else(|| timeline_send_state_from_sdk(event_item.send_state()));
 
             TimelineItem {
                 id,
@@ -2489,6 +2710,7 @@ pub fn sdk_item_to_timeline_item(
                 can_redact,
                 is_edited,
                 can_edit,
+                send_state,
             }
         }
         TimelineItemKind::Virtual(virtual_item) => {
@@ -2512,6 +2734,7 @@ pub fn sdk_item_to_timeline_item(
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
+                send_state: None,
             }
         }
     }
@@ -2630,6 +2853,62 @@ fn timeline_media_thumbnail_from_sdk(
         width: info.and_then(|info| uint_to_u64(info.width.as_ref())),
         height: info.and_then(|info| uint_to_u64(info.height.as_ref())),
     })
+}
+
+fn timeline_send_state_from_sdk(state: Option<&SdkEventSendState>) -> Option<TimelineSendState> {
+    match state {
+        Some(SdkEventSendState::NotSentYet { .. }) => Some(TimelineSendState::Sending),
+        Some(SdkEventSendState::SendingFailed { is_recoverable, .. }) => {
+            Some(TimelineSendState::NotSent {
+                reason: send_failure_reason(*is_recoverable),
+            })
+        }
+        Some(SdkEventSendState::Sent { .. }) => Some(TimelineSendState::Sent),
+        None => None,
+    }
+}
+
+fn send_failure_reason(is_recoverable: bool) -> TimelineSendFailureReason {
+    if is_recoverable {
+        TimelineSendFailureReason::Recoverable
+    } else {
+        TimelineSendFailureReason::Unrecoverable
+    }
+}
+
+fn remember_send_handle(
+    statuses: &mut HashMap<String, TimelineSendState>,
+    handles: &mut HashMap<String, SendHandle>,
+    handle: &SendHandle,
+    state: TimelineSendState,
+) {
+    let transaction_id = handle.transaction_id().to_string();
+    statuses.insert(transaction_id.clone(), state);
+    handles.insert(transaction_id, handle.clone());
+}
+
+fn remember_local_echo(
+    statuses: &mut HashMap<String, TimelineSendState>,
+    handles: &mut HashMap<String, SendHandle>,
+    echo: &LocalEcho,
+) {
+    let transaction_id = echo.transaction_id.to_string();
+    if let LocalEchoContent::Event {
+        send_handle,
+        send_error,
+        ..
+    } = &echo.content
+    {
+        let state = if send_error.is_some() {
+            TimelineSendState::NotSent {
+                reason: TimelineSendFailureReason::Unrecoverable,
+            }
+        } else {
+            TimelineSendState::Sending
+        };
+        statuses.insert(transaction_id.clone(), state);
+        handles.insert(transaction_id, send_handle.clone());
+    }
 }
 
 fn private_media_entry_from_msgtype(msgtype: &MessageType) -> Option<PrivateMediaEntry> {
@@ -2781,6 +3060,30 @@ pub(crate) fn timeline_item_can_edit(
     is_event_backed && is_own_message && !is_redacted && has_editable_body
 }
 
+pub(crate) fn validate_retry_send(
+    state: Option<&TimelineSendState>,
+) -> Result<(), TimelineFailureKind> {
+    match state {
+        Some(TimelineSendState::NotSent { .. }) => Ok(()),
+        Some(
+            TimelineSendState::Sending | TimelineSendState::Cancelled | TimelineSendState::Sent,
+        ) => Err(TimelineFailureKind::InvalidSendState),
+        None => Err(TimelineFailureKind::InvalidSendTarget),
+    }
+}
+
+pub(crate) fn validate_cancel_send(
+    state: Option<&TimelineSendState>,
+) -> Result<(), TimelineFailureKind> {
+    match state {
+        Some(TimelineSendState::Sending | TimelineSendState::NotSent { .. }) => Ok(()),
+        Some(TimelineSendState::Cancelled | TimelineSendState::Sent) => {
+            Err(TimelineFailureKind::InvalidSendState)
+        }
+        None => Err(TimelineFailureKind::InvalidSendTarget),
+    }
+}
+
 pub(crate) fn reaction_groups_from_sdk(
     reactions: &ReactionsByKeyBySender,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
@@ -2820,21 +3123,22 @@ pub(crate) fn reaction_groups_from_sdk(
 fn sdk_vector_diff_to_timeline_diff(
     diff: eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
+    send_statuses: &HashMap<String, TimelineSendState>,
 ) -> TimelineDiff {
     match diff {
         eyeball_im::VectorDiff::PushFront { value } => TimelineDiff::PushFront {
-            item: sdk_item_to_timeline_item(&value, own_user_id),
+            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
         },
         eyeball_im::VectorDiff::PushBack { value } => TimelineDiff::PushBack {
-            item: sdk_item_to_timeline_item(&value, own_user_id),
+            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
         },
         eyeball_im::VectorDiff::Insert { index, value } => TimelineDiff::Insert {
             index,
-            item: sdk_item_to_timeline_item(&value, own_user_id),
+            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
         },
         eyeball_im::VectorDiff::Set { index, value } => TimelineDiff::Set {
             index,
-            item: sdk_item_to_timeline_item(&value, own_user_id),
+            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
         },
         eyeball_im::VectorDiff::Remove { index } => TimelineDiff::Remove { index },
         eyeball_im::VectorDiff::Truncate { length } => TimelineDiff::Truncate { length },
@@ -2842,7 +3146,9 @@ fn sdk_vector_diff_to_timeline_diff(
         eyeball_im::VectorDiff::Reset { values } => TimelineDiff::Reset {
             items: values
                 .iter()
-                .map(|value| sdk_item_to_timeline_item(value, own_user_id))
+                .map(|value| {
+                    sdk_item_to_timeline_item_with_send_states(value, own_user_id, send_statuses)
+                })
                 .collect(),
         },
         eyeball_im::VectorDiff::PopFront => {
@@ -2872,7 +3178,13 @@ fn sdk_vector_diff_to_timeline_diff(
             TimelineDiff::Reset {
                 items: values
                     .iter()
-                    .map(|value| sdk_item_to_timeline_item(value, own_user_id))
+                    .map(|value| {
+                        sdk_item_to_timeline_item_with_send_states(
+                            value,
+                            own_user_id,
+                            send_statuses,
+                        )
+                    })
                     .collect(),
             }
         }
@@ -2928,6 +3240,7 @@ struct PendingSendCompletion {
     client_txn_id: String,
     request_id: RequestId,
     settles_composer: bool,
+    failure_reported: bool,
 }
 
 impl SendCompletionTracker {
@@ -2947,6 +3260,7 @@ impl SendCompletionTracker {
                     client_txn_id,
                     request_id,
                     settles_composer,
+                    failure_reported: false,
                 },
             );
             None
@@ -2959,16 +3273,39 @@ impl SendCompletionTracker {
         event_id: String,
     ) -> Option<(String, RequestId, String, bool)> {
         if let Some(pending) = self.pending_sends.remove(&sdk_txn_id) {
+            let settles_composer = pending.settles_composer && !pending.failure_reported;
             Some((
                 pending.client_txn_id,
                 pending.request_id,
                 event_id,
-                pending.settles_composer,
+                settles_composer,
             ))
         } else {
             self.completed_sends.insert(sdk_txn_id, event_id);
             None
         }
+    }
+
+    fn record_send_error(&mut self, sdk_txn_id: &str) -> Option<(String, RequestId, bool)> {
+        let pending = self.pending_sends.get_mut(sdk_txn_id)?;
+        if pending.failure_reported {
+            return None;
+        }
+        pending.failure_reported = true;
+        Some((
+            pending.client_txn_id.clone(),
+            pending.request_id,
+            pending.settles_composer,
+        ))
+    }
+
+    fn record_cancelled_event(&mut self, sdk_txn_id: &str) -> Option<(String, RequestId, bool)> {
+        let pending = self.pending_sends.remove(sdk_txn_id)?;
+        Some((
+            pending.client_txn_id,
+            pending.request_id,
+            pending.settles_composer && !pending.failure_reported,
+        ))
     }
 
     fn pending_send(&self, sdk_txn_id: &str) -> Option<(&str, RequestId)> {
@@ -3682,6 +4019,84 @@ mod tests {
         assert_eq!(
             tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
             Some((client_txn, request_id, event_id, false))
+        );
+    }
+
+    #[test]
+    fn send_operation_guards_allow_retry_and_cancel_only_from_outbound_states() {
+        assert_eq!(
+            validate_retry_send(Some(&TimelineSendState::NotSent {
+                reason: TimelineSendFailureReason::Recoverable,
+            })),
+            Ok(())
+        );
+        assert_eq!(
+            validate_retry_send(Some(&TimelineSendState::Sending)),
+            Err(TimelineFailureKind::InvalidSendState)
+        );
+        assert_eq!(
+            validate_retry_send(Some(&TimelineSendState::Sent)),
+            Err(TimelineFailureKind::InvalidSendState)
+        );
+        assert_eq!(
+            validate_cancel_send(Some(&TimelineSendState::Sending)),
+            Ok(())
+        );
+        assert_eq!(
+            validate_cancel_send(Some(&TimelineSendState::NotSent {
+                reason: TimelineSendFailureReason::Unrecoverable,
+            })),
+            Ok(())
+        );
+        assert_eq!(
+            validate_cancel_send(Some(&TimelineSendState::Sent)),
+            Err(TimelineFailureKind::InvalidSendState)
+        );
+        assert_eq!(
+            validate_cancel_send(None),
+            Err(TimelineFailureKind::InvalidSendTarget)
+        );
+    }
+
+    #[test]
+    fn retry_send_reenables_sdk_room_queue_before_unwedge() {
+        let source = include_str!("timeline.rs");
+        let retry_handler = source
+            .split("async fn handle_retry_send")
+            .nth(1)
+            .and_then(|section| section.split("async fn handle_cancel_send").next())
+            .expect("retry handler source");
+        let enable_index = retry_handler
+            .find("set_enabled(true)")
+            .expect("retry must re-enable the SDK room send queue");
+        let unwedge_index = retry_handler
+            .find("unwedge().await")
+            .expect("retry must unwedge the SDK send handle");
+
+        assert!(
+            enable_index < unwedge_index,
+            "room send queue must be re-enabled before SendHandle::unwedge()"
+        );
+    }
+
+    #[test]
+    fn cancel_send_reenables_sdk_room_queue_after_abort() {
+        let source = include_str!("timeline.rs");
+        let cancel_handler = source
+            .split("async fn handle_cancel_send")
+            .nth(1)
+            .and_then(|section| section.split("fn sdk_room_for_key").next())
+            .expect("cancel handler source");
+        let abort_index = cancel_handler
+            .find("abort().await")
+            .expect("cancel must abort the SDK send handle");
+        let enable_index = cancel_handler
+            .find("set_enabled(true)")
+            .expect("cancel must re-enable the SDK room send queue after abort");
+
+        assert!(
+            abort_index < enable_index,
+            "room send queue must be re-enabled after a successful abort"
         );
     }
 

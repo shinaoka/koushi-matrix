@@ -245,6 +245,9 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    defect. Phase-exit docs-sync verifies diagram↔reducer agreement. Design new
    state transitions as explicit guarded state machines (events distinct from
    states, invalid/stale inputs rejected), not ad-hoc field assignments.
+   Actor-owned product state that is exposed through DTOs or guarded commands
+   follows the same rule: add the diagram/guard table with the implementation
+   change, even when the state is not stored directly in `AppState`.
 6. For umbrella issue work, each child issue completion must record
    implementation discoveries in the right place: durable architecture/rule
    changes in `docs/architecture/`, `REPOSITORY_RULES.md`, or this document;

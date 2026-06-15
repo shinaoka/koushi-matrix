@@ -84,6 +84,8 @@ impl CoreCommand {
                 | TimelineCommand::Paginate { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
+                | TimelineCommand::RetrySend { request_id, .. }
+                | TimelineCommand::CancelSend { request_id, .. }
                 | TimelineCommand::UploadAndSendMedia { request_id, .. }
                 | TimelineCommand::DownloadMedia { request_id, .. }
                 | TimelineCommand::EditText { request_id, .. }
@@ -745,6 +747,16 @@ pub enum TimelineCommand {
         in_reply_to_event_id: String,
         body: String,
     },
+    RetrySend {
+        request_id: RequestId,
+        key: TimelineKey,
+        transaction_id: String,
+    },
+    CancelSend {
+        request_id: RequestId,
+        key: TimelineKey,
+        transaction_id: String,
+    },
     UploadAndSendMedia {
         request_id: RequestId,
         key: TimelineKey,
@@ -856,6 +868,18 @@ impl fmt::Debug for TimelineCommand {
                 .field("transaction_id", transaction_id)
                 .field("in_reply_to_event_id", &"EventId(..)")
                 .field("body", &"MessageBody(..)")
+                .finish(),
+            Self::RetrySend { request_id, .. } => formatter
+                .debug_struct("RetrySend")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("transaction_id", &"TransactionId(..)")
+                .finish(),
+            Self::CancelSend { request_id, .. } => formatter
+                .debug_struct("CancelSend")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("transaction_id", &"TransactionId(..)")
                 .finish(),
             Self::UploadAndSendMedia {
                 request_id,
@@ -1045,6 +1069,28 @@ mod tests {
         assert!(!debug.contains("private-fixture-name.png"), "{debug}");
         assert!(!debug.contains("private caption"), "{debug}");
         assert!(!debug.contains("1, 2, 3, 4"), "{debug}");
+    }
+
+    #[test]
+    fn retry_and_cancel_send_debug_redacts_timeline_key_and_transaction_id() {
+        let key = TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test");
+        let retry = TimelineCommand::RetrySend {
+            request_id: fake_rid(9),
+            key: key.clone(),
+            transaction_id: "txn-private".to_owned(),
+        };
+        let cancel = TimelineCommand::CancelSend {
+            request_id: fake_rid(10),
+            key,
+            transaction_id: "txn-private".to_owned(),
+        };
+
+        for debug in [format!("{retry:?}"), format!("{cancel:?}")] {
+            assert!(!debug.contains("!room:test"), "{debug}");
+            assert!(!debug.contains("@a:test"), "{debug}");
+            assert!(!debug.contains("txn-private"), "{debug}");
+            assert!(debug.contains("TransactionId(..)"), "{debug}");
+        }
     }
 
     #[test]

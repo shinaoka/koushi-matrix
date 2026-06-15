@@ -386,9 +386,14 @@ stream), and the runtime must relay that model, not fight it.
    (drop immediately vs. keep-warm) is decided by the UI through these
    commands; the runtime never leaks timeline state in an unbounded map.
 8. **Sends go through the SDK send queue.** Local echo, offline persistence,
-   retry, and remote-echo matching come from the SDK send queue and are
-   relayed as events. The runtime does not serialize sends behind a command
-   loop.
+   strict FIFO retry, retry-after-reconnect, and remote-echo matching come from
+   the SDK send queue. The Rust runtime owns the product state projection:
+   `TimelineItem.send_state`, transaction-id keyed retry/cancel guards, and
+   `RetrySend` / `CancelSend` command routing through SDK `SendHandle`s. After
+   recoverable send errors, retry/cancel also re-enable the SDK room queue so
+   FIFO successors are not stranded. React renders and dispatches only; it must
+   not infer send legality or repair queue state locally. The runtime does not
+   serialize sends behind a command loop.
 9. **Sync uses capability-probed SDK services, not ad hoc polling.** Prefer
    `SyncService`/`RoomListService` when the homeserver supports MSC4186. If
    `SyncService` is unavailable for a target homeserver, the `SyncActor`

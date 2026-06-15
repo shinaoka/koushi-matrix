@@ -752,6 +752,8 @@ pub fn run() {
             commands::paginate_timeline_backwards,
             commands::paginate_thread_timeline_backwards,
             commands::send_text,
+            commands::retry_send,
+            commands::cancel_send,
             commands::upload_media,
             commands::download_media,
             commands::edit_message,
@@ -1164,6 +1166,7 @@ mod tests {
                 PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineEvent,
                 TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
                 TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
+                TimelineSendFailureReason, TimelineSendState,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1203,6 +1206,7 @@ mod tests {
             can_redact: true,
             is_edited: true,
             can_edit: true,
+            send_state: None,
         };
         let media_item = TimelineItem {
             id: TimelineItemId::Event {
@@ -1244,6 +1248,28 @@ mod tests {
             can_redact: true,
             is_edited: false,
             can_edit: false,
+            send_state: None,
+        };
+        let send_state_item = TimelineItem {
+            id: TimelineItemId::Transaction {
+                transaction_id: "txn-not-sent".to_owned(),
+            },
+            sender: Some("@u:example.test".to_owned()),
+            body: Some("queued".to_owned()),
+            timestamp_ms: Some(789),
+            in_reply_to_event_id: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            send_state: Some(TimelineSendState::NotSent {
+                reason: TimelineSendFailureReason::Recoverable,
+            }),
         };
 
         // InitialItems envelope + payload
@@ -1346,6 +1372,22 @@ mod tests {
                     "width": 1,
                     "height": 1
                 }
+            })
+        );
+
+        let send_state_initial =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(request_id),
+                key: key.clone(),
+                generation: TimelineGeneration(3),
+                items: vec![send_state_item],
+            }))
+            .expect("serialize send-state initial items");
+        assert_eq!(
+            send_state_initial["event"]["InitialItems"]["items"][0]["send_state"],
+            json!({
+                "kind": "notSent",
+                "reason": "recoverable"
             })
         );
 
@@ -1574,6 +1616,7 @@ mod tests {
             ))
             .expect("serialize"),
             "timelineResyncRequired": resync,
+            "timelineSendStateInitialItems": send_state_initial,
         });
         let checked_in_contract: serde_json::Value =
             serde_json::from_str(include_str!("../../src/domain/coreEvents.generated.json"))

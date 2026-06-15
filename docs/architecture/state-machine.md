@@ -514,6 +514,45 @@ stateDiagram-v2
 - The reply target is Rust-owned `AppState`, not React-local, so the send path,
   snapshots, and QA can read which event a draft replies to.
 
+## Outbound Send Queue
+
+Outbound timeline send state is owned by the Rust `TimelineActor`, keyed by the
+SDK send-queue transaction id exposed on local-echo timeline items. React may
+render `TimelineItem.send_state` and dispatch typed commands, but it must not
+derive retry/cancel legality from local component state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Sending: NewLocalEvent / enqueue success
+    Sending --> NotSent: SendError
+    Sending --> Sent: SentEvent
+    Sending --> Cancelled: CancelSend / CancelledLocalEvent
+    NotSent --> Sending: RetrySend / RetryEvent
+    NotSent --> Cancelled: CancelSend / CancelledLocalEvent
+    Cancelled --> [*]
+    Sent --> [*]
+```
+
+| Command / update | Accepted states | Rejected states | Notes |
+| --- | --- | --- | --- |
+| `NewLocalEvent` | any | none | Records `sending` and stores the SDK `SendHandle` for retry/cancel. Restored local echoes from `RoomSendQueue::subscribe()` initialize the same table before the actor starts processing commands. |
+| `SendError` | `sending` | none | Records `not_sent { reason }` using only the SDK recoverable flag. Raw SDK errors stay out of DTOs, logs, QA tokens, and React state. The matching composer pending state is failed once; later retry success can still emit `SendCompleted`. |
+| `RetrySend { room_id, transaction_id }` | `not_sent` with a stored `SendHandle` | `sending`, `sent`, `cancelled`, unknown transaction | Re-enables the SDK room queue with `room.send_queue().set_enabled(true)`, then calls `SendHandle::unwedge()`. FIFO order remains the SDK send queue's responsibility; React never reorders or manually marks successors sent. |
+| `CancelSend { room_id, transaction_id }` | `sending`, `not_sent` with a stored `SendHandle` | `sent`, `cancelled`, unknown transaction | Calls `SendHandle::abort()`. A successful cancel records `cancelled`, drops the handle, re-enables the SDK room queue so successors are not stranded, and clears matching composer pending state without creating a send-failure error. |
+| `SentEvent` | any | none | Records `sent`, drops the handle, maps SDK transaction id to event id, and emits `SendCompleted` for the original request when available. |
+
+`TimelineItem.send_state` is a coarse webview DTO: `sending`, `notSent`
+(`recoverable` / `unrecoverable`), `cancelled`, or `sent`. The SDK
+`RoomSendQueue` remains responsible for local echo persistence, offline retry,
+strict FIFO ordering, and retry-after-reconnect. The Rust runtime only projects
+that state and exposes guarded commands.
+
+Headless core QA covers this with the `send_queue` scenario against disposable
+local homeservers. The Rust QA binary inserts a local TCP proxy to inject
+offline send failures and reports only private-data-free tokens:
+`send_fail=ok`, `resend=ok`, `cancel_send=ok`, `fifo=ok`, and
+`unsent_restart=ok`.
+
 ## Basic Operations (Room / Space Creation, Space Linking)
 
 Room creation, space creation, and space-child linking share one in-flight slot,

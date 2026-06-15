@@ -30,6 +30,7 @@ const checks = [
   "scenario live_signals",
   "scenario thread",
   "scenario edit_redact_search",
+  "scenario send_queue",
   "scenario restore_cleanup",
   "verify installed Conduit binary",
   "verify installed Tuwunel binary",
@@ -378,7 +379,7 @@ function safeTimestamp() {
 
 function printUsage() {
   console.log(
-    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both] [--scenario=all|live_signals] [--core] [--core-backend=probed|legacy|both]"
+    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both] [--scenario=all|send_queue|live_signals] [--core] [--core-backend=probed|legacy|both]"
   );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
   console.log("  --core  Also run the headless-core-qa binary (Phase 2+ core runtime QA).");
