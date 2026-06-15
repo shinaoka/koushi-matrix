@@ -1560,6 +1560,14 @@ pub struct MatrixRoomSettingsSnapshot {
     pub join_rule: MatrixRoomJoinRule,
     pub history_visibility: MatrixRoomHistoryVisibility,
     pub permissions: MatrixRoomPermissionFacts,
+    pub members: Vec<MatrixRoomMemberSummary>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixRoomMemberSummary {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2798,6 +2806,7 @@ fn matrix_public_room_from_chunk(
 async fn matrix_room_settings_snapshot(room: &matrix_sdk::Room) -> MatrixRoomSettingsSnapshot {
     let power_levels = room.power_levels_or_default().await;
     let own_user_id = room.own_user_id();
+    let members = matrix_room_member_summaries(room).await;
     let can_edit_settings = power_levels.user_can_send_state(
         own_user_id,
         matrix_sdk::ruma::events::StateEventType::RoomName,
@@ -2832,7 +2841,24 @@ async fn matrix_room_settings_snapshot(room: &matrix_sdk::Room) -> MatrixRoomSet
             can_ban: power_levels.user_can_ban(own_user_id),
             can_unban: power_levels.user_can_ban(own_user_id),
         },
+        members,
     }
+}
+
+async fn matrix_room_member_summaries(room: &matrix_sdk::Room) -> Vec<MatrixRoomMemberSummary> {
+    let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else {
+        return Vec::new();
+    };
+    let mut summaries: Vec<MatrixRoomMemberSummary> = members
+        .into_iter()
+        .map(|member| MatrixRoomMemberSummary {
+            user_id: member.user_id().to_string(),
+            display_name: member.display_name().map(ToOwned::to_owned),
+            avatar_url: member.avatar_url().map(ToString::to_string),
+        })
+        .collect();
+    summaries.sort_by(|left, right| left.user_id.cmp(&right.user_id));
+    summaries
 }
 
 fn room_settings_snapshot_with_change(
@@ -3569,6 +3595,11 @@ mod tests {
                 can_ban: true,
                 can_unban: false,
             },
+            members: vec![super::MatrixRoomMemberSummary {
+                user_id: "@member:example.invalid".to_owned(),
+                display_name: Some("Synthetic Member".to_owned()),
+                avatar_url: None,
+            }],
         };
         let _change = MatrixRoomSettingChange::JoinRule(MatrixRoomJoinRule::Public);
         let _moderation = MatrixRoomModerationAction::Kick;
@@ -3604,6 +3635,7 @@ mod tests {
                 can_ban: true,
                 can_unban: true,
             },
+            members: vec![],
         };
 
         assert_eq!(

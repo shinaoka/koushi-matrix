@@ -727,6 +727,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   move between Rooms and Favourites from Rust-owned `RoomSummary.tags`; it
   prints `gui_local_room_tag_set=ok` and `gui_local_room_tag_removed=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-tags-fast --timeout-ms=180000`
+- Room-management GUI iteration has a focused virtual-display lane:
+  `--scenario=local-room-management`. It seeds a helper member, opens the real
+  Room info panel, edits the topic, waits for
+  `AppState.room_management.settings.topic`, kicks the helper, and waits for
+  the room-scoped `settings.members` snapshot to remove the row. It prints
+  only `gui_local_room_topic=ok` and `gui_local_room_kick=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-management --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-management-fast --timeout-ms=180000`
 - Explore GUI iteration has a focused virtual-display lane:
   `--scenario=local-explore`. It creates a synthetic public-room fixture with a
   helper account, drives the real Explore search and Join controls, waits for
@@ -907,6 +914,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   movement from Rust-owned `RoomSummary.tags`. Do not mutate React state,
   monkeypatch Tauri IPC, or treat menu click completion as evidence until the
   row is observed in the expected section.
+- `local-room-management` must render member actions from the room-scoped
+  `AppState.room_management.settings.members` snapshot, not the global
+  profile cache. Kick/ban success removes the target in the Rust reducer; React
+  must not locally filter the member row after command completion. The Linux
+  lane stdout must stay private-data-free and must not print Matrix room IDs,
+  user IDs, room names/topics, avatar URLs, moderation reasons, or raw SDK
+  errors.
 - `local-explore` must drive the real Explore pane and wait for
   `AppState.directory.query` results plus the joined room-list snapshot. React
   may keep only the search input draft; it must not synthesize directory

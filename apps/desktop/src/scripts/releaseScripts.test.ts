@@ -303,6 +303,7 @@ describe("desktop release scripts", () => {
       "scenario local-reply",
       "scenario local-media",
       "scenario local-room-tags",
+      "scenario local-room-management",
       "scenario local-explore",
       "scenario local-message-actions",
       "scenario local-composer",
@@ -338,6 +339,8 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_media=ok");
     expect(source).toContain("gui_local_room_tag_set=ok");
     expect(source).toContain("gui_local_room_tag_removed=ok");
+    expect(source).toContain("gui_local_room_topic=ok");
+    expect(source).toContain("gui_local_room_kick=ok");
     expect(source).toContain("gui_local_message_source=ok");
     expect(source).toContain("gui_local_message_forward=ok");
     expect(source).toContain("gui_local_mention=ok");
@@ -376,6 +379,22 @@ describe("desktop release scripts", () => {
     expect(source).toContain('data-room-section="favourites"');
     expect(source).toContain('data-room-section="rooms"');
     expect(source).toContain("waitForRoomInSection(");
+    expect(source).not.toContain("installTauriInvokeRecorder(");
+  });
+
+  test("linux GUI room-management smoke drives Rust-owned settings and member state", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("async function runLocalRoomManagementScenario()");
+    expect(source).toContain('textarea[aria-label="Room topic"]');
+    expect(source).toContain("Save topic");
+    expect(source).toContain(".settings-detail-row");
+    expect(source).toContain(".room-member-row");
+    expect(source).toContain('button[data-action="kick"]');
+    expect(source).toContain("waitForRoomManagementTopic(");
     expect(source).not.toContain("installTauriInvokeRecorder(");
   });
 
@@ -424,6 +443,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("--scenario=local-reply");
     expect(docs).toContain("--scenario=local-media");
     expect(docs).toContain("--scenario=local-room-tags");
+    expect(docs).toContain("--scenario=local-room-management");
     expect(docs).toContain("--scenario=local-explore");
     expect(docs).toContain("--scenario=local-message-actions");
     expect(docs).toContain("--scenario=local-composer");
@@ -435,6 +455,8 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("gui_local_media=ok");
     expect(docs).toContain("gui_local_room_tag_set=ok");
     expect(docs).toContain("gui_local_room_tag_removed=ok");
+    expect(docs).toContain("gui_local_room_topic=ok");
+    expect(docs).toContain("gui_local_room_kick=ok");
     expect(docs).toContain("gui_local_message_source=ok");
     expect(docs).toContain("gui_local_message_forward=ok");
     expect(docs).toContain("gui_local_mention=ok");
@@ -473,6 +495,8 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_send=ok");
     expect(source).toContain("gui_local_explore_query=ok");
     expect(source).toContain("gui_local_explore_join=ok");
+    expect(source).toContain("gui_local_room_topic=ok");
+    expect(source).toContain("gui_local_room_kick=ok");
   });
 
   test("linux GUI local scenarios also emit DBus and window-state evidence", () => {

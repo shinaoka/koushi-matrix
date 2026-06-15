@@ -961,9 +961,16 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    const updatedSettings =
+      action === "unban"
+        ? settings
+        : {
+            ...settings,
+            members: settings.members.filter((member) => member.user_id !== targetUserId.trim())
+          };
     this.snapshot.state.room_management = {
       selected_room_id: normalizedRoomId,
-      settings,
+      settings: updatedSettings,
       operation: { kind: "idle" }
     };
     return this.getSnapshot();
@@ -1425,8 +1432,19 @@ class BrowserFakeApi implements DesktopApi {
       avatar_url: null,
       join_rule: "invite",
       history_visibility: "shared",
-      permissions
+      permissions,
+      members: this.roomMemberSnapshot()
     };
+  }
+
+  private roomMemberSnapshot(): RoomSettingsSnapshot["members"] {
+    return Object.values(this.snapshot.state.profile.users)
+      .map((profile) => ({
+        user_id: profile.user_id,
+        display_name: profile.display_name,
+        avatar_url: profile.avatar?.mxc_uri ?? null
+      }))
+      .sort((left, right) => left.user_id.localeCompare(right.user_id));
   }
 
   private canRestartSync() {

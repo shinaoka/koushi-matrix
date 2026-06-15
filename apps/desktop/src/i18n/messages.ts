@@ -117,27 +117,56 @@ export type MessageId =
   | "panel.thread"
   | "panel.userSettings"
   | "room.members"
+  | "room.ban"
+  | "room.banMember"
+  | "room.currentTopic"
   | "room.directMessage"
   | "room.dmList"
+  | "room.editSettings"
   | "room.exactVerifiedResults"
   | "room.files"
   | "room.globalDmList"
   | "room.invitePeople"
+  | "room.historyInvited"
+  | "room.historyJoined"
+  | "room.historyShared"
+  | "room.historyVisibility"
+  | "room.historyWorldReadable"
+  | "room.joinRule"
+  | "room.joinRuleInvite"
+  | "room.joinRuleKnock"
+  | "room.joinRulePrivate"
+  | "room.joinRulePublic"
+  | "room.joinRuleRestricted"
+  | "room.kick"
+  | "room.kickMember"
+  | "room.management"
+  | "room.noMembers"
+  | "room.noTopic"
   | "room.noRoomSelected"
   | "room.noSpaces"
   | "room.notifications"
+  | "room.operationFailed"
   | "room.people"
+  | "room.rolePermissions"
   | "room.roomInfo"
   | "room.roomScoped"
   | "room.roomSettings"
+  | "room.saveAccess"
+  | "room.saveName"
+  | "room.saveTopic"
   | "room.searchIndex"
+  | "room.settingsLoading"
   | "room.spaces"
   | "room.subscribed"
   | "room.summary"
   | "room.tabs"
   | "room.threadToggle"
   | "room.timeline"
+  | "room.topic"
   | "room.type"
+  | "room.unban"
+  | "room.unbanMember"
   | "room.unread"
   | "room.unreadCount"
   | "search.noExactMatches"
@@ -609,28 +638,57 @@ const en: Catalog = {
   "panel.spaceInfo": "Space info",
   "panel.thread": "Thread",
   "panel.userSettings": "User settings",
+  "room.ban": "Ban",
+  "room.banMember": "Ban {name}",
+  "room.currentTopic": "Current topic",
   "room.members": "Members",
   "room.directMessage": "Direct message",
   "room.dmList": "DM list",
+  "room.editSettings": "Edit settings",
   "room.exactVerifiedResults": "Exact verified results",
   "room.files": "Files",
   "room.globalDmList": "Global DM list",
+  "room.historyInvited": "Since invite",
+  "room.historyJoined": "Since join",
+  "room.historyShared": "Shared history",
+  "room.historyVisibility": "History visibility",
+  "room.historyWorldReadable": "World readable",
   "room.invitePeople": "Invite people",
+  "room.joinRule": "Join rule",
+  "room.joinRuleInvite": "Invite only",
+  "room.joinRuleKnock": "Knock",
+  "room.joinRulePrivate": "Private",
+  "room.joinRulePublic": "Public",
+  "room.joinRuleRestricted": "Restricted",
+  "room.kick": "Kick",
+  "room.kickMember": "Kick {name}",
+  "room.management": "Room management",
+  "room.noMembers": "No members loaded",
+  "room.noTopic": "No topic",
   "room.noRoomSelected": "No room selected",
   "room.noSpaces": "No Spaces",
   "room.notifications": "Notifications",
+  "room.operationFailed": "Operation failed",
   "room.people": "People",
+  "room.rolePermissions": "Role permissions",
   "room.roomInfo": "Room info",
   "room.roomScoped": "Room scoped",
   "room.roomSettings": "Room settings",
+  "room.saveAccess": "Save access",
+  "room.saveName": "Save room name",
+  "room.saveTopic": "Save topic",
   "room.searchIndex": "Search index",
+  "room.settingsLoading": "Room settings loading",
   "room.spaces": "Spaces",
   "room.subscribed": "Subscribed",
   "room.summary": "Room summary",
   "room.tabs": "Room tabs",
   "room.threadToggle": "Toggle thread",
   "room.timeline": "Timeline",
+  "room.topic": "Room topic",
   "room.type": "Type",
+  "room.unban": "Unban",
+  "room.unbanMember": "Unban {name}",
   "room.unread": "Unread",
   "room.unreadCount": "{count} unread",
   "search.noExactMatches": "No exact matches",
@@ -1012,28 +1070,57 @@ const ja: Catalog = {
   "panel.spaceInfo": "スペース情報",
   "panel.thread": "スレッド",
   "panel.userSettings": "ユーザー設定",
+  "room.ban": "BAN",
+  "room.banMember": "{name}をBAN",
+  "room.currentTopic": "現在のトピック",
   "room.members": "メンバー",
   "room.directMessage": "ダイレクトメッセージ",
   "room.dmList": "DM一覧",
+  "room.editSettings": "設定を編集",
   "room.exactVerifiedResults": "検証済み完全一致結果",
   "room.files": "ファイル",
   "room.globalDmList": "全体DM一覧",
+  "room.historyInvited": "招待以降",
+  "room.historyJoined": "参加以降",
+  "room.historyShared": "共有履歴",
+  "room.historyVisibility": "履歴の表示範囲",
+  "room.historyWorldReadable": "誰でも閲覧可",
   "room.invitePeople": "メンバーを招待",
+  "room.joinRule": "参加ルール",
+  "room.joinRuleInvite": "招待のみ",
+  "room.joinRuleKnock": "ノック",
+  "room.joinRulePrivate": "非公開",
+  "room.joinRulePublic": "公開",
+  "room.joinRuleRestricted": "制限付き",
+  "room.kick": "キック",
+  "room.kickMember": "{name}をキック",
+  "room.management": "ルーム管理",
+  "room.noMembers": "読み込まれたメンバーはありません",
+  "room.noTopic": "トピックなし",
   "room.noRoomSelected": "ルームが選択されていません",
   "room.noSpaces": "スペースがありません",
   "room.notifications": "通知",
+  "room.operationFailed": "操作に失敗しました",
   "room.people": "ユーザー",
+  "room.rolePermissions": "ロール権限",
   "room.roomInfo": "ルーム情報",
   "room.roomScoped": "ルーム内",
   "room.roomSettings": "ルーム設定",
+  "room.saveAccess": "アクセス設定を保存",
+  "room.saveName": "ルーム名を保存",
+  "room.saveTopic": "トピックを保存",
   "room.searchIndex": "検索インデックス",
+  "room.settingsLoading": "ルーム設定を読み込み中",
   "room.spaces": "スペース",
   "room.subscribed": "購読中",
   "room.summary": "ルーム概要",
   "room.tabs": "ルームタブ",
   "room.threadToggle": "スレッドを切り替え",
   "room.timeline": "タイムライン",
+  "room.topic": "ルームトピック",
   "room.type": "種類",
+  "room.unban": "BAN解除",
+  "room.unbanMember": "{name}のBANを解除",
   "room.unread": "未読",
   "room.unreadCount": "未読 {count} 件",
   "search.noExactMatches": "完全一致はありません",

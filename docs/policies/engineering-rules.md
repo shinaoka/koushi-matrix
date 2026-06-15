@@ -216,6 +216,13 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    Timeline mention pills are display-only decoration over Rust-owned
    timeline body/profile snapshots; React must not infer mention semantics from
    rendered text.
+   Room-management GUI tests must render room settings and member actions from
+   `AppState.room_management.settings`, including the room-scoped `members`
+   projection. React must not use the global profile cache as the room member
+   list and must not locally remove a member row after kick/ban; the Rust
+   reducer owns that snapshot transition. Linux room-management GUI QA output
+   is limited to private-data-free tokens and must not print room/user IDs,
+   room names/topics, avatar URLs, moderation reasons, or raw SDK errors.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

@@ -363,6 +363,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-invites-dm --serv
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --artifact-dir=artifacts/linux-gui-local-media --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --artifact-dir=artifacts/linux-gui-local-room-tags --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-management --server=conduit --artifact-dir=artifacts/linux-gui-local-room-management --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --artifact-dir=artifacts/linux-gui-local-explore --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --artifact-dir=artifacts/linux-gui-local-message-actions --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
@@ -401,6 +402,16 @@ then clicks `Remove from Favourites` and waits for the row to return to Rooms.
 The lane prints only `gui_local_room_tag_set=ok` and
 `gui_local_room_tag_removed=ok`; it must not monkeypatch Tauri IPC, synthesize
 React-local room-list membership, or print Matrix room IDs / raw SDK errors.
+
+`local-room-management` seeds a helper member in the disposable local room,
+opens the real Room info panel, edits the room topic through the right-panel
+form, waits for the Rust-owned `AppState.room_management.settings.topic`
+snapshot row to update, then clicks the Kick control and waits for the
+room-scoped `settings.members` snapshot to remove the member row. The lane
+prints only `gui_local_room_topic=ok` and `gui_local_room_kick=ok`; it must not
+monkeypatch Tauri IPC, synthesize React-local settings/member state, or print
+Matrix room IDs, user IDs, room names/topics, avatar URLs, moderation reasons,
+or raw SDK errors.
 
 `local-explore` registers a synthetic helper account on the same disposable
 homeserver, has that helper create one public room with a synthetic alias, then
@@ -476,6 +487,8 @@ gui_local_reply=ok
 gui_local_media=ok
 gui_local_room_tag_set=ok
 gui_local_room_tag_removed=ok
+gui_local_room_topic=ok
+gui_local_room_kick=ok
 gui_local_message_source=ok
 gui_local_message_forward=ok
 gui_local_settings=ok

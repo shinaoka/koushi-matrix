@@ -465,6 +465,13 @@ export interface RoomSettingsSnapshot {
   join_rule: RoomJoinRule;
   history_visibility: RoomHistoryVisibility;
   permissions: RoomPermissionFacts;
+  members: RoomMemberSummary[];
+}
+
+export interface RoomMemberSummary {
+  user_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
 }
 
 export type RoomJoinRule = "public" | "invite" | "knock" | "restricted" | "private";

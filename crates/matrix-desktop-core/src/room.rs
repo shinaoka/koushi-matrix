@@ -59,14 +59,14 @@ use std::{
 
 use matrix_desktop_sdk::{
     MatrixClientSession, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
-    MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomModerationAction,
-    MatrixRoomOperationError, MatrixRoomPermissionFacts, MatrixRoomSettingChange,
-    MatrixRoomSettingsSnapshot, MatrixRoomTagKind, MatrixRoomTags,
+    MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomMemberSummary,
+    MatrixRoomModerationAction, MatrixRoomOperationError, MatrixRoomPermissionFacts,
+    MatrixRoomSettingChange, MatrixRoomSettingsSnapshot, MatrixRoomTagKind, MatrixRoomTags,
 };
 use matrix_desktop_state::{
     AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, DirectoryQuery,
     DirectoryRoomSummary, InvitePreview, OperationFailureKind, PinnedEvent, RoomHistoryVisibility,
-    RoomJoinRule, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
+    RoomJoinRule, RoomMemberSummary, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
     RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
     UserProfile,
 };
@@ -1585,6 +1585,19 @@ fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> Room
         join_rule: room_join_rule_from_sdk(settings.join_rule),
         history_visibility: room_history_visibility_from_sdk(settings.history_visibility),
         permissions: room_permission_facts_from_sdk(settings.permissions),
+        members: settings
+            .members
+            .into_iter()
+            .map(room_member_summary_from_sdk)
+            .collect(),
+    }
+}
+
+fn room_member_summary_from_sdk(member: MatrixRoomMemberSummary) -> RoomMemberSummary {
+    RoomMemberSummary {
+        user_id: member.user_id,
+        display_name: member.display_name,
+        avatar_url: member.avatar_url,
     }
 }
 

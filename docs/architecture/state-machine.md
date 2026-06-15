@@ -722,8 +722,10 @@ stateDiagram-v2
 ```
 
 - `RoomSettingsSnapshot` carries the selected room id, name, topic, avatar URL,
-  join rule, history visibility, and `RoomPermissionFacts`. It is app-owned DTO
-  data mapped from the SDK before crossing the command/event boundary.
+  join rule, history visibility, `RoomPermissionFacts`, and the room-scoped
+  `members` projection. It is app-owned DTO data mapped from the SDK before
+  crossing the command/event boundary. GUI member actions must render this
+  room-scoped member snapshot, not the global profile cache.
 - The command surface is `RoomCommand::LoadRoomSettings`,
   `RoomCommand::UpdateRoomSetting`, and `RoomCommand::ModerateRoomMember`.
   Tauri handlers are transport adapters: they allocate a request id, submit the
@@ -739,6 +741,12 @@ stateDiagram-v2
 - Settings and moderation completions are request-correlated. Stale successes,
   stale failures, duplicate completions, and completions for a room that is no
   longer selected are ignored.
+- Successful kick/ban completions remove the target from
+  `RoomSettingsSnapshot.members` in the Rust reducer when the operation matches
+  the selected room. React must wait for this snapshot change and must not
+  locally filter member rows after dispatching a moderation command. Unban does
+  not synthesize a member row; a later settings/member refresh projects any
+  active membership.
 - SDK state-event mutation calls can return before the SDK room cache reflects
   the sent state event. The SDK adapter must project the submitted setting
   change into the success snapshot or otherwise wait for a refreshed cache

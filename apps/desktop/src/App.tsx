@@ -124,6 +124,8 @@ import type {
   OperationFailureKind,
   ResolveComposerKeyAction,
   RoomListItem,
+  RoomModerationAction,
+  RoomSettingChange,
   RoomTags,
   SavedSessionInfo,
   SearchResult,
@@ -343,6 +345,7 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const loginPasswordRef = useRef<HTMLInputElement>(null);
   const recoverySecretRef = useRef<HTMLInputElement>(null);
+  const roomSettingsLoadRef = useRef<string | null>(null);
   const attentionSummary = snapshot
     ? desktopAttentionSummary({
         activeRoomId: snapshot.state.navigation.active_room_id,
@@ -697,6 +700,41 @@ export function App() {
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!snapshot || rightPanelMode !== "roomInfo") {
+      return;
+    }
+    const activeRoomId = snapshot.state.navigation.active_room_id;
+    if (!activeRoomId) {
+      return;
+    }
+    const roomManagement = snapshot.state.room_management;
+    if (
+      roomManagement.selected_room_id === activeRoomId &&
+      roomManagement.settings
+    ) {
+      roomSettingsLoadRef.current = activeRoomId;
+      return;
+    }
+    if (
+      roomManagement.operation.kind === "pending" &&
+      roomManagement.operation.room_id === activeRoomId
+    ) {
+      return;
+    }
+    if (roomSettingsLoadRef.current === activeRoomId) {
+      return;
+    }
+    roomSettingsLoadRef.current = activeRoomId;
+    void api.loadRoomSettings(activeRoomId).then(setSnapshot);
+  }, [
+    rightPanelMode,
+    snapshot?.state.navigation.active_room_id,
+    snapshot?.state.room_management.operation,
+    snapshot?.state.room_management.selected_room_id,
+    snapshot?.state.room_management.settings
+  ]);
 
   async function refresh() {
     setIsBusy(true);
@@ -1082,6 +1120,19 @@ export function App() {
     setSnapshot(await api.unpinEvent(roomId, eventId));
   }
 
+  async function updateRoomSetting(roomId: string, change: RoomSettingChange) {
+    setSnapshot(await api.updateRoomSetting(roomId, change));
+  }
+
+  async function moderateRoomMember(
+    roomId: string,
+    targetUserId: string,
+    action: RoomModerationAction,
+    reason: string | null = null
+  ) {
+    setSnapshot(await api.moderateRoomMember(roomId, targetUserId, action, reason));
+  }
+
   async function openThread(roomId: string, rootEventId: string) {
     await closeFocusedContextIfHiddenBy("thread");
     setSnapshot(await api.openThread(roomId, rootEventId));
@@ -1428,6 +1479,9 @@ export function App() {
             void setRightPanelModeClosingFocusedContext("keyboardSettings");
           }}
           onInviteUser={openInviteUserDialog}
+          onModerateMember={(roomId, targetUserId, action, reason) => {
+            void moderateRoomMember(roomId, targetUserId, action, reason);
+          }}
           onRecoverySecretPresenceChange={setRecoverySecretFilled}
           onReply={(roomId, eventId) => {
             void setComposerReplyTarget(roomId, eventId);
@@ -1476,6 +1530,9 @@ export function App() {
           }}
           onUpdateSettings={(patch) => {
             void updateSettings(patch);
+          }}
+          onUpdateRoomSetting={(roomId, change) => {
+            void updateRoomSetting(roomId, change);
           }}
         />
       </div>
@@ -3498,6 +3555,7 @@ export function ContextualRightPanel({
   onClosePanel,
   onOpenKeyboardSettings,
   onInviteUser = () => undefined,
+  onModerateMember = () => undefined,
   onRecoverySecretPresenceChange,
   onReply,
   onResultSelect,
@@ -3515,6 +3573,7 @@ export function ContextualRightPanel({
   onSubmitIdentityResetOAuth,
   onSubmitIdentityResetPassword,
   onUpdateSettings = () => undefined,
+  onUpdateRoomSetting = () => undefined,
   onThreadComposerDraftChange,
   onThreadReplySend
 }: {
@@ -3534,6 +3593,12 @@ export function ContextualRightPanel({
   onClosePanel: () => void;
   onOpenKeyboardSettings: () => void;
   onInviteUser?: (roomId: string, title: string) => void;
+  onModerateMember?: (
+    roomId: string,
+    targetUserId: string,
+    action: RoomModerationAction,
+    reason: string | null
+  ) => void;
   onRecoverySecretPresenceChange: (value: boolean) => void;
   onReply: TimelineRowActionHandlers["onReply"];
   onResultSelect: (roomId: string, eventId: string) => void;
@@ -3551,6 +3616,7 @@ export function ContextualRightPanel({
   onSubmitIdentityResetOAuth: (flowId: number) => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onUpdateSettings?: (patch: SettingsPatch) => void;
+  onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
   onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
 }) {
@@ -3620,7 +3686,9 @@ export function ContextualRightPanel({
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("panel.roomInfo")} onClose={onClosePanel} />
         <RoomInfoPanel
+          currentUserId={snapshot.state.session.user_id ?? null}
           room={activeRoom}
+          roomManagement={snapshot.state.room_management}
           spaces={snapshot.state.spaces}
           onInvitePeople={
             activeRoom
@@ -3631,6 +3699,8 @@ export function ContextualRightPanel({
                   )
               : undefined
           }
+          onModerateMember={onModerateMember}
+          onUpdateRoomSetting={onUpdateRoomSetting}
         />
       </aside>
     );

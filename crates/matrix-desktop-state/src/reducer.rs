@@ -1304,8 +1304,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::RoomModerationSucceeded {
             request_id,
             room_id,
-            target_user_id: _,
-            action: _,
+            target_user_id,
+            action,
         } => {
             if !room_management_operation_matches(
                 state,
@@ -1316,6 +1316,16 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            if matches!(
+                action,
+                RoomModerationAction::Kick | RoomModerationAction::Ban
+            ) && let Some(settings) = state.room_management.settings.as_mut()
+                && settings.room_id == room_id
+            {
+                settings
+                    .members
+                    .retain(|member| member.user_id != target_user_id);
+            }
             state.room_management.operation = RoomManagementOperationState::Idle;
             vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
         }

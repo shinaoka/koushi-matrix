@@ -1685,6 +1685,11 @@ mod tests {
                 can_ban: true,
                 can_unban: true,
             },
+            members: vec![matrix_desktop_state::RoomMemberSummary {
+                user_id: "@member:example.test".to_owned(),
+                display_name: Some("Member".to_owned()),
+                avatar_url: Some("mxc://example.test/member-avatar".to_owned()),
+            }],
         };
         let room_settings_loaded =
             serialize_core_event(&CoreEvent::Room(RoomEvent::RoomSettingsLoaded {

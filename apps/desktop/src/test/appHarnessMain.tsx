@@ -869,6 +869,37 @@ mock.setCommandResponse("edit_message", () => currentSnapshot);
 mock.setCommandResponse("redact_message", () => currentSnapshot);
 mock.setCommandResponse("set_room_tag", () => currentSnapshot);
 mock.setCommandResponse("remove_room_tag", () => currentSnapshot);
+mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) => {
+  const room = currentSnapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+  const next: DesktopSnapshot = {
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      room_management: {
+        selected_room_id: roomId,
+        settings: {
+          room_id: roomId,
+          name: room?.display_name ?? null,
+          topic: null,
+          avatar_url: null,
+          join_rule: "invite",
+          history_visibility: "shared",
+          permissions: {
+            can_edit_settings: true,
+            can_kick: true,
+            can_ban: true,
+            can_unban: true
+          },
+          members: []
+        },
+        operation: { kind: "idle" }
+      }
+    }
+  };
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("update_room_setting", () => currentSnapshot);
+mock.setCommandResponse("moderate_room_member", () => currentSnapshot);
 mock.setCommandResponse("pin_event", () => currentSnapshot);
 mock.setCommandResponse("unpin_event", () => currentSnapshot);
 mock.setCommandResponse("upload_media", () => currentSnapshot);

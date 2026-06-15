@@ -75,11 +75,12 @@ Crate responsibilities:
   unsupported slash commands fail locally with structured private-data-free
   failure kinds. React does not construct `m.mentions`, formatted bodies, or
   slash-command dispatch.
-  Room management is likewise Rust-owned: room settings snapshots, permission
-  facts, setting changes, and kick/ban/unban moderation operations live in
-  `AppState.room_management` and `RoomCommand` / `RoomEvent`. React renders
-  `settings.permissions` and dispatches typed commands only; it must not decide
-  whether a user can edit settings or moderate members locally.
+  Room management is likewise Rust-owned: room settings snapshots, room-scoped
+  member summaries, permission facts, setting changes, and kick/ban/unban
+  moderation operations live in `AppState.room_management` and `RoomCommand` /
+  `RoomEvent`. React renders `settings.permissions` and `settings.members` and
+  dispatches typed commands only; it must not decide whether a user can edit
+  settings or moderate members locally.
   Core Batch A0 ownership also lives in this crate: local encryption /
   credential-store health, native attention candidates and capabilities,
   Japanese/CJK display/search policy, and backup restore scope are

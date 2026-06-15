@@ -314,6 +314,13 @@
           "avatar_url": "mxc://example.test/avatar",
           "history_visibility": "shared",
           "join_rule": "invite",
+          "members": [
+            {
+              "avatar_url": "mxc://example.test/member-avatar",
+              "display_name": "Member",
+              "user_id": "@member:example.test"
+            }
+          ],
           "name": "Room Settings Sample",
           "permissions": {
             "can_ban": true,
@@ -339,6 +346,13 @@
           "avatar_url": "mxc://example.test/avatar",
           "history_visibility": "shared",
           "join_rule": "invite",
+          "members": [
+            {
+              "avatar_url": "mxc://example.test/member-avatar",
+              "display_name": "Member",
+              "user_id": "@member:example.test"
+            }
+          ],
           "name": "Room Settings Sample",
           "permissions": {
             "can_ban": true,

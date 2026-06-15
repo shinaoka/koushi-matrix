@@ -1239,6 +1239,7 @@ pub struct RoomSettingsSnapshot {
     pub join_rule: RoomJoinRule,
     pub history_visibility: RoomHistoryVisibility,
     pub permissions: RoomPermissionFacts,
+    pub members: Vec<RoomMemberSummary>,
 }
 
 impl fmt::Debug for RoomSettingsSnapshot {
@@ -1255,6 +1256,31 @@ impl fmt::Debug for RoomSettingsSnapshot {
             .field("join_rule", &self.join_rule)
             .field("history_visibility", &self.history_visibility)
             .field("permissions", &self.permissions)
+            .field("members", &self.members.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomMemberSummary {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+impl fmt::Debug for RoomMemberSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomMemberSummary")
+            .field("user_id", &"UserId(..)")
+            .field(
+                "display_name",
+                &self.display_name.as_ref().map(|_| "DisplayName(..)"),
+            )
+            .field(
+                "avatar_url",
+                &self.avatar_url.as_ref().map(|_| "MxcUri(..)"),
+            )
             .finish()
     }
 }

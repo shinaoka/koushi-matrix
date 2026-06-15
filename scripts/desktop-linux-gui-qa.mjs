@@ -36,6 +36,7 @@ const checks = [
   "scenario local-reply",
   "scenario local-media",
   "scenario local-room-tags",
+  "scenario local-room-management",
   "scenario local-explore",
   "scenario local-message-actions",
   "scenario local-composer",
@@ -204,6 +205,10 @@ async function run() {
   }
   if (guiScenario === "local-room-tags") {
     await runLocalRoomTagsScenario();
+    return;
+  }
+  if (guiScenario === "local-room-management") {
+    await runLocalRoomManagementScenario();
     return;
   }
   if (guiScenario === "local-explore") {
@@ -653,6 +658,55 @@ async function runLocalRoomTagsScenario() {
   }
 }
 
+async function runLocalRoomManagementScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const roomInfoButton = await session.browser.$('button[aria-label="Room info"]');
+    await roomInfoButton.waitForDisplayed({ timeout: timeoutMs });
+    await roomInfoButton.click();
+
+    const topicInput = await session.browser.$('textarea[aria-label="Room topic"]');
+    await topicInput.waitForDisplayed({ timeout: timeoutMs });
+    await topicInput.setValue(session.roomManagementTopic);
+    const saveTopicButton = await session.browser.$("//button[normalize-space()='Save topic']");
+    await saveTopicButton.waitForDisplayed({ timeout: timeoutMs });
+    await saveTopicButton.click();
+    await waitForRoomManagementTopic(
+      session.browser,
+      session.roomManagementTopic,
+      timeoutMs,
+      "local GUI room management topic"
+    );
+    console.log("gui_local_room_topic=ok");
+
+    await waitForElementCount(
+      session.browser,
+      ".room-member-row",
+      1,
+      timeoutMs,
+      "local GUI room management member baseline"
+    );
+    const kickButton = await session.browser.$('.room-member-row button[data-action="kick"]');
+    await kickButton.waitForDisplayed({ timeout: timeoutMs });
+    await kickButton.click();
+    await waitForElementCount(
+      session.browser,
+      ".room-member-row",
+      0,
+      timeoutMs,
+      "local GUI room management kick"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_room_kick=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalExploreScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -975,6 +1029,40 @@ async function waitForDocumentText(browser, expectedTexts, timeout, description)
 
 async function elementCount(browser, selector) {
   return browser.execute((cssSelector) => document.querySelectorAll(cssSelector).length, selector);
+}
+
+async function waitForElementCount(browser, selector, expected, timeout, description) {
+  const startedAt = Date.now();
+  let lastCount = -1;
+  while (Date.now() - startedAt < timeout) {
+    lastCount = await elementCount(browser, selector);
+    if (lastCount === expected) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not reach expected element count. Last count: ${lastCount}`
+  );
+}
+
+async function waitForRoomManagementTopic(browser, expectedTopic, timeout, description) {
+  const startedAt = Date.now();
+  let matched = false;
+  while (Date.now() - startedAt < timeout) {
+    matched = await browser.execute((topic) => {
+      const rowText = (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
+      return Array.from(document.querySelectorAll(".settings-detail-row")).some((row) => {
+        const text = rowText(row);
+        return text.includes("Current topic") && text.includes(topic);
+      });
+    }, expectedTopic);
+    if (matched) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} did not observe the Rust-owned topic snapshot`);
 }
 
 async function selectComposerText(browser) {
@@ -1445,6 +1533,7 @@ async function startLocalGuiScenario() {
     helperAccessToken: null,
     composerMentionDisplayName: null,
     directoryRoomName: null,
+    roomManagementTopic: null,
     primaryUserId: null,
     seedRoomId: null,
     seedInviteRoomName: null
@@ -1512,6 +1601,28 @@ async function startLocalGuiScenario() {
         "QA helper seed message",
         `qa-helper-${userSuffix}`
       );
+    }
+
+    if (guiScenario === "local-room-management") {
+      const helperUsername = `qa_management_${userSuffix}`;
+      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
+      const helperAccessToken = helperRegistration.access_token;
+      const helperUserId = helperRegistration.user_id;
+      if (!helperAccessToken || !helperUserId) {
+        throw new Error("local GUI room management setup did not return helper credentials");
+      }
+      await setDisplayName(homeserver, helperAccessToken, helperUserId, "Management Helper");
+      await inviteUserToRoom(homeserver, accessToken, seedRoomId, helperUserId);
+      await joinRoom(homeserver, helperAccessToken, seedRoomId);
+      await sendRoomMessage(
+        homeserver,
+        helperAccessToken,
+        seedRoomId,
+        "QA room management seed message",
+        `qa-management-${userSuffix}`
+      );
+      session.roomManagementTopic = "QA managed topic";
     }
 
     if (guiScenario === "local-invites-dm") {

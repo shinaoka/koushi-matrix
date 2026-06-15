@@ -1,8 +1,8 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, OperationFailureKind, RoomHistoryVisibility, RoomJoinRule,
     RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState,
-    RoomModerationAction, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
-    SessionInfo, SessionState, UiEvent, reduce,
+    RoomMemberSummary, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
+    RoomSettingsSnapshot, SessionInfo, SessionState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -34,6 +34,18 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
             can_ban: true,
             can_unban: false,
         },
+        members: vec![
+            RoomMemberSummary {
+                user_id: "@user-a:example.invalid".to_owned(),
+                display_name: Some("User A".to_owned()),
+                avatar_url: None,
+            },
+            RoomMemberSummary {
+                user_id: "@target:example.invalid".to_owned(),
+                display_name: Some("Target".to_owned()),
+                avatar_url: Some("mxc://example.invalid/target-avatar".to_owned()),
+            },
+        ],
     }
 }
 
@@ -107,6 +119,8 @@ fn room_management_debug_output_redacts_private_values() {
             "mxc://example.invalid/private-avatar",
             "Private updated topic",
             "Private updated name",
+            "Target",
+            "mxc://example.invalid/target-avatar",
             "@private-target:example.invalid",
             "Private moderation reason",
         ] {
@@ -285,6 +299,57 @@ fn moderation_command_without_permission_is_rejected_in_rust_state() {
     assert_eq!(
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+    );
+}
+
+#[test]
+fn successful_kick_removes_target_from_room_scoped_member_snapshot() {
+    let mut state = ready_state();
+    let room_id = "!room:example.invalid";
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings: editable_settings(room_id),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomModerationRequested {
+            request_id: 21,
+            room_id: room_id.to_owned(),
+            target_user_id: "@target:example.invalid".to_owned(),
+            action: RoomModerationAction::Kick,
+            reason: None,
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomModerationSucceeded {
+            request_id: 21,
+            room_id: room_id.to_owned(),
+            target_user_id: "@target:example.invalid".to_owned(),
+            action: RoomModerationAction::Kick,
+        },
+    );
+
+    let settings = state
+        .room_management
+        .settings
+        .expect("room management settings");
+    assert_eq!(
+        settings
+            .members
+            .iter()
+            .map(|member| member.user_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["@user-a:example.invalid"]
+    );
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Idle
     );
 }
 

@@ -3047,6 +3047,23 @@ kbd {
   font: inherit;
 }
 
+.profile-settings-field textarea,
+.profile-settings-field select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+}
+
+.profile-settings-field textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
 .profile-settings-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3069,9 +3086,83 @@ kbd {
 }
 
 .profile-settings-action:disabled,
-.profile-settings-field input:disabled {
+.profile-settings-field input:disabled,
+.profile-settings-field textarea:disabled,
+.profile-settings-field select:disabled {
   opacity: 0.62;
   cursor: default;
+}
+
+.room-management-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.room-management-form {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.room-management-status {
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.room-member-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.room-member-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.room-member-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.room-member-main span,
+.room-member-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-member-main span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.room-member-main small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.room-member-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.room-member-action {
+  min-height: 28px;
+  font-size: 11px;
 }
 
 .account-switcher h3 {
@@ -3299,6 +3390,14 @@ kbd {
 
   .account-switcher-row {
     grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .room-member-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .room-member-actions {
+    justify-content: flex-start;
   }
 
   .account-switcher-action {
