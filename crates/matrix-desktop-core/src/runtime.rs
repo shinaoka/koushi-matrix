@@ -275,6 +275,38 @@ impl ActivityProjection {
         cleared
     }
 
+    fn fully_read_marker_updates(
+        &self,
+        state: &AppState,
+        target: &ActivityMarkReadTarget,
+    ) -> Vec<(String, String)> {
+        match target {
+            ActivityMarkReadTarget::Room {
+                room_id,
+                up_to_event_id,
+            } => vec![(room_id.clone(), up_to_event_id.clone())],
+            ActivityMarkReadTarget::All => {
+                let (_recent, unread, _excluded) = self.snapshot(state);
+                let mut latest_by_room: BTreeMap<String, (u64, String)> = BTreeMap::new();
+                for row in unread.rows {
+                    latest_by_room
+                        .entry(row.room_id)
+                        .and_modify(|(timestamp_ms, event_id)| {
+                            if row.timestamp_ms > *timestamp_ms {
+                                *timestamp_ms = row.timestamp_ms;
+                                *event_id = row.event_id.clone();
+                            }
+                        })
+                        .or_insert((row.timestamp_ms, row.event_id));
+                }
+                latest_by_room
+                    .into_iter()
+                    .map(|(room_id, (_timestamp_ms, event_id))| (room_id, event_id))
+                    .collect()
+            }
+        }
+    }
+
     fn update_action_for_open_state(&self, state: &AppState) -> Option<AppAction> {
         if !matches!(state.activity, ActivityState::Open { .. }) {
             return None;
@@ -310,8 +342,21 @@ impl ActivityProjection {
             let Some(room) = rooms_by_id.get(row.room_id.as_str()) else {
                 continue;
             };
-            let unread_row =
-                room.unread_count > 0 && !self.cleared_event_ids.contains(&row.event_id);
+            let fully_read_event_id = state
+                .live_signals
+                .rooms
+                .get(row.room_id.as_str())
+                .and_then(|signals| signals.fully_read_event_id.as_deref());
+            let unread_by_marker = match fully_read_event_id {
+                Some(event_id) if event_id == row.event_id => false,
+                Some(event_id) => self
+                    .rows_by_event_id
+                    .get(event_id)
+                    .map(|fully_read_row| row.timestamp_ms > fully_read_row.timestamp_ms)
+                    .unwrap_or(room.unread_count > 0),
+                None => room.unread_count > 0,
+            };
+            let unread_row = unread_by_marker && !self.cleared_event_ids.contains(&row.event_id);
             let row = ActivityRow {
                 room_label: room.display_name.clone(),
                 unread: unread_row,
@@ -626,6 +671,9 @@ impl AppActor {
                         },
                     );
                     self.handle_app_effects(request_id, effects).await;
+                    let fully_read_updates = self
+                        .activity_projection
+                        .fully_read_marker_updates(&self.state, &target);
                     let cleared_event_ids =
                         self.activity_projection.mark_read(&self.state, &target);
                     let success_effects = reduce(
@@ -636,6 +684,16 @@ impl AppActor {
                         },
                     );
                     self.handle_app_effects(request_id, success_effects).await;
+                    for (room_id, event_id) in fully_read_updates {
+                        let marker_effects = reduce(
+                            &mut self.state,
+                            AppAction::FullyReadMarkerUpdated {
+                                room_id,
+                                event_id: Some(event_id),
+                            },
+                        );
+                        self.handle_app_effects(request_id, marker_effects).await;
+                    }
                     self.emit(CoreEvent::Activity(ActivityEvent::MarkedRead {
                         request_id,
                         cleared_event_ids,
