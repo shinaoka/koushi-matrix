@@ -36,6 +36,14 @@ impl TimelineKey {
             },
         }
     }
+
+    pub fn room_id(&self) -> &str {
+        match &self.kind {
+            TimelineKind::Room { room_id }
+            | TimelineKind::Thread { room_id, .. }
+            | TimelineKind::Focused { room_id, .. } => room_id,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]

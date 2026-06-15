@@ -233,12 +233,21 @@ reaction counts, ownership, target eligibility, or toggle semantics.
   present. If the projection does not support the requested transition, settle
   it as an invalid reaction failure instead of guessing from React state.
 
-## Timeline Reply Quotes And Pins
+## Timeline Reply Quotes, Pins, And Actions
 
 Reply quote previews and pinned-event state are Rust-owned message-interaction
 projections. `TimelineItem.reply_quote` is projected in
 `matrix-desktop-core` from SDK reply details; React renders that DTO and must
 not resolve reply bodies, classify redactions, or repair missing quote state.
+
+Message action affordances are also Rust-owned timeline projections.
+`TimelineItem.actions` carries `can_copy`, `can_forward`, `can_permalink`,
+`can_view_source`, and an optional `permalink`. The permalink is generated in
+Rust from the owning `TimelineKey` room id plus the event id as a
+`https://matrix.to/#/<room>/<event>` URL. React may render or copy this value
+only when the DTO says it is available; it must not build Matrix permalinks,
+infer action eligibility from `TimelineItemId`, body/media fields, or redaction
+flags, or invent forward/source behavior.
 
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:
@@ -267,6 +276,14 @@ stateDiagram-v2
   `Unsupported`. `Ready` may include a sender and body preview; redacted,
   missing, and unsupported quotes never require React to inspect Matrix event
   content.
+- `TimelineItem.actions` is populated only for event-backed timeline items.
+  Synthetic and transaction-backed items receive all-false affordances. Redacted
+  event items keep event-scoped affordances such as permalink/source visibility
+  but lose copy/forward affordances unless Rust explicitly restores them.
+- Copy is allowed only when Rust projected a visible body and the item is not
+  redacted. Forward is allowed only when Rust projected visible body or media
+  and the item is not redacted. Future forward/source commands must consume
+  typed Rust-owned DTOs rather than raw React-side event inspection.
 - `RoomPinnedEventsUpdated { room_id, pinned }` replaces only that room's
   pinned-event list and emits `RoomInteractionsChanged` when the list changes.
   It may arrive from sync or as the post-command refresh after successful
@@ -291,7 +308,8 @@ stateDiagram-v2
   and renders the next Rust snapshot/event only.
 - The local core `reply` QA scenario proves this Phase A slice with
   `reply_quote=ok pin_event=ok pinned_state=ok unpin_event=ok`. Its stdout must
-  remain private-data-free.
+  remain private-data-free. Message-action QA evidence must likewise use coarse
+  tokens only; do not print Matrix IDs, message bodies, or generated permalinks.
 
 ## Timeline Media
 

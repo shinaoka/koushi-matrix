@@ -174,6 +174,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - `TimelineItem.reply_quote` is a Rust-owned projection. React renders the
   `ReplyQuoteState` and optional preview only; it must not look up reply
   bodies, classify redactions, or patch quote state after a send.
+- `TimelineItem.actions` is a Rust-owned action-affordance projection. React
+  may render/copy only the DTO-provided body/permalink affordances; it must not
+  build `matrix.to` permalinks, infer copy/forward/source eligibility from
+  event ids, body/media fields, or redaction flags, or synthesize message-source
+  / forward semantics locally.
 - `AppState.room_interactions` is the Rust-owned source of truth for
   `pinned_events` and `pin_operation`. GUI code dispatches typed `pin_event` /
   `unpin_event` commands and waits for Rust-shaped snapshots/events instead of
@@ -187,15 +192,16 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Browser fakes must enforce the same known-room guard as the Rust reducer and
   `RoomActor`; do not let tests create `room_interactions[roomId]` for a room
   absent from `state.rooms`.
-- When changing `TimelineItem.reply_quote`, `PinnedEvent`,
-  `RoomInteractionState`, or pin/unpin command/event variants, update the Tauri
-  DTO, TypeScript domain types, `coreEvents.generated.json`, browser fake,
-  app/IPC harness snapshots, and serialization-contract tests in the same
-  change.
+- When changing `TimelineItem.reply_quote`, `TimelineItem.actions`,
+  `PinnedEvent`, `RoomInteractionState`, or pin/unpin command/event variants,
+  update the Tauri DTO, TypeScript domain types, `coreEvents.generated.json`,
+  browser fake, app/IPC harness snapshots, and serialization-contract tests in
+  the same change.
 - The local core `reply` QA stage uses token-only evidence:
   `reply_quote=ok`, `pin_event=ok`, `pinned_state=ok`, and `unpin_event=ok`.
   Do not print Matrix room IDs, event IDs, sender IDs, message bodies, or raw
-  SDK errors for this stage.
+  SDK errors for this stage. Message-action/permalink evidence must also stay
+  token-only and must not print generated permalinks.
 
 ## User Profiles Phase Notes
 

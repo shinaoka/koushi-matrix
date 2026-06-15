@@ -82,8 +82,9 @@ use crate::command::{
 use crate::event::{
     CoreEvent, LiveSignalsEvent, MediaTransferProgress, PaginationDirection, PaginationState,
     ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
-    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
-    TimelineSendFailureReason, TimelineSendState,
+    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
+    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
+    message_actions_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -1067,7 +1068,7 @@ impl TimelineActor {
 
         let initial_items: Vec<TimelineItem> = initial_sdk_items
             .iter()
-            .map(|item| sdk_item_to_timeline_item(item, own_user_id.as_deref()))
+            .map(|item| sdk_item_to_timeline_item(&key, item, own_user_id.as_deref()))
             .collect();
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
@@ -2098,6 +2099,7 @@ impl TimelineActor {
             .map(|diff| {
                 sdk_vector_diff_to_timeline_diff(
                     diff,
+                    &self.key,
                     self.own_user_id.as_deref(),
                     &self.send_statuses,
                 )
@@ -2329,7 +2331,7 @@ impl TimelineActor {
                 continue;
             }
 
-            let projected = sdk_item_to_timeline_item(item, self.own_user_id.as_deref());
+            let projected = sdk_item_to_timeline_item(&self.key, item, self.own_user_id.as_deref());
             let my_reaction_event_id = projected
                 .reactions
                 .iter()
@@ -2465,6 +2467,7 @@ impl TimelineActor {
             .iter()
             .map(|item| {
                 sdk_item_to_timeline_item_with_send_states(
+                    &self.key,
                     item,
                     self.own_user_id.as_deref(),
                     &self.send_statuses,
@@ -2812,13 +2815,15 @@ fn live_event_receipts_from_sdk_item(
 
 /// Convert a single SDK `TimelineItem` to our `TimelineItem` DTO.
 pub fn sdk_item_to_timeline_item(
+    key: &TimelineKey,
     item: &Arc<SdkTimelineItem>,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
 ) -> TimelineItem {
-    sdk_item_to_timeline_item_with_send_states(item, own_user_id, &HashMap::new())
+    sdk_item_to_timeline_item_with_send_states(key, item, own_user_id, &HashMap::new())
 }
 
 fn sdk_item_to_timeline_item_with_send_states(
+    key: &TimelineKey,
     item: &Arc<SdkTimelineItem>,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
     send_statuses: &HashMap<String, TimelineSendState>,
@@ -2906,6 +2911,13 @@ fn sdk_item_to_timeline_item_with_send_states(
                 .as_deref()
                 .and_then(|txn_id| send_statuses.get(txn_id).cloned())
                 .or_else(|| timeline_send_state_from_sdk(event_item.send_state()));
+            let actions = message_actions_for_timeline_item(
+                key.room_id(),
+                &id,
+                body.as_deref(),
+                media.is_some(),
+                event_item.content().is_redacted(),
+            );
 
             TimelineItem {
                 id,
@@ -2923,6 +2935,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 can_redact,
                 is_edited,
                 can_edit,
+                actions,
                 send_state,
             }
         }
@@ -2948,6 +2961,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
+                actions: TimelineMessageActions::default(),
                 send_state: None,
             }
         }
@@ -3404,23 +3418,44 @@ pub(crate) fn reaction_groups_from_sdk(
 /// Convert an SDK `VectorDiff` to our `TimelineDiff`.
 fn sdk_vector_diff_to_timeline_diff(
     diff: eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+    key: &TimelineKey,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
     send_statuses: &HashMap<String, TimelineSendState>,
 ) -> TimelineDiff {
     match diff {
         eyeball_im::VectorDiff::PushFront { value } => TimelineDiff::PushFront {
-            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
+            item: sdk_item_to_timeline_item_with_send_states(
+                key,
+                &value,
+                own_user_id,
+                send_statuses,
+            ),
         },
         eyeball_im::VectorDiff::PushBack { value } => TimelineDiff::PushBack {
-            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
+            item: sdk_item_to_timeline_item_with_send_states(
+                key,
+                &value,
+                own_user_id,
+                send_statuses,
+            ),
         },
         eyeball_im::VectorDiff::Insert { index, value } => TimelineDiff::Insert {
             index,
-            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
+            item: sdk_item_to_timeline_item_with_send_states(
+                key,
+                &value,
+                own_user_id,
+                send_statuses,
+            ),
         },
         eyeball_im::VectorDiff::Set { index, value } => TimelineDiff::Set {
             index,
-            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
+            item: sdk_item_to_timeline_item_with_send_states(
+                key,
+                &value,
+                own_user_id,
+                send_statuses,
+            ),
         },
         eyeball_im::VectorDiff::Remove { index } => TimelineDiff::Remove { index },
         eyeball_im::VectorDiff::Truncate { length } => TimelineDiff::Truncate { length },
@@ -3429,7 +3464,12 @@ fn sdk_vector_diff_to_timeline_diff(
             items: values
                 .iter()
                 .map(|value| {
-                    sdk_item_to_timeline_item_with_send_states(value, own_user_id, send_statuses)
+                    sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    )
                 })
                 .collect(),
         },
@@ -3462,6 +3502,7 @@ fn sdk_vector_diff_to_timeline_diff(
                     .iter()
                     .map(|value| {
                         sdk_item_to_timeline_item_with_send_states(
+                            key,
                             value,
                             own_user_id,
                             send_statuses,

@@ -1188,7 +1188,7 @@ mod tests {
                 PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineEvent,
                 TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
                 TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
-                TimelineSendFailureReason, TimelineSendState,
+                TimelineMessageActions, TimelineSendFailureReason, TimelineSendState,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1233,6 +1233,13 @@ mod tests {
             can_redact: true,
             is_edited: true,
             can_edit: true,
+            actions: TimelineMessageActions {
+                can_copy: true,
+                can_forward: true,
+                can_permalink: true,
+                can_view_source: true,
+                permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24e1".to_owned()),
+            },
             send_state: None,
         };
         let media_item = TimelineItem {
@@ -1276,6 +1283,13 @@ mod tests {
             can_redact: true,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions {
+                can_copy: true,
+                can_forward: true,
+                can_permalink: true,
+                can_view_source: true,
+                permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24media1".to_owned()),
+            },
             send_state: None,
         };
         let send_state_item = TimelineItem {
@@ -1296,6 +1310,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
             }),
@@ -1323,6 +1338,13 @@ mod tests {
             can_redact: true,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions {
+                can_copy: true,
+                can_forward: true,
+                can_permalink: true,
+                can_view_source: true,
+                permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24reply1".to_owned()),
+            },
             send_state: None,
         };
 
@@ -1363,6 +1385,13 @@ mod tests {
                 "can_redact": true,
                 "is_edited": true,
                 "can_edit": true,
+                "actions": {
+                    "can_copy": true,
+                    "can_forward": true,
+                    "can_permalink": true,
+                    "can_view_source": true,
+                    "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
+                },
                 "reactions": [
                     {
                         "key": "👍",

@@ -7614,7 +7614,7 @@ async fn wait_for_search_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use matrix_desktop_core::event::ThreadSummaryDto;
+    use matrix_desktop_core::event::{ThreadSummaryDto, TimelineMessageActions};
 
     #[test]
     fn parses_all_scenarios_from_env_value_including_directory() {
@@ -7767,6 +7767,7 @@ mod tests {
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
+                actions: TimelineMessageActions::default(),
                 send_state: None,
             },
             matrix_desktop_core::event::TimelineItem {
@@ -7787,6 +7788,7 @@ mod tests {
                 can_redact: false,
                 is_edited: false,
                 can_edit: true,
+                actions: TimelineMessageActions::default(),
                 send_state: None,
             },
         ];
@@ -7818,6 +7820,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: None,
         }];
 
@@ -7847,6 +7850,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: None,
         }];
 
@@ -7887,6 +7891,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: None,
         }
     }
@@ -8103,6 +8108,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: None,
         }];
 
@@ -8134,6 +8140,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: None,
         }];
 
@@ -8192,6 +8199,7 @@ mod tests {
                         can_redact: false,
                         is_edited: false,
                         can_edit: false,
+                        actions: TimelineMessageActions::default(),
                         send_state: None,
                     },
                 }],

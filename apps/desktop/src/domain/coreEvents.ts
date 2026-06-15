@@ -122,6 +122,14 @@ export type TimelineSendState =
   | { kind: "cancelled" }
   | { kind: "sent" };
 
+export interface TimelineMessageActions {
+  can_copy: boolean;
+  can_forward: boolean;
+  can_permalink: boolean;
+  can_view_source: boolean;
+  permalink?: string | null;
+}
+
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
@@ -138,6 +146,7 @@ export interface TimelineItem {
   can_redact: boolean;
   is_edited: boolean;
   can_edit: boolean;
+  actions?: TimelineMessageActions;
   send_state?: TimelineSendState | null;
 }
 

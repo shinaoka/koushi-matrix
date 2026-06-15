@@ -108,6 +108,13 @@ Rules:
    thumbnail paths, encrypted media keys/hashes, or raw SDK errors. React must
    render avatar images only from Rust/platform-owned ready source URLs and must
    fall back to generated initials for MXC, loading, or failed thumbnail states.
+15. Message-action diagnostics are metadata-minimized. `TimelineItem.actions`
+   may expose coarse affordance booleans and synthetic/test permalinks through
+   the typed timeline DTO, but normal `Debug`, QA logs, errors, window-title
+   tokens, and issue evidence must not expose real Matrix room IDs, event IDs,
+   generated permalinks, message bodies, sender IDs, transaction IDs, or raw SDK
+   errors. React must not generate Matrix permalinks or decide action
+   eligibility locally; it may render/copy only the Rust-owned DTO values.
 
 ## Logging and Diagnostics
 

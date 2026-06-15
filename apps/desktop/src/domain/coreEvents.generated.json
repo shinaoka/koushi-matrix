@@ -411,7 +411,14 @@
               }
             ],
             "sender": "@u:example.test",
-            "timestamp_ms": 123
+            "timestamp_ms": 123,
+            "actions": {
+              "can_copy": true,
+              "can_forward": true,
+              "can_permalink": true,
+              "can_view_source": true,
+              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
+            }
           }
         ],
         "key": {
@@ -464,7 +471,14 @@
                   }
                 ],
                 "sender": "@u:example.test",
-                "timestamp_ms": 123
+                "timestamp_ms": 123,
+                "actions": {
+                  "can_copy": true,
+                  "can_forward": true,
+                  "can_permalink": true,
+                  "can_view_source": true,
+                  "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
+                }
               }
             }
           },
@@ -556,7 +570,14 @@
             "can_edit": false,
             "reactions": [],
             "sender": "@u:example.test",
-            "timestamp_ms": 456
+            "timestamp_ms": 456,
+            "actions": {
+              "can_copy": true,
+              "can_forward": true,
+              "can_permalink": true,
+              "can_view_source": true,
+              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24media1"
+            }
           }
         ],
         "key": {
@@ -651,7 +672,14 @@
             "sender": "@u:example.test",
             "thread_root": null,
             "thread_summary": null,
-            "timestamp_ms": 987
+            "timestamp_ms": 987,
+            "actions": {
+              "can_copy": true,
+              "can_forward": true,
+              "can_permalink": true,
+              "can_view_source": true,
+              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24reply1"
+            }
           }
         ],
         "key": {
@@ -712,7 +740,13 @@
             "sender": "@u:example.test",
             "thread_root": null,
             "thread_summary": null,
-            "timestamp_ms": 789
+            "timestamp_ms": 789,
+            "actions": {
+              "can_copy": false,
+              "can_forward": false,
+              "can_permalink": false,
+              "can_view_source": false
+            }
           }
         ],
         "key": {
