@@ -362,6 +362,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-space --se
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-invites-dm --server=conduit --artifact-dir=artifacts/linux-gui-local-invites-dm --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --artifact-dir=artifacts/linux-gui-local-media --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --artifact-dir=artifacts/linux-gui-local-room-tags --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
 ```
 
@@ -389,6 +390,14 @@ only `gui_local_media=ok`; it must not open native file dialogs, use
 real/private filenames, print MXC URIs, expose downloaded bytes, monkeypatch
 Tauri internals from WebDriver, or synthesize upload/download lifecycle state in
 React.
+
+`local-room-tags` opens the seeded synthetic room row's real context menu in the
+Linux Tauri WebView, clicks `Add to Favourites`, waits for the row to move from
+the Rooms section to Favourites from the Rust-owned `RoomSummary.tags` snapshot,
+then clicks `Remove from Favourites` and waits for the row to return to Rooms.
+The lane prints only `gui_local_room_tag_set=ok` and
+`gui_local_room_tag_removed=ok`; it must not monkeypatch Tauri IPC, synthesize
+React-local room-list membership, or print Matrix room IDs / raw SDK errors.
 
 `local-invites-dm` registers a synthetic helper account on the same disposable
 homeserver, has that helper create and invite the QA user to a synthetic room,
@@ -432,6 +441,8 @@ gui_local_invite_accept=ok
 gui_local_dm_start=ok
 gui_local_reply=ok
 gui_local_media=ok
+gui_local_room_tag_set=ok
+gui_local_room_tag_removed=ok
 gui_local_settings=ok
 gui_local_trust_settings=ok
 ```

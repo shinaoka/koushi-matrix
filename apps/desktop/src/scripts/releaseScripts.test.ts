@@ -302,6 +302,7 @@ describe("desktop release scripts", () => {
       "scenario local-invites-dm",
       "scenario local-reply",
       "scenario local-media",
+      "scenario local-room-tags",
       "scenario local-settings",
       "verify local-settings trust section"
     ]) {
@@ -332,8 +333,27 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_dm_start=ok");
     expect(source).toContain("gui_local_reply=ok");
     expect(source).toContain("gui_local_media=ok");
+    expect(source).toContain("gui_local_room_tag_set=ok");
+    expect(source).toContain("gui_local_room_tag_removed=ok");
     expect(source).toContain("gui_local_settings=ok");
     expect(source).toContain("gui_local_trust_settings=ok");
+  });
+
+  test("linux GUI room-tag smoke drives context menu and Rust-owned section movement", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("async function runLocalRoomTagsScenario()");
+    expect(source).toContain('button[data-testid="room-item"]');
+    expect(source).toContain('button[role="menuitem"]');
+    expect(source).toContain("Add to Favourites");
+    expect(source).toContain("Remove from Favourites");
+    expect(source).toContain('data-room-section="favourites"');
+    expect(source).toContain('data-room-section="rooms"');
+    expect(source).toContain("waitForRoomInSection(");
+    expect(source).not.toContain("installTauriInvokeRecorder(");
   });
 
   test("linux GUI media smoke drives the hidden file input without a native dialog", () => {
@@ -363,12 +383,15 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("--scenario=local-invites-dm");
     expect(docs).toContain("--scenario=local-reply");
     expect(docs).toContain("--scenario=local-media");
+    expect(docs).toContain("--scenario=local-room-tags");
     expect(docs).toContain("--scenario=local-settings");
     expect(docs).toContain("gui_local_create_room=ok");
     expect(docs).toContain("gui_local_invite_accept=ok");
     expect(docs).toContain("gui_local_dm_start=ok");
     expect(docs).toContain("gui_local_reply=ok");
     expect(docs).toContain("gui_local_media=ok");
+    expect(docs).toContain("gui_local_room_tag_set=ok");
+    expect(docs).toContain("gui_local_room_tag_removed=ok");
     expect(docs).toContain("gui_local_settings=ok");
     expect(docs).toContain("gui_local_trust_settings=ok");
   });

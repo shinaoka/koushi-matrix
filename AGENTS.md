@@ -692,6 +692,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   waits for `timeline_room=true` and the Rust-owned `TimelineItem.media` row in
   the real Tauri WebView, clicks Download, and prints `gui_local_media=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000`
+- Room-tag GUI iteration has a focused virtual-display lane:
+  `--scenario=local-room-tags`. It opens the real room row context menu in the
+  Linux Tauri WebView, clicks Add/Remove Favourites, and waits for the row to
+  move between Rooms and Favourites from Rust-owned `RoomSummary.tags`; it
+  prints `gui_local_room_tag_set=ok` and `gui_local_room_tag_removed=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-tags-fast --timeout-ms=180000`
 - When you only need a quick window-state sanity check, use the lane's cheap
   QA title helpers such as `--qa-title-ready` and `--qa-title-send-ready`
   before starting a full scenario run.
@@ -845,6 +851,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   do not provide a reliable app-world command recorder. If the lane fails,
   inspect the scenario-specific artifact run log; the lane uses synthetic
   filenames/content only and must not write real/private media data.
+- `local-room-tags` must use the real context menu and wait for section
+  movement from Rust-owned `RoomSummary.tags`. Do not mutate React state,
+  monkeypatch Tauri IPC, or treat menu click completion as evidence until the
+  row is observed in the expected section.
 
 ## macOS GUI Smoke Failures
 
