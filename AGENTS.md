@@ -62,6 +62,19 @@ before any Phase B font asset or CSS wiring.
 Phase B GUI/browser-headless work for the same issue follows
 [docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md](docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md).
 
+## Out of Scope (deferred)
+
+Real-time and recorded audio/video are deferred for now and are intentionally
+absent from the product roadmap:
+
+- Voice / video calls — MatrixRTC / Element Call (MSC4143, MSC3401), including
+  1:1 and group calling.
+- Voice messages — recorded audio clips with waveform record/playback UI
+  (MSC3245).
+
+This is a conscious "not yet" decision, not a permanent exclusion; revisit
+before GA. Do not open feature issues for these without re-deciding scope here.
+
 ## Core Batch A DTO Mirrors
 
 - When `AppState` gains a Core Batch A field, update the hand-maintained Tauri
@@ -74,6 +87,27 @@ Phase B GUI/browser-headless work for the same issue follows
   `cargo test -p matrix-desktop-state --test core_batch_a_state`,
   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact`,
   and `npm --prefix apps/desktop run typecheck`.
+
+## Public Directory Phase A Notes
+
+- Public directory semantics are Rust-owned. `AppState.directory.query` and
+  `AppState.directory.join` are separate state machines; React must render
+  those DTOs and dispatch typed `query_directory` / `join_directory_room`
+  commands only. Do not recreate query, pagination, join success, or failure
+  state in React.
+- Directory join is alias-based. The SDK wrapper rejects bare room IDs for the
+  directory flow; GUI code should pass the canonical alias and optional server
+  hint from the Rust directory result.
+- When adding or changing public directory fields, update
+  `apps/desktop/src/domain/types.ts`,
+  `apps/desktop/src/domain/coreEvents.ts`,
+  `apps/desktop/src/domain/coreEvents.generated.json`,
+  Tauri DTO tests, browser fake snapshots, app harness snapshots, and the Tauri
+  IPC mock in the same change.
+- The local core QA `directory` scenario proves public directory query and
+  alias join through token-only stdout (`directory_query=ok`,
+  `directory_join=ok`). Do not print room IDs, aliases, server names, query
+  text, pagination tokens, or raw SDK errors for this stage.
 
 ## Message Interactions Phase A Notes
 
