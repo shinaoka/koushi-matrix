@@ -31,7 +31,11 @@ Credential-store verification is split by tier:
   `cargo test --manifest-path` there, so it must not require the private
   vendored Matrix SDK submodule. Manual local runs without an initialized
   vendor submodule should use the same temp-copy pattern before setting
-  `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`.
+  `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`. On hosted runners,
+  `security set-key-partition-list` is best-effort because generic-password-only
+  temporary keychains can reject that code-signing ACL operation; the Tier 2
+  pass/fail proof remains the real backend set/get/delete plus locked-keychain
+  fail-closed assertion.
 - Tier 3 remains attended-only: native consent dialogs, Touch ID, locked
   login-keychain UX, and signed-build ACL behavior. `tauri-driver` does not
   support native macOS GUI automation, so do not claim automated coverage for

@@ -146,7 +146,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `$RUNNER_TEMP` and runs `cargo test --manifest-path` there, so it must not
   require the private vendored Matrix SDK submodule. For a manual macOS session
   without an initialized vendor submodule, use the same temp-copy pattern before
-  setting `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`.
+  setting `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`. The test treats
+  `security set-key-partition-list` as best-effort on hosted runners; the
+  pass/fail proof is the real backend set/get/delete plus locked-keychain
+  fail-closed assertion.
 
 ## Native Attention QA
 

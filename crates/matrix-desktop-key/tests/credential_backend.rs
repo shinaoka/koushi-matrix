@@ -174,7 +174,10 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
     ];
     list_args.extend(guard.previous_keychains.clone());
     run_security(&list_args)?;
-    run_security(&[
+    // Hosted macOS runners can reject partition-list updates for a temporary
+    // generic-password-only keychain. Keep this as best-effort; the proof below
+    // still fails if the real backend cannot save/load/delete or fail closed.
+    let _ = run_security(&[
         "set-key-partition-list".to_owned(),
         "-S".to_owned(),
         "apple-tool:,apple:".to_owned(),
@@ -182,7 +185,7 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
         "-k".to_owned(),
         PASSWORD.to_owned(),
         path.clone(),
-    ])?;
+    ]);
 
     let store = CredentialStore::new(&format!("matrix-desktop-keychain-qa-{unique}"));
     let secret = LocalUnlockSecret::generate();
