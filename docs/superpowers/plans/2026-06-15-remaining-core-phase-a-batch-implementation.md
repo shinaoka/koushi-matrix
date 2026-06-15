@@ -803,7 +803,7 @@ activity_markread=ok
 
 Include a stale-unread room in the scenario.
 
-- [ ] **Step 5: Run focused checks**
+- [x] **Step 5: Run focused checks**
 
 Run:
 
@@ -814,7 +814,7 @@ cargo test -p matrix-desktop-core activity
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Commit and comment**
+- [x] **Step 6: Commit and comment**
 
 Run:
 
