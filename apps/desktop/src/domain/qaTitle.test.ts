@@ -45,6 +45,48 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("timeline_room=false");
   });
 
+  test("uses Rust-owned native attention tokens instead of room-list aggregation", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const title = qaWindowTitle({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        rooms: snapshot.state.rooms.map((room) => ({
+          ...room,
+          unread_count: 99,
+          notification_count: 99,
+          highlight_count: 99
+        })),
+        native_attention: {
+          summary: {
+            unread_count: 2,
+            highlight_count: 1,
+            badge_count: 2,
+            candidate: {
+              room_display_name: "Hidden QA Room",
+              kind: "mention",
+              unread_count: 2,
+              highlight_count: 1
+            },
+            capabilities: {
+              notifications: "available",
+              badge: "available",
+              sound: "unknown",
+              tray: "unknown",
+              activation: "unknown"
+            }
+          },
+          dispatch: { kind: "idle" }
+        }
+      }
+    });
+
+    expect(title).toContain("unread=2 badge=2 notify=mention");
+    expect(title).not.toContain("unread=99");
+    expect(title).not.toContain("Hidden QA Room");
+  });
+
   test("includes an optional panel token when provided", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();

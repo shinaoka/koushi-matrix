@@ -1,6 +1,5 @@
 import {
   isPermissionGranted,
-  requestPermission,
   sendNotification
 } from "@tauri-apps/plugin-notification";
 
@@ -24,25 +23,18 @@ export function desktopAttentionNotificationContent(
         title: `Mention in ${candidate.roomDisplayName}`,
         body: joinAttentionCounts([
           formatCount(candidate.highlightCount, "mention"),
-          formatCount(candidate.notificationCount, "notification"),
           formatCount(candidate.unreadCount, "unread", "unread")
         ])
       };
     case "dm":
       return {
         title: `Direct message in ${candidate.roomDisplayName}`,
-        body: joinAttentionCounts([
-          formatCount(candidate.notificationCount, "notification"),
-          formatCount(candidate.unreadCount, "unread", "unread")
-        ])
+        body: joinAttentionCounts([formatCount(candidate.unreadCount, "unread", "unread")])
       };
     case "message":
       return {
         title: `Message in ${candidate.roomDisplayName}`,
-        body: joinAttentionCounts([
-          formatCount(candidate.notificationCount, "notification"),
-          formatCount(candidate.unreadCount, "unread", "unread")
-        ])
+        body: joinAttentionCounts([formatCount(candidate.unreadCount, "unread", "unread")])
       };
   }
 }
@@ -73,12 +65,7 @@ export function createTauriDesktopNotificationTransport(): DesktopNotificationTr
 }
 
 async function ensureNotificationPermission(): Promise<boolean> {
-  if (await isPermissionGranted()) {
-    return true;
-  }
-
-  const permission = await requestPermission();
-  return permission === "granted";
+  return isPermissionGranted();
 }
 
 function joinAttentionCounts(parts: string[]): string {

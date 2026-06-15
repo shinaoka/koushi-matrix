@@ -343,19 +343,12 @@ export function App() {
     roomId: null,
     isTyping: false
   });
-  const previousAttentionInput = useRef<{
-    activeRoomId: string | null;
-    rooms: DesktopSnapshot["state"]["rooms"];
-  } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const loginPasswordRef = useRef<HTMLInputElement>(null);
   const recoverySecretRef = useRef<HTMLInputElement>(null);
   const roomSettingsLoadRef = useRef<string | null>(null);
   const attentionSummary = snapshot
-    ? desktopAttentionSummary({
-        activeRoomId: snapshot.state.navigation.active_room_id,
-        rooms: snapshot.state.rooms
-      })
+    ? desktopAttentionSummary(snapshot.state.native_attention)
     : null;
   const safeAttentionSummary =
     attentionSummary ?? {
@@ -534,26 +527,25 @@ export function App() {
 
   useEffect(() => {
     if (!snapshot) {
-      previousAttentionInput.current = null;
       return;
     }
 
-    const currentAttentionInput = {
-      activeRoomId: snapshot.state.navigation.active_room_id,
-      rooms: snapshot.state.rooms
-    };
     const candidate = desktopAttentionNotificationCandidate(
-      currentAttentionInput,
-      previousAttentionInput.current
+      snapshot.state.native_attention
     );
-    previousAttentionInput.current = currentAttentionInput;
 
     if (!candidate || !tauriNotificationTransport) {
       return;
     }
 
     void sendDesktopAttentionNotification(candidate, tauriNotificationTransport);
-  }, [snapshot]);
+  }, [
+    snapshot?.state.native_attention.dispatch.kind,
+    snapshot?.state.native_attention.summary.candidate?.room_display_name,
+    snapshot?.state.native_attention.summary.candidate?.kind,
+    snapshot?.state.native_attention.summary.candidate?.unread_count,
+    snapshot?.state.native_attention.summary.candidate?.highlight_count
+  ]);
 
   useEffect(() => {
     const message = qaSendSmokeMessage();

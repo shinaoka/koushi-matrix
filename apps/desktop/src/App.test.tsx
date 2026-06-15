@@ -920,12 +920,24 @@ describe("Tauri state refresh wiring", () => {
     expect(panelPropsSource).toContain("closeFocusedContextPanel");
   });
 
-  test("feeds the effective right panel mode into the QA window title", () => {
+  test("feeds Rust-owned native attention into window title and notification adapters", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("desktopAttentionSummary");
+    const summaryStart = source.indexOf("const attentionSummary");
+    const summaryEnd = source.indexOf("function handleShortcutAction", summaryStart);
+    const summarySource = source.slice(summaryStart, summaryEnd);
+    expect(summarySource).toContain("desktopAttentionSummary(snapshot.state.native_attention)");
+    expect(summarySource).not.toContain("snapshot.state.rooms");
+    expect(summarySource).not.toContain("navigation.active_room_id");
+
+    const notificationStart = source.indexOf("const candidate = desktopAttentionNotificationCandidate");
+    const notificationEnd = source.indexOf("void sendDesktopAttentionNotification", notificationStart);
+    const notificationSource = source.slice(notificationStart, notificationEnd);
+    expect(notificationSource).toContain("snapshot.state.native_attention");
+    expect(notificationSource).not.toContain("previousAttentionInput");
+    expect(notificationSource).not.toContain("snapshot.state.rooms");
+
     expect(source).toContain("desktopAttentionWindowTitle");
-    expect(source).toContain("desktopAttentionNotificationCandidate");
     expect(source).toContain("sendDesktopAttentionNotification");
     expect(source).toContain("applyDesktopAttentionToWindow");
     expect(source).toContain("qaWindowTitle(");

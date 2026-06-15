@@ -1201,6 +1201,10 @@ stateDiagram-v2
   eligibility, tray visibility, and activation behavior are reducer/core
   semantics. Platform adapters only map candidates to macOS, Windows, Linux, or
   no-op capabilities.
+- Passive platform dispatch must not trigger native notification permission
+  prompts. Adapters may check already-granted permission and no-op otherwise;
+  prompts require an explicit user/onboarding action and a corresponding
+  Rust-owned setting/permission transition.
 - Dispatch completions are request-correlated. Stale dispatch results are
   ignored, and adapter failures settle as private-data-free `Failed(kind)`
   states that can be cleared by read/focus transitions.

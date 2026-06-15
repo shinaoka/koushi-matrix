@@ -6,83 +6,92 @@ import {
   desktopAttentionSummary,
   desktopAttentionWindowTitle
 } from "./desktopAttention";
+import type { NativeAttentionState } from "./types";
+
+function nativeAttentionState(
+  partial: Partial<NativeAttentionState["summary"]> = {},
+  dispatch: NativeAttentionState["dispatch"] = { kind: "idle" }
+): NativeAttentionState {
+  return {
+    summary: {
+      unread_count: 0,
+      highlight_count: 0,
+      badge_count: 0,
+      candidate: null,
+      capabilities: {
+        notifications: "unknown",
+        badge: "unknown",
+        sound: "unknown",
+        tray: "unknown",
+        activation: "unknown"
+      },
+      ...partial
+    },
+    dispatch
+  };
+}
 
 describe("desktop attention summary", () => {
-  test("computes unread totals, badge counts, title hints, and QA tokens from room attention", () => {
-    const summary = desktopAttentionSummary({
-      activeRoomId: null,
-      rooms: [
-        {
-          room_id: "!dm-alerts:example.invalid",
-          display_name: "Direct chat",
-          is_dm: true,
-          unread_count: 0,
-          notification_count: 2,
-          highlight_count: 0
-        },
-        {
-          room_id: "!room-announcements:example.invalid",
-          display_name: "Announcements",
-          is_dm: false,
+  test("projects window attention from Rust-owned native attention state", () => {
+    const summary = desktopAttentionSummary(
+      nativeAttentionState({
+        unread_count: 6,
+        highlight_count: 1,
+        badge_count: 4,
+        candidate: {
+          room_display_name: "Announcements",
+          kind: "mention",
           unread_count: 3,
           highlight_count: 1
-        },
-        {
-          room_id: "!room-updates:example.invalid",
-          display_name: "Updates",
-          is_dm: false,
-          unread_count: 1
         }
-      ]
-    });
+      })
+    );
 
     expect(summary).toEqual({
       unreadTotal: 6,
-      badgeCount: 6,
+      badgeCount: 4,
       notificationKind: "mention",
       titleHint: "6 unread",
-      qaTitleToken: "unread=6 badge=6 notify=mention"
+      qaTitleToken: "unread=6 badge=4 notify=mention"
     });
-    expect(summary.qaTitleToken).not.toContain("Direct chat");
     expect(summary.qaTitleToken).not.toContain("Announcements");
   });
 
-  test("falls back to unread counts when notification metadata is zero", () => {
-    const summary = desktopAttentionSummary({
-      activeRoomId: null,
-      rooms: [
+  test("renders no notification intent when Rust suppresses or clears the candidate", () => {
+    const summary = desktopAttentionSummary(
+      nativeAttentionState(
         {
-          room_id: "!room-fallback:example.invalid",
-          display_name: "Fallback room",
-          is_dm: false,
           unread_count: 3,
-          notification_count: 0,
-          highlight_count: 0
-        }
-      ]
-    });
+          highlight_count: 1,
+          badge_count: 3,
+          candidate: null
+        },
+        { kind: "suppressed", reason: "windowFocused" }
+      )
+    );
 
     expect(summary).toEqual({
       unreadTotal: 3,
       badgeCount: 3,
-      notificationKind: "message",
+      notificationKind: "none",
       titleHint: "3 unread",
-      qaTitleToken: "unread=3 badge=3 notify=message"
+      qaTitleToken: "unread=3 badge=3 notify=none"
     });
   });
 
   test("turns a summary into a human readable window title", () => {
-    const summary = desktopAttentionSummary({
-      activeRoomId: null,
-      rooms: [
-        {
-          room_id: "!room-one:example.invalid",
-          display_name: "Room One",
-          is_dm: false,
-          unread_count: 4
+    const summary = desktopAttentionSummary(
+      nativeAttentionState({
+        unread_count: 4,
+        badge_count: 4,
+        candidate: {
+          room_display_name: "Room One",
+          kind: "message",
+          unread_count: 4,
+          highlight_count: 0
         }
-      ]
-    });
+      })
+    );
 
     expect(desktopAttentionWindowTitle("matrix-desktop", summary)).toBe(
       "matrix-desktop · 4 unread"
@@ -91,94 +100,48 @@ describe("desktop attention summary", () => {
 });
 
 describe("desktop notification candidate", () => {
-  test("prefers mention changes over DM and message changes", () => {
-    const previous = {
-      activeRoomId: null,
-      rooms: [
-        {
-          room_id: "!room-mention:example.invalid",
-          display_name: "Announcements",
-          is_dm: false,
-          unread_count: 0,
-          highlight_count: 0
-        },
-        {
-          room_id: "!dm-room:example.invalid",
-          display_name: "Direct chat",
-          is_dm: true,
-          unread_count: 0,
-          notification_count: 0
-        },
-        {
-          room_id: "!room-message:example.invalid",
-          display_name: "General",
-          is_dm: false,
-          unread_count: 0
-        }
-      ]
-    };
-    const current = {
-      activeRoomId: null,
-      rooms: [
-        {
-          room_id: "!room-mention:example.invalid",
-          display_name: "Announcements",
-          is_dm: false,
-          unread_count: 3,
-          highlight_count: 1
-        },
-        {
-          room_id: "!dm-room:example.invalid",
-          display_name: "Direct chat",
-          is_dm: true,
-          unread_count: 2,
-          notification_count: 2
-        },
-        {
-          room_id: "!room-message:example.invalid",
-          display_name: "General",
-          is_dm: false,
-          unread_count: 1
-        }
-      ]
-    };
-
-    expect(desktopAttentionNotificationCandidate(current, previous)).toEqual({
+  test("uses the Rust-owned native attention candidate without React room diffing", () => {
+    expect(
+      desktopAttentionNotificationCandidate(
+        nativeAttentionState({
+          unread_count: 6,
+          highlight_count: 1,
+          badge_count: 6,
+          candidate: {
+            room_display_name: "Announcements",
+            kind: "mention",
+            unread_count: 3,
+            highlight_count: 1
+          }
+        })
+      )
+    ).toEqual({
       roomDisplayName: "Announcements",
       kind: "mention",
       unreadCount: 3,
-      notificationCount: 0,
       highlightCount: 1
     });
   });
 
-  test("suppresses notification candidates for the focused room", () => {
-    const previous = {
-      activeRoomId: null,
-      rooms: [
-        {
-          room_id: "!room-focused:example.invalid",
-          display_name: "Focused room",
-          is_dm: false,
-          unread_count: 0,
-          highlight_count: 0
-        }
-      ]
-    };
-    const current = {
-      activeRoomId: "!room-focused:example.invalid",
-      rooms: [
-        {
-          room_id: "!room-focused:example.invalid",
-          display_name: "Focused room",
-          is_dm: false,
-          unread_count: 2,
-          highlight_count: 1
-        }
-      ]
-    };
-
-    expect(desktopAttentionNotificationCandidate(current, previous)).toBeNull();
+  test("does not dispatch when Rust state marks the candidate non-idle", () => {
+    expect(
+      desktopAttentionNotificationCandidate(
+        nativeAttentionState(
+          {
+            unread_count: 2,
+            highlight_count: 1,
+            badge_count: 2,
+            candidate: {
+              room_display_name: "Focused room",
+              kind: "mention",
+              unread_count: 2,
+              highlight_count: 1
+            }
+          },
+          { kind: "suppressed", reason: "windowFocused" }
+        )
+      )
+    ).toBeNull();
   });
 
   test("applies the derived title and badge count to a window-like adapter", async () => {
@@ -186,17 +149,18 @@ describe("desktop notification candidate", () => {
       setTitle: vi.fn().mockResolvedValue(undefined),
       setBadgeCount: vi.fn().mockResolvedValue(undefined)
     };
-    const summary = desktopAttentionSummary({
-      activeRoomId: null,
-      rooms: [
-        {
-          room_id: "!room-one:example.invalid",
-          display_name: "Room One",
-          is_dm: false,
-          unread_count: 5
+    const summary = desktopAttentionSummary(
+      nativeAttentionState({
+        unread_count: 5,
+        badge_count: 5,
+        candidate: {
+          room_display_name: "Room One",
+          kind: "message",
+          unread_count: 5,
+          highlight_count: 0
         }
-      ]
-    });
+      })
+    );
 
     await applyDesktopAttentionToWindow(
       windowMock,

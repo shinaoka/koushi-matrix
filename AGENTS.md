@@ -162,6 +162,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `AppState.native_attention` projections. GUI/native adapter code must render
   or dispatch from the snapshot/capability DTOs; it must not invent notification
   candidates, badge counts, dedupe, or suppression semantics.
+- React attention helpers may only map `snapshot.state.native_attention` to
+  window title, badge, and native adapter payloads. They must not aggregate
+  `rooms`, diff previous room snapshots, or infer focused-room/muted/duplicate
+  notification behavior locally.
+- Passive native notification dispatch checks the current OS permission state
+  only. It must not call permission-prompt APIs; permission prompts belong to an
+  explicit user/onboarding action.
 - Candidate projection uses private-data-minimized room labels and counts only.
   It must not expose message bodies, sender IDs, room IDs, event IDs,
   transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,

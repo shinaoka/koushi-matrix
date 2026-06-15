@@ -60,7 +60,11 @@ Rules:
    or secrets. Native attention candidates and platform capability profiles are
    Rust-owned DTOs; React and platform adapters must not add account/content
    fields while mapping them to macOS, Windows, Linux, tray, sound, badge, or
-   no-op behavior.
+   no-op behavior. React attention helpers must consume
+   `AppState.native_attention` directly; they must not aggregate room lists,
+   diff previous room snapshots, or synthesize dedupe/focus/mute semantics.
+   Passive notification dispatch may check existing OS permission, but must not
+   prompt for permission except through an explicit user or onboarding action.
 10. Device-local settings are non-secret product state, but they are still a
    privacy boundary. Settings files may contain only typed preferences such as
    locale, theme, font/emoji choice, keyboard behavior, and notification

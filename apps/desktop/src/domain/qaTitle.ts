@@ -8,10 +8,7 @@ export function qaWindowTitle(
   panelMode?: RightPanelMode,
   sendStatus?: QaSendSmokeStatus
 ): string {
-  const attention = desktopAttentionSummary({
-    activeRoomId: snapshot.state.navigation.active_room_id,
-    rooms: snapshot.state.rooms
-  });
+  const attention = desktopAttentionSummary(snapshot.state.native_attention);
   const title = [
     "matrix-desktop qa",
     `session=${snapshot.state.session.kind}`,

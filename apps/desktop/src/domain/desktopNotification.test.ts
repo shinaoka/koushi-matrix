@@ -28,13 +28,12 @@ describe("desktop notification content", () => {
       roomDisplayName: "Announcements",
       kind: "mention",
       unreadCount: 6,
-      notificationCount: 2,
       highlightCount: 1
     });
 
     expect(payload).toEqual({
       title: "Mention in Announcements",
-      body: "1 mention, 2 notifications, 6 unread"
+      body: "1 mention, 6 unread"
     });
     expect(Object.keys(payload)).toEqual(["title", "body"]);
     expect(JSON.stringify(payload)).not.toContain("room_id");
@@ -49,7 +48,6 @@ describe("desktop notification content", () => {
       roomDisplayName: "Direct chat",
       kind: "dm",
       unreadCount: 1,
-      notificationCount: 0,
       highlightCount: 0
     });
 
@@ -68,7 +66,6 @@ describe("desktop notification content", () => {
         roomDisplayName: "Direct chat",
         kind: "dm",
         unreadCount: 3,
-        notificationCount: 3,
         highlightCount: 0
       },
       transport
@@ -77,7 +74,7 @@ describe("desktop notification content", () => {
     expect(transport.notify).toHaveBeenCalledOnce();
     expect(transport.notify).toHaveBeenCalledWith({
       title: "Direct message in Direct chat",
-      body: "3 notifications, 3 unread"
+      body: "3 unread"
     });
   });
 
@@ -92,7 +89,6 @@ describe("desktop notification content", () => {
           roomDisplayName: "General",
           kind: "message",
           unreadCount: 1,
-          notificationCount: 1,
           highlightCount: 0
         },
         transport
@@ -101,23 +97,37 @@ describe("desktop notification content", () => {
     expect(transport.notify).toHaveBeenCalledOnce();
   });
 
-  test("requests permission before notifying in the Tauri transport", async () => {
+  test("sends through the Tauri transport when permission is already granted", async () => {
+    vi.mocked(isPermissionGranted).mockResolvedValue(true);
+    vi.mocked(sendNotification).mockResolvedValue(undefined);
+
+    await createTauriDesktopNotificationTransport().notify({
+      title: "Mention in Announcements",
+      body: "1 mention, 6 unread"
+    });
+
+    expect(isPermissionGranted).toHaveBeenCalledOnce();
+    expect(requestPermission).not.toHaveBeenCalled();
+    expect(sendNotification).toHaveBeenCalledOnce();
+    expect(sendNotification).toHaveBeenCalledWith({
+      title: "Mention in Announcements",
+      body: "1 mention, 6 unread"
+    });
+  });
+
+  test("does not prompt for notification permission during passive attention dispatch", async () => {
     vi.mocked(isPermissionGranted).mockResolvedValue(false);
     vi.mocked(requestPermission).mockResolvedValue("granted");
     vi.mocked(sendNotification).mockResolvedValue(undefined);
 
     await createTauriDesktopNotificationTransport().notify({
       title: "Mention in Announcements",
-      body: "1 mention, 2 notifications, 6 unread"
+      body: "1 mention, 6 unread"
     });
 
     expect(isPermissionGranted).toHaveBeenCalledOnce();
-    expect(requestPermission).toHaveBeenCalledOnce();
-    expect(sendNotification).toHaveBeenCalledOnce();
-    expect(sendNotification).toHaveBeenCalledWith({
-      title: "Mention in Announcements",
-      body: "1 mention, 2 notifications, 6 unread"
-    });
+    expect(requestPermission).not.toHaveBeenCalled();
+    expect(sendNotification).not.toHaveBeenCalled();
   });
 
   test("skips notification delivery when permission is denied", async () => {
@@ -127,11 +137,11 @@ describe("desktop notification content", () => {
 
     await createTauriDesktopNotificationTransport().notify({
       title: "Message in General",
-      body: "1 notification, 1 unread"
+      body: "1 unread"
     });
 
     expect(isPermissionGranted).toHaveBeenCalledOnce();
-    expect(requestPermission).toHaveBeenCalledOnce();
+    expect(requestPermission).not.toHaveBeenCalled();
     expect(sendNotification).not.toHaveBeenCalled();
   });
 });
