@@ -501,12 +501,22 @@ Phase B GUI/browser-headless work for the same issue follows
 
 - After the one-time host package install, run the GUI QA lanes as a normal
   user; no `su` or root shell is needed for the fast loop.
-- Prepend the local homeserver binaries when iterating so the headless/local
-  GUI lanes use the local QA binaries first. In this environment, check these
-  paths before assuming Conduit/Tuwunel are missing:
-  `/tmp/matrix-desktop-local-qa-bin` and
-  `/tmp/matrix-desktop-local-qa-bin-test`.
-  `export PATH=/tmp/matrix-desktop-local-qa-bin:$PATH`
+- Local homeserver QA runners resolve `conduit` and `tuwunel` from the child
+  process `PATH`; they do not maintain a separate absolute-path probe list.
+  Prepend local QA binary directories before running headless/local GUI lanes.
+- Search path list for local homeserver binaries:
+  - Host fast lane, preferred:
+    `/tmp/matrix-desktop-local-qa-bin`
+  - Host fallback/test binaries:
+    `/tmp/matrix-desktop-local-qa-bin-test`
+  - Docker lane:
+    `/usr/local/bin` inside the committed Linux GUI image
+  - Windows/manual equivalent:
+    `%TEMP%\matrix-desktop-local-qa-bin` or another synthetic, ignored QA bin
+    directory prepended to `PATH`
+  - Existing user/system `PATH` entries after the QA bin directories
+- POSIX host example:
+  `export PATH=/tmp/matrix-desktop-local-qa-bin:/tmp/matrix-desktop-local-qa-bin-test:$PATH`
 - Quick verification:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH conduit --version` and
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH tuwunel --version`.
