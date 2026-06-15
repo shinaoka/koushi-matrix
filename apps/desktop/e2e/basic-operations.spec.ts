@@ -486,6 +486,148 @@ test("room tag context menu dispatches typed commands and waits for Rust section
   await expect(favouritesSection).toHaveCount(0);
 });
 
+test("mention autocomplete inserts a pill and sends typed mention intent", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        profile: {
+          ...snapshot.state.profile,
+          users: {
+            ...snapshot.state.profile.users,
+            "@alice:example.invalid": {
+              user_id: "@alice:example.invalid",
+              display_name: "Alice",
+              avatar: null
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("@a");
+  await expect(page.getByRole("listbox", { name: "Mention suggestions" })).toBeVisible();
+  await page.getByRole("option", { name: "Alice" }).click();
+  await expect(
+    page.getByLabel("Selected mentions").getByText("@Alice", { exact: true })
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect.poll(() => invocationCount(page, "send_text")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      body: "@Alice ",
+      mentions: {
+        targets: [
+          {
+            kind: "user",
+            user_id: "@alice:example.invalid",
+            display_label: "Alice"
+          }
+        ]
+      }
+    });
+});
+
+test("markdown toolbar and slash composer input dispatch Rust-owned send bodies", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("world");
+  await composer.selectText();
+  await page.getByRole("button", { name: "Bold" }).click();
+  await expect(composer).toHaveValue("**world**");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      body: "**world**",
+      mentions: { targets: [] }
+    });
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await composer.fill("/me waves");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      body: "/me waves",
+      mentions: { targets: [] }
+    });
+});
+
+test("main composer composing Enter never sends or accepts mention autocomplete", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        profile: {
+          ...snapshot.state.profile,
+          users: {
+            "@alice:example.invalid": {
+              user_id: "@alice:example.invalid",
+              display_name: "Alice",
+              avatar: null
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("@a");
+  await expect(page.getByRole("listbox", { name: "Mention suggestions" })).toBeVisible();
+  await composer.evaluate((element) => {
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Enter"
+    });
+    Object.defineProperty(event, "isComposing", { value: true });
+    element.dispatchEvent(event);
+  });
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("resolve_composer_key_action")[0]?.args)
+    )
+    .toMatchObject({
+      surface: "main",
+      keyEvent: { key: "enter", is_composing: true },
+      autocompleteOpen: true,
+      sendEnabled: true
+    });
+  expect(await invocationCount(page, "send_text")).toBe(0);
+  await expect(page.getByRole("listbox", { name: "Mention suggestions" })).toBeVisible();
+  await expect(composer).toHaveValue("@a");
+});
+
 test("send queue rows dispatch retry and cancel commands from Rust-owned send state", async ({
   page
 }) => {

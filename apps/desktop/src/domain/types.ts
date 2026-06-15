@@ -156,6 +156,15 @@ export type ComposerResolvedAction =
   | "commitImeCandidate"
   | "noop";
 
+export type MentionTarget =
+  | { kind: "user"; user_id: string; display_label: string }
+  | { kind: "room"; room_id: string; display_label: string }
+  | { kind: "roomMention"; display_label: string };
+
+export interface MentionIntent {
+  targets: MentionTarget[];
+}
+
 export type ResolveComposerKeyAction = (
   surface: ComposerSurface,
   keyEvent: ComposerKeyEvent,

@@ -698,6 +698,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   move between Rooms and Favourites from Rust-owned `RoomSummary.tags`; it
   prints `gui_local_room_tag_set=ok` and `gui_local_room_tag_removed=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-tags-fast --timeout-ms=180000`
+- Composer GUI iteration has a focused virtual-display lane:
+  `--scenario=local-composer`. It seeds a synthetic helper member, waits for
+  Rust-owned `ProfileState.users` to feed the mention autocomplete, drives the
+  real composer mention option, Bold toolbar, and slash input, then waits for
+  Rust-owned send state (`send=sent`) plus composer clear. It prints `gui_local_mention=ok`,
+  `gui_local_markdown=ok`, and `gui_local_slash=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-composer-fast --timeout-ms=180000`
 - When you only need a quick window-state sanity check, use the lane's cheap
   QA title helpers such as `--qa-title-ready` and `--qa-title-send-ready`
   before starting a full scenario run.
@@ -855,6 +862,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   movement from Rust-owned `RoomSummary.tags`. Do not mutate React state,
   monkeypatch Tauri IPC, or treat menu click completion as evidence until the
   row is observed in the expected section.
+- `local-composer` mention candidates must come from Rust-owned
+  `ProfileState.users`, which is projected from SDK room member profiles during
+  room-list observation. React may track selected draft mention pills and pass a
+  typed `MentionIntent`, but it must not synthesize Matrix `m.mentions`,
+  formatted HTML, slash command semantics, or fallback send behavior.
 
 ## macOS GUI Smoke Failures
 

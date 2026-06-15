@@ -372,6 +372,11 @@ stateDiagram-v2
 
 - Profile actions are accepted only for a Ready session. Late profile snapshots
   after logout, lock, or account switch are ignored.
+- Joined-room member profiles enter `AppState.profile.users` through the
+  Rust-owned room-list observation path (`RoomActor` normalizes SDK active
+  member profiles and emits `UserProfilesUpdated`). GUI mention autocomplete
+  and member/person surfaces consume this projection; React must not query
+  Matrix profiles or create member candidates from DOM/timeline strings.
 - `ProfileUpdateRequested { request_id, request }` is accepted only when no
   profile update is in flight. It records either `SettingDisplayName` or
   `SettingAvatar` and emits `ProfileChanged`.
@@ -1178,6 +1183,11 @@ stateDiagram-v2
   plain body plus safe HTML formatted body, `/me` becomes an emote message, and
   unsupported slash commands fail locally as `UnsupportedSlashCommand` before
   a submitted composer transaction clears draft state.
+- Mention autocomplete candidates are Rust-owned profile/member DTOs. React may
+  show the popover, track selected draft pills, and pass a typed
+  `MentionIntent`; it must not synthesize Matrix mention content, infer members
+  from rendered timeline text, or repair send behavior if the Rust resolver
+  returns `noop`/failure.
 - CJK policy updates carry a generation or request id. Stale profile/search
   results for an older locale/settings generation are ignored.
 - Failure behavior falls back to safe default display/search policy with a

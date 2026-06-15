@@ -115,6 +115,8 @@ import type {
   ComposerMode,
   DesktopSnapshot,
   LocaleDisplayProfile,
+  MentionIntent,
+  MentionTarget,
   ResolveComposerKeyAction,
   RoomListItem,
   RoomTags,
@@ -122,7 +124,8 @@ import type {
   SearchResult,
   SearchScopeKind,
   SettingsPatch,
-  TimelineMessage
+  TimelineMessage,
+  UserProfile
 } from "./domain/types";
 
 const api = createDesktopApi();
@@ -131,6 +134,7 @@ const MENU_EVENT_NAME = "matrix-desktop://menu";
 const STATE_EVENT_NAME = "matrix-desktop://state";
 const CORE_EVENT_NAME = "matrix-desktop://event";
 const EMPTY_ROOM_TAGS: RoomTags = { favourite: null, low_priority: null };
+const EMPTY_MENTION_INTENT: MentionIntent = { targets: [] };
 
 /**
  * Tauri transport for the event-driven timeline (Async rule 4: timeline data
@@ -255,6 +259,13 @@ type ComposerModeProp =
   | { kind: "plain" }
   | { kind: "reply"; in_reply_to_event_id: string };
 
+type MentionCandidate = {
+  key: string;
+  label: string;
+  searchText: string;
+  target: MentionTarget;
+};
+
 function composerModeProp(mode: ComposerMode): ComposerModeProp {
   return mode === "Plain"
     ? { kind: "plain" }
@@ -279,6 +290,7 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerDraft, setComposerDraft] = useState("");
+  const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginDeviceName, setLoginDeviceName] = useState("Matrix Desktop");
@@ -960,8 +972,13 @@ export function App() {
     try {
       const nextSnapshot =
         composerMode === "Plain"
-          ? await api.sendText(roomId, body)
-          : await api.sendReply(roomId, composerMode.Reply.in_reply_to_event_id, body);
+          ? await api.sendText(roomId, body, composerMentions)
+          : await api.sendReply(
+              roomId,
+              composerMode.Reply.in_reply_to_event_id,
+              body,
+              composerMentions
+            );
       setSnapshot(nextSnapshot);
       if (!isTauriRuntime()) {
         const completionStatus = qaSendSmokeCompletionStatus(
@@ -978,6 +995,12 @@ export function App() {
       return;
     }
     setComposerDraft("");
+    setComposerMentions(EMPTY_MENTION_INTENT);
+  }
+
+  function updateComposerDraft(value: string) {
+    setComposerDraft(value);
+    setComposerMentions((mentions) => pruneMentionIntentForDraft(mentions, value));
   }
 
   async function uploadMediaFile(file: File) {
@@ -1277,6 +1300,7 @@ export function App() {
             activeRoomName={activeRoom?.display_name ?? t("room.noRoomSelected")}
             composerDraft={composerDraft}
             composerMode={composerModeProp(snapshot.state.timeline.composer.mode)}
+            mentionIntent={composerMentions}
             resolveComposerKeyAction={resolveComposerKeyAction}
             searchQuery={searchQuery}
             searchResults={searchResults}
@@ -1288,7 +1312,8 @@ export function App() {
             onAttachFile={(file) => {
               void uploadMediaFile(file);
             }}
-            onComposerDraftChange={setComposerDraft}
+            onComposerDraftChange={updateComposerDraft}
+            onMentionIntentChange={setComposerMentions}
             onOpenThread={openThread}
             onPaginateBackwards={paginateTimelineBackwards}
             onReply={(roomId, eventId) => {
@@ -2471,6 +2496,7 @@ function TimelinePane({
   activeRoomName,
   composerDraft,
   composerMode,
+  mentionIntent,
   resolveComposerKeyAction,
   searchQuery,
   searchResults,
@@ -2479,6 +2505,7 @@ function TimelinePane({
   onCancelReply,
   onAttachFile,
   onComposerDraftChange,
+  onMentionIntentChange,
   onEditMessage,
   onOpenContextMenu,
   onOpenThread,
@@ -2494,6 +2521,7 @@ function TimelinePane({
   activeRoomName: string;
   composerDraft: string;
   composerMode: ComposerModeProp;
+  mentionIntent: MentionIntent;
   resolveComposerKeyAction: ResolveComposerKeyAction;
   searchQuery: string;
   searchResults: SearchResult[];
@@ -2502,6 +2530,7 @@ function TimelinePane({
   onCancelReply: () => void;
   onAttachFile: (file: File) => void | Promise<void>;
   onComposerDraftChange: (value: string) => void;
+  onMentionIntentChange: (intent: MentionIntent) => void;
   onEditMessage: (message: TimelineMessage) => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenThread: (roomId: string, rootEventId: string) => void;
@@ -2622,11 +2651,14 @@ function TimelinePane({
       <Composer
         composerMode={composerMode}
         isSending={Boolean(snapshot.state.timeline.composer.pending_transaction_id)}
+        mentionCandidates={mentionCandidatesFromSnapshot(snapshot)}
+        mentionIntent={mentionIntent}
         resolveComposerKeyAction={resolveComposerKeyAction}
         roomName={activeRoomName}
         value={composerDraft}
         onCancelReply={onCancelReply}
         onAttachFile={onAttachFile}
+        onMentionIntentChange={onMentionIntentChange}
         onSend={onSendText}
         onValueChange={onComposerDraftChange}
       />
@@ -2684,6 +2716,78 @@ function pinnedEventsForRoom(
   roomId: string | null | undefined
 ): DesktopSnapshot["state"]["room_interactions"][string]["pinned_events"] {
   return roomId ? snapshot.state.room_interactions[roomId]?.pinned_events ?? [] : [];
+}
+
+function mentionCandidatesFromSnapshot(snapshot: DesktopSnapshot): MentionCandidate[] {
+  return Object.values(snapshot.state.profile.users)
+    .map((profile) => {
+      const label = mentionLabel(profile);
+      const target: MentionTarget = {
+        kind: "user",
+        user_id: profile.user_id,
+        display_label: label
+      };
+      return {
+        key: profile.user_id,
+        label,
+        searchText: `${label} ${profile.user_id}`.toLowerCase(),
+        target
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) ||
+        a.key.localeCompare(b.key)
+    );
+}
+
+function mentionLabel(profile: UserProfile): string {
+  return profile.display_name?.trim() || profile.user_id;
+}
+
+function activeMentionQuery(value: string): { start: number; end: number; query: string } | null {
+  const match = /(^|\s)@([^\s@]*)$/u.exec(value);
+  if (!match) {
+    return null;
+  }
+  const query = match[2] ?? "";
+  return {
+    start: value.length - query.length - 1,
+    end: value.length,
+    query
+  };
+}
+
+function appendMentionTarget(intent: MentionIntent, target: MentionTarget): MentionIntent {
+  const targetKey = mentionTargetKey(target);
+  if (intent.targets.some((candidate) => mentionTargetKey(candidate) === targetKey)) {
+    return intent;
+  }
+  return { targets: [...intent.targets, target] };
+}
+
+function mentionTargetKey(target: MentionTarget): string {
+  switch (target.kind) {
+    case "user":
+      return `user:${target.user_id}`;
+    case "room":
+      return `room:${target.room_id}`;
+    case "roomMention":
+      return "roomMention";
+  }
+}
+
+function mentionDraftToken(target: MentionTarget): string {
+  return `@${target.display_label}`;
+}
+
+function mentionPillLabel(target: MentionTarget): string {
+  return mentionDraftToken(target);
+}
+
+function pruneMentionIntentForDraft(intent: MentionIntent, draft: string): MentionIntent {
+  const targets = intent.targets.filter((target) => draft.includes(mentionDraftToken(target)));
+  return targets.length === intent.targets.length ? intent : { targets };
 }
 
 function SearchResults({
@@ -2828,25 +2932,118 @@ function MessageArticle({
 export function Composer({
   composerMode,
   isSending,
+  mentionCandidates = [],
+  mentionIntent = EMPTY_MENTION_INTENT,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   roomName,
   value,
   onCancelReply,
   onAttachFile = async () => undefined,
+  onMentionIntentChange = () => undefined,
   onSend,
   onValueChange
 }: {
   composerMode: ComposerModeProp;
   isSending: boolean;
+  mentionCandidates?: MentionCandidate[];
+  mentionIntent?: MentionIntent;
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   roomName: string;
   value: string;
   onCancelReply: () => void;
   onAttachFile?: (file: File) => void | Promise<void>;
+  onMentionIntentChange?: (intent: MentionIntent) => void;
   onSend: () => void | Promise<void>;
   onValueChange: (value: string) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const activeMention = activeMentionQuery(value);
+  const activeMentionSuggestions =
+    activeMention === null
+      ? []
+      : mentionCandidates
+          .filter((candidate) => candidate.searchText.includes(activeMention.query.toLowerCase()))
+          .slice(0, 5);
+  const autocompleteOpen = activeMentionSuggestions.length > 0;
+
+  function replaceTextRange(
+    start: number,
+    end: number,
+    replacement: string,
+    cursorOffset = replacement.length
+  ) {
+    const nextValue = `${value.slice(0, start)}${replacement}${value.slice(end)}`;
+    const cursor = start + cursorOffset;
+    onValueChange(nextValue);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(cursor, cursor);
+    });
+  }
+
+  function selectionRange(): { start: number; end: number } {
+    const textarea = textareaRef.current;
+    return {
+      start: textarea?.selectionStart ?? value.length,
+      end: textarea?.selectionEnd ?? value.length
+    };
+  }
+
+  function keepComposerFocus(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+  }
+
+  function applyInlineMarkdown(prefix: string, suffix = prefix, placeholder = "") {
+    const { start, end } = selectionRange();
+    const selected = value.slice(start, end) || placeholder;
+    replaceTextRange(
+      start,
+      end,
+      `${prefix}${selected}${suffix}`,
+      prefix.length + selected.length + suffix.length
+    );
+  }
+
+  function applyLinkMarkdown() {
+    const { start, end } = selectionRange();
+    const selected = value.slice(start, end) || "link";
+    const replacement = `[${selected}](https://)`;
+    replaceTextRange(start, end, replacement, replacement.length - 1);
+  }
+
+  function applyListMarkdown() {
+    const { start, end } = selectionRange();
+    const selected = value.slice(start, end);
+    if (!selected) {
+      replaceTextRange(start, end, "- ", 2);
+      return;
+    }
+    const replacement = selected
+      .split("\n")
+      .map((line) => (line.startsWith("- ") ? line : `- ${line}`))
+      .join("\n");
+    replaceTextRange(start, end, replacement);
+  }
+
+  function insertMentionTrigger() {
+    const { start, end } = selectionRange();
+    replaceTextRange(start, end, "@");
+  }
+
+  function acceptMention(candidate: MentionCandidate) {
+    if (!activeMention) {
+      return;
+    }
+    const token = `${mentionDraftToken(candidate.target)} `;
+    onValueChange(`${value.slice(0, activeMention.start)}${token}${value.slice(activeMention.end)}`);
+    onMentionIntentChange(appendMentionTarget(mentionIntent, candidate.target));
+    const cursor = activeMention.start + token.length;
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(cursor, cursor);
+    });
+  }
 
   async function onAttachFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0] ?? null;
@@ -2874,7 +3071,7 @@ export function Composer({
       end: selectionEnd
     });
     const resolverOptions = {
-      autocomplete_open: false,
+      autocomplete_open: autocompleteOpen,
       send_enabled: !isSending && value.trim().length > 0
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
@@ -2896,6 +3093,13 @@ export function Composer({
             textarea.selectionStart = nextValue.cursor;
             textarea.selectionEnd = nextValue.cursor;
           });
+          return;
+        }
+        if (action === "acceptAutocomplete") {
+          const firstSuggestion = activeMentionSuggestions[0];
+          if (firstSuggestion) {
+            acceptMention(firstSuggestion);
+          }
           return;
         }
         if (action === "cancel" && composerMode.kind === "reply") {
@@ -2921,23 +3125,92 @@ export function Composer({
         </div>
       ) : null}
       <div className="composer-tools">
-        <button className="icon-button" type="button" aria-label={t("composer.bold")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.bold")}
+          onMouseDown={keepComposerFocus}
+          onClick={() => applyInlineMarkdown("**", "**", "bold")}
+        >
           <Bold size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label={t("composer.italic")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.italic")}
+          onMouseDown={keepComposerFocus}
+          onClick={() => applyInlineMarkdown("_", "_", "italic")}
+        >
           <Italic size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label={t("composer.link")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.link")}
+          onMouseDown={keepComposerFocus}
+          onClick={applyLinkMarkdown}
+        >
           <Link2 size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label={t("composer.list")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.list")}
+          onMouseDown={keepComposerFocus}
+          onClick={applyListMarkdown}
+        >
           <List size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label={t("composer.code")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.code")}
+          onMouseDown={keepComposerFocus}
+          onClick={() => applyInlineMarkdown("`", "`", "code")}
+        >
           <Code2 size={17} />
         </button>
       </div>
+      {mentionIntent.targets.length ? (
+        <div className="composer-mention-pills" aria-label={t("composer.selectedMentions")}>
+          {mentionIntent.targets.map((target) => (
+            <span className="mention-pill" key={mentionTargetKey(target)} dir="auto">
+              {mentionPillLabel(target)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {autocompleteOpen ? (
+        <div
+          className="composer-autocomplete"
+          role="listbox"
+          aria-label={t("composer.mentionSuggestions")}
+        >
+          {activeMentionSuggestions.map((candidate) => (
+            <button
+              className="composer-autocomplete-option"
+              key={candidate.key}
+              type="button"
+              role="option"
+              aria-label={candidate.label}
+              aria-selected="false"
+              onMouseDown={keepComposerFocus}
+              onClick={() => acceptMention(candidate)}
+            >
+              <span className="mention-option-label" dir="auto">
+                {candidate.label}
+              </span>
+              {candidate.target.kind === "user" ? (
+                <span className="mention-option-meta" dir="auto" aria-hidden="true">
+                  {candidate.target.user_id}
+                </span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <textarea
+        ref={textareaRef}
         aria-label={t("composer.messageComposer")}
         value={value}
         placeholder={t("composer.placeholder", { roomName })}
@@ -2963,7 +3236,13 @@ export function Composer({
           >
             <Paperclip size={18} />
           </button>
-          <button className="icon-button" type="button" aria-label={t("composer.mention")}>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("composer.mention")}
+            onMouseDown={keepComposerFocus}
+            onClick={insertMentionTrigger}
+          >
             <AtSign size={18} />
           </button>
           <button className="icon-button" type="button" aria-label={t("composer.emoji")}>

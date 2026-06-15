@@ -762,6 +762,7 @@ pub async fn paginate_thread_timeline_backwards(
 pub async fn send_text(
     room_id: String,
     body: String,
+    mentions: Option<matrix_desktop_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -775,9 +776,14 @@ pub async fn send_text(
     );
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_send_text_command(request_id, account_key, room_id, transaction_id, body)
-    {
+    if let Some(command) = build_send_text_command(
+        request_id,
+        account_key,
+        room_id,
+        transaction_id,
+        body,
+        mentions.unwrap_or_default(),
+    ) {
         submit_core_command(state.inner(), command).await?;
     }
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -1820,6 +1826,7 @@ pub async fn send_reply(
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
+    mentions: Option<matrix_desktop_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -1840,6 +1847,7 @@ pub async fn send_reply(
         transaction_id,
         in_reply_to_event_id,
         body,
+        mentions.unwrap_or_default(),
     ) {
         submit_core_command(state.inner(), command).await?;
     }
@@ -2146,6 +2154,7 @@ pub(crate) fn build_send_text_command(
     room_id: String,
     transaction_id: String,
     body: String,
+    mentions: matrix_desktop_state::MentionIntent,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -2155,7 +2164,7 @@ pub(crate) fn build_send_text_command(
         key: build_timeline_key(account_key, room_id),
         transaction_id,
         body,
-        mentions: matrix_desktop_state::MentionIntent::default(),
+        mentions,
     }))
 }
 
@@ -2659,6 +2668,7 @@ pub(crate) fn build_send_reply_command(
     transaction_id: String,
     in_reply_to_event_id: String,
     body: String,
+    mentions: matrix_desktop_state::MentionIntent,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -2669,7 +2679,7 @@ pub(crate) fn build_send_reply_command(
         transaction_id,
         in_reply_to_event_id,
         body,
-        mentions: matrix_desktop_state::MentionIntent::default(),
+        mentions,
     }))
 }
 
@@ -2980,8 +2990,8 @@ mod tests {
         RoomCommand, SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
     };
     use matrix_desktop_state::{
-        AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, SessionInfo, SessionState,
-        VerificationCancelReason,
+        AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent,
+        MentionTarget, SessionInfo, SessionState, VerificationCancelReason,
     };
     use matrix_desktop_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, LocaleSettings, SettingsPatch,
@@ -3277,6 +3287,12 @@ mod tests {
             room_id.clone(),
             transaction_id.clone(),
             body.clone(),
+            MentionIntent {
+                targets: vec![MentionTarget::User {
+                    user_id: "@alice:example.invalid".to_owned(),
+                    display_label: "Alice".to_owned(),
+                }],
+            },
         )
         .expect("send_text should build a command")
         {
@@ -3288,7 +3304,15 @@ mod tests {
                 mentions,
             }) => {
                 assert_eq!(request_id, fake_request_id(10));
-                assert_eq!(mentions, matrix_desktop_state::MentionIntent::default());
+                assert_eq!(
+                    mentions,
+                    MentionIntent {
+                        targets: vec![MentionTarget::User {
+                            user_id: "@alice:example.invalid".to_owned(),
+                            display_label: "Alice".to_owned(),
+                        }],
+                    }
+                );
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -4083,6 +4107,7 @@ mod tests {
             "desktop-reply-1".to_owned(),
             "$root".to_owned(),
             "reply body".to_owned(),
+            MentionIntent::default(),
         )
         .expect("send_reply should build a command")
         {
@@ -4241,6 +4266,7 @@ mod tests {
                 room_id.clone(),
                 "desktop-14".to_owned(),
                 "   ".to_owned(),
+                MentionIntent::default(),
             )
             .is_none()
         );
@@ -5044,6 +5070,7 @@ mod tests {
             room_id.clone(),
             "desktop-18".to_owned(),
             "sensitive body".to_owned(),
+            MentionIntent::default(),
         )
         .expect("send_text should build a command");
         let edit = build_edit_message_command(

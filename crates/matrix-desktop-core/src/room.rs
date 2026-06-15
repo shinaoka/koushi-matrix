@@ -68,6 +68,7 @@ use matrix_desktop_state::{
     DirectoryRoomSummary, InvitePreview, OperationFailureKind, PinnedEvent, RoomHistoryVisibility,
     RoomJoinRule, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
     RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
+    UserProfile,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -1291,10 +1292,14 @@ fn project_room_list_snapshot(
     let spaces = normalize_spaces(snapshot);
     let rooms = normalize_rooms(snapshot);
     let invites = normalize_invites(snapshot);
+    let user_profiles = normalize_user_profiles(snapshot);
     replace_known_room_ids(known_room_ids, &rooms);
     let _ = action_tx.try_send(vec![
         AppAction::RoomListUpdated { spaces, rooms },
         AppAction::InviteListUpdated { invites },
+        AppAction::UserProfilesUpdated {
+            profiles: user_profiles,
+        },
     ]);
     let _ = event_tx.send(CoreEvent::Room(RoomEvent::RoomListUpdated));
 }
@@ -1508,6 +1513,20 @@ fn normalize_room_tags(tags: &MatrixRoomTags) -> RoomTags {
             order: info.order.clone(),
         }),
     }
+}
+
+fn normalize_user_profiles(
+    snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot,
+) -> Vec<UserProfile> {
+    snapshot
+        .user_profiles
+        .iter()
+        .map(|profile| UserProfile {
+            user_id: profile.user_id.clone(),
+            display_name: profile.display_name.clone(),
+            avatar: avatar_from_mxc_uri(profile.avatar_mxc_uri.as_deref()),
+        })
+        .collect()
 }
 
 fn pinned_events_from_ids(event_ids: Vec<String>) -> Vec<PinnedEvent> {
@@ -1977,6 +1996,66 @@ pub mod tests {
         assert_eq!(avatar.thumbnail, AvatarThumbnailState::NotRequested);
     }
 
+    #[test]
+    fn normalize_user_profiles_preserves_member_profile_fields() {
+        let snapshot = MatrixRoomListSnapshot {
+            user_profiles: vec![matrix_desktop_sdk::MatrixUserProfile {
+                user_id: "@alice:example.test".to_owned(),
+                display_name: Some("Alice".to_owned()),
+                avatar_mxc_uri: Some("mxc://example.test/alice".to_owned()),
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+
+        let profiles = normalize_user_profiles(&snapshot);
+
+        assert_eq!(
+            profiles,
+            vec![UserProfile {
+                user_id: "@alice:example.test".to_owned(),
+                display_name: Some("Alice".to_owned()),
+                avatar: Some(AvatarImage {
+                    mxc_uri: "mxc://example.test/alice".to_owned(),
+                    thumbnail: AvatarThumbnailState::NotRequested,
+                }),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn project_room_list_snapshot_updates_user_profiles() {
+        let (action_tx, mut action_rx) = mpsc::channel(16);
+        let (event_tx, _event_rx) = broadcast::channel(16);
+        let known_room_ids = Arc::new(RwLock::new(BTreeSet::new()));
+        let snapshot = MatrixRoomListSnapshot {
+            user_profiles: vec![matrix_desktop_sdk::MatrixUserProfile {
+                user_id: "@alice:example.test".to_owned(),
+                display_name: Some("Alice".to_owned()),
+                avatar_mxc_uri: None,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+
+        project_room_list_snapshot(&snapshot, &known_room_ids, &action_tx, &event_tx);
+
+        let actions = action_rx.recv().await.expect("actions");
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [
+                    AppAction::RoomListUpdated { .. },
+                    AppAction::InviteListUpdated { .. },
+                    AppAction::UserProfilesUpdated { profiles },
+                ] if profiles == &vec![UserProfile {
+                    user_id: "@alice:example.test".to_owned(),
+                    display_name: Some("Alice".to_owned()),
+                    avatar: None,
+                }]
+            ),
+            "expected UserProfilesUpdated action, got {actions:?}"
+        );
+    }
+
     // --- SelectSpace / SelectRoom projection ---
 
     #[tokio::test]
@@ -2025,6 +2104,7 @@ pub mod tests {
                 parent_space_ids: vec![],
             }],
             invites: vec![],
+            user_profiles: vec![],
         };
 
         let rooms = normalize_rooms(&snapshot);

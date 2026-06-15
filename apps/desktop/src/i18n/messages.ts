@@ -42,10 +42,12 @@ export type MessageId =
   | "composer.link"
   | "composer.list"
   | "composer.mention"
+  | "composer.mentionSuggestions"
   | "composer.messageComposer"
   | "composer.placeholder"
   | "composer.replying"
   | "composer.cancelReply"
+  | "composer.selectedMentions"
   | "context.editMessage"
   | "context.addToFavourites"
   | "context.addToLowPriority"
@@ -499,10 +501,12 @@ const en: Catalog = {
   "composer.link": "Link",
   "composer.list": "List",
   "composer.mention": "Mention",
+  "composer.mentionSuggestions": "Mention suggestions",
   "composer.messageComposer": "Message composer",
   "composer.placeholder": "Message {roomName}",
   "composer.replying": "Replying",
   "composer.cancelReply": "Cancel reply",
+  "composer.selectedMentions": "Selected mentions",
   "context.editMessage": "Edit",
   "context.addToFavourites": "Add to Favourites",
   "context.addToLowPriority": "Move to Low priority",
@@ -866,10 +870,12 @@ const ja: Catalog = {
   "composer.link": "リンク",
   "composer.list": "リスト",
   "composer.mention": "メンション",
+  "composer.mentionSuggestions": "メンション候補",
   "composer.messageComposer": "メッセージ入力欄",
   "composer.placeholder": "{roomName}にメッセージ",
   "composer.replying": "返信中",
   "composer.cancelReply": "返信をキャンセル",
+  "composer.selectedMentions": "選択中のメンション",
   "context.editMessage": "編集",
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",

@@ -363,6 +363,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-invites-dm --serv
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --artifact-dir=artifacts/linux-gui-local-media --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --artifact-dir=artifacts/linux-gui-local-room-tags --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
 ```
 
@@ -398,6 +399,17 @@ then clicks `Remove from Favourites` and waits for the row to return to Rooms.
 The lane prints only `gui_local_room_tag_set=ok` and
 `gui_local_room_tag_removed=ok`; it must not monkeypatch Tauri IPC, synthesize
 React-local room-list membership, or print Matrix room IDs / raw SDK errors.
+
+`local-composer` registers a synthetic helper account, gives it a synthetic
+display name, joins it to the seeded local room, and sends one helper seed
+message so the Rust-owned `ProfileState.users` projection can populate member
+mention candidates. The lane drives the real composer controls in the Linux
+Tauri WebView: type `@`, select the member autocomplete option, send the
+mention, select text and click Bold, then send a slash command. It prints only
+`gui_local_mention=ok`, `gui_local_markdown=ok`, and `gui_local_slash=ok`; it
+must not monkeypatch Tauri IPC, synthesize `m.mentions` or formatted HTML in
+React, print Matrix IDs, or treat DOM-local text insertion as enough evidence
+before the Rust-owned send state reaches `send=sent` and the composer clears.
 
 `local-invites-dm` registers a synthetic helper account on the same disposable
 homeserver, has that helper create and invite the QA user to a synthetic room,

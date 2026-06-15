@@ -9,6 +9,7 @@ use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::room::ParentSpace;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fmt,
     future::Future,
     net::IpAddr,
@@ -1387,6 +1388,7 @@ pub struct MatrixRoomListSnapshot {
     pub spaces: Vec<MatrixRoomListSpace>,
     pub rooms: Vec<MatrixRoomListRoom>,
     pub invites: Vec<MatrixInvitePreview>,
+    pub user_profiles: Vec<MatrixUserProfile>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1512,6 +1514,13 @@ pub enum MatrixRoomListError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatrixOwnProfile {
+    pub display_name: Option<String>,
+    pub avatar_mxc_uri: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixUserProfile {
+    pub user_id: String,
     pub display_name: Option<String>,
     pub avatar_mxc_uri: Option<String>,
 }
@@ -3066,10 +3075,13 @@ async fn matrix_room_list_snapshot_from_rooms(
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
 ) -> MatrixRoomListSnapshot {
     let mut snapshot = MatrixRoomListSnapshot::default();
+    let mut user_profiles = BTreeMap::new();
     for room in rooms {
         if room.state() != matrix_sdk::RoomState::Joined {
             continue;
         }
+
+        collect_active_member_profiles(&room, &mut user_profiles).await;
 
         let room_id = room.room_id().to_string();
         let display_name = room
@@ -3110,7 +3122,27 @@ async fn matrix_room_list_snapshot_from_rooms(
             parent_space_ids,
         ));
     }
+    snapshot.user_profiles = user_profiles.into_values().collect();
     snapshot
+}
+
+async fn collect_active_member_profiles(
+    room: &matrix_sdk::Room,
+    user_profiles: &mut BTreeMap<String, MatrixUserProfile>,
+) {
+    let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else {
+        return;
+    };
+    for member in members {
+        let user_id = member.user_id().to_string();
+        user_profiles
+            .entry(user_id.clone())
+            .or_insert_with(|| MatrixUserProfile {
+                user_id,
+                display_name: member.display_name().map(ToOwned::to_owned),
+                avatar_mxc_uri: member.avatar_url().map(ToString::to_string),
+            });
+    }
 }
 
 async fn matrix_invite_previews_from_rooms(

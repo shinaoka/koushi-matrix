@@ -24,6 +24,7 @@ import type {
   PresenceKind,
   LocaleSettings,
   LocaleDisplayProfile,
+  MentionIntent,
   SpaceSummary,
   TimelineMessage
 } from "../domain/types";
@@ -61,7 +62,7 @@ export interface DesktopApi {
   selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   closeFocusedContext(): Promise<DesktopSnapshot>;
   paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
-  sendText(roomId: string, body: string): Promise<DesktopSnapshot>;
+  sendText(roomId: string, body: string, mentions?: MentionIntent): Promise<DesktopSnapshot>;
   retrySend(roomId: string, transactionId: string): Promise<DesktopSnapshot>;
   cancelSend(roomId: string, transactionId: string): Promise<DesktopSnapshot>;
   sendReaction(roomId: string, eventId: string, reactionKey: string): Promise<DesktopSnapshot>;
@@ -114,7 +115,12 @@ export interface DesktopApi {
   inviteUser(roomId: string, userId: string): Promise<DesktopSnapshot>;
   setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   cancelComposerReply(): Promise<DesktopSnapshot>;
-  sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<DesktopSnapshot>;
+  sendReply(
+    roomId: string,
+    inReplyToEventId: string,
+    body: string,
+    mentions?: MentionIntent
+  ): Promise<DesktopSnapshot>;
 }
 
 export interface BrowserFakeApiOptions {
@@ -456,7 +462,12 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async sendText(roomId: string, body: string): Promise<DesktopSnapshot> {
+  async sendText(
+    roomId: string,
+    body: string,
+    mentions: MentionIntent = emptyMentionIntent()
+  ): Promise<DesktopSnapshot> {
+    void mentions;
     const session = this.snapshot.state.session;
     if (
       session.kind !== "ready" ||
@@ -1326,7 +1337,13 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<DesktopSnapshot> {
+  async sendReply(
+    roomId: string,
+    inReplyToEventId: string,
+    body: string,
+    mentions: MentionIntent = emptyMentionIntent()
+  ): Promise<DesktopSnapshot> {
+    void mentions;
     const session = this.snapshot.state.session;
     if (
       session.kind !== "ready" ||
@@ -2101,6 +2118,10 @@ function emptyRoomTags(): RoomTags {
     favourite: null,
     low_priority: null
   };
+}
+
+function emptyMentionIntent(): MentionIntent {
+  return { targets: [] };
 }
 
 const spaces: SpaceSummary[] = [

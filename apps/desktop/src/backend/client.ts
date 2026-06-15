@@ -10,6 +10,7 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   DirectoryQuery,
+  MentionIntent,
   PresenceKind,
   RoomModerationAction,
   RoomSettingChange,
@@ -138,8 +139,12 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("paginate_timeline_backwards", { roomId });
   }
 
-  async sendText(roomId: string, body: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("send_text", { roomId, body });
+  async sendText(
+    roomId: string,
+    body: string,
+    mentions: MentionIntent = { targets: [] }
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("send_text", { roomId, body, mentions });
   }
 
   async retrySend(roomId: string, transactionId: string): Promise<DesktopSnapshot> {
@@ -368,8 +373,13 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("cancel_composer_reply");
   }
 
-  async sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("send_reply", { roomId, inReplyToEventId, body });
+  async sendReply(
+    roomId: string,
+    inReplyToEventId: string,
+    body: string,
+    mentions: MentionIntent = { targets: [] }
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("send_reply", { roomId, inReplyToEventId, body, mentions });
   }
 }
 

@@ -1768,6 +1768,78 @@ mark {
   background: var(--surface-hover);
 }
 
+.composer-mention-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 32px;
+  padding: 7px 10px 0;
+}
+
+.mention-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 180px;
+  height: 24px;
+  padding: 0 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--brand);
+  background: var(--surface-hover);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-autocomplete {
+  display: grid;
+  gap: 2px;
+  max-height: 150px;
+  margin: 8px 10px 0;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 16px 32px rgb(15 27 45 / 18%);
+}
+
+.composer-autocomplete-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  min-height: 38px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: start;
+}
+
+.composer-autocomplete-option:hover,
+.composer-autocomplete-option:focus-visible {
+  background: var(--surface-hover);
+}
+
+.mention-option-label,
+.mention-option-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-option-label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.mention-option-meta {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
 .composer textarea,
 .thread-composer textarea {
   display: block;

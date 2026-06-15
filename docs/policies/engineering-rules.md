@@ -187,6 +187,10 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    Room-list section tests must prove tag-driven movement from Rust-shaped
    `RoomSummary.tags` snapshots, not from React-local menu state after
    `set_room_tag` or `remove_room_tag` is clicked.
+   Composer mention GUI tests must use Rust-shaped `ProfileState.users` member
+   profiles for autocomplete candidates. React may render the popover/pills and
+   pass a typed `MentionIntent`, but it must not synthesize Matrix
+   `m.mentions`, formatted HTML, slash semantics, or fallback send behavior.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

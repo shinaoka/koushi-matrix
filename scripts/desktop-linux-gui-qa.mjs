@@ -13,7 +13,10 @@ import {
   createRoom,
   freePort,
   inviteUser as inviteUserToRoom,
+  joinRoom,
   registerUser,
+  sendRoomMessage,
+  setDisplayName,
   startHomeserver,
   stopProcess,
   tuwunelConfig,
@@ -33,6 +36,7 @@ const checks = [
   "scenario local-reply",
   "scenario local-media",
   "scenario local-room-tags",
+  "scenario local-composer",
   "scenario local-settings",
   "verify local-settings trust section",
   "verify Xvfb virtual display",
@@ -198,6 +202,10 @@ async function run() {
   }
   if (guiScenario === "local-room-tags") {
     await runLocalRoomTagsScenario();
+    return;
+  }
+  if (guiScenario === "local-composer") {
+    await runLocalComposerScenario();
     return;
   }
   if (guiScenario === "local-settings") {
@@ -635,6 +643,60 @@ async function runLocalRoomTagsScenario() {
   }
 }
 
+async function runLocalComposerScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const composer = await session.browser.$('textarea[aria-label="Message composer"]');
+    await composer.waitForDisplayed({ timeout: timeoutMs });
+    await composer.click();
+    await composer.setValue("@qa");
+
+    const mentionOption = await session.browser.$('button[role="option"]');
+    await mentionOption.waitForDisplayed({ timeout: timeoutMs });
+    await mentionOption.click();
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".composer-mention-pills .mention-pill",
+      0,
+      timeoutMs,
+      "local GUI mention pill"
+    );
+    await session.browser.keys("Enter");
+    await waitForComposerSendSettled(session.browser, timeoutMs, "local GUI mention send");
+    console.log("gui_local_mention=ok");
+
+    await composer.click();
+    await composer.setValue("world");
+    await selectComposerText(session.browser);
+    const boldButton = await session.browser.$('button[aria-label="Bold"]');
+    await boldButton.waitForDisplayed({ timeout: timeoutMs });
+    await boldButton.click();
+    await waitForTextareaValue(
+      session.browser,
+      'textarea[aria-label="Message composer"]',
+      "**world**",
+      timeoutMs,
+      "local GUI bold markdown"
+    );
+    await session.browser.keys("Enter");
+    await waitForComposerSendSettled(session.browser, timeoutMs, "local GUI markdown send");
+    console.log("gui_local_markdown=ok");
+
+    await composer.click();
+    await composer.setValue("/me waves");
+    await session.browser.keys("Enter");
+    await waitForComposerSendSettled(session.browser, timeoutMs, "local GUI slash send");
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_slash=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalSettingsScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -724,6 +786,33 @@ async function waitForElementAttribute(browser, selector, attribute, expected, t
   );
 }
 
+async function waitForComposerSendSettled(browser, timeout, description) {
+  await waitForTextareaValue(
+    browser,
+    'textarea[aria-label="Message composer"]',
+    "",
+    timeout,
+    `${description} clear`
+  );
+  await waitForLocalSendSuccess(browser, timeout);
+}
+
+async function waitForTextareaValue(browser, selector, expected, timeout, description) {
+  const startedAt = Date.now();
+  let lastValue = "";
+  while (Date.now() - startedAt < timeout) {
+    lastValue = await browser.execute((cssSelector) => {
+      const textarea = document.querySelector(cssSelector);
+      return textarea instanceof HTMLTextAreaElement ? textarea.value : "";
+    }, selector);
+    if (lastValue === expected) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} did not reach expected textarea value. Last value: ${lastValue}`);
+}
+
 async function waitForDocumentTheme(browser, expected, timeout) {
   const startedAt = Date.now();
   let lastTheme = "";
@@ -756,6 +845,17 @@ async function waitForDocumentText(browser, expectedTexts, timeout, description)
 
 async function elementCount(browser, selector) {
   return browser.execute((cssSelector) => document.querySelectorAll(cssSelector).length, selector);
+}
+
+async function selectComposerText(browser) {
+  await browser.execute(() => {
+    const textarea = document.querySelector('textarea[aria-label="Message composer"]');
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return;
+    }
+    textarea.focus();
+    textarea.setSelectionRange(0, textarea.value.length);
+  });
 }
 
 async function openRoomContextMenu(browser, sectionId, roomName) {
@@ -1034,7 +1134,9 @@ async function startLocalGuiScenario() {
     credentials: null,
     dmTargetUserId: null,
     helperAccessToken: null,
+    composerMentionDisplayName: null,
     primaryUserId: null,
+    seedRoomId: null,
     seedInviteRoomName: null
   };
 
@@ -1067,8 +1169,40 @@ async function startLocalGuiScenario() {
     if (!userId) {
       throw new Error("local GUI setup did not return a user id");
     }
-    await createRoom(homeserver, accessToken, { name: "QA Seed Room" });
+    const seedRoom = await createRoom(homeserver, accessToken, { name: "QA Seed Room" });
+    const seedRoomId = seedRoom.room_id;
+    if (!seedRoomId) {
+      throw new Error("local GUI setup did not return a seed room id");
+    }
+    session.seedRoomId = seedRoomId;
     session.primaryUserId = userId;
+
+    if (guiScenario === "local-composer") {
+      const helperUsername = `qa_mention_${userSuffix}`;
+      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
+      const helperAccessToken = helperRegistration.access_token;
+      const helperUserId = helperRegistration.user_id;
+      if (!helperAccessToken || !helperUserId) {
+        throw new Error("local GUI composer setup did not return helper credentials");
+      }
+      session.composerMentionDisplayName = "Mention Helper";
+      await setDisplayName(
+        homeserver,
+        helperAccessToken,
+        helperUserId,
+        session.composerMentionDisplayName
+      );
+      await inviteUserToRoom(homeserver, accessToken, seedRoomId, helperUserId);
+      await joinRoom(homeserver, helperAccessToken, seedRoomId);
+      await sendRoomMessage(
+        homeserver,
+        helperAccessToken,
+        seedRoomId,
+        "QA helper seed message",
+        `qa-helper-${userSuffix}`
+      );
+    }
 
     if (guiScenario === "local-invites-dm") {
       const helperUsername = `qa_inviter_${userSuffix}`;
