@@ -59,8 +59,16 @@ const transport: TimelineTransport = {
     }
     return Promise.resolve();
   },
-  toggleReaction(roomId, eventId, reactionKey) {
-    return ipc.invoke("toggle_reaction", { roomId, eventId, reactionKey });
+  sendReaction(roomId, eventId, reactionKey) {
+    return ipc.invoke("send_reaction", { roomId, eventId, reactionKey });
+  },
+  redactReaction(roomId, eventId, reactionKey, reactionEventId) {
+    return ipc.invoke("redact_reaction", {
+      roomId,
+      eventId,
+      reactionKey,
+      reactionEventId
+    });
   },
   sendReadReceipt(roomId, eventId) {
     return ipc.invoke("send_read_receipt", { roomId, eventId });

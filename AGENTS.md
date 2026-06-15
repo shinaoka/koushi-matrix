@@ -553,6 +553,13 @@ Phase B GUI/browser-headless work for the same issue follows
   reply affordance on `item.body !== null`, so only message rows are replyable.
   A `local-reply` lane must send/target a message and reply to that row, not the
   first event row in a fresh room (whose first events are state events).
+- Timeline reactions are Rust-owned projection state. React must only dispatch
+  typed `SendReaction` / `RedactReaction` commands; do not implement toggle
+  semantics in the UI, because `Timeline::toggle_reaction` is only an internal
+  Rust delegation detail behind the typed boundary. When `AppState` fields or
+  the command surface changes, keep the Tauri DTO, TypeScript domain types, IPC
+  mock, browser fake, and serialization-contract tests in sync in the same
+  change.
 - `local-media` must not use the visible Attach button to open a native file
   dialog. WebDriver should write an ignored synthetic fixture file in the
   scenario artifact directory, set that path on

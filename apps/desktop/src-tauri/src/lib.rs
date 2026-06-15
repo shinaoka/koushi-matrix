@@ -780,6 +780,8 @@ pub fn run() {
             commands::cancel_composer_reply,
             commands::set_thread_composer_draft,
             commands::toggle_reaction,
+            commands::send_reaction,
+            commands::redact_reaction,
             commands::send_reply,
             commands::send_thread_reply,
         ])

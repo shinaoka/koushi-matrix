@@ -65,7 +65,7 @@ use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
 use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk_ui::timeline::{
     ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineEventItemId, TimelineFocus,
-    TimelineItem as SdkTimelineItem,
+    TimelineItem as SdkTimelineItem, TimelineItemKind,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -339,6 +339,42 @@ impl TimelineManagerActor {
                         request_id,
                         event_id,
                         reaction_key,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::SendReaction {
+                request_id,
+                key,
+                event_id,
+                reaction_key,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::SendReaction {
+                        request_id,
+                        event_id,
+                        reaction_key,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::RedactReaction {
+                request_id,
+                key,
+                event_id,
+                reaction_key,
+                reaction_event_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::RedactReaction {
+                        request_id,
+                        event_id,
+                        reaction_key,
+                        reaction_event_id,
                     },
                 )
                 .await;
@@ -775,6 +811,17 @@ enum TimelineActorMessage {
         event_id: String,
         reaction_key: String,
     },
+    SendReaction {
+        request_id: RequestId,
+        event_id: String,
+        reaction_key: String,
+    },
+    RedactReaction {
+        request_id: RequestId,
+        event_id: String,
+        reaction_key: String,
+        reaction_event_id: String,
+    },
     SendReadReceipt {
         request_id: RequestId,
         event_id: String,
@@ -811,6 +858,12 @@ struct PrivateMediaEntry {
     source: MediaSource,
     thumbnail_source: Option<MediaSource>,
     mimetype: Option<String>,
+}
+
+struct ReactionTargetState {
+    item_id: TimelineEventItemId,
+    can_react: bool,
+    my_reaction_event_id: Option<String>,
 }
 
 struct TimelineActor {
@@ -1004,6 +1057,23 @@ impl TimelineActor {
                 reaction_key,
             } => {
                 self.handle_toggle_reaction(request_id, event_id, reaction_key)
+                    .await;
+            }
+            TimelineActorMessage::SendReaction {
+                request_id,
+                event_id,
+                reaction_key,
+            } => {
+                self.handle_send_reaction(request_id, event_id, reaction_key)
+                    .await;
+            }
+            TimelineActorMessage::RedactReaction {
+                request_id,
+                event_id,
+                reaction_key,
+                reaction_event_id,
+            } => {
+                self.handle_redact_reaction(request_id, event_id, reaction_key, reaction_event_id)
                     .await;
             }
             TimelineActorMessage::SendReadReceipt {
@@ -1531,6 +1601,83 @@ impl TimelineActor {
         }
     }
 
+    async fn handle_send_reaction(
+        &mut self,
+        request_id: RequestId,
+        event_id: String,
+        reaction_key: String,
+    ) {
+        if reaction_key.trim().is_empty() {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionTarget);
+            return;
+        }
+
+        let Some(target) = self.reaction_target_state(&event_id, &reaction_key).await else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionTarget);
+            return;
+        };
+        if let Err(kind) =
+            validate_send_reaction(target.can_react, target.my_reaction_event_id.as_deref())
+        {
+            self.emit_timeline_failure(request_id, kind);
+            return;
+        }
+
+        match self
+            .timeline
+            .toggle_reaction(&target.item_id, &reaction_key)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionState);
+            }
+            Err(error) => {
+                self.emit_timeline_failure(request_id, classify_reaction_error(&error));
+            }
+        }
+    }
+
+    async fn handle_redact_reaction(
+        &mut self,
+        request_id: RequestId,
+        event_id: String,
+        reaction_key: String,
+        reaction_event_id: String,
+    ) {
+        if reaction_key.trim().is_empty() || reaction_event_id.trim().is_empty() {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionTarget);
+            return;
+        }
+
+        let Some(target) = self.reaction_target_state(&event_id, &reaction_key).await else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionTarget);
+            return;
+        };
+        if let Err(kind) = validate_redact_reaction(
+            target.can_react,
+            target.my_reaction_event_id.as_deref(),
+            &reaction_event_id,
+        ) {
+            self.emit_timeline_failure(request_id, kind);
+            return;
+        }
+
+        match self
+            .timeline
+            .toggle_reaction(&target.item_id, &reaction_key)
+            .await
+        {
+            Ok(false) => {}
+            Ok(true) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionState);
+            }
+            Err(error) => {
+                self.emit_timeline_failure(request_id, classify_reaction_error(&error));
+            }
+        }
+    }
+
     async fn handle_send_read_receipt(&mut self, request_id: RequestId, event_id: String) {
         let parsed_event_id = match matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
             Ok(event_id) => event_id,
@@ -1854,6 +2001,40 @@ impl TimelineActor {
         ids
     }
 
+    async fn reaction_target_state(
+        &self,
+        event_id: &str,
+        reaction_key: &str,
+    ) -> Option<ReactionTargetState> {
+        let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+        let items = self.timeline.items().await;
+        for item in items.iter().rev() {
+            let TimelineItemKind::Event(event_item) = item.kind() else {
+                continue;
+            };
+            if !event_item
+                .event_id()
+                .map(|candidate| candidate.as_str() == parsed_event_id.as_str())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let projected = sdk_item_to_timeline_item(item, self.own_user_id.as_deref());
+            let my_reaction_event_id = projected
+                .reactions
+                .iter()
+                .find(|reaction| reaction.key == reaction_key)
+                .and_then(|reaction| reaction.my_reaction_event_id.clone());
+            return Some(ReactionTargetState {
+                item_id: TimelineEventItemId::EventId(parsed_event_id),
+                can_react: projected.can_react,
+                my_reaction_event_id,
+            });
+        }
+        None
+    }
+
     fn handle_send_queue_update(&mut self, update: RoomSendQueueUpdate) {
         match update {
             RoomSendQueueUpdate::SentEvent {
@@ -1949,6 +2130,10 @@ impl TimelineActor {
             request_id,
             failure,
         });
+    }
+
+    fn emit_timeline_failure(&self, request_id: RequestId, kind: TimelineFailureKind) {
+        self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
     }
 
     /// Drive the reducer's composer completion transition for the matching
@@ -2551,6 +2736,33 @@ pub(crate) fn timeline_item_can_react(
     is_event_backed && can_hold_reactions && !is_redacted && has_renderable_content
 }
 
+pub(crate) fn validate_send_reaction(
+    can_react: bool,
+    my_reaction_event_id: Option<&str>,
+) -> Result<(), TimelineFailureKind> {
+    if !can_react {
+        return Err(TimelineFailureKind::InvalidReactionTarget);
+    }
+    if my_reaction_event_id.is_some() {
+        return Err(TimelineFailureKind::InvalidReactionState);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_redact_reaction(
+    can_react: bool,
+    my_reaction_event_id: Option<&str>,
+    reaction_event_id: &str,
+) -> Result<(), TimelineFailureKind> {
+    if !can_react {
+        return Err(TimelineFailureKind::InvalidReactionTarget);
+    }
+    match my_reaction_event_id {
+        Some(current) if current == reaction_event_id => Ok(()),
+        _ => Err(TimelineFailureKind::InvalidReactionState),
+    }
+}
+
 pub(crate) fn timeline_item_can_redact(
     is_event_backed: bool,
     is_own_message: bool,
@@ -2678,6 +2890,15 @@ fn classify_pagination_error(err: &matrix_sdk_ui::timeline::Error) -> TimelineFa
             TimelineFailureKind::InvalidDirection
         }
         Error::PaginationError(_) => TimelineFailureKind::Sdk,
+        _ => TimelineFailureKind::Sdk,
+    }
+}
+
+fn classify_reaction_error(err: &matrix_sdk_ui::timeline::Error) -> TimelineFailureKind {
+    match err {
+        matrix_sdk_ui::timeline::Error::EventNotInTimeline(_) => {
+            TimelineFailureKind::InvalidReactionTarget
+        }
         _ => TimelineFailureKind::Sdk,
     }
 }
@@ -3485,12 +3706,104 @@ mod tests {
     }
 
     #[test]
+    fn reaction_groups_count_unique_senders_after_sdk_deduplication() {
+        let mut reactions = ReactionsByKeyBySender::default();
+        let thumbs = reactions.entry("👍".to_owned()).or_default();
+        let alice = OwnedUserId::try_from("@alice:test").expect("user id");
+        thumbs.insert(
+            alice.clone(),
+            ReactionInfo {
+                timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(1)),
+                status: ReactionStatus::RemoteToRemote(
+                    matrix_sdk::ruma::OwnedEventId::try_from("$reaction:old").expect("event id"),
+                ),
+            },
+        );
+        thumbs.insert(
+            alice,
+            ReactionInfo {
+                timestamp: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch(uint!(2)),
+                status: ReactionStatus::RemoteToRemote(
+                    matrix_sdk::ruma::OwnedEventId::try_from("$reaction:new").expect("event id"),
+                ),
+            },
+        );
+
+        let groups = reaction_groups_from_sdk(&reactions, None);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].count, 1);
+        assert_eq!(groups[0].sender_preview, vec!["@alice:test"]);
+    }
+
+    #[test]
+    fn reaction_groups_follow_sdk_redaction_removal() {
+        let mut reactions = reaction_groups_fixture();
+        reactions
+            .get_mut("👍")
+            .expect("thumbs reaction")
+            .shift_remove(&OwnedUserId::try_from("@me:test").expect("user id"));
+        let own_user_id = OwnedUserId::try_from("@me:test").expect("user id");
+
+        let groups = reaction_groups_from_sdk(&reactions, Some(own_user_id.as_ref()));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].count, 3);
+        assert!(!groups[0].reacted_by_me);
+        assert_eq!(groups[0].my_reaction_event_id, None);
+    }
+
+    #[test]
     fn timeline_item_can_react_requires_event_backed_renderable_content() {
         assert!(timeline_item_can_react(true, true, false, true));
         assert!(!timeline_item_can_react(false, true, false, true));
         assert!(!timeline_item_can_react(true, false, false, true));
         assert!(!timeline_item_can_react(true, true, false, false));
         assert!(!timeline_item_can_react(true, true, true, true));
+    }
+
+    #[test]
+    fn send_reaction_guard_requires_reactable_target_without_existing_own_reaction() {
+        assert_eq!(validate_send_reaction(true, None), Ok(()));
+        assert_eq!(
+            validate_send_reaction(false, None),
+            Err(TimelineFailureKind::InvalidReactionTarget)
+        );
+        assert_eq!(
+            validate_send_reaction(true, Some("$reaction:example.test")),
+            Err(TimelineFailureKind::InvalidReactionState)
+        );
+    }
+
+    #[test]
+    fn redact_reaction_guard_requires_matching_own_reaction_event() {
+        assert_eq!(
+            validate_redact_reaction(
+                true,
+                Some("$reaction:example.test"),
+                "$reaction:example.test"
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_redact_reaction(
+                false,
+                Some("$reaction:example.test"),
+                "$reaction:example.test"
+            ),
+            Err(TimelineFailureKind::InvalidReactionTarget)
+        );
+        assert_eq!(
+            validate_redact_reaction(true, None, "$reaction:example.test"),
+            Err(TimelineFailureKind::InvalidReactionState)
+        );
+        assert_eq!(
+            validate_redact_reaction(
+                true,
+                Some("$other-reaction:example.test"),
+                "$reaction:example.test"
+            ),
+            Err(TimelineFailureKind::InvalidReactionState)
+        );
     }
 
     #[test]

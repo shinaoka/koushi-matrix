@@ -165,8 +165,21 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           });
         }
       },
-      async toggleReaction(roomId: string, eventId: string, reactionKey: string) {
-        await invoke("toggle_reaction", { roomId, eventId, reactionKey });
+      async sendReaction(roomId: string, eventId: string, reactionKey: string) {
+        await invoke("send_reaction", { roomId, eventId, reactionKey });
+      },
+      async redactReaction(
+        roomId: string,
+        eventId: string,
+        reactionKey: string,
+        reactionEventId: string
+      ) {
+        await invoke("redact_reaction", {
+          roomId,
+          eventId,
+          reactionKey,
+          reactionEventId
+        });
       },
       async sendReadReceipt(roomId: string, eventId: string) {
         await invoke("send_read_receipt", { roomId, eventId });

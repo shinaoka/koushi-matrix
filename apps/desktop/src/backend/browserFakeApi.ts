@@ -52,6 +52,13 @@ export interface DesktopApi {
   closeFocusedContext(): Promise<DesktopSnapshot>;
   paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
   sendText(roomId: string, body: string): Promise<DesktopSnapshot>;
+  sendReaction(roomId: string, eventId: string, reactionKey: string): Promise<DesktopSnapshot>;
+  redactReaction(
+    roomId: string,
+    eventId: string,
+    reactionKey: string,
+    reactionEventId: string
+  ): Promise<DesktopSnapshot>;
   sendReadReceipt(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   setFullyRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot>;
@@ -438,6 +445,30 @@ class BrowserFakeApi implements DesktopApi {
     ];
     this.snapshot.state.timeline.composer.pending_transaction_id = null;
     this.snapshot.state.timeline.composer.draft = "";
+    return this.getSnapshot();
+  }
+
+  async sendReaction(
+    roomId: string,
+    eventId: string,
+    reactionKey: string
+  ): Promise<DesktopSnapshot> {
+    void roomId;
+    void eventId;
+    void reactionKey;
+    return this.getSnapshot();
+  }
+
+  async redactReaction(
+    roomId: string,
+    eventId: string,
+    reactionKey: string,
+    reactionEventId: string
+  ): Promise<DesktopSnapshot> {
+    void roomId;
+    void eventId;
+    void reactionKey;
+    void reactionEventId;
     return this.getSnapshot();
   }
 

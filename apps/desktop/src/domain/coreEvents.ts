@@ -57,6 +57,8 @@ export type PaginationState =
 export type TimelineFailureKind =
   | "InvalidDirection"
   | "NotSubscribed"
+  | "InvalidReactionTarget"
+  | "InvalidReactionState"
   | "Forbidden"
   | "Network"
   | "Timeout"

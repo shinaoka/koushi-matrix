@@ -101,6 +101,19 @@ fn secret_bearing_commands_redact_debug() {
         event_id: "$evt".to_owned(),
         reaction_key: "👍".to_owned(),
     });
+    let send_reaction = CoreCommand::Timeline(TimelineCommand::SendReaction {
+        request_id: fake_request_id(),
+        key: key.clone(),
+        event_id: "$evt".to_owned(),
+        reaction_key: "👍".to_owned(),
+    });
+    let redact_reaction = CoreCommand::Timeline(TimelineCommand::RedactReaction {
+        request_id: fake_request_id(),
+        key: key.clone(),
+        event_id: "$evt".to_owned(),
+        reaction_key: "👍".to_owned(),
+        reaction_event_id: "$reaction".to_owned(),
+    });
     let edit = CoreCommand::Timeline(TimelineCommand::EditText {
         request_id: fake_request_id(),
         key: key.clone(),
@@ -128,6 +141,8 @@ fn secret_bearing_commands_redact_debug() {
         (&restore_key_backup, vec![RECOVERY, "backup-version-1"]),
         (&send, vec![BODY]),
         (&toggle_reaction, vec!["👍", "$evt"]),
+        (&send_reaction, vec!["👍", "$evt"]),
+        (&redact_reaction, vec!["👍", "$evt", "$reaction"]),
         (&edit, vec![BODY]),
         (&search, vec![QUERY]),
         (&thread_draft, vec![BODY, "$root"]),
@@ -142,6 +157,36 @@ fn secret_bearing_commands_redact_debug() {
     }
     // Non-secret correlation data stays visible.
     assert!(format!("{send:?}").contains("txn-1"));
+}
+
+#[test]
+fn reaction_commands_are_split_correlated_ready_gated_and_redacted() {
+    let request_id = fake_request_id();
+    let key = TimelineKey::room(AccountKey("acc".to_owned()), "!room:example.test");
+    let commands = vec![
+        CoreCommand::Timeline(TimelineCommand::SendReaction {
+            request_id,
+            key: key.clone(),
+            event_id: "$target:example.test".to_owned(),
+            reaction_key: "👍".to_owned(),
+        }),
+        CoreCommand::Timeline(TimelineCommand::RedactReaction {
+            request_id,
+            key,
+            event_id: "$target:example.test".to_owned(),
+            reaction_key: "👍".to_owned(),
+            reaction_event_id: "$reaction:example.test".to_owned(),
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(!debug.contains("$target:example.test"), "{debug}");
+        assert!(!debug.contains("$reaction:example.test"), "{debug}");
+        assert!(!debug.contains("👍"), "{debug}");
+    }
 }
 
 #[test]

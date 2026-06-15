@@ -133,6 +133,28 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("send_text", { roomId, body });
   }
 
+  async sendReaction(
+    roomId: string,
+    eventId: string,
+    reactionKey: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("send_reaction", { roomId, eventId, reactionKey });
+  }
+
+  async redactReaction(
+    roomId: string,
+    eventId: string,
+    reactionKey: string,
+    reactionEventId: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("redact_reaction", {
+      roomId,
+      eventId,
+      reactionKey,
+      reactionEventId
+    });
+  }
+
   async sendReadReceipt(roomId: string, eventId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("send_read_receipt", { roomId, eventId });
   }
