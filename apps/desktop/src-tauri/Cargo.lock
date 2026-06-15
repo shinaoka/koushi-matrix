@@ -3226,6 +3226,7 @@ dependencies = [
  "matrix-desktop-state",
  "serde",
  "thiserror 2.0.18",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -3233,6 +3234,7 @@ name = "matrix-desktop-state"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "unicode-normalization",
  "zeroize",
 ]
 
