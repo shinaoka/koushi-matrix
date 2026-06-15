@@ -169,6 +169,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Passive native notification dispatch checks the current OS permission state
   only. It must not call permission-prompt APIs; permission prompts belong to an
   explicit user/onboarding action.
+- Native notification clearing is adapter-only and best-effort. When Rust-owned
+  attention state drops the badge count to zero (including logout/account clear),
+  React may call the native transport clear hook, but it must not mutate Matrix
+  state or synthesize read/focus semantics locally.
 - Candidate projection uses private-data-minimized room labels and counts only.
   It must not expose message bodies, sender IDs, room IDs, event IDs,
   transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,

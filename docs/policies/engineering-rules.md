@@ -65,6 +65,9 @@ Rules:
    diff previous room snapshots, or synthesize dedupe/focus/mute semantics.
    Passive notification dispatch may check existing OS permission, but must not
    prompt for permission except through an explicit user or onboarding action.
+   Native notification clearing is best-effort adapter work triggered by
+   Rust-owned zero-badge/logout state; clearing failures must not mutate Matrix
+   state or surface as React rendering failures.
 10. Device-local settings are non-secret product state, but they are still a
    privacy boundary. Settings files may contain only typed preferences such as
    locale, theme, font/emoji choice, keyboard behavior, and notification

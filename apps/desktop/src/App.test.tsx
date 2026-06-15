@@ -937,6 +937,13 @@ describe("Tauri state refresh wiring", () => {
     expect(notificationSource).not.toContain("previousAttentionInput");
     expect(notificationSource).not.toContain("snapshot.state.rooms");
 
+    const clearStart = source.indexOf("safeAttentionSummary.badgeCount !== 0");
+    const clearEnd = source.indexOf("const message = qaSendSmokeMessage", clearStart);
+    const clearSource = source.slice(clearStart, clearEnd);
+    expect(clearSource).toContain("safeAttentionSummary.badgeCount !== 0");
+    expect(clearSource).toContain("void clearDesktopAttentionNotifications");
+    expect(clearSource).toContain("tauriNotificationTransport");
+
     expect(source).toContain("desktopAttentionWindowTitle");
     expect(source).toContain("sendDesktopAttentionNotification");
     expect(source).toContain("applyDesktopAttentionToWindow");

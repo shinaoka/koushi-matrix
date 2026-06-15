@@ -1,18 +1,23 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("@tauri-apps/plugin-notification", () => ({
+  cancelAll: vi.fn(),
   isPermissionGranted: vi.fn(),
+  removeAllActive: vi.fn(),
   requestPermission: vi.fn(),
   sendNotification: vi.fn()
 }));
 
 import {
+  cancelAll,
   isPermissionGranted,
+  removeAllActive,
   requestPermission,
   sendNotification
 } from "@tauri-apps/plugin-notification";
 
 import {
+  clearDesktopAttentionNotifications,
   createTauriDesktopNotificationTransport,
   desktopAttentionNotificationContent,
   sendDesktopAttentionNotification
@@ -58,7 +63,8 @@ describe("desktop notification content", () => {
 
   test("sends the redacted payload through a mockable adapter", async () => {
     const transport = {
-      notify: vi.fn().mockResolvedValue(undefined)
+      notify: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn().mockResolvedValue(undefined)
     };
 
     await sendDesktopAttentionNotification(
@@ -80,7 +86,8 @@ describe("desktop notification content", () => {
 
   test("swallows notification transport failures", async () => {
     const transport = {
-      notify: vi.fn().mockRejectedValue(new Error("notification failed"))
+      notify: vi.fn().mockRejectedValue(new Error("notification failed")),
+      clear: vi.fn().mockResolvedValue(undefined)
     };
 
     await expect(
@@ -95,6 +102,27 @@ describe("desktop notification content", () => {
       )
     ).resolves.toBeUndefined();
     expect(transport.notify).toHaveBeenCalledOnce();
+  });
+
+  test("clears native notifications through a mockable adapter", async () => {
+    const transport = {
+      notify: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await clearDesktopAttentionNotifications(transport);
+
+    expect(transport.clear).toHaveBeenCalledOnce();
+  });
+
+  test("swallows native notification clearing failures", async () => {
+    const transport = {
+      notify: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn().mockRejectedValue(new Error("clear failed"))
+    };
+
+    await expect(clearDesktopAttentionNotifications(transport)).resolves.toBeUndefined();
+    expect(transport.clear).toHaveBeenCalledOnce();
   });
 
   test("sends through the Tauri transport when permission is already granted", async () => {
@@ -113,6 +141,16 @@ describe("desktop notification content", () => {
       title: "Mention in Announcements",
       body: "1 mention, 6 unread"
     });
+  });
+
+  test("clears pending and active notifications in the Tauri transport", async () => {
+    vi.mocked(cancelAll).mockResolvedValue(undefined);
+    vi.mocked(removeAllActive).mockResolvedValue(undefined);
+
+    await createTauriDesktopNotificationTransport().clear();
+
+    expect(cancelAll).toHaveBeenCalledOnce();
+    expect(removeAllActive).toHaveBeenCalledOnce();
   });
 
   test("does not prompt for notification permission during passive attention dispatch", async () => {

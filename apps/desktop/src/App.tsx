@@ -103,6 +103,7 @@ import {
   desktopAttentionNotificationCandidate
 } from "./domain/desktopAttention";
 import {
+  clearDesktopAttentionNotifications,
   createTauriDesktopNotificationTransport,
   sendDesktopAttentionNotification
 } from "./domain/desktopNotification";
@@ -546,6 +547,14 @@ export function App() {
     snapshot?.state.native_attention.summary.candidate?.unread_count,
     snapshot?.state.native_attention.summary.candidate?.highlight_count
   ]);
+
+  useEffect(() => {
+    if (!tauriNotificationTransport || safeAttentionSummary.badgeCount !== 0) {
+      return;
+    }
+
+    void clearDesktopAttentionNotifications(tauriNotificationTransport);
+  }, [safeAttentionSummary.badgeCount]);
 
   useEffect(() => {
     const message = qaSendSmokeMessage();

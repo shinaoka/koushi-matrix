@@ -1205,6 +1205,10 @@ stateDiagram-v2
   prompts. Adapters may check already-granted permission and no-op otherwise;
   prompts require an explicit user/onboarding action and a corresponding
   Rust-owned setting/permission transition.
+- When Rust-owned attention state clears unread badge state to zero, the GUI may
+  ask the native adapter to cancel/remove pending or active notifications as a
+  best-effort side effect. Adapter clear failures do not feed back into Matrix
+  state and cannot change read/focus semantics.
 - Dispatch completions are request-correlated. Stale dispatch results are
   ignored, and adapter failures settle as private-data-free `Failed(kind)`
   states that can be cleared by read/focus transitions.

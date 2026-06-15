@@ -1,5 +1,7 @@
 import {
+  cancelAll,
   isPermissionGranted,
+  removeAllActive,
   sendNotification
 } from "@tauri-apps/plugin-notification";
 
@@ -12,6 +14,7 @@ export interface DesktopNotificationContent {
 
 export interface DesktopNotificationTransport {
   notify(content: DesktopNotificationContent): Promise<void>;
+  clear(): Promise<void>;
 }
 
 export function desktopAttentionNotificationContent(
@@ -50,6 +53,16 @@ export async function sendDesktopAttentionNotification(
   }
 }
 
+export async function clearDesktopAttentionNotifications(
+  transport: DesktopNotificationTransport
+): Promise<void> {
+  try {
+    await transport.clear();
+  } catch {
+    // Best-effort desktop attention: native clearing failures must not surface.
+  }
+}
+
 export function createTauriDesktopNotificationTransport(): DesktopNotificationTransport {
   let permissionPromise: Promise<boolean> | null = null;
 
@@ -60,6 +73,9 @@ export function createTauriDesktopNotificationTransport(): DesktopNotificationTr
         return;
       }
       await sendNotification(content);
+    },
+    async clear() {
+      await Promise.allSettled([cancelAll(), removeAllActive()]);
     }
   };
 }
