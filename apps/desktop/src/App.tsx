@@ -150,6 +150,18 @@ const STATE_EVENT_NAME = "matrix-desktop://state";
 const CORE_EVENT_NAME = "matrix-desktop://event";
 const EMPTY_ROOM_TAGS: RoomTags = { favourite: null, low_priority: null };
 const EMPTY_MENTION_INTENT: MentionIntent = { targets: [] };
+const ICON_SIZE = {
+  micro: 14,
+  compact: 15,
+  small: 16,
+  input: 17,
+  control: 18,
+  panel: 19,
+  rail: 20,
+  large: 22,
+  auth: 23,
+  emptyState: 24
+} as const;
 
 /**
  * Tauri transport for the event-driven timeline (Async rule 4: timeline data
@@ -1863,7 +1875,7 @@ function RecoveryPanel({
       <form className="recovery-panel-form" onSubmit={onSubmit}>
         <div className="auth-brand">
           <div className="auth-mark recovery-mark">
-            <ShieldCheck size={23} />
+            <ShieldCheck size={ICON_SIZE.auth} />
           </div>
           <div>
             <h1>{t("auth.encryptionRecovery")}</h1>
@@ -1871,7 +1883,7 @@ function RecoveryPanel({
           </div>
         </div>
         <div className="recovery-summary">
-          <KeyRound size={18} />
+          <KeyRound size={ICON_SIZE.control} />
           <div className="recovery-methods" aria-label={t("auth.supportedRecoveryMethods")}>
             {(session.recovery_methods ?? ["recoveryKey", "securityPhrase"]).map((method) => (
               <span className="recovery-chip" key={method}>
@@ -1943,7 +1955,7 @@ function AuthScreen({
       <form className="auth-panel" onSubmit={onSubmit}>
         <div className="auth-brand">
           <div className="auth-mark">
-            <Hash size={22} />
+            <Hash size={ICON_SIZE.large} />
           </div>
           <div>
             <h1>{t("auth.matrixDesktop")}</h1>
@@ -2169,11 +2181,11 @@ export function TopBar({
           ›
         </button>
         <button className="icon-button" type="button" aria-label={t("action.history")}>
-          <Clock3 size={18} />
+          <Clock3 size={ICON_SIZE.control} />
         </button>
       </div>
       <label className="top-search">
-        <Search size={17} />
+        <Search size={ICON_SIZE.input} />
         <input
           ref={searchInputRef}
           aria-label={t("workspace.search")}
@@ -2216,7 +2228,7 @@ export function TopBar({
             disabled={isBusy}
             onClick={onRestartSync}
           >
-            <RefreshCw size={18} />
+            <RefreshCw size={ICON_SIZE.control} />
           </button>
         ) : null}
         <button
@@ -2225,7 +2237,7 @@ export function TopBar({
           aria-label={t("shortcut.showKeyboardSettings")}
           onClick={onOpenKeyboardSettings}
         >
-          <HelpCircle size={18} />
+          <HelpCircle size={ICON_SIZE.control} />
         </button>
       </div>
     </header>
@@ -2260,7 +2272,7 @@ export function WorkspaceRail({
           aria-label={t("workspace.activity")}
           onClick={onOpenActivity}
         >
-          <Clock3 size={20} />
+          <Clock3 size={ICON_SIZE.rail} />
         </button>
         <Tooltip label={snapshot.sidebar.account_home.display_name}>
           {(tooltipProps) => (
@@ -2277,7 +2289,7 @@ export function WorkspaceRail({
               onClick={() => onSelectSpace(null)}
               {...tooltipProps}
             >
-              <Home size={20} />
+              <Home size={ICON_SIZE.rail} />
             </button>
           )}
         </Tooltip>
@@ -2317,7 +2329,7 @@ export function WorkspaceRail({
           aria-label={t("action.createSpace")}
           onClick={onCreateSpace}
         >
-          <Plus size={22} />
+          <Plus size={ICON_SIZE.large} />
         </button>
         <button
           className="user-presence"
@@ -2374,7 +2386,7 @@ function Sidebar({
           aria-label={t("workspace.newDm")}
           onClick={onNewDm}
         >
-          <MessageCircle size={18} />
+          <MessageCircle size={ICON_SIZE.control} />
         </button>
         <button
           className="icon-button"
@@ -2382,7 +2394,7 @@ function Sidebar({
           aria-label={t("workspace.spaceInfoSettings")}
           onClick={onOpenSpaceInfo}
         >
-          <Settings size={18} />
+          <Settings size={ICON_SIZE.control} />
         </button>
         <button
           className="icon-button"
@@ -2390,32 +2402,32 @@ function Sidebar({
           aria-label={t("action.createRoom")}
           onClick={onCreateRoom}
         >
-          <Edit3 size={18} />
+          <Edit3 size={ICON_SIZE.control} />
         </button>
       </div>
       <div className="sidebar-scroll">
         <NavButton
           active={activeView === "timeline" && snapshot.sidebar.account_home.is_active}
-          icon={<Home size={18} />}
+          icon={<Home size={ICON_SIZE.control} />}
           label={t("workspace.home")}
         />
         <NavButton
           count={threadAttention?.notification_count ?? 0}
-          icon={<MessageCircle size={18} />}
+          icon={<MessageCircle size={ICON_SIZE.control} />}
           label={t("workspace.threads")}
           liveCount={threadAttention?.live_event_marker_count ?? 0}
           mentionCount={threadAttention?.highlight_count ?? 0}
         />
         <NavButton
           active={activeView === "explore"}
-          icon={<Compass size={18} />}
+          icon={<Compass size={ICON_SIZE.control} />}
           label={t("workspace.explore")}
           onClick={onOpenExplore}
         />
         <NavButton
           active={activeView === "invites"}
           count={snapshot.state.invites.length}
-          icon={<Bell size={18} />}
+          icon={<Bell size={ICON_SIZE.control} />}
           label={t("workspace.invites")}
           onClick={onOpenInvites}
         />
@@ -2541,7 +2553,7 @@ function SectionTitle({ count, label }: { count: number; label: string }) {
       <span className="section-title-label">{label}</span>
       <span className="section-title-meta">
         <span className="section-count">{count}</span>
-        <Plus size={15} />
+        <Plus size={ICON_SIZE.compact} />
       </span>
     </div>
   );
@@ -2639,7 +2651,7 @@ function ActivityPane({
     <main className="main-pane activity-pane" aria-labelledby="activity-title">
       <header className="channel-header">
         <div className="channel-title">
-          <Clock3 size={22} />
+          <Clock3 size={ICON_SIZE.large} />
           <h1 id="activity-title">{t("workspace.activity")}</h1>
         </div>
         <div className="activity-actions">
@@ -2650,7 +2662,7 @@ function ActivityPane({
               disabled={markAllPending}
               onClick={() => onMarkRead({ kind: "all" })}
             >
-              <Check size={16} />
+              <Check size={ICON_SIZE.small} />
               <span>{t("activity.markAllRead")}</span>
             </button>
           ) : null}
@@ -2660,7 +2672,7 @@ function ActivityPane({
             aria-label={t("action.close", { title: t("workspace.activity") })}
             onClick={onClose}
           >
-            <X size={18} />
+            <X size={ICON_SIZE.control} />
           </button>
         </div>
       </header>
@@ -2687,12 +2699,12 @@ function ActivityPane({
       <section className="activity-scroll" aria-label={activityTabLabel(activeTab)}>
         {activity.kind === "opening" ? (
           <div className="activity-empty">
-            <Clock3 size={24} />
+            <Clock3 size={ICON_SIZE.emptyState} />
             <span>{t("activity.loading")}</span>
           </div>
         ) : rows.length === 0 ? (
           <div className="activity-empty">
-            <Clock3 size={24} />
+            <Clock3 size={ICON_SIZE.emptyState} />
             <span>
               {activeTab === "recent" ? t("activity.noRecent") : t("activity.noUnread")}
             </span>
@@ -2745,7 +2757,7 @@ function ActivityPane({
                       })
                     }
                   >
-                    <Check size={16} />
+                    <Check size={ICON_SIZE.small} />
                   </button>
                 ) : null}
               </li>
@@ -2812,7 +2824,7 @@ function ExplorePane({
     <main className="main-pane explore-pane" aria-labelledby="explore-title">
       <header className="channel-header">
         <div className="channel-title">
-          <Compass size={22} />
+          <Compass size={ICON_SIZE.large} />
           <h1 id="explore-title">{t("workspace.explore")}</h1>
         </div>
       </header>
@@ -2833,7 +2845,7 @@ function ExplorePane({
           aria-label={t("directory.searchPublicRooms")}
           disabled={searchDisabled}
         >
-          <Search size={16} />
+          <Search size={ICON_SIZE.small} />
           <span>
             {queryState.kind === "querying"
               ? t("directory.searching")
@@ -2932,7 +2944,7 @@ function InvitesPane({
     <main className="main-pane invites-pane" aria-labelledby="invites-title">
       <header className="channel-header">
         <div className="channel-title">
-          <Bell size={22} />
+          <Bell size={ICON_SIZE.large} />
           <h1 id="invites-title">{t("workspace.invites")}</h1>
         </div>
         <div className="channel-actions">
@@ -2942,7 +2954,7 @@ function InvitesPane({
             aria-label={t("workspace.newDm")}
             onClick={onNewDm}
           >
-            <MessageCircle size={16} />
+            <MessageCircle size={ICON_SIZE.small} />
             <span>{t("workspace.newDm")}</span>
           </button>
         </div>
@@ -3024,7 +3036,7 @@ function InvitesPane({
                   disabled={isBusy}
                   onClick={() => onDeclineInvite(selectedInvite.room_id)}
                 >
-                  <X size={16} />
+                  <X size={ICON_SIZE.small} />
                   <span>{t("invite.decline")}</span>
                 </button>
                 <button
@@ -3034,14 +3046,14 @@ function InvitesPane({
                   disabled={isBusy}
                   onClick={() => onAcceptInvite(selectedInvite.room_id)}
                 >
-                  <Check size={16} />
+                  <Check size={ICON_SIZE.small} />
                   <span>{t("invite.accept")}</span>
                 </button>
               </div>
             </>
           ) : (
             <div className="invite-empty-preview">
-              <Bell size={24} />
+              <Bell size={ICON_SIZE.emptyState} />
               <span>{t("invite.noPending")}</span>
             </div>
           )}
@@ -3132,14 +3144,14 @@ function TimelinePane({
         </div>
         <div className="channel-actions">
           <button className="member-pill" type="button" aria-label={t("room.members")}>
-            <Users size={16} />
+            <Users size={ICON_SIZE.small} />
             <span>8</span>
           </button>
           <button className="icon-button" type="button" aria-label={t("room.threadToggle")} onClick={onToggleThread}>
-            {snapshot.state.thread.kind !== "closed" ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}
+            {snapshot.state.thread.kind !== "closed" ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
           </button>
           <button className="icon-button" type="button" aria-label={t("room.roomInfo")} onClick={onOpenRoomInfo}>
-            <MoreVertical size={19} />
+            <MoreVertical size={ICON_SIZE.panel} />
           </button>
         </div>
       </header>
@@ -3176,7 +3188,7 @@ function TimelinePane({
                 }
               }}
             >
-              <Clock3 size={15} />
+              <Clock3 size={ICON_SIZE.compact} />
               <span>
                 {snapshot.state.timeline.is_paginating_backwards
                   ? t("timeline.loading")
@@ -3248,7 +3260,7 @@ function PinnedEventsList({
   return (
     <section className="pinned-events" aria-label={t("timeline.pinnedMessages")}>
       <div className="pinned-events-heading">
-        <Pin size={15} aria-hidden="true" />
+        <Pin size={ICON_SIZE.compact} aria-hidden="true" />
         <span>{t("timeline.pinnedMessages")}</span>
       </div>
       <div className="pinned-events-list">
@@ -3272,7 +3284,7 @@ function PinnedEventsList({
               aria-label={t("timeline.unpinMessage")}
               onClick={() => onUnpin(roomId, event.event_id)}
             >
-              <PinOff size={14} aria-hidden="true" />
+              <PinOff size={ICON_SIZE.micro} aria-hidden="true" />
             </button>
           </div>
         ))}
@@ -3474,7 +3486,7 @@ function MessageArticle({
                 aria-label={t("timeline.editMessage")}
                 onClick={() => onEditMessage(message)}
               >
-                <Edit3 size={14} />
+                <Edit3 size={ICON_SIZE.micro} />
               </button>
               <button
                 className="message-action"
@@ -3482,7 +3494,7 @@ function MessageArticle({
                 aria-label={t("timeline.redactMessage")}
                 onClick={() => onRedactMessage(message.room_id, message.event_id)}
               >
-                <X size={14} />
+                <X size={ICON_SIZE.micro} />
               </button>
             </span>
           ) : null}
@@ -3492,7 +3504,7 @@ function MessageArticle({
         </div>
         {message.attachment_filename ? (
           <div className="attachment">
-            <Paperclip size={16} />
+            <Paperclip size={ICON_SIZE.small} />
             <span dir="auto">{highlightQueryLines(message.attachment_filename, query)}</span>
           </div>
         ) : null}
@@ -3701,7 +3713,7 @@ export function Composer({
             aria-label={t("composer.cancelReply")}
             onClick={onCancelReply}
           >
-            <X size={16} />
+            <X size={ICON_SIZE.small} />
           </button>
         </div>
       ) : null}
@@ -3713,7 +3725,7 @@ export function Composer({
           onMouseDown={keepComposerFocus}
           onClick={() => applyInlineMarkdown("**", "**", "bold")}
         >
-          <Bold size={17} />
+          <Bold size={ICON_SIZE.input} />
         </button>
         <button
           className="icon-button"
@@ -3722,7 +3734,7 @@ export function Composer({
           onMouseDown={keepComposerFocus}
           onClick={() => applyInlineMarkdown("_", "_", "italic")}
         >
-          <Italic size={17} />
+          <Italic size={ICON_SIZE.input} />
         </button>
         <button
           className="icon-button"
@@ -3731,7 +3743,7 @@ export function Composer({
           onMouseDown={keepComposerFocus}
           onClick={applyLinkMarkdown}
         >
-          <Link2 size={17} />
+          <Link2 size={ICON_SIZE.input} />
         </button>
         <button
           className="icon-button"
@@ -3740,7 +3752,7 @@ export function Composer({
           onMouseDown={keepComposerFocus}
           onClick={applyListMarkdown}
         >
-          <List size={17} />
+          <List size={ICON_SIZE.input} />
         </button>
         <button
           className="icon-button"
@@ -3749,7 +3761,7 @@ export function Composer({
           onMouseDown={keepComposerFocus}
           onClick={() => applyInlineMarkdown("`", "`", "code")}
         >
-          <Code2 size={17} />
+          <Code2 size={ICON_SIZE.input} />
         </button>
       </div>
       {mentionIntent.targets.length ? (
@@ -3815,7 +3827,7 @@ export function Composer({
             aria-label={t("composer.attachFile")}
             onClick={() => fileInputRef.current?.click()}
           >
-            <Paperclip size={18} />
+            <Paperclip size={ICON_SIZE.control} />
           </button>
           <button
             className="icon-button"
@@ -3824,10 +3836,10 @@ export function Composer({
             onMouseDown={keepComposerFocus}
             onClick={insertMentionTrigger}
           >
-            <AtSign size={18} />
+            <AtSign size={ICON_SIZE.control} />
           </button>
           <button className="icon-button" type="button" aria-label={t("composer.emoji")}>
-            <Smile size={18} />
+            <Smile size={ICON_SIZE.control} />
           </button>
         </div>
         <button
@@ -3837,7 +3849,7 @@ export function Composer({
           disabled={isSending || !value.trim()}
           onClick={onSend}
         >
-          <Send size={17} />
+          <Send size={ICON_SIZE.input} />
         </button>
       </div>
     </section>
@@ -4245,7 +4257,7 @@ function ThreadComposer({
           disabled={!canSend}
           onClick={onSend}
         >
-          <Send size={17} />
+          <Send size={ICON_SIZE.input} />
         </button>
       </div>
     </section>
@@ -4265,11 +4277,11 @@ function PanelHeader({
     <header className="thread-header">
       <div className="thread-title">{title}</div>
       <button className="icon-button" type="button" aria-label={t("action.more")}>
-        <MoreHorizontal size={19} />
+        <MoreHorizontal size={ICON_SIZE.panel} />
       </button>
       {showClose ? (
         <button className="icon-button" type="button" aria-label={t("action.close", { title })} onClick={onClose}>
-          <X size={19} />
+          <X size={ICON_SIZE.panel} />
         </button>
       ) : null}
     </header>

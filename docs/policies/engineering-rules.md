@@ -305,7 +305,8 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    counters, and tooltip offsets should use named CSS custom properties or
    existing design tokens. Hard-coded `px` values are acceptable only behind a
    named token for deliberately fixed controls; avoid scattered `px` literals
-   in TSX presentation code.
+   in TSX presentation code. Repeated React icon sizes, including Lucide
+   `size` props, must be centralized in a local constant map.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

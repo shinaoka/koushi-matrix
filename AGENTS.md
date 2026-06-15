@@ -539,6 +539,8 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   tooltip placement belong in named CSS custom properties. Keeping `px` behind
   a token is acceptable for deliberately fixed-format controls; text-driven
   layout should prefer logical properties and scalable units where practical.
+  Repeated Lucide icon `size` props are fixed GUI geometry too; centralize them
+  in a local constant map instead of scattering numeric props through React.
 - Event-driven `TimelineItemRow` uses the same `.message` grid contract as the
   legacy snapshot `MessageArticle`: direct child `.avatar`, `.message-main`,
   and row-level `.message-actions`. Keep direct-child grid placement explicit;

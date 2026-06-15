@@ -3,6 +3,44 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function blockFor(pattern: RegExp, label: string): string {
+  const match = css.match(pattern);
+  expect(match, `Expected CSS block for ${label}`).not.toBeNull();
+  return match?.groups?.body ?? match?.[1] ?? "";
+}
+
+function selectorBlock(selector: string): string {
+  return blockFor(new RegExp(`${escapeRegExp(selector)}\\s*\\{(?<body>[^}]*)\\}`), selector);
+}
+
+function lastSelectorBlock(selector: string): string {
+  const pattern = new RegExp(`${escapeRegExp(selector)}\\s*\\{(?<body>[^}]*)\\}`, "g");
+  const matches = [...css.matchAll(pattern)];
+  expect(matches.length, `Expected CSS block for ${selector}`).toBeGreaterThan(0);
+  return matches.at(-1)?.groups?.body ?? "";
+}
+
+function groupedSelectorBlock(selectorPattern: RegExp, label: string): string {
+  return blockFor(new RegExp(`${selectorPattern.source}\\s*\\{(?<body>[^}]*)\\}`), label);
+}
+
+function expectTokens(tokens: string[]) {
+  for (const token of tokens) {
+    expect(css).toMatch(new RegExp(`(?:^|\\n)\\s*${escapeRegExp(token)}\\s*:`));
+  }
+}
+
+function expectBlockUses(block: string, tokens: string[]) {
+  for (const token of tokens) {
+    expect(block).toContain(`var(${token}`);
+  }
+}
 
 describe("styles.css token system", () => {
   test("defines the blue brand token in light and dark", () => {
@@ -66,5 +104,164 @@ describe("styles.css token system", () => {
       /\b(?:left|right|margin-left|margin-right|padding-left|padding-right|border-left|border-right|inset-left|inset-right)\s*:/
     );
     expect(css).not.toMatch(/text-align:\s*(?:left|right)\b/);
+  });
+
+  test("defines fixed-format sizing tokens for shared GUI controls", () => {
+    expectTokens([
+      "--icon-button-size",
+      "--icon-button-radius",
+      "--activity-row-action-size",
+      "--activity-row-action-radius",
+      "--nav-badge-size",
+      "--nav-badge-padding-inline",
+      "--nav-badge-font-size",
+      "--nav-dot-size",
+      "--nav-dot-margin-inline-start",
+      "--room-count-min-inline-size",
+      "--room-count-block-size",
+      "--room-count-padding-inline",
+      "--room-count-font-size",
+      "--room-avatar-size",
+      "--room-avatar-font-size",
+      "--message-avatar-column-inline-size",
+      "--message-avatar-size",
+      "--message-avatar-font-size",
+      "--avatar-compact-size",
+      "--avatar-compact-radius",
+      "--avatar-compact-font-size",
+      "--thread-reply-avatar-column-inline-size",
+      "--directory-avatar-size",
+      "--directory-avatar-font-size",
+      "--directory-avatar-compact-size",
+      "--directory-avatar-compact-font-size",
+      "--receipt-row-gap",
+      "--receipt-row-min-block-size",
+      "--receipt-row-margin-block-start",
+      "--receipt-row-font-size",
+      "--receipt-focus-outline-width",
+      "--receipt-focus-outline-offset",
+      "--receipt-avatar-stack-min-inline-size",
+      "--receipt-avatar-size",
+      "--receipt-avatar-overlap",
+      "--receipt-avatar-border-width",
+      "--receipt-avatar-font-size",
+      "--receipt-overflow-min-inline-size",
+      "--receipt-overflow-padding-inline",
+      "--receipt-tooltip-z-index",
+      "--receipt-tooltip-offset-block",
+      "--receipt-tooltip-gap",
+      "--receipt-tooltip-min-inline-size",
+      "--receipt-tooltip-max-inline-size",
+      "--receipt-tooltip-max-viewport-inline-size",
+      "--receipt-tooltip-padding-block",
+      "--receipt-tooltip-padding-inline",
+      "--receipt-tooltip-font-size",
+      "--receipt-tooltip-translate-block",
+      "--motion-tooltip-duration"
+    ]);
+  });
+
+  test("sidebar counters and icon buttons use fixed-format tokens", () => {
+    expectBlockUses(selectorBlock(".icon-button"), ["--icon-button-size", "--icon-button-radius"]);
+    expectBlockUses(selectorBlock(".activity-row-action"), [
+      "--activity-row-action-size",
+      "--activity-row-action-radius"
+    ]);
+    expectBlockUses(selectorBlock(".workspace-button[data-count]::after"), ["--nav-badge-font-size"]);
+    expectBlockUses(selectorBlock(".nav-item[data-count]::after"), [
+      "--nav-badge-size",
+      "--nav-badge-padding-inline",
+      "--nav-badge-font-size"
+    ]);
+    expectBlockUses(
+      groupedSelectorBlock(
+        /\.nav-item\[data-mention-count\]\s+\.nav-label::after,\s*\.nav-item\[data-live-count\]\s+\.nav-label::before/,
+        "nav notification dots"
+      ),
+      ["--nav-dot-size", "--nav-dot-margin-inline-start"]
+    );
+    expectBlockUses(selectorBlock(".room-mention-dot"), ["--nav-dot-size"]);
+    expectBlockUses(selectorBlock(".room-count"), ["--room-count-min-inline-size", "--room-count-font-size"]);
+    expectBlockUses(selectorBlock(".room-count:not(:empty)"), [
+      "--room-count-min-inline-size",
+      "--room-count-block-size",
+      "--room-count-padding-inline"
+    ]);
+  });
+
+  test("avatar and receipt fixed geometry use named tokens", () => {
+    expectBlockUses(selectorBlock(".room-avatar"), ["--room-avatar-size", "--room-avatar-font-size"]);
+    expectBlockUses(selectorBlock(".message"), ["--message-avatar-column-inline-size"]);
+    expectBlockUses(selectorBlock(".avatar"), ["--message-avatar-size", "--message-avatar-font-size"]);
+    expectBlockUses(selectorBlock(".directory-result"), ["--directory-avatar-size"]);
+    expectBlockUses(selectorBlock(".directory-result-avatar"), [
+      "--directory-avatar-size",
+      "--directory-avatar-font-size"
+    ]);
+    expectBlockUses(selectorBlock(".thread-reply"), ["--thread-reply-avatar-column-inline-size"]);
+    expectBlockUses(selectorBlock(".thread-reply .avatar"), [
+      "--avatar-compact-size",
+      "--avatar-compact-radius",
+      "--avatar-compact-font-size"
+    ]);
+    expectBlockUses(
+      blockFor(
+        /@media\s+\(max-width:\s*760px\)\s*\{[\s\S]*?\.avatar\s*\{(?<body>[^}]*)\}/,
+        "compact avatar"
+      ),
+      ["--avatar-compact-size", "--avatar-compact-radius", "--avatar-compact-font-size"]
+    );
+    expectBlockUses(
+      blockFor(
+        /@media\s+\(max-width:\s*760px\)\s*\{[\s\S]*?\.directory-result-avatar\s*\{(?<body>[^}]*)\}/,
+        "compact directory avatar"
+      ),
+      ["--directory-avatar-compact-size", "--directory-avatar-compact-font-size"]
+    );
+  });
+
+  test("receipt row and tooltip sizing use fixed-format tokens", () => {
+    expectBlockUses(selectorBlock(".message-receipts"), [
+      "--receipt-row-gap",
+      "--receipt-row-min-block-size",
+      "--receipt-row-margin-block-start",
+      "--receipt-row-font-size"
+    ]);
+    expectBlockUses(selectorBlock(".message-receipts:focus-visible"), [
+      "--receipt-focus-outline-width",
+      "--receipt-focus-outline-offset"
+    ]);
+    expectBlockUses(selectorBlock(".receipt-avatars"), ["--receipt-avatar-stack-min-inline-size"]);
+    expectBlockUses(
+      groupedSelectorBlock(/\.receipt-reader-avatar,\s*\.receipt-overflow/, "receipt avatars"),
+      [
+        "--receipt-avatar-size",
+        "--receipt-avatar-overlap",
+        "--receipt-avatar-border-width",
+        "--receipt-avatar-font-size"
+      ]
+    );
+    expectBlockUses(lastSelectorBlock(".receipt-overflow"), [
+      "--receipt-overflow-min-inline-size",
+      "--receipt-overflow-padding-inline"
+    ]);
+    expectBlockUses(selectorBlock(".receipt-tooltip"), [
+      "--receipt-tooltip-z-index",
+      "--receipt-tooltip-offset-block",
+      "--receipt-tooltip-gap",
+      "--receipt-tooltip-min-inline-size",
+      "--receipt-tooltip-max-inline-size",
+      "--receipt-tooltip-max-viewport-inline-size",
+      "--receipt-tooltip-padding-block",
+      "--receipt-tooltip-padding-inline",
+      "--receipt-tooltip-font-size",
+      "--receipt-tooltip-translate-block",
+      "--motion-tooltip-duration"
+    ]);
+  });
+
+  test("App.tsx centralizes fixed Lucide icon sizes", () => {
+    expect(appSource).toContain("const ICON_SIZE");
+    expect(appSource).not.toMatch(/size=\{\d+\}/);
   });
 });
