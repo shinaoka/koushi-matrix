@@ -701,11 +701,21 @@ impl AppActor {
                     true
                 }
                 AppCommand::RecordLocalEncryptionHealth { request_id, health } => {
-                    let effects = reduce(
+                    let probe_effects = reduce(
                         &mut self.state,
-                        AppAction::LocalEncryptionHealthChanged { health },
+                        AppAction::LocalEncryptionProbeRequested {
+                            request_id: request_id.sequence,
+                        },
                     );
-                    self.handle_app_effects(request_id, effects).await;
+                    self.handle_app_effects(request_id, probe_effects).await;
+                    let health_effects = reduce(
+                        &mut self.state,
+                        AppAction::LocalEncryptionHealthChanged {
+                            request_id: request_id.sequence,
+                            health,
+                        },
+                    );
+                    self.handle_app_effects(request_id, health_effects).await;
                     true
                 }
                 AppCommand::UpdateNativeAttentionSummary {
@@ -1069,6 +1079,11 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
             request_id: request_id.sequence,
         }),
+        AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
+            Some(AppAction::LocalEncryptionProbeRequested {
+                request_id: request_id.sequence,
+            })
+        }
         AccountCommand::SubmitIdentityResetAuth { flow_id, .. } => {
             Some(AppAction::ResetIdentityAuthSubmitted {
                 request_id: *flow_id,

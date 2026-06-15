@@ -438,6 +438,21 @@ pub async fn update_settings(
 }
 
 #[tauri::command]
+pub async fn probe_local_encryption_health(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_probe_local_encryption_health_command(request_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn bootstrap_cross_signing(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
@@ -1913,6 +1928,12 @@ pub(crate) fn build_update_settings_command(
     CoreCommand::App(AppCommand::UpdateSettings { request_id, patch })
 }
 
+pub(crate) fn build_probe_local_encryption_health_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ProbeLocalEncryptionHealth { request_id })
+}
+
 pub(crate) fn build_open_activity_command(
     request_id: matrix_desktop_core::RequestId,
 ) -> CoreCommand {
@@ -2979,6 +3000,7 @@ mod tests {
         build_leave_room_command, build_load_room_settings_command, build_logout_command,
         build_moderate_room_member_command, build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
+        build_probe_local_encryption_health_command,
         build_query_directory_command, build_redact_message_command, build_redact_reaction_command,
         build_remove_room_tag_command, build_reset_identity_command, build_restart_sync_command,
         build_retry_send_command, build_select_room_command, build_select_space_command,
@@ -4613,6 +4635,43 @@ mod tests {
         assert!(
             commands_source.contains(route_name),
             "Tauri command should route through the Rust settings state machine"
+        );
+        assert!(
+            lib_source.contains(registration_name),
+            "Tauri command should be registered in generate_handler"
+        );
+    }
+
+    #[test]
+    fn credential_health_command_routes_to_account_state_machine() {
+        match build_probe_local_encryption_health_command(fake_request_id(47)) {
+            CoreCommand::Account(AccountCommand::ProbeLocalEncryptionHealth { request_id }) => {
+                assert_eq!(request_id, fake_request_id(47));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_health_tauri_command_contract_is_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        let command_name = "pub async fn probe_local_encryption_health";
+        let builder_name = "build_probe_local_encryption_health_command";
+        let route_name = "AccountCommand::ProbeLocalEncryptionHealth";
+        let registration_name = "commands::probe_local_encryption_health";
+
+        assert!(
+            commands_source.contains(command_name),
+            "Tauri command should expose probe_local_encryption_health"
+        );
+        assert!(
+            commands_source.contains(builder_name),
+            "Tauri command should keep a testable local encryption probe builder"
+        );
+        assert!(
+            commands_source.contains(route_name),
+            "Tauri command should route through the Rust credential health state machine"
         );
         assert!(
             lib_source.contains(registration_name),

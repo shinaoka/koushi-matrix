@@ -330,8 +330,21 @@ pub enum AppAction {
         target: ActivityMarkReadTarget,
         kind: OperationFailureKind,
     },
+    LocalEncryptionProbeRequested {
+        request_id: u64,
+    },
     LocalEncryptionHealthChanged {
+        request_id: u64,
         health: LocalEncryptionHealth,
+    },
+    ResetLocalDataRequested {
+        request_id: u64,
+    },
+    ResetLocalDataCompleted {
+        request_id: u64,
+    },
+    ResetLocalDataFailed {
+        request_id: u64,
     },
     NativeAttentionUpdated {
         summary: NativeAttentionSummary,

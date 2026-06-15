@@ -208,6 +208,7 @@ npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=m
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=live_signals --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=activity --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=send_queue --core --core-backend=both --timeout-ms=240000
 ```
 
@@ -231,8 +232,10 @@ cjk_collation=ok
 joined_room_restore=ok
 ```
 
-`credential_health=ok` / `fail_closed=ok` prove Rust-owned
-`LocalEncryptionState` transitions and kind-only OS credential failures.
+`credential_health=ok` / `fail_closed=ok` prove StoreActor-fed, Rust-owned
+`LocalEncryptionState` transitions and kind-only credential-store failure
+projection. The headless lane runs under the debug/test file credential-store
+guard and must refuse to touch the OS keychain.
 `notification_candidate=ok`, `badge_state=ok`, `suppress_focus=ok`, and
 `clear_badge=ok` prove Rust-owned native attention candidates and platform
 capability mapping without message bodies or identifiers.

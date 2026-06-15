@@ -50,6 +50,7 @@ impl CoreCommand {
                 | AccountCommand::RestoreSession { request_id, .. }
                 | AccountCommand::RestoreLastSession { request_id }
                 | AccountCommand::QuerySavedSessions { request_id }
+                | AccountCommand::ProbeLocalEncryptionHealth { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
                 | AccountCommand::RequestVerification { request_id, .. }
                 | AccountCommand::AcceptVerification { request_id, .. }
@@ -371,6 +372,9 @@ pub enum AccountCommand {
     QuerySavedSessions {
         request_id: RequestId,
     },
+    ProbeLocalEncryptionHealth {
+        request_id: RequestId,
+    },
     SubmitRecovery {
         request_id: RequestId,
         request: RecoveryRequest,
@@ -449,6 +453,7 @@ impl AccountCommand {
                 | Self::SetPresence { .. }
                 | Self::SetDisplayName { .. }
                 | Self::SetAvatar { .. }
+                | Self::ProbeLocalEncryptionHealth { .. }
         )
     }
 }
@@ -495,6 +500,10 @@ impl fmt::Debug for AccountCommand {
                 .finish(),
             Self::QuerySavedSessions { request_id } => formatter
                 .debug_struct("QuerySavedSessions")
+                .field("request_id", request_id)
+                .finish(),
+            Self::ProbeLocalEncryptionHealth { request_id } => formatter
+                .debug_struct("ProbeLocalEncryptionHealth")
                 .field("request_id", request_id)
                 .finish(),
             Self::SubmitRecovery {

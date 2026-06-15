@@ -42,6 +42,7 @@ export interface DesktopApi {
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
   updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
+  probeLocalEncryptionHealth(): Promise<DesktopSnapshot>;
   bootstrapCrossSigning(): Promise<DesktopSnapshot>;
   enableKeyBackup(): Promise<DesktopSnapshot>;
   acceptVerification(flowId: number): Promise<DesktopSnapshot>;
@@ -268,6 +269,14 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.settings.values.typography
     );
     this.snapshot.state.settings.persistence = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async probeLocalEncryptionHealth(): Promise<DesktopSnapshot> {
+    const requestId = this.nextRequestId();
+    this.snapshot.state.local_encryption = { kind: "probing", request_id: requestId };
+    await Promise.resolve();
+    this.snapshot.state.local_encryption = { kind: "healthy" };
     return this.getSnapshot();
   }
 

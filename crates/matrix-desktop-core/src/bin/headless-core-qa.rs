@@ -47,9 +47,9 @@ use matrix_desktop_core::command::{
     SearchScope, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 use matrix_desktop_core::event::{
-    AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection,
-    PaginationState, RoomEvent, SearchEvent, SyncBackendKind, SyncEvent, TimelineDiff,
-    TimelineEvent, TimelineItem, TimelineItemId, TimelineSendState,
+    AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
+    PaginationDirection, PaginationState, RoomEvent, SearchEvent, SyncBackendKind, SyncEvent,
+    TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineSendState,
 };
 use matrix_desktop_core::failure::{CoreFailure, RoomFailureKind};
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -59,10 +59,11 @@ use matrix_desktop_state::{
     ComposerKeyModifiers, ComposerResolvedAction, ComposerResolverContext, ComposerSelection,
     ComposerSendShortcut, ComposerSurface, CrossSigningStatus, DirectoryQuery,
     DirectoryRoomSummary, IdentityResetAuthRequest, IdentityResetAuthType, IdentityResetState,
-    KeyBackupStatus, MentionIntent, MentionTarget, OperationFailureKind, PresenceKind,
-    RecoveryRequest, ReplyQuoteState, RoomManagementOperationKind, RoomManagementOperationState,
-    RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, SasEmoji, SessionInfo,
-    SessionState, TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
+    KeyBackupStatus, LocalEncryptionHealth, LocalEncryptionState, MentionIntent, MentionTarget,
+    OperationFailureKind, PresenceKind, RecoveryRequest, ReplyQuoteState,
+    RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
+    RoomSettingChange, RoomSettingsSnapshot, SasEmoji, SessionInfo, SessionState,
+    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
     resolve_composer_key_action,
 };
 
@@ -97,6 +98,7 @@ enum QaScenario {
     All,
     Safety,
     LoginSync,
+    CredentialHealth,
     E2eeTrust,
     InvitesDm,
     RoomSpace,
@@ -118,6 +120,7 @@ enum QaScenario {
 enum QaStage {
     Safety,
     LoginSync,
+    CredentialHealth,
     E2eeTrust,
     InvitesDm,
     RoomSpace,
@@ -211,6 +214,7 @@ impl QaScenario {
             "all" => Ok(Self::All),
             "safety" => Ok(Self::Safety),
             "login_sync" => Ok(Self::LoginSync),
+            "credential_health" => Ok(Self::CredentialHealth),
             "e2ee_trust" => Ok(Self::E2eeTrust),
             "invites_dm" => Ok(Self::InvitesDm),
             "room_space" => Ok(Self::RoomSpace),
@@ -227,7 +231,7 @@ impl QaScenario {
             "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
             )),
         }
     }
@@ -237,6 +241,10 @@ impl QaScenario {
             Self::All => true,
             Self::Safety => matches!(stage, QaStage::Safety),
             Self::LoginSync => matches!(stage, QaStage::Safety | QaStage::LoginSync),
+            Self::CredentialHealth => matches!(
+                stage,
+                QaStage::Safety | QaStage::LoginSync | QaStage::CredentialHealth
+            ),
             Self::E2eeTrust => {
                 matches!(
                     stage,
@@ -344,7 +352,11 @@ impl QaScenario {
     fn suppress_matrix_identifiers(self) -> bool {
         matches!(
             self,
-            Self::LiveSignals | Self::SendQueue | Self::RoomManagement | Self::Activity
+            Self::LiveSignals
+                | Self::SendQueue
+                | Self::RoomManagement
+                | Self::Activity
+                | Self::CredentialHealth
         )
     }
 }
@@ -358,6 +370,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
     match stage {
         QaStage::Safety => &["safety=ok"],
         QaStage::LoginSync => &["login_sync=ok"],
+        QaStage::CredentialHealth => &["credential_health=ok", "fail_closed=ok"],
         QaStage::E2eeTrust => &["e2ee_trust=ok"],
         QaStage::InvitesDm => &[
             "invite_recv=ok",
@@ -417,6 +430,8 @@ fn implemented_final_tokens() -> Vec<&'static str> {
     vec![
         "safety=ok",
         "login_sync=ok",
+        "credential_health=ok",
+        "fail_closed=ok",
         "invite_recv=ok",
         "invite_accept=ok",
         "invite_decline=ok",
@@ -466,6 +481,11 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
     match scenario {
         QaScenario::Safety => vec![QaStage::Safety],
         QaScenario::LoginSync => vec![QaStage::Safety, QaStage::LoginSync],
+        QaScenario::CredentialHealth => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::CredentialHealth,
+        ],
         QaScenario::E2eeTrust => {
             vec![QaStage::Safety, QaStage::LoginSync, QaStage::E2eeTrust]
         }
@@ -555,6 +575,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::All => vec![
             QaStage::Safety,
             QaStage::LoginSync,
+            QaStage::CredentialHealth,
             QaStage::InvitesDm,
             QaStage::RoomSpace,
             QaStage::Directory,
@@ -589,6 +610,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         QaScenario::RoomSpace
         | QaScenario::Directory
         | QaScenario::RoomManagement
+        | QaScenario::CredentialHealth
         | QaScenario::E2eeTrust
         | QaScenario::InvitesDm
         | QaScenario::Timeline
@@ -1546,6 +1568,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     wait_for_sync_running(&mut conn_a, "sync A running").await?;
     println!("sync_a=running");
     println!("login_sync=ok");
+
+    if scenario.should_run_stage(QaStage::CredentialHealth) {
+        run_credential_health_stage(&mut conn_a).await?;
+    }
 
     if scenario == QaScenario::E2eeTrust {
         run_e2ee_trust_stage(&config, &mut conn_a, &account_key_a).await?;
@@ -3860,6 +3886,48 @@ async fn wait_for_activity_unread_empty(
     }
 }
 
+async fn wait_for_local_encryption_health(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    expected: LocalEncryptionHealth,
+    label: &str,
+) -> Result<(), String> {
+    let expected_state = LocalEncryptionState::from(expected);
+    if conn.snapshot().local_encryption == expected_state {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for local encryption health"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) if snapshot.local_encryption == expected_state => {
+                return Ok(());
+            }
+            CoreEvent::LocalEncryption(LocalEncryptionEvent::HealthChanged { health })
+                if health == expected && conn.snapshot().local_encryption == expected_state =>
+            {
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!(
+                    "{label}: local encryption health failed: {failure:?}"
+                ));
+            }
+            _ if conn.snapshot().local_encryption == expected_state => {
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Wait for `AccountEvent::LoggedIn` with the given request_id.
 async fn wait_for_logged_in(
     conn: &mut CoreConnection,
@@ -4090,6 +4158,57 @@ fn handle_cross_signing_status(
         return Err(format!("{label}: cross-signing failed: {kind:?}"));
     }
     Ok(())
+}
+
+async fn run_credential_health_stage(conn: &mut CoreConnection) -> Result<(), String> {
+    let probe_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(
+        AccountCommand::ProbeLocalEncryptionHealth {
+            request_id: probe_id,
+        },
+    ))
+    .await
+    .map_err(|e| format!("submit credential health probe: {e}"))?;
+    wait_for_local_encryption_health(
+        conn,
+        probe_id,
+        LocalEncryptionHealth::Healthy,
+        "credential health",
+    )
+    .await?;
+    println!("credential_health=ok");
+
+    let fail_closed_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::RecordLocalEncryptionHealth {
+        request_id: fail_closed_id,
+        health: LocalEncryptionHealth::LockedOrInaccessible,
+    }))
+    .await
+    .map_err(|e| format!("submit credential fail-closed health record: {e}"))?;
+    wait_for_local_encryption_health(
+        conn,
+        fail_closed_id,
+        LocalEncryptionHealth::LockedOrInaccessible,
+        "credential fail-closed",
+    )
+    .await?;
+    println!("fail_closed=ok");
+
+    let reprobe_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(
+        AccountCommand::ProbeLocalEncryptionHealth {
+            request_id: reprobe_id,
+        },
+    ))
+    .await
+    .map_err(|e| format!("submit credential health restore probe: {e}"))?;
+    wait_for_local_encryption_health(
+        conn,
+        reprobe_id,
+        LocalEncryptionHealth::Healthy,
+        "credential health restore",
+    )
+    .await
 }
 
 async fn run_activity_stage(
@@ -7335,6 +7454,10 @@ mod tests {
             QaScenario::Activity
         );
         assert_eq!(
+            QaScenario::from_env_value("credential_health").unwrap(),
+            QaScenario::CredentialHealth
+        );
+        assert_eq!(
             QaScenario::from_env_value("reply").unwrap(),
             QaScenario::Reply
         );
@@ -7385,6 +7508,7 @@ mod tests {
         for scenario in [
             QaScenario::Safety,
             QaScenario::LoginSync,
+            QaScenario::CredentialHealth,
             QaScenario::RoomSpace,
             QaScenario::Directory,
             QaScenario::RoomManagement,
@@ -7413,6 +7537,7 @@ mod tests {
     fn privacy_sensitive_scenarios_suppress_matrix_identifiers() {
         assert!(QaScenario::LiveSignals.suppress_matrix_identifiers());
         assert!(QaScenario::SendQueue.suppress_matrix_identifiers());
+        assert!(QaScenario::CredentialHealth.suppress_matrix_identifiers());
         assert!(!QaScenario::Timeline.suppress_matrix_identifiers());
         assert!(!QaScenario::All.suppress_matrix_identifiers());
     }
@@ -7911,6 +8036,12 @@ mod tests {
         assert!(!QaScenario::Activity.should_run_stage(QaStage::Composer));
         assert!(!QaScenario::Activity.should_run_stage(QaStage::Reply));
 
+        assert!(QaScenario::CredentialHealth.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::CredentialHealth.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::CredentialHealth.should_run_stage(QaStage::CredentialHealth));
+        assert!(!QaScenario::CredentialHealth.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::CredentialHealth.suppress_matrix_identifiers());
+
         assert!(QaScenario::Reply.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::Reply.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::Reply.should_run_stage(QaStage::Timeline));
@@ -7966,6 +8097,7 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::RoomManagement));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::All.should_run_stage(QaStage::Activity));
+        assert!(QaScenario::All.should_run_stage(QaStage::CredentialHealth));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
         assert!(QaScenario::All.should_run_stage(QaStage::Media));
         assert!(QaScenario::All.should_run_stage(QaStage::LiveSignals));
@@ -8059,6 +8191,8 @@ mod tests {
             &[
                 "safety=ok",
                 "login_sync=ok",
+                "credential_health=ok",
+                "fail_closed=ok",
                 "invite_recv=ok",
                 "invite_accept=ok",
                 "invite_decline=ok",
@@ -8171,6 +8305,16 @@ mod tests {
             ]
         );
         assert_eq!(
+            final_tokens_for_scenario(QaScenario::CredentialHealth),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "credential_health=ok",
+                "fail_closed=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
             final_tokens_for_scenario(QaScenario::Directory),
             [
                 "safety=ok",
@@ -8278,6 +8422,8 @@ mod tests {
             &[
                 "safety=ok",
                 "login_sync=ok",
+                "credential_health=ok",
+                "fail_closed=ok",
                 "invite_recv=ok",
                 "invite_accept=ok",
                 "invite_decline=ok",

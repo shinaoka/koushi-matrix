@@ -40,7 +40,9 @@ use matrix_desktop_state::{
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
-use crate::event::{AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent};
+use crate::event::{
+    AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
+};
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId};
 use crate::room::{RoomActorHandle, RoomMessage};
@@ -540,6 +542,9 @@ impl AccountActor {
             }
             AccountCommand::QuerySavedSessions { request_id } => {
                 self.handle_query_saved_sessions(request_id);
+            }
+            AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
+                self.handle_probe_local_encryption_health(request_id);
             }
             AccountCommand::Logout { request_id } => {
                 self.handle_logout(request_id).await;
@@ -2014,6 +2019,21 @@ impl AccountActor {
         self.session
             .as_ref()
             .map(|session| AccountKey(session.info.user_id.clone()))
+    }
+
+    fn handle_probe_local_encryption_health(&self, request_id: RequestId) {
+        let health = self
+            .session_key_id
+            .as_ref()
+            .map(|key_id| self.store.probe_local_encryption_health(key_id))
+            .unwrap_or(matrix_desktop_state::LocalEncryptionHealth::Unknown);
+        self.reduce(vec![AppAction::LocalEncryptionHealthChanged {
+            request_id: request_id.sequence,
+            health,
+        }]);
+        self.emit(CoreEvent::LocalEncryption(
+            LocalEncryptionEvent::HealthChanged { health },
+        ));
     }
 
     fn reduce(&self, actions: Vec<AppAction>) {

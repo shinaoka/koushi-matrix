@@ -241,4 +241,13 @@ describe("TauriDesktopApi", () => {
     });
     expect(invoke).toHaveBeenCalledWith("close_activity");
   });
+
+  test("passes credential health probe to Rust-owned account command", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.probeLocalEncryptionHealth();
+
+    expect(invoke).toHaveBeenCalledWith("probe_local_encryption_health");
+  });
 });

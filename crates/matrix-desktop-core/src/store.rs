@@ -19,6 +19,7 @@ use matrix_desktop_sdk::{
     MatrixClientStoreConfig, MatrixClientStoreKey, MatrixSearchIndexKey,
     MatrixSearchIndexStoreConfig,
 };
+use matrix_desktop_state::LocalEncryptionHealth;
 
 use crate::failure::CoreFailure;
 
@@ -152,6 +153,18 @@ impl StoreActor {
         let _ = std::fs::remove_dir_all(self.account_root_dir(key_id));
     }
 
+    /// Probe the stored local unlock secret without creating a new one.
+    ///
+    /// This is the Rust-owned source for Settings/Security credential-store
+    /// health. It is intentionally kind-only; raw backend errors never leave
+    /// the store layer.
+    pub fn probe_local_encryption_health(&self, key_id: &SessionKeyId) -> LocalEncryptionHealth {
+        match self.credential_store.load(key_id) {
+            Ok(_) => LocalEncryptionHealth::Healthy,
+            Err(error) => local_secret_error_health(&error),
+        }
+    }
+
     /// The OS or file-based credential store backend.
     pub fn credential_store_backend(&self) -> &CredentialStoreBackend {
         &self.credential_store
@@ -217,6 +230,8 @@ pub enum CredentialStoreBackend {
     OsKeychain(CredentialStore),
     #[cfg(any(debug_assertions, test))]
     FileDir(FileCredentialStore),
+    #[cfg(test)]
+    InMemory(CredentialStore<matrix_desktop_key::InMemoryCredentialBackend>),
 }
 
 impl CredentialStoreBackend {
@@ -238,6 +253,8 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.load(key_id),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => store.load(key_id),
+            #[cfg(test)]
+            Self::InMemory(store) => store.load(key_id),
         }
     }
 
@@ -250,6 +267,8 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.save(key_id, secret),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => store.save(key_id, secret),
+            #[cfg(test)]
+            Self::InMemory(store) => store.save(key_id, secret),
         }
     }
 
@@ -258,6 +277,8 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.delete(key_id),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => store.delete(key_id),
+            #[cfg(test)]
+            Self::InMemory(store) => store.delete(key_id),
         }
     }
 
@@ -276,6 +297,8 @@ impl CredentialStoreBackend {
             Self::FileDir(store) => {
                 store.save_named(&key_id.matrix_session_account_name(), session.as_str())
             }
+            #[cfg(test)]
+            Self::InMemory(store) => store.save_matrix_session(key_id, session),
         }
     }
 
@@ -290,6 +313,8 @@ impl CredentialStoreBackend {
                 let value = store.load_named(&key_id.matrix_session_account_name())?;
                 Ok(matrix_desktop_key::StoredMatrixSession::new(value))
             }
+            #[cfg(test)]
+            Self::InMemory(store) => store.load_matrix_session(key_id),
         }
     }
 
@@ -301,6 +326,8 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.delete_matrix_session(key_id),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => store.delete_named(&key_id.matrix_session_account_name()),
+            #[cfg(test)]
+            Self::InMemory(store) => store.delete_matrix_session(key_id),
         }
     }
 
@@ -319,6 +346,8 @@ impl CredentialStoreBackend {
                     &json,
                 )
             }
+            #[cfg(test)]
+            Self::InMemory(store) => store.save_last_session(key_id),
         }
     }
 
@@ -341,6 +370,8 @@ impl CredentialStoreBackend {
                     Err(err) => Err(err),
                 }
             }
+            #[cfg(test)]
+            Self::InMemory(store) => store.load_last_session(),
         }
     }
 
@@ -351,6 +382,8 @@ impl CredentialStoreBackend {
             Self::FileDir(store) => {
                 store.delete_named(matrix_desktop_key::CredentialStore::last_session_account_name())
             }
+            #[cfg(test)]
+            Self::InMemory(store) => store.delete_last_session(),
         }
     }
 
@@ -371,6 +404,8 @@ impl CredentialStoreBackend {
                     Err(err) => Err(err),
                 }
             }
+            #[cfg(test)]
+            Self::InMemory(store) => store.load_saved_sessions(),
         }
     }
 
@@ -389,6 +424,8 @@ impl CredentialStoreBackend {
                     &index.to_json()?,
                 )
             }
+            #[cfg(test)]
+            Self::InMemory(store) => store.remember_saved_session(key_id),
         }
     }
 
@@ -407,6 +444,8 @@ impl CredentialStoreBackend {
                     &index.to_json()?,
                 )
             }
+            #[cfg(test)]
+            Self::InMemory(store) => store.forget_saved_session(key_id),
         }
     }
 
@@ -416,7 +455,54 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => Some(store),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(_) => None,
+            #[cfg(test)]
+            Self::InMemory(_) => None,
         }
+    }
+}
+
+fn local_secret_error_health(
+    error: &matrix_desktop_key::LocalSecretError,
+) -> LocalEncryptionHealth {
+    if matrix_desktop_key::is_missing_credential_error(error) {
+        return LocalEncryptionHealth::MissingCredential;
+    }
+    if matrix_desktop_key::is_locked_or_inaccessible_error(error) {
+        return LocalEncryptionHealth::LockedOrInaccessible;
+    }
+    match error {
+        matrix_desktop_key::LocalSecretError::CredentialBackend(
+            matrix_desktop_key::CredentialBackendErrorKind::Unavailable,
+        )
+        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::PlatformFailure(
+            _,
+        ))
+        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::TooLong(_, _))
+        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::Invalid(_, _)) => {
+            LocalEncryptionHealth::Unavailable
+        }
+        matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoStorageAccess(
+            _,
+        )) => LocalEncryptionHealth::LockedOrInaccessible,
+        matrix_desktop_key::LocalSecretError::CredentialBackend(
+            matrix_desktop_key::CredentialBackendErrorKind::Corrupt,
+        )
+        | matrix_desktop_key::LocalSecretError::Base64Decode(_)
+        | matrix_desktop_key::LocalSecretError::InvalidSecretLength { .. }
+        | matrix_desktop_key::LocalSecretError::Json(_)
+        | matrix_desktop_key::LocalSecretError::Derivation
+        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::BadEncoding(_))
+        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::Ambiguous(_)) => {
+            LocalEncryptionHealth::ResetRequired
+        }
+        matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoEntry)
+        | matrix_desktop_key::LocalSecretError::CredentialBackend(
+            matrix_desktop_key::CredentialBackendErrorKind::MissingCredential,
+        ) => LocalEncryptionHealth::MissingCredential,
+        matrix_desktop_key::LocalSecretError::CredentialBackend(
+            matrix_desktop_key::CredentialBackendErrorKind::LockedOrInaccessible,
+        ) => LocalEncryptionHealth::LockedOrInaccessible,
+        _ => LocalEncryptionHealth::Unavailable,
     }
 }
 
@@ -666,5 +752,40 @@ mod tests {
 
         // Should not panic even when credentials don't exist.
         actor.delete_account_credentials(&key_id);
+    }
+
+    #[test]
+    fn store_actor_probe_maps_credential_backend_health_without_raw_errors() {
+        let data_dir = tempdir().expect("tempdir");
+        let backend = matrix_desktop_key::InMemoryCredentialBackend::default();
+        let actor = StoreActor::with_backend(
+            CredentialStoreBackend::InMemory(matrix_desktop_key::CredentialStore::with_backend(
+                "matrix-desktop-test",
+                backend.clone(),
+            )),
+            data_dir.path(),
+        );
+        let key_id = make_key_id();
+
+        assert_eq!(
+            actor.probe_local_encryption_health(&key_id),
+            matrix_desktop_state::LocalEncryptionHealth::MissingCredential
+        );
+
+        let secret = LocalUnlockSecret::generate();
+        actor
+            .credential_backend()
+            .save(&key_id, &secret)
+            .expect("save synthetic unlock secret");
+        assert_eq!(
+            actor.probe_local_encryption_health(&key_id),
+            matrix_desktop_state::LocalEncryptionHealth::Healthy
+        );
+
+        backend.set_error(matrix_desktop_key::CredentialBackendErrorKind::LockedOrInaccessible);
+        assert_eq!(
+            actor.probe_local_encryption_health(&key_id),
+            matrix_desktop_state::LocalEncryptionHealth::LockedOrInaccessible
+        );
     }
 }

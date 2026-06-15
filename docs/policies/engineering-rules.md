@@ -86,7 +86,12 @@ Rules:
    `missing_credential`, or `reset_required`, with optional private-data-free
    remediation hints. Raw OS/keyring errors, local paths, account identifiers,
    key labels, local unlock secrets, SDK/search keys, and recovery material must
-   stay inside `StoreActor`/adapter diagnostics gated for debug/test.
+   stay inside `StoreActor`/adapter diagnostics gated for debug/test. OS
+   credential calls go through the `matrix-desktop-key` credential backend
+   abstraction and the StoreActor path; GUI code may only dispatch typed probe
+   or reset commands and render `AppState.local_encryption`. Debug/test file
+   credential stores remain behind debug/test-only cfg, and release builds must
+   ignore those environment variables.
 13. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
    filename, caption, mimetype, dimensions, and bytes when sending media, and
    `TimelineItem.media` may expose safe render metadata. Normal `Debug`, QA

@@ -312,4 +312,19 @@ describe("BrowserFakeApi settings preview", () => {
     }
     expect(markedAll.state.activity.unread.rows).toEqual([]);
   });
+
+  test("models local encryption health probe as Rust-owned state", async () => {
+    const api = createBrowserFakeApi();
+
+    expect((await api.getSnapshot()).state.local_encryption).toEqual({ kind: "unknown" });
+
+    const probing = api.probeLocalEncryptionHealth();
+    expect((await api.getSnapshot()).state.local_encryption).toMatchObject({
+      kind: "probing",
+      request_id: expect.any(Number)
+    });
+
+    const snapshot = await probing;
+    expect(snapshot.state.local_encryption).toEqual({ kind: "healthy" });
+  });
 });

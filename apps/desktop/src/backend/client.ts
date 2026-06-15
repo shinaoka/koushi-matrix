@@ -74,6 +74,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("update_settings", { patch });
   }
 
+  async probeLocalEncryptionHealth(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("probe_local_encryption_health");
+  }
+
   async bootstrapCrossSigning(): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("bootstrap_cross_signing");
   }

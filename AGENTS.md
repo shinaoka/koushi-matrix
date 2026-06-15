@@ -91,6 +91,24 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact`,
   and `npm --prefix apps/desktop run typecheck`.
 
+## Credential Health QA
+
+- Local-encryption / credential-store health is Rust-owned
+  `AppState.local_encryption`; GUI code must dispatch typed probe/reset
+  commands and render the snapshot, not infer OS/keyring semantics.
+- Fast Tier 1 checks are:
+  `cargo test -p matrix-desktop-state --test local_encryption_state`,
+  `cargo test -p matrix-desktop-key credential_backend`, and
+  `cargo test -p matrix-desktop-core store_actor_probe_maps_credential_backend_health_without_raw_errors`.
+- The local headless proof is
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000`.
+  It runs under the debug/test file credential-store guard and must refuse to
+  touch the OS keychain.
+- macOS Tier 2 real-Keychain proof is opt-in:
+  `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1 cargo test -p matrix-desktop-key credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture`.
+  Run it only on a real macOS session/CI runner. Consent dialogs, Touch ID,
+  locked login-keychain UX, and signed-build ACL behavior remain attended-only.
+
 ## Public Directory Phase A Notes
 
 - Public directory semantics are Rust-owned. `AppState.directory.query` and

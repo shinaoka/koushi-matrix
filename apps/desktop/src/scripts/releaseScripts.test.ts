@@ -796,6 +796,7 @@ describe("desktop release scripts", () => {
       "scenario room_management",
       "scenario timeline",
       "scenario composer",
+      "scenario credential_health",
       "scenario reply",
       "scenario media",
       "scenario thread",

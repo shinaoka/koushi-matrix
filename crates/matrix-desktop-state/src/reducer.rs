@@ -1483,13 +1483,71 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             };
             vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
         }
-        AppAction::LocalEncryptionHealthChanged { health } => {
+        AppAction::LocalEncryptionProbeRequested { request_id } => {
+            let next = LocalEncryptionState::Probing { request_id };
+            if state.local_encryption == next {
+                return Vec::new();
+            }
+
+            state.local_encryption = next;
+            vec![AppEffect::EmitUiEvent(UiEvent::LocalEncryptionChanged)]
+        }
+        AppAction::LocalEncryptionHealthChanged { request_id, health } => {
+            let LocalEncryptionState::Probing {
+                request_id: current_request_id,
+            } = state.local_encryption
+            else {
+                return Vec::new();
+            };
+            if current_request_id != request_id {
+                return Vec::new();
+            }
+
             let next = LocalEncryptionState::from(health);
             if state.local_encryption == next {
                 return Vec::new();
             }
 
             state.local_encryption = next;
+            vec![AppEffect::EmitUiEvent(UiEvent::LocalEncryptionChanged)]
+        }
+        AppAction::ResetLocalDataRequested { request_id } => {
+            if !matches!(
+                state.local_encryption,
+                LocalEncryptionState::MissingCredential | LocalEncryptionState::ResetRequired
+            ) {
+                return Vec::new();
+            }
+
+            state.local_encryption = LocalEncryptionState::Resetting { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::LocalEncryptionChanged)]
+        }
+        AppAction::ResetLocalDataCompleted { request_id } => {
+            let LocalEncryptionState::Resetting {
+                request_id: current_request_id,
+            } = state.local_encryption
+            else {
+                return Vec::new();
+            };
+            if current_request_id != request_id {
+                return Vec::new();
+            }
+
+            state.local_encryption = LocalEncryptionState::Unknown;
+            vec![AppEffect::EmitUiEvent(UiEvent::LocalEncryptionChanged)]
+        }
+        AppAction::ResetLocalDataFailed { request_id } => {
+            let LocalEncryptionState::Resetting {
+                request_id: current_request_id,
+            } = state.local_encryption
+            else {
+                return Vec::new();
+            };
+            if current_request_id != request_id {
+                return Vec::new();
+            }
+
+            state.local_encryption = LocalEncryptionState::ResetRequired;
             vec![AppEffect::EmitUiEvent(UiEvent::LocalEncryptionChanged)]
         }
         AppAction::NativeAttentionUpdated { summary } => {

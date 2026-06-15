@@ -1025,12 +1025,17 @@ stateDiagram-v2
 
 - The coarse health states are exactly `unknown`, `healthy`, `unavailable`,
   `locked_or_inaccessible`, `missing_credential`, and `reset_required`.
-- Probes are accepted during startup, login, restore, and explicit retry.
-  Commands that require encrypted SDK/search storage are rejected unless the
-  state is `Healthy` for the active account/device.
-- Health and reset completions carry a request id and account/device identity
-  owned by Rust. Stale completions, duplicate completions, and completions for a
-  previous account are ignored.
+- Probes are accepted after the account runtime is ready and on explicit retry.
+  GUI code requests a probe through the typed `probe_local_encryption_health`
+  command; it never reads OS/keyring errors directly.
+- Commands that open encrypted SDK/search storage fail closed inside the
+  StoreActor/credential backend path. `AppState.local_encryption` is the
+  public coarse status projection for UI and QA, not a React-side authorization
+  switch.
+- Health and reset completions carry a request id owned by Rust. Stale
+  completions and duplicate completions are ignored; logout, lock, and account
+  switch clear any account-specific health state before another account can
+  observe it.
 - Failure behavior is fail-closed. Public state stores only kind-only failure
   data; raw OS/keyring errors, local paths, keys, and recovery material never
   enter `AppState`, `CoreEvent`, `Debug`, or QA tokens.
