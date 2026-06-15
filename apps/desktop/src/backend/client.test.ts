@@ -76,6 +76,31 @@ describe("TauriDesktopApi", () => {
     expect(invoke).toHaveBeenCalledWith("submit_identity_reset_oauth", { flowId: 45 });
   });
 
+  test("passes reaction actions to Rust-owned timeline commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.sendReaction("!room:example.invalid", "$event:example.invalid", "👍");
+    await api.redactReaction(
+      "!room:example.invalid",
+      "$event:example.invalid",
+      "👍",
+      "$reaction:example.invalid"
+    );
+
+    expect(invoke).toHaveBeenCalledWith("send_reaction", {
+      roomId: "!room:example.invalid",
+      eventId: "$event:example.invalid",
+      reactionKey: "👍"
+    });
+    expect(invoke).toHaveBeenCalledWith("redact_reaction", {
+      roomId: "!room:example.invalid",
+      eventId: "$event:example.invalid",
+      reactionKey: "👍",
+      reactionEventId: "$reaction:example.invalid"
+    });
+  });
+
   test("passes profile actions to Rust-owned account commands", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

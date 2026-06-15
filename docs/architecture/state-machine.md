@@ -207,6 +207,32 @@ stateDiagram-v2
   `in_reply_to_event_id == root_event_id`. Focused timelines do not own
   composer state.
 
+## Timeline Reactions
+
+Reaction annotations are Rust-owned timeline projection data. Grouped reaction
+state carries the reaction key, aggregated count, whether the current user has
+selected it, and the current user's reaction event id when present. React may
+render this projection and dispatch typed commands, but it must not keep local
+reaction counts, ownership, target eligibility, or toggle semantics.
+
+- `SendReaction` and `RedactReaction` are the only reaction commands accepted
+  across the app boundary. They are accepted only for a Ready session and only
+  through the Rust timeline actor that owns the current subscription.
+- Reaction targets are restricted to reaction-eligible timeline events in the
+  active subscription. Stale event ids, wrong-room or wrong-thread targets,
+  state events, and other unsupported targets are rejected as invalid reaction
+  failures.
+- Rust projects the SDK's aggregated reaction annotations into grouped state
+  keyed by reaction key. Duplicate annotations are deduplicated by the SDK
+  aggregation layer, and redactions update the same grouped projection rather
+  than creating React-local replacement state.
+- The public SDK surface exposes `Timeline::toggle_reaction`. Rust must prove
+  the current projected state before delegating to that toggle helper: add only
+  when the projection says the user has not already selected the reaction, and
+  redact only when the projection says the matching own reaction event is
+  present. If the projection does not support the requested transition, settle
+  it as an invalid reaction failure instead of guessing from React state.
+
 ## Timeline Media
 
 Timeline media is a core-owned operation/effect state, not React-local logic.

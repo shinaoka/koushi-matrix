@@ -76,8 +76,15 @@ export interface TimelineTransport {
   listenCoreEvents(listener: (payload: CoreEventPayload) => void): () => void;
   /** Invoke a backward-pagination command for this timeline key. */
   paginateBackwards(timelineKey: TimelineKey): Promise<void>;
-  /** Toggle a reaction on a timeline event. */
-  toggleReaction(roomId: string, eventId: string, reactionKey: string): Promise<void>;
+  /** Send a reaction command for a timeline event. */
+  sendReaction(roomId: string, eventId: string, reactionKey: string): Promise<void>;
+  /** Redact a reaction event. */
+  redactReaction(
+    roomId: string,
+    eventId: string,
+    reactionKey: string,
+    reactionEventId: string
+  ): Promise<void>;
   /** Send a read receipt for a room event. */
   sendReadReceipt(roomId: string, eventId: string): Promise<void>;
   /** Advance the fully-read marker for a room event. */
@@ -94,15 +101,20 @@ export interface TimelineTransport {
 
 /**
  * Row-level actions surfaced on timeline items. Matrix semantics stay
- * Rust-owned: the row only reports the (roomId, eventId, reactionKey), edit
- * body, or event-backed media download intent; reply targeting, reaction
- * toggles, edits, redaction, and download all travel through the core
- * transport path.
+ * Rust-owned: the row reports event-backed intent plus Rust-projected reaction
+ * ownership; reply targeting, reaction send/redact, edits, redaction, and
+ * download all travel through typed core transport paths.
  */
 export interface TimelineRowActionHandlers {
   onReply: (roomId: string, eventId: string) => void;
   onOpenThread: (roomId: string, rootEventId: string) => void;
-  onToggleReaction: (roomId: string, eventId: string, reactionKey: string) => void;
+  onSendReaction: (roomId: string, eventId: string, reactionKey: string) => void;
+  onRedactReaction: (
+    roomId: string,
+    eventId: string,
+    reactionKey: string,
+    reactionEventId: string
+  ) => void;
   onEdit: (roomId: string, eventId: string, body: string) => void;
   onRedact: (roomId: string, eventId: string) => void;
   onDownloadMedia: (roomId: string, eventId: string) => void;
@@ -262,9 +274,17 @@ export function TimelineView({
   // tests can poll a concrete attribute instead of sleeping. 0 = no
   // InitialItems received yet.
   const generation = getKeyState(store, timelineKey)?.generation ?? 0;
-  const onToggleReaction = useCallback(
+  const onSendReaction = useCallback(
     (targetRoomId: string, eventId: string, reactionKey: string) => {
-      void transport.toggleReaction(targetRoomId, eventId, reactionKey).catch(() => undefined);
+      void transport.sendReaction(targetRoomId, eventId, reactionKey).catch(() => undefined);
+    },
+    [transport]
+  );
+  const onRedactReaction = useCallback(
+    (targetRoomId: string, eventId: string, reactionKey: string, reactionEventId: string) => {
+      void transport
+        .redactReaction(targetRoomId, eventId, reactionKey, reactionEventId)
+        .catch(() => undefined);
     },
     [transport]
   );
@@ -383,7 +403,8 @@ export function TimelineView({
               onOpenThread={onOpenThread}
               resolveComposerKeyAction={resolveComposerKeyAction}
               mediaUploadProgress={mediaUploadProgressForItem(store, timelineKey, item)}
-              onToggleReaction={onToggleReaction}
+              onSendReaction={onSendReaction}
+              onRedactReaction={onRedactReaction}
               onEdit={onEdit}
               onRedact={onRedact}
               onDownloadMedia={onDownloadMedia}
@@ -410,7 +431,8 @@ export function TimelineItemRow({
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   mediaUploadProgress = null,
-  onToggleReaction,
+  onSendReaction,
+  onRedactReaction,
   onEdit,
   onRedact,
   onDownloadMedia = () => undefined,
@@ -424,7 +446,8 @@ export function TimelineItemRow({
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   mediaUploadProgress?: MediaTransferProgress | null;
-  onToggleReaction: TimelineRowActionHandlers["onToggleReaction"];
+  onSendReaction: TimelineRowActionHandlers["onSendReaction"];
+  onRedactReaction: TimelineRowActionHandlers["onRedactReaction"];
   onEdit: TimelineRowActionHandlers["onEdit"];
   onRedact: TimelineRowActionHandlers["onRedact"];
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
@@ -562,10 +585,24 @@ export function TimelineItemRow({
       if (!eventId) {
         return;
       }
-      onToggleReaction(roomId, eventId, reactionKey);
+      const existingOwnReaction = item.reactions.find(
+        (reaction) => reaction.key === reactionKey && reaction.reacted_by_me
+      );
+      if (existingOwnReaction) {
+        if (existingOwnReaction.my_reaction_event_id) {
+          onRedactReaction(
+            roomId,
+            eventId,
+            reactionKey,
+            existingOwnReaction.my_reaction_event_id
+          );
+        }
+      } else {
+        onSendReaction(roomId, eventId, reactionKey);
+      }
       closeReactionPicker();
     },
-    [closeReactionPicker, eventId, onToggleReaction, roomId]
+    [closeReactionPicker, eventId, item.reactions, onRedactReaction, onSendReaction, roomId]
   );
   const submitReply = useCallback(() => {
     if (!eventId) {
@@ -730,7 +767,20 @@ export function TimelineItemRow({
                   key={pillKey}
                   type="button"
                   aria-pressed={reaction.reacted_by_me}
-                  onClick={() => onToggleReaction(roomId, eventId, reaction.key)}
+                  onClick={() => {
+                    if (reaction.reacted_by_me) {
+                      if (reaction.my_reaction_event_id) {
+                        onRedactReaction(
+                          roomId,
+                          eventId,
+                          reaction.key,
+                          reaction.my_reaction_event_id
+                        );
+                      }
+                    } else {
+                      onSendReaction(roomId, eventId, reaction.key);
+                    }
+                  }}
                 >
                   <span className="reaction-pill-key" dir="auto">
                     {reaction.key}

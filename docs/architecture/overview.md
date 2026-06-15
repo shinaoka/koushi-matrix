@@ -165,8 +165,9 @@ An in-process actor system in `matrix-desktop-core`:
   React must not derive favourite or low-priority membership from local UI
   state.
 - `TimelineActor` (per room/thread/focused timeline) — subscription, diffs,
-  pagination, send/edit/redaction relay, media/file projection, upload
-  progress, room-scoped live signals, and Rust-only media download effects.
+  pagination, send/edit/redaction relay, reaction annotation projection and
+  guarded send/redact relay, media/file projection, upload progress,
+  room-scoped live signals, and Rust-only media download effects.
   Room live timelines use
   `TimelineFocus::Live { hide_threaded_events: true }` so threaded replies
   are hidden from the main room timeline. Expanded threads use
@@ -185,6 +186,9 @@ An in-process actor system in `matrix-desktop-core`:
   it does not infer Matrix media semantics, upload state, encrypted media
   metadata, or download behavior. Downloaded bytes and encrypted media keys or
   hashes stay inside Rust actor effects and are never sent through CoreEvents.
+  Reaction groups are projected the same way from SDK aggregation data; React
+  renders the grouped DTO and dispatches typed reaction commands only, while
+  Rust guards current state before delegating to the SDK toggle helper.
   Read receipts, fully-read markers, and typing notifications are projected
   from SDK timeline/room signals into `AppState.live_signals`; React may render
   that snapshot and dispatch typed commands, but it must not synthesize receipt,

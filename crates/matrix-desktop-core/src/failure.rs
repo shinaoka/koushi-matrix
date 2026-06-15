@@ -70,6 +70,8 @@ pub enum RoomFailureKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TimelineFailureKind {
     InvalidDirection,
+    InvalidReactionTarget,
+    InvalidReactionState,
     NotSubscribed,
     Forbidden,
     Network,

@@ -887,6 +887,61 @@ pub async fn toggle_reaction(
 }
 
 #[tauri::command]
+pub async fn send_reaction(
+    room_id: String,
+    event_id: String,
+    reaction_key: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if reaction_key.trim().is_empty() || event_id.trim().is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) =
+        build_send_reaction_command(request_id, account_key, room_id, event_id, reaction_key)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn redact_reaction(
+    room_id: String,
+    event_id: String,
+    reaction_key: String,
+    reaction_event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if reaction_key.trim().is_empty()
+        || event_id.trim().is_empty()
+        || reaction_event_id.trim().is_empty()
+    {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) = build_redact_reaction_command(
+        request_id,
+        account_key,
+        room_id,
+        event_id,
+        reaction_key,
+        reaction_event_id,
+    ) {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn send_read_receipt(
     room_id: String,
     event_id: String,
@@ -1834,6 +1889,47 @@ pub(crate) fn build_toggle_reaction_command(
     }))
 }
 
+pub(crate) fn build_send_reaction_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+    reaction_key: String,
+) -> Option<CoreCommand> {
+    if event_id.trim().is_empty() || reaction_key.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SendReaction {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+        reaction_key,
+    }))
+}
+
+pub(crate) fn build_redact_reaction_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+    reaction_key: String,
+    reaction_event_id: String,
+) -> Option<CoreCommand> {
+    if event_id.trim().is_empty()
+        || reaction_key.trim().is_empty()
+        || reaction_event_id.trim().is_empty()
+    {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::RedactReaction {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+        reaction_key,
+        reaction_event_id,
+    }))
+}
+
 pub(crate) fn build_send_read_receipt_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -2386,8 +2482,9 @@ mod tests {
         build_invite_user_command, build_leave_room_command, build_logout_command,
         build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_redact_message_command,
-        build_remove_room_tag_command, build_reset_identity_command, build_restart_sync_command,
-        build_select_room_command, build_select_space_command, build_send_read_receipt_command,
+        build_redact_reaction_command, build_remove_room_tag_command,
+        build_reset_identity_command, build_restart_sync_command, build_select_room_command,
+        build_select_space_command, build_send_reaction_command, build_send_read_receipt_command,
         build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
         build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
         build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
@@ -2852,6 +2949,67 @@ mod tests {
                 );
                 assert!(!debug.contains("👍"), "{debug}");
                 assert!(!debug.contains("$event"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_send_reaction_command(
+            fake_request_id(25),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$event".to_owned(),
+            "👍".to_owned(),
+        )
+        .expect("send_reaction should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::SendReaction {
+                request_id,
+                key,
+                event_id,
+                reaction_key,
+            }) => {
+                assert_eq!(request_id, fake_request_id(25));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$event");
+                assert_eq!(reaction_key, "👍");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_redact_reaction_command(
+            fake_request_id(26),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$event".to_owned(),
+            "👍".to_owned(),
+            "$reaction".to_owned(),
+        )
+        .expect("redact_reaction should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::RedactReaction {
+                request_id,
+                key,
+                event_id,
+                reaction_key,
+                reaction_event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(26));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$event");
+                assert_eq!(reaction_key, "👍");
+                assert_eq!(reaction_event_id, "$reaction");
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -3389,6 +3547,37 @@ mod tests {
             helper_source.contains("event_count: TIMELINE_BACKWARDS_PAGE_EVENT_COUNT"),
             "thread pagination should keep the shared room pagination event count"
         );
+    }
+
+    #[test]
+    fn reaction_tauri_command_contracts_are_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        for (command_name, route_name, registration_name) in [
+            (
+                "pub async fn send_reaction",
+                "build_send_reaction_command",
+                "commands::send_reaction",
+            ),
+            (
+                "pub async fn redact_reaction",
+                "build_redact_reaction_command",
+                "commands::redact_reaction",
+            ),
+        ] {
+            assert!(
+                commands_source.contains(command_name),
+                "Tauri command should expose {command_name}"
+            );
+            assert!(
+                commands_source.contains(route_name),
+                "Tauri command should route through {route_name}"
+            );
+            assert!(
+                lib_source.contains(registration_name),
+                "Tauri command should register {registration_name}"
+            );
+        }
     }
 
     #[test]

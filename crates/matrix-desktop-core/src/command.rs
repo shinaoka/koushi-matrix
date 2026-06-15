@@ -88,6 +88,8 @@ impl CoreCommand {
                 | TimelineCommand::DownloadMedia { request_id, .. }
                 | TimelineCommand::EditText { request_id, .. }
                 | TimelineCommand::Redact { request_id, .. }
+                | TimelineCommand::SendReaction { request_id, .. }
+                | TimelineCommand::RedactReaction { request_id, .. }
                 | TimelineCommand::SendReadReceipt { request_id, .. }
                 | TimelineCommand::SetFullyRead { request_id, .. }
                 | TimelineCommand::SetTyping { request_id, .. }
@@ -772,6 +774,19 @@ pub enum TimelineCommand {
         event_id: String,
         reaction_key: String,
     },
+    SendReaction {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+        reaction_key: String,
+    },
+    RedactReaction {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+        reaction_key: String,
+        reaction_event_id: String,
+    },
     SendReadReceipt {
         request_id: RequestId,
         key: TimelineKey,
@@ -901,6 +916,25 @@ impl fmt::Debug for TimelineCommand {
                 .field("key", key)
                 .field("event_id", &"EventId(..)")
                 .field("reaction_key", &"ReactionKey(..)")
+                .finish(),
+            Self::SendReaction {
+                request_id, key, ..
+            } => formatter
+                .debug_struct("SendReaction")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("event_id", &"EventId(..)")
+                .field("reaction_key", &"ReactionKey(..)")
+                .finish(),
+            Self::RedactReaction {
+                request_id, key, ..
+            } => formatter
+                .debug_struct("RedactReaction")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("event_id", &"EventId(..)")
+                .field("reaction_key", &"ReactionKey(..)")
+                .field("reaction_event_id", &"EventId(..)")
                 .finish(),
             Self::SendReadReceipt { request_id, .. } => formatter
                 .debug_struct("SendReadReceipt")

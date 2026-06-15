@@ -130,7 +130,8 @@ describe("ContextualRightPanel", () => {
         }}
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />
@@ -164,7 +165,8 @@ describe("ContextualRightPanel", () => {
         }}
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />
@@ -189,7 +191,8 @@ describe("ContextualRightPanel", () => {
         }}
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />
@@ -233,7 +236,8 @@ describe("ContextualRightPanel", () => {
         }}
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />
@@ -269,7 +273,8 @@ describe("ContextualRightPanel", () => {
         }
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />
@@ -304,7 +309,8 @@ describe("ContextualRightPanel", () => {
         }
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />
@@ -344,7 +350,8 @@ describe("ContextualRightPanel", () => {
         }
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />
@@ -376,7 +383,8 @@ describe("ContextualRightPanel", () => {
         }
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />
@@ -464,7 +472,8 @@ describe("ContextualRightPanel", () => {
             paginateBackwards: async (timelineKey) => {
               void timelineKey;
             },
-            toggleReaction: async () => undefined,
+            sendReaction: async () => undefined,
+            redactReaction: async () => undefined,
             sendReadReceipt: async () => undefined,
             setFullyRead: async () => undefined,
             setTyping: async () => undefined,
@@ -524,7 +533,8 @@ describe("ContextualRightPanel", () => {
           {
             listenCoreEvents: () => () => undefined,
             paginateBackwards: async () => undefined,
-            toggleReaction: async () => undefined,
+            sendReaction: async () => undefined,
+            redactReaction: async () => undefined,
             sendReadReceipt: async () => undefined,
             setFullyRead: async () => undefined,
             setTyping: async () => undefined,
@@ -598,7 +608,8 @@ describe("ContextualRightPanel", () => {
             paginateBackwards: async (timelineKey) => {
               void timelineKey;
             },
-            toggleReaction: async () => undefined,
+            sendReaction: async () => undefined,
+            redactReaction: async () => undefined,
             sendReadReceipt: async () => undefined,
             setFullyRead: async () => undefined,
             setTyping: async () => undefined,
@@ -933,7 +944,8 @@ describe("Timeline item row rendering", () => {
         }
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />
@@ -963,7 +975,8 @@ describe("Timeline item row rendering", () => {
         }
         roomId="!room:example.invalid"
         onReply={() => undefined}
-        onToggleReaction={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
         onEdit={() => undefined}
         onRedact={() => undefined}
       />

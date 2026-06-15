@@ -807,7 +807,8 @@ mock.setCommandResponse("close_focused_context", () => {
   };
   return setCurrentSnapshot(next);
 });
-mock.setCommandResponse("toggle_reaction", () => currentSnapshot);
+mock.setCommandResponse("send_reaction", () => currentSnapshot);
+mock.setCommandResponse("redact_reaction", () => currentSnapshot);
 mock.setCommandResponse("edit_message", () => currentSnapshot);
 mock.setCommandResponse("redact_message", () => currentSnapshot);
 mock.setCommandResponse("upload_media", () => currentSnapshot);
