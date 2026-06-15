@@ -3,8 +3,8 @@ use matrix_desktop_state::{
     LoginFlowKind, LoginRequest, NativeAttentionCandidate, NativeAttentionCapabilities,
     NativeAttentionCapability, NativeAttentionState, NativeAttentionSummary, NavigationState,
     RecoveryMethod, RecoveryRequest, RoomAttentionKind, RoomSummary, RoomTags, SearchScope,
-    SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadPaneState,
-    TimelinePaneState, UiEvent, reduce,
+    SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadAttentionState,
+    ThreadPaneState, TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -275,6 +275,13 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
             is_subscribed: true,
             composer: Default::default(),
         },
+        thread_attention: ThreadAttentionState::Tracking {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            notification_count: 2,
+            highlight_count: 1,
+            live_event_marker_count: 2,
+        },
         search: SearchState::Editing {
             query: "hello".to_owned(),
             scope: SearchScope::AllRooms,
@@ -301,6 +308,7 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
     assert!(state.rooms.is_empty());
     assert_eq!(state.timeline, TimelinePaneState::default());
     assert_eq!(state.thread, ThreadPaneState::Closed);
+    assert_eq!(state.thread_attention, ThreadAttentionState::Closed);
     assert_eq!(state.search, SearchState::Closed);
     assert_eq!(
         effects,
@@ -603,6 +611,13 @@ fn logout_clears_session_views_and_notifies_ui() {
             is_subscribed: true,
             composer: Default::default(),
         },
+        thread_attention: ThreadAttentionState::Tracking {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            notification_count: 2,
+            highlight_count: 1,
+            live_event_marker_count: 2,
+        },
         search: SearchState::Editing {
             query: "アンケート".to_owned(),
             scope: SearchScope::AllRooms,
@@ -617,6 +632,7 @@ fn logout_clears_session_views_and_notifies_ui() {
     assert!(state.rooms.is_empty());
     assert_eq!(state.timeline, TimelinePaneState::default());
     assert_eq!(state.thread, ThreadPaneState::Closed);
+    assert_eq!(state.thread_attention, ThreadAttentionState::Closed);
     assert_eq!(state.search, SearchState::Closed);
     assert_eq!(
         effects,

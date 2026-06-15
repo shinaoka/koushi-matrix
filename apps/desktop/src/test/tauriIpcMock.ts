@@ -192,6 +192,7 @@ function defaultSnapshotResponse() {
         composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
       },
       thread: { kind: "closed" },
+      thread_attention: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],

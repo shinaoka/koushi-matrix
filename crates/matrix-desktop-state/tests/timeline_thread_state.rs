@@ -1,7 +1,7 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, ComposerMode, ComposerState, NavigationState,
-    PendingComposerSendKind, RoomSummary, RoomTags, SessionInfo, SessionState, ThreadPaneState,
-    TimelinePaneState, UiEvent, reduce,
+    PendingComposerSendKind, RoomSummary, RoomTags, SessionInfo, SessionState,
+    ThreadAttentionState, ThreadPaneState, TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -437,6 +437,63 @@ fn opening_thread_requests_thread_timeline_and_subscription_success_opens_pane()
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
     );
+}
+
+#[test]
+fn thread_attention_updates_matching_open_thread_only() {
+    let mut state = open_thread_state("room-a", "$root");
+
+    assert_eq!(
+        state.thread_attention,
+        ThreadAttentionState::Tracking {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            notification_count: 0,
+            highlight_count: 0,
+            live_event_marker_count: 0,
+        }
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadAttentionUpdated {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            notification_count: 4,
+            highlight_count: 1,
+            live_event_marker_count: 2,
+        },
+    );
+
+    assert_eq!(
+        state.thread_attention,
+        ThreadAttentionState::Tracking {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            notification_count: 4,
+            highlight_count: 1,
+            live_event_marker_count: 2,
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+
+    let previous = state.clone();
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadAttentionUpdated {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$other-root".to_owned(),
+            notification_count: 9,
+            highlight_count: 9,
+            live_event_marker_count: 9,
+        },
+    );
+
+    assert_eq!(state, previous);
+    assert!(effects.is_empty());
 }
 
 fn open_thread_state(room_id: &str, root_event_id: &str) -> AppState {

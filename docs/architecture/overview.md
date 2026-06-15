@@ -512,6 +512,9 @@ Persistent title, badge, overlay, tray, and clear hooks follow the Rust-owned
 snapshot. Sound and activation hooks are candidate-scoped transient effects, so
 they run only for a Rust-owned notification candidate and not for every later
 snapshot that still contains unread state.
+Pane-level thread attention is also Rust-owned: `AppState.thread_attention`
+tracks the open thread's notification, highlight, and live-event marker counts
+and reaches React only through the Tauri/TypeScript DTO.
 User notification preferences are the same boundary: `SettingsValues.notifications`
 is the Rust-owned persisted source of truth, and legacy settings files backfill
 the default policy before any GUI reads the snapshot.

@@ -47,10 +47,11 @@ pub use state::{
     RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, SearchMatchField, SearchMatchKind,
     SearchResult, SearchScope, SearchState, SessionInfo, SessionState, SettingsPatch,
     SettingsPersistenceState, SettingsState, SettingsValues, SpaceSummary, SyncState,
-    TextDirectionPreference, TextRange, ThemePreference, ThreadPaneState, TimelinePaneState,
-    TrustOperationFailureKind, TypographySettings, UserProfile, VerificationCancelReason,
-    VerificationFlowState, VerificationTarget, native_attention_capabilities_for_platform,
-    native_attention_state_from_rooms, room_attention_kind, room_attention_summary,
+    TextDirectionPreference, TextRange, ThemePreference, ThreadAttentionState, ThreadPaneState,
+    TimelinePaneState, TrustOperationFailureKind, TypographySettings, UserProfile,
+    VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    native_attention_capabilities_for_platform, native_attention_state_from_rooms,
+    room_attention_kind, room_attention_summary,
 };
 pub use typography_profile::{
     TypographyAssetStatus, TypographyDisplayProfile, resolve_typography_display_profile,

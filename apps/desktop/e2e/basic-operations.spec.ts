@@ -327,7 +327,8 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
             room_id: String(roomId),
             is_subscribed: true
           },
-          thread: { kind: "closed" }
+          thread: { kind: "closed" },
+          thread_attention: { kind: "closed" }
         },
         thread: null
       };
@@ -656,6 +657,7 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
             is_subscribed: true
           },
           thread: { kind: "closed" },
+          thread_attention: { kind: "closed" },
           focused_context: {
             kind: "opening",
             room_id: String(roomId),

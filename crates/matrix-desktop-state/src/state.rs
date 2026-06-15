@@ -21,6 +21,7 @@ pub struct AppState {
     pub activity: ActivityState,
     pub timeline: TimelinePaneState,
     pub thread: ThreadPaneState,
+    pub thread_attention: ThreadAttentionState,
     pub focused_context: FocusedContextState,
     pub search: SearchState,
     pub basic_operation: BasicOperationState,
@@ -50,6 +51,7 @@ impl Default for AppState {
             activity: ActivityState::Closed,
             timeline: TimelinePaneState::default(),
             thread: ThreadPaneState::Closed,
+            thread_attention: ThreadAttentionState::Closed,
             focused_context: FocusedContextState::Closed,
             search: SearchState::Closed,
             basic_operation: BasicOperationState::Idle,
@@ -1835,6 +1837,20 @@ pub enum ThreadPaneState {
         root_event_id: String,
         is_subscribed: bool,
         composer: ComposerState,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ThreadAttentionState {
+    #[default]
+    Closed,
+    Tracking {
+        room_id: String,
+        root_event_id: String,
+        notification_count: u64,
+        highlight_count: u64,
+        live_event_marker_count: u64,
     },
 }
 

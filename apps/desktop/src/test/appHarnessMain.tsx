@@ -160,6 +160,7 @@ function readySnapshot(
         }
       },
       thread: { kind: "closed" },
+      thread_attention: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
@@ -749,6 +750,14 @@ mock.setCommandResponse(
             draft: "",
             mode: "Plain"
           }
+        },
+        thread_attention: {
+          kind: "tracking",
+          room_id: roomId,
+          root_event_id: rootEventId,
+          notification_count: 0,
+          highlight_count: 0,
+          live_event_marker_count: 0
         }
       },
       thread: null
@@ -820,7 +829,8 @@ mock.setCommandResponse("close_thread", () => {
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
-      thread: { kind: "closed" }
+      thread: { kind: "closed" },
+      thread_attention: { kind: "closed" }
     },
     thread: null
   };
@@ -866,6 +876,7 @@ mock.setCommandResponse(
           is_subscribed: true
         },
         thread: { kind: "closed" },
+        thread_attention: { kind: "closed" },
         focused_context: {
           kind: "opening",
           room_id: roomId,

@@ -200,9 +200,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Space rail attention badges are Rust-owned `SidebarModel.space_rail` counts
   produced by `compose_sidebar`; `WorkspaceRail` may render the snapshot
   attributes but must not recompute child-room unread/highlight state. Timeline
-  thread chips render the Rust-projected row `thread_summary` DTO. If a future
-  pane-level thread attention indicator is needed, add that field to Rust state
-  and mirror it through the Tauri/TypeScript DTOs before touching React.
+  thread chips render the Rust-projected row `thread_summary` DTO. Pane-level
+  thread attention is Rust-owned `AppState.thread_attention`; React may render
+  the Tauri/TypeScript DTO but must not scan visible thread rows or row chips to
+  derive indicator counts. The current core producer counts only remote live
+  thread timeline message diffs; backfill/prepend diffs and the current user's
+  own messages are ignored.
 - Candidate projection uses private-data-minimized room labels and counts only.
   It must not expose message bodies, sender IDs, room IDs, event IDs,
   transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,

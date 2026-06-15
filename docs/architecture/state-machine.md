@@ -8,7 +8,7 @@ fixture/demo backend contract mentioned below is historical (dev/demo only).
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-06-15
+Date: 2026-06-16
 
 ## Contract
 
@@ -206,6 +206,33 @@ stateDiagram-v2
   `TimelineKind::Thread { room_id, root_event_id }`, with
   `in_reply_to_event_id == root_event_id`. Focused timelines do not own
   composer state.
+- Pane-level thread attention is Rust-owned `AppState.thread_attention`. It is
+  initialized when a thread is opened, receives counts only for the currently
+  open room/root event pair, and is cleared when the thread closes or navigation
+  selects another room. React may render the DTO but must not scan timeline rows
+  or thread chips to invent pane-level notification counts.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Tracking: OpenThread [Ready, active room]
+    Tracking --> Tracking: ThreadAttentionUpdated [matching room/root]
+    Tracking --> Closed: CloseThread
+    Tracking --> Closed: SelectRoom
+    Tracking --> Closed: LogoutRequested/SessionCleared
+```
+
+- `ThreadAttentionUpdated` is accepted only for a Ready session and only when
+  its `room_id` and `root_event_id` match the currently tracked open thread.
+  Stale, wrong-room, wrong-root, or post-logout updates are ignored.
+- The tracking state carries `notification_count`, `highlight_count`, and
+  `live_event_marker_count`. Equal updates produce no UI event; changed counts
+  emit `ThreadChanged` so the pane can re-render from the Rust snapshot.
+- The current producer increments `notification_count` and
+  `live_event_marker_count` from remote live `PushBack` message diffs in the
+  open thread timeline. Backfill/prepend diffs and the current user's own
+  messages are ignored. Future richer SDK thread notification counts must enter
+  through the same Rust-owned action/state path.
 
 ## Timeline Reactions
 
@@ -1219,9 +1246,9 @@ stateDiagram-v2
 - Space attention for the workspace rail is projected by Rust
   `SidebarModel.space_rail`; React renders those unread/highlight counts without
   recomputing child-room state. Timeline thread summary chips render
-  Rust-projected row `thread_summary` DTOs. Any future pane-level thread
-  attention indicator must be added to Rust state and mirrored through the
-  Tauri/TypeScript DTO before React renders it.
+  Rust-projected row `thread_summary` DTOs. Pane-level thread attention renders
+  `AppState.thread_attention`, mirrored through the Tauri/TypeScript DTO; React
+  must not synthesize it by scanning visible thread rows.
 - Passive platform dispatch must not trigger native notification permission
   prompts. Adapters may check already-granted permission and no-op otherwise;
   prompts require an explicit user/onboarding action and a corresponding

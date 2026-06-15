@@ -1694,6 +1694,14 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
           mode: "Plain"
         }
       },
+      thread_attention: {
+        kind: "tracking",
+        room_id: active_room_id,
+        root_event_id: "$alpha-update",
+        notification_count: 0,
+        highlight_count: 0,
+        live_event_marker_count: 0
+      },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],
@@ -1773,6 +1781,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
         }
       },
       thread: { kind: "closed" },
+      thread_attention: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],

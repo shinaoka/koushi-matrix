@@ -146,6 +146,16 @@ function snapshotForPanelMode(
       thread: hasThread
         ? { kind: "open", room_id: "!room:example", root_event_id: "$event" }
         : { kind: "closed" },
+      thread_attention: hasThread
+        ? {
+            kind: "tracking",
+            room_id: "!room:example",
+            root_event_id: "$event",
+            notification_count: 0,
+            highlight_count: 0,
+            live_event_marker_count: 0
+          }
+        : { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       errors: [],

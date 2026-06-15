@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-06-15.
+Last amended: 2026-06-16.
 
 ## Secrets and Private Data
 
@@ -82,8 +82,12 @@ Rules:
    projection, and timeline thread chips come from Rust-projected row
    `thread_summary` DTOs. React may render those fields and dispatch typed
    navigation/open-thread commands, but it must not scan rooms or timeline rows
-   to invent space/thread attention semantics. A pane-level thread attention
-   indicator requires a Rust state/DTO field first.
+   to invent space/thread attention semantics. Pane-level thread attention is
+   `AppState.thread_attention`, mirrored through the Tauri/TypeScript DTO; React
+   may render it but must not derive it from visible timeline rows or local
+   thread chips. Core producers may update it from remote live thread timeline
+   events; backfill/prepend diffs and the current user's own messages must not
+   create notification markers.
 10. Device-local settings are non-secret product state, but they are still a
    privacy boundary. Settings files may contain only typed preferences such as
    locale, theme, font/emoji choice, keyboard behavior, and notification

@@ -9,8 +9,9 @@ use crate::{
         NavigationState, OperationFailureKind, PendingComposerSendKind, PinOp, PinOperationState,
         RoomManagementOperationKind, RoomManagementOperationState, RoomMemberRole,
         RoomModerationAction, SasEmoji, SearchState, SessionState, SettingsPersistenceState,
-        SyncState, ThreadPaneState, TimelinePaneState, TrustOperationFailureKind,
-        VerificationCancelReason, VerificationFlowState, VerificationTarget,
+        SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState,
+        TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
+        VerificationTarget,
     },
 };
 
@@ -792,10 +793,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 if !room_still_exists {
                     state.navigation.active_room_id = None;
                     let previous_room_id = state.timeline.room_id.clone().unwrap_or(active_room_id);
-                    let had_thread = state.thread != ThreadPaneState::Closed;
+                    let had_thread = state.thread != ThreadPaneState::Closed
+                        || state.thread_attention != ThreadAttentionState::Closed;
 
                     state.timeline = Default::default();
                     state.thread = ThreadPaneState::Closed;
+                    state.thread_attention = ThreadAttentionState::Closed;
 
                     effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                         room_id: previous_room_id,
@@ -1676,7 +1679,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
-            let had_thread = state.thread != ThreadPaneState::Closed;
+            let had_thread = state.thread != ThreadPaneState::Closed
+                || state.thread_attention != ThreadAttentionState::Closed;
             state.navigation.active_room_id = Some(room_id.clone());
             state.timeline = TimelinePaneState {
                 room_id: Some(room_id.clone()),
@@ -1685,6 +1689,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 composer: Default::default(),
             };
             state.thread = ThreadPaneState::Closed;
+            state.thread_attention = ThreadAttentionState::Closed;
             state.focused_context = FocusedContextState::Closed;
             let mut effects = vec![
                 AppEffect::SubscribeTimeline {
@@ -1977,6 +1982,13 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 room_id: room_id.clone(),
                 root_event_id: root_event_id.clone(),
             };
+            state.thread_attention = ThreadAttentionState::Tracking {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+                notification_count: 0,
+                highlight_count: 0,
+                live_event_marker_count: 0,
+            };
             vec![
                 AppEffect::OpenThreadTimeline {
                     room_id,
@@ -2009,12 +2021,48 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             };
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
+        AppAction::ThreadAttentionUpdated {
+            room_id,
+            root_event_id,
+            notification_count,
+            highlight_count,
+            live_event_marker_count,
+        } => {
+            if !is_session_ready(state)
+                || !matches!(
+                    &state.thread_attention,
+                    ThreadAttentionState::Tracking {
+                        room_id: tracking_room_id,
+                        root_event_id: tracking_root_event_id,
+                        ..
+                    } if tracking_room_id == &room_id
+                        && tracking_root_event_id == &root_event_id
+                )
+            {
+                return Vec::new();
+            }
+
+            let next = ThreadAttentionState::Tracking {
+                room_id,
+                root_event_id,
+                notification_count,
+                highlight_count,
+                live_event_marker_count,
+            };
+            if state.thread_attention == next {
+                return Vec::new();
+            }
+
+            state.thread_attention = next;
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+        }
         AppAction::CloseThread => {
             if !is_session_ready(state) || state.thread == ThreadPaneState::Closed {
                 return Vec::new();
             }
 
             state.thread = ThreadPaneState::Closed;
+            state.thread_attention = ThreadAttentionState::Closed;
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
         AppAction::OpenFocusedContext { room_id, event_id } => {
@@ -2531,7 +2579,8 @@ fn retarget_active_room_for_selected_space(
     previous_room_id: String,
 ) {
     let next_room_id = first_room_id_in_active_space(state);
-    let had_thread = state.thread != ThreadPaneState::Closed;
+    let had_thread = state.thread != ThreadPaneState::Closed
+        || state.thread_attention != ThreadAttentionState::Closed;
 
     match next_room_id {
         Some(room_id) => {
@@ -2540,6 +2589,7 @@ fn retarget_active_room_for_selected_space(
         None => {
             state.navigation.active_room_id = None;
             state.thread = ThreadPaneState::Closed;
+            state.thread_attention = ThreadAttentionState::Closed;
             state.timeline = Default::default();
             effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: previous_room_id,
@@ -2557,7 +2607,8 @@ fn select_active_room_after_room_list_update(
     effects: &mut Vec<AppEffect>,
     room_id: String,
 ) {
-    let had_thread = state.thread != ThreadPaneState::Closed;
+    let had_thread = state.thread != ThreadPaneState::Closed
+        || state.thread_attention != ThreadAttentionState::Closed;
 
     state.navigation.active_room_id = Some(room_id.clone());
     state.timeline = TimelinePaneState {
@@ -2567,6 +2618,7 @@ fn select_active_room_after_room_list_update(
         composer: Default::default(),
     };
     state.thread = ThreadPaneState::Closed;
+    state.thread_attention = ThreadAttentionState::Closed;
     effects.push(AppEffect::SubscribeTimeline {
         room_id: room_id.clone(),
     });
@@ -2593,7 +2645,8 @@ fn current_session_info(state: &AppState) -> Option<crate::state::SessionInfo> {
 
 fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let previous_room_id = state.timeline.room_id.clone();
-    let had_thread = state.thread != ThreadPaneState::Closed;
+    let had_thread = state.thread != ThreadPaneState::Closed
+        || state.thread_attention != ThreadAttentionState::Closed;
     let had_search = state.search != SearchState::Closed;
     let had_e2ee_trust = state.e2ee_trust != E2eeTrustState::default();
     let had_live_signals = state.live_signals != Default::default();
@@ -2616,6 +2669,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.profile = Default::default();
     state.timeline = Default::default();
     state.thread = ThreadPaneState::Closed;
+    state.thread_attention = ThreadAttentionState::Closed;
     state.focused_context = FocusedContextState::Closed;
     state.search = SearchState::Closed;
     state.e2ee_trust = E2eeTrustState::default();

@@ -18,8 +18,8 @@ use matrix_desktop_state::{
     NativeAttentionCapabilities, NativeAttentionState, NavigationState, ProfileState,
     RecoveryMethod, RoomInteractionState, RoomManagementState, RoomSummary, SearchMatchField,
     SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState, SettingsState,
-    SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
-    TypographyDisplayProfile, native_attention_capabilities_for_platform,
+    SidebarModel, SpaceSummary, SyncState, ThreadAttentionState, ThreadPaneState,
+    TimelinePaneState, TypographyDisplayProfile, native_attention_capabilities_for_platform,
     resolve_locale_display_profile, resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,7 @@ pub struct FrontendAppState {
     pub activity: ActivityState,
     pub timeline: TimelinePaneState,
     pub thread: FrontendThreadPaneState,
+    pub thread_attention: ThreadAttentionState,
     pub focused_context: FocusedContextState,
     pub search: FrontendSearchState,
     pub basic_operation: BasicOperationState,
@@ -114,6 +115,7 @@ impl From<AppState> for FrontendAppState {
             activity: state.activity,
             timeline: state.timeline,
             thread: state.thread.into(),
+            thread_attention: state.thread_attention,
             focused_context: state.focused_context,
             search: state.search.into(),
             basic_operation: state.basic_operation,
@@ -520,6 +522,7 @@ mod tests {
         // ...product thread state lives in state.thread (default Closed). The UI
         // reads the open/closed decision from here, not the legacy placeholder.
         assert_eq!(value["state"]["thread"]["kind"], json!("closed"));
+        assert_eq!(value["state"]["thread_attention"]["kind"], json!("closed"));
         // focused_context must be present (default Closed) so the UI can drive
         // the focused search context view from the Rust-owned state machine.
         assert_eq!(value["state"]["focused_context"]["kind"], json!("closed"));

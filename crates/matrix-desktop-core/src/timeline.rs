@@ -852,6 +852,67 @@ fn send_failed_action(
     }
 }
 
+fn thread_attention_action_from_timeline_diffs(
+    counts: &mut ThreadAttentionCounters,
+    key: &TimelineKey,
+    diffs: &[TimelineDiff],
+    own_user_id: Option<&str>,
+) -> Option<AppAction> {
+    let TimelineKind::Thread {
+        room_id,
+        root_event_id,
+    } = &key.kind
+    else {
+        return None;
+    };
+
+    let live_delta = diffs
+        .iter()
+        .filter(|diff| match diff {
+            TimelineDiff::PushBack { item } => {
+                is_remote_renderable_timeline_message(item, own_user_id)
+            }
+            TimelineDiff::PushFront { .. }
+            | TimelineDiff::Insert { .. }
+            | TimelineDiff::Set { .. }
+            | TimelineDiff::Remove { .. }
+            | TimelineDiff::Truncate { .. }
+            | TimelineDiff::Clear
+            | TimelineDiff::Reset { .. } => false,
+        })
+        .count() as u64;
+
+    if live_delta == 0 {
+        return None;
+    }
+
+    counts.notification_count = counts.notification_count.saturating_add(live_delta);
+    counts.live_event_marker_count = counts.live_event_marker_count.saturating_add(live_delta);
+
+    Some(AppAction::ThreadAttentionUpdated {
+        room_id: room_id.clone(),
+        root_event_id: root_event_id.clone(),
+        notification_count: counts.notification_count,
+        highlight_count: counts.highlight_count,
+        live_event_marker_count: counts.live_event_marker_count,
+    })
+}
+
+fn is_remote_renderable_timeline_message(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
+    if !matches!(item.id, TimelineItemId::Event { .. }) {
+        return false;
+    }
+    if item.body.is_none() && item.media.is_none() {
+        return false;
+    }
+    if let (Some(sender), Some(own_user_id)) = (item.sender.as_deref(), own_user_id) {
+        if sender == own_user_id {
+            return false;
+        }
+    }
+    true
+}
+
 fn validate_composer_body_for_timeline_send(body: &str) -> Result<(), TimelineFailureKind> {
     match resolve_composer_send_intent(body, MentionIntent::default()) {
         ComposerSendIntent::LocalFailure { .. }
@@ -1088,6 +1149,16 @@ struct TimelineActor {
     /// configured (pre-session or pre-Phase-6 builds). Fire-and-forget: if the
     /// channel is full, we drop the mutation rather than block the diff relay.
     search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
+    /// Rust-owned pane-level thread attention counters. Only thread timelines
+    /// update these, and React reads them through `AppState.thread_attention`.
+    thread_attention_counts: ThreadAttentionCounters,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ThreadAttentionCounters {
+    notification_count: u64,
+    highlight_count: u64,
+    live_event_marker_count: u64,
 }
 
 impl TimelineActor {
@@ -1194,6 +1265,7 @@ impl TimelineActor {
             sent_event_txns: HashMap::new(),
             media_sources,
             search_index_tx,
+            thread_attention_counts: ThreadAttentionCounters::default(),
         };
 
         executor::spawn(actor.run());
@@ -2245,6 +2317,14 @@ impl TimelineActor {
                 )
             })
             .collect();
+        if let Some(action) = thread_attention_action_from_timeline_diffs(
+            &mut self.thread_attention_counts,
+            &self.key,
+            &core_diffs,
+            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+        ) {
+            let _ = self.action_tx.try_send(vec![action]);
+        }
         let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
         if !activity_rows.is_empty() {
             let _ = self
@@ -3961,6 +4041,30 @@ mod tests {
         }
     }
 
+    fn timeline_message_item(event_id: &str, sender: &str) -> TimelineItem {
+        TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: event_id.to_owned(),
+            },
+            sender: Some(sender.to_owned()),
+            body: Some("body".to_owned()),
+            timestamp_ms: Some(1),
+            in_reply_to_event_id: None,
+            reply_quote: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: true,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            actions: TimelineMessageActions::default(),
+            send_state: None,
+        }
+    }
+
     // --- Direction enforcement ---
 
     #[tokio::test]
@@ -4111,6 +4215,51 @@ mod tests {
         assert!(
             compact_projection_source.contains("content().thread_summary()"),
             "timeline item projection must read SDK thread_summary"
+        );
+    }
+
+    #[test]
+    fn thread_attention_action_counts_remote_live_thread_messages_only() {
+        let key = thread_key();
+        let own_user_id = "@me:test";
+        let mut counts = ThreadAttentionCounters::default();
+        let diffs = vec![
+            TimelineDiff::PushBack {
+                item: timeline_message_item("$remote:test", "@alice:test"),
+            },
+            TimelineDiff::PushBack {
+                item: timeline_message_item("$own:test", own_user_id),
+            },
+            TimelineDiff::PushFront {
+                item: timeline_message_item("$backfill:test", "@bob:test"),
+            },
+        ];
+
+        assert_eq!(
+            thread_attention_action_from_timeline_diffs(
+                &mut counts,
+                &key,
+                &diffs,
+                Some(own_user_id)
+            ),
+            Some(AppAction::ThreadAttentionUpdated {
+                room_id: "!r:test".to_owned(),
+                root_event_id: "$root:test".to_owned(),
+                notification_count: 1,
+                highlight_count: 0,
+                live_event_marker_count: 1,
+            })
+        );
+        assert_eq!(
+            thread_attention_action_from_timeline_diffs(
+                &mut counts,
+                &room_key(),
+                &[TimelineDiff::PushBack {
+                    item: timeline_message_item("$room:test", "@alice:test"),
+                }],
+                Some(own_user_id),
+            ),
+            None
         );
     }
 

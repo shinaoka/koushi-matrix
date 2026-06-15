@@ -440,6 +440,13 @@ pub enum AppAction {
         room_id: String,
         root_event_id: String,
     },
+    ThreadAttentionUpdated {
+        room_id: String,
+        root_event_id: String,
+        notification_count: u64,
+        highlight_count: u64,
+        live_event_marker_count: u64,
+    },
     CloseThread,
     OpenFocusedContext {
         room_id: String,

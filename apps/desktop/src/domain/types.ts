@@ -31,6 +31,7 @@ export interface AppState {
   activity: ActivityState;
   timeline: TimelinePaneState;
   thread: ThreadPaneState;
+  thread_attention: ThreadAttentionState;
   focused_context: FocusedContextState;
   search: SearchState;
   errors: AppError[];
@@ -750,6 +751,17 @@ export interface ThreadPaneState {
   is_subscribed?: boolean;
   composer?: ComposerState;
 }
+
+export type ThreadAttentionState =
+  | { kind: "closed" }
+  | {
+      kind: "tracking";
+      room_id: string;
+      root_event_id: string;
+      notification_count: number;
+      highlight_count: number;
+      live_event_marker_count: number;
+    };
 
 export type FocusedContextState =
   | { kind: "closed" }
