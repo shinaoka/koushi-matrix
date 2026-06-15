@@ -138,8 +138,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   touch the OS keychain.
 - macOS Tier 2 real-Keychain proof is opt-in:
   `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1 cargo test -p matrix-desktop-key credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture`.
-  Run it only on a real macOS session/CI runner. Consent dialogs, Touch ID,
-  locked login-keychain UX, and signed-build ACL behavior remain attended-only.
+  Run it only on a real macOS session/CI runner. The committed manual GitHub
+  Actions lane is
+  `gh workflow run macos-keychain-tier2.yml --ref main`; inspect it with
+  `gh run list --workflow macos-keychain-tier2.yml --limit 1` and
+  `gh run watch <run-id> --exit-status`. Consent dialogs, Touch ID, locked
+  login-keychain UX, and signed-build ACL behavior remain attended-only.
 
 ## Native Attention QA
 

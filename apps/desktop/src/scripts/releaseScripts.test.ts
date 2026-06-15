@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 const repoRoot = new URL("../../../../", import.meta.url).pathname;
@@ -100,6 +100,29 @@ describe("desktop release scripts", () => {
     const output = runScript("scripts/desktop-release-preflight.mjs", ["--check-config"]);
 
     expect(output).toContain("package.scripts.qa:mac-gui");
+  });
+
+  test("macOS Keychain Tier 2 workflow exposes the env-gated temporary-keychain lane", () => {
+    const workflowUrl = new URL(
+      "../../../../.github/workflows/macos-keychain-tier2.yml",
+      import.meta.url
+    );
+
+    expect(existsSync(workflowUrl)).toBe(true);
+
+    const workflow = readFileSync(workflowUrl, "utf8");
+
+    for (const token of [
+      "workflow_dispatch:",
+      "runs-on: macos-latest",
+      'MATRIX_DESKTOP_MACOS_KEYCHAIN_QA: "1"',
+      "cargo test -p matrix-desktop-key credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture",
+      "cargo test -p matrix-desktop-key credential_backend"
+    ]) {
+      expect(workflow).toContain(token);
+    }
+
+    expect(workflow).not.toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR");
   });
 
   test("release preflight validates linux GUI smoke entry", () => {

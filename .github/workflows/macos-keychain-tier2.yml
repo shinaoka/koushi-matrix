@@ -1,0 +1,29 @@
+name: macOS Keychain Tier 2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  temporary-keychain:
+    name: Temporary Keychain round trip
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show Rust toolchain
+        run: rustup show
+
+      - name: Run generic credential backend contract
+        run: cargo test -p matrix-desktop-key credential_backend
+
+      - name: Run macOS temporary Keychain proof
+        env:
+          MATRIX_DESKTOP_MACOS_KEYCHAIN_QA: "1"
+        run: cargo test -p matrix-desktop-key credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture

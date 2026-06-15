@@ -23,7 +23,11 @@ Credential-store verification is split by tier:
   The test creates a temporary keychain with `security create-keychain`,
   performs one synthetic set/get/delete through the normal `keyring` backend,
   and verifies locked-keychain failure maps to a coarse fail-closed state. It is
-  not an Xvfb-style headless lane; macOS has no equivalent.
+  not an Xvfb-style headless lane; macOS has no equivalent. The committed
+  manual GitHub Actions entry point is
+  `gh workflow run macos-keychain-tier2.yml --ref main`; after dispatch, use
+  `gh run list --workflow macos-keychain-tier2.yml --limit 1` and
+  `gh run watch <run-id> --exit-status` to collect private-data-free evidence.
 - Tier 3 remains attended-only: native consent dialogs, Touch ID, locked
   login-keychain UX, and signed-build ACL behavior. `tauri-driver` does not
   support native macOS GUI automation, so do not claim automated coverage for

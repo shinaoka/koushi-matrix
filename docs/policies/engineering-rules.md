@@ -95,7 +95,11 @@ Rules:
    ignore those environment variables. `reset_local_data` is a Rust-owned
    AccountActor/StoreActor operation: it clears current-account local
    persistence and returns the app to a local signed-out snapshot. React must
-   not implement local-data cleanup through a UI-only logout path.
+   not implement local-data cleanup through a UI-only logout path. macOS Tier 2
+   Keychain evidence must run only through the env-gated temporary-keychain
+   test, either manually on a real macOS session or through the manual
+   `macos-keychain-tier2.yml` workflow. That lane must not use the debug/test
+   file credential store, and its output remains private-data-free.
 13. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
    filename, caption, mimetype, dimensions, and bytes when sending media, and
    `TimelineItem.media` may expose safe render metadata. Normal `Debug`, QA
