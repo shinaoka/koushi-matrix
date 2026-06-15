@@ -1,6 +1,6 @@
 use matrix_desktop_state::{
     AppAction, AppState, BasicOperationRequest, BasicOperationState, ComposerMode, ComposerState,
-    RoomSummary, SessionInfo, SessionState, TimelinePaneState, reduce,
+    RoomSummary, RoomTags, SessionInfo, SessionState, TimelinePaneState, reduce,
 };
 
 fn ready_state() -> AppState {
@@ -15,6 +15,7 @@ fn ready_state() -> AppState {
             display_name: "QA Seed Room".to_owned(),
             avatar: None,
             is_dm: false,
+            tags: RoomTags::default(),
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,

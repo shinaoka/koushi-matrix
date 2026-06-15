@@ -1,6 +1,6 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, ComposerMode, ComposerState, NavigationState,
-    PendingComposerSendKind, RoomSummary, SessionInfo, SessionState, ThreadPaneState,
+    PendingComposerSendKind, RoomSummary, RoomTags, SessionInfo, SessionState, ThreadPaneState,
     TimelinePaneState, UiEvent, reduce,
 };
 
@@ -18,6 +18,7 @@ fn room(room_id: &str) -> RoomSummary {
         display_name: room_id.to_owned(),
         avatar: None,
         is_dm: false,
+        tags: RoomTags::default(),
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,

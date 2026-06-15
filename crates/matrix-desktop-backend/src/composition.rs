@@ -1,4 +1,4 @@
-use matrix_desktop_state::{AppAction, RoomSummary, SpaceSummary};
+use matrix_desktop_state::{AppAction, RoomSummary, RoomTags, SpaceSummary};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -66,6 +66,7 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
                 display_name: room.display_name,
                 avatar: None,
                 is_dm: room.is_dm,
+                tags: RoomTags::default(),
                 unread_count: room.unread_count,
                 notification_count: room.notification_count,
                 highlight_count: room.highlight_count,

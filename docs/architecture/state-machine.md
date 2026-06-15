@@ -96,6 +96,44 @@ search state. The reducer emits UI events for any cleared visible panes.
 - Selecting a room closes any open thread pane and emits a timeline subscription
   effect.
 
+## Room Tags
+
+Room tags are Rust-owned room-list state. `RoomSummary.tags` carries the
+Element-aligned subset of Matrix `m.tag` data that affects product IA today:
+favourite and low priority. React may render tag affordances and dispatch typed
+commands, but it must not locally decide tag membership, mutually-exclusive tag
+cleanup, or section membership.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Untagged
+    Untagged --> Favourite: RoomTagSet(Favourite)/RoomTagsUpdated(favourite)
+    Untagged --> LowPriority: RoomTagSet(LowPriority)/RoomTagsUpdated(low_priority)
+    Favourite --> Untagged: RoomTagRemoved(Favourite)/RoomTagsUpdated(empty)
+    LowPriority --> Untagged: RoomTagRemoved(LowPriority)/RoomTagsUpdated(empty)
+    Favourite --> LowPriority: RoomTagSet(LowPriority)/RoomTagsUpdated(low_priority)
+    LowPriority --> Favourite: RoomTagSet(Favourite)/RoomTagsUpdated(favourite)
+```
+
+- `RoomTagsUpdated { room_id, tags }`, `RoomTagSet { room_id, tag, info }`,
+  and `RoomTagRemoved { room_id, tag }` are accepted only when the session is
+  Ready. Late deliveries after logout, restore, lock, or account switch are
+  ignored.
+- Unknown `room_id` inputs are ignored; tag actions never synthesize a room.
+- Favourite and low-priority are mutually exclusive in the reducer. Setting one
+  clears the other, matching the SDK `set_is_favourite` /
+  `set_is_low_priority` behavior.
+- Successful tag changes emit `RoomListChanged`. Phase B room-list sections
+  (Favourites / People / Rooms / Low priority) are derived from this Rust-owned
+  snapshot, not from React-local menu state.
+- `RoomActor` routes `RoomCommand::SetTag` / `RemoveTag` through
+  `matrix-desktop-sdk` tag wrappers, emits `RoomEvent::RoomTagSet` /
+  `RoomTagRemoved`, reliably dispatches the reducer action that updates
+  `RoomSummary.tags`, and does not immediately refresh the room list. The SDK
+  tag calls send account-data changes to the homeserver, so the next sync
+  snapshot is canonical; an immediate local refresh can still contain stale
+  tags and must not overwrite the reducer projection.
+
 ## Invites And Direct Messages
 
 Incoming invite state is Rust-owned in `AppState.invites`. React may render the

@@ -21,8 +21,8 @@ use matrix_desktop_core::{
 };
 use matrix_desktop_state::{
     AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
-    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, SessionInfo,
-    SettingsPatch, VerificationCancelReason,
+    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, RoomTagKind,
+    SessionInfo, SettingsPatch, VerificationCancelReason,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -1021,6 +1021,41 @@ pub async fn forget_room(
 }
 
 #[tauri::command]
+pub async fn set_room_tag(
+    room_id: String,
+    tag: RoomTagKind,
+    order: Option<f64>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_room_tag_command(request_id, room_id, tag, order),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn remove_room_tag(
+    room_id: String,
+    tag: RoomTagKind,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_remove_room_tag_command(request_id, room_id, tag),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn open_thread(
     room_id: String,
     root_event_id: String,
@@ -1895,6 +1930,32 @@ pub(crate) fn build_forget_room_command(
     })
 }
 
+pub(crate) fn build_set_room_tag_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    tag: RoomTagKind,
+    order: Option<f64>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::SetTag {
+        request_id,
+        room_id,
+        tag,
+        order,
+    })
+}
+
+pub(crate) fn build_remove_room_tag_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    tag: RoomTagKind,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::RemoveTag {
+        request_id,
+        room_id,
+        tag,
+    })
+}
+
 pub(crate) fn build_submit_search_command(
     request_id: matrix_desktop_core::RequestId,
     query: String,
@@ -2325,12 +2386,13 @@ mod tests {
         build_invite_user_command, build_leave_room_command, build_logout_command,
         build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_redact_message_command,
-        build_reset_identity_command, build_restart_sync_command, build_select_room_command,
-        build_select_space_command, build_send_read_receipt_command, build_send_reply_command,
-        build_send_text_command, build_send_thread_reply_command, build_set_avatar_command,
-        build_set_display_name_command, build_set_fully_read_command, build_set_presence_command,
-        build_set_space_child_command, build_set_thread_composer_draft_command,
-        build_set_typing_command, build_start_direct_message_command,
+        build_remove_room_tag_command, build_reset_identity_command, build_restart_sync_command,
+        build_select_room_command, build_select_space_command, build_send_read_receipt_command,
+        build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
+        build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
+        build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
+        build_set_thread_composer_draft_command, build_set_typing_command,
+        build_start_direct_message_command,
         build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
         build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
@@ -2339,7 +2401,7 @@ mod tests {
         qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
-    use matrix_desktop_state::{PresenceKind, RoomSummary};
+    use matrix_desktop_state::{PresenceKind, RoomSummary, RoomTagKind, RoomTags};
 
     #[test]
     fn qa_login_pipe_payload_maps_to_login_request_without_debugging_secret() {
@@ -2416,6 +2478,7 @@ mod tests {
                 display_name: "Room 1".to_owned(),
                 avatar: None,
                 is_dm: false,
+                tags: RoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
@@ -2426,6 +2489,7 @@ mod tests {
                 display_name: "Room 2".to_owned(),
                 avatar: None,
                 is_dm: false,
+                tags: RoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
@@ -3068,6 +3132,43 @@ mod tests {
                 assert_eq!(request_id, fake_request_id(22));
                 assert_eq!(room_id, "!room:example.org");
                 assert_eq!(user_id, "@target:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_room_tag_command(
+            fake_request_id(23),
+            "!room:example.org".to_owned(),
+            RoomTagKind::Favourite,
+            Some(0.25),
+        ) {
+            CoreCommand::Room(RoomCommand::SetTag {
+                request_id,
+                room_id,
+                tag,
+                order,
+            }) => {
+                assert_eq!(request_id, fake_request_id(23));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(tag, RoomTagKind::Favourite);
+                assert_eq!(order, Some(0.25));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_remove_room_tag_command(
+            fake_request_id(24),
+            "!room:example.org".to_owned(),
+            RoomTagKind::LowPriority,
+        ) {
+            CoreCommand::Room(RoomCommand::RemoveTag {
+                request_id,
+                room_id,
+                tag,
+            }) => {
+                assert_eq!(request_id, fake_request_id(24));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(tag, RoomTagKind::LowPriority);
             }
             other => panic!("unexpected command: {other:?}"),
         }

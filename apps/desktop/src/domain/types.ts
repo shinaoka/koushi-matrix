@@ -238,11 +238,23 @@ export interface SpaceSummary {
   child_room_ids: string[];
 }
 
+export type RoomTagKind = "favourite" | "lowPriority";
+
+export interface RoomTagInfo {
+  order: string | null;
+}
+
+export interface RoomTags {
+  favourite: RoomTagInfo | null;
+  low_priority: RoomTagInfo | null;
+}
+
 export interface RoomSummary {
   room_id: string;
   display_name: string;
   avatar: AvatarImage | null;
   is_dm: boolean;
+  tags: RoomTags;
   unread_count: number;
   notification_count?: number;
   highlight_count?: number;
@@ -490,6 +502,7 @@ export interface RoomListItem {
   room_id: string;
   display_name: string;
   avatar: AvatarImage | null;
+  tags: RoomTags;
   unread_count: number;
 }
 

@@ -8,6 +8,7 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   PresenceKind,
+  RoomTagKind,
   SavedSessionInfo,
   SearchScopeKind,
   SettingsPatch
@@ -170,6 +171,18 @@ class TauriDesktopApi implements DesktopApi {
 
   async forgetRoom(roomId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("forget_room", { roomId });
+  }
+
+  async setRoomTag(
+    roomId: string,
+    tag: RoomTagKind,
+    order: number | null = null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_room_tag", { roomId, tag, order });
+  }
+
+  async removeRoomTag(roomId: string, tag: RoomTagKind): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("remove_room_tag", { roomId, tag });
   }
 
   async openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot> {

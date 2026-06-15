@@ -14,6 +14,7 @@ describe("SpaceInfoPanel", () => {
             display_name: "Alpha Room",
             avatar: null,
             is_dm: false,
+            tags: { favourite: null, low_priority: null },
             parent_space_ids: ["!space-work:example.invalid"],
             unread_count: 8
           },
@@ -22,6 +23,7 @@ describe("SpaceInfoPanel", () => {
             display_name: "Beta Room",
             avatar: null,
             is_dm: false,
+            tags: { favourite: null, low_priority: null },
             parent_space_ids: ["!space-work:example.invalid"],
             unread_count: 2
           },
@@ -30,6 +32,7 @@ describe("SpaceInfoPanel", () => {
             display_name: "Alice",
             avatar: null,
             is_dm: true,
+            tags: { favourite: null, low_priority: null },
             parent_space_ids: ["!space-work:example.invalid"],
             unread_count: 4
           }
@@ -73,6 +76,7 @@ describe("SpaceInfoPanel", () => {
             display_name: "Alpha Room",
             avatar: null,
             is_dm: false,
+            tags: { favourite: null, low_priority: null },
             parent_space_ids: [],
             unread_count: 8
           },
@@ -81,6 +85,7 @@ describe("SpaceInfoPanel", () => {
             display_name: "Alice",
             avatar: null,
             is_dm: true,
+            tags: { favourite: null, low_priority: null },
             parent_space_ids: [],
             unread_count: 4
           }

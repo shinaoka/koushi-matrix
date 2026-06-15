@@ -96,6 +96,7 @@ function roomListItem(room: RoomSummary): RoomListItem {
     room_id: room.room_id,
     display_name: room.display_name,
     avatar: room.avatar,
+    tags: room.tags,
     unread_count: room.unread_count
   };
 }

@@ -274,7 +274,11 @@ export type RoomEvent =
   | { RoomJoined: { request_id: RequestId; room_id: string } }
   | { RoomLeft: { request_id: RequestId; room_id: string } }
   | { RoomForgotten: { request_id: RequestId; room_id: string } }
+  | { RoomTagSet: { request_id: RequestId; room_id: string; tag: RoomTagKind } }
+  | { RoomTagRemoved: { request_id: RequestId; room_id: string; tag: RoomTagKind } }
   | "RoomListUpdated";
+
+export type RoomTagKind = "favourite" | "lowPriority";
 
 export type PresenceKind = "online" | "away" | "offline";
 

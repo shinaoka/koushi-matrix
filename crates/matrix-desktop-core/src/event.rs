@@ -5,7 +5,7 @@ use std::fmt;
 
 use matrix_desktop_state::{
     CrossSigningStatus, IdentityResetState, KeyBackupStatus, LiveRoomSignalUpdate, PresenceKind,
-    VerificationFlowState,
+    RoomTagKind, VerificationFlowState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -266,7 +266,7 @@ pub enum SyncBackendKind {
     LegacySync,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RoomEvent {
     RoomCreated {
         request_id: RequestId,
@@ -310,7 +310,93 @@ pub enum RoomEvent {
         request_id: RequestId,
         room_id: String,
     },
+    RoomTagSet {
+        request_id: RequestId,
+        room_id: String,
+        tag: RoomTagKind,
+    },
+    RoomTagRemoved {
+        request_id: RequestId,
+        room_id: String,
+        tag: RoomTagKind,
+    },
     RoomListUpdated,
+}
+
+impl fmt::Debug for RoomEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RoomCreated { request_id, .. } => formatter
+                .debug_struct("RoomCreated")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::SpaceCreated { request_id, .. } => formatter
+                .debug_struct("SpaceCreated")
+                .field("request_id", request_id)
+                .field("space_id", &"RoomId(..)")
+                .finish(),
+            Self::SpaceChildSet { request_id, .. } => formatter
+                .debug_struct("SpaceChildSet")
+                .field("request_id", request_id)
+                .field("space_id", &"RoomId(..)")
+                .field("child_room_id", &"RoomId(..)")
+                .finish(),
+            Self::UserInvited { request_id, .. } => formatter
+                .debug_struct("UserInvited")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("user_id", &"UserId(..)")
+                .finish(),
+            Self::InviteAccepted { request_id, .. } => formatter
+                .debug_struct("InviteAccepted")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::InviteDeclined { request_id, .. } => formatter
+                .debug_struct("InviteDeclined")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::DirectMessageStarted { request_id, .. } => formatter
+                .debug_struct("DirectMessageStarted")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::RoomJoined { request_id, .. } => formatter
+                .debug_struct("RoomJoined")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::RoomLeft { request_id, .. } => formatter
+                .debug_struct("RoomLeft")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::RoomForgotten { request_id, .. } => formatter
+                .debug_struct("RoomForgotten")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::RoomTagSet {
+                request_id, tag, ..
+            } => formatter
+                .debug_struct("RoomTagSet")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("tag", tag)
+                .finish(),
+            Self::RoomTagRemoved {
+                request_id, tag, ..
+            } => formatter
+                .debug_struct("RoomTagRemoved")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("tag", tag)
+                .finish(),
+            Self::RoomListUpdated => formatter.write_str("RoomListUpdated"),
+        }
+    }
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

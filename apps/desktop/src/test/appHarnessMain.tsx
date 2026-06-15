@@ -136,6 +136,7 @@ function readySnapshot(
           display_name: ROOM_NAME,
           avatar: null,
           is_dm: false,
+          tags: { favourite: null, low_priority: null },
           unread_count: 0,
           parent_space_ids: []
         }
@@ -164,7 +165,13 @@ function readySnapshot(
       account_home: { display_name: "Home", unread_count: 0, is_active: true },
       space_rail: railItems,
       space_rooms: [
-        { room_id: ROOM_ID, display_name: ROOM_NAME, avatar: null, unread_count: 0 }
+        {
+          room_id: ROOM_ID,
+          display_name: ROOM_NAME,
+          avatar: null,
+          tags: { favourite: null, low_priority: null },
+          unread_count: 0
+        }
       ],
       global_dms: [],
       space_unread_count: 0,
@@ -393,6 +400,7 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     display_name: "Created Room",
     avatar: null,
     is_dm: false,
+    tags: { favourite: null, low_priority: null },
     unread_count: 0,
     parent_space_ids: []
   });
@@ -402,6 +410,7 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     room_id: newRoomId,
     display_name: "Created Room",
     avatar: null,
+    tags: { favourite: null, low_priority: null },
     unread_count: 0
   });
   return snapshot;
