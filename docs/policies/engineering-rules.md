@@ -99,7 +99,8 @@ Rules:
    Keychain evidence must run only through the env-gated temporary-keychain
    test, either manually on a real macOS session or through the manual
    `macos-keychain-tier2.yml` workflow. That lane must not use the debug/test
-   file credential store, and its output remains private-data-free.
+   file credential store, must not require the private vendored Matrix SDK
+   submodule, and its output remains private-data-free.
 13. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
    filename, caption, mimetype, dimensions, and bytes when sending media, and
    `TimelineItem.media` may expose safe render metadata. Normal `Debug`, QA

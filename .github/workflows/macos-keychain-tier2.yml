@@ -21,9 +21,9 @@ jobs:
         run: rustup show
 
       - name: Run generic credential backend contract
-        run: cargo test -p matrix-desktop-key credential_backend
+        run: cargo test --manifest-path crates/matrix-desktop-key/Cargo.toml credential_backend
 
       - name: Run macOS temporary Keychain proof
         env:
           MATRIX_DESKTOP_MACOS_KEYCHAIN_QA: "1"
-        run: cargo test -p matrix-desktop-key credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture
+        run: cargo test --manifest-path crates/matrix-desktop-key/Cargo.toml credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture

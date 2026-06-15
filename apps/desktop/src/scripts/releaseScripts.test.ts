@@ -116,13 +116,14 @@ describe("desktop release scripts", () => {
       "workflow_dispatch:",
       "runs-on: macos-latest",
       'MATRIX_DESKTOP_MACOS_KEYCHAIN_QA: "1"',
-      "cargo test -p matrix-desktop-key credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture",
-      "cargo test -p matrix-desktop-key credential_backend"
+      "cargo test --manifest-path crates/matrix-desktop-key/Cargo.toml credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture",
+      "cargo test --manifest-path crates/matrix-desktop-key/Cargo.toml credential_backend"
     ]) {
       expect(workflow).toContain(token);
     }
 
     expect(workflow).not.toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR");
+    expect(workflow).not.toContain("submodules:");
   });
 
   test("release preflight validates linux GUI smoke entry", () => {
