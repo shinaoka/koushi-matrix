@@ -1216,6 +1216,12 @@ stateDiagram-v2
   snapshot state. Transient sound and activation effects are scoped to a
   Rust-owned notification candidate; they must not fire again merely because a
   later snapshot still has unread or badge state.
+- Space attention for the workspace rail is projected by Rust
+  `SidebarModel.space_rail`; React renders those unread/highlight counts without
+  recomputing child-room state. Timeline thread summary chips render
+  Rust-projected row `thread_summary` DTOs. Any future pane-level thread
+  attention indicator must be added to Rust state and mirrored through the
+  Tauri/TypeScript DTO before React renders it.
 - Passive platform dispatch must not trigger native notification permission
   prompts. Adapters may check already-granted permission and no-op otherwise;
   prompts require an explicit user/onboarding action and a corresponding

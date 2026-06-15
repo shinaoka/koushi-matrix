@@ -193,6 +193,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Windows taskbar overlay support is modeled as the Rust-owned
   `NativeAttentionCapabilities.overlay_icon` field. React adapter code may call
   `setOverlayIcon` only from that DTO capability, never from direct OS sniffing.
+- Space rail attention badges are Rust-owned `SidebarModel.space_rail` counts
+  produced by `compose_sidebar`; `WorkspaceRail` may render the snapshot
+  attributes but must not recompute child-room unread/highlight state. Timeline
+  thread chips render the Rust-projected row `thread_summary` DTO. If a future
+  pane-level thread attention indicator is needed, add that field to Rust state
+  and mirror it through the Tauri/TypeScript DTOs before touching React.
 - Candidate projection uses private-data-minimized room labels and counts only.
   It must not expose message bodies, sender IDs, room IDs, event IDs,
   transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,

@@ -66,6 +66,39 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain('aria-label="Create space"');
   });
 
+  test("workspace rail renders Rust-projected space attention counts", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { WorkspaceRail } = await import("./App");
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    snapshot.sidebar.space_rail = [
+      {
+        space_id: "!ops:example.invalid",
+        display_name: "Ops Space",
+        avatar: null,
+        unread_count: 13,
+        highlight_count: 2,
+        is_active: false
+      }
+    ];
+
+    const markup = renderToStaticMarkup(
+      <WorkspaceRail
+        activeView="timeline"
+        snapshot={snapshot}
+        onCreateSpace={() => undefined}
+        onOpenContextMenu={() => undefined}
+        onOpenActivity={() => undefined}
+        onOpenUserSettings={() => undefined}
+        onSelectSpace={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('aria-label="Ops Space"');
+    expect(markup).toContain('data-count="13"');
+    expect(markup).toContain('data-mention-count="2"');
+  });
+
   test("composer renders reply mode from snapshot state", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { Composer } = await import("./App");
@@ -188,6 +221,45 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain('class="message-mention-pill"');
     expect(markup).toContain('data-mention-user-id="@alice:example.invalid"');
     expect(markup).toContain("@Alice");
+  });
+
+  test("TimelineItemRow renders thread summary from Rust-owned row data", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={{
+          id: { Event: { event_id: "$root:example.invalid" } },
+          sender: "@alice:example.invalid",
+          body: "Root message",
+          timestamp_ms: 1_800_000_000_000,
+          in_reply_to_event_id: null,
+          thread_root: null,
+          thread_summary: {
+            reply_count: 3,
+            latest_sender: "@bob:example.invalid",
+            latest_body_preview: "Latest thread reply",
+            latest_timestamp_ms: 1_800_000_100_000
+          },
+          can_react: true,
+          is_redacted: false,
+          can_redact: false,
+          is_edited: false,
+          can_edit: true,
+          reactions: []
+        }}
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+        onOpenThread={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('class="thread-summary-chip"');
+    expect(markup).toContain("3 replies");
+    expect(markup).toContain("@bob:example.invalid: Latest thread reply");
+    expect(markup).toContain('aria-label="Open thread, 3 replies');
   });
 
   test("TimelineItemRow renders add reaction affordance only for reactable events", () => {

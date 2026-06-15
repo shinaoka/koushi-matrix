@@ -523,10 +523,16 @@ fn sidebar_projection_carries_rust_owned_highlight_counts_for_mention_affordance
     let sidebar = compose_sidebar(None, &spaces(), &rooms());
     let value = serde_json::to_value(sidebar).expect("sidebar serializes");
 
+    assert_eq!(value["account_home"]["unread_count"], json!(7));
+    assert_eq!(value["space_rail"][0]["unread_count"], json!(5));
     assert_eq!(value["account_home"]["highlight_count"], json!(1));
     assert_eq!(value["space_rail"][0]["highlight_count"], json!(1));
+    assert_eq!(value["space_rooms"][0]["unread_count"], json!(5));
     assert_eq!(value["space_rooms"][0]["highlight_count"], json!(1));
+    assert_eq!(value["global_dms"][0]["unread_count"], json!(3));
     assert_eq!(value["global_dms"][0]["highlight_count"], json!(0));
+    assert_eq!(value["space_unread_count"], json!(7));
+    assert_eq!(value["dm_unread_count"], json!(3));
     assert_eq!(value["space_highlight_count"], json!(1));
     assert_eq!(value["dm_highlight_count"], json!(0));
 }

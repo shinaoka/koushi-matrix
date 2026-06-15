@@ -78,6 +78,12 @@ Rules:
    not add their own macOS/Linux/Windows capability branches. Windows taskbar
    overlay routing uses the Rust-owned `overlay_icon` capability field, not
    React-side OS detection.
+   Space rail attention badges come from the Rust-owned `SidebarModel.space_rail`
+   projection, and timeline thread chips come from Rust-projected row
+   `thread_summary` DTOs. React may render those fields and dispatch typed
+   navigation/open-thread commands, but it must not scan rooms or timeline rows
+   to invent space/thread attention semantics. A pane-level thread attention
+   indicator requires a Rust state/DTO field first.
 10. Device-local settings are non-secret product state, but they are still a
    privacy boundary. Settings files may contain only typed preferences such as
    locale, theme, font/emoji choice, keyboard behavior, and notification
