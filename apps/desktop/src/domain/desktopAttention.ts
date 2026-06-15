@@ -6,6 +6,7 @@ import type {
 
 export type DesktopAttentionKind = "mention" | "dm" | "message" | "none";
 export const WINDOWS_ATTENTION_OVERLAY_ICON_PATH = "src-tauri/icons/icon.png";
+export const DESKTOP_ATTENTION_REQUEST_TYPE = 2;
 
 export interface DesktopAttentionSummary {
   unreadTotal: number;
@@ -26,6 +27,12 @@ export interface DesktopWindowLike {
   setTitle(title: string): Promise<void>;
   setBadgeCount(count?: number): Promise<void>;
   setOverlayIcon?(icon?: string): Promise<void>;
+  setTrayBadgeCount?(count?: number): Promise<void>;
+}
+
+export interface DesktopAttentionTransientLike {
+  playAttentionSound?(): Promise<void>;
+  requestUserAttention?(requestType: typeof DESKTOP_ATTENTION_REQUEST_TYPE): Promise<void>;
 }
 
 export function desktopAttentionSummary(attention: NativeAttentionState): DesktopAttentionSummary {
@@ -66,6 +73,32 @@ export async function applyDesktopAttentionToWindow(
         badgeCount > 0 ? WINDOWS_ATTENTION_OVERLAY_ICON_PATH : undefined
       )
     );
+  }
+
+  if (capabilities?.tray === "available" && windowLike.setTrayBadgeCount) {
+    operations.push(windowLike.setTrayBadgeCount(badgeCount > 0 ? badgeCount : undefined));
+  }
+
+  await Promise.allSettled(operations);
+}
+
+export async function dispatchDesktopAttentionTransientEffects(
+  transport: DesktopAttentionTransientLike,
+  candidate: DesktopAttentionNotificationCandidate | null,
+  capabilities?: NativeAttentionCapabilities
+): Promise<void> {
+  if (!candidate) {
+    return;
+  }
+
+  const operations: Promise<void>[] = [];
+
+  if (capabilities?.sound === "available" && transport.playAttentionSound) {
+    operations.push(transport.playAttentionSound());
+  }
+
+  if (capabilities?.activation === "available" && transport.requestUserAttention) {
+    operations.push(transport.requestUserAttention(DESKTOP_ATTENTION_REQUEST_TYPE));
   }
 
   await Promise.allSettled(operations);

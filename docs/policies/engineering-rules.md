@@ -63,6 +63,11 @@ Rules:
    no-op behavior. React attention helpers must consume
    `AppState.native_attention` directly; they must not aggregate room lists,
    diff previous room snapshots, or synthesize dedupe/focus/mute semantics.
+   Persistent native effects (window title, badge count, Windows overlay, tray
+   count, and zero-badge clearing) are snapshot-state mappings. Transient sound
+   and activation effects are candidate-scoped and must run only from a
+   Rust-owned notification candidate plus the Rust-owned capability DTO, never
+   from every unread/badge snapshot refresh.
    Passive notification dispatch may check existing OS permission, but must not
    prompt for permission except through an explicit user or onboarding action.
    Native notification clearing is best-effort adapter work triggered by

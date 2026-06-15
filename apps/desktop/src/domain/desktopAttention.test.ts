@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import {
   applyDesktopAttentionToWindow,
+  dispatchDesktopAttentionTransientEffects,
   desktopAttentionNotificationCandidate,
   desktopAttentionSummary,
   desktopAttentionWindowTitle,
@@ -191,6 +192,81 @@ describe("desktop notification candidate", () => {
     });
 
     expect(windowMock.setOverlayIcon).toHaveBeenCalledWith(WINDOWS_ATTENTION_OVERLAY_ICON_PATH);
+  });
+
+  test("routes tray badge state through native attention capability DTOs", async () => {
+    const windowMock = {
+      setTitle: vi.fn().mockResolvedValue(undefined),
+      setBadgeCount: vi.fn().mockResolvedValue(undefined),
+      setOverlayIcon: vi.fn().mockResolvedValue(undefined),
+      setTrayBadgeCount: vi.fn().mockResolvedValue(undefined),
+      playAttentionSound: vi.fn().mockResolvedValue(undefined),
+      requestUserAttention: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop · 2 unread", 2, {
+      notifications: "available",
+      badge: "available",
+      overlay_icon: "unavailable",
+      sound: "available",
+      tray: "available",
+      activation: "available"
+    });
+
+    expect(windowMock.setTrayBadgeCount).toHaveBeenCalledWith(2);
+    expect(windowMock.playAttentionSound).not.toHaveBeenCalled();
+    expect(windowMock.requestUserAttention).not.toHaveBeenCalled();
+  });
+
+  test("routes transient sound and activation only for notification candidates", async () => {
+    const windowMock = {
+      playAttentionSound: vi.fn().mockResolvedValue(undefined),
+      requestUserAttention: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await dispatchDesktopAttentionTransientEffects(
+      windowMock,
+      {
+        roomDisplayName: "Announcements",
+        kind: "mention",
+        unreadCount: 2,
+        highlightCount: 1
+      },
+      {
+        notifications: "available",
+        badge: "available",
+        overlay_icon: "unavailable",
+        sound: "available",
+        tray: "available",
+        activation: "available"
+      }
+    );
+
+    expect(windowMock.playAttentionSound).toHaveBeenCalledOnce();
+    expect(windowMock.requestUserAttention).toHaveBeenCalledWith(2);
+  });
+
+  test("does not route tray sound or activation when capabilities are unavailable", async () => {
+    const windowMock = {
+      setTitle: vi.fn().mockResolvedValue(undefined),
+      setBadgeCount: vi.fn().mockResolvedValue(undefined),
+      setTrayBadgeCount: vi.fn().mockResolvedValue(undefined),
+      playAttentionSound: vi.fn().mockResolvedValue(undefined),
+      requestUserAttention: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop · 2 unread", 2, {
+      notifications: "available",
+      badge: "available",
+      overlay_icon: "unavailable",
+      sound: "unavailable",
+      tray: "unavailable",
+      activation: "unavailable"
+    });
+
+    expect(windowMock.playAttentionSound).not.toHaveBeenCalled();
+    expect(windowMock.setTrayBadgeCount).not.toHaveBeenCalled();
+    expect(windowMock.requestUserAttention).not.toHaveBeenCalled();
   });
 
   test("clears Windows overlay icon through the native attention capability DTO", async () => {

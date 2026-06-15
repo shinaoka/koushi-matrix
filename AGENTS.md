@@ -173,6 +173,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   window title, badge, and native adapter payloads. They must not aggregate
   `rooms`, diff previous room snapshots, or infer focused-room/muted/duplicate
   notification behavior locally.
+- Keep persistent and transient native attention effects separate. Window
+  title, badge count, Windows overlay, tray count, and zero-badge clearing are
+  snapshot-state mappings. Sound and activation are candidate-scoped transient
+  effects and may run only from a Rust-owned notification candidate plus the
+  Rust-owned capability DTO; do not trigger them from every unread/badge
+  snapshot refresh.
 - Passive native notification dispatch checks the current OS permission state
   only. It must not call permission-prompt APIs; permission prompts belong to an
   explicit user/onboarding action.

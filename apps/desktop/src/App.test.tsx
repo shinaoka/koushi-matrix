@@ -937,6 +937,12 @@ describe("Tauri state refresh wiring", () => {
     expect(notificationSource).not.toContain("previousAttentionInput");
     expect(notificationSource).not.toContain("snapshot.state.rooms");
 
+    const notificationEffectEnd = source.indexOf("]);", notificationStart);
+    const notificationEffectSource = source.slice(notificationStart, notificationEffectEnd);
+    expect(notificationEffectSource).toContain("void dispatchDesktopAttentionTransientEffects");
+    expect(notificationEffectSource).toContain("snapshot.state.native_attention.summary.capabilities");
+    expect(notificationEffectSource).not.toContain("snapshot.state.rooms");
+
     const clearStart = source.indexOf("safeAttentionSummary.badgeCount !== 0");
     const clearEnd = source.indexOf("const message = qaSendSmokeMessage", clearStart);
     const clearSource = source.slice(clearStart, clearEnd);
@@ -946,6 +952,7 @@ describe("Tauri state refresh wiring", () => {
 
     expect(source).toContain("desktopAttentionWindowTitle");
     expect(source).toContain("sendDesktopAttentionNotification");
+    expect(source).toContain("dispatchDesktopAttentionTransientEffects");
     expect(source).toContain("applyDesktopAttentionToWindow");
     expect(source).toContain("qaWindowTitle(");
     expect(source).toContain("effectiveRightPanelModeForSnapshot");

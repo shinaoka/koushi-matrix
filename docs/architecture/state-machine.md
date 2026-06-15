@@ -1211,6 +1211,11 @@ stateDiagram-v2
   eligibility, tray visibility, and activation behavior are reducer/core
   semantics. Platform adapters only map candidates to macOS, Windows, Linux, or
   no-op capabilities.
+- Persistent adapter effects such as window title, badge count, Windows overlay,
+  tray count, and zero-badge notification clearing follow the Rust-owned
+  snapshot state. Transient sound and activation effects are scoped to a
+  Rust-owned notification candidate; they must not fire again merely because a
+  later snapshot still has unread or badge state.
 - Passive platform dispatch must not trigger native notification permission
   prompts. Adapters may check already-granted permission and no-op otherwise;
   prompts require an explicit user/onboarding action and a corresponding

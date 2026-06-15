@@ -508,6 +508,10 @@ read-marker transition creates, suppresses, updates, or clears an attention
 candidate. The adapter may only map that private-data-minimized candidate to
 macOS, Windows, Linux, or no-op capabilities; React must not branch on platform
 notification semantics or synthesize badge/window-title state locally.
+Persistent title, badge, overlay, tray, and clear hooks follow the Rust-owned
+snapshot. Sound and activation hooks are candidate-scoped transient effects, so
+they run only for a Rust-owned notification candidate and not for every later
+snapshot that still contains unread state.
 User notification preferences are the same boundary: `SettingsValues.notifications`
 is the Rust-owned persisted source of truth, and legacy settings files backfill
 the default policy before any GUI reads the snapshot.

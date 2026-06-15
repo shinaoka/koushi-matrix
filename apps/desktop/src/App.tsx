@@ -98,6 +98,7 @@ import {
 } from "./domain/rightPanel";
 import {
   applyDesktopAttentionToWindow,
+  dispatchDesktopAttentionTransientEffects,
   desktopAttentionSummary,
   desktopAttentionWindowTitle,
   desktopAttentionNotificationCandidate
@@ -540,6 +541,11 @@ export function App() {
       return;
     }
 
+    void dispatchDesktopAttentionTransientEffects(
+      getCurrentWindow(),
+      candidate,
+      snapshot.state.native_attention.summary.capabilities
+    );
     void sendDesktopAttentionNotification(candidate, tauriNotificationTransport);
   }, [
     snapshot?.state.native_attention.dispatch.kind,
