@@ -2,6 +2,8 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
+use crate::locale_profile::DisplayPlatform;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub session: SessionState,
@@ -1626,6 +1628,23 @@ pub struct NativeAttentionCapabilities {
     pub sound: NativeAttentionCapability,
     pub tray: NativeAttentionCapability,
     pub activation: NativeAttentionCapability,
+}
+
+pub fn native_attention_capabilities_for_platform(
+    platform: DisplayPlatform,
+) -> NativeAttentionCapabilities {
+    let badge = match platform {
+        DisplayPlatform::Macos | DisplayPlatform::Windows => NativeAttentionCapability::Available,
+        DisplayPlatform::Linux => NativeAttentionCapability::Unknown,
+    };
+
+    NativeAttentionCapabilities {
+        notifications: NativeAttentionCapability::Available,
+        badge,
+        sound: NativeAttentionCapability::Available,
+        tray: NativeAttentionCapability::Unknown,
+        activation: NativeAttentionCapability::Unknown,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

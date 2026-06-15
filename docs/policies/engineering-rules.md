@@ -67,7 +67,10 @@ Rules:
    prompt for permission except through an explicit user or onboarding action.
    Native notification clearing is best-effort adapter work triggered by
    Rust-owned zero-badge/logout state; clearing failures must not mutate Matrix
-   state or surface as React rendering failures.
+   state or surface as React rendering failures. Platform capability profiles
+   for native attention are resolved in Rust from the shared `DisplayPlatform`
+   model before reaching React; React components and notification helpers must
+   not add their own macOS/Linux/Windows capability branches.
 10. Device-local settings are non-secret product state, but they are still a
    privacy boundary. Settings files may contain only typed preferences such as
    locale, theme, font/emoji choice, keyboard behavior, and notification

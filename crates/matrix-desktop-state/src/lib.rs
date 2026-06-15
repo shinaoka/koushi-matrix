@@ -49,7 +49,8 @@ pub use state::{
     SettingsValues, SpaceSummary, SyncState, TextDirectionPreference, TextRange, ThemePreference,
     ThreadPaneState, TimelinePaneState, TrustOperationFailureKind, TypographySettings, UserProfile,
     VerificationCancelReason, VerificationFlowState, VerificationTarget,
-    native_attention_state_from_rooms, room_attention_kind, room_attention_summary,
+    native_attention_capabilities_for_platform, native_attention_state_from_rooms,
+    room_attention_kind, room_attention_summary,
 };
 pub use typography_profile::{
     TypographyAssetStatus, TypographyDisplayProfile, resolve_typography_display_profile,

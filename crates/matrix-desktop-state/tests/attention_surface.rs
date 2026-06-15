@@ -1,9 +1,9 @@
 use matrix_desktop_state::{
-    AppAction, AppState, NativeAttentionCandidate, NativeAttentionCapabilities,
+    AppAction, AppState, DisplayPlatform, NativeAttentionCandidate, NativeAttentionCapabilities,
     NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionObservationKind,
     NativeAttentionProjectionInput, NativeAttentionSuppressionReason, RoomAttentionKind,
-    RoomSummary, RoomTagInfo, RoomTags, native_attention_state_from_rooms, reduce,
-    room_attention_summary,
+    RoomSummary, RoomTagInfo, RoomTags, native_attention_capabilities_for_platform,
+    native_attention_state_from_rooms, reduce, room_attention_summary,
 };
 use serde_json::json;
 
@@ -36,6 +36,29 @@ fn available_capabilities() -> NativeAttentionCapabilities {
         tray: NativeAttentionCapability::Available,
         activation: NativeAttentionCapability::Available,
     }
+}
+
+#[test]
+fn native_attention_capabilities_are_resolved_from_platform_profile() {
+    let macos = native_attention_capabilities_for_platform(DisplayPlatform::Macos);
+    let windows = native_attention_capabilities_for_platform(DisplayPlatform::Windows);
+    let linux = native_attention_capabilities_for_platform(DisplayPlatform::Linux);
+
+    assert_eq!(macos.notifications, NativeAttentionCapability::Available);
+    assert_eq!(windows.notifications, NativeAttentionCapability::Available);
+    assert_eq!(linux.notifications, NativeAttentionCapability::Available);
+    assert_eq!(macos.badge, NativeAttentionCapability::Available);
+    assert_eq!(windows.badge, NativeAttentionCapability::Available);
+    assert_eq!(linux.badge, NativeAttentionCapability::Unknown);
+    assert_eq!(macos.sound, NativeAttentionCapability::Available);
+    assert_eq!(windows.sound, NativeAttentionCapability::Available);
+    assert_eq!(linux.sound, NativeAttentionCapability::Available);
+    assert_eq!(macos.tray, NativeAttentionCapability::Unknown);
+    assert_eq!(windows.tray, NativeAttentionCapability::Unknown);
+    assert_eq!(linux.tray, NativeAttentionCapability::Unknown);
+    assert_eq!(macos.activation, NativeAttentionCapability::Unknown);
+    assert_eq!(windows.activation, NativeAttentionCapability::Unknown);
+    assert_eq!(linux.activation, NativeAttentionCapability::Unknown);
 }
 
 #[test]

@@ -1186,6 +1186,9 @@ stateDiagram-v2
   notification settings changes, room muted/low-priority state changes, window
   focus changes, mark-read/read-receipt actions, platform capability updates,
   and dispatch completion/failure events from the Tauri adapter.
+- Platform capability updates use the shared Rust `DisplayPlatform` model.
+  React receives the resulting `NativeAttentionCapabilities` DTO and must not
+  branch on macOS/Linux/Windows notification semantics locally.
 - The Phase A core projection is `native_attention_state_from_rooms`. It
   aggregates unread/highlight counts from eligible rooms, excludes low-priority
   and muted rooms, prefers `mention` over `dm` over `message` candidates,

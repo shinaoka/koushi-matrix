@@ -173,6 +173,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   attention state drops the badge count to zero (including logout/account clear),
   React may call the native transport clear hook, but it must not mutate Matrix
   state or synthesize read/focus semantics locally.
+- Native attention platform capability profiles are Rust-owned and resolved from
+  the shared `DisplayPlatform` model before reaching React. Add macOS/Linux/Win
+  capability differences there; do not scatter platform branches through React
+  components or notification helpers.
 - Candidate projection uses private-data-minimized room labels and counts only.
   It must not expose message bodies, sender IDs, room IDs, event IDs,
   transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,

@@ -15,11 +15,12 @@ use matrix_desktop_state::{
     ActivityState, AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
     ComposerState, DirectoryState, DisplayPlatform, E2eeTrustState, FocusedContextState,
     InvitePreview, LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile,
-    NativeAttentionState, NavigationState, ProfileState, RecoveryMethod, RoomInteractionState,
-    RoomManagementState, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope,
-    SearchState, SessionState, SettingsState, SidebarModel, SpaceSummary, SyncState,
-    ThreadPaneState, TimelinePaneState, TypographyDisplayProfile, resolve_locale_display_profile,
-    resolve_typography_display_profile,
+    NativeAttentionCapabilities, NativeAttentionState, NavigationState, ProfileState,
+    RecoveryMethod, RoomInteractionState, RoomManagementState, RoomSummary, SearchMatchField,
+    SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState, SettingsState,
+    SidebarModel, SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState,
+    TypographyDisplayProfile, native_attention_capabilities_for_platform,
+    resolve_locale_display_profile, resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +91,11 @@ impl From<AppState> for FrontendAppState {
             resolve_locale_display_profile(&state.settings.values.locale, platform);
         let typography_profile =
             resolve_typography_display_profile(&state.settings.values.typography, platform);
+        let mut native_attention = state.native_attention;
+        if native_attention.summary.capabilities == NativeAttentionCapabilities::default() {
+            native_attention.summary.capabilities =
+                native_attention_capabilities_for_platform(platform);
+        }
         Self {
             session: state.session.into(),
             auth: state.auth,
@@ -114,7 +120,7 @@ impl From<AppState> for FrontendAppState {
             live_signals: state.live_signals,
             e2ee_trust: state.e2ee_trust,
             local_encryption: state.local_encryption,
-            native_attention: state.native_attention,
+            native_attention,
             cjk_text_policy: state.cjk_text_policy,
             errors: state.errors,
         }
@@ -455,12 +461,12 @@ impl From<SearchMatchKind> for FrontendSearchMatchKind {
 mod tests {
     use serde_json::json;
 
-    use super::{FrontendDesktopSnapshot, FrontendSyncState};
+    use super::{FrontendDesktopSnapshot, FrontendSyncState, frontend_display_platform};
     use matrix_desktop_state::{
         AppState, AvatarImage, AvatarThumbnailState, EmojiPreference, FontPreference,
         InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod, RoomSummary, RoomTags,
         SessionInfo, SessionState, SpaceSummary, SyncState, TextDirectionPreference,
-        TypographySettings, UserProfile,
+        TypographySettings, UserProfile, native_attention_capabilities_for_platform,
     };
 
     fn booted_app_state() -> AppState {
@@ -546,6 +552,13 @@ mod tests {
         assert_eq!(
             value["state"]["native_attention"]["dispatch"]["kind"],
             json!("idle")
+        );
+        assert_eq!(
+            value["state"]["native_attention"]["summary"]["capabilities"],
+            serde_json::to_value(native_attention_capabilities_for_platform(
+                frontend_display_platform()
+            ))
+            .expect("capability profile serializes")
         );
         assert_eq!(
             value["state"]["cjk_text_policy"]["japanese_catalog"]["catalog_locale"],
@@ -732,8 +745,14 @@ mod tests {
                 "thumbnail": { "kind": "notRequested" }
             })
         );
-        assert_eq!(value["sidebar"]["account_home"]["highlight_count"], json!(1));
-        assert_eq!(value["sidebar"]["space_rooms"][0]["highlight_count"], json!(1));
+        assert_eq!(
+            value["sidebar"]["account_home"]["highlight_count"],
+            json!(1)
+        );
+        assert_eq!(
+            value["sidebar"]["space_rooms"][0]["highlight_count"],
+            json!(1)
+        );
         assert_eq!(value["sidebar"]["space_highlight_count"], json!(1));
     }
 
