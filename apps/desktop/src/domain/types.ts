@@ -284,21 +284,32 @@ export interface RoomInteractionState {
 
 export interface PinnedEvent {
   event_id: string;
-  sender_display_name: string | null;
+  sender: string | null;
   body_preview: string | null;
-  timestamp_ms: number | null;
+  redacted: boolean;
 }
+
+export type PinOp = "pin" | "unpin";
 
 export type PinOperationState =
   | { kind: "idle" }
-  | { kind: "pinning"; request_id: number; event_id: string }
-  | { kind: "unpinning"; request_id: number; event_id: string }
+  | { kind: "pending"; request_id: number; room_id: string; event_id: string; op: PinOp }
   | {
       kind: "failed";
-      request_id: number;
+      room_id: string;
       event_id: string;
-      failureKind: OperationFailureKind;
+      op: PinOp;
+      recoverable: boolean;
     };
+
+export interface ReplyQuote {
+  event_id: string;
+  sender: string | null;
+  body_preview: string | null;
+  state: ReplyQuoteState;
+}
+
+export type ReplyQuoteState = "ready" | "redacted" | "missing" | "unsupported";
 
 export type OperationFailureKind =
   | "forbidden"

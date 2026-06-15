@@ -5,7 +5,7 @@ use crate::{
         ActivityState, ActivityTab, AppError, AppState, BasicOperationRequest, BasicOperationState,
         ComposerMode, CrossSigningStatus, DirectoryState, E2eeRecoveryState, E2eeTrustState,
         FocusedContextState, IdentityResetState, KeyBackupStatus, LocalEncryptionState,
-        NavigationState, PendingComposerSendKind, PinOperationState, SasEmoji, SearchState,
+        NavigationState, PendingComposerSendKind, PinOp, PinOperationState, SasEmoji, SearchState,
         SessionState, SettingsPersistenceState, SyncState, ThreadPaneState, TimelinePaneState,
         TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
         VerificationTarget,
@@ -15,6 +15,8 @@ use crate::{
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
 const SETTINGS_LOAD_FAILED_MESSAGE: &str = "Settings could not be loaded";
 const SETTINGS_PERSIST_FAILED_MESSAGE: &str = "Settings could not be saved";
+const PIN_EVENT_FAILED_MESSAGE: &str = "Pinning the event failed";
+const UNPIN_EVENT_FAILED_MESSAGE: &str = "Unpinning the event failed";
 
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     match action {
@@ -903,18 +905,20 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             event_id,
         } => {
-            if !is_session_ready(state) {
+            if !is_session_ready(state) || event_id.is_empty() || !room_exists(state, &room_id) {
                 return Vec::new();
             }
 
-            let entry = state.room_interactions.entry(room_id).or_default();
-            if !entry.pin_operation.is_idle() {
+            let entry = state.room_interactions.entry(room_id.clone()).or_default();
+            if !entry.pin_operation.accepts_new_request() {
                 return Vec::new();
             }
 
-            entry.pin_operation = PinOperationState::Pinning {
+            entry.pin_operation = PinOperationState::Pending {
                 request_id,
+                room_id,
                 event_id,
+                op: PinOp::Pin,
             };
             vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
         }
@@ -929,7 +933,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             let Some(entry) = state.room_interactions.get_mut(&room_id) else {
                 return Vec::new();
             };
-            if entry.pin_operation.request_id() != Some(request_id) {
+            if !matches!(
+                entry.pin_operation,
+                PinOperationState::Pending {
+                    request_id: pending_request_id,
+                    op: PinOp::Pin,
+                    ..
+                } if pending_request_id == request_id
+            ) {
                 return Vec::new();
             }
 
@@ -939,7 +950,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::PinEventFailed {
             request_id,
             room_id,
-            kind,
+            kind: _,
         } => {
             if !is_session_ready(state) {
                 return Vec::new();
@@ -948,40 +959,55 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             let Some(entry) = state.room_interactions.get_mut(&room_id) else {
                 return Vec::new();
             };
-            if entry.pin_operation.request_id() != Some(request_id) {
+            let PinOperationState::Pending {
+                request_id: pending_request_id,
+                event_id,
+                op: PinOp::Pin,
+                ..
+            } = &entry.pin_operation
+            else {
                 return Vec::new();
-            }
-            let event_id = match &entry.pin_operation {
-                PinOperationState::Pinning { event_id, .. }
-                | PinOperationState::Unpinning { event_id, .. }
-                | PinOperationState::Failed { event_id, .. } => event_id.clone(),
-                PinOperationState::Idle => return Vec::new(),
             };
+            if *pending_request_id != request_id {
+                return Vec::new();
+            };
+            let event_id = event_id.clone();
 
             entry.pin_operation = PinOperationState::Failed {
-                request_id,
+                room_id,
                 event_id,
-                kind,
+                op: PinOp::Pin,
+                recoverable: true,
             };
-            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+            state.errors.push(AppError {
+                code: "pin_event_failed".to_owned(),
+                message: PIN_EVENT_FAILED_MESSAGE.to_owned(),
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
         }
         AppAction::UnpinEventRequested {
             request_id,
             room_id,
             event_id,
         } => {
-            if !is_session_ready(state) {
+            if !is_session_ready(state) || event_id.is_empty() || !room_exists(state, &room_id) {
                 return Vec::new();
             }
 
-            let entry = state.room_interactions.entry(room_id).or_default();
-            if !entry.pin_operation.is_idle() {
+            let entry = state.room_interactions.entry(room_id.clone()).or_default();
+            if !entry.pin_operation.accepts_new_request() {
                 return Vec::new();
             }
 
-            entry.pin_operation = PinOperationState::Unpinning {
+            entry.pin_operation = PinOperationState::Pending {
                 request_id,
+                room_id,
                 event_id,
+                op: PinOp::Unpin,
             };
             vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
         }
@@ -996,7 +1022,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             let Some(entry) = state.room_interactions.get_mut(&room_id) else {
                 return Vec::new();
             };
-            if entry.pin_operation.request_id() != Some(request_id) {
+            if !matches!(
+                entry.pin_operation,
+                PinOperationState::Pending {
+                    request_id: pending_request_id,
+                    op: PinOp::Unpin,
+                    ..
+                } if pending_request_id == request_id
+            ) {
                 return Vec::new();
             }
 
@@ -1006,7 +1039,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::UnpinEventFailed {
             request_id,
             room_id,
-            kind,
+            kind: _,
         } => {
             if !is_session_ready(state) {
                 return Vec::new();
@@ -1015,22 +1048,35 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             let Some(entry) = state.room_interactions.get_mut(&room_id) else {
                 return Vec::new();
             };
-            if entry.pin_operation.request_id() != Some(request_id) {
+            let PinOperationState::Pending {
+                request_id: pending_request_id,
+                event_id,
+                op: PinOp::Unpin,
+                ..
+            } = &entry.pin_operation
+            else {
                 return Vec::new();
-            }
-            let event_id = match &entry.pin_operation {
-                PinOperationState::Pinning { event_id, .. }
-                | PinOperationState::Unpinning { event_id, .. }
-                | PinOperationState::Failed { event_id, .. } => event_id.clone(),
-                PinOperationState::Idle => return Vec::new(),
             };
+            if *pending_request_id != request_id {
+                return Vec::new();
+            };
+            let event_id = event_id.clone();
 
             entry.pin_operation = PinOperationState::Failed {
-                request_id,
+                room_id,
                 event_id,
-                kind,
+                op: PinOp::Unpin,
+                recoverable: true,
             };
-            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+            state.errors.push(AppError {
+                code: "unpin_event_failed".to_owned(),
+                message: UNPIN_EVENT_FAILED_MESSAGE.to_owned(),
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
         }
         AppAction::DirectoryQueryRequested { request_id, query } => {
             if !is_session_ready(state) {
@@ -1785,6 +1831,10 @@ fn is_session_ready(state: &AppState) -> bool {
             | SessionState::NeedsRecovery { .. }
             | SessionState::Recovering { .. }
     )
+}
+
+fn room_exists(state: &AppState, room_id: &str) -> bool {
+    state.rooms.iter().any(|room| room.room_id == room_id)
 }
 
 fn verification_request_id(verification: &VerificationFlowState) -> Option<u64> {

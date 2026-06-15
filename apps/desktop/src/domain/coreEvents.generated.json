@@ -473,6 +473,53 @@
     },
     "kind": "Timeline"
   },
+  "timelineReplyQuoteInitialItems": {
+    "event": {
+      "InitialItems": {
+        "generation": 4,
+        "items": [
+          {
+            "body": "reply body",
+            "can_edit": false,
+            "can_react": true,
+            "can_redact": true,
+            "id": {
+              "Event": {
+                "event_id": "$reply1"
+              }
+            },
+            "in_reply_to_event_id": "$root1",
+            "is_edited": false,
+            "is_redacted": false,
+            "reactions": [],
+            "reply_quote": {
+              "body_preview": "quoted preview",
+              "event_id": "$root1",
+              "sender": "@other:example.test",
+              "state": "ready"
+            },
+            "sender": "@u:example.test",
+            "thread_root": null,
+            "thread_summary": null,
+            "timestamp_ms": 987
+          }
+        ],
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
   "timelineResyncRequired": {
     "event": {
       "ResyncRequired": {

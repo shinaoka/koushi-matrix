@@ -52,14 +52,18 @@
 //! Raw SDK error text never appears in events or AppState. All errors are
 //! classified into `RoomFailureKind`.
 
-use std::sync::Arc;
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, RwLock},
+};
 
 use matrix_desktop_sdk::{
     MatrixClientSession, MatrixRoomOperationError, MatrixRoomTagKind, MatrixRoomTags,
 };
 use matrix_desktop_state::{
     AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, InvitePreview,
-    OperationFailureKind, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
+    OperationFailureKind, PinnedEvent, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    SpaceSummary,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -138,6 +142,7 @@ struct RoomListObservation {
 pub struct RoomActor {
     session: Option<Arc<MatrixClientSession>>,
     observation: Option<RoomListObservation>,
+    known_room_ids: Arc<RwLock<BTreeSet<String>>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     command_rx: mpsc::Receiver<RoomMessage>,
@@ -152,6 +157,7 @@ impl RoomActor {
         let actor = RoomActor {
             session: None,
             observation: None,
+            known_room_ids: Arc::new(RwLock::new(BTreeSet::new())),
             action_tx,
             event_tx,
             command_rx,
@@ -174,6 +180,7 @@ impl RoomActor {
                     // Room operations become available; observation starts
                     // later on SyncStarted (backend then known).
                     self.session = Some(session);
+                    self.clear_known_rooms();
                 }
                 RoomMessage::SyncStarted {
                     session,
@@ -184,6 +191,7 @@ impl RoomActor {
                     // replacement is spawned.
                     self.stop_observation().await;
                     self.session = Some(session.clone());
+                    self.clear_known_rooms();
                     match room_list_service {
                         Some(service) => {
                             // SyncService backend: relay the live service's
@@ -204,6 +212,7 @@ impl RoomActor {
                 }
                 RoomMessage::SyncStopped => {
                     self.stop_observation().await;
+                    self.clear_known_rooms();
                 }
             }
         }
@@ -222,6 +231,7 @@ impl RoomActor {
         let task = executor::spawn(run_live_room_list_observation(
             session,
             service,
+            self.known_room_ids.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             refresh_rx,
@@ -243,6 +253,7 @@ impl RoomActor {
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
         let task = executor::spawn(run_legacy_room_list_observation(
             session.clone(),
+            self.known_room_ids.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             stop_rx,
@@ -346,48 +357,14 @@ impl RoomActor {
                 room_id,
                 event_id,
             } => {
-                self.reduce(vec![
-                    AppAction::PinEventRequested {
-                        request_id: request_id.sequence,
-                        room_id: room_id.clone(),
-                        event_id,
-                    },
-                    AppAction::PinEventFailed {
-                        request_id: request_id.sequence,
-                        room_id,
-                        kind: OperationFailureKind::Sdk,
-                    },
-                ]);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RoomOperationFailed {
-                        kind: RoomFailureKind::Sdk,
-                    },
-                );
+                self.handle_pin_event(request_id, room_id, event_id).await;
             }
             RoomCommand::UnpinEvent {
                 request_id,
                 room_id,
                 event_id,
             } => {
-                self.reduce(vec![
-                    AppAction::UnpinEventRequested {
-                        request_id: request_id.sequence,
-                        room_id: room_id.clone(),
-                        event_id,
-                    },
-                    AppAction::UnpinEventFailed {
-                        request_id: request_id.sequence,
-                        room_id,
-                        kind: OperationFailureKind::Sdk,
-                    },
-                ]);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RoomOperationFailed {
-                        kind: RoomFailureKind::Sdk,
-                    },
-                );
+                self.handle_unpin_event(request_id, room_id, event_id).await;
             }
             RoomCommand::QueryDirectory { request_id, query } => {
                 self.reduce(vec![
@@ -775,6 +752,107 @@ impl RoomActor {
         }
     }
 
+    async fn handle_pin_event(&self, request_id: RequestId, room_id: String, event_id: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        self.reduce(vec![AppAction::PinEventRequested {
+            request_id: request_id.sequence,
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+        }]);
+        if !self.ensure_known_room_for_message_interaction(request_id, &room_id) {
+            return;
+        }
+        match matrix_desktop_sdk::pin_event(session, &room_id, &event_id).await {
+            Ok(()) => {
+                self.reduce(vec![AppAction::PinEventCompleted {
+                    request_id: request_id.sequence,
+                    room_id: room_id.clone(),
+                }]);
+                self.emit(CoreEvent::Room(RoomEvent::PinEventCompleted {
+                    request_id,
+                    room_id: room_id.clone(),
+                }));
+                self.project_pinned_events_after_success(request_id, room_id)
+                    .await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.reduce(vec![AppAction::PinEventFailed {
+                    request_id: request_id.sequence,
+                    room_id,
+                    kind: operation_failure_kind(kind),
+                }]);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_unpin_event(&self, request_id: RequestId, room_id: String, event_id: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        self.reduce(vec![AppAction::UnpinEventRequested {
+            request_id: request_id.sequence,
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+        }]);
+        if !self.ensure_known_room_for_message_interaction(request_id, &room_id) {
+            return;
+        }
+        match matrix_desktop_sdk::unpin_event(session, &room_id, &event_id).await {
+            Ok(()) => {
+                self.reduce(vec![AppAction::UnpinEventCompleted {
+                    request_id: request_id.sequence,
+                    room_id: room_id.clone(),
+                }]);
+                self.emit(CoreEvent::Room(RoomEvent::UnpinEventCompleted {
+                    request_id,
+                    room_id: room_id.clone(),
+                }));
+                self.project_pinned_events_after_success(request_id, room_id)
+                    .await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.reduce(vec![AppAction::UnpinEventFailed {
+                    request_id: request_id.sequence,
+                    room_id,
+                    kind: operation_failure_kind(kind),
+                }]);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn project_pinned_events_after_success(&self, request_id: RequestId, room_id: String) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let pinned = match matrix_desktop_sdk::load_pinned_event_ids(session, &room_id).await {
+            Ok(event_ids) => pinned_events_from_ids(event_ids),
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+                return;
+            }
+        };
+
+        self.reduce(vec![AppAction::RoomPinnedEventsUpdated {
+            room_id: room_id.clone(),
+            pinned: pinned.clone(),
+        }]);
+        self.emit(CoreEvent::Room(RoomEvent::PinnedEventsUpdated {
+            room_id,
+            pinned,
+        }));
+    }
+
     /// Refresh the room list and project it into AppState via the action
     /// channel. Also emits `RoomEvent::RoomListUpdated` as a discrete event.
     ///
@@ -790,8 +868,41 @@ impl RoomActor {
             return;
         }
         if let Some(session) = &self.session {
-            refresh_room_list_from_joined_rooms(session, &self.action_tx, &self.event_tx).await;
+            refresh_room_list_from_joined_rooms(
+                session,
+                &self.known_room_ids,
+                &self.action_tx,
+                &self.event_tx,
+            )
+            .await;
         }
+    }
+
+    fn clear_known_rooms(&self) {
+        if let Ok(mut known_room_ids) = self.known_room_ids.write() {
+            known_room_ids.clear();
+        }
+    }
+
+    fn ensure_known_room_for_message_interaction(
+        &self,
+        request_id: RequestId,
+        room_id: &str,
+    ) -> bool {
+        let known = self
+            .known_room_ids
+            .read()
+            .map(|known_room_ids| known_room_ids.contains(room_id))
+            .unwrap_or(false);
+        if !known {
+            self.emit_failure(
+                request_id,
+                CoreFailure::RoomOperationFailed {
+                    kind: RoomFailureKind::NotFound,
+                },
+            );
+        }
+        known
     }
 
     fn emit(&self, event: CoreEvent) {
@@ -822,12 +933,14 @@ const ROOM_LIST_ENTRIES_LIMIT: usize = 4096;
 /// `RoomEvent::RoomListUpdated`.
 fn project_room_list_snapshot(
     snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot,
+    known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
     let spaces = normalize_spaces(snapshot);
     let rooms = normalize_rooms(snapshot);
     let invites = normalize_invites(snapshot);
+    replace_known_room_ids(known_room_ids, &rooms);
     let _ = action_tx.try_send(vec![
         AppAction::RoomListUpdated { spaces, rooms },
         AppAction::InviteListUpdated { invites },
@@ -839,6 +952,7 @@ fn project_room_list_snapshot(
 /// project. Never constructs a `RoomListService` (canon prohibition).
 async fn refresh_room_list_from_joined_rooms(
     session: &MatrixClientSession,
+    known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
@@ -847,7 +961,7 @@ async fn refresh_room_list_from_joined_rooms(
         session.client().joined_rooms(),
     )
     .await;
-    project_room_list_snapshot(&snapshot, action_tx, event_tx);
+    project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx);
 }
 
 /// SyncService-path observation loop (Async rule 1: relay the SDK's
@@ -865,6 +979,7 @@ async fn refresh_room_list_from_joined_rooms(
 async fn run_live_room_list_observation(
     session: Arc<MatrixClientSession>,
     service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
+    known_room_ids: Arc<RwLock<BTreeSet<String>>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut refresh_rx: mpsc::Receiver<()>,
@@ -893,7 +1008,13 @@ async fn run_live_room_list_observation(
                 // Operation-triggered refresh: drain coalesced requests, then
                 // re-normalize from the live service's CURRENT entries.
                 while refresh_rx.try_recv().is_ok() {}
-                normalize_and_project_entries(&session, &current, &action_tx, &event_tx).await;
+                normalize_and_project_entries(
+                    &session,
+                    &current,
+                    &known_room_ids,
+                    &action_tx,
+                    &event_tx,
+                ).await;
             }
             maybe_diffs = entries.next() => match maybe_diffs {
                 None => break,
@@ -901,7 +1022,13 @@ async fn run_live_room_list_observation(
                     for diff in diffs {
                         diff.apply(&mut current);
                     }
-                    normalize_and_project_entries(&session, &current, &action_tx, &event_tx).await;
+                    normalize_and_project_entries(
+                        &session,
+                        &current,
+                        &known_room_ids,
+                        &action_tx,
+                        &event_tx,
+                    ).await;
                 }
             },
         }
@@ -912,6 +1039,7 @@ async fn run_live_room_list_observation(
 async fn normalize_and_project_entries(
     session: &MatrixClientSession,
     current: &eyeball_im::Vector<matrix_sdk_ui::room_list_service::RoomListItem>,
+    known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
@@ -923,7 +1051,7 @@ async fn normalize_and_project_entries(
     }
     let snapshot =
         matrix_desktop_sdk::room_list_snapshot_from_sdk_rooms_with_invites(session, rooms).await;
-    project_room_list_snapshot(&snapshot, action_tx, event_tx);
+    project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx);
 }
 
 /// LegacySync-path observation loop (Async rule 1: relay the SDK's observable
@@ -935,6 +1063,7 @@ async fn normalize_and_project_entries(
 /// `sync.rs` `legacy_stop_tx`) or when the SDK closes the broadcast.
 async fn run_legacy_room_list_observation(
     session: Arc<MatrixClientSession>,
+    known_room_ids: Arc<RwLock<BTreeSet<String>>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut stop_rx: oneshot::Receiver<()>,
@@ -950,11 +1079,21 @@ async fn run_legacy_room_list_observation(
                     // Coalesce: drain any additionally pending update batches;
                     // one refresh covers them all.
                     while updates_rx.try_recv().is_ok() {}
-                    refresh_room_list_from_joined_rooms(&session, &action_tx, &event_tx).await;
+                    refresh_room_list_from_joined_rooms(
+                        &session,
+                        &known_room_ids,
+                        &action_tx,
+                        &event_tx,
+                    ).await;
                 }
                 Err(RecvError::Lagged(_)) => {
                     // The snapshot is self-healing: refresh once.
-                    refresh_room_list_from_joined_rooms(&session, &action_tx, &event_tx).await;
+                    refresh_room_list_from_joined_rooms(
+                        &session,
+                        &known_room_ids,
+                        &action_tx,
+                        &event_tx,
+                    ).await;
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -1020,6 +1159,24 @@ fn normalize_room_tags(tags: &MatrixRoomTags) -> RoomTags {
     }
 }
 
+fn pinned_events_from_ids(event_ids: Vec<String>) -> Vec<PinnedEvent> {
+    event_ids
+        .into_iter()
+        .map(|event_id| PinnedEvent {
+            event_id,
+            sender: None,
+            body_preview: None,
+            redacted: false,
+        })
+        .collect()
+}
+
+fn replace_known_room_ids(known_room_ids: &Arc<RwLock<BTreeSet<String>>>, rooms: &[RoomSummary]) {
+    if let Ok(mut known_room_ids) = known_room_ids.write() {
+        *known_room_ids = rooms.iter().map(|room| room.room_id.clone()).collect();
+    }
+}
+
 /// Convert `MatrixRoomListSnapshot` invites into Rust-owned invite previews.
 fn normalize_invites(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec<InvitePreview> {
     snapshot
@@ -1053,6 +1210,15 @@ fn sdk_room_tag_kind(tag: RoomTagKind) -> MatrixRoomTagKind {
 fn room_tag_info_from_order(order: Option<f64>) -> RoomTagInfo {
     RoomTagInfo {
         order: order.map(|order| order.to_string()),
+    }
+}
+
+fn operation_failure_kind(kind: RoomFailureKind) -> OperationFailureKind {
+    match kind {
+        RoomFailureKind::Forbidden => OperationFailureKind::Forbidden,
+        RoomFailureKind::Network => OperationFailureKind::Network,
+        RoomFailureKind::NotFound => OperationFailureKind::NotFound,
+        RoomFailureKind::Sdk => OperationFailureKind::Sdk,
     }
 }
 
@@ -1592,6 +1758,70 @@ pub mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn pin_event_without_session_emits_session_required() {
+        let (action_tx, _action_rx) = mpsc::channel(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let handle = RoomActor::spawn(action_tx, event_tx);
+
+        let request_id = make_request_id(8);
+        handle
+            .send(RoomMessage::Command(RoomCommand::PinEvent {
+                request_id,
+                room_id: "!room:example.test".to_owned(),
+                event_id: "$event:example.test".to_owned(),
+            }))
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("event");
+
+        match event {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, CoreFailure::SessionRequired);
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unpin_event_without_session_emits_session_required() {
+        let (action_tx, _action_rx) = mpsc::channel(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let handle = RoomActor::spawn(action_tx, event_tx);
+
+        let request_id = make_request_id(9);
+        handle
+            .send(RoomMessage::Command(RoomCommand::UnpinEvent {
+                request_id,
+                room_id: "!room:example.test".to_owned(),
+                event_id: "$event:example.test".to_owned(),
+            }))
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("event");
+
+        match event {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, CoreFailure::SessionRequired);
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
     #[test]
     fn room_tag_success_path_does_not_refresh_from_stale_sdk_snapshot() {
         let source = include_str!("room.rs");
@@ -1612,6 +1842,86 @@ pub mod tests {
 
         assert!(!set_tag_body.contains("refresh_room_list().await"));
         assert!(!remove_tag_body.contains("refresh_room_list().await"));
+    }
+
+    #[test]
+    fn pin_success_settles_pending_before_pinned_projection_reload() {
+        let source = include_str!("room.rs");
+        let pin_body = source
+            .split("async fn handle_pin_event")
+            .nth(1)
+            .expect("pin handler")
+            .split("async fn handle_unpin_event")
+            .next()
+            .expect("pin body");
+        let unpin_body = source
+            .split("async fn handle_unpin_event")
+            .nth(1)
+            .expect("unpin handler")
+            .split("async fn project_pinned_events_after_success")
+            .next()
+            .expect("unpin body");
+        let projection_body = source
+            .split("async fn project_pinned_events_after_success")
+            .nth(1)
+            .expect("projection helper")
+            .split("    /// Refresh the room list")
+            .next()
+            .expect("projection body");
+
+        let pin_completion = pin_body
+            .find("self.reduce(vec![AppAction::PinEventCompleted")
+            .expect("pin completion action");
+        let pin_reload = pin_body
+            .find("project_pinned_events_after_success")
+            .expect("pin projection reload");
+        assert!(pin_completion < pin_reload);
+
+        let unpin_completion = unpin_body
+            .find("self.reduce(vec![AppAction::UnpinEventCompleted")
+            .expect("unpin completion action");
+        let unpin_reload = unpin_body
+            .find("project_pinned_events_after_success")
+            .expect("unpin projection reload");
+        assert!(unpin_completion < unpin_reload);
+
+        assert!(!projection_body.contains("AppAction::PinEventCompleted"));
+        assert!(!projection_body.contains("AppAction::UnpinEventCompleted"));
+    }
+
+    #[test]
+    fn pin_and_unpin_commands_require_actor_known_room_guard_before_sdk_call() {
+        let source = include_str!("room.rs");
+        let pin_body = source
+            .split("async fn handle_pin_event")
+            .nth(1)
+            .expect("pin handler")
+            .split("async fn handle_unpin_event")
+            .next()
+            .expect("pin body");
+        let unpin_body = source
+            .split("async fn handle_unpin_event")
+            .nth(1)
+            .expect("unpin handler")
+            .split("async fn project_pinned_events_after_success")
+            .next()
+            .expect("unpin body");
+
+        let pin_guard = pin_body
+            .find("ensure_known_room_for_message_interaction")
+            .expect("pin known-room guard");
+        let pin_sdk = pin_body
+            .find("matrix_desktop_sdk::pin_event")
+            .expect("pin sdk call");
+        assert!(pin_guard < pin_sdk);
+
+        let unpin_guard = unpin_body
+            .find("ensure_known_room_for_message_interaction")
+            .expect("unpin known-room guard");
+        let unpin_sdk = unpin_body
+            .find("matrix_desktop_sdk::unpin_event")
+            .expect("unpin sdk call");
+        assert!(unpin_guard < unpin_sdk);
     }
 
     // --- request_id correlation on RoomEvents ---

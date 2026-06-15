@@ -2095,6 +2095,50 @@ pub async fn remove_room_tag(
     .map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
+pub async fn pin_event(
+    session: &MatrixClientSession,
+    room_id: &str,
+    event_id: &str,
+) -> Result<(), MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidEventId)?;
+    room.pin_event(&event_id)
+        .await
+        .map(|_| ())
+        .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+pub async fn unpin_event(
+    session: &MatrixClientSession,
+    room_id: &str,
+    event_id: &str,
+) -> Result<(), MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidEventId)?;
+    room.unpin_event(&event_id)
+        .await
+        .map(|_| ())
+        .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+pub async fn load_pinned_event_ids(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<Vec<String>, MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let pinned = room
+        .load_pinned_events()
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?
+        .unwrap_or_default();
+    Ok(pinned
+        .into_iter()
+        .map(|event_id| event_id.to_string())
+        .collect())
+}
+
 pub async fn edit_text_message(
     session: &MatrixClientSession,
     room_id: &str,
@@ -3029,5 +3073,27 @@ mod tests {
         assert!(source.contains("set_is_favourite(false"));
         assert!(source.contains("set_is_low_priority(true"));
         assert!(source.contains("set_is_low_priority(false"));
+    }
+
+    #[test]
+    fn pin_operations_use_sdk_pinned_event_methods() {
+        let source = include_str!("lib.rs");
+        let pin_body = source
+            .split("pub async fn pin_event")
+            .nth(1)
+            .expect("pin_event wrapper")
+            .split("pub async fn unpin_event")
+            .next()
+            .expect("pin_event body");
+        let unpin_body = source
+            .split("pub async fn unpin_event")
+            .nth(1)
+            .expect("unpin_event wrapper")
+            .split("pub async fn edit_text_message")
+            .next()
+            .expect("unpin_event body");
+
+        assert!(pin_body.contains(".pin_event(&event_id)"));
+        assert!(unpin_body.contains(".unpin_event(&event_id)"));
     }
 }

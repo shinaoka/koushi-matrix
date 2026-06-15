@@ -200,6 +200,10 @@ An in-process actor system in `matrix-desktop-core`:
   Reaction groups are projected the same way from SDK aggregation data; React
   renders the grouped DTO and dispatches typed reaction commands only, while
   Rust guards current state before delegating to the SDK toggle helper.
+  Reply quote previews are projected into `TimelineItem.reply_quote`; React
+  renders the quote state and does not resolve Matrix reply bodies. Pinned
+  events live in `AppState.room_interactions`, and pin/unpin commands route
+  through `RoomActor` before the Rust snapshot/event stream updates the GUI.
   Read receipts, fully-read markers, and typing notifications are projected
   from SDK timeline/room signals into `AppState.live_signals`; React may render
   that snapshot and dispatch typed commands, but it must not synthesize receipt,
@@ -310,10 +314,11 @@ pub enum TimelineFailureKind {
 ```
 
 Timeline item events carry app-owned DTOs. `TimelineItem` includes stable
-identity, sender/body/timestamp fields, `in_reply_to_event_id`, reactions and
-edit/redact affordances, plus thread fields: `thread_root: Option<String>` for
-items that are in a thread, and `thread_summary: Option<ThreadSummaryDto>` on
-thread root items. `ThreadSummaryDto` contains `reply_count`, `latest_sender`,
+identity, sender/body/timestamp fields, `in_reply_to_event_id`,
+`reply_quote`, reactions and edit/redact affordances, plus thread fields:
+`thread_root: Option<String>` for items that are in a thread, and
+`thread_summary: Option<ThreadSummaryDto>` on thread root items.
+`ThreadSummaryDto` contains `reply_count`, `latest_sender`,
 `latest_body_preview`, and `latest_timestamp_ms`; the `latest_*` fields are
 `None` when the SDK has not loaded the latest event details.
 

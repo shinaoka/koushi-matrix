@@ -75,6 +75,34 @@ Phase B GUI/browser-headless work for the same issue follows
   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact`,
   and `npm --prefix apps/desktop run typecheck`.
 
+## Message Interactions Phase A Notes
+
+- `TimelineItem.reply_quote` is a Rust-owned projection. React renders the
+  `ReplyQuoteState` and optional preview only; it must not look up reply
+  bodies, classify redactions, or patch quote state after a send.
+- `AppState.room_interactions` is the Rust-owned source of truth for
+  `pinned_events` and `pin_operation`. GUI code dispatches typed `pin_event` /
+  `unpin_event` commands and waits for Rust-shaped snapshots/events instead of
+  mutating local pin lists.
+- Recoverable pin/unpin failures must remain retryable in the reducer. Do not
+  clear failed pin state from React; a new typed request transitions the Rust
+  state from `Failed` to `Pending`.
+- Pin/unpin command success settles the Rust pending state before the follow-up
+  pinned-event reload. A reload failure may emit a coarse operation failure, but
+  it must not leave the GUI stuck in `Pending`.
+- Browser fakes must enforce the same known-room guard as the Rust reducer and
+  `RoomActor`; do not let tests create `room_interactions[roomId]` for a room
+  absent from `state.rooms`.
+- When changing `TimelineItem.reply_quote`, `PinnedEvent`,
+  `RoomInteractionState`, or pin/unpin command/event variants, update the Tauri
+  DTO, TypeScript domain types, `coreEvents.generated.json`, browser fake,
+  app/IPC harness snapshots, and serialization-contract tests in the same
+  change.
+- The local core `reply` QA stage uses token-only evidence:
+  `reply_quote=ok`, `pin_event=ok`, `pinned_state=ok`, and `unpin_event=ok`.
+  Do not print Matrix room IDs, event IDs, sender IDs, message bodies, or raw
+  SDK errors for this stage.
+
 ## User Profiles Phase Notes
 
 - Own-profile state, per-user profile cache, room avatars, and space avatars
@@ -473,9 +501,15 @@ Phase B GUI/browser-headless work for the same issue follows
 
 - After the one-time host package install, run the GUI QA lanes as a normal
   user; no `su` or root shell is needed for the fast loop.
-- Prepend the local homeserver binaries when iterating so the host lanes use
-  the checked-in QA binaries first:
+- Prepend the local homeserver binaries when iterating so the headless/local
+  GUI lanes use the local QA binaries first. In this environment, check these
+  paths before assuming Conduit/Tuwunel are missing:
+  `/tmp/matrix-desktop-local-qa-bin` and
+  `/tmp/matrix-desktop-local-qa-bin-test`.
   `export PATH=/tmp/matrix-desktop-local-qa-bin:$PATH`
+- Quick verification:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH conduit --version` and
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH tuwunel --version`.
 - Build the debug app once, then reuse it with `--skip-build` (optionally
   `--app-binary=PATH`) so each scenario trial skips the full Tauri rebuild:
   `npm --prefix apps/desktop run tauri build -- --debug --no-bundle`, then

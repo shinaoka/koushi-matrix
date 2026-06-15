@@ -1194,6 +1194,27 @@ mod tests {
     }
 
     #[test]
+    fn pin_event_debug_redacts_room_and_event_ids() {
+        let pin = RoomCommand::PinEvent {
+            request_id: fake_rid(11),
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$event:example.invalid".to_owned(),
+        };
+        let unpin = RoomCommand::UnpinEvent {
+            request_id: fake_rid(12),
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$event:example.invalid".to_owned(),
+        };
+
+        for debug in [format!("{pin:?}"), format!("{unpin:?}")] {
+            assert!(debug.contains("RoomId(..)"), "{debug}");
+            assert!(debug.contains("EventId(..)"), "{debug}");
+            assert!(!debug.contains("!room:example.invalid"), "{debug}");
+            assert!(!debug.contains("$event:example.invalid"), "{debug}");
+        }
+    }
+
+    #[test]
     fn profile_command_debug_redacts_display_name_and_avatar_bytes() {
         let display_name = AccountCommand::SetDisplayName {
             request_id: fake_rid(9),

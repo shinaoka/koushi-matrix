@@ -776,6 +776,8 @@ pub fn run() {
             commands::forget_room,
             commands::set_room_tag,
             commands::remove_room_tag,
+            commands::pin_event,
+            commands::unpin_event,
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
@@ -1184,7 +1186,8 @@ mod tests {
             IdentityResetAuthType, IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts,
             LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
             NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
-            PresenceKind, RoomTagKind, SasEmoji, VerificationFlowState, VerificationTarget,
+            PresenceKind, ReplyQuote, ReplyQuoteState, RoomTagKind, SasEmoji,
+            VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -1201,6 +1204,7 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(123),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -1226,6 +1230,7 @@ mod tests {
             body: Some("caption".to_owned()),
             timestamp_ms: Some(456),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: Some(TimelineMedia {
@@ -1268,6 +1273,7 @@ mod tests {
             body: Some("queued".to_owned()),
             timestamp_ms: Some(789),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -1280,6 +1286,31 @@ mod tests {
             send_state: Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
             }),
+        };
+        let reply_quote_item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: "$reply1".to_owned(),
+            },
+            sender: Some("@u:example.test".to_owned()),
+            body: Some("reply body".to_owned()),
+            timestamp_ms: Some(987),
+            in_reply_to_event_id: Some("$root1".to_owned()),
+            reply_quote: Some(ReplyQuote {
+                event_id: "$root1".to_owned(),
+                sender: Some("@other:example.test".to_owned()),
+                body_preview: Some("quoted preview".to_owned()),
+                state: ReplyQuoteState::Ready,
+            }),
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: false,
+            can_edit: false,
+            send_state: None,
         };
 
         // InitialItems envelope + payload
@@ -1398,6 +1429,24 @@ mod tests {
             json!({
                 "kind": "notSent",
                 "reason": "recoverable"
+            })
+        );
+
+        let reply_quote_initial =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(request_id),
+                key: key.clone(),
+                generation: TimelineGeneration(4),
+                items: vec![reply_quote_item],
+            }))
+            .expect("serialize reply quote initial items");
+        assert_eq!(
+            reply_quote_initial["event"]["InitialItems"]["items"][0]["reply_quote"],
+            json!({
+                "event_id": "$root1",
+                "sender": "@other:example.test",
+                "body_preview": "quoted preview",
+                "state": "ready"
             })
         );
 
@@ -1683,6 +1732,7 @@ mod tests {
                 },
             ))
             .expect("serialize"),
+            "timelineReplyQuoteInitialItems": reply_quote_initial,
             "timelineResyncRequired": resync,
             "timelineSendStateInitialItems": send_state_initial,
         });

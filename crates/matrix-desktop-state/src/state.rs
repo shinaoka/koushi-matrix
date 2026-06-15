@@ -706,9 +706,44 @@ pub struct RoomInteractionState {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PinnedEvent {
     pub event_id: String,
-    pub sender_display_name: Option<String>,
+    pub sender: Option<String>,
     pub body_preview: Option<String>,
-    pub timestamp_ms: Option<u64>,
+    pub redacted: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReplyQuote {
+    pub event_id: String,
+    pub sender: Option<String>,
+    pub body_preview: Option<String>,
+    pub state: ReplyQuoteState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReplyQuoteState {
+    Ready,
+    Redacted,
+    Missing,
+    Unsupported,
+}
+
+impl ReplyQuoteState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Redacted => "redacted",
+            Self::Missing => "missing",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PinOp {
+    Pin,
+    Unpin,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -716,19 +751,17 @@ pub struct PinnedEvent {
 pub enum PinOperationState {
     #[default]
     Idle,
-    Pinning {
+    Pending {
         request_id: u64,
+        room_id: String,
         event_id: String,
-    },
-    Unpinning {
-        request_id: u64,
-        event_id: String,
+        op: PinOp,
     },
     Failed {
-        request_id: u64,
+        room_id: String,
         event_id: String,
-        #[serde(rename = "failureKind")]
-        kind: OperationFailureKind,
+        op: PinOp,
+        recoverable: bool,
     },
 }
 
@@ -736,14 +769,24 @@ impl PinOperationState {
     pub fn request_id(&self) -> Option<u64> {
         match self {
             Self::Idle => None,
-            Self::Pinning { request_id, .. }
-            | Self::Unpinning { request_id, .. }
-            | Self::Failed { request_id, .. } => Some(*request_id),
+            Self::Pending { request_id, .. } => Some(*request_id),
+            Self::Failed { .. } => None,
         }
     }
 
     pub fn is_idle(&self) -> bool {
         matches!(self, Self::Idle)
+    }
+
+    pub fn accepts_new_request(&self) -> bool {
+        matches!(
+            self,
+            Self::Idle
+                | Self::Failed {
+                    recoverable: true,
+                    ..
+                }
+        )
     }
 }
 

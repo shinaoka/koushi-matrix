@@ -6,7 +6,8 @@ use std::fmt;
 use matrix_desktop_state::{
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
     JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
-    NativeAttentionSummary, PinnedEvent, PresenceKind, RoomTagKind, VerificationFlowState,
+    NativeAttentionSummary, PinnedEvent, PresenceKind, ReplyQuote, RoomTagKind,
+    VerificationFlowState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -699,6 +700,8 @@ pub struct TimelineItem {
     pub body: Option<String>,
     pub timestamp_ms: Option<u64>,
     pub in_reply_to_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_quote: Option<ReplyQuote>,
     #[serde(default)]
     pub thread_root: Option<String>,
     #[serde(default)]
@@ -729,7 +732,14 @@ impl fmt::Debug for TimelineItem {
             .field("sender", &self.sender)
             .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
             .field("timestamp_ms", &self.timestamp_ms)
-            .field("in_reply_to_event_id", &self.in_reply_to_event_id)
+            .field(
+                "in_reply_to_event_id",
+                &self.in_reply_to_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "reply_quote",
+                &self.reply_quote.as_ref().map(|quote| quote.state.as_str()),
+            )
             .field("thread_root", &self.thread_root)
             .field(
                 "thread_summary",
@@ -882,6 +892,7 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: Some("$root:test".to_owned()),
             thread_summary: Some(ThreadSummaryDto {
                 reply_count: 2,
@@ -937,6 +948,51 @@ mod tests {
     }
 
     #[test]
+    fn timeline_item_serializes_reply_quote_without_debugging_body() {
+        let item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: "$reply:test".to_owned(),
+            },
+            sender: Some("@alice:example.invalid".to_owned()),
+            body: Some("reply body".to_owned()),
+            timestamp_ms: Some(1_234),
+            in_reply_to_event_id: Some("$root:test".to_owned()),
+            reply_quote: Some(matrix_desktop_state::ReplyQuote {
+                event_id: "$root:test".to_owned(),
+                sender: Some("@bob:example.invalid".to_owned()),
+                body_preview: Some("quoted body".to_owned()),
+                state: matrix_desktop_state::ReplyQuoteState::Ready,
+            }),
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: false,
+            can_edit: false,
+            send_state: None,
+        };
+
+        let value = serde_json::to_value(&item).expect("timeline item serializes");
+
+        assert_eq!(
+            value["reply_quote"],
+            json!({
+                "event_id": "$root:test",
+                "sender": "@bob:example.invalid",
+                "body_preview": "quoted body",
+                "state": "ready"
+            })
+        );
+        let debug = format!("{item:?}");
+        assert!(debug.contains("reply_quote"));
+        assert!(!debug.contains("quoted body"), "{debug}");
+        assert!(!debug.contains("$root:test"), "{debug}");
+    }
+
+    #[test]
     fn timeline_item_serializes_outbound_send_state_without_raw_error() {
         let item = TimelineItem {
             id: TimelineItemId::Transaction {
@@ -946,6 +1002,7 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -984,6 +1041,7 @@ mod tests {
             body: Some("synthetic caption".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: Some(TimelineMedia {

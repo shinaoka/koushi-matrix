@@ -73,6 +73,8 @@ export interface DesktopApi {
   forgetRoom(roomId: string): Promise<DesktopSnapshot>;
   setRoomTag(roomId: string, tag: RoomTagKind, order?: number | null): Promise<DesktopSnapshot>;
   removeRoomTag(roomId: string, tag: RoomTagKind): Promise<DesktopSnapshot>;
+  pinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  unpinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
   setThreadComposerDraft(roomId: string, rootEventId: string, draft: string): Promise<DesktopSnapshot>;
@@ -911,6 +913,50 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async pinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim() || !eventId.trim() || !this.hasRoom(roomId)) {
+      return this.getSnapshot();
+    }
+
+    const entry = this.snapshot.state.room_interactions[roomId] ?? {
+      pinned_events: [],
+      pin_operation: { kind: "idle" as const }
+    };
+    const alreadyPinned = entry.pinned_events.some((event) => event.event_id === eventId);
+    this.snapshot.state.room_interactions = {
+      ...this.snapshot.state.room_interactions,
+      [roomId]: {
+        pinned_events: alreadyPinned
+          ? entry.pinned_events
+          : [
+              ...entry.pinned_events,
+              { event_id: eventId, sender: null, body_preview: null, redacted: false }
+            ],
+        pin_operation: { kind: "idle" }
+      }
+    };
+    return this.getSnapshot();
+  }
+
+  async unpinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim() || !eventId.trim() || !this.hasRoom(roomId)) {
+      return this.getSnapshot();
+    }
+
+    const entry = this.snapshot.state.room_interactions[roomId] ?? {
+      pinned_events: [],
+      pin_operation: { kind: "idle" as const }
+    };
+    this.snapshot.state.room_interactions = {
+      ...this.snapshot.state.room_interactions,
+      [roomId]: {
+        pinned_events: entry.pinned_events.filter((event) => event.event_id !== eventId),
+        pin_operation: { kind: "idle" }
+      }
+    };
+    return this.getSnapshot();
+  }
+
   async setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
@@ -977,6 +1023,10 @@ class BrowserFakeApi implements DesktopApi {
       sessionKind === "needsRecovery" ||
       sessionKind === "recovering"
     );
+  }
+
+  private hasRoom(roomId: string): boolean {
+    return this.snapshot.state.rooms.some((room) => room.room_id === roomId);
   }
 
   private canRestartSync() {

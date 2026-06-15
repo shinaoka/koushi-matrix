@@ -126,4 +126,13 @@ describe("BrowserFakeApi settings preview", () => {
     expect(reset.state.e2ee_trust.cross_signing).toEqual({ kind: "missing" });
     expect(reset.state.e2ee_trust.key_backup).toEqual({ kind: "disabled" });
   });
+
+  test("does not synthesize pin state for an unknown room", async () => {
+    const api = createBrowserFakeApi();
+
+    await api.pinEvent("!missing:browser.fake", "$event:browser.fake");
+    const snapshot = await api.unpinEvent("!missing:browser.fake", "$event:browser.fake");
+
+    expect(snapshot.state.room_interactions["!missing:browser.fake"]).toBeUndefined();
+  });
 });

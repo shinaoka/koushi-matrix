@@ -56,8 +56,9 @@ use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind}
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{
     AppState, AuthSecret, CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType,
-    IdentityResetState, KeyBackupStatus, PresenceKind, RecoveryRequest, SasEmoji, SessionInfo,
-    SessionState, TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
+    IdentityResetState, KeyBackupStatus, PresenceKind, RecoveryRequest, ReplyQuoteState, SasEmoji,
+    SessionInfo, SessionState, TrustOperationFailureKind, VerificationFlowState,
+    VerificationTarget,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -321,7 +322,13 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         ],
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Timeline => &["timeline=ok"],
-        QaStage::Reply => &["reply=ok"],
+        QaStage::Reply => &[
+            "reply=ok",
+            "reply_quote=ok",
+            "pin_event=ok",
+            "pinned_state=ok",
+            "unpin_event=ok",
+        ],
         QaStage::Media => &["send_media=ok", "recv_media=ok"],
         QaStage::LiveSignals => &[
             "read_receipt=ok",
@@ -359,6 +366,10 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "room_space=ok",
         "timeline=ok",
         "reply=ok",
+        "reply_quote=ok",
+        "pin_event=ok",
+        "pinned_state=ok",
+        "unpin_event=ok",
         "thread_hidden=ok",
         "thread_summary=ok",
         "thread_recv=ok",
@@ -1716,13 +1727,62 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         )
         .await?;
         if reply_item.in_reply_to_event_id != Some(event1_id.clone()) {
-            return Err(format!(
-                "reply relation mismatch: expected {:?}, got {:?}",
-                Some(event1_id.clone()),
-                reply_item.in_reply_to_event_id
-            ));
+            return Err("reply relation mismatch".to_owned());
         }
         println!("reply=ok");
+
+        let Some(reply_quote) = reply_item.reply_quote.as_ref() else {
+            return Err("reply_quote failed: missing quote".to_owned());
+        };
+        if reply_quote.event_id != event1_id
+            || reply_quote.state != ReplyQuoteState::Ready
+            || reply_quote.body_preview.is_none()
+        {
+            return Err("reply_quote failed: quote was not ready".to_owned());
+        }
+        println!("reply_quote=ok");
+
+        let pin_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Room(RoomCommand::PinEvent {
+                request_id: pin_id,
+                room_id: room_id.clone(),
+                event_id: event1_id.clone(),
+            }))
+            .await
+            .map_err(|e| format!("submit pin event: {e}"))?;
+        wait_for_pin_event_completed(&mut conn_a, pin_id, "pin event completed").await?;
+        println!("pin_event=ok");
+
+        wait_for_pinned_state(
+            &mut conn_a,
+            &room_id,
+            &event1_id,
+            true,
+            "pinned state after pin",
+        )
+        .await?;
+        println!("pinned_state=ok");
+
+        let unpin_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Room(RoomCommand::UnpinEvent {
+                request_id: unpin_id,
+                room_id: room_id.clone(),
+                event_id: event1_id.clone(),
+            }))
+            .await
+            .map_err(|e| format!("submit unpin event: {e}"))?;
+        wait_for_unpin_event_completed(&mut conn_a, unpin_id, "unpin event completed").await?;
+        wait_for_pinned_state(
+            &mut conn_a,
+            &room_id,
+            &event1_id,
+            false,
+            "pinned state after unpin",
+        )
+        .await?;
+        println!("unpin_event=ok");
     }
 
     if scenario.should_run_stage(QaStage::Media) {
@@ -2595,6 +2655,108 @@ async fn wait_for_room_joined(
             _ => continue,
         }
     }
+}
+
+async fn wait_for_pin_event_completed(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::PinEventCompleted"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::PinEventCompleted {
+                request_id: ev_id, ..
+            }) if ev_id == request_id => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_unpin_event_completed(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::UnpinEventCompleted"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::UnpinEventCompleted {
+                request_id: ev_id, ..
+            }) if ev_id == request_id => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_pinned_state(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    event_id: &str,
+    expected_present: bool,
+    label: &str,
+) -> Result<(), String> {
+    if snapshot_has_pinned_event(&conn.snapshot(), room_id, event_id) == expected_present {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for pinned state"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) => {
+                if snapshot_has_pinned_event(&snapshot, room_id, event_id) == expected_present {
+                    return Ok(());
+                }
+            }
+            CoreEvent::Room(RoomEvent::PinnedEventsUpdated {
+                room_id: ev_room_id,
+                pinned,
+            }) if ev_room_id == room_id => {
+                let has_event = pinned.iter().any(|event| event.event_id == event_id);
+                if has_event == expected_present {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn snapshot_has_pinned_event(snapshot: &AppState, room_id: &str, event_id: &str) -> bool {
+    snapshot
+        .room_interactions
+        .get(room_id)
+        .map(|state| {
+            state
+                .pinned_events
+                .iter()
+                .any(|event| event.event_id == event_id)
+        })
+        .unwrap_or(false)
 }
 
 /// Wait (event-driven on `RoomListUpdated`/`StateChanged`, bounded by
@@ -6417,6 +6579,7 @@ mod tests {
                 body: Some("first item".to_owned()),
                 timestamp_ms: None,
                 in_reply_to_event_id: None,
+                reply_quote: None,
                 thread_root: None,
                 thread_summary: None,
                 media: None,
@@ -6436,6 +6599,7 @@ mod tests {
                 body: Some("Phase 5 QA thread reply from B".to_owned()),
                 timestamp_ms: None,
                 in_reply_to_event_id: Some("$root:test".to_owned()),
+                reply_quote: None,
                 thread_root: None,
                 thread_summary: None,
                 media: None,
@@ -6466,6 +6630,7 @@ mod tests {
             body: Some("Phase 5 QA message 1".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -6494,6 +6659,7 @@ mod tests {
             body: Some("Phase 5 QA thread reply from B".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: Some("$root:test".to_owned()),
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -6533,6 +6699,7 @@ mod tests {
             body: body.map(str::to_owned),
             timestamp_ms: None,
             in_reply_to_event_id: in_reply_to_event_id.map(str::to_owned),
+            reply_quote: None,
             thread_root: thread_root.map(str::to_owned),
             thread_summary,
             media: None,
@@ -6748,6 +6915,7 @@ mod tests {
             body: Some("Phase 5 QA thread reply from B".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: Some("$root:test".to_owned()),
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -6778,6 +6946,7 @@ mod tests {
             body: Some("Phase 5 QA message 1".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -6835,6 +7004,7 @@ mod tests {
                         body: Some("Phase 5 QA message 1".to_owned()),
                         timestamp_ms: None,
                         in_reply_to_event_id: None,
+                        reply_quote: None,
                         thread_root: None,
                         thread_summary: None,
                         media: None,
@@ -6972,6 +7142,10 @@ mod tests {
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
+                "reply_quote=ok",
+                "pin_event=ok",
+                "pinned_state=ok",
+                "unpin_event=ok",
                 "thread_hidden=ok",
                 "thread_summary=ok",
                 "thread_recv=ok",
@@ -7041,6 +7215,10 @@ mod tests {
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
+                "reply_quote=ok",
+                "pin_event=ok",
+                "pinned_state=ok",
+                "unpin_event=ok",
                 "restore_cleanup=ok",
             ]
         );
@@ -7079,6 +7257,10 @@ mod tests {
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
+                "reply_quote=ok",
+                "pin_event=ok",
+                "pinned_state=ok",
+                "unpin_event=ok",
                 "thread_hidden=ok",
                 "thread_summary=ok",
                 "thread_recv=ok",
@@ -7126,6 +7308,10 @@ mod tests {
                 "room_space=ok",
                 "timeline=ok",
                 "reply=ok",
+                "reply_quote=ok",
+                "pin_event=ok",
+                "pinned_state=ok",
+                "unpin_event=ok",
                 "thread_hidden=ok",
                 "thread_summary=ok",
                 "thread_recv=ok",

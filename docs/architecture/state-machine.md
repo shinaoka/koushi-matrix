@@ -233,6 +233,66 @@ reaction counts, ownership, target eligibility, or toggle semantics.
   present. If the projection does not support the requested transition, settle
   it as an invalid reaction failure instead of guessing from React state.
 
+## Timeline Reply Quotes And Pins
+
+Reply quote previews and pinned-event state are Rust-owned message-interaction
+projections. `TimelineItem.reply_quote` is projected in
+`matrix-desktop-core` from SDK reply details; React renders that DTO and must
+not resolve reply bodies, classify redactions, or repair missing quote state.
+
+`AppState.room_interactions[room_id]` carries the room's pinned-event
+projection plus the current pin/unpin operation state:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> PendingPin: PinEventRequested
+    Idle --> PendingUnpin: UnpinEventRequested
+    PendingPin --> Idle: PinEventCompleted [matching request_id]
+    PendingPin --> FailedPin: PinEventFailed [matching request_id]
+    PendingUnpin --> Idle: UnpinEventCompleted [matching request_id]
+    PendingUnpin --> FailedUnpin: UnpinEventFailed [matching request_id]
+    FailedPin --> PendingPin: PinEventRequested [recoverable]
+    FailedPin --> PendingUnpin: UnpinEventRequested [recoverable]
+    FailedUnpin --> PendingPin: PinEventRequested [recoverable]
+    FailedUnpin --> PendingUnpin: UnpinEventRequested [recoverable]
+    Idle --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+    PendingPin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+    PendingUnpin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+    FailedPin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+    FailedUnpin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+```
+
+- `ReplyQuoteState` is one of `Ready`, `Redacted`, `Missing`, or
+  `Unsupported`. `Ready` may include a sender and body preview; redacted,
+  missing, and unsupported quotes never require React to inspect Matrix event
+  content.
+- `RoomPinnedEventsUpdated { room_id, pinned }` replaces only that room's
+  pinned-event list and emits `RoomInteractionsChanged` when the list changes.
+  It may arrive from sync or as the post-command refresh after successful
+  pin/unpin. It does not synthesize a room summary and does not settle a
+  pending operation by itself.
+- `PinEventRequested` and `UnpinEventRequested` are accepted only for a Ready
+  session, a known room, a non-empty event id, and an `Idle` or recoverable
+  `Failed` pin operation. Requests while another pin/unpin is pending are
+  ignored.
+- Completion and failure actions settle only the matching request id and
+  operation kind. Stale completions, duplicate completions, and opposite
+  operation completions are ignored.
+- Failures store a recoverable `Failed` state and push only a coarse
+  private-data-free `AppError`; raw SDK errors, room ids, event ids, and
+  message bodies must not appear in ordinary logs or QA output.
+- `RoomCommand::PinEvent` and `RoomCommand::UnpinEvent` route through
+  `RoomActor` and `matrix-desktop-sdk`; successful commands emit typed
+  completion events and then refresh the Rust pinned-event projection. The
+  completion action settles `Pending` before the follow-up pinned-state reload:
+  if that reload fails, the command is still no longer pending and the failure
+  is reported as a coarse operation failure. GUI code dispatches typed commands
+  and renders the next Rust snapshot/event only.
+- The local core `reply` QA scenario proves this Phase A slice with
+  `reply_quote=ok pin_event=ok pinned_state=ok unpin_event=ok`. Its stdout must
+  remain private-data-free.
+
 ## Timeline Media
 
 Timeline media is a core-owned operation/effect state, not React-local logic.

@@ -51,7 +51,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
-use matrix_desktop_state::{AppAction, LiveEventReceipts, LiveReadReceipt};
+use matrix_desktop_state::{
+    AppAction, LiveEventReceipts, LiveReadReceipt, ReplyQuote, ReplyQuoteState,
+};
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::room::edit::EditedContent;
@@ -64,8 +66,9 @@ use matrix_sdk::ruma::events::room::message::{
 use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
 use matrix_sdk_ui::timeline::{
-    EventSendState as SdkEventSendState, ReactionStatus, ReactionsByKeyBySender, Timeline,
-    TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemKind,
+    EmbeddedEvent, EventSendState as SdkEventSendState, InReplyToDetails, ReactionStatus,
+    ReactionsByKeyBySender, Timeline, TimelineDetails, TimelineEventItemId, TimelineFocus,
+    TimelineItem as SdkTimelineItem, TimelineItemKind,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -85,6 +88,7 @@ use crate::search::SearchIndexMessage;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
+const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 
 /// Messages routed to the `TimelineManagerActor`.
 pub enum TimelineMessage {
@@ -2668,10 +2672,11 @@ fn sdk_item_to_timeline_item_with_send_states(
                 event_item.content().is_redacted(),
                 body.is_some(),
             );
-            let in_reply_to_event_id = event_item
-                .content()
-                .in_reply_to()
+            let in_reply_to = event_item.content().in_reply_to();
+            let in_reply_to_event_id = in_reply_to
+                .as_ref()
                 .map(|details| details.event_id.to_string());
+            let reply_quote = in_reply_to.as_ref().map(reply_quote_from_details);
             let thread_root = event_item
                 .content()
                 .thread_root()
@@ -2701,6 +2706,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 body,
                 timestamp_ms,
                 in_reply_to_event_id,
+                reply_quote,
                 thread_root,
                 thread_summary,
                 media,
@@ -2725,6 +2731,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 body: None,
                 timestamp_ms: None,
                 in_reply_to_event_id: None,
+                reply_quote: None,
                 thread_root: None,
                 thread_summary: None,
                 media: None,
@@ -2763,6 +2770,74 @@ fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> T
 struct MessageProjection {
     body: Option<String>,
     media: Option<TimelineMedia>,
+}
+
+fn reply_quote_from_details(details: &InReplyToDetails) -> ReplyQuote {
+    match &details.event {
+        TimelineDetails::Ready(event) => reply_quote_from_embedded_event(details, event),
+        TimelineDetails::Unavailable | TimelineDetails::Pending | TimelineDetails::Error(_) => {
+            ReplyQuote {
+                event_id: details.event_id.to_string(),
+                sender: None,
+                body_preview: None,
+                state: ReplyQuoteState::Missing,
+            }
+        }
+    }
+}
+
+fn reply_quote_from_embedded_event(
+    details: &InReplyToDetails,
+    event: &EmbeddedEvent,
+) -> ReplyQuote {
+    let sender = Some(event.sender.to_string());
+    if event.content.is_redacted() {
+        return ReplyQuote {
+            event_id: details.event_id.to_string(),
+            sender,
+            body_preview: None,
+            state: ReplyQuoteState::Redacted,
+        };
+    }
+
+    let body_preview = event.content.as_message().and_then(|msg| {
+        let projection = message_projection_from_msgtype(msg.msgtype(), msg.body());
+        reply_quote_preview_from_message_projection(projection)
+    });
+    let state = if body_preview.is_some() {
+        ReplyQuoteState::Ready
+    } else {
+        ReplyQuoteState::Unsupported
+    };
+
+    ReplyQuote {
+        event_id: details.event_id.to_string(),
+        sender,
+        body_preview,
+        state,
+    }
+}
+
+fn reply_quote_preview_from_message_projection(projection: MessageProjection) -> Option<String> {
+    let source = projection
+        .body
+        .or_else(|| projection.media.map(|media| media.filename))?;
+    collapsed_preview(&source, REPLY_QUOTE_PREVIEW_MAX_CHARS)
+}
+
+fn collapsed_preview(value: &str, max_chars: usize) -> Option<String> {
+    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+
+    if collapsed.chars().count() <= max_chars {
+        return Some(collapsed);
+    }
+
+    let mut preview = collapsed.chars().take(max_chars).collect::<String>();
+    preview.push_str("...");
+    Some(preview)
 }
 
 fn message_projection_from_msgtype(

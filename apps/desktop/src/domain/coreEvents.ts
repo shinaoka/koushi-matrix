@@ -127,6 +127,7 @@ export interface TimelineItem {
   body: string | null;
   timestamp_ms: number | null;
   in_reply_to_event_id: string | null;
+  reply_quote?: ReplyQuote | null;
   thread_root: string | null;
   thread_summary: ThreadSummaryDto | null;
   media?: TimelineMedia | null;
@@ -306,10 +307,19 @@ export type RoomTagKind = "favourite" | "lowPriority";
 
 export interface PinnedEvent {
   event_id: string;
-  sender_display_name: string | null;
+  sender: string | null;
   body_preview: string | null;
-  timestamp_ms: number | null;
+  redacted: boolean;
 }
+
+export interface ReplyQuote {
+  event_id: string;
+  sender: string | null;
+  body_preview: string | null;
+  state: ReplyQuoteState;
+}
+
+export type ReplyQuoteState = "ready" | "redacted" | "missing" | "unsupported";
 
 export interface DirectoryQuery {
   term: string | null;

@@ -1147,6 +1147,40 @@ pub async fn remove_room_tag(
 }
 
 #[tauri::command]
+pub async fn pin_event(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_pin_event_command(request_id, room_id, event_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn unpin_event(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_unpin_event_command(request_id, room_id, event_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn open_thread(
     room_id: String,
     root_event_id: String,
@@ -2120,6 +2154,30 @@ pub(crate) fn build_remove_room_tag_command(
     })
 }
 
+pub(crate) fn build_pin_event_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    event_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::PinEvent {
+        request_id,
+        room_id,
+        event_id,
+    })
+}
+
+pub(crate) fn build_unpin_event_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    event_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::UnpinEvent {
+        request_id,
+        room_id,
+        event_id,
+    })
+}
+
 pub(crate) fn build_submit_search_command(
     request_id: matrix_desktop_core::RequestId,
     query: String,
@@ -2556,10 +2614,10 @@ mod tests {
         build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
         build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
         build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
-        build_set_thread_composer_draft_command, build_set_typing_command,
+        build_set_thread_composer_draft_command, build_set_typing_command, build_pin_event_command,
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
         build_submit_identity_reset_password_command, build_submit_login_command,
-        build_submit_recovery_command, build_submit_search_command,
+        build_submit_recovery_command, build_submit_search_command, build_unpin_event_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
         build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
@@ -3465,6 +3523,40 @@ mod tests {
                 assert_eq!(request_id, fake_request_id(24));
                 assert_eq!(room_id, "!room:example.org");
                 assert_eq!(tag, RoomTagKind::LowPriority);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_pin_event_command(
+            fake_request_id(25),
+            "!room:example.org".to_owned(),
+            "$event:example.org".to_owned(),
+        ) {
+            CoreCommand::Room(RoomCommand::PinEvent {
+                request_id,
+                room_id,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(25));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(event_id, "$event:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_unpin_event_command(
+            fake_request_id(26),
+            "!room:example.org".to_owned(),
+            "$event:example.org".to_owned(),
+        ) {
+            CoreCommand::Room(RoomCommand::UnpinEvent {
+                request_id,
+                room_id,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(26));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(event_id, "$event:example.org");
             }
             other => panic!("unexpected command: {other:?}"),
         }
