@@ -85,12 +85,13 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
     const PASSWORD: &str = "matrix-desktop-temporary-keychain-qa-password";
 
     fn run_security(args: &[String]) -> Result<String, String> {
+        let subcommand = args.first().map(String::as_str).unwrap_or("unknown");
         let output = Command::new("security")
             .args(args)
             .output()
-            .map_err(|_| "security tool could not be executed".to_owned())?;
+            .map_err(|_| format!("security {subcommand} could not be executed"))?;
         if !output.status.success() {
-            return Err("security tool command failed".to_owned());
+            return Err(format!("security {subcommand} failed"));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
