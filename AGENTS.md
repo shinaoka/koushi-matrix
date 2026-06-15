@@ -96,9 +96,16 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Japanese/CJK product semantics stay Rust-owned. React may render the
   `ja` catalog and Rust-owned ordering/highlight data, but it must not compute
   CJK normalization, collation, query folding, or highlight repair locally.
+- CJK GUI text fitting is a presentation contract, not a product-semantic
+  workaround. Long room names, member/sender names, message bodies, thread
+  labels, and search snippets must keep Rust-owned text/order unchanged while
+  CSS supplies `line-break: strict`, `word-break: normal`, `hyphens: none`,
+  logical spacing, and width-aware ellipsis/wrapping as appropriate.
 - Search/review paths for this area are:
   `apps/desktop/src/i18n/messages.ts`,
   `apps/desktop/src/i18n/messages.test.ts`,
+  `apps/desktop/src/styles.css`,
+  `apps/desktop/e2e/basic-operations.spec.ts`,
   `crates/matrix-desktop-state/src/locale_profile.rs`,
   `crates/matrix-desktop-state/tests/locale_display_profile.rs`,
   `crates/matrix-desktop-search/src/document.rs`,
@@ -107,6 +114,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `crates/matrix-desktop-core/src/search.rs`.
 - Fast focused checks are:
   `npm --prefix apps/desktop run test -- --run src/i18n/messages.test.ts`,
+  `npm --prefix apps/desktop exec -- playwright test e2e/basic-operations.spec.ts -g "Japanese locale renders shell labels and CJK text without clipping|thread and edit composers composing Enter" --workers=1`,
   `cargo test -p matrix-desktop-search --test search_adapter`,
   `cargo test -p matrix-desktop-state --test locale_display_profile`, and
   `npm --prefix apps/desktop run typecheck`.
@@ -845,6 +853,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Rust-owned send state (`send=sent`) plus composer clear. It prints `gui_local_mention=ok`,
   `gui_local_markdown=ok`, and `gui_local_slash=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-composer-fast --timeout-ms=180000`
+- CJK visual fitting has a focused virtual-display lane:
+  `--scenario=local-cjk`. It creates a long Japanese/CJK local room name, sends
+  a long Japanese/CJK message through the real composer, and verifies the Tauri
+  WebView CSS contract (`line-break: strict`, `word-break: normal`,
+  `hyphens: none`, room ellipsis, message wrapping, no horizontal document
+  overflow). It prints `gui_local_cjk=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-cjk --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-cjk-fast --timeout-ms=180000`
 - When you only need a quick window-state sanity check, use the lane's cheap
   QA title helpers such as `--qa-title-ready` and `--qa-title-send-ready`
   before starting a full scenario run.

@@ -38,7 +38,7 @@
  *      snapshots and dispatch credential health probes only through Tauri IPC.
  */
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { focusedTimelineKey, roomTimelineKey, threadTimelineKey } from "../src/domain/coreEvents";
 import { pseudoLocalize, t } from "../src/i18n/messages";
@@ -99,6 +99,19 @@ async function gotoReadyShell(page: Page): Promise<void> {
 
 async function invocationCount(page: Page, command: string): Promise<number> {
   return page.evaluate((cmd) => window.__harness.invocationsOf(cmd).length, command);
+}
+
+async function dispatchComposingEnter(locator: Locator): Promise<boolean> {
+  return locator.evaluate((element) => {
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Enter"
+    });
+    Object.defineProperty(event, "isComposing", { value: true });
+    element.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
 }
 
 async function seedTimelineItems(page: Page, items: unknown[], generation = 2): Promise<void> {
@@ -1600,6 +1613,87 @@ test("main composer composing Enter never sends or accepts mention autocomplete"
   await expect(composer).toHaveValue("@a");
 });
 
+test("thread and edit composers composing Enter never send through GUI", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        thread: {
+          kind: "open",
+          room_id: "!harness-room:example.invalid",
+          root_event_id: "$seed-event:example.invalid",
+          is_subscribed: true,
+          composer: {
+            pending_transaction_id: null,
+            draft: "",
+            mode: "Plain"
+          }
+        },
+        thread_attention: {
+          kind: "tracking",
+          room_id: "!harness-room:example.invalid",
+          root_event_id: "$seed-event:example.invalid",
+          notification_count: 0,
+          highlight_count: 0,
+          live_event_marker_count: 0
+        }
+      },
+      thread: null
+    });
+    window.__harness.pushStateChanged();
+  });
+  const threadComposer = page.getByRole("textbox", { name: t("timeline.threadComposer") });
+  await expect(threadComposer).toBeVisible();
+  await threadComposer.fill("スレッド変換中");
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await expect(await dispatchComposingEnter(threadComposer)).toBe(false);
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("resolve_composer_key_action")[0]?.args)
+    )
+    .toMatchObject({
+      surface: "thread",
+      keyEvent: { key: "enter", is_composing: true },
+      autocompleteOpen: false,
+      sendEnabled: true
+    });
+  expect(await invocationCount(page, "send_thread_reply")).toBe(0);
+  await expect(threadComposer).toHaveValue("スレッド変換中");
+
+  const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
+  await row
+    .locator(`button[aria-label="${t("timeline.editMessage")}"]`)
+    .first()
+    .evaluate((button) => (button as HTMLButtonElement).click());
+  const editBody = page.getByRole("textbox", { name: t("timeline.editBody") });
+  await expect(editBody).toBeVisible();
+  await editBody.fill("編集変換中");
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await expect(await dispatchComposingEnter(editBody)).toBe(false);
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("resolve_composer_key_action")[0]?.args)
+    )
+    .toMatchObject({
+      surface: "edit",
+      keyEvent: { key: "enter", is_composing: true },
+      autocompleteOpen: false,
+      sendEnabled: true
+    });
+  expect(await invocationCount(page, "edit_message")).toBe(0);
+  await expect(editBody).toHaveValue("編集変換中");
+});
+
 test("send queue rows dispatch retry and cancel commands from Rust-owned send state", async ({
   page
 }) => {
@@ -2812,6 +2906,217 @@ test("Rust-owned locale profile applies root lang and dir", async ({ page }) => 
   await expect
     .poll(() => page.evaluate(() => document.documentElement.dataset.pseudoLocale))
     .toBe("bidi");
+});
+
+test("Japanese locale renders shell labels and CJK text without clipping", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  const longWorkspaceName = "ホーム日本語検証".repeat(10);
+  const longRoomName = "幅制約付き日本語ルーム名".repeat(12);
+  const rustOrderedRoomNames = ["会議2", "会議10", longRoomName];
+  const longSenderName = "長い日本語送信者名".repeat(12);
+  const cjkMessageBody = "日本語の長文メッセージと検索確認テキスト".repeat(18);
+  const fullWidthSnippet = "ＡＢＣ１２３を含む日本語検索結果";
+
+  await page.evaluate(({ workspaceName, roomNames }) => {
+    const snapshot = window.__harness.currentSnapshot();
+    const cjkRooms = roomNames.map((displayName, index) => ({
+      ...snapshot.state.rooms[0],
+      room_id: index === roomNames.length - 1 ? snapshot.state.rooms[0].room_id : `!cjk-order-${index}:example.invalid`,
+      display_name: displayName
+    }));
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        locale_profile: {
+          lang: "ja",
+          dir: "ltr",
+          catalog_locale: "ja",
+          pseudo_locale: "none",
+          platform: "linux",
+          modifier_labels: { primary: "Ctrl" }
+        },
+        cjk_text_policy: {
+          ...snapshot.state.cjk_text_policy,
+          japanese_catalog: {
+            catalog_locale: "ja",
+            complete: true,
+            missing_message_ids: []
+          }
+        },
+        rooms: cjkRooms
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        account_home: {
+          ...snapshot.sidebar.account_home,
+          display_name: workspaceName
+        },
+        space_rooms: cjkRooms.map((room) => ({
+          room_id: room.room_id,
+          display_name: room.display_name,
+          avatar: room.avatar,
+          tags: room.tags,
+          unread_count: room.unread_count,
+          highlight_count: room.highlight_count
+        }))
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  }, { workspaceName: longWorkspaceName, roomNames: rustOrderedRoomNames });
+
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: "$cjk-gui-linebreak:example.invalid" } },
+      sender: longSenderName,
+      body: cjkMessageBody,
+      timestamp_ms: 1_800_000_003_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      reactions: [],
+      can_react: true,
+      is_redacted: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false
+    }
+  ]);
+
+  await page.evaluate(
+    ({ snippet, roomName }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      window.__harness.setCommandResponse("submit_search", ({ query }: { query?: string }) => {
+        const next = window.__harness.currentSnapshot();
+        return {
+          ...next,
+          state: {
+            ...next.state,
+            rooms: next.state.rooms.map((room) =>
+              room.room_id === "!harness-room:example.invalid"
+                ? { ...room, display_name: "かな先頭" }
+                : room
+            ),
+            search: {
+              kind: "results",
+              request_id: 32,
+              query: String(query ?? "ABC123"),
+              scope: "allRooms",
+              results: [
+                {
+                  room_id: "!harness-room:example.invalid",
+                  event_id: "$cjk-gui-linebreak:example.invalid",
+                  sender: "@cjk-user:example.invalid",
+                  timestamp_ms: 1_800_000_003_000,
+                  score_millis: 990,
+                  snippet,
+                  match_field: "messageBody",
+                  highlights: [{ start_utf16: 0, end_utf16: 6 }],
+                  match_kind: "exact"
+                }
+              ]
+            }
+          }
+        };
+      });
+    },
+    { snippet: fullWidthSnippet, roomName: longRoomName }
+  );
+
+  await expect.poll(() => page.evaluate(() => document.documentElement.lang)).toBe("ja");
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.dataset.catalogLocale))
+    .toBe("ja");
+  await expect(page.getByRole("button", { name: "ルームを作成", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ユーザー設定", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "スレッド", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "送信", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create room", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Threads", exact: true })).toHaveCount(0);
+  await expect
+    .poll(async () =>
+      page
+        .locator('section[data-room-section="rooms"] .room-name')
+        .evaluateAll((elements) => elements.map((element) => element.textContent ?? ""))
+    )
+    .toEqual(rustOrderedRoomNames);
+
+  await page.getByRole("textbox", { name: "検索" }).fill("ABC123");
+  await page.getByRole("textbox", { name: "検索" }).press("Enter");
+  await expect(page.locator("mark").filter({ hasText: "ＡＢＣ１２３" })).toBeVisible();
+  await expect(page.locator(".result-meta").first()).toContainText("かな先頭");
+
+  const roomNameMetrics = await page
+    .locator(".room-name", { hasText: longRoomName })
+    .first()
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        clientWidth: element.clientWidth,
+        hyphens: style.hyphens,
+        lineBreak: style.lineBreak,
+        scrollWidth: element.scrollWidth,
+        textOverflow: style.textOverflow,
+        wordBreak: style.wordBreak
+      };
+    });
+  expect(roomNameMetrics.scrollWidth).toBeGreaterThan(roomNameMetrics.clientWidth);
+  expect(roomNameMetrics).toMatchObject({
+    hyphens: "none",
+    lineBreak: "strict",
+    textOverflow: "ellipsis",
+    wordBreak: "normal"
+  });
+
+  const senderMetrics = await page
+    .locator(".sender", { hasText: longSenderName })
+    .first()
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        clientWidth: element.clientWidth,
+        hyphens: style.hyphens,
+        lineBreak: style.lineBreak,
+        scrollWidth: element.scrollWidth,
+        textOverflow: style.textOverflow,
+        wordBreak: style.wordBreak
+      };
+    });
+  expect(senderMetrics.scrollWidth).toBeGreaterThan(senderMetrics.clientWidth);
+  expect(senderMetrics).toMatchObject({
+    hyphens: "none",
+    lineBreak: "strict",
+    textOverflow: "ellipsis",
+    wordBreak: "normal"
+  });
+
+  const bodyMetrics = await page
+    .locator(".message-body", { hasText: cjkMessageBody })
+    .first()
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        clientWidth: element.clientWidth,
+        hyphens: style.hyphens,
+        lineBreak: style.lineBreak,
+        scrollWidth: element.scrollWidth,
+        wordBreak: style.wordBreak
+      };
+    });
+  expect(bodyMetrics.scrollWidth).toBeLessThanOrEqual(bodyMetrics.clientWidth + 1);
+  expect(bodyMetrics).toMatchObject({
+    hyphens: "none",
+    lineBreak: "strict",
+    wordBreak: "normal"
+  });
+
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2))
+    .toBe(true);
 });
 
 test("pseudo RTL profile with CJK and combining samples does not overflow shell", async ({

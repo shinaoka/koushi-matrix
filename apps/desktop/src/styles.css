@@ -722,6 +722,27 @@ button {
   white-space: nowrap;
 }
 
+:where(
+  .workspace-name,
+  .nav-label,
+  .room-name,
+  .channel-title h1,
+  .channel-title span:last-child,
+  .member-pill,
+  .sender,
+  .message-body,
+  .thread-title,
+  .thread-summary-chip span,
+  .result-button span,
+  .result-meta span,
+  .mention-option-label,
+  .mention-option-meta
+) {
+  hyphens: none;
+  line-break: strict;
+  word-break: normal;
+}
+
 .room-trailing {
   display: inline-flex;
   align-items: center;

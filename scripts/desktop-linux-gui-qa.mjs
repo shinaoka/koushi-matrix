@@ -41,6 +41,7 @@ const checks = [
   "scenario local-explore",
   "scenario local-message-actions",
   "scenario local-composer",
+  "scenario local-cjk",
   "scenario local-settings",
   "verify local-settings trust section",
   "verify Xvfb virtual display",
@@ -226,6 +227,10 @@ async function run() {
   }
   if (guiScenario === "local-composer") {
     await runLocalComposerScenario();
+    return;
+  }
+  if (guiScenario === "local-cjk") {
+    await runLocalCjkScenario();
     return;
   }
   if (guiScenario === "local-settings") {
@@ -945,6 +950,47 @@ async function runLocalComposerScenario() {
   }
 }
 
+async function runLocalCjkScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await waitForDocumentText(
+      session.browser,
+      [session.cjkRoomName],
+      timeoutMs,
+      "local GUI CJK room name"
+    );
+
+    const composer = await session.browser.$('textarea[aria-label="Message composer"]');
+    await composer.waitForDisplayed({ timeout: timeoutMs });
+    await composer.click();
+    await composer.setValue(session.cjkMessageBody);
+    await session.browser.keys("Enter");
+    await waitForComposerSendSettled(session.browser, timeoutMs, "local GUI CJK send");
+    await waitForDocumentText(
+      session.browser,
+      [session.cjkMessageBody],
+      timeoutMs,
+      "local GUI CJK message render"
+    );
+    await waitForCjkVisualContract(
+      session.browser,
+      {
+        roomName: session.cjkRoomName,
+        messageBody: session.cjkMessageBody
+      },
+      timeoutMs
+    );
+
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_cjk=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalSettingsScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -1089,6 +1135,58 @@ async function waitForDocumentText(browser, expectedTexts, timeout, description)
     await sleep(250);
   }
   throw new Error(`${description} missing expected text: ${missing.join(", ")}`);
+}
+
+async function waitForCjkVisualContract(browser, expected, timeout) {
+  const startedAt = Date.now();
+  let diagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    diagnostics = await browser.execute(({ roomName, messageBody }) => {
+      const byText = (selector, text) =>
+        Array.from(document.querySelectorAll(selector)).find((element) =>
+          (element.textContent ?? "").includes(text)
+        );
+      const metricsFor = (element) => {
+        if (!element) {
+          return null;
+        }
+        const style = window.getComputedStyle(element);
+        return {
+          clientWidth: element.clientWidth,
+          hyphens: style.hyphens,
+          lineBreak: style.lineBreak,
+          scrollWidth: element.scrollWidth,
+          textOverflow: style.textOverflow,
+          wordBreak: style.wordBreak
+        };
+      };
+      const contractOk = (metrics) =>
+        metrics?.hyphens === "none" &&
+        metrics?.lineBreak === "strict" &&
+        metrics?.wordBreak === "normal";
+      const roomMetrics = metricsFor(byText(".room-name", roomName));
+      const bodyMetrics = metricsFor(byText(".message-body", messageBody));
+      const roomOk =
+        contractOk(roomMetrics) &&
+        roomMetrics.textOverflow === "ellipsis" &&
+        roomMetrics.scrollWidth > roomMetrics.clientWidth;
+      const bodyOk =
+        contractOk(bodyMetrics) &&
+        bodyMetrics.scrollWidth <= bodyMetrics.clientWidth + 1;
+      const documentOk = document.documentElement.scrollWidth <= window.innerWidth + 2;
+      return {
+        ok: Boolean(roomOk && bodyOk && documentOk),
+        documentOk,
+        roomMetrics,
+        bodyMetrics
+      };
+    }, expected);
+    if (diagnostics?.ok) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`local GUI CJK visual contract failed: ${JSON.stringify(diagnostics)}`);
 }
 
 async function elementCount(browser, selector) {
@@ -1621,6 +1719,8 @@ async function startLocalGuiScenario() {
     dmTargetUserId: null,
     helperAccessToken: null,
     composerMentionDisplayName: null,
+    cjkMessageBody: null,
+    cjkRoomName: null,
     directoryRoomName: null,
     roomManagementTopic: null,
     primaryUserId: null,
@@ -1657,13 +1757,22 @@ async function startLocalGuiScenario() {
     if (!userId) {
       throw new Error("local GUI setup did not return a user id");
     }
-    const seedRoom = await createRoom(homeserver, accessToken, { name: "QA Seed Room" });
+    const seedRoomName =
+      guiScenario === "local-cjk"
+        ? `日本語幅確認ルーム${"長い名前".repeat(24)}`
+        : "QA Seed Room";
+    const seedRoom = await createRoom(homeserver, accessToken, { name: seedRoomName });
     const seedRoomId = seedRoom.room_id;
     if (!seedRoomId) {
       throw new Error("local GUI setup did not return a seed room id");
     }
     session.seedRoomId = seedRoomId;
     session.primaryUserId = userId;
+
+    if (guiScenario === "local-cjk") {
+      session.cjkRoomName = seedRoomName;
+      session.cjkMessageBody = `日本語の長文メッセージ${"かなカナ漢字と幅確認".repeat(20)}`;
+    }
 
     if (guiScenario === "local-composer") {
       const helperUsername = `qa_mention_${userSuffix}`;

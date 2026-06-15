@@ -384,6 +384,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --artifact-dir=artifacts/linux-gui-local-explore --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --artifact-dir=artifacts/linux-gui-local-message-actions --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-cjk --server=conduit --artifact-dir=artifacts/linux-gui-local-cjk --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
 ```
 
@@ -472,6 +473,14 @@ mention, select text and click Bold, then send a slash command. It prints only
 must not monkeypatch Tauri IPC, synthesize `m.mentions` or formatted HTML in
 React, print Matrix IDs, or treat DOM-local text insertion as enough evidence
 before the Rust-owned send state reaches `send=sent` and the composer clears.
+
+`local-cjk` creates a synthetic local room with a long Japanese/CJK display
+name, sends a long Japanese/CJK message through the real composer, and inspects
+the Linux Tauri WebView DOM/CSS under Xvfb. It verifies strict CJK line breaking,
+normal word breaking, disabled hyphenation, room-name ellipsis, message-body
+wrapping without horizontal document overflow, and prints only
+`gui_local_cjk=ok`; it must not rewrite CJK text, compute sort keys, normalize
+queries, or repair highlights in React.
 
 `local-invites-dm` registers a synthetic helper account on the same disposable
 homeserver, has that helper create and invite the QA user to a synthetic room,

@@ -278,6 +278,11 @@ conflict is being resolved.
   physical left/right spacing, borders, positioning, or text alignment in the
   desktop shell is a defect unless the physical direction is intentional and
   documented.
+- CJK text fitting is a presentation contract. GUI code may use CSS line-break,
+  word-break, hyphenation, wrapping, and ellipsis rules to fit Rust-owned room
+  names, sender/member names, message bodies, thread labels, and snippets, but
+  must not rewrite text, recompute sort keys, normalize queries, or repair
+  highlights locally.
 
 ## Documentation And Work Records
 

@@ -356,6 +356,11 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    `matrix-desktop-core`. React may render the resolved catalog and Rust-owned
    ordering only; it must not compute local CJK normalization, collation, or
    highlight repair.
+8. CJK GUI fitting is CSS-owned presentation. Shell/timeline/search surfaces
+   that render Rust-owned CJK/user text must keep the text unchanged and use
+   reviewed CSS contracts for strict line breaking, normal word breaking,
+   disabled hyphenation, logical spacing, wrapping, and ellipsis instead of
+   JavaScript text rewriting.
 
 ## Documentation
 

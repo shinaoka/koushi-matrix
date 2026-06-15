@@ -334,6 +334,7 @@ describe("desktop release scripts", () => {
       "scenario local-explore",
       "scenario local-message-actions",
       "scenario local-composer",
+      "scenario local-cjk",
       "scenario local-settings",
       "verify local-settings trust section"
     ]) {
@@ -474,6 +475,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("--scenario=local-explore");
     expect(docs).toContain("--scenario=local-message-actions");
     expect(docs).toContain("--scenario=local-composer");
+    expect(docs).toContain("--scenario=local-cjk");
     expect(docs).toContain("--scenario=local-settings");
     expect(docs).toContain("gui_local_create_room=ok");
     expect(docs).toContain("gui_local_invite_accept=ok");
@@ -489,6 +491,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("gui_local_mention=ok");
     expect(docs).toContain("gui_local_markdown=ok");
     expect(docs).toContain("gui_local_slash=ok");
+    expect(docs).toContain("gui_local_cjk=ok");
     expect(docs).toContain("gui_local_settings=ok");
     expect(docs).toContain("gui_local_trust_settings=ok");
   });
@@ -524,6 +527,7 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_explore_join=ok");
     expect(source).toContain("gui_local_room_topic=ok");
     expect(source).toContain("gui_local_room_kick=ok");
+    expect(source).toContain("gui_local_cjk=ok");
   });
 
   test("linux GUI local scenarios also emit DBus and window-state evidence", () => {
