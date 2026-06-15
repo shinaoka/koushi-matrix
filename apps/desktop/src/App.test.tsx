@@ -49,14 +49,17 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <WorkspaceRail
+        activeView="timeline"
         snapshot={snapshot}
         onCreateSpace={() => undefined}
         onOpenContextMenu={() => undefined}
+        onOpenActivity={() => undefined}
         onOpenUserSettings={() => undefined}
         onSelectSpace={() => undefined}
       />
     );
 
+    expect(markup).toContain('aria-label="Activity"');
     expect(markup).toContain('aria-label="Create space"');
   });
 

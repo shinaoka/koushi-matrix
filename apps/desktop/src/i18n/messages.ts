@@ -15,6 +15,20 @@ export type MessageId =
   | "action.recovering"
   | "action.send"
   | "action.sending"
+  | "activity.highlightBadge"
+  | "activity.loadMore"
+  | "activity.loading"
+  | "activity.markAllRead"
+  | "activity.markReadFailed"
+  | "activity.markRoomRead"
+  | "activity.noPreview"
+  | "activity.noRecent"
+  | "activity.noUnread"
+  | "activity.openItem"
+  | "activity.recent"
+  | "activity.tabs"
+  | "activity.unread"
+  | "activity.unreadBadge"
   | "auth.checking"
   | "auth.checkLoginMethods"
   | "auth.connecting"
@@ -425,6 +439,7 @@ export type MessageId =
   | "timeline.typingOne"
   | "timeline.openThreadSummary"
   | "timeline.viewReplies"
+  | "workspace.activity"
   | "workspace.createSpace"
   | "workspace.explore"
   | "workspace.home"
@@ -548,6 +563,20 @@ const en: Catalog = {
   "action.recovering": "Recovering",
   "action.send": "Send",
   "action.sending": "Sending",
+  "activity.highlightBadge": "Mention",
+  "activity.loadMore": "Load more activity",
+  "activity.loading": "Loading activity",
+  "activity.markAllRead": "Mark all read",
+  "activity.markReadFailed": "Mark read failed",
+  "activity.markRoomRead": "Mark room read",
+  "activity.noPreview": "No message preview",
+  "activity.noRecent": "No recent activity",
+  "activity.noUnread": "No unread activity",
+  "activity.openItem": "Open activity item {room}",
+  "activity.recent": "Recent",
+  "activity.tabs": "Activity views",
+  "activity.unread": "Unread",
+  "activity.unreadBadge": "Unread",
   "auth.checking": "Checking",
   "auth.checkLoginMethods": "Check login methods",
   "auth.connecting": "Connecting",
@@ -958,6 +987,7 @@ const en: Catalog = {
   "timeline.typingOne": "{user} is typing",
   "timeline.openThreadSummary": "Open thread, {summary}",
   "timeline.viewReplies": "View new replies · {count}",
+  "workspace.activity": "Activity",
   "workspace.createSpace": "Create space",
   "workspace.explore": "Explore",
   "workspace.home": "Home",
@@ -992,6 +1022,20 @@ const ja: Catalog = {
   "action.recovering": "復旧中",
   "action.send": "送信",
   "action.sending": "送信中",
+  "activity.highlightBadge": "メンション",
+  "activity.loadMore": "アクティビティをさらに読み込む",
+  "activity.loading": "アクティビティを読み込み中",
+  "activity.markAllRead": "すべて既読",
+  "activity.markReadFailed": "既読化に失敗しました",
+  "activity.markRoomRead": "ルームを既読",
+  "activity.noPreview": "メッセージプレビューなし",
+  "activity.noRecent": "最近のアクティビティはありません",
+  "activity.noUnread": "未読アクティビティはありません",
+  "activity.openItem": "{room}のアクティビティを開く",
+  "activity.recent": "最近",
+  "activity.tabs": "アクティビティ表示",
+  "activity.unread": "未読",
+  "activity.unreadBadge": "未読",
   "auth.checking": "確認中",
   "auth.checkLoginMethods": "ログイン方法を確認",
   "auth.connecting": "接続中",
@@ -1398,6 +1442,7 @@ const ja: Catalog = {
   "timeline.typingOne": "{user} が入力中",
   "timeline.openThreadSummary": "スレッドを開く、{summary}",
   "timeline.viewReplies": "新しい返信を見る · {count}",
+  "workspace.activity": "アクティビティ",
   "workspace.createSpace": "スペースを作成",
   "workspace.explore": "探索",
   "workspace.home": "ホーム",

@@ -380,6 +380,17 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `activity_recent=ok`, `activity_unread=ok`, and `activity_markread=ok`. Do not
   print Matrix room IDs, event IDs, sender IDs, message bodies, pagination
   tokens, or raw SDK errors for this stage.
+- Browser-headless Activity GUI tests should seed Rust-shaped
+  `AppState.activity` snapshots and assert that rows stay visible after
+  `mark_activity_read` until a later snapshot removes them. Do not make React
+  sort rows, infer low-priority exclusion, auto-clear Unread on tab view, or
+  repair mark-read results locally.
+- The Linux virtual-display `--scenario=local-activity` lane is a real Tauri
+  smoke for the Activity rail entry and tab switching. It intentionally leaves
+  Recent/Unread row ordering, focused-context row jumps, and mark-read
+  correctness to the Rust core and browser-headless gates, and prints only
+  `gui_local_activity_open=ok`, `gui_local_activity_unread_tab=ok`, and
+  `gui_local_activity_recent_tab=ok`.
 
 ## Live Signals Phase B Notes
 
@@ -742,6 +753,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Rust-owned directory results and joined room-list state, and prints only
   `gui_local_explore_query=ok` / `gui_local_explore_join=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-explore-fast --timeout-ms=180000`
+- Activity GUI iteration has a focused virtual-display lane:
+  `--scenario=local-activity`. It opens the real Activity rail entry and
+  switches between Unread and Recent tabs through the Tauri command path. It
+  prints `gui_local_activity_open=ok`, `gui_local_activity_unread_tab=ok`, and
+  `gui_local_activity_recent_tab=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-activity-fast --timeout-ms=180000`
 - Composer GUI iteration has a focused virtual-display lane:
   `--scenario=local-composer`. It seeds a synthetic helper member, waits for
   Rust-owned `ProfileState.users` to feed the mention autocomplete, drives the

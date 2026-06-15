@@ -891,6 +891,161 @@ button {
   border-bottom-color: var(--brand);
 }
 
+.activity-pane {
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
+.activity-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.activity-actions .dialog-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.activity-status {
+  margin: 0;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--line);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.activity-scroll {
+  min-height: 0;
+  overflow: auto;
+}
+
+.activity-list {
+  display: grid;
+  margin: 0;
+  padding: 4px 0 12px;
+  list-style: none;
+}
+
+.activity-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+  min-height: 72px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.activity-row.is-unread {
+  background: var(--brand-weak);
+}
+
+.activity-row.is-highlight {
+  border-inline-start: 3px solid var(--mention);
+  padding-inline-start: 17px;
+}
+
+.activity-row:hover,
+.activity-row:focus-within {
+  background: var(--surface-hover);
+}
+
+.activity-row-open {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text);
+  text-align: start;
+  background: transparent;
+}
+
+.activity-row-topline,
+.activity-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.activity-row-topline strong,
+.activity-row-meta span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-row-topline time {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.activity-row-meta {
+  flex-wrap: wrap;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.activity-row-meta span:not(:first-child) {
+  min-height: 19px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.activity-row-preview {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-row-action {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.activity-row-action:hover,
+.activity-row-action:focus-visible {
+  color: var(--brand-contrast);
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.activity-row-action:disabled {
+  opacity: 0.55;
+}
+
+.activity-empty {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 220px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.activity-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 8px 20px 14px;
+  border-top: 1px solid var(--line);
+}
+
 .timeline-scroll {
   padding: 0 0 18px;
 }

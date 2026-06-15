@@ -37,6 +37,7 @@ const checks = [
   "scenario local-media",
   "scenario local-room-tags",
   "scenario local-room-management",
+  "scenario local-activity",
   "scenario local-explore",
   "scenario local-message-actions",
   "scenario local-composer",
@@ -209,6 +210,10 @@ async function run() {
   }
   if (guiScenario === "local-room-management") {
     await runLocalRoomManagementScenario();
+    return;
+  }
+  if (guiScenario === "local-activity") {
+    await runLocalActivityScenario();
     return;
   }
   if (guiScenario === "local-explore") {
@@ -714,6 +719,53 @@ async function runLocalRoomManagementScenario() {
     );
     await recordLocalGuiEvidence(session);
     console.log("gui_local_room_kick=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalActivityScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const activityButton = await session.browser.$('button[aria-label="Activity"]');
+    await activityButton.waitForDisplayed({ timeout: timeoutMs });
+    await activityButton.click();
+    const activityMain = await session.browser.$('main[aria-labelledby="activity-title"]');
+    await activityMain.waitForDisplayed({ timeout: timeoutMs });
+    console.log("gui_local_activity_open=ok");
+
+    const unreadTabSelector = "//button[@role='tab' and normalize-space()='Unread']";
+    const unreadTab = await session.browser.$(unreadTabSelector);
+    await unreadTab.waitForDisplayed({ timeout: timeoutMs });
+    await unreadTab.click();
+    await waitForElementAttribute(
+      session.browser,
+      unreadTabSelector,
+      "aria-selected",
+      "true",
+      timeoutMs,
+      "local GUI activity unread tab"
+    );
+    console.log("gui_local_activity_unread_tab=ok");
+
+    const recentTabSelector = "//button[@role='tab' and normalize-space()='Recent']";
+    const recentTab = await session.browser.$(recentTabSelector);
+    await recentTab.waitForDisplayed({ timeout: timeoutMs });
+    await recentTab.click();
+    await waitForElementAttribute(
+      session.browser,
+      recentTabSelector,
+      "aria-selected",
+      "true",
+      timeoutMs,
+      "local GUI activity recent tab"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_activity_recent_tab=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }

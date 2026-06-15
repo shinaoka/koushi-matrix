@@ -32,6 +32,8 @@
  *      Rust-shaped snapshots before rendering results or joined rooms.
  *  13. Drive room-management topic/avatar/moderation/role commands and wait for
  *      Rust-shaped snapshots before rendering settings or membership changes.
+ *  14. Drive Activity Recent/Unread streams from Rust-owned snapshots, dispatch
+ *      focused-context and mark-read commands, and wait for Rust to remove rows.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -532,6 +534,253 @@ test("Explore searches public rooms and joins only after Rust snapshot updates",
   await expect(
     roomsSection.getByRole("button", { name: "Public Search Result" })
   ).toBeVisible();
+});
+
+test("Activity renders Rust-owned streams and waits for mark-read snapshots", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const recentRows = [
+      {
+        room_id: "!room-beta:example.invalid",
+        event_id: "$activity-beta-newest:example.invalid",
+        room_label: "Project Beta",
+        sender_label: "Beta Sender",
+        preview: "Newest recent update",
+        timestamp_ms: 1_800_000_010_000,
+        unread: false,
+        highlight: false
+      },
+      {
+        room_id: "!room-alpha:example.invalid",
+        event_id: "$activity-alpha-middle:example.invalid",
+        room_label: "Project Alpha",
+        sender_label: "Alpha Sender",
+        preview: "Middle recent update",
+        timestamp_ms: 1_800_000_009_000,
+        unread: true,
+        highlight: true
+      },
+      {
+        room_id: "!room-gamma:example.invalid",
+        event_id: "$activity-gamma-oldest:example.invalid",
+        room_label: "Project Gamma",
+        sender_label: null,
+        preview: "Oldest recent update",
+        timestamp_ms: 1_800_000_008_000,
+        unread: false,
+        highlight: false
+      }
+    ];
+    const unreadRows = [
+      {
+        room_id: "!room-alpha:example.invalid",
+        event_id: "$activity-alpha-unread:example.invalid",
+        room_label: "Project Alpha",
+        sender_label: "Alpha Sender",
+        preview: "Stale unread update",
+        timestamp_ms: 1_800_000_001_000,
+        unread: true,
+        highlight: true
+      },
+      {
+        room_id: "!room-beta:example.invalid",
+        event_id: "$activity-beta-unread:example.invalid",
+        room_label: "Project Beta",
+        sender_label: "Beta Sender",
+        preview: "Fresh unread update",
+        timestamp_ms: 1_800_000_011_000,
+        unread: true,
+        highlight: false
+      }
+    ];
+    const activitySnapshot = (activeTab: "recent" | "unread", nextUnreadRows = unreadRows) => {
+      const snapshot = window.__harness.currentSnapshot();
+      return {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          activity: {
+            kind: "open",
+            active_tab: activeTab,
+            recent: { rows: recentRows, next_batch: "activity-page-2" },
+            unread: { rows: nextUnreadRows, next_batch: null },
+            mark_read: { kind: "idle" }
+          }
+        }
+      };
+    };
+
+    window.__harness.setCommandResponse("open_activity", () => {
+      const next = activitySnapshot("recent");
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("set_activity_tab", ({ tab }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          activity:
+            snapshot.state.activity.kind === "open"
+              ? { ...snapshot.state.activity, active_tab: tab }
+              : snapshot.state.activity
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("paginate_activity", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.setCommandResponse("mark_activity_read", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.setCommandResponse("select_search_result", ({ roomId, eventId }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          navigation: {
+            ...snapshot.state.navigation,
+            active_room_id: String(roomId)
+          },
+          timeline: {
+            ...snapshot.state.timeline,
+            room_id: String(roomId),
+            is_subscribed: true
+          },
+          thread: { kind: "closed" },
+          focused_context: {
+            kind: "opening",
+            room_id: String(roomId),
+            event_id: String(eventId)
+          }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "Activity" }).click();
+
+  await expect.poll(() => invocationCount(page, "open_activity")).toBeGreaterThanOrEqual(1);
+  await expect(page.getByRole("main", { name: "Activity" })).toBeVisible();
+  const recentRows = page.locator(".activity-row");
+  await expect(recentRows).toHaveCount(3);
+  await expect(recentRows.nth(0)).toContainText("Newest recent update");
+  await expect(recentRows.nth(1)).toContainText("Middle recent update");
+  await expect(recentRows.nth(2)).toContainText("Oldest recent update");
+
+  await page.getByRole("button", { name: "Load more activity" }).click();
+  await expect.poll(() => invocationCount(page, "paginate_activity")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("paginate_activity")[0]?.args)
+    )
+    .toEqual({
+      tab: "recent",
+      cursor: "activity-page-2"
+    });
+
+  await page.getByRole("button", { name: "Open activity item Project Beta" }).click();
+  await expect.poll(() => invocationCount(page, "select_search_result")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("select_search_result")[0]?.args)
+    )
+    .toEqual({
+      roomId: "!room-beta:example.invalid",
+      eventId: "$activity-beta-newest:example.invalid"
+    });
+  await expect(page.getByText("Focused context").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Activity" }).click();
+  await page.getByRole("tab", { name: "Unread" }).click();
+
+  await expect.poll(() => invocationCount(page, "set_activity_tab")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("set_activity_tab")[0]?.args))
+    .toEqual({ tab: "unread" });
+  expect(await invocationCount(page, "mark_activity_read")).toBe(0);
+
+  const alphaUnreadRow = page.locator(".activity-row").filter({
+    hasText: "Stale unread update"
+  });
+  await expect(alphaUnreadRow).toBeVisible();
+  await alphaUnreadRow.getByRole("button", { name: "Mark room read" }).click();
+
+  await expect.poll(() => invocationCount(page, "mark_activity_read")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("mark_activity_read")[0]?.args)
+    )
+    .toEqual({
+      target: {
+        kind: "room",
+        room_id: "!room-alpha:example.invalid",
+        up_to_event_id: "$activity-alpha-unread:example.invalid"
+      }
+    });
+  await expect(alphaUnreadRow).toBeVisible();
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    if (snapshot.state.activity.kind !== "open") {
+      throw new Error("expected open Activity snapshot");
+    }
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        activity: {
+          ...snapshot.state.activity,
+          unread: {
+            ...snapshot.state.activity.unread,
+            rows: snapshot.state.activity.unread.rows.filter(
+              (row) => row.room_id !== "!room-alpha:example.invalid"
+            )
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(alphaUnreadRow).toHaveCount(0);
+  await page.getByRole("button", { name: "Mark all read" }).click();
+  await expect.poll(() => invocationCount(page, "mark_activity_read")).toBe(2);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("mark_activity_read")[1]?.args)
+    )
+    .toEqual({ target: { kind: "all" } });
+  await expect(page.locator(".activity-row").filter({ hasText: "Fresh unread update" })).toBeVisible();
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    if (snapshot.state.activity.kind !== "open") {
+      throw new Error("expected open Activity snapshot");
+    }
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        activity: {
+          ...snapshot.state.activity,
+          unread: { rows: [], next_batch: null }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(page.getByText("No unread activity")).toBeVisible();
 });
 
 test("room management panel updates settings, roles, and members from Rust state", async ({

@@ -293,6 +293,14 @@ id prefix from `timelineItemDomId`, e.g. `data-item-id="txn:desktop-media-1"`.
 Do not assert on or render MXC URIs, encrypted media keys/hashes, downloaded
 bytes, real filenames, room IDs, or event IDs.
 
+For Activity Phase B, the harness seeds Rust-shaped `AppState.activity`
+snapshots. It proves the Activity rail entry, Recent/Unread tabs, row order as
+provided by Rust, pagination cursor dispatch, focused-context row opens, and
+mark-read command shapes. Viewing Unread must not dispatch mark-read, and rows
+must remain visible after `mark_activity_read` until a later Rust-shaped
+snapshot removes them. React must not sort, filter, synthesize unread
+membership, or locally repair Activity streams.
+
 ## matrix.org compatibility lane
 
 This lane is reserved for the last compatibility pass after local headless and
@@ -364,6 +372,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=co
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --artifact-dir=artifacts/linux-gui-local-media --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --artifact-dir=artifacts/linux-gui-local-room-tags --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-management --server=conduit --artifact-dir=artifacts/linux-gui-local-room-management --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server=conduit --artifact-dir=artifacts/linux-gui-local-activity --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --artifact-dir=artifacts/linux-gui-local-explore --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --artifact-dir=artifacts/linux-gui-local-message-actions --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
@@ -416,6 +425,15 @@ React-local settings/member state, or print Matrix room IDs, user IDs, room
 names/topics, avatar URLs, moderation reasons, or raw SDK errors. Room avatar
 URL editing is covered by the browser-headless command/snapshot test because
 the local homeserver lane should not depend on reusable synthetic MXC media.
+
+`local-activity` opens the real Activity entry in the Linux Tauri WebView and
+switches between Unread and Recent tabs through the Tauri command path. Row
+ordering, focused-context row jumps, and mark-read behavior are covered by the
+browser-headless Activity proof and Rust core Activity scenario. The Linux lane
+prints only `gui_local_activity_open=ok`, `gui_local_activity_unread_tab=ok`,
+and `gui_local_activity_recent_tab=ok`; it must not monkeypatch Tauri IPC,
+synthesize Activity rows in React, or print Matrix IDs, event IDs, message
+bodies, pagination tokens, or raw SDK errors.
 
 `local-explore` registers a synthetic helper account on the same disposable
 homeserver, has that helper create one public room with a synthetic alias, then
@@ -494,6 +512,9 @@ gui_local_room_tag_removed=ok
 gui_local_room_topic=ok
 gui_local_room_role=ok
 gui_local_room_kick=ok
+gui_local_activity_open=ok
+gui_local_activity_unread_tab=ok
+gui_local_activity_recent_tab=ok
 gui_local_message_source=ok
 gui_local_message_forward=ok
 gui_local_settings=ok

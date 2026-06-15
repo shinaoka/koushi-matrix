@@ -115,6 +115,11 @@ import {
   qaSendSmokeMessageFromEnv
 } from "./domain/qaSendSmoke";
 import type {
+  ActivityMarkReadTarget,
+  ActivityRow,
+  ActivityState,
+  ActivityStream,
+  ActivityTab,
   ComposerMode,
   DesktopSnapshot,
   DirectoryRoomSummary,
@@ -259,7 +264,7 @@ type ActiveContextMenu = {
   target: ContextMenuTarget;
   items: ContextMenuItem[];
 };
-type PrimaryView = "timeline" | "invites" | "explore";
+type PrimaryView = "timeline" | "invites" | "explore" | "activity";
 type InviteUserDialogState = {
   roomId: string;
   title: string;
@@ -889,6 +894,28 @@ export function App() {
     setPrimaryView("explore");
   }
 
+  async function openActivityView() {
+    setSnapshot(await api.openActivity());
+    setPrimaryView("activity");
+  }
+
+  async function closeActivityView() {
+    setSnapshot(await api.closeActivity());
+    setPrimaryView("timeline");
+  }
+
+  async function setActivityTab(tab: ActivityTab) {
+    setSnapshot(await api.setActivityTab(tab));
+  }
+
+  async function paginateActivity(tab: ActivityTab, cursor: string | null) {
+    setSnapshot(await api.paginateActivity(tab, cursor));
+  }
+
+  async function markActivityRead(target: ActivityMarkReadTarget) {
+    setSnapshot(await api.markActivityRead(target));
+  }
+
   async function queryDirectory() {
     if (isBusy) {
       return;
@@ -1363,9 +1390,13 @@ export function App() {
       />
       <div className={`app-grid ${rightPanelOpen ? "right-panel-open" : "thread-closed"}`}>
         <WorkspaceRail
+          activeView={primaryView}
           snapshot={snapshot}
           onCreateSpace={() => openCreateDialog("space")}
           onOpenContextMenu={openContextMenu}
+          onOpenActivity={() => {
+            void openActivityView();
+          }}
           onOpenUserSettings={() => {
             void setRightPanelModeClosingFocusedContext("userSettings");
           }}
@@ -1389,7 +1420,26 @@ export function App() {
           }}
           onSelectRoom={selectRoom}
         />
-        {primaryView === "explore" ? (
+        {primaryView === "activity" ? (
+          <ActivityPane
+            activity={snapshot.state.activity}
+            onClose={() => {
+              void closeActivityView();
+            }}
+            onLoadMore={(tab, cursor) => {
+              void paginateActivity(tab, cursor);
+            }}
+            onMarkRead={(target) => {
+              void markActivityRead(target);
+            }}
+            onOpenRow={(row) => {
+              selectSearchResult(row.room_id, row.event_id);
+            }}
+            onSetTab={(tab) => {
+              void setActivityTab(tab);
+            }}
+          />
+        ) : primaryView === "explore" ? (
           <ExplorePane
             isBusy={isBusy}
             queryDraft={directorySearchDraft}
@@ -2156,15 +2206,19 @@ export function TopBar({
 }
 
 export function WorkspaceRail({
+  activeView,
   snapshot,
   onCreateSpace,
   onOpenContextMenu,
+  onOpenActivity,
   onOpenUserSettings,
   onSelectSpace
 }: {
+  activeView: PrimaryView;
   snapshot: DesktopSnapshot;
   onCreateSpace: () => void;
   onOpenContextMenu: OpenContextMenu;
+  onOpenActivity: () => void;
   onOpenUserSettings: () => void;
   onSelectSpace: (spaceId: string | null) => void;
 }) {
@@ -2172,7 +2226,19 @@ export function WorkspaceRail({
     <nav className="workspace-rail" aria-label={t("workspace.workspaces")}>
       <div className="workspace-list">
         <button
-          className={`workspace-button ${snapshot.sidebar.account_home.is_active ? "is-active" : ""}`}
+          className={`workspace-button ${activeView === "activity" ? "is-active" : ""}`}
+          data-count={snapshot.sidebar.account_home.unread_count || undefined}
+          data-mention-count={snapshot.sidebar.account_home.highlight_count || undefined}
+          type="button"
+          aria-label={t("workspace.activity")}
+          onClick={onOpenActivity}
+        >
+          <Clock3 size={20} />
+        </button>
+        <button
+          className={`workspace-button ${
+            activeView === "timeline" && snapshot.sidebar.account_home.is_active ? "is-active" : ""
+          }`}
           data-count={snapshot.sidebar.account_home.unread_count || undefined}
           data-mention-count={snapshot.sidebar.account_home.highlight_count || undefined}
           type="button"
@@ -2486,6 +2552,181 @@ function EntityAvatar({
       {sourceUrl ? <img src={sourceUrl} /> : <span dir="auto">{fallback}</span>}
     </span>
   );
+}
+
+function ActivityPane({
+  activity,
+  onClose,
+  onLoadMore,
+  onMarkRead,
+  onOpenRow,
+  onSetTab
+}: {
+  activity: ActivityState;
+  onClose: () => void;
+  onLoadMore: (tab: ActivityTab, cursor: string | null) => void;
+  onMarkRead: (target: ActivityMarkReadTarget) => void;
+  onOpenRow: (row: ActivityRow) => void;
+  onSetTab: (tab: ActivityTab) => void;
+}) {
+  const activeTab =
+    activity.kind === "open" ? activity.active_tab : activity.kind === "opening" ? activity.tab : "recent";
+  const stream = activity.kind === "open" ? activityStream(activity, activeTab) : null;
+  const rows = stream?.rows ?? [];
+  const markReadState = activity.kind === "open" ? activity.mark_read : { kind: "idle" as const };
+  const markAllPending =
+    markReadState.kind === "pending" && markReadState.target.kind === "all";
+  const markRoomPending = (row: ActivityRow) =>
+    markReadState.kind === "pending" &&
+    markReadState.target.kind === "room" &&
+    markReadState.target.room_id === row.room_id;
+
+  return (
+    <main className="main-pane activity-pane" aria-labelledby="activity-title">
+      <header className="channel-header">
+        <div className="channel-title">
+          <Clock3 size={22} />
+          <h1 id="activity-title">{t("workspace.activity")}</h1>
+        </div>
+        <div className="activity-actions">
+          {activity.kind === "open" && activeTab === "unread" && rows.length > 0 ? (
+            <button
+              className="dialog-button secondary"
+              type="button"
+              disabled={markAllPending}
+              onClick={() => onMarkRead({ kind: "all" })}
+            >
+              <Check size={16} />
+              <span>{t("activity.markAllRead")}</span>
+            </button>
+          ) : null}
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("action.close", { title: t("workspace.activity") })}
+            onClick={onClose}
+          >
+            <X size={18} />
+          </button>
+        </div>
+      </header>
+      <div className="tabs" role="tablist" aria-label={t("activity.tabs")}>
+        {(["recent", "unread"] as ActivityTab[]).map((tab) => (
+          <button
+            className={`tab ${activeTab === tab ? "is-active" : ""}`}
+            role="tab"
+            aria-selected={activeTab === tab}
+            type="button"
+            key={tab}
+            disabled={activity.kind !== "open"}
+            onClick={() => onSetTab(tab)}
+          >
+            {activityTabLabel(tab)}
+          </button>
+        ))}
+      </div>
+      {markReadState.kind === "failed" ? (
+        <p className="activity-status" role="alert">
+          {t("activity.markReadFailed")}
+        </p>
+      ) : null}
+      <section className="activity-scroll" aria-label={activityTabLabel(activeTab)}>
+        {activity.kind === "opening" ? (
+          <div className="activity-empty">
+            <Clock3 size={24} />
+            <span>{t("activity.loading")}</span>
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="activity-empty">
+            <Clock3 size={24} />
+            <span>
+              {activeTab === "recent" ? t("activity.noRecent") : t("activity.noUnread")}
+            </span>
+          </div>
+        ) : (
+          <ol className="activity-list">
+            {rows.map((row) => (
+              <li
+                className={`activity-row ${row.unread ? "is-unread" : ""} ${
+                  row.highlight ? "is-highlight" : ""
+                }`}
+                data-event-id={row.event_id}
+                data-room-id={row.room_id}
+                key={`${row.room_id}:${row.event_id}`}
+              >
+                <button
+                  className="activity-row-open"
+                  type="button"
+                  aria-label={t("activity.openItem", { room: row.room_label })}
+                  onClick={() => onOpenRow(row)}
+                >
+                  <span className="activity-row-topline">
+                    <strong dir="auto">{row.room_label}</strong>
+                    <time dateTime={new Date(row.timestamp_ms).toISOString()}>
+                      {activityTimestamp(row.timestamp_ms)}
+                    </time>
+                  </span>
+                  <span className="activity-row-meta">
+                    <span dir="auto">
+                      {row.sender_label ?? t("timeline.replyQuoteUnknownSender")}
+                    </span>
+                    {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
+                    {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
+                  </span>
+                  <span className="activity-row-preview" dir="auto">
+                    {row.preview ?? t("activity.noPreview")}
+                  </span>
+                </button>
+                {activeTab === "unread" ? (
+                  <button
+                    className="activity-row-action"
+                    type="button"
+                    aria-label={t("activity.markRoomRead")}
+                    disabled={markRoomPending(row)}
+                    onClick={() =>
+                      onMarkRead({
+                        kind: "room",
+                        room_id: row.room_id,
+                        up_to_event_id: row.event_id
+                      })
+                    }
+                  >
+                    <Check size={16} />
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+      {stream?.next_batch ? (
+        <div className="activity-load-more">
+          <button
+            className="load-more-button"
+            type="button"
+            onClick={() => onLoadMore(activeTab, stream.next_batch)}
+          >
+            {t("activity.loadMore")}
+          </button>
+        </div>
+      ) : null}
+    </main>
+  );
+}
+
+function activityStream(activity: Extract<ActivityState, { kind: "open" }>, tab: ActivityTab): ActivityStream {
+  return tab === "recent" ? activity.recent : activity.unread;
+}
+
+function activityTabLabel(tab: ActivityTab): string {
+  return tab === "recent" ? t("activity.recent") : t("activity.unread");
+}
+
+function activityTimestamp(timestampMs: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(timestampMs));
 }
 
 function ExplorePane({

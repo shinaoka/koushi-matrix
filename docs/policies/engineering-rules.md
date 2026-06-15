@@ -225,6 +225,13 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    transitions. Linux room-management GUI QA output is limited to
    private-data-free tokens and must not print room/user IDs, room
    names/topics, avatar URLs, moderation reasons, or raw SDK errors.
+   Activity GUI tests must render Rust-shaped `AppState.activity` Recent and
+   Unread streams. React may switch tabs, request pagination, open focused
+   context, and dispatch `mark_activity_read`, but it must not sort rows,
+   filter rows, infer unread membership, clear unread state, or remove rows
+   until a later Rust-owned snapshot does so. Linux Activity GUI QA output is
+   limited to private-data-free tokens and must not print room IDs, event IDs,
+   message bodies, pagination cursors, or raw SDK errors.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.
