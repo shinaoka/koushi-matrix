@@ -2630,6 +2630,90 @@ mark {
   font-weight: 800;
 }
 
+.settings-toggle-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-toggle-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  text-align: start;
+  background: var(--surface);
+}
+
+.settings-toggle-row:hover,
+.settings-toggle-row:focus-visible {
+  background: var(--surface-hover);
+}
+
+.settings-toggle-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.settings-toggle-label svg {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.settings-toggle-label span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-switch-track {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-hover);
+}
+
+.settings-switch-thumb {
+  position: absolute;
+  inset-block-start: 3px;
+  inset-inline-start: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.settings-toggle-row[aria-checked="true"] .settings-switch-track {
+  border-color: var(--brand);
+  background: var(--brand-weak);
+}
+
+.settings-toggle-row[aria-checked="true"] .settings-switch-thumb {
+  transform: translateX(18px);
+  background: var(--brand);
+}
+
+[dir="rtl"] .settings-toggle-row[aria-checked="true"] .settings-switch-thumb {
+  transform: translateX(-18px);
+}
+
 .settings-save-state {
   color: var(--text-muted);
   font-size: 12px;

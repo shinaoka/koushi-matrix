@@ -220,6 +220,10 @@ export type MessageId =
   | "settings.homeserver"
   | "settings.keyboard"
   | "settings.keyboardDescription"
+  | "settings.notificationBadges"
+  | "settings.notificationDesktop"
+  | "settings.notificationSound"
+  | "settings.notifications"
   | "settings.localStore"
   | "settings.localStoreLabel"
   | "settings.localData"
@@ -786,6 +790,10 @@ const en: Catalog = {
   "settings.homeserver": "Homeserver",
   "settings.keyboard": "Keyboard",
   "settings.keyboardDescription": "Element-compatible shortcuts for implemented desktop actions.",
+  "settings.notificationBadges": "Badges",
+  "settings.notificationDesktop": "Desktop notifications",
+  "settings.notificationSound": "Sound",
+  "settings.notifications": "Notifications",
   "settings.localData": "Local data",
   "settings.localDataResetAvailable": "Recovery or local reset available",
   "settings.localEncryption": "Local encryption",
@@ -1261,6 +1269,10 @@ const ja: Catalog = {
   "settings.homeserver": "ホームサーバー",
   "settings.keyboard": "キーボード",
   "settings.keyboardDescription": "実装済みデスクトップ操作用のElement互換ショートカットです。",
+  "settings.notificationBadges": "バッジ",
+  "settings.notificationDesktop": "デスクトップ通知",
+  "settings.notificationSound": "サウンド",
+  "settings.notifications": "通知",
   "settings.localData": "ローカルデータ",
   "settings.localDataResetAvailable": "リカバリーまたはローカルリセットを利用できます",
   "settings.localEncryption": "ローカル暗号化",

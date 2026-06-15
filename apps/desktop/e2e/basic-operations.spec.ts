@@ -2909,6 +2909,57 @@ test("typography settings dispatch Rust-owned update_settings patches", async ({
     .toBe("twemojiColr");
 });
 
+test("notification settings dispatch Rust-owned update_settings patches", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page.getByRole("button", { name: "User settings" }).click();
+  await expect(page.getByRole("heading", { name: "Notifications" })).toBeVisible();
+
+  const desktopNotifications = page.getByRole("switch", { name: "Desktop notifications" });
+  await expect(desktopNotifications).toHaveAttribute("aria-checked", "true");
+  await desktopNotifications.click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        notifications: {
+          desktop_notifications: false,
+          sound: true,
+          badges: true
+        }
+      }
+    });
+  await expect(desktopNotifications).toHaveAttribute("aria-checked", "false");
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  const sound = page.getByRole("switch", { name: "Sound" });
+  await expect(sound).toHaveAttribute("aria-checked", "true");
+  await sound.click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        notifications: {
+          desktop_notifications: false,
+          sound: false,
+          badges: true
+        }
+      }
+    });
+  await expect(sound).toHaveAttribute("aria-checked", "false");
+});
+
 test("profile settings dispatch Rust-owned commands and avatars render from profile state", async ({
   page
 }) => {

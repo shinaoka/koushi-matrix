@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import {
+  Bell,
   Check,
   Image,
   KeyRound,
@@ -26,6 +27,7 @@ import type {
   IdentityResetState,
   KeyBackupStatus,
   LocalEncryptionState,
+  NotificationSettings,
   SavedSessionInfo,
   SettingsPatch,
   SettingsState,
@@ -87,6 +89,7 @@ export function UserSettingsPanel({
   const selectedTheme = settings.values.appearance.theme;
   const selectedFont = settings.values.typography.font;
   const selectedEmoji = settings.values.typography.emoji;
+  const selectedNotifications = settings.values.notifications;
   const isSaving = settings.persistence.kind === "saving";
   const [displayNameDraft, setDisplayNameDraft] = useState(profile.own.display_name ?? "");
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
@@ -294,6 +297,33 @@ export function UserSettingsPanel({
               />
             </div>
           </div>
+        </div>
+      </section>
+
+      <section className="settings-section" aria-label={t("settings.notifications")}>
+        <div className="settings-section-heading">
+          <h3>{t("settings.notifications")}</h3>
+          {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
+        </div>
+        <div className="settings-toggle-list">
+          <NotificationToggle
+            label={t("settings.notificationDesktop")}
+            settingKey="desktop_notifications"
+            current={selectedNotifications}
+            onSelect={onUpdateSettings}
+          />
+          <NotificationToggle
+            label={t("settings.notificationSound")}
+            settingKey="sound"
+            current={selectedNotifications}
+            onSelect={onUpdateSettings}
+          />
+          <NotificationToggle
+            label={t("settings.notificationBadges")}
+            settingKey="badges"
+            current={selectedNotifications}
+            onSelect={onUpdateSettings}
+          />
         </div>
       </section>
 
@@ -1153,6 +1183,47 @@ function EmojiButton({
       }}
     >
       {label}
+    </button>
+  );
+}
+
+function NotificationToggle({
+  label,
+  settingKey,
+  current,
+  onSelect
+}: {
+  label: string;
+  settingKey: keyof NotificationSettings;
+  current: NotificationSettings;
+  onSelect: (patch: SettingsPatch) => void;
+}) {
+  const checked = current[settingKey];
+  return (
+    <button
+      className="settings-toggle-row"
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => {
+        onSelect({
+          notifications: {
+            ...current,
+            [settingKey]: !checked
+          }
+        });
+      }}
+    >
+      <span className="settings-toggle-copy">
+        <span className="settings-toggle-label">
+          <Bell size={15} aria-hidden="true" />
+          <span>{label}</span>
+        </span>
+      </span>
+      <span className="settings-switch-track" aria-hidden="true">
+        <span className="settings-switch-thumb" />
+      </span>
     </button>
   );
 }

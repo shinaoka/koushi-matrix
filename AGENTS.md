@@ -166,6 +166,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   product state and must persist through the settings store with legacy JSON
   backfill. React settings UI may dispatch typed `SettingsPatch.notifications`
   updates, but it must not keep independent local notification policy state.
+  Browser-headless notification settings tests must click the visible switches
+  and assert the resulting `update_settings` payload; the UI must reflect
+  changed switch state only after the Rust-shaped settings snapshot updates.
 - React attention helpers may only map `snapshot.state.native_attention` to
   window title, badge, and native adapter payloads. They must not aggregate
   `rooms`, diff previous room snapshots, or infer focused-room/muted/duplicate

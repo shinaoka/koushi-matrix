@@ -135,6 +135,11 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Typography");
     expect(markup).toContain("UI font");
     expect(markup).toContain("Emoji font");
+    expect(markup).toContain("Notifications");
+    expect(markup).toContain("Desktop notifications");
+    expect(markup).toContain("Sound");
+    expect(markup).toContain("Badges");
+    expect(markup).toContain('role="switch"');
     expect(markup).toContain("Inter");
     expect(markup).toContain("Twemoji COLR");
     expect(markup).toContain('aria-pressed="true"');

@@ -88,7 +88,11 @@ Rules:
    Notification preferences live in Rust-owned `SettingsValues.notifications`
    and are persisted through the settings store. Older settings JSON files that
    predate notification preferences must deserialize with safe defaults instead
-   of forcing React to invent a local notification policy.
+   of forcing React to invent a local notification policy. Notification
+   settings UI controls may dispatch typed `SettingsPatch.notifications`
+   updates, but browser-headless coverage must drive the visible controls and
+   assert the `update_settings` payload plus the returned Rust-shaped snapshot
+   state; React must not repair switch state locally after dispatch.
 11. E2EE trust diagnostics are kind-only. Verification, cross-signing,
    key-backup, and identity-reset commands/events may expose structured state to
    the UI, but normal `Debug`, QA logs, and window-title tokens must redact
