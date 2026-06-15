@@ -432,8 +432,29 @@ export type RoomModerationAction = "kick" | "ban" | "unban";
 
 export type PresenceKind = "online" | "away" | "offline";
 
+export interface AvatarImage {
+  mxc_uri: string;
+  thumbnail: AvatarThumbnailState;
+}
+
+export type AvatarThumbnailState =
+  | { kind: "notRequested" }
+  | { kind: "loading"; request_id: number }
+  | {
+      kind: "ready";
+      source_url: string;
+      width: number | null;
+      height: number | null;
+      mime_type: string | null;
+    }
+  | { kind: "failed"; request_id: number; failureKind: AvatarThumbnailFailureKind };
+
+export type AvatarThumbnailFailureKind = "network" | "forbidden" | "unsupported" | "sdk";
+
 export interface LiveReadReceipt {
   user_id: string;
+  display_name: string | null;
+  avatar: AvatarImage | null;
   timestamp_ms: number | null;
 }
 

@@ -171,6 +171,8 @@
             "event_id": "$e1",
             "receipts": [
               {
+                "avatar": null,
+                "display_name": "Other",
                 "timestamp_ms": 123,
                 "user_id": "@other:example.test"
               }

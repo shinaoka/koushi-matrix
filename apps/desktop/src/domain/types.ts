@@ -541,14 +541,22 @@ export interface LiveSignalsState {
 }
 
 export interface RoomLiveSignals {
-  receipts_by_event: Record<string, LiveReadReceipt[]>;
+  receipts_by_event: Record<string, LiveEventReceiptSummary>;
   fully_read_event_id: string | null;
   typing_user_ids: string[];
 }
 
 export interface LiveReadReceipt {
   user_id: string;
+  display_name: string | null;
+  avatar: AvatarImage | null;
   timestamp_ms: number | null;
+}
+
+export interface LiveEventReceiptSummary {
+  readers: LiveReadReceipt[];
+  total_count: number;
+  overflow_count: number;
 }
 
 export interface LiveEventReceipts {

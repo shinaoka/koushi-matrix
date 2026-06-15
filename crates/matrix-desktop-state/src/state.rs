@@ -2002,15 +2002,26 @@ pub struct LiveSignalsState {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomLiveSignals {
-    pub receipts_by_event: BTreeMap<String, Vec<LiveReadReceipt>>,
+    pub receipts_by_event: BTreeMap<String, LiveEventReceiptSummary>,
     pub fully_read_event_id: Option<String>,
     pub typing_user_ids: Vec<String>,
 }
 
+pub const LIVE_READ_RECEIPT_READER_CAP: usize = 3;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LiveReadReceipt {
     pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar: Option<AvatarImage>,
     pub timestamp_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LiveEventReceiptSummary {
+    pub readers: Vec<LiveReadReceipt>,
+    pub total_count: u64,
+    pub overflow_count: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2028,11 +2039,19 @@ pub struct LiveRoomSignalUpdate {
 
 impl LiveRoomSignalUpdate {
     pub fn into_room_signals(self) -> RoomLiveSignals {
+        self.into_room_signals_with_profiles(&ProfileState::default(), None)
+    }
+
+    pub fn into_room_signals_with_profiles(
+        self,
+        profiles: &ProfileState,
+        own_user_id: Option<&str>,
+    ) -> RoomLiveSignals {
         let receipts_by_event = self
             .receipts_by_event
             .into_iter()
             .map(|entry| {
-                let receipts = normalize_receipts(entry.receipts);
+                let receipts = normalize_receipts(entry.receipts, profiles, own_user_id);
                 (entry.event_id, receipts)
             })
             .collect();
@@ -2053,12 +2072,68 @@ pub enum PresenceKind {
     Offline,
 }
 
-fn normalize_receipts(receipts: Vec<LiveReadReceipt>) -> Vec<LiveReadReceipt> {
+fn normalize_receipts(
+    receipts: Vec<LiveReadReceipt>,
+    profiles: &ProfileState,
+    own_user_id: Option<&str>,
+) -> LiveEventReceiptSummary {
     let mut by_user = BTreeMap::new();
     for receipt in receipts {
-        by_user.insert(receipt.user_id.clone(), receipt);
+        let receipt = enrich_receipt(receipt, profiles, own_user_id);
+        by_user
+            .entry(receipt.user_id.clone())
+            .and_modify(|existing: &mut LiveReadReceipt| {
+                if receipt_is_newer(&receipt, existing) {
+                    *existing = receipt.clone();
+                }
+            })
+            .or_insert(receipt);
     }
-    by_user.into_values().collect()
+    let mut readers = by_user.into_values().collect::<Vec<_>>();
+    readers.sort_by(|left, right| {
+        right
+            .timestamp_ms
+            .unwrap_or_default()
+            .cmp(&left.timestamp_ms.unwrap_or_default())
+            .then_with(|| left.user_id.cmp(&right.user_id))
+    });
+
+    let total_count = readers.len() as u64;
+    let overflow_count = total_count.saturating_sub(LIVE_READ_RECEIPT_READER_CAP as u64);
+    readers.truncate(LIVE_READ_RECEIPT_READER_CAP);
+
+    LiveEventReceiptSummary {
+        readers,
+        total_count,
+        overflow_count,
+    }
+}
+
+fn receipt_is_newer(candidate: &LiveReadReceipt, existing: &LiveReadReceipt) -> bool {
+    candidate.timestamp_ms.unwrap_or_default() >= existing.timestamp_ms.unwrap_or_default()
+}
+
+fn enrich_receipt(
+    mut receipt: LiveReadReceipt,
+    profiles: &ProfileState,
+    own_user_id: Option<&str>,
+) -> LiveReadReceipt {
+    let own_profile = own_user_id
+        .filter(|user_id| *user_id == receipt.user_id)
+        .map(|_| &profiles.own);
+    let user_profile = profiles.users.get(&receipt.user_id);
+
+    if receipt.display_name.is_none() {
+        receipt.display_name = own_profile
+            .and_then(|profile| profile.display_name.clone())
+            .or_else(|| user_profile.and_then(|profile| profile.display_name.clone()));
+    }
+    if receipt.avatar.is_none() {
+        receipt.avatar = own_profile
+            .and_then(|profile| profile.avatar.clone())
+            .or_else(|| user_profile.and_then(|profile| profile.avatar.clone()));
+    }
+    receipt
 }
 
 fn sorted_unique(mut values: Vec<String>) -> Vec<String> {

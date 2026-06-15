@@ -143,8 +143,12 @@ lane sends a read receipt, sets the fully-read marker, sends a typing notice,
 and records a Rust-owned presence value through `CoreCommand`/`CoreEvent` and
 `AppState.live_signals`. The current presence proof is a Rust-owned command and
 snapshot contract; full network presence propagation stays in the Rust sync
-backend policy when the SDK API path is finalized. This stage must not print
-Matrix room IDs, event IDs, user IDs, message bodies, or raw SDK errors. On
+backend policy when the SDK API path is finalized. Browser-headless GUI coverage
+also seeds the Rust-shaped live-signal snapshot for receipt reader avatars and
+asserts capped readers, initials/image fallback, overflow, and tooltip details
+without React joining profile state locally. This stage must not print Matrix
+room IDs, event IDs, user IDs, reader display names, avatar MXC URIs, message
+bodies, or raw SDK errors. On
 local SyncService homeserver legs, the typing check may use one bounded
 debug/test `SyncOnce` on the observer account after `SetTyping` is acknowledged
 because local sliding-sync typing delivery does not reliably wake the SDK room

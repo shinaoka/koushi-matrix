@@ -229,7 +229,12 @@ An in-process actor system in `matrix-desktop-core`:
   Read receipts, fully-read markers, and typing notifications are projected
   from SDK timeline/room signals into `AppState.live_signals`; React may render
   that snapshot and dispatch typed commands, but it must not synthesize receipt,
-  marker, or typing lifecycle locally.
+  marker, or typing lifecycle locally. Receipt reader avatars are part of this
+  Rust-owned projection: reducers resolve reader display labels and avatar DTOs
+  from profile state, order readers most-recent-first, cap the rendered reader
+  list, and expose an overflow count before the data reaches `TimelineView`.
+  React must not join receipt user ids with profile maps or choose receipt
+  ordering locally.
 - Account-wide Activity is projected in `AppActor` from Rust-owned timeline
   observations plus room unread/tag summaries. `TimelineView` and focused
   timelines remain event-driven render surfaces; they do not own the Activity

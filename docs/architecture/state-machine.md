@@ -514,6 +514,14 @@ stateDiagram-v2
 - `LiveRoomReceiptsUpdated { room_id, receipts_by_event }` is a partial merge
   into the room receipt map. It does not clear typing users or the fully-read
   marker.
+- Receipt reader display data is resolved in Rust before it reaches the GUI.
+  Each event's receipt projection deduplicates by reader user id using the
+  newest timestamp, fills missing display labels and avatar DTOs from
+  `AppState.profile`, orders readers most-recent-first with deterministic
+  tie-breaking, caps the rendered reader list at the shared receipt-reader cap,
+  and carries `total_count` plus `overflow_count`. GUI code renders that
+  projection and must not join receipt ids to profile maps, choose ordering, or
+  infer hidden overflow readers locally.
 - `FullyReadMarkerUpdated { room_id, event_id }` replaces only that room's
   fully-read marker; `event_id: None` clears it.
 - `TypingUsersUpdated { room_id, user_ids }` replaces only that room's typing

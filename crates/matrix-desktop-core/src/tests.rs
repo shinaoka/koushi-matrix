@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityRow, ActivityState, AppAction, AppearanceSettings, AuthSecret,
-    ComposerMode, CrossSigningStatus, IdentityResetAuthRequest, LiveEventReceipts, LiveReadReceipt,
-    LiveRoomSignalUpdate, LoginRequest, MentionIntent, NotificationSettings, PresenceKind,
-    RecoveryRequest, RoomSummary, RoomTagKind, RoomTags, SasEmoji, SearchState, SessionInfo,
-    SessionState, SettingsPatch, SettingsPersistenceState, ThemePreference,
-    VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    AvatarImage, AvatarThumbnailState, ComposerMode, CrossSigningStatus, IdentityResetAuthRequest,
+    LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate, LoginRequest, MentionIntent,
+    NotificationSettings, PresenceKind, RecoveryRequest, RoomSummary, RoomTagKind, RoomTags,
+    SasEmoji, SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
+    ThemePreference, VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 
 use crate::command::{
@@ -433,6 +433,11 @@ fn live_signal_events_are_typed_and_debug_redacts_identifiers() {
             event_id: "$event:example.test".to_owned(),
             receipts: vec![LiveReadReceipt {
                 user_id: "@bob:example.test".to_owned(),
+                display_name: Some("Private Reader".to_owned()),
+                avatar: Some(AvatarImage {
+                    mxc_uri: "mxc://example.test/private-reader".to_owned(),
+                    thumbnail: AvatarThumbnailState::NotRequested,
+                }),
                 timestamp_ms: Some(123),
             }],
         }],
@@ -447,6 +452,10 @@ fn live_signal_events_are_typed_and_debug_redacts_identifiers() {
     let value = serde_json::to_value(&event).expect("live signal event serializes");
     assert_eq!(value["kind"], "roomSignalsUpdated");
     assert_eq!(value["room_id"], "!room:example.test");
+    let debug_update = format!("{:?}", CoreEvent::LiveSignals(event));
+    assert!(debug_update.contains("RoomSignalsUpdated"));
+    assert!(!debug_update.contains("Private Reader"), "{debug_update}");
+    assert!(!debug_update.contains("private-reader"), "{debug_update}");
 
     let completion = LiveSignalsEvent::ReadReceiptSent {
         request_id,

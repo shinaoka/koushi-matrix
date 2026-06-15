@@ -2368,12 +2368,18 @@ test("live signals render from Rust state and dispatch read/typing commands", as
           rooms: {
             "!harness-room:example.invalid": {
               receipts_by_event: {
-                "$seed-event:example.invalid": [
-                  {
-                    user_id: "@reader:example.invalid",
-                    timestamp_ms: 1_800_000_000_500
-                  }
-                ]
+                "$seed-event:example.invalid": {
+                  readers: [
+                    {
+                      user_id: "@reader:example.invalid",
+                      display_name: "Reader",
+                      avatar: null,
+                      timestamp_ms: 1_800_000_000_500
+                    }
+                  ],
+                  total_count: 1,
+                  overflow_count: 0
+                }
               },
               fully_read_event_id: "$seed-event:example.invalid",
               typing_user_ids: ["@typing-user:example.invalid"]
@@ -2406,6 +2412,84 @@ test("live signals render from Rust state and dispatch read/typing commands", as
       roomId: "!harness-room:example.invalid",
       isTyping: true
     });
+});
+
+test("read receipt avatars render from Rust projection with overflow and tooltip", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        live_signals: {
+          rooms: {
+            "!harness-room:example.invalid": {
+              receipts_by_event: {
+                "$seed-event:example.invalid": {
+                  readers: [
+                    {
+                      user_id: "@alice:example.invalid",
+                      display_name: "Alice",
+                      avatar: {
+                        mxc_uri: "mxc://example.invalid/alice",
+                        thumbnail: {
+                          kind: "ready",
+                          source_url:
+                            "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+                          width: 1,
+                          height: 1,
+                          mime_type: "image/gif"
+                        }
+                      },
+                      timestamp_ms: 1_800_000_000_500
+                    },
+                    {
+                      user_id: "@dana:example.invalid",
+                      display_name: "Dana",
+                      avatar: null,
+                      timestamp_ms: 1_800_000_000_400
+                    },
+                    {
+                      user_id: "@bob:example.invalid",
+                      display_name: "Bob",
+                      avatar: null,
+                      timestamp_ms: 1_800_000_000_300
+                    }
+                  ],
+                  total_count: 4,
+                  overflow_count: 1
+                }
+              },
+              fully_read_event_id: null,
+              typing_user_ids: []
+            }
+          },
+          presence: {}
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
+  const receipts = row.locator(".message-receipts");
+  await expect(receipts).toHaveAttribute("aria-label", /Read by 4/);
+  await expect(receipts).toHaveAttribute("aria-label", /Alice/);
+  await expect(receipts.locator(".receipt-reader-avatar")).toHaveCount(3);
+  await expect(receipts.locator(".receipt-reader-avatar img")).toHaveCount(1);
+  await expect(receipts.locator(".receipt-reader-avatar").nth(1)).toHaveText("DA");
+  await expect(receipts.locator(".receipt-overflow")).toHaveText("+1");
+
+  await receipts.hover();
+  await expect(receipts.locator(".receipt-tooltip")).toBeVisible();
+  await expect(receipts.locator(".receipt-tooltip")).toContainText("Alice");
+  await expect(receipts.locator(".receipt-tooltip")).toContainText("Dana");
+  await expect(receipts.locator(".receipt-tooltip")).toContainText("Bob");
+  await expect(receipts.locator(".receipt-tooltip")).toContainText("1 more");
 });
 
 test("redact message invokes redact_message and shows the redacted placeholder", async ({

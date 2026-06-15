@@ -2785,6 +2785,8 @@ impl TimelineActor {
                     event_id: event_id.to_owned(),
                     receipts: vec![LiveReadReceipt {
                         user_id: user_id.to_string(),
+                        display_name: None,
+                        avatar: None,
                         timestamp_ms: None,
                     }],
                 }],
@@ -3046,6 +3048,8 @@ fn live_event_receipts_from_sdk_item(
         .iter()
         .map(|(user_id, receipt)| LiveReadReceipt {
             user_id: user_id.to_string(),
+            display_name: None,
+            avatar: None,
             timestamp_ms: receipt.ts.map(|timestamp| timestamp.0.into()),
         })
         .collect::<Vec<_>>();

@@ -148,6 +148,12 @@ conflict is being resolved.
 - Decrypted event bodies and plaintext-derived data MUST NOT be persisted in
   first-party stores outside an encrypted Matrix SDK store or encrypted search
   index.
+- Read-receipt reader avatars are Rust-owned live-signal projection data.
+  Reducers/core must resolve reader labels/avatar DTOs, most-recent-first
+  ordering, cap, and overflow count before the snapshot reaches React. GUI code
+  may render that projection and provide ephemeral tooltip visibility only; it
+  must not join receipt user ids with profile maps, choose receipt ordering, or
+  print real reader names/avatar MXC URIs in QA evidence.
 - Ngram terms, token dictionaries, postings, highlight spans, and attachment
   filename matches are plaintext-derived data. Treat them with the same
   confidentiality as the original message text.

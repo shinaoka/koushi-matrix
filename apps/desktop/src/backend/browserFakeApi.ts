@@ -24,6 +24,8 @@ import type {
   PresenceKind,
   LocaleSettings,
   LocaleDisplayProfile,
+  LiveEventReceiptSummary,
+  LiveReadReceipt,
   MentionIntent,
   SpaceSummary,
   TimelineMessage
@@ -567,11 +569,16 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
     const roomSignals = ensureRoomLiveSignals(this.snapshot, roomId);
-    const existing = roomSignals.receipts_by_event[eventId] ?? [];
-    roomSignals.receipts_by_event[eventId] = [
+    const existing = roomSignals.receipts_by_event[eventId]?.readers ?? [];
+    roomSignals.receipts_by_event[eventId] = projectReceiptSummary([
       ...existing.filter((receipt) => receipt.user_id !== session.user_id),
-      { user_id: session.user_id, timestamp_ms: Date.now() }
-    ];
+      {
+        user_id: session.user_id,
+        display_name: this.snapshot.state.profile.own.display_name,
+        avatar: this.snapshot.state.profile.own.avatar,
+        timestamp_ms: Date.now()
+      }
+    ]);
     return this.getSnapshot();
   }
 
@@ -1967,6 +1974,19 @@ function ensureRoomLiveSignals(
     typing_user_ids: []
   };
   return snapshot.state.live_signals.rooms[roomId];
+}
+
+function projectReceiptSummary(receipts: LiveReadReceipt[]): LiveEventReceiptSummary {
+  const readers = [...receipts].sort((left, right) => {
+    const byTimestamp = (right.timestamp_ms ?? 0) - (left.timestamp_ms ?? 0);
+    return byTimestamp || left.user_id.localeCompare(right.user_id);
+  });
+  const totalCount = readers.length;
+  return {
+    readers: readers.slice(0, 3),
+    total_count: totalCount,
+    overflow_count: Math.max(0, totalCount - 3)
+  };
 }
 
 function defaultLocaleDisplayProfile(): LocaleDisplayProfile {

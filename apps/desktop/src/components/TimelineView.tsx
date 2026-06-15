@@ -720,7 +720,13 @@ export function TimelineView({
               presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
               profile={item.sender ? profileUsers[item.sender] : undefined}
               mentionProfileUsers={profileUsers}
-              receipts={eventId ? roomSignals?.receipts_by_event[eventId] ?? [] : []}
+              receipts={eventId ? roomSignals?.receipts_by_event[eventId]?.readers ?? [] : []}
+              receiptTotalCount={
+                eventId ? roomSignals?.receipts_by_event[eventId]?.total_count ?? 0 : 0
+              }
+              receiptOverflowCount={
+                eventId ? roomSignals?.receipts_by_event[eventId]?.overflow_count ?? 0 : 0
+              }
             />
           </div>
         );
@@ -764,7 +770,9 @@ export function TimelineItemRow({
   presence,
   profile,
   mentionProfileUsers = {},
-  receipts = []
+  receipts = [],
+  receiptTotalCount = receipts.length,
+  receiptOverflowCount = 0
 }: {
   item: TimelineItem;
   roomId: string;
@@ -790,6 +798,8 @@ export function TimelineItemRow({
   profile?: UserProfile;
   mentionProfileUsers?: Record<string, UserProfile>;
   receipts?: LiveReadReceipt[];
+  receiptTotalCount?: number;
+  receiptOverflowCount?: number;
 }) {
   const domId = timelineItemDomId(item.id);
   const transactionId = "Transaction" in item.id ? item.id.Transaction.transaction_id : null;
@@ -1103,6 +1113,10 @@ export function TimelineItemRow({
         item.thread_summary.latest_body_preview
       )
     : "";
+  const receiptDetails = formatReceiptDetails(receipts, receiptOverflowCount);
+  const receiptLabel = t("timeline.readBy", { count: receiptTotalCount });
+  const receiptAriaLabel =
+    receiptDetails.length > 0 ? `${receiptLabel}: ${receiptDetails.join("; ")}` : receiptLabel;
   const replyQuoteContent =
     !isRedacted && item.reply_quote ? (
       <div className="reply-quote" data-reply-state={item.reply_quote.state}>
@@ -1227,14 +1241,33 @@ export function TimelineItemRow({
             <span>{threadSummaryText}</span>
           </button>
         ) : null}
-        {receipts.length > 0 ? (
-          <div className="message-receipts" aria-label={t("timeline.readBy", { count: receipts.length })}>
-            <span className="receipt-dots" aria-hidden="true">
-              {receipts.slice(0, 3).map((receipt) => (
-                <span className="receipt-dot" key={receipt.user_id} />
+        {receiptTotalCount > 0 ? (
+          <div className="message-receipts" aria-label={receiptAriaLabel} tabIndex={0}>
+            <span className="receipt-avatars" aria-hidden="true">
+              {receipts.map((receipt) => {
+                const sourceUrl = receiptAvatarSource(receipt);
+                return (
+                  <span className="receipt-reader-avatar" key={receipt.user_id}>
+                    {sourceUrl ? (
+                      <img src={sourceUrl} alt={receiptDisplayName(receipt)} />
+                    ) : (
+                      <span dir="auto">{receiptInitials(receipt)}</span>
+                    )}
+                  </span>
+                );
+              })}
+              {receiptOverflowCount > 0 ? (
+                <span className="receipt-overflow">+{receiptOverflowCount}</span>
+              ) : null}
+            </span>
+            <span>{receiptLabel}</span>
+            <span className="receipt-tooltip" role="tooltip">
+              {receiptDetails.map((detail, index) => (
+                <span key={`${detail}:${index}`} dir="auto">
+                  {detail}
+                </span>
               ))}
             </span>
-            <span>{t("timeline.readBy", { count: receipts.length })}</span>
           </div>
         ) : null}
         {canShowReactions ? (
@@ -1553,6 +1586,45 @@ function formatTypingUsers(userIds: string[]): string {
     return t("timeline.typingOne", { user: firstUser });
   }
   return t("timeline.typingMany", { count: userIds.length });
+}
+
+function formatReceiptDetails(receipts: LiveReadReceipt[], overflowCount: number): string[] {
+  const details = receipts.map((receipt) => {
+    const timestamp = formatReceiptTimestamp(receipt.timestamp_ms);
+    const name = receiptDisplayName(receipt);
+    return timestamp ? `${name} ${timestamp}` : name;
+  });
+  if (overflowCount > 0) {
+    details.push(t("timeline.readReceiptOverflow", { count: overflowCount }));
+  }
+  return details;
+}
+
+function receiptDisplayName(receipt: LiveReadReceipt): string {
+  return receipt.display_name?.trim() || receipt.user_id;
+}
+
+function receiptInitials(receipt: LiveReadReceipt): string {
+  const label = receiptDisplayName(receipt);
+  const ascii = label.match(/[A-Za-z]/g);
+  if (ascii?.length) {
+    return ascii.slice(0, 2).join("").toUpperCase();
+  }
+  return label.slice(0, 2);
+}
+
+function receiptAvatarSource(receipt: LiveReadReceipt): string | null {
+  return receipt.avatar?.thumbnail.kind === "ready" ? receipt.avatar.thumbnail.source_url : null;
+}
+
+function formatReceiptTimestamp(timestampMs: number | null): string | null {
+  if (timestampMs === null) {
+    return null;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(timestampMs));
 }
 
 function presenceLabel(presence: PresenceKind): string {

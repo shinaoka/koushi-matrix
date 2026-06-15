@@ -159,6 +159,11 @@ Rules:
    thumbnail paths, encrypted media keys/hashes, or raw SDK errors. React must
    render avatar images only from Rust/platform-owned ready source URLs and must
    fall back to generated initials for MXC, loading, or failed thumbnail states.
+   Read-receipt reader avatars use the same boundary: `AppState.live_signals`
+   carries Rust-resolved reader labels, avatar DTOs, read timestamps, capped
+   reader ordering, and overflow counts; React must not resolve reader profiles
+   locally or include real reader names/avatar MXC URIs in QA tokens, logs, or
+   issue evidence.
 15. Message-action diagnostics are metadata-minimized. `TimelineItem.actions`
    may expose coarse affordance booleans and synthetic/test permalinks through
    the typed timeline DTO, but normal `Debug`, QA logs, errors, window-title

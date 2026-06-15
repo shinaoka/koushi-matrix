@@ -409,6 +409,7 @@ export type MessageId =
   | "timeline.reactionPicker"
   | "timeline.reactionOption"
   | "timeline.readBy"
+  | "timeline.readReceiptOverflow"
   | "timeline.readMarker"
   | "timeline.olderMessages"
   | "timeline.saveEdit"
@@ -979,6 +980,7 @@ const en: Catalog = {
   "timeline.reactionPicker": "Choose reaction",
   "timeline.reactionOption": "React with {emoji}",
   "timeline.readBy": "Read by {count}",
+  "timeline.readReceiptOverflow": "{count} more",
   "timeline.readMarker": "Read up to here",
   "timeline.olderMessages": "Older messages",
   "timeline.saveEdit": "Save edit",
@@ -1457,6 +1459,7 @@ const ja: Catalog = {
   "timeline.reactionPicker": "リアクションを選択",
   "timeline.reactionOption": "{emoji}でリアクション",
   "timeline.readBy": "{count} 人が既読",
+  "timeline.readReceiptOverflow": "他 {count} 人",
   "timeline.readMarker": "ここまで既読",
   "timeline.olderMessages": "古いメッセージ",
   "timeline.saveEdit": "編集を保存",

@@ -6554,7 +6554,7 @@ async fn run_live_signals_stage(
             .rooms
             .get(&room_id)
             .and_then(|room| room.receipts_by_event.get(event_id))
-            .is_some_and(|receipts| !receipts.is_empty())
+            .is_some_and(|receipts| !receipts.readers.is_empty())
     })
     .await?;
     println!("read_receipt=ok");

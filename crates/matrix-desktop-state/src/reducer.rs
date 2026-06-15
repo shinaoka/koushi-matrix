@@ -2260,10 +2260,11 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
-            state
-                .live_signals
-                .rooms
-                .insert(room_id, update.into_room_signals());
+            let own_user_id = session_user_id(state).map(str::to_owned);
+            state.live_signals.rooms.insert(
+                room_id,
+                update.into_room_signals_with_profiles(&state.profile, own_user_id.as_deref()),
+            );
             vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
         }
         AppAction::LiveRoomReceiptsUpdated {
@@ -2274,13 +2275,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let own_user_id = session_user_id(state).map(str::to_owned);
             let room = state.live_signals.rooms.entry(room_id).or_default();
             let normalized = crate::state::LiveRoomSignalUpdate {
                 receipts_by_event,
                 fully_read_event_id: None,
                 typing_user_ids: Vec::new(),
             }
-            .into_room_signals();
+            .into_room_signals_with_profiles(&state.profile, own_user_id.as_deref());
             for (event_id, receipts) in normalized.receipts_by_event {
                 room.receipts_by_event.insert(event_id, receipts);
             }
@@ -2357,6 +2359,15 @@ fn is_session_ready(state: &AppState) -> bool {
             | SessionState::NeedsRecovery { .. }
             | SessionState::Recovering { .. }
     )
+}
+
+fn session_user_id(state: &AppState) -> Option<&str> {
+    match &state.session {
+        SessionState::Ready(info)
+        | SessionState::NeedsRecovery { info, .. }
+        | SessionState::Recovering { info, .. } => Some(info.user_id.as_str()),
+        _ => None,
+    }
 }
 
 fn room_exists(state: &AppState, room_id: &str) -> bool {
@@ -2721,7 +2732,8 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
 mod tests {
     use super::*;
     use crate::state::{
-        LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate, PresenceKind, RoomLiveSignals,
+        AvatarImage, AvatarThumbnailState, LiveEventReceiptSummary, LiveEventReceipts,
+        LiveReadReceipt, LiveRoomSignalUpdate, PresenceKind, RoomLiveSignals, UserProfile,
     };
 
     fn ready_state() -> AppState {
@@ -2747,6 +2759,8 @@ mod tests {
                         event_id: "$event:example.invalid".to_owned(),
                         receipts: vec![LiveReadReceipt {
                             user_id: "@bob:example.invalid".to_owned(),
+                            display_name: None,
+                            avatar: None,
                             timestamp_ms: Some(1_234),
                         }],
                     }],
@@ -2769,10 +2783,16 @@ mod tests {
             Some(&RoomLiveSignals {
                 receipts_by_event: [(
                     "$event:example.invalid".to_owned(),
-                    vec![LiveReadReceipt {
-                        user_id: "@bob:example.invalid".to_owned(),
-                        timestamp_ms: Some(1_234),
-                    }],
+                    LiveEventReceiptSummary {
+                        readers: vec![LiveReadReceipt {
+                            user_id: "@bob:example.invalid".to_owned(),
+                            display_name: None,
+                            avatar: None,
+                            timestamp_ms: Some(1_234),
+                        }],
+                        total_count: 1,
+                        overflow_count: 0,
+                    },
                 )]
                 .into(),
                 fully_read_event_id: Some("$event:example.invalid".to_owned()),
@@ -2825,6 +2845,126 @@ mod tests {
                 effect,
                 AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)
             ))
+        );
+    }
+
+    #[test]
+    fn live_read_receipts_project_reader_profiles_order_and_overflow() {
+        let mut state = ready_state();
+        state.profile.users.insert(
+            "@alice:example.invalid".to_owned(),
+            UserProfile {
+                user_id: "@alice:example.invalid".to_owned(),
+                display_name: Some("Alice".to_owned()),
+                avatar: Some(AvatarImage {
+                    mxc_uri: "mxc://example.invalid/alice".to_owned(),
+                    thumbnail: AvatarThumbnailState::NotRequested,
+                }),
+            },
+        );
+        state.profile.users.insert(
+            "@bob:example.invalid".to_owned(),
+            UserProfile {
+                user_id: "@bob:example.invalid".to_owned(),
+                display_name: Some("Bob".to_owned()),
+                avatar: Some(AvatarImage {
+                    mxc_uri: "mxc://example.invalid/bob".to_owned(),
+                    thumbnail: AvatarThumbnailState::NotRequested,
+                }),
+            },
+        );
+        state.profile.users.insert(
+            "@carol:example.invalid".to_owned(),
+            UserProfile {
+                user_id: "@carol:example.invalid".to_owned(),
+                display_name: Some("Carol".to_owned()),
+                avatar: None,
+            },
+        );
+
+        let effects = reduce(
+            &mut state,
+            AppAction::LiveRoomReceiptsUpdated {
+                room_id: "!room:example.invalid".to_owned(),
+                receipts_by_event: vec![LiveEventReceipts {
+                    event_id: "$event:example.invalid".to_owned(),
+                    receipts: vec![
+                        LiveReadReceipt {
+                            user_id: "@alice:example.invalid".to_owned(),
+                            display_name: None,
+                            avatar: None,
+                            timestamp_ms: Some(1_000),
+                        },
+                        LiveReadReceipt {
+                            user_id: "@bob:example.invalid".to_owned(),
+                            display_name: None,
+                            avatar: None,
+                            timestamp_ms: Some(3_000),
+                        },
+                        LiveReadReceipt {
+                            user_id: "@carol:example.invalid".to_owned(),
+                            display_name: None,
+                            avatar: None,
+                            timestamp_ms: Some(2_000),
+                        },
+                        LiveReadReceipt {
+                            user_id: "@dana:example.invalid".to_owned(),
+                            display_name: Some("Dana".to_owned()),
+                            avatar: None,
+                            timestamp_ms: Some(4_000),
+                        },
+                        LiveReadReceipt {
+                            user_id: "@alice:example.invalid".to_owned(),
+                            display_name: None,
+                            avatar: None,
+                            timestamp_ms: Some(5_000),
+                        },
+                    ],
+                }],
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        );
+        let summary = state
+            .live_signals
+            .rooms
+            .get("!room:example.invalid")
+            .and_then(|room| room.receipts_by_event.get("$event:example.invalid"))
+            .expect("receipt projection");
+        assert_eq!(summary.total_count, 4);
+        assert_eq!(summary.overflow_count, 1);
+        assert_eq!(
+            summary
+                .readers
+                .iter()
+                .map(|receipt| (
+                    receipt.user_id.as_str(),
+                    receipt.display_name.as_deref(),
+                    receipt.timestamp_ms,
+                    receipt
+                        .avatar
+                        .as_ref()
+                        .map(|avatar| avatar.mxc_uri.as_str()),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "@alice:example.invalid",
+                    Some("Alice"),
+                    Some(5_000),
+                    Some("mxc://example.invalid/alice"),
+                ),
+                ("@dana:example.invalid", Some("Dana"), Some(4_000), None),
+                (
+                    "@bob:example.invalid",
+                    Some("Bob"),
+                    Some(3_000),
+                    Some("mxc://example.invalid/bob"),
+                ),
+            ]
         );
     }
 }

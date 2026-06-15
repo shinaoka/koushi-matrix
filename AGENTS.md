@@ -412,6 +412,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   fully-read markers, typing users, and presence. React may render it and
   dispatch typed commands only; do not add React-local receipt, marker, typing,
   or presence semantics.
+- Read-receipt reader avatars are also Rust-owned live-signal projection data:
+  reducers resolve reader display labels and avatar DTOs from profile state,
+  dedupe by reader using the newest timestamp, order readers most-recent-first,
+  cap the rendered readers, and expose `overflow_count`. `TimelineView` renders
+  that DTO and may own only tooltip visibility through DOM/CSS; do not join
+  receipts with `profile.users` in React.
 - Timeline live-signal commands route through `TimelineCommand` and the
   subscribed `TimelineActor`: `SendReadReceipt`, `SetFullyRead`, and
   `SetTyping`. Account presence routes through `AccountCommand::SetPresence`.

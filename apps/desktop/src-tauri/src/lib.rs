@@ -1794,6 +1794,8 @@ mod tests {
                         event_id: "$e1".to_owned(),
                         receipts: vec![LiveReadReceipt {
                             user_id: "@other:example.test".to_owned(),
+                            display_name: Some("Other".to_owned()),
+                            avatar: None,
                             timestamp_ms: Some(123),
                         }],
                     }],
