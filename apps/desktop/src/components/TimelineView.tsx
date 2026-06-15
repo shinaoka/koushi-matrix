@@ -120,6 +120,14 @@ export interface TimelineTransport {
   unpinEvent(roomId: string, eventId: string): Promise<void>;
   /** Download an event-backed media attachment. */
   downloadMedia(roomId: string, eventId: string): Promise<void>;
+  /** Request a Rust-owned safe source DTO for an event-backed item. */
+  loadMessageSource(roomId: string, eventId: string): Promise<void>;
+  /** Forward an event-backed message through Rust-owned source projection. */
+  forwardMessage(
+    roomId: string,
+    sourceEventId: string,
+    destinationRoomId: string
+  ): Promise<void>;
 }
 
 /**
@@ -394,7 +402,11 @@ export function TimelineView({
                   ? event.MediaUploadProgress.key
                   : "MediaDownloadCompleted" in event
                     ? event.MediaDownloadCompleted.key
-                    : event.ResyncRequired.key;
+                    : "MessageForwarded" in event
+                      ? event.MessageForwarded.key
+                      : "MessageSourceLoaded" in event
+                        ? event.MessageSourceLoaded.key
+                        : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         return;
       }
@@ -412,6 +424,10 @@ export function TimelineView({
       if ("ResyncRequired" in event) {
         pendingAnchorRef.current = null;
         anchorRestorePendingRef.current = false;
+      }
+
+      if ("MessageForwarded" in event || "MessageSourceLoaded" in event) {
+        return;
       }
 
       setStore((current) => applyTimelineEvent(current, event));

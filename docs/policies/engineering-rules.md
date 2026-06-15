@@ -115,6 +115,9 @@ Rules:
    generated permalinks, message bodies, sender IDs, transaction IDs, or raw SDK
    errors. React must not generate Matrix permalinks or decide action
    eligibility locally; it may render/copy only the Rust-owned DTO values.
+   `TimelineMessageSource` is a safe UI projection, not a raw event dump, and
+   forward commands must send Rust-projected content rather than React-copied
+   message bodies.
 
 ## Logging and Diagnostics
 

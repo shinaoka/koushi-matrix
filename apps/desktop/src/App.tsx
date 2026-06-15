@@ -221,6 +221,16 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       },
       async downloadMedia(roomId: string, eventId: string) {
         await invoke("download_media", { roomId, eventId });
+      },
+      async loadMessageSource(roomId: string, eventId: string) {
+        await invoke("load_message_source", { roomId, eventId });
+      },
+      async forwardMessage(
+        roomId: string,
+        sourceEventId: string,
+        destinationRoomId: string
+      ) {
+        await invoke("forward_message", { roomId, sourceEventId, destinationRoomId });
       }
     }
   : null;

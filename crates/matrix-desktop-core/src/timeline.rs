@@ -83,8 +83,8 @@ use crate::event::{
     CoreEvent, LiveSignalsEvent, MediaTransferProgress, PaginationDirection, PaginationState,
     ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
     TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
-    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
-    message_actions_for_timeline_item,
+    TimelineMessageSource, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
+    message_actions_for_timeline_item, message_source_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -278,6 +278,40 @@ impl TimelineManagerActor {
                         in_reply_to_event_id,
                         body,
                         mentions,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::ForwardMessage {
+                request_id,
+                key,
+                source_event_id,
+                destination_room_id,
+                transaction_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::ForwardMessage {
+                        request_id,
+                        source_event_id,
+                        destination_room_id,
+                        transaction_id,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::LoadMessageSource {
+                request_id,
+                key,
+                event_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::LoadMessageSource {
+                        request_id,
+                        event_id,
                     },
                 )
                 .await;
@@ -928,6 +962,16 @@ enum TimelineActorMessage {
         body: String,
         mentions: MentionIntent,
     },
+    ForwardMessage {
+        request_id: RequestId,
+        source_event_id: String,
+        destination_room_id: String,
+        transaction_id: String,
+    },
+    LoadMessageSource {
+        request_id: RequestId,
+        event_id: String,
+    },
     RetrySend {
         request_id: RequestId,
         transaction_id: String,
@@ -1197,6 +1241,26 @@ impl TimelineActor {
                     mentions,
                 )
                 .await;
+            }
+            TimelineActorMessage::ForwardMessage {
+                request_id,
+                source_event_id,
+                destination_room_id,
+                transaction_id,
+            } => {
+                self.handle_forward_message(
+                    request_id,
+                    source_event_id,
+                    destination_room_id,
+                    transaction_id,
+                )
+                .await;
+            }
+            TimelineActorMessage::LoadMessageSource {
+                request_id,
+                event_id,
+            } => {
+                self.handle_load_message_source(request_id, event_id).await;
             }
             TimelineActorMessage::RetrySend {
                 request_id,
@@ -1552,6 +1616,82 @@ impl TimelineActor {
                         kind: TimelineFailureKind::Sdk,
                     },
                 );
+            }
+        }
+    }
+
+    async fn handle_load_message_source(&mut self, request_id: RequestId, event_id: String) {
+        let Some(source) = self.project_message_source_for_event(&event_id).await else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+
+        self.emit(CoreEvent::Timeline(TimelineEvent::MessageSourceLoaded {
+            request_id,
+            key: self.key.clone(),
+            source,
+        }));
+    }
+
+    async fn handle_forward_message(
+        &mut self,
+        request_id: RequestId,
+        source_event_id: String,
+        destination_room_id: String,
+        transaction_id: String,
+    ) {
+        let Some(source) = self
+            .project_message_source_for_event(&source_event_id)
+            .await
+        else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+        let Some(body) = source
+            .body
+            .as_deref()
+            .filter(|body| !body.trim().is_empty())
+        else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
+            return;
+        };
+        if source.is_redacted {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
+            return;
+        }
+
+        let destination_room_id_parsed = match matrix_sdk::ruma::RoomId::parse(&destination_room_id)
+        {
+            Ok(room_id) => room_id,
+            Err(_) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+                return;
+            }
+        };
+        let Some(destination_room) = self.session.client().get_room(&destination_room_id_parsed)
+        else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+
+        let txn_id = matrix_sdk::ruma::OwnedTransactionId::from(transaction_id.clone());
+        let content = RoomMessageEventContent::text_plain(body);
+        match destination_room
+            .send(content)
+            .with_transaction_id(txn_id)
+            .await
+        {
+            Ok(result) => {
+                self.emit(CoreEvent::Timeline(TimelineEvent::MessageForwarded {
+                    request_id,
+                    key: self.key.clone(),
+                    destination_room_id,
+                    transaction_id,
+                    event_id: result.response.event_id.to_string(),
+                }));
+            }
+            Err(_) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::Sdk);
             }
         }
     }
@@ -2310,6 +2450,30 @@ impl TimelineActor {
             ids.push(TimelineEventItemId::TransactionId(txn.clone()));
         }
         ids
+    }
+
+    async fn project_message_source_for_event(
+        &self,
+        event_id: &str,
+    ) -> Option<TimelineMessageSource> {
+        let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+        let items = self.timeline.items().await;
+        for item in items.iter().rev() {
+            let TimelineItemKind::Event(event_item) = item.kind() else {
+                continue;
+            };
+            if !event_item
+                .event_id()
+                .map(|candidate| candidate.as_str() == parsed_event_id.as_str())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let projected = sdk_item_to_timeline_item(&self.key, item, self.own_user_id.as_deref());
+            return message_source_for_timeline_item(&projected);
+        }
+        None
     }
 
     async fn reaction_target_state(

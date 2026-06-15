@@ -249,6 +249,17 @@ only when the DTO says it is available; it must not build Matrix permalinks,
 infer action eligibility from `TimelineItemId`, body/media fields, or redaction
 flags, or invent forward/source behavior.
 
+`TimelineCommand::LoadMessageSource` loads a Rust-owned
+`TimelineMessageSource` safe DTO for a subscribed event. It contains the
+projected event id, sender, timestamp, visible body, reply/thread relation
+ids, redaction/edit flags, and a media-presence flag; it is not a raw Matrix
+event JSON dump. `TimelineCommand::ForwardMessage` resolves the source item in
+Rust, sends only the projected visible body to the destination room, and emits
+`MessageForwarded` when the destination send completes. React supplies source
+and destination identifiers only; it must not copy the body, inspect raw event
+JSON, or synthesize forward content. Media-only forwarding remains disabled
+until a separate Rust-owned media-forward contract exists.
+
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:
 
@@ -281,9 +292,10 @@ stateDiagram-v2
   event items keep event-scoped affordances such as permalink/source visibility
   but lose copy/forward affordances unless Rust explicitly restores them.
 - Copy is allowed only when Rust projected a visible body and the item is not
-  redacted. Forward is allowed only when Rust projected visible body or media
-  and the item is not redacted. Future forward/source commands must consume
-  typed Rust-owned DTOs rather than raw React-side event inspection.
+  redacted. Forward is allowed only when Rust projected a visible body and the
+  item is not redacted; media-only items stay non-forwardable until media
+  forwarding has its own Rust-owned contract. Future source extensions must
+  consume typed Rust-owned DTOs rather than raw React-side event inspection.
 - `RoomPinnedEventsUpdated { room_id, pinned }` replaces only that room's
   pinned-event list and emits `RoomInteractionsChanged` when the list changes.
   It may arrive from sync or as the post-command refresh after successful

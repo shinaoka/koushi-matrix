@@ -130,6 +130,18 @@ export interface TimelineMessageActions {
   permalink?: string | null;
 }
 
+export interface TimelineMessageSource {
+  event_id: string;
+  sender: string | null;
+  timestamp_ms: number | null;
+  body: string | null;
+  in_reply_to_event_id: string | null;
+  thread_root: string | null;
+  is_redacted: boolean;
+  is_edited: boolean;
+  has_media: boolean;
+}
+
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
@@ -224,6 +236,22 @@ export type TimelineEvent =
         key: TimelineKey;
         transaction_id: string;
         event_id: string;
+      };
+    }
+  | {
+      MessageForwarded: {
+        request_id: RequestId;
+        key: TimelineKey;
+        destination_room_id: string;
+        transaction_id: string;
+        event_id: string;
+      };
+    }
+  | {
+      MessageSourceLoaded: {
+        request_id: RequestId;
+        key: TimelineKey;
+        source: TimelineMessageSource;
       };
     }
   | {

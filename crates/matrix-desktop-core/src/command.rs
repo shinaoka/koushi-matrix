@@ -103,6 +103,8 @@ impl CoreCommand {
                 | TimelineCommand::Paginate { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
+                | TimelineCommand::ForwardMessage { request_id, .. }
+                | TimelineCommand::LoadMessageSource { request_id, .. }
                 | TimelineCommand::RetrySend { request_id, .. }
                 | TimelineCommand::CancelSend { request_id, .. }
                 | TimelineCommand::UploadAndSendMedia { request_id, .. }
@@ -970,6 +972,18 @@ pub enum TimelineCommand {
         body: String,
         mentions: MentionIntent,
     },
+    ForwardMessage {
+        request_id: RequestId,
+        key: TimelineKey,
+        source_event_id: String,
+        destination_room_id: String,
+        transaction_id: String,
+    },
+    LoadMessageSource {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
     RetrySend {
         request_id: RequestId,
         key: TimelineKey,
@@ -1093,6 +1107,20 @@ impl fmt::Debug for TimelineCommand {
                 .field("in_reply_to_event_id", &"EventId(..)")
                 .field("body", &"MessageBody(..)")
                 .field("mentions", &"MentionIntent(..)")
+                .finish(),
+            Self::ForwardMessage { request_id, .. } => formatter
+                .debug_struct("ForwardMessage")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("source_event_id", &"EventId(..)")
+                .field("destination_room_id", &"RoomId(..)")
+                .field("transaction_id", &"TransactionId(..)")
+                .finish(),
+            Self::LoadMessageSource { request_id, .. } => formatter
+                .debug_struct("LoadMessageSource")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
                 .finish(),
             Self::RetrySend { request_id, .. } => formatter
                 .debug_struct("RetrySend")
@@ -1297,6 +1325,64 @@ mod tests {
         assert!(debug.contains("txn-reply"), "{debug}");
         assert!(!debug.contains("secret reply body"), "{debug}");
         assert!(!debug.contains("$event:test"), "{debug}");
+    }
+
+    #[test]
+    fn forward_message_debug_redacts_source_destination_and_transaction() {
+        let request_id = fake_rid(71);
+        let command = TimelineCommand::ForwardMessage {
+            request_id,
+            key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!source-room:test"),
+            source_event_id: "$source-event:test".to_owned(),
+            destination_room_id: "!destination-room:test".to_owned(),
+            transaction_id: "txn-forward-private".to_owned(),
+        };
+
+        assert_eq!(CoreCommand::Timeline(command).request_id(), request_id);
+
+        let command = TimelineCommand::ForwardMessage {
+            request_id,
+            key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!source-room:test"),
+            source_event_id: "$source-event:test".to_owned(),
+            destination_room_id: "!destination-room:test".to_owned(),
+            transaction_id: "txn-forward-private".to_owned(),
+        };
+        let debug = format!("{command:?}");
+        assert!(debug.contains("ForwardMessage"), "{debug}");
+        assert!(debug.contains("TimelineKey(..)"), "{debug}");
+        assert!(debug.contains("EventId(..)"), "{debug}");
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        assert!(debug.contains("TransactionId(..)"), "{debug}");
+        assert!(!debug.contains("@a:test"), "{debug}");
+        assert!(!debug.contains("!source-room:test"), "{debug}");
+        assert!(!debug.contains("$source-event:test"), "{debug}");
+        assert!(!debug.contains("!destination-room:test"), "{debug}");
+        assert!(!debug.contains("txn-forward-private"), "{debug}");
+    }
+
+    #[test]
+    fn load_message_source_debug_redacts_timeline_key_and_event_id() {
+        let request_id = fake_rid(72);
+        let command = TimelineCommand::LoadMessageSource {
+            request_id,
+            key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!source-room:test"),
+            event_id: "$source-event:test".to_owned(),
+        };
+
+        assert_eq!(CoreCommand::Timeline(command).request_id(), request_id);
+
+        let command = TimelineCommand::LoadMessageSource {
+            request_id,
+            key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!source-room:test"),
+            event_id: "$source-event:test".to_owned(),
+        };
+        let debug = format!("{command:?}");
+        assert!(debug.contains("LoadMessageSource"), "{debug}");
+        assert!(debug.contains("TimelineKey(..)"), "{debug}");
+        assert!(debug.contains("EventId(..)"), "{debug}");
+        assert!(!debug.contains("@a:test"), "{debug}");
+        assert!(!debug.contains("!source-room:test"), "{debug}");
+        assert!(!debug.contains("$source-event:test"), "{debug}");
     }
 
     #[test]

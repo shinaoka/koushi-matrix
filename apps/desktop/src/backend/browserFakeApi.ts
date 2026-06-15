@@ -80,6 +80,12 @@ export interface DesktopApi {
   setAvatar(mimeType: string, bytes: number[]): Promise<DesktopSnapshot>;
   editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
   redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  loadMessageSource(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  forwardMessage(
+    roomId: string,
+    sourceEventId: string,
+    destinationRoomId: string
+  ): Promise<DesktopSnapshot>;
   leaveRoom(roomId: string): Promise<DesktopSnapshot>;
   forgetRoom(roomId: string): Promise<DesktopSnapshot>;
   setRoomTag(roomId: string, tag: RoomTagKind, order?: number | null): Promise<DesktopSnapshot>;
@@ -634,6 +640,18 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.timeline = this.snapshot.timeline.filter(
       (message) => !(message.room_id === roomId && message.event_id === eventId)
     );
+    return this.getSnapshot();
+  }
+
+  async loadMessageSource(_roomId: string, _eventId: string): Promise<DesktopSnapshot> {
+    return this.getSnapshot();
+  }
+
+  async forwardMessage(
+    _roomId: string,
+    _sourceEventId: string,
+    _destinationRoomId: string
+  ): Promise<DesktopSnapshot> {
     return this.getSnapshot();
   }
 

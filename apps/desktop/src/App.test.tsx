@@ -522,7 +522,9 @@ describe("ContextualRightPanel", () => {
             redactMessage: async () => undefined,
             pinEvent: async () => undefined,
             unpinEvent: async () => undefined,
-            downloadMedia: async () => undefined
+            downloadMedia: async () => undefined,
+            loadMessageSource: async () => undefined,
+            forwardMessage: async () => undefined
           } as const
         }
         onClosePanel={() => undefined}
@@ -587,7 +589,9 @@ describe("ContextualRightPanel", () => {
             redactMessage: async () => undefined,
             pinEvent: async () => undefined,
             unpinEvent: async () => undefined,
-            downloadMedia: async () => undefined
+            downloadMedia: async () => undefined,
+            loadMessageSource: async () => undefined,
+            forwardMessage: async () => undefined
           } as const
         }
         onClosePanel={() => undefined}
@@ -666,7 +670,9 @@ describe("ContextualRightPanel", () => {
             redactMessage: async () => undefined,
             pinEvent: async () => undefined,
             unpinEvent: async () => undefined,
-            downloadMedia: async () => undefined
+            downloadMedia: async () => undefined,
+            loadMessageSource: async () => undefined,
+            forwardMessage: async () => undefined
           } as const
         }
         onClosePanel={() => undefined}

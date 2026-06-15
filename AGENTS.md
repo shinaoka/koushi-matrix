@@ -179,6 +179,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   build `matrix.to` permalinks, infer copy/forward/source eligibility from
   event ids, body/media fields, or redaction flags, or synthesize message-source
   / forward semantics locally.
+- `TimelineCommand::LoadMessageSource` and `TimelineCommand::ForwardMessage`
+  are the typed Phase A path for view-source/forward GUI work. The source DTO is
+  a safe Rust projection, not raw Matrix JSON. Forwarding sends the Rust-
+  projected visible body only; media-only rows must remain non-forwardable until
+  a dedicated media-forward contract exists.
 - `AppState.room_interactions` is the Rust-owned source of truth for
   `pinned_events` and `pin_operation`. GUI code dispatches typed `pin_event` /
   `unpin_event` commands and waits for Rust-shaped snapshots/events instead of
@@ -193,6 +198,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `RoomActor`; do not let tests create `room_interactions[roomId]` for a room
   absent from `state.rooms`.
 - When changing `TimelineItem.reply_quote`, `TimelineItem.actions`,
+  `TimelineMessageSource`, message forward/source command/event variants,
   `PinnedEvent`, `RoomInteractionState`, or pin/unpin command/event variants,
   update the Tauri DTO, TypeScript domain types, `coreEvents.generated.json`,
   browser fake, app/IPC harness snapshots, and serialization-contract tests in

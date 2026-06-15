@@ -882,6 +882,52 @@ pub async fn download_media(
 }
 
 #[tauri::command]
+pub async fn load_message_source(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) =
+        build_load_message_source_command(request_id, account_key, room_id, event_id)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn forward_message(
+    room_id: String,
+    source_event_id: String,
+    destination_room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let transaction_id = format!(
+        "desktop-forward-{}",
+        NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) = build_forward_message_command(
+        request_id,
+        account_key,
+        room_id,
+        source_event_id,
+        destination_room_id,
+        transaction_id,
+    ) {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn edit_message(
     room_id: String,
     event_id: String,
@@ -2260,6 +2306,45 @@ pub(crate) fn build_download_media_command(
     }))
 }
 
+pub(crate) fn build_load_message_source_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+) -> Option<CoreCommand> {
+    if event_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::LoadMessageSource {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+    }))
+}
+
+pub(crate) fn build_forward_message_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    source_event_id: String,
+    destination_room_id: String,
+    transaction_id: String,
+) -> Option<CoreCommand> {
+    if source_event_id.trim().is_empty()
+        || destination_room_id.trim().is_empty()
+        || transaction_id.trim().is_empty()
+    {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::ForwardMessage {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        source_event_id,
+        destination_room_id,
+        transaction_id,
+    }))
+}
+
 pub(crate) fn build_edit_message_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -3006,8 +3091,9 @@ mod tests {
         build_cancel_verification_command, build_confirm_sas_verification_command,
         build_create_room_command, build_create_space_command, build_decline_invite_command,
         build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
-        build_forget_room_command, build_invite_user_command, build_join_directory_room_command,
-        build_leave_room_command, build_load_room_settings_command, build_logout_command,
+        build_forget_room_command, build_forward_message_command, build_invite_user_command,
+        build_join_directory_room_command, build_leave_room_command,
+        build_load_message_source_command, build_load_room_settings_command, build_logout_command,
         build_moderate_room_member_command, build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_probe_local_encryption_health_command,
@@ -3377,9 +3463,68 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+
+        match build_forward_message_command(
+            fake_request_id(33),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$source-event".to_owned(),
+            "!destination:example.invalid".to_owned(),
+            "desktop-forward-1".to_owned(),
+        )
+        .expect("forward_message should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::ForwardMessage {
+                request_id,
+                key,
+                source_event_id,
+                destination_room_id,
+                transaction_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(33));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(source_event_id, "$source-event");
+                assert_eq!(destination_room_id, "!destination:example.invalid");
+                assert_eq!(transaction_id, "desktop-forward-1");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_load_message_source_command(
+            fake_request_id(34),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$source-event".to_owned(),
+        )
+        .expect("load_message_source should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::LoadMessageSource {
+                request_id,
+                key,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(34));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$source-event");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         assert!(
             build_retry_send_command(
-                fake_request_id(33),
+                fake_request_id(35),
                 active_account_key.clone(),
                 room_id.clone(),
                 " \t".to_owned()
@@ -3388,7 +3533,7 @@ mod tests {
         );
         assert!(
             build_cancel_send_command(
-                fake_request_id(34),
+                fake_request_id(36),
                 active_account_key.clone(),
                 room_id.clone(),
                 "\n".to_owned()

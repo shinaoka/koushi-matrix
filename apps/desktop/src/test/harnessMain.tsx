@@ -99,6 +99,12 @@ const transport: TimelineTransport = {
   },
   downloadMedia(roomId, eventId) {
     return ipc.invoke("download_media", { roomId, eventId });
+  },
+  loadMessageSource(roomId, eventId) {
+    return ipc.invoke("load_message_source", { roomId, eventId });
+  },
+  forwardMessage(roomId, sourceEventId, destinationRoomId) {
+    return ipc.invoke("forward_message", { roomId, sourceEventId, destinationRoomId });
   }
 };
 
