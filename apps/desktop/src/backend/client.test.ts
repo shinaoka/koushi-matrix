@@ -211,4 +211,34 @@ describe("TauriDesktopApi", () => {
       reason: "Private reason"
     });
   });
+
+  test("passes activity actions to Rust-owned activity commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.openActivity();
+    await api.setActivityTab("unread");
+    await api.paginateActivity("recent", "recent-page-2");
+    await api.markActivityRead({
+      kind: "room",
+      room_id: "!room:example.invalid",
+      up_to_event_id: "$event:example.invalid"
+    });
+    await api.closeActivity();
+
+    expect(invoke).toHaveBeenCalledWith("open_activity");
+    expect(invoke).toHaveBeenCalledWith("set_activity_tab", { tab: "unread" });
+    expect(invoke).toHaveBeenCalledWith("paginate_activity", {
+      tab: "recent",
+      cursor: "recent-page-2"
+    });
+    expect(invoke).toHaveBeenCalledWith("mark_activity_read", {
+      target: {
+        kind: "room",
+        room_id: "!room:example.invalid",
+        up_to_event_id: "$event:example.invalid"
+      }
+    });
+    expect(invoke).toHaveBeenCalledWith("close_activity");
+  });
 });

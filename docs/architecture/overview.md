@@ -168,7 +168,10 @@ rewriting the runtime.
 An in-process actor system in `matrix-desktop-core`:
 
 - `AppActor` — command entry point, routing, active account, ordered event
-  broadcast and snapshots.
+  broadcast and snapshots. It also owns the account-wide Activity projection
+  cache: room timeline actors may report message rows, but Recent/Unread
+  ordering, unread membership, low-priority exclusion, and mark-read clearing
+  are materialized into `AppState.activity` by Rust before React sees them.
 - `AccountActor` (per account/device) — SDK session ownership,
   login/restore/recovery/logout, account switch, child shutdown.
 - `SyncActor` — continuous sync lifecycle
@@ -222,6 +225,11 @@ An in-process actor system in `matrix-desktop-core`:
   from SDK timeline/room signals into `AppState.live_signals`; React may render
   that snapshot and dispatch typed commands, but it must not synthesize receipt,
   marker, or typing lifecycle locally.
+- Account-wide Activity is projected in `AppActor` from Rust-owned timeline
+  observations plus room unread/tag summaries. `TimelineView` and focused
+  timelines remain event-driven render surfaces; they do not own the Activity
+  state machine. React dispatches typed Activity commands and focused-context
+  opens using event references supplied by Rust.
 - Account-level live signals such as presence are Rust-owned state in
   `AppState.live_signals.presence`. In the current Phase A contract,
   `AccountCommand::SetPresence` records the requested presence and emits typed

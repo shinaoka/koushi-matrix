@@ -20,10 +20,10 @@ use matrix_desktop_core::{
     UploadMediaKind, UploadMediaRequest,
 };
 use matrix_desktop_state::{
-    AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
-    DirectoryQuery, IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest,
-    RoomModerationAction, RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch,
-    VerificationCancelReason,
+    ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
+    ComposerResolverContext, ComposerSurface, DirectoryQuery, IdentityResetAuthRequest,
+    LoginRequest, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
+    RoomTagKind, SessionInfo, SettingsPatch, VerificationCancelReason,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -1284,6 +1284,77 @@ pub async fn moderate_room_member(
 }
 
 #[tauri::command]
+pub async fn open_activity(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_open_activity_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn close_activity(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_close_activity_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_activity_tab(
+    tab: ActivityTab,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_activity_tab_command(request_id, tab),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn paginate_activity(
+    tab: ActivityTab,
+    cursor: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_paginate_activity_command(request_id, tab, cursor),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn mark_activity_read(
+    target: ActivityMarkReadTarget,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_mark_activity_read_command(request_id, target),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn open_thread(
     room_id: String,
     root_event_id: String,
@@ -1840,6 +1911,44 @@ pub(crate) fn build_update_settings_command(
     patch: SettingsPatch,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::UpdateSettings { request_id, patch })
+}
+
+pub(crate) fn build_open_activity_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::OpenActivity { request_id })
+}
+
+pub(crate) fn build_close_activity_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::CloseActivity { request_id })
+}
+
+pub(crate) fn build_set_activity_tab_command(
+    request_id: matrix_desktop_core::RequestId,
+    tab: ActivityTab,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::SetActivityTab { request_id, tab })
+}
+
+pub(crate) fn build_paginate_activity_command(
+    request_id: matrix_desktop_core::RequestId,
+    tab: ActivityTab,
+    cursor: Option<String>,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::PaginateActivity {
+        request_id,
+        tab,
+        cursor: optional_non_blank(cursor),
+    })
+}
+
+pub(crate) fn build_mark_activity_read_command(
+    request_id: matrix_desktop_core::RequestId,
+    target: ActivityMarkReadTarget,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::MarkActivityRead { request_id, target })
 }
 
 pub(crate) fn build_bootstrap_cross_signing_command(
@@ -2854,7 +2963,8 @@ mod tests {
         VerificationCancelReason,
     };
     use matrix_desktop_state::{
-        AppearanceSettings, LocaleSettings, SettingsPatch, TextDirectionPreference, ThemePreference,
+        ActivityMarkReadTarget, ActivityTab, AppearanceSettings, LocaleSettings, SettingsPatch,
+        TextDirectionPreference, ThemePreference,
     };
 
     use super::QaControlCommand;
@@ -2885,7 +2995,9 @@ mod tests {
         build_update_room_setting_command, build_update_settings_command,
         build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
         qa_recovery_prompt_is_available, qa_window_title_string,
-        resolve_search_scope_from_active_room,
+        resolve_search_scope_from_active_room, build_open_activity_command,
+        build_close_activity_command, build_set_activity_tab_command,
+        build_paginate_activity_command, build_mark_activity_read_command,
     };
     use matrix_desktop_state::{
         PresenceKind, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
@@ -4030,6 +4142,69 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+
+        match build_open_activity_command(fake_request_id(37)) {
+            CoreCommand::App(AppCommand::OpenActivity { request_id }) => {
+                assert_eq!(request_id, fake_request_id(37));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_activity_tab_command(fake_request_id(38), ActivityTab::Unread) {
+            CoreCommand::App(AppCommand::SetActivityTab { request_id, tab }) => {
+                assert_eq!(request_id, fake_request_id(38));
+                assert_eq!(tab, ActivityTab::Unread);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_paginate_activity_command(
+            fake_request_id(39),
+            ActivityTab::Recent,
+            Some("page-2".to_owned()),
+        ) {
+            CoreCommand::App(AppCommand::PaginateActivity {
+                request_id,
+                tab,
+                cursor,
+            }) => {
+                assert_eq!(request_id, fake_request_id(39));
+                assert_eq!(tab, ActivityTab::Recent);
+                assert_eq!(cursor.as_deref(), Some("page-2"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert!(matches!(
+            build_paginate_activity_command(
+                fake_request_id(40),
+                ActivityTab::Unread,
+                Some("  ".to_owned())
+            ),
+            CoreCommand::App(AppCommand::PaginateActivity { cursor: None, .. })
+        ));
+
+        let target = ActivityMarkReadTarget::Room {
+            room_id: "!room:example.org".to_owned(),
+            up_to_event_id: "$event:example.org".to_owned(),
+        };
+        match build_mark_activity_read_command(fake_request_id(41), target.clone()) {
+            CoreCommand::App(AppCommand::MarkActivityRead {
+                request_id,
+                target: routed_target,
+            }) => {
+                assert_eq!(request_id, fake_request_id(41));
+                assert_eq!(routed_target, target);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_close_activity_command(fake_request_id(42)) {
+            CoreCommand::App(AppCommand::CloseActivity { request_id }) => {
+                assert_eq!(request_id, fake_request_id(42));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]
@@ -4209,6 +4384,52 @@ mod tests {
                 "pub async fn cancel_send",
                 "build_cancel_send_command",
                 "commands::cancel_send",
+            ),
+        ] {
+            assert!(
+                commands_source.contains(command_name),
+                "Tauri command should expose {command_name}"
+            );
+            assert!(
+                commands_source.contains(route_name),
+                "Tauri command should route through {route_name}"
+            );
+            assert!(
+                lib_source.contains(registration_name),
+                "Tauri command should register {registration_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn activity_tauri_command_contracts_are_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        for (command_name, route_name, registration_name) in [
+            (
+                "pub async fn open_activity",
+                "build_open_activity_command",
+                "commands::open_activity",
+            ),
+            (
+                "pub async fn close_activity",
+                "build_close_activity_command",
+                "commands::close_activity",
+            ),
+            (
+                "pub async fn set_activity_tab",
+                "build_set_activity_tab_command",
+                "commands::set_activity_tab",
+            ),
+            (
+                "pub async fn paginate_activity",
+                "build_paginate_activity_command",
+                "commands::paginate_activity",
+            ),
+            (
+                "pub async fn mark_activity_read",
+                "build_mark_activity_read_command",
+                "commands::mark_activity_read",
             ),
         ] {
             assert!(

@@ -10,6 +10,62 @@
     },
     "kind": "Activity"
   },
+  "activityMarkedRead": {
+    "event": {
+      "MarkedRead": {
+        "cleared_event_ids": [
+          "$activity-unread:example.test"
+        ],
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Activity"
+  },
+  "activitySnapshotLoaded": {
+    "event": {
+      "SnapshotLoaded": {
+        "active_tab": "unread",
+        "recent": {
+          "next_batch": "recent-next",
+          "rows": [
+            {
+              "event_id": "$activity-recent:example.test",
+              "highlight": false,
+              "preview": "Recent preview",
+              "room_id": "!activity-recent:example.test",
+              "room_label": "Recent room",
+              "sender_label": "Recent sender",
+              "timestamp_ms": 20,
+              "unread": false
+            }
+          ]
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "unread": {
+          "next_batch": "unread-next",
+          "rows": [
+            {
+              "event_id": "$activity-unread:example.test",
+              "highlight": true,
+              "preview": "Unread preview",
+              "room_id": "!activity-unread:example.test",
+              "room_label": "Unread room",
+              "sender_label": "Unread sender",
+              "timestamp_ms": 10,
+              "unread": true
+            }
+          ]
+        }
+      }
+    },
+    "kind": "Activity"
+  },
   "accountProfileUpdated": {
     "event": {
       "ProfileUpdated": {

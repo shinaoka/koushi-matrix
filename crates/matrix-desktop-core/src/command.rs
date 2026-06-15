@@ -4,10 +4,10 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    DirectoryQuery, IdentityResetAuthRequest, JapaneseCatalogProfile, LocalEncryptionHealth,
-    LoginRequest, MentionIntent, NativeAttentionSummary, PresenceKind, RecoveryRequest,
-    RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch, VerificationCancelReason,
-    VerificationTarget,
+    ActivityMarkReadTarget, ActivityTab, DirectoryQuery, IdentityResetAuthRequest,
+    JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest, MentionIntent,
+    NativeAttentionSummary, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
+    RoomTagKind, SettingsPatch, VerificationCancelReason, VerificationTarget,
 };
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
@@ -38,6 +38,9 @@ impl CoreCommand {
                 | AppCommand::UpdateSettings { request_id, .. }
                 | AppCommand::OpenActivity { request_id }
                 | AppCommand::CloseActivity { request_id }
+                | AppCommand::SetActivityTab { request_id, .. }
+                | AppCommand::PaginateActivity { request_id, .. }
+                | AppCommand::MarkActivityRead { request_id, .. }
                 | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
                 | AppCommand::UpdateNativeAttentionSummary { request_id, .. }
                 | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. },
@@ -174,6 +177,19 @@ pub enum AppCommand {
     CloseActivity {
         request_id: RequestId,
     },
+    SetActivityTab {
+        request_id: RequestId,
+        tab: ActivityTab,
+    },
+    PaginateActivity {
+        request_id: RequestId,
+        tab: ActivityTab,
+        cursor: Option<String>,
+    },
+    MarkActivityRead {
+        request_id: RequestId,
+        target: ActivityMarkReadTarget,
+    },
     RecordLocalEncryptionHealth {
         request_id: RequestId,
         health: LocalEncryptionHealth,
@@ -260,6 +276,26 @@ impl fmt::Debug for AppCommand {
             Self::CloseActivity { request_id } => formatter
                 .debug_struct("CloseActivity")
                 .field("request_id", request_id)
+                .finish(),
+            Self::SetActivityTab { request_id, tab } => formatter
+                .debug_struct("SetActivityTab")
+                .field("request_id", request_id)
+                .field("tab", tab)
+                .finish(),
+            Self::PaginateActivity {
+                request_id,
+                tab,
+                cursor,
+            } => formatter
+                .debug_struct("PaginateActivity")
+                .field("request_id", request_id)
+                .field("tab", tab)
+                .field("cursor", &cursor.as_ref().map(|_| "PageToken(..)"))
+                .finish(),
+            Self::MarkActivityRead { request_id, target } => formatter
+                .debug_struct("MarkActivityRead")
+                .field("request_id", request_id)
+                .field("target", target)
                 .finish(),
             Self::RecordLocalEncryptionHealth { request_id, health } => formatter
                 .debug_struct("RecordLocalEncryptionHealth")
@@ -1433,6 +1469,58 @@ mod tests {
             );
             assert!(!debug.contains("Private Room Name"), "{debug}");
             assert!(!debug.contains("Private moderation reason"), "{debug}");
+        }
+    }
+
+    #[test]
+    fn activity_commands_debug_redacts_targets_and_carry_request_ids() {
+        use matrix_desktop_state::{ActivityMarkReadTarget, ActivityTab};
+
+        let set_tab_request_id = fake_rid(21);
+        let set_tab = AppCommand::SetActivityTab {
+            request_id: set_tab_request_id,
+            tab: ActivityTab::Unread,
+        };
+        let paginate_request_id = fake_rid(22);
+        let paginate = AppCommand::PaginateActivity {
+            request_id: paginate_request_id,
+            tab: ActivityTab::Recent,
+            cursor: Some("private-page-token".to_owned()),
+        };
+        let mark_request_id = fake_rid(23);
+        let mark = AppCommand::MarkActivityRead {
+            request_id: mark_request_id,
+            target: ActivityMarkReadTarget::Room {
+                room_id: "!private-room:example.invalid".to_owned(),
+                up_to_event_id: "$private-event:example.invalid".to_owned(),
+            },
+        };
+
+        assert_eq!(CoreCommand::App(set_tab).request_id(), set_tab_request_id);
+        assert_eq!(CoreCommand::App(paginate).request_id(), paginate_request_id);
+        assert_eq!(
+            CoreCommand::App(AppCommand::MarkActivityRead {
+                request_id: mark_request_id,
+                target: ActivityMarkReadTarget::All,
+            })
+            .request_id(),
+            mark_request_id
+        );
+
+        for debug in [
+            format!(
+                "{:?}",
+                AppCommand::PaginateActivity {
+                    request_id: fake_rid(24),
+                    tab: ActivityTab::Unread,
+                    cursor: Some("private-page-token".to_owned()),
+                }
+            ),
+            format!("{mark:?}"),
+        ] {
+            assert!(!debug.contains("private-page-token"), "{debug}");
+            assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+            assert!(!debug.contains("$private-event:example.invalid"), "{debug}");
         }
     }
 

@@ -536,7 +536,35 @@ export type E2eeTrustEvent =
 
 export type ActivityEvent =
   | { Opened: { request_id: RequestId } }
-  | { Closed: { request_id: RequestId } };
+  | { Closed: { request_id: RequestId } }
+  | {
+      SnapshotLoaded: {
+        request_id: RequestId;
+        active_tab: ActivityTab;
+        recent: ActivityStream;
+        unread: ActivityStream;
+      };
+    }
+  | { TabSelected: { request_id: RequestId; tab: ActivityTab } }
+  | { MarkedRead: { request_id: RequestId; cleared_event_ids: string[] } };
+
+export type ActivityTab = "recent" | "unread";
+
+export interface ActivityStream {
+  rows: ActivityRow[];
+  next_batch: string | null;
+}
+
+export interface ActivityRow {
+  room_id: string;
+  event_id: string;
+  room_label: string;
+  sender_label: string | null;
+  preview: string | null;
+  timestamp_ms: number;
+  unread: boolean;
+  highlight: boolean;
+}
 
 export type LocalEncryptionHealth =
   | "unknown"

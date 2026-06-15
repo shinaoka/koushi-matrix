@@ -52,8 +52,9 @@ use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_state::{
-    AppAction, ComposerSendIntent, FormattedMessageDraft, LiveEventReceipts, LiveReadReceipt,
-    MentionIntent, ReplyQuote, ReplyQuoteState, SlashCommandIntent, resolve_composer_send_intent,
+    ActivityRow, AppAction, ComposerSendIntent, FormattedMessageDraft, LiveEventReceipts,
+    LiveReadReceipt, MentionIntent, ReplyQuote, ReplyQuoteState, SlashCommandIntent,
+    resolve_composer_send_intent,
 };
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
@@ -1068,6 +1069,7 @@ impl TimelineActor {
             .iter()
             .map(|item| sdk_item_to_timeline_item(item, own_user_id.as_deref()))
             .collect();
+        let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
@@ -1082,6 +1084,11 @@ impl TimelineActor {
             generation,
             items: initial_items,
         }));
+        if !initial_activity_rows.is_empty() {
+            let _ = action_tx.try_send(vec![AppAction::ActivityRowsObserved {
+                rows: initial_activity_rows,
+            }]);
+        }
 
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
         let relay_tx = actor_tx.clone();
@@ -2096,6 +2103,14 @@ impl TimelineActor {
                 )
             })
             .collect();
+        let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
+        if !activity_rows.is_empty() {
+            let _ = self
+                .action_tx
+                .try_send(vec![AppAction::ActivityRowsObserved {
+                    rows: activity_rows,
+                }]);
+        }
 
         let batch_id = self.next_batch_id;
         self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
@@ -2663,6 +2678,70 @@ fn timeline_room_id(key: &TimelineKey) -> Option<String> {
         | TimelineKind::Thread { room_id, .. }
         | TimelineKind::Focused { room_id, .. } => Some(room_id.clone()),
     }
+}
+
+fn activity_rows_from_timeline_items(
+    key: &TimelineKey,
+    items: &[TimelineItem],
+) -> Vec<ActivityRow> {
+    let TimelineKind::Room { room_id } = &key.kind else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| activity_row_from_timeline_item(room_id, item))
+        .collect()
+}
+
+fn activity_rows_from_timeline_diffs(
+    key: &TimelineKey,
+    diffs: &[TimelineDiff],
+) -> Vec<ActivityRow> {
+    let TimelineKind::Room { room_id } = &key.kind else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for diff in diffs {
+        match diff {
+            TimelineDiff::PushFront { item }
+            | TimelineDiff::PushBack { item }
+            | TimelineDiff::Insert { item, .. }
+            | TimelineDiff::Set { item, .. } => {
+                if let Some(row) = activity_row_from_timeline_item(room_id, item) {
+                    rows.push(row);
+                }
+            }
+            TimelineDiff::Reset { items } => {
+                rows.extend(
+                    items
+                        .iter()
+                        .filter_map(|item| activity_row_from_timeline_item(room_id, item)),
+                );
+            }
+            TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {}
+        }
+    }
+    rows
+}
+
+fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option<ActivityRow> {
+    let TimelineItemId::Event { event_id } = &item.id else {
+        return None;
+    };
+    let preview = item
+        .body
+        .clone()
+        .or_else(|| item.media.as_ref().map(|media| media.filename.clone()))?;
+    Some(ActivityRow {
+        room_id: room_id.to_owned(),
+        event_id: event_id.clone(),
+        room_label: String::new(),
+        sender_label: item.sender.clone(),
+        preview: Some(preview),
+        timestamp_ms: item.timestamp_ms.unwrap_or(0),
+        unread: false,
+        highlight: false,
+    })
 }
 
 fn live_event_receipts_from_sdk_items<'a>(

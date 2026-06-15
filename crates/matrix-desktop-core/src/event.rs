@@ -4,10 +4,10 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
-    JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
-    NativeAttentionSummary, PinnedEvent, PresenceKind, ReplyQuote, RoomModerationAction,
-    RoomSettingsSnapshot, RoomTagKind, VerificationFlowState,
+    ActivityStream, ActivityTab, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
+    IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate,
+    LocalEncryptionHealth, NativeAttentionSummary, PinnedEvent, PresenceKind, ReplyQuote,
+    RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, VerificationFlowState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,10 +38,71 @@ pub enum CoreEvent {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ActivityEvent {
-    Opened { request_id: RequestId },
-    Closed { request_id: RequestId },
+    Opened {
+        request_id: RequestId,
+    },
+    Closed {
+        request_id: RequestId,
+    },
+    SnapshotLoaded {
+        request_id: RequestId,
+        active_tab: ActivityTab,
+        recent: ActivityStream,
+        unread: ActivityStream,
+    },
+    TabSelected {
+        request_id: RequestId,
+        tab: ActivityTab,
+    },
+    MarkedRead {
+        request_id: RequestId,
+        cleared_event_ids: Vec<String>,
+    },
+}
+
+impl fmt::Debug for ActivityEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Opened { request_id } => formatter
+                .debug_struct("ActivityOpened")
+                .field("request_id", request_id)
+                .finish(),
+            Self::Closed { request_id } => formatter
+                .debug_struct("ActivityClosed")
+                .field("request_id", request_id)
+                .finish(),
+            Self::SnapshotLoaded {
+                request_id,
+                active_tab,
+                recent,
+                unread,
+            } => formatter
+                .debug_struct("ActivitySnapshotLoaded")
+                .field("request_id", request_id)
+                .field("active_tab", active_tab)
+                .field("recent", recent)
+                .field("unread", unread)
+                .finish(),
+            Self::TabSelected { request_id, tab } => formatter
+                .debug_struct("ActivityTabSelected")
+                .field("request_id", request_id)
+                .field("tab", tab)
+                .finish(),
+            Self::MarkedRead {
+                request_id,
+                cleared_event_ids,
+            } => formatter
+                .debug_struct("ActivityMarkedRead")
+                .field("request_id", request_id)
+                .field(
+                    "cleared_event_ids",
+                    &format_args!("{} event id(s)", cleared_event_ids.len()),
+                )
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -914,6 +975,74 @@ pub struct SearchResultItem {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn fake_rid(sequence: u64) -> RequestId {
+        RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(7),
+            sequence,
+        }
+    }
+
+    fn activity_row(
+        room_id: &str,
+        event_id: &str,
+        timestamp_ms: u64,
+    ) -> matrix_desktop_state::ActivityRow {
+        matrix_desktop_state::ActivityRow {
+            room_id: room_id.to_owned(),
+            event_id: event_id.to_owned(),
+            room_label: "Private Room".to_owned(),
+            sender_label: Some("Private Sender".to_owned()),
+            preview: Some("private message body".to_owned()),
+            timestamp_ms,
+            unread: true,
+            highlight: false,
+        }
+    }
+
+    fn activity_stream(
+        rows: Vec<matrix_desktop_state::ActivityRow>,
+    ) -> matrix_desktop_state::ActivityStream {
+        matrix_desktop_state::ActivityStream {
+            rows,
+            next_batch: Some("private-page-token".to_owned()),
+        }
+    }
+
+    #[test]
+    fn activity_events_debug_redacts_rows_targets_and_page_tokens() {
+        let snapshot = ActivityEvent::SnapshotLoaded {
+            request_id: fake_rid(1),
+            active_tab: matrix_desktop_state::ActivityTab::Recent,
+            recent: activity_stream(vec![activity_row(
+                "!private-room:example.invalid",
+                "$private-event:example.invalid",
+                20,
+            )]),
+            unread: activity_stream(vec![activity_row(
+                "!private-room:example.invalid",
+                "$private-unread:example.invalid",
+                10,
+            )]),
+        };
+        let marked = ActivityEvent::MarkedRead {
+            request_id: fake_rid(2),
+            cleared_event_ids: vec!["$private-event:example.invalid".to_owned()],
+        };
+
+        for debug in [format!("{snapshot:?}"), format!("{marked:?}")] {
+            assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+            assert!(!debug.contains("$private-event:example.invalid"), "{debug}");
+            assert!(
+                !debug.contains("$private-unread:example.invalid"),
+                "{debug}"
+            );
+            assert!(!debug.contains("Private Room"), "{debug}");
+            assert!(!debug.contains("Private Sender"), "{debug}");
+            assert!(!debug.contains("private message body"), "{debug}");
+            assert!(!debug.contains("private-page-token"), "{debug}");
+        }
+    }
 
     #[test]
     fn timeline_item_serializes_thread_fields_reactions_and_redaction_affordances() {

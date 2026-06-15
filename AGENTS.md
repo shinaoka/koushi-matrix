@@ -263,6 +263,33 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   the same Rust-owned typing observer. Do not replace this with React polling or
   local UI timers.
 
+## Activity Phase A Notes
+
+- `AppState.activity` is the Rust-owned source of truth for account-wide
+  Recent/Unread Activity. React may render `ActivityState`, switch tabs through
+  `set_activity_tab`, request pagination, open focused context from the row's
+  event reference, and dispatch `mark_activity_read`; it must not sort,
+  synthesize unread membership, clear rows locally, or derive account-wide
+  Activity from `TimelineView` DOM state.
+- Activity rows are observed by room `TimelineActor`s as `ActivityRowsObserved`
+  and materialized by the `AppActor`'s Activity projection cache. The projection
+  fills room labels, unread flags, highlight flags, and low-priority exclusion
+  from Rust-owned `AppState` facts. Keep this cache outside React and outside
+  per-view browser fake state.
+- Opening or paginating Activity snapshots the Rust projection into separate
+  Recent and Unread streams. Viewing the Unread tab does not mark anything read.
+  `MarkActivityRead` settles both room targets and the all-activity target
+  through the Rust `mark_read` substate and then updates Activity streams;
+  future SDK fully-read writes must stay behind the same typed command boundary.
+- When adding or changing `ActivityState`, `ActivityRow`, `ActivityEvent`, or
+  Activity command shapes, update the Tauri DTO, TypeScript domain types,
+  checked-in CoreEvent contract artifact, browser fake, Tauri IPC mock, app
+  harness snapshots, and serialization-contract tests in the same change.
+- The local core QA `activity` scenario is token-only:
+  `activity_recent=ok`, `activity_unread=ok`, and `activity_markread=ok`. Do not
+  print Matrix room IDs, event IDs, sender IDs, message bodies, pagination
+  tokens, or raw SDK errors for this stage.
+
 ## Live Signals Phase B Notes
 
 - The full-app browser harness (`apps/desktop/src/test/appHarnessMain.tsx`)

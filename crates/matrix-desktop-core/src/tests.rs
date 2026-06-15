@@ -4,11 +4,12 @@
 use std::time::Duration;
 
 use matrix_desktop_state::{
-    AppAction, AppearanceSettings, AuthSecret, ComposerMode, CrossSigningStatus,
-    IdentityResetAuthRequest, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
-    LoginRequest, MentionIntent, PresenceKind, RecoveryRequest, RoomSummary, RoomTagKind, RoomTags,
-    SasEmoji, SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
-    ThemePreference, VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    ActivityMarkReadTarget, ActivityRow, ActivityState, AppAction, AppearanceSettings, AuthSecret,
+    ComposerMode, CrossSigningStatus, IdentityResetAuthRequest, LiveEventReceipts, LiveReadReceipt,
+    LiveRoomSignalUpdate, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest, RoomSummary,
+    RoomTagKind, RoomTags, SasEmoji, SearchState, SessionInfo, SessionState, SettingsPatch,
+    SettingsPersistenceState, ThemePreference, VerificationCancelReason, VerificationFlowState,
+    VerificationTarget,
 };
 
 use crate::command::{
@@ -878,6 +879,26 @@ fn room_summary(room_id: &str) -> RoomSummary {
     }
 }
 
+fn unread_room_summary(room_id: &str, unread_count: u64) -> RoomSummary {
+    RoomSummary {
+        unread_count,
+        ..room_summary(room_id)
+    }
+}
+
+fn activity_row(room_id: &str, event_id: &str, timestamp_ms: u64) -> ActivityRow {
+    ActivityRow {
+        room_id: room_id.to_owned(),
+        event_id: event_id.to_owned(),
+        room_label: String::new(),
+        sender_label: Some("Private sender".to_owned()),
+        preview: Some("Private preview".to_owned()),
+        timestamp_ms,
+        unread: false,
+        highlight: false,
+    }
+}
+
 async fn wait_for_state<F>(
     connection: &mut CoreConnection,
     predicate: F,
@@ -1020,6 +1041,86 @@ async fn app_command_sets_open_thread_composer_draft() {
         }
         other => panic!("expected open thread, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![
+                    unread_room_summary("!recent:example.test", 1),
+                    unread_room_summary("!stale:example.test", 1),
+                ],
+            },
+            AppAction::ActivityRowsObserved {
+                rows: vec![
+                    activity_row("!recent:example.test", "$recent:example.test", 20),
+                    activity_row("!stale:example.test", "$stale:example.test", 1),
+                ],
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 2
+    })
+    .await;
+
+    let open_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::OpenActivity {
+        request_id: open_request_id,
+    }))
+    .await
+    .expect("open activity command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(state.activity, ActivityState::Open { .. })
+    })
+    .await;
+    let ActivityState::Open { recent, unread, .. } = snapshot.activity else {
+        panic!("activity should be open");
+    };
+    assert_eq!(
+        recent
+            .rows
+            .iter()
+            .map(|row| row.event_id.as_str())
+            .collect::<Vec<_>>(),
+        ["$recent:example.test", "$stale:example.test"]
+    );
+    assert!(
+        unread
+            .rows
+            .iter()
+            .any(|row| row.event_id == "$stale:example.test"),
+        "stale unread rows must remain visible"
+    );
+
+    let mark_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::MarkActivityRead {
+        request_id: mark_request_id,
+        target: ActivityMarkReadTarget::All,
+    }))
+    .await
+    .expect("mark activity read command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(
+            &state.activity,
+            ActivityState::Open { unread, mark_read, .. }
+                if unread.rows.is_empty()
+                    && matches!(mark_read, matrix_desktop_state::ActivityMarkReadState::Idle)
+        )
+    })
+    .await;
+    let ActivityState::Open { unread, .. } = snapshot.activity else {
+        panic!("activity should stay open");
+    };
+    assert!(unread.rows.is_empty());
 }
 
 #[tokio::test]

@@ -43,11 +43,11 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use matrix_desktop_core::command::{
-    AccountCommand, CoreCommand, MediaDownloadSelection, RoomCommand, SearchCommand, SearchScope,
-    SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
+    AccountCommand, AppCommand, CoreCommand, MediaDownloadSelection, RoomCommand, SearchCommand,
+    SearchScope, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 use matrix_desktop_core::event::{
-    AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection,
+    AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection,
     PaginationState, RoomEvent, SearchEvent, SyncBackendKind, SyncEvent, TimelineDiff,
     TimelineEvent, TimelineItem, TimelineItemId, TimelineSendState,
 };
@@ -55,12 +55,12 @@ use matrix_desktop_core::failure::{CoreFailure, RoomFailureKind};
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{
-    AppState, AuthSecret, ComposerKey, ComposerKeyEvent, ComposerKeyModifiers,
-    ComposerResolvedAction, ComposerResolverContext, ComposerSelection, ComposerSendShortcut,
-    ComposerSurface, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
-    IdentityResetAuthRequest, IdentityResetAuthType, IdentityResetState, KeyBackupStatus,
-    MentionIntent, MentionTarget, OperationFailureKind, PresenceKind, RecoveryRequest,
-    ReplyQuoteState, RoomManagementOperationKind, RoomManagementOperationState,
+    ActivityMarkReadTarget, ActivityState, AppState, AuthSecret, ComposerKey, ComposerKeyEvent,
+    ComposerKeyModifiers, ComposerResolvedAction, ComposerResolverContext, ComposerSelection,
+    ComposerSendShortcut, ComposerSurface, CrossSigningStatus, DirectoryQuery,
+    DirectoryRoomSummary, IdentityResetAuthRequest, IdentityResetAuthType, IdentityResetState,
+    KeyBackupStatus, MentionIntent, MentionTarget, OperationFailureKind, PresenceKind,
+    RecoveryRequest, ReplyQuoteState, RoomManagementOperationKind, RoomManagementOperationState,
     RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, SasEmoji, SessionInfo,
     SessionState, TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
     resolve_composer_key_action,
@@ -103,6 +103,7 @@ enum QaScenario {
     Directory,
     RoomManagement,
     Timeline,
+    Activity,
     Composer,
     Reply,
     Media,
@@ -123,6 +124,7 @@ enum QaStage {
     Directory,
     RoomManagement,
     Timeline,
+    Activity,
     Composer,
     Reply,
     Media,
@@ -215,6 +217,7 @@ impl QaScenario {
             "directory" => Ok(Self::Directory),
             "room_management" => Ok(Self::RoomManagement),
             "timeline" => Ok(Self::Timeline),
+            "activity" => Ok(Self::Activity),
             "composer" => Ok(Self::Composer),
             "reply" => Ok(Self::Reply),
             "media" => Ok(Self::Media),
@@ -224,7 +227,7 @@ impl QaScenario {
             "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
             )),
         }
     }
@@ -259,6 +262,14 @@ impl QaScenario {
             Self::Timeline => matches!(
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace | QaStage::Timeline
+            ),
+            Self::Activity => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::Activity
             ),
             Self::Composer => matches!(
                 stage,
@@ -333,7 +344,7 @@ impl QaScenario {
     fn suppress_matrix_identifiers(self) -> bool {
         matches!(
             self,
-            Self::LiveSignals | Self::SendQueue | Self::RoomManagement
+            Self::LiveSignals | Self::SendQueue | Self::RoomManagement | Self::Activity
         )
     }
 }
@@ -358,6 +369,11 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::Directory => &["directory_query=ok", "directory_join=ok"],
         QaStage::RoomManagement => &["room_settings=ok", "moderation=ok", "permission_guard=ok"],
         QaStage::Timeline => &["timeline=ok"],
+        QaStage::Activity => &[
+            "activity_recent=ok",
+            "activity_unread=ok",
+            "activity_markread=ok",
+        ],
         QaStage::Composer => &[
             "mention_send=ok",
             "markdown_send=ok",
@@ -412,6 +428,9 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "moderation=ok",
         "permission_guard=ok",
         "timeline=ok",
+        "activity_recent=ok",
+        "activity_unread=ok",
+        "activity_markread=ok",
         "mention_send=ok",
         "markdown_send=ok",
         "slash_command=ok",
@@ -466,6 +485,13 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::LoginSync,
             QaStage::RoomSpace,
             QaStage::Timeline,
+        ],
+        QaScenario::Activity => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::Activity,
         ],
         QaScenario::Composer => vec![
             QaStage::Safety,
@@ -534,6 +560,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Directory,
             QaStage::RoomManagement,
             QaStage::Timeline,
+            QaStage::Activity,
             QaStage::Composer,
             QaStage::Reply,
             QaStage::Media,
@@ -565,6 +592,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::E2eeTrust
         | QaScenario::InvitesDm
         | QaScenario::Timeline
+        | QaScenario::Activity
         | QaScenario::Composer
         | QaScenario::Reply
         | QaScenario::Media
@@ -1962,6 +1990,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         wait_for_paginate_end_reached(&mut conn_a, &key_a, paginate_id, "paginate to EndReached")
             .await?;
     println!("paginate={paginate_result}");
+
+    if scenario.should_run_stage(QaStage::Activity) {
+        run_activity_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, &room_id).await?;
+    }
 
     if scenario.should_run_stage(QaStage::Composer) {
         run_composer_stage(&mut conn_a, &key_a, &account_key_b.0).await?;
@@ -3723,6 +3755,111 @@ async fn wait_for_ready_snapshot(conn: &mut CoreConnection, label: &str) -> Resu
     }
 }
 
+async fn wait_for_room_unread_count(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let started_at = std::time::Instant::now();
+    loop {
+        if conn
+            .snapshot()
+            .rooms
+            .iter()
+            .any(|room| room.room_id == room_id && room.unread_count > 0)
+        {
+            return Ok(());
+        }
+        if started_at.elapsed() > EVENT_TIMEOUT {
+            return Err(format!(
+                "{label}: timed out waiting for unread room summary"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_activity_snapshot(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for Activity SnapshotLoaded"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
+                request_id: ev_id,
+                recent,
+                unread,
+                ..
+            }) if ev_id == request_id => {
+                return Ok((
+                    recent.rows.into_iter().map(|row| row.event_id).collect(),
+                    unread.rows.into_iter().map(|row| row.event_id).collect(),
+                ));
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: Activity open failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_activity_marked_read(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for Activity MarkedRead"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Activity(ActivityEvent::MarkedRead {
+                request_id: ev_id, ..
+            }) if ev_id == request_id => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: Activity mark-read failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_activity_unread_empty(
+    conn: &mut CoreConnection,
+    label: &str,
+) -> Result<(), String> {
+    let started_at = std::time::Instant::now();
+    loop {
+        if matches!(
+            &conn.snapshot().activity,
+            ActivityState::Open { unread, .. } if unread.rows.is_empty()
+        ) {
+            return Ok(());
+        }
+        if started_at.elapsed() > EVENT_TIMEOUT {
+            return Err(format!(
+                "{label}: timed out waiting for empty unread stream"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Wait for `AccountEvent::LoggedIn` with the given request_id.
 async fn wait_for_logged_in(
     conn: &mut CoreConnection,
@@ -3952,6 +4089,88 @@ fn handle_cross_signing_status(
     {
         return Err(format!("{label}: cross-signing failed: {kind:?}"));
     }
+    Ok(())
+}
+
+async fn run_activity_stage(
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+    key_a: &TimelineKey,
+    key_b: &TimelineKey,
+    room_id: &str,
+) -> Result<(), String> {
+    let activity_body = "Phase 23 QA activity unread seed";
+    let txn = "qa-phase23-activity-unread".to_owned();
+    let send_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_id,
+            key: key_b.clone(),
+            transaction_id: txn.clone(),
+            body: activity_body.to_owned(),
+            mentions: MentionIntent::default(),
+        }))
+        .await
+        .map_err(|e| format!("activity: submit unread seed failed: {e}"))?;
+
+    let send_outcome = wait_for_send_flow_completion(
+        conn_b,
+        send_id,
+        key_b,
+        &txn,
+        activity_body,
+        "activity unread seed send",
+    )
+    .await?;
+    wait_for_item_with_body(
+        conn_a,
+        key_a,
+        activity_body,
+        "activity unread seed observed by A",
+    )
+    .await?;
+
+    sync_once_for_qa(conn_a, "activity sync A after unread seed").await?;
+    wait_for_room_unread_count(conn_a, room_id, "activity room unread count").await?;
+
+    let open_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::App(AppCommand::OpenActivity {
+            request_id: open_id,
+        }))
+        .await
+        .map_err(|e| format!("activity: submit open failed: {e}"))?;
+    let (recent_event_ids, unread_event_ids) =
+        wait_for_activity_snapshot(conn_a, open_id, "activity open").await?;
+
+    if !recent_event_ids
+        .iter()
+        .any(|event_id| event_id == &send_outcome.event_id)
+    {
+        return Err("activity recent projection did not include the unread seed".to_owned());
+    }
+    println!("activity_recent=ok");
+
+    if !unread_event_ids
+        .iter()
+        .any(|event_id| event_id == &send_outcome.event_id)
+    {
+        return Err("activity unread projection did not include the unread seed".to_owned());
+    }
+    println!("activity_unread=ok");
+
+    let mark_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::App(AppCommand::MarkActivityRead {
+            request_id: mark_id,
+            target: ActivityMarkReadTarget::All,
+        }))
+        .await
+        .map_err(|e| format!("activity: submit mark-read failed: {e}"))?;
+    wait_for_activity_marked_read(conn_a, mark_id, "activity mark read").await?;
+    wait_for_activity_unread_empty(conn_a, "activity unread cleared").await?;
+    println!("activity_markread=ok");
+
     Ok(())
 }
 
@@ -7112,6 +7331,10 @@ mod tests {
             QaScenario::Timeline
         );
         assert_eq!(
+            QaScenario::from_env_value("activity").unwrap(),
+            QaScenario::Activity
+        );
+        assert_eq!(
             QaScenario::from_env_value("reply").unwrap(),
             QaScenario::Reply
         );
@@ -7676,8 +7899,17 @@ mod tests {
         assert!(QaScenario::Timeline.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::Timeline.should_run_stage(QaStage::Timeline));
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::E2eeTrust));
+        assert!(!QaScenario::Timeline.should_run_stage(QaStage::Activity));
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::Reply));
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::EditRedactSearch));
+
+        assert!(QaScenario::Activity.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::Activity.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::Activity.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::Activity.should_run_stage(QaStage::Activity));
+        assert!(QaScenario::Activity.suppress_matrix_identifiers());
+        assert!(!QaScenario::Activity.should_run_stage(QaStage::Composer));
+        assert!(!QaScenario::Activity.should_run_stage(QaStage::Reply));
 
         assert!(QaScenario::Reply.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::Reply.should_run_stage(QaStage::RoomSpace));
@@ -7733,6 +7965,7 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::Directory));
         assert!(QaScenario::All.should_run_stage(QaStage::RoomManagement));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::All.should_run_stage(QaStage::Activity));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
         assert!(QaScenario::All.should_run_stage(QaStage::Media));
         assert!(QaScenario::All.should_run_stage(QaStage::LiveSignals));
@@ -7837,6 +8070,9 @@ mod tests {
                 "moderation=ok",
                 "permission_guard=ok",
                 "timeline=ok",
+                "activity_recent=ok",
+                "activity_unread=ok",
+                "activity_markread=ok",
                 "mention_send=ok",
                 "markdown_send=ok",
                 "slash_command=ok",
@@ -7918,6 +8154,19 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::Activity),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "activity_recent=ok",
+                "activity_unread=ok",
+                "activity_markread=ok",
                 "restore_cleanup=ok",
             ]
         );
@@ -8040,6 +8289,9 @@ mod tests {
                 "moderation=ok",
                 "permission_guard=ok",
                 "timeline=ok",
+                "activity_recent=ok",
+                "activity_unread=ok",
+                "activity_markread=ok",
                 "mention_send=ok",
                 "markdown_send=ok",
                 "slash_command=ok",

@@ -252,4 +252,64 @@ describe("BrowserFakeApi settings preview", () => {
       failureKind: "forbidden"
     });
   });
+
+  test("models activity recent, unread, pagination, and mark-read substates", async () => {
+    const api = createBrowserFakeApi();
+
+    const opened = await api.openActivity();
+    expect(opened.state.activity.kind).toBe("open");
+    if (opened.state.activity.kind !== "open") {
+      throw new Error("activity should be open");
+    }
+    expect(opened.state.activity.active_tab).toBe("recent");
+    expect(opened.state.activity.recent.rows.map((row) => row.event_id).slice(0, 3)).toEqual([
+      "$search-dev-note",
+      "$late-original",
+      "$false-positive"
+    ]);
+    expect(opened.state.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
+      true
+    );
+
+    const switched = await api.setActivityTab("unread");
+    expect(switched.state.activity.kind).toBe("open");
+    if (switched.state.activity.kind !== "open") {
+      throw new Error("activity should stay open");
+    }
+    expect(switched.state.activity.active_tab).toBe("unread");
+    expect(switched.state.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
+      true
+    );
+
+    const paged = await api.paginateActivity("recent", switched.state.activity.recent.next_batch);
+    expect(paged.state.activity.kind).toBe("open");
+    if (paged.state.activity.kind !== "open") {
+      throw new Error("activity should stay open after pagination");
+    }
+    expect(paged.state.activity.recent.rows.at(-1)?.event_id).toBe("$alpha-history");
+    expect(paged.state.activity.recent.next_batch).toBeNull();
+
+    const markedRoom = await api.markActivityRead({
+      kind: "room",
+      room_id: "!room-alpha:example.invalid",
+      up_to_event_id: "$false-positive"
+    });
+    expect(markedRoom.state.activity.kind).toBe("open");
+    if (markedRoom.state.activity.kind !== "open") {
+      throw new Error("activity should stay open after mark-read");
+    }
+    expect(markedRoom.state.activity.mark_read).toEqual({ kind: "idle" });
+    expect(
+      markedRoom.state.activity.unread.rows.some(
+        (row) => row.room_id === "!room-alpha:example.invalid"
+      )
+    ).toBe(false);
+
+    const markedAll = await api.markActivityRead({ kind: "all" });
+    expect(markedAll.state.activity.kind).toBe("open");
+    if (markedAll.state.activity.kind !== "open") {
+      throw new Error("activity should stay open after mark-all-read");
+    }
+    expect(markedAll.state.activity.unread.rows).toEqual([]);
+  });
 });

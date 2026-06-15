@@ -781,6 +781,11 @@ pub fn run() {
             commands::load_room_settings,
             commands::update_room_setting,
             commands::moderate_room_member,
+            commands::open_activity,
+            commands::close_activity,
+            commands::set_activity_tab,
+            commands::paginate_activity,
+            commands::mark_activity_read,
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
@@ -1188,10 +1193,11 @@ mod tests {
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
-            DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType, IdentityResetState,
-            JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
-            LocalEncryptionHealth, NativeAttentionCapabilities, NativeAttentionCapability,
-            NativeAttentionSummary, PresenceKind, ReplyQuote, ReplyQuoteState,
+            ActivityRow, ActivityStream, ActivityTab, DirectoryQuery, DirectoryRoomSummary,
+            IdentityResetAuthType, IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts,
+            LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
+            NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
+            PresenceKind, ReplyQuote, ReplyQuoteState,
             RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomPermissionFacts,
             RoomSettingsSnapshot, RoomTagKind, SasEmoji, VerificationFlowState, VerificationTarget,
         };
@@ -1724,6 +1730,57 @@ mod tests {
             activity_opened["event"]["Opened"]["request_id"],
             json!({ "connection_id": 3, "sequence": 7 })
         );
+        let activity_snapshot_loaded = serialize_core_event(&CoreEvent::Activity(
+            ActivityEvent::SnapshotLoaded {
+                request_id,
+                active_tab: ActivityTab::Unread,
+                recent: ActivityStream {
+                    rows: vec![ActivityRow {
+                        room_id: "!activity-recent:example.test".to_owned(),
+                        event_id: "$activity-recent:example.test".to_owned(),
+                        room_label: "Recent room".to_owned(),
+                        sender_label: Some("Recent sender".to_owned()),
+                        preview: Some("Recent preview".to_owned()),
+                        timestamp_ms: 20,
+                        unread: false,
+                        highlight: false,
+                    }],
+                    next_batch: Some("recent-next".to_owned()),
+                },
+                unread: ActivityStream {
+                    rows: vec![ActivityRow {
+                        room_id: "!activity-unread:example.test".to_owned(),
+                        event_id: "$activity-unread:example.test".to_owned(),
+                        room_label: "Unread room".to_owned(),
+                        sender_label: Some("Unread sender".to_owned()),
+                        preview: Some("Unread preview".to_owned()),
+                        timestamp_ms: 10,
+                        unread: true,
+                        highlight: true,
+                    }],
+                    next_batch: Some("unread-next".to_owned()),
+                },
+            },
+        ))
+        .expect("serialize activity snapshot event");
+        assert_eq!(
+            activity_snapshot_loaded["event"]["SnapshotLoaded"]["active_tab"],
+            json!("unread")
+        );
+        assert_eq!(
+            activity_snapshot_loaded["event"]["SnapshotLoaded"]["unread"]["rows"][0]["highlight"],
+            json!(true)
+        );
+        let activity_marked_read =
+            serialize_core_event(&CoreEvent::Activity(ActivityEvent::MarkedRead {
+                request_id,
+                cleared_event_ids: vec!["$activity-unread:example.test".to_owned()],
+            }))
+            .expect("serialize activity marked-read event");
+        assert_eq!(
+            activity_marked_read["event"]["MarkedRead"]["cleared_event_ids"],
+            json!(["$activity-unread:example.test"])
+        );
 
         let local_encryption = serialize_core_event(&CoreEvent::LocalEncryption(
             LocalEncryptionEvent::HealthChanged {
@@ -1775,6 +1832,8 @@ mod tests {
 
         let actual_contract = json!({
             "activityOpened": activity_opened,
+            "activityMarkedRead": activity_marked_read,
+            "activitySnapshotLoaded": activity_snapshot_loaded,
             "cjkTextPolicyJapaneseCatalogProfileChanged": cjk_text_policy,
             "e2eeTrustIdentityResetChanged": e2ee_identity_reset,
             "accountProfileUpdated": profile_updated,

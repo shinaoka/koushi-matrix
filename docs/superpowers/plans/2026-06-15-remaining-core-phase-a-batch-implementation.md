@@ -619,7 +619,7 @@ directory_query=ok
 directory_join=ok
 ```
 
-- [ ] **Step 5: Run focused checks**
+- [x] **Step 5: Run focused checks**
 
 Run:
 
@@ -742,7 +742,7 @@ gh issue comment 21 --body "Phase A room management core landed on branch \`code
 - Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
 - Test: `crates/matrix-desktop-state/tests/activity_state.rs`
 
-- [ ] **Step 1: Write failing activity state tests**
+- [x] **Step 1: Write failing activity state tests**
 
 Test:
 
@@ -764,7 +764,7 @@ cargo test -p matrix-desktop-state --test activity_state
 
 Expected: failing tests before implementation.
 
-- [ ] **Step 2: Add Activity state and row DTOs**
+- [x] **Step 2: Add Activity state and row DTOs**
 
 Add:
 
@@ -777,7 +777,7 @@ pub struct ActivityRow { /* room label, sender label, preview, timestamp, event 
 Store event references in a way that can drive `OpenFocusedContext` without
 printing event IDs in QA output.
 
-- [ ] **Step 3: Add core projection and mark-read commands**
+- [x] **Step 3: Add core projection and mark-read commands**
 
 Project account-wide rows from Rust-owned timeline/live-signal data. Reuse
 fully-read state from #16 and room tag data from #22. Add commands:
@@ -788,10 +788,10 @@ CloseActivityView
 SetActivityTab
 PaginateActivity
 MarkActivityRead
-MarkAllActivityRead
+MarkActivityRead { target: All }
 ```
 
-- [ ] **Step 4: Add headless QA**
+- [x] **Step 4: Add headless QA**
 
 Add tokens:
 

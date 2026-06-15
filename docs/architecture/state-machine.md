@@ -1038,6 +1038,49 @@ stateDiagram-v2
   health to `Unknown` and cancel pending probe/reset correlation. Platform
   capability facts may be recomputed after the next startup/login probe.
 
+## Account Activity
+
+Account-wide Recent/Unread Activity is a Rust-owned state machine. It may be
+rendered by React as tabs or a rail, but the list membership, ordering,
+low-priority exclusion, unread clearing, and focused-context references are
+computed before the GUI layer.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Opening: OpenActivity
+    Opening --> Open: ActivitySnapshotLoaded [matching request_id]
+    Opening --> Closed: CloseActivity
+    Open --> Open: SetActivityTab
+    Open --> Open: ActivityRowsUpdated
+    Open --> Open: PaginateActivity/ActivitySnapshotLoaded
+    Open --> MarkReadPending: MarkActivityRead(room|all)
+    MarkReadPending --> Open: ActivityMarkReadSucceeded [matching request_id]
+    MarkReadPending --> Open: ActivityMarkReadFailed [matching request_id]
+    Open --> Closed: CloseActivity
+```
+
+- Accepted inputs are `ActivityRowsObserved` from room `TimelineActor`s, room
+  unread/highlight counts, room tag facts, explicit Activity commands, and
+  request-correlated Activity completions. Thread and focused timelines do not
+  duplicate account-wide Activity rows; the room live timeline is the source.
+- `AppActor` owns the Activity projection cache. It fills safe room labels,
+  unread/highlight flags, and low-priority exclusions from `AppState`; React
+  must not infer Activity rows from timeline DOM, browser-local state, or IPC
+  mock convenience data.
+- Recent and Unread are separate `ActivityStream`s. Changing tabs only updates
+  `active_tab`; viewing Unread does not mark rows read. Mark-read commands
+  transition the Rust `mark_read` substate to pending, then clear projection
+  rows only after a matching success action. Any future SDK fully-read side
+  effect must remain behind this typed command path.
+- `ActivityRow` carries event references so the GUI can dispatch a focused
+  context open without inventing navigation semantics. QA tokens and logs must
+  not print room IDs, event IDs, sender IDs, message previews, pagination
+  tokens, or raw SDK errors.
+- Logout, lock, account switch, and session clearing close Activity and discard
+  account-derived rows. Non-secret UI preferences such as the last selected tab
+  may be remembered only if they are not coupled to room or event identity.
+
 ## Native Attention
 
 Native notifications, badges, title hints, sounds, tray state, and activation

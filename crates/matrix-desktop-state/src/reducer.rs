@@ -2,17 +2,19 @@ use crate::{
     action::AppAction,
     effect::{AppEffect, UiEvent},
     state::{
-        ActivityState, ActivityTab, AppError, AppState, BasicOperationRequest, BasicOperationState,
-        ComposerMode, CrossSigningStatus, DirectoryJoinState, DirectoryQueryState, DirectoryState,
-        E2eeRecoveryState, E2eeTrustState, FocusedContextState, IdentityResetState,
-        KeyBackupStatus, LocalEncryptionState, NavigationState, OperationFailureKind,
-        PendingComposerSendKind, PinOp, PinOperationState, RoomManagementOperationKind,
-        RoomManagementOperationState, RoomModerationAction, SasEmoji, SearchState, SessionState,
-        SettingsPersistenceState, SyncState, ThreadPaneState, TimelinePaneState,
-        TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
-        VerificationTarget,
+        ActivityMarkReadState, ActivityState, ActivityStream, ActivityTab, AppError, AppState,
+        BasicOperationRequest, BasicOperationState, ComposerMode, CrossSigningStatus,
+        DirectoryJoinState, DirectoryQueryState, DirectoryState, E2eeRecoveryState, E2eeTrustState,
+        FocusedContextState, IdentityResetState, KeyBackupStatus, LocalEncryptionState,
+        NavigationState, OperationFailureKind, PendingComposerSendKind, PinOp, PinOperationState,
+        RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction, SasEmoji,
+        SearchState, SessionState, SettingsPersistenceState, SyncState, ThreadPaneState,
+        TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
+        VerificationFlowState, VerificationTarget,
     },
 };
+
+use std::collections::BTreeSet;
 
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
 const SETTINGS_LOAD_FAILED_MESSAGE: &str = "Settings could not be loaded";
@@ -1360,6 +1362,127 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.activity = ActivityState::Closed;
             vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
         }
+        AppAction::ActivitySnapshotLoaded {
+            request_id,
+            active_tab,
+            recent,
+            unread,
+            excluded_room_ids,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let ActivityState::Opening {
+                request_id: current_request_id,
+                ..
+            } = state.activity
+            else {
+                return Vec::new();
+            };
+            if current_request_id != request_id {
+                return Vec::new();
+            }
+
+            let excluded_room_ids: BTreeSet<_> = excluded_room_ids.into_iter().collect();
+            state.activity = ActivityState::Open {
+                active_tab,
+                recent: normalize_activity_stream(recent, &excluded_room_ids),
+                unread: normalize_activity_stream(unread, &excluded_room_ids),
+                mark_read: ActivityMarkReadState::Idle,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+        }
+        AppAction::ActivityRowsObserved { .. } => Vec::new(),
+        AppAction::ActivityRowsUpdated {
+            recent,
+            unread,
+            excluded_room_ids,
+        } => {
+            let ActivityState::Open {
+                recent: current_recent,
+                unread: current_unread,
+                ..
+            } = &mut state.activity
+            else {
+                return Vec::new();
+            };
+
+            let excluded_room_ids: BTreeSet<_> = excluded_room_ids.into_iter().collect();
+            *current_recent = normalize_activity_stream(recent, &excluded_room_ids);
+            *current_unread = normalize_activity_stream(unread, &excluded_room_ids);
+            vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+        }
+        AppAction::ActivityTabSelected { tab } => {
+            let ActivityState::Open { active_tab, .. } = &mut state.activity else {
+                return Vec::new();
+            };
+            if *active_tab == tab {
+                return Vec::new();
+            }
+
+            *active_tab = tab;
+            vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+        }
+        AppAction::ActivityMarkReadRequested { request_id, target } => {
+            let ActivityState::Open { mark_read, .. } = &mut state.activity else {
+                return Vec::new();
+            };
+
+            *mark_read = ActivityMarkReadState::Pending { request_id, target };
+            vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+        }
+        AppAction::ActivityMarkReadSucceeded {
+            request_id,
+            cleared_event_ids,
+        } => {
+            let ActivityState::Open {
+                unread, mark_read, ..
+            } = &mut state.activity
+            else {
+                return Vec::new();
+            };
+            if !matches!(
+                mark_read,
+                ActivityMarkReadState::Pending {
+                    request_id: current_request_id,
+                    ..
+                } if *current_request_id == request_id
+            ) {
+                return Vec::new();
+            }
+
+            let cleared_event_ids: BTreeSet<_> = cleared_event_ids.into_iter().collect();
+            unread
+                .rows
+                .retain(|row| !cleared_event_ids.contains(&row.event_id));
+            *mark_read = ActivityMarkReadState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+        }
+        AppAction::ActivityMarkReadFailed {
+            request_id,
+            target,
+            kind,
+        } => {
+            let ActivityState::Open { mark_read, .. } = &mut state.activity else {
+                return Vec::new();
+            };
+            if !matches!(
+                mark_read,
+                ActivityMarkReadState::Pending {
+                    request_id: current_request_id,
+                    ..
+                } if *current_request_id == request_id
+            ) {
+                return Vec::new();
+            }
+
+            *mark_read = ActivityMarkReadState::Failed {
+                target,
+                failure_kind: kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+        }
         AppAction::LocalEncryptionHealthChanged { health } => {
             let next = LocalEncryptionState::from(health);
             if state.local_encryption == next {
@@ -2093,6 +2216,23 @@ fn room_management_operation_matches(
             && current_room_id == room_id
             && *current_operation == operation
     )
+}
+
+fn normalize_activity_stream(
+    mut stream: ActivityStream,
+    excluded_room_ids: &BTreeSet<String>,
+) -> ActivityStream {
+    stream
+        .rows
+        .retain(|row| !excluded_room_ids.contains(&row.room_id));
+    stream.rows.sort_by(|left, right| {
+        right
+            .timestamp_ms
+            .cmp(&left.timestamp_ms)
+            .then_with(|| left.room_id.cmp(&right.room_id))
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
+    stream
 }
 
 fn verification_request_id(verification: &VerificationFlowState) -> Option<u64> {

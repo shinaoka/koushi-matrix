@@ -1,14 +1,14 @@
 use std::fmt;
 
 use crate::state::{
-    BasicOperationRequest, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
-    E2eeRecoveryState, IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts,
-    LiveRoomSignalUpdate, LocalEncryptionHealth, LoginFlow, NativeAttentionSummary,
-    OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest,
-    RecoveryMethod, RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, RoomSummary,
-    RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, SearchResult, SearchScope, SessionInfo,
-    SettingsPatch, SettingsValues, SpaceSummary, TrustOperationFailureKind, UserProfile,
-    VerificationCancelReason, VerificationTarget,
+    ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab, BasicOperationRequest,
+    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState,
+    IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate,
+    LocalEncryptionHealth, LoginFlow, NativeAttentionSummary, OperationFailureKind, OwnProfile,
+    PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomModerationAction,
+    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
+    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -299,6 +299,37 @@ pub enum AppAction {
         request_id: u64,
     },
     ActivityClosed,
+    ActivitySnapshotLoaded {
+        request_id: u64,
+        active_tab: ActivityTab,
+        recent: ActivityStream,
+        unread: ActivityStream,
+        excluded_room_ids: Vec<String>,
+    },
+    ActivityRowsObserved {
+        rows: Vec<ActivityRow>,
+    },
+    ActivityRowsUpdated {
+        recent: ActivityStream,
+        unread: ActivityStream,
+        excluded_room_ids: Vec<String>,
+    },
+    ActivityTabSelected {
+        tab: ActivityTab,
+    },
+    ActivityMarkReadRequested {
+        request_id: u64,
+        target: ActivityMarkReadTarget,
+    },
+    ActivityMarkReadSucceeded {
+        request_id: u64,
+        cleared_event_ids: Vec<String>,
+    },
+    ActivityMarkReadFailed {
+        request_id: u64,
+        target: ActivityMarkReadTarget,
+        kind: OperationFailureKind,
+    },
     LocalEncryptionHealthChanged {
         health: LocalEncryptionHealth,
     },
@@ -564,6 +595,75 @@ impl fmt::Debug for AppAction {
                 .field("room_id", &"RoomId(..)")
                 .field("target_user_id", &"UserId(..)")
                 .field("action", action)
+                .field("kind", kind)
+                .finish(),
+            Self::ActivityOpened { request_id } => formatter
+                .debug_struct("ActivityOpened")
+                .field("request_id", request_id)
+                .finish(),
+            Self::ActivityClosed => formatter.write_str("ActivityClosed"),
+            Self::ActivitySnapshotLoaded {
+                request_id,
+                active_tab,
+                recent,
+                unread,
+                excluded_room_ids,
+            } => formatter
+                .debug_struct("ActivitySnapshotLoaded")
+                .field("request_id", request_id)
+                .field("active_tab", active_tab)
+                .field("recent", recent)
+                .field("unread", unread)
+                .field(
+                    "excluded_room_ids",
+                    &format_args!("{} room id(s)", excluded_room_ids.len()),
+                )
+                .finish(),
+            Self::ActivityRowsObserved { rows } => formatter
+                .debug_struct("ActivityRowsObserved")
+                .field("rows", &format_args!("{} row(s)", rows.len()))
+                .finish(),
+            Self::ActivityRowsUpdated {
+                recent,
+                unread,
+                excluded_room_ids,
+            } => formatter
+                .debug_struct("ActivityRowsUpdated")
+                .field("recent", recent)
+                .field("unread", unread)
+                .field(
+                    "excluded_room_ids",
+                    &format_args!("{} room id(s)", excluded_room_ids.len()),
+                )
+                .finish(),
+            Self::ActivityTabSelected { tab } => formatter
+                .debug_struct("ActivityTabSelected")
+                .field("tab", tab)
+                .finish(),
+            Self::ActivityMarkReadRequested { request_id, target } => formatter
+                .debug_struct("ActivityMarkReadRequested")
+                .field("request_id", request_id)
+                .field("target", target)
+                .finish(),
+            Self::ActivityMarkReadSucceeded {
+                request_id,
+                cleared_event_ids,
+            } => formatter
+                .debug_struct("ActivityMarkReadSucceeded")
+                .field("request_id", request_id)
+                .field(
+                    "cleared_event_ids",
+                    &format_args!("{} event id(s)", cleared_event_ids.len()),
+                )
+                .finish(),
+            Self::ActivityMarkReadFailed {
+                request_id,
+                target,
+                kind,
+            } => formatter
+                .debug_struct("ActivityMarkReadFailed")
+                .field("request_id", request_id)
+                .field("target", target)
                 .field("kind", kind)
                 .finish(),
             _ => formatter.write_str("AppAction(..)"),

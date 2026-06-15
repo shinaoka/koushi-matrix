@@ -1,5 +1,9 @@
 import { composeSidebar, roomIsInScope, textRangeUtf16 } from "../domain/desktopModel";
 import type {
+  ActivityMarkReadTarget,
+  ActivityRow,
+  ActivityStream,
+  ActivityTab,
   DesktopSnapshot,
   ComposerKeyEvent,
   ComposerResolvedAction,
@@ -80,6 +84,11 @@ export interface DesktopApi {
   removeRoomTag(roomId: string, tag: RoomTagKind): Promise<DesktopSnapshot>;
   pinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   unpinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  openActivity(): Promise<DesktopSnapshot>;
+  closeActivity(): Promise<DesktopSnapshot>;
+  setActivityTab(tab: ActivityTab): Promise<DesktopSnapshot>;
+  paginateActivity(tab: ActivityTab, cursor?: string | null): Promise<DesktopSnapshot>;
+  markActivityRead(target: ActivityMarkReadTarget): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
   setThreadComposerDraft(roomId: string, rootEventId: string, draft: string): Promise<DesktopSnapshot>;
@@ -1184,6 +1193,110 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async openActivity(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    const requestId = this.nextRequestId();
+    this.snapshot.state.activity = {
+      kind: "opening",
+      request_id: requestId,
+      tab: "recent"
+    };
+
+    await Promise.resolve();
+
+    const streams = createActivityStreams(false);
+    this.snapshot.state.activity = {
+      kind: "open",
+      active_tab: "recent",
+      recent: streams.recent,
+      unread: streams.unread,
+      mark_read: { kind: "idle" }
+    };
+    return this.getSnapshot();
+  }
+
+  async closeActivity(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.activity = { kind: "closed" };
+    return this.getSnapshot();
+  }
+
+  async setActivityTab(tab: ActivityTab): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || this.snapshot.state.activity.kind !== "open") {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.activity.active_tab = tab;
+    return this.getSnapshot();
+  }
+
+  async paginateActivity(
+    tab: ActivityTab,
+    cursor: string | null = null
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || this.snapshot.state.activity.kind !== "open") {
+      return this.getSnapshot();
+    }
+
+    const normalizedCursor = cursor?.trim() ? cursor.trim() : null;
+    if (tab !== "recent" || normalizedCursor === null) {
+      return this.getSnapshot();
+    }
+
+    const existingEventIds = new Set(
+      this.snapshot.state.activity.recent.rows.map((row) => row.event_id)
+    );
+    const olderRows = activityRows(backwardTimelineMessages, new Set())
+      .filter((row) => !existingEventIds.has(row.event_id))
+      .map((row) => ({ ...row, unread: false, highlight: false }));
+    this.snapshot.state.activity.recent = {
+      rows: [...this.snapshot.state.activity.recent.rows, ...olderRows],
+      next_batch: null
+    };
+    return this.getSnapshot();
+  }
+
+  async markActivityRead(target: ActivityMarkReadTarget): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || this.snapshot.state.activity.kind !== "open") {
+      return this.getSnapshot();
+    }
+
+    const requestId = this.nextRequestId();
+    this.snapshot.state.activity.mark_read = {
+      kind: "pending",
+      request_id: requestId,
+      target
+    };
+
+    await Promise.resolve();
+
+    if (target.kind === "all") {
+      this.snapshot.state.activity.unread = { rows: [], next_batch: null };
+      this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) => ({
+        ...room,
+        unread_count: 0
+      }));
+    } else {
+      this.snapshot.state.activity.unread = {
+        ...this.snapshot.state.activity.unread,
+        rows: this.snapshot.state.activity.unread.rows.filter(
+          (row) => row.room_id !== target.room_id
+        )
+      };
+      this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+        room.room_id === target.room_id ? { ...room, unread_count: 0 } : room
+      );
+    }
+    this.snapshot.state.activity.mark_read = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
   async setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
@@ -1323,6 +1436,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.search = { kind: "closed" };
     this.snapshot.state.directory = defaultDirectoryState();
     this.snapshot.state.room_management = defaultRoomManagementState();
+    this.snapshot.state.activity = { kind: "closed" };
     this.snapshot.state.basic_operation = { kind: "idle" };
     this.snapshot.state.profile = defaultProfileState(null);
     this.snapshot.state.e2ee_trust = defaultE2eeTrustState();
@@ -1918,6 +2032,55 @@ function candidateScore(eventId: string): number {
     default:
       return 700;
   }
+}
+
+function createActivityStreams(includeBackfill: boolean): {
+  recent: ActivityStream;
+  unread: ActivityStream;
+} {
+  const unreadRoomIds = new Set(
+    rooms.filter((room) => room.unread_count > 0).map((room) => room.room_id)
+  );
+  const messages = includeBackfill
+    ? [...timelineMessages, ...backwardTimelineMessages]
+    : timelineMessages;
+  return {
+    recent: {
+      rows: activityRows(messages, unreadRoomIds),
+      next_batch: includeBackfill ? null : "browser-activity-recent-page-2"
+    },
+    unread: {
+      rows: activityRows(
+        timelineMessages.filter((message) => unreadRoomIds.has(message.room_id)),
+        unreadRoomIds
+      ),
+      next_batch: null
+    }
+  };
+}
+
+function activityRows(
+  messages: TimelineMessage[],
+  unreadRoomIds: Set<string>
+): ActivityRow[] {
+  return messages
+    .map((message) => {
+      const room = rooms.find((candidate) => candidate.room_id === message.room_id);
+      return {
+        room_id: message.room_id,
+        event_id: message.event_id,
+        room_label: room?.display_name ?? "Unknown room",
+        sender_label: message.sender,
+        preview: message.body,
+        timestamp_ms: message.timestamp_ms,
+        unread: unreadRoomIds.has(message.room_id),
+        highlight: message.event_id === "$alpha-update"
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.timestamp_ms - left.timestamp_ms || left.event_id.localeCompare(right.event_id)
+    );
 }
 
 function clone<T>(value: T): T {

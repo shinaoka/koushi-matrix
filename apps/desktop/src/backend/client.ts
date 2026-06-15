@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { createBrowserFakeApi, type DesktopApi } from "./browserFakeApi";
 import type {
+  ActivityMarkReadTarget,
+  ActivityTab,
   DesktopSnapshot,
   ComposerKeyEvent,
   ComposerResolvedAction,
@@ -249,6 +251,29 @@ class TauriDesktopApi implements DesktopApi {
       action,
       reason
     });
+  }
+
+  async openActivity(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("open_activity");
+  }
+
+  async closeActivity(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("close_activity");
+  }
+
+  async setActivityTab(tab: ActivityTab): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_activity_tab", { tab });
+  }
+
+  async paginateActivity(
+    tab: ActivityTab,
+    cursor: string | null = null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("paginate_activity", { tab, cursor });
+  }
+
+  async markActivityRead(target: ActivityMarkReadTarget): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("mark_activity_read", { target });
   }
 
   async openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot> {

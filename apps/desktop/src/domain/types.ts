@@ -329,9 +329,44 @@ export type OperationFailureKind =
 export type ActivityState =
   | { kind: "closed" }
   | { kind: "opening"; request_id: number; tab: ActivityTab }
-  | { kind: "open"; active_tab: ActivityTab };
+  | {
+      kind: "open";
+      active_tab: ActivityTab;
+      recent: ActivityStream;
+      unread: ActivityStream;
+      mark_read: ActivityMarkReadState;
+    };
 
 export type ActivityTab = "recent" | "unread";
+
+export interface ActivityStream {
+  rows: ActivityRow[];
+  next_batch: string | null;
+}
+
+export interface ActivityRow {
+  room_id: string;
+  event_id: string;
+  room_label: string;
+  sender_label: string | null;
+  preview: string | null;
+  timestamp_ms: number;
+  unread: boolean;
+  highlight: boolean;
+}
+
+export type ActivityMarkReadState =
+  | { kind: "idle" }
+  | { kind: "pending"; request_id: number; target: ActivityMarkReadTarget }
+  | {
+      kind: "failed";
+      target: ActivityMarkReadTarget;
+      failure_kind: OperationFailureKind;
+    };
+
+export type ActivityMarkReadTarget =
+  | { kind: "room"; room_id: string; up_to_event_id: string }
+  | { kind: "all" };
 
 export interface DirectoryState {
   query: DirectoryQueryState;
