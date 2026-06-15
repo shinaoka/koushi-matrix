@@ -54,10 +54,12 @@
 
 use std::sync::Arc;
 
-use matrix_desktop_sdk::{MatrixClientSession, MatrixRoomOperationError};
+use matrix_desktop_sdk::{
+    MatrixClientSession, MatrixRoomOperationError, MatrixRoomTagKind, MatrixRoomTags,
+};
 use matrix_desktop_state::{
     AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, InvitePreview,
-    RoomSummary, SpaceSummary,
+    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -323,6 +325,21 @@ impl RoomActor {
                 room_id,
             } => {
                 self.handle_forget_room(request_id, room_id).await;
+            }
+            RoomCommand::SetTag {
+                request_id,
+                room_id,
+                tag,
+                order,
+            } => {
+                self.handle_set_tag(request_id, room_id, tag, order).await;
+            }
+            RoomCommand::RemoveTag {
+                request_id,
+                room_id,
+                tag,
+            } => {
+                self.handle_remove_tag(request_id, room_id, tag).await;
             }
             RoomCommand::SelectSpace {
                 request_id: _,
@@ -600,6 +617,97 @@ impl RoomActor {
         }
     }
 
+    async fn handle_set_tag(
+        &self,
+        request_id: RequestId,
+        room_id: String,
+        tag: RoomTagKind,
+        order: Option<f64>,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        match matrix_desktop_sdk::set_room_tag(session, &room_id, sdk_room_tag_kind(tag), order)
+            .await
+        {
+            Ok(()) => {
+                let info = room_tag_info_from_order(order);
+                if self
+                    .action_tx
+                    .send(vec![AppAction::RoomTagSet {
+                        room_id: room_id.clone(),
+                        tag,
+                        info,
+                    }])
+                    .await
+                    .is_err()
+                {
+                    self.emit_failure(
+                        request_id,
+                        CoreFailure::RoomOperationFailed {
+                            kind: RoomFailureKind::Sdk,
+                        },
+                    );
+                    return;
+                }
+                // `set_is_favourite` / `set_is_low_priority` only send the
+                // tag mutation to the server; the SDK room-list snapshot may
+                // remain stale until the next sync. Keep the immediate state
+                // projection in the reducer action above instead of refreshing
+                // and potentially overwriting it with old tags.
+                self.emit(CoreEvent::Room(RoomEvent::RoomTagSet {
+                    request_id,
+                    room_id,
+                    tag,
+                }));
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_remove_tag(&self, request_id: RequestId, room_id: String, tag: RoomTagKind) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        match matrix_desktop_sdk::remove_room_tag(session, &room_id, sdk_room_tag_kind(tag)).await {
+            Ok(()) => {
+                if self
+                    .action_tx
+                    .send(vec![AppAction::RoomTagRemoved {
+                        room_id: room_id.clone(),
+                        tag,
+                    }])
+                    .await
+                    .is_err()
+                {
+                    self.emit_failure(
+                        request_id,
+                        CoreFailure::RoomOperationFailed {
+                            kind: RoomFailureKind::Sdk,
+                        },
+                    );
+                    return;
+                }
+                // See `handle_set_tag`: the reducer owns the immediate state
+                // projection, while the next sync snapshot becomes canonical.
+                self.emit(CoreEvent::Room(RoomEvent::RoomTagRemoved {
+                    request_id,
+                    room_id,
+                    tag,
+                }));
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
     /// Refresh the room list and project it into AppState via the action
     /// channel. Also emits `RoomEvent::RoomListUpdated` as a discrete event.
     ///
@@ -825,12 +933,24 @@ fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec
             display_name: room.display_name.clone(),
             avatar: avatar_from_mxc_uri(room.avatar_mxc_uri.as_deref()),
             is_dm: room.is_dm,
+            tags: normalize_room_tags(&room.tags),
             unread_count: room.unread_count,
             notification_count: room.notification_count,
             highlight_count: room.highlight_count,
             parent_space_ids: room.parent_space_ids.clone(),
         })
         .collect()
+}
+
+fn normalize_room_tags(tags: &MatrixRoomTags) -> RoomTags {
+    RoomTags {
+        favourite: tags.favourite.as_ref().map(|info| RoomTagInfo {
+            order: info.order.clone(),
+        }),
+        low_priority: tags.low_priority.as_ref().map(|info| RoomTagInfo {
+            order: info.order.clone(),
+        }),
+    }
 }
 
 /// Convert `MatrixRoomListSnapshot` invites into Rust-owned invite previews.
@@ -854,6 +974,19 @@ fn avatar_from_mxc_uri(mxc_uri: Option<&str>) -> Option<AvatarImage> {
         mxc_uri: mxc_uri.to_owned(),
         thumbnail: AvatarThumbnailState::NotRequested,
     })
+}
+
+fn sdk_room_tag_kind(tag: RoomTagKind) -> MatrixRoomTagKind {
+    match tag {
+        RoomTagKind::Favourite => MatrixRoomTagKind::Favourite,
+        RoomTagKind::LowPriority => MatrixRoomTagKind::LowPriority,
+    }
+}
+
+fn room_tag_info_from_order(order: Option<f64>) -> RoomTagInfo {
+    RoomTagInfo {
+        order: order.map(|order| order.to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -891,7 +1024,9 @@ pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailu
 pub mod tests {
     use matrix_desktop_sdk::{
         MatrixInvitePreview, MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace,
+        MatrixRoomTagInfo, MatrixRoomTags,
     };
+    use matrix_desktop_state::{RoomTagInfo, RoomTagKind};
     use tokio::sync::{broadcast, mpsc};
 
     use super::*;
@@ -967,6 +1102,7 @@ pub mod tests {
                     display_name: "Room 1".to_owned(),
                     avatar_mxc_uri: None,
                     is_dm: false,
+                    tags: MatrixRoomTags::default(),
                     unread_count: 0,
                     notification_count: 0,
                     highlight_count: 0,
@@ -977,6 +1113,7 @@ pub mod tests {
                     display_name: "Room 2".to_owned(),
                     avatar_mxc_uri: None,
                     is_dm: false,
+                    tags: MatrixRoomTags::default(),
                     unread_count: 0,
                     notification_count: 0,
                     highlight_count: 0,
@@ -1035,6 +1172,7 @@ pub mod tests {
                 display_name: "Alice".to_owned(),
                 avatar_mxc_uri: None,
                 is_dm: true,
+                tags: MatrixRoomTags::default(),
                 unread_count: 3,
                 notification_count: 3,
                 highlight_count: 1,
@@ -1060,6 +1198,7 @@ pub mod tests {
                 display_name: "General".to_owned(),
                 avatar_mxc_uri: None,
                 is_dm: false,
+                tags: MatrixRoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
@@ -1083,6 +1222,7 @@ pub mod tests {
                 display_name: "General".to_owned(),
                 avatar_mxc_uri: Some("mxc://example.test/room-avatar".to_owned()),
                 is_dm: false,
+                tags: MatrixRoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
@@ -1165,6 +1305,40 @@ pub mod tests {
             ),
             "expected SelectSpace action, got {actions:?}"
         );
+    }
+
+    #[test]
+    fn normalize_rooms_carries_sdk_room_tags() {
+        let snapshot = MatrixRoomListSnapshot {
+            spaces: vec![],
+            rooms: vec![MatrixRoomListRoom {
+                room_id: "!room1:example.test".to_owned(),
+                display_name: "Room 1".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: false,
+                tags: MatrixRoomTags {
+                    favourite: Some(MatrixRoomTagInfo {
+                        order: Some("0.25".to_owned()),
+                    }),
+                    low_priority: None,
+                },
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                parent_space_ids: vec![],
+            }],
+            invites: vec![],
+        };
+
+        let rooms = normalize_rooms(&snapshot);
+
+        assert_eq!(
+            rooms[0].tags.favourite,
+            Some(RoomTagInfo {
+                order: Some("0.25".to_owned())
+            })
+        );
+        assert_eq!(rooms[0].tags.low_priority, None);
     }
 
     #[tokio::test]
@@ -1284,6 +1458,93 @@ pub mod tests {
             }
             other => panic!("expected OperationFailed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn set_room_tag_without_session_emits_session_required() {
+        let (action_tx, _action_rx) = mpsc::channel(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let handle = RoomActor::spawn(action_tx, event_tx);
+
+        let request_id = make_request_id(6);
+        handle
+            .send(RoomMessage::Command(RoomCommand::SetTag {
+                request_id,
+                room_id: "!room:example.test".to_owned(),
+                tag: RoomTagKind::Favourite,
+                order: None,
+            }))
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("event");
+
+        match event {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, CoreFailure::SessionRequired);
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_room_tag_without_session_emits_session_required() {
+        let (action_tx, _action_rx) = mpsc::channel(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let handle = RoomActor::spawn(action_tx, event_tx);
+
+        let request_id = make_request_id(7);
+        handle
+            .send(RoomMessage::Command(RoomCommand::RemoveTag {
+                request_id,
+                room_id: "!room:example.test".to_owned(),
+                tag: RoomTagKind::LowPriority,
+            }))
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("event");
+
+        match event {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } => {
+                assert_eq!(ev_id, request_id);
+                assert_eq!(failure, CoreFailure::SessionRequired);
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn room_tag_success_path_does_not_refresh_from_stale_sdk_snapshot() {
+        let source = include_str!("room.rs");
+        let set_tag_body = source
+            .split("async fn handle_set_tag")
+            .nth(1)
+            .expect("set tag handler")
+            .split("async fn handle_remove_tag")
+            .next()
+            .expect("set tag body");
+        let remove_tag_body = source
+            .split("async fn handle_remove_tag")
+            .nth(1)
+            .expect("remove tag handler")
+            .split("    /// Refresh the room list")
+            .next()
+            .expect("remove tag body");
+
+        assert!(!set_tag_body.contains("refresh_room_list().await"));
+        assert!(!remove_tag_body.contains("refresh_room_list().await"));
     }
 
     // --- request_id correlation on RoomEvents ---

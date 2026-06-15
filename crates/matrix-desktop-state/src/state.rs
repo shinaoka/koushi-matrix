@@ -568,10 +568,52 @@ pub struct RoomSummary {
     #[serde(default)]
     pub avatar: Option<AvatarImage>,
     pub is_dm: bool,
+    #[serde(default)]
+    pub tags: RoomTags,
     pub unread_count: u64,
     pub notification_count: u64,
     pub highlight_count: u64,
     pub parent_space_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomTags {
+    pub favourite: Option<RoomTagInfo>,
+    pub low_priority: Option<RoomTagInfo>,
+}
+
+impl RoomTags {
+    pub fn set(&mut self, tag: RoomTagKind, info: RoomTagInfo) {
+        match tag {
+            RoomTagKind::Favourite => {
+                self.favourite = Some(info);
+                self.low_priority = None;
+            }
+            RoomTagKind::LowPriority => {
+                self.low_priority = Some(info);
+                self.favourite = None;
+            }
+        }
+    }
+
+    pub fn remove(&mut self, tag: RoomTagKind) {
+        match tag {
+            RoomTagKind::Favourite => self.favourite = None,
+            RoomTagKind::LowPriority => self.low_priority = None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomTagInfo {
+    pub order: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomTagKind {
+    Favourite,
+    LowPriority,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

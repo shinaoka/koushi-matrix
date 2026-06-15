@@ -440,9 +440,9 @@ mod tests {
     use super::{FrontendDesktopSnapshot, FrontendSyncState};
     use matrix_desktop_state::{
         AppState, AvatarImage, AvatarThumbnailState, EmojiPreference, FontPreference,
-        InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod, RoomSummary, SessionInfo,
-        SessionState, SpaceSummary, SyncState, TextDirectionPreference, TypographySettings,
-        UserProfile,
+        InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod, RoomSummary, RoomTags,
+        SessionInfo, SessionState, SpaceSummary, SyncState, TextDirectionPreference,
+        TypographySettings, UserProfile,
     };
 
     fn booted_app_state() -> AppState {
@@ -636,6 +636,7 @@ mod tests {
             display_name: "Room".to_owned(),
             avatar: Some(room_avatar),
             is_dm: false,
+            tags: RoomTags::default(),
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,

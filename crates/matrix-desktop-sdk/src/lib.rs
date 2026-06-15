@@ -1440,10 +1440,28 @@ pub struct MatrixRoomListRoom {
     pub display_name: String,
     pub avatar_mxc_uri: Option<String>,
     pub is_dm: bool,
+    pub tags: MatrixRoomTags,
     pub unread_count: u64,
     pub notification_count: u64,
     pub highlight_count: u64,
     pub parent_space_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MatrixRoomTags {
+    pub favourite: Option<MatrixRoomTagInfo>,
+    pub low_priority: Option<MatrixRoomTagInfo>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixRoomTagInfo {
+    pub order: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRoomTagKind {
+    Favourite,
+    LowPriority,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2050,6 +2068,33 @@ pub async fn set_space_child(
         .map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
+pub async fn set_room_tag(
+    session: &MatrixClientSession,
+    room_id: &str,
+    tag: MatrixRoomTagKind,
+    order: Option<f64>,
+) -> Result<(), MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    match tag {
+        MatrixRoomTagKind::Favourite => room.set_is_favourite(true, order).await,
+        MatrixRoomTagKind::LowPriority => room.set_is_low_priority(true, order).await,
+    }
+    .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+pub async fn remove_room_tag(
+    session: &MatrixClientSession,
+    room_id: &str,
+    tag: MatrixRoomTagKind,
+) -> Result<(), MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    match tag {
+        MatrixRoomTagKind::Favourite => room.set_is_favourite(false, None).await,
+        MatrixRoomTagKind::LowPriority => room.set_is_low_priority(false, None).await,
+    }
+    .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
 pub async fn edit_text_message(
     session: &MatrixClientSession,
     room_id: &str,
@@ -2610,12 +2655,14 @@ async fn matrix_room_list_snapshot_from_rooms(
         );
 
         let parent_space_ids = matrix_parent_space_ids(&room).await;
+        let tags = matrix_room_tags(&room).await;
 
         snapshot.rooms.push(matrix_room_list_room_from_counts(
             room_id,
             display_name,
             room.avatar_url().map(|uri| uri.to_string()),
             room.is_dm(),
+            tags,
             notification_count,
             highlight_count,
             unread_count,
@@ -2679,6 +2726,7 @@ fn matrix_room_list_room_from_counts(
     display_name: String,
     avatar_mxc_uri: Option<String>,
     is_dm: bool,
+    tags: MatrixRoomTags,
     notification_count: u64,
     highlight_count: u64,
     unread_count: u64,
@@ -2689,10 +2737,44 @@ fn matrix_room_list_room_from_counts(
         display_name,
         avatar_mxc_uri,
         is_dm,
+        tags,
         unread_count,
         notification_count,
         highlight_count,
         parent_space_ids,
+    }
+}
+
+async fn matrix_room_tags(room: &matrix_sdk::Room) -> MatrixRoomTags {
+    let tags = room.tags().await.ok().flatten();
+    let favourite = tags
+        .as_ref()
+        .and_then(|tags| tags.get(&matrix_sdk::ruma::events::tag::TagName::Favorite))
+        .map(matrix_room_tag_info_from_sdk)
+        .or_else(|| {
+            room.is_favourite()
+                .then_some(MatrixRoomTagInfo { order: None })
+        });
+    let low_priority = tags
+        .as_ref()
+        .and_then(|tags| tags.get(&matrix_sdk::ruma::events::tag::TagName::LowPriority))
+        .map(matrix_room_tag_info_from_sdk)
+        .or_else(|| {
+            room.is_low_priority()
+                .then_some(MatrixRoomTagInfo { order: None })
+        });
+
+    MatrixRoomTags {
+        favourite,
+        low_priority,
+    }
+}
+
+fn matrix_room_tag_info_from_sdk(
+    info: &matrix_sdk::ruma::events::tag::TagInfo,
+) -> MatrixRoomTagInfo {
+    MatrixRoomTagInfo {
+        order: info.order.map(|order| order.to_string()),
     }
 }
 
@@ -2860,7 +2942,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        MatrixSearchIndexKey, MatrixSearchIndexStoreConfig, matrix_room_list_room_from_counts,
+        MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
+        matrix_room_list_room_from_counts,
     };
 
     #[test]
@@ -2901,6 +2984,7 @@ mod tests {
             "Room".to_owned(),
             None,
             true,
+            MatrixRoomTags::default(),
             4,
             2,
             4,
@@ -2911,5 +2995,39 @@ mod tests {
         assert_eq!(room.highlight_count, 2);
         assert_eq!(room.unread_count, 4);
         assert!(room.is_dm);
+    }
+
+    #[test]
+    fn room_list_room_from_counts_carries_room_tags() {
+        let tags = MatrixRoomTags {
+            favourite: Some(MatrixRoomTagInfo {
+                order: Some("0.25".to_owned()),
+            }),
+            low_priority: None,
+        };
+
+        let room = matrix_room_list_room_from_counts(
+            "!room:example.invalid".to_owned(),
+            "Room".to_owned(),
+            None,
+            false,
+            tags.clone(),
+            0,
+            0,
+            0,
+            vec![],
+        );
+
+        assert_eq!(room.tags, tags);
+    }
+
+    #[test]
+    fn room_tag_operations_use_sdk_tag_methods() {
+        let source = include_str!("lib.rs");
+
+        assert!(source.contains("set_is_favourite(true"));
+        assert!(source.contains("set_is_favourite(false"));
+        assert!(source.contains("set_is_low_priority(true"));
+        assert!(source.contains("set_is_low_priority(false"));
     }
 }

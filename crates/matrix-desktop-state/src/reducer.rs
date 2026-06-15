@@ -832,6 +832,58 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             effects
         }
+        AppAction::RoomTagsUpdated { room_id, tags } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) else {
+                return Vec::new();
+            };
+
+            if room.tags == tags {
+                return Vec::new();
+            }
+
+            room.tags = tags;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::RoomTagSet { room_id, tag, info } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) else {
+                return Vec::new();
+            };
+
+            let mut tags = room.tags.clone();
+            tags.set(tag, info);
+            if room.tags == tags {
+                return Vec::new();
+            }
+
+            room.tags = tags;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::RoomTagRemoved { room_id, tag } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) else {
+                return Vec::new();
+            };
+
+            let mut tags = room.tags.clone();
+            tags.remove(tag);
+            if room.tags == tags {
+                return Vec::new();
+            }
+
+            room.tags = tags;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
         AppAction::InviteListUpdated { invites } => {
             if !is_session_ready(state) {
                 return Vec::new();

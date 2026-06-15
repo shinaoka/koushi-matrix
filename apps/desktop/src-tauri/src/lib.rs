@@ -764,6 +764,8 @@ pub fn run() {
             commands::set_avatar,
             commands::leave_room,
             commands::forget_room,
+            commands::set_room_tag,
+            commands::remove_room_tag,
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
@@ -1166,7 +1168,7 @@ mod tests {
         };
         use matrix_desktop_state::{
             IdentityResetAuthType, IdentityResetState, LiveEventReceipts, LiveReadReceipt,
-            LiveRoomSignalUpdate, PresenceKind, SasEmoji, VerificationFlowState,
+            LiveRoomSignalUpdate, PresenceKind, RoomTagKind, SasEmoji, VerificationFlowState,
             VerificationTarget,
         };
         use serde_json::json;
@@ -1460,6 +1462,18 @@ mod tests {
                 room_id: "!dm:example.test".to_owned(),
             }))
             .expect("serialize");
+        let room_tag_set = serialize_core_event(&CoreEvent::Room(RoomEvent::RoomTagSet {
+            request_id,
+            room_id: "!r:example.test".to_owned(),
+            tag: RoomTagKind::Favourite,
+        }))
+        .expect("serialize room tag set");
+        let room_tag_removed = serialize_core_event(&CoreEvent::Room(RoomEvent::RoomTagRemoved {
+            request_id,
+            room_id: "!r:example.test".to_owned(),
+            tag: RoomTagKind::LowPriority,
+        }))
+        .expect("serialize room tag removed");
 
         let e2ee_trust = serialize_core_event(&CoreEvent::E2eeTrust(
             E2eeTrustEvent::VerificationProgress {
@@ -1541,6 +1555,8 @@ mod tests {
             "roomInviteAccepted": room_invite_accepted,
             "roomInviteDeclined": room_invite_declined,
             "roomLeft": room_left,
+            "roomTagRemoved": room_tag_removed,
+            "roomTagSet": room_tag_set,
             "timelineInitialItems": initial,
             "timelineItemsUpdated": updated,
             "timelineMediaDownloadCompleted": media_download_completed,

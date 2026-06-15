@@ -6,6 +6,8 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   RoomSummary,
+  RoomTagKind,
+  RoomTags,
   SavedSessionInfo,
   SearchResult,
   SearchScopeKind,
@@ -60,6 +62,8 @@ export interface DesktopApi {
   redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   leaveRoom(roomId: string): Promise<DesktopSnapshot>;
   forgetRoom(roomId: string): Promise<DesktopSnapshot>;
+  setRoomTag(roomId: string, tag: RoomTagKind, order?: number | null): Promise<DesktopSnapshot>;
+  removeRoomTag(roomId: string, tag: RoomTagKind): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
   setThreadComposerDraft(roomId: string, rootEventId: string, draft: string): Promise<DesktopSnapshot>;
@@ -656,6 +660,7 @@ class BrowserFakeApi implements DesktopApi {
       display_name: name,
       avatar: null,
       is_dm: false,
+      tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: []
     };
@@ -736,6 +741,7 @@ class BrowserFakeApi implements DesktopApi {
       display_name: invite.display_name,
       avatar: invite.avatar,
       is_dm: invite.is_dm,
+      tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: []
     };
@@ -780,6 +786,7 @@ class BrowserFakeApi implements DesktopApi {
       display_name: trimmedUserId,
       avatar: null,
       is_dm: true,
+      tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: []
     };
@@ -798,6 +805,64 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
+    return this.getSnapshot();
+  }
+
+  async setRoomTag(
+    roomId: string,
+    tag: RoomTagKind,
+    order: number | null = null
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+      room.room_id === roomId
+        ? {
+            ...room,
+            tags:
+              tag === "favourite"
+                ? {
+                    favourite: { order: order == null ? null : String(order) },
+                    low_priority: null
+                  }
+                : {
+                    favourite: null,
+                    low_priority: { order: order == null ? null : String(order) }
+                  }
+          }
+        : room
+    );
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
+    return this.getSnapshot();
+  }
+
+  async removeRoomTag(roomId: string, tag: RoomTagKind): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+      room.room_id === roomId
+        ? {
+            ...room,
+            tags: {
+              ...room.tags,
+              ...(tag === "favourite" ? { favourite: null } : { low_priority: null })
+            }
+          }
+        : room
+    );
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
     return this.getSnapshot();
   }
 
@@ -1400,6 +1465,13 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+function emptyRoomTags(): RoomTags {
+  return {
+    favourite: null,
+    low_priority: null
+  };
+}
+
 const spaces: SpaceSummary[] = [
   {
     space_id: "!space-alpha:example.invalid",
@@ -1421,6 +1493,7 @@ const rooms: RoomSummary[] = [
     display_name: "synthetic-room",
     avatar: null,
     is_dm: false,
+    tags: emptyRoomTags(),
     unread_count: 8,
     parent_space_ids: ["!space-alpha:example.invalid"]
   },
@@ -1429,6 +1502,7 @@ const rooms: RoomSummary[] = [
     display_name: "planning-room",
     avatar: null,
     is_dm: false,
+    tags: emptyRoomTags(),
     unread_count: 2,
     parent_space_ids: ["!space-alpha:example.invalid"]
   },
@@ -1437,6 +1511,7 @@ const rooms: RoomSummary[] = [
     display_name: "matrix-sdk-search",
     avatar: null,
     is_dm: false,
+    tags: emptyRoomTags(),
     unread_count: 1,
     parent_space_ids: ["!space-beta:example.invalid"]
   },
@@ -1445,6 +1520,7 @@ const rooms: RoomSummary[] = [
     display_name: "Member 1",
     avatar: null,
     is_dm: true,
+    tags: emptyRoomTags(),
     unread_count: 1,
     parent_space_ids: []
   },
@@ -1453,6 +1529,7 @@ const rooms: RoomSummary[] = [
     display_name: "Member 2",
     avatar: null,
     is_dm: true,
+    tags: emptyRoomTags(),
     unread_count: 0,
     parent_space_ids: []
   }

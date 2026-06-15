@@ -1,7 +1,7 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, InvitePreview, OwnProfile,
-    ProfileUpdateRequest, ProfileUpdateState, RoomSummary, SessionInfo, SessionState, SpaceSummary,
-    UiEvent, UserProfile, reduce,
+    ProfileUpdateRequest, ProfileUpdateState, RoomSummary, RoomTags, SessionInfo, SessionState,
+    SpaceSummary, UiEvent, UserProfile, reduce,
 };
 
 fn ready_state() -> AppState {
@@ -233,6 +233,7 @@ fn room_space_and_invite_summaries_surface_avatar_mxc() {
                 display_name: "Room".to_owned(),
                 avatar: Some(avatar("mxc://localhost/room-avatar")),
                 is_dm: false,
+                tags: RoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,

@@ -1,6 +1,7 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, ComposerMode, ComposerState, FocusedContextState,
-    PendingComposerSendKind, RoomSummary, SessionInfo, SessionState, TimelinePaneState, reduce,
+    PendingComposerSendKind, RoomSummary, RoomTags, SessionInfo, SessionState, TimelinePaneState,
+    reduce,
 };
 use serde_json::json;
 
@@ -16,6 +17,7 @@ fn ready_selected_room_state() -> AppState {
             display_name: "Synthetic Room".to_owned(),
             avatar: None,
             is_dm: false,
+            tags: RoomTags::default(),
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,

@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use matrix_desktop_sdk::{
-    MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace, MatrixSearchCandidate,
-    MatrixTimelineItem,
+    MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace, MatrixRoomTags,
+    MatrixSearchCandidate, MatrixTimelineItem,
 };
 use matrix_desktop_state::{AuthSecret, LoginRequest, RecoveryRequest};
 use std::{
@@ -30,6 +30,7 @@ fn room_list_smoke_report_counts_without_private_names() {
                 display_name: "Private Room Name".into(),
                 avatar_mxc_uri: None,
                 is_dm: false,
+                tags: MatrixRoomTags::default(),
                 unread_count: 2,
                 notification_count: 2,
                 highlight_count: 0,
@@ -40,6 +41,7 @@ fn room_list_smoke_report_counts_without_private_names() {
                 display_name: "Private DM Name".into(),
                 avatar_mxc_uri: None,
                 is_dm: true,
+                tags: MatrixRoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
@@ -72,6 +74,7 @@ fn real_account_qa_report_counts_without_private_timeline_data() {
             display_name: "Private Room Name".into(),
             avatar_mxc_uri: None,
             is_dm: false,
+            tags: MatrixRoomTags::default(),
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,
@@ -110,6 +113,7 @@ fn restored_real_account_qa_report_records_restore_without_private_data() {
             display_name: "Private Room Name".into(),
             avatar_mxc_uri: None,
             is_dm: false,
+            tags: MatrixRoomTags::default(),
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,
@@ -147,6 +151,7 @@ fn real_account_qa_report_records_search_without_private_candidate_ids() {
             display_name: "Private Room Name".into(),
             avatar_mxc_uri: None,
             is_dm: false,
+            tags: MatrixRoomTags::default(),
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,

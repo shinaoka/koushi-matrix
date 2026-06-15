@@ -37,6 +37,7 @@ describe("desktop model", () => {
         display_name: "Alpha room",
         avatar: null,
         is_dm: false,
+        tags: { favourite: { order: "0.25" }, low_priority: null },
         parent_space_ids: ["!space-a:example.invalid"],
         unread_count: 5
       },
@@ -45,6 +46,7 @@ describe("desktop model", () => {
         display_name: "Global room",
         avatar: null,
         is_dm: false,
+        tags: { favourite: null, low_priority: null },
         parent_space_ids: [],
         unread_count: 2
       },
@@ -53,6 +55,7 @@ describe("desktop model", () => {
         display_name: "Direct chat",
         avatar: null,
         is_dm: true,
+        tags: { favourite: null, low_priority: null },
         parent_space_ids: ["!space-a:example.invalid"],
         unread_count: 3
       }
@@ -69,6 +72,7 @@ describe("desktop model", () => {
       "!room-a:example.invalid",
       "!global-room:example.invalid"
     ]);
+    expect(sidebar.space_rooms[0]?.tags.favourite?.order).toBe("0.25");
     expect(sidebar.global_dms.map((room) => room.room_id)).toEqual([
       "!dm-a:example.invalid"
     ]);

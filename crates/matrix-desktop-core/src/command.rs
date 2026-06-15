@@ -4,8 +4,8 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, SettingsPatch,
-    VerificationCancelReason, VerificationTarget,
+    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, RoomTagKind,
+    SettingsPatch, VerificationCancelReason, VerificationTarget,
 };
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
@@ -73,6 +73,8 @@ impl CoreCommand {
                 | RoomCommand::JoinRoom { request_id, .. }
                 | RoomCommand::LeaveRoom { request_id, .. }
                 | RoomCommand::ForgetRoom { request_id, .. }
+                | RoomCommand::SetTag { request_id, .. }
+                | RoomCommand::RemoveTag { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
                 | RoomCommand::SelectRoom { request_id, .. } => *request_id,
             },
@@ -508,7 +510,6 @@ pub enum SyncCommand {
     SyncOnce { request_id: RequestId },
 }
 
-#[derive(Debug)]
 pub enum RoomCommand {
     CreateRoom {
         request_id: RequestId,
@@ -554,6 +555,17 @@ pub enum RoomCommand {
         request_id: RequestId,
         room_id: String,
     },
+    SetTag {
+        request_id: RequestId,
+        room_id: String,
+        tag: RoomTagKind,
+        order: Option<f64>,
+    },
+    RemoveTag {
+        request_id: RequestId,
+        room_id: String,
+        tag: RoomTagKind,
+    },
     SelectSpace {
         request_id: RequestId,
         space_id: Option<String>,
@@ -562,6 +574,104 @@ pub enum RoomCommand {
         request_id: RequestId,
         room_id: String,
     },
+}
+
+impl fmt::Debug for RoomCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CreateRoom {
+                request_id,
+                encrypted,
+                ..
+            } => formatter
+                .debug_struct("CreateRoom")
+                .field("request_id", request_id)
+                .field("name", &"RoomName(..)")
+                .field("encrypted", encrypted)
+                .finish(),
+            Self::CreateSpace { request_id, .. } => formatter
+                .debug_struct("CreateSpace")
+                .field("request_id", request_id)
+                .field("name", &"RoomName(..)")
+                .finish(),
+            Self::SetSpaceChild { request_id, .. } => formatter
+                .debug_struct("SetSpaceChild")
+                .field("request_id", request_id)
+                .field("space_id", &"RoomId(..)")
+                .field("child_room_id", &"RoomId(..)")
+                .field("via_server", &"ServerName(..)")
+                .finish(),
+            Self::InviteUser { request_id, .. } => formatter
+                .debug_struct("InviteUser")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("user_id", &"UserId(..)")
+                .finish(),
+            Self::AcceptInvite { request_id, .. } => formatter
+                .debug_struct("AcceptInvite")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::DeclineInvite { request_id, .. } => formatter
+                .debug_struct("DeclineInvite")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::StartDirectMessage { request_id, .. } => formatter
+                .debug_struct("StartDirectMessage")
+                .field("request_id", request_id)
+                .field("user_id", &"UserId(..)")
+                .finish(),
+            Self::JoinRoom { request_id, .. } => formatter
+                .debug_struct("JoinRoom")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::LeaveRoom { request_id, .. } => formatter
+                .debug_struct("LeaveRoom")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::ForgetRoom { request_id, .. } => formatter
+                .debug_struct("ForgetRoom")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::SetTag {
+                request_id,
+                tag,
+                order,
+                ..
+            } => formatter
+                .debug_struct("SetTag")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("tag", tag)
+                .field("order", order)
+                .finish(),
+            Self::RemoveTag {
+                request_id, tag, ..
+            } => formatter
+                .debug_struct("RemoveTag")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("tag", tag)
+                .finish(),
+            Self::SelectSpace {
+                request_id,
+                space_id,
+            } => formatter
+                .debug_struct("SelectSpace")
+                .field("request_id", request_id)
+                .field("space_id", &space_id.as_ref().map(|_| "RoomId(..)"))
+                .finish(),
+            Self::SelectRoom { request_id, .. } => formatter
+                .debug_struct("SelectRoom")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -6,9 +6,9 @@ use std::time::Duration;
 use matrix_desktop_state::{
     AppAction, AppearanceSettings, AuthSecret, ComposerMode, CrossSigningStatus,
     IdentityResetAuthRequest, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
-    LoginRequest, PresenceKind, RecoveryRequest, RoomSummary, SasEmoji, SearchState, SessionInfo,
-    SessionState, SettingsPatch, SettingsPersistenceState, ThemePreference,
-    VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    LoginRequest, PresenceKind, RecoveryRequest, RoomSummary, RoomTagKind, RoomTags, SasEmoji,
+    SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
+    ThemePreference, VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 
 use crate::command::{
@@ -232,6 +232,33 @@ fn invite_and_dm_room_commands_are_correlated() {
         }),
     ] {
         assert_eq!(command.request_id(), request_id);
+    }
+}
+
+#[test]
+fn room_tag_commands_are_correlated_ready_gated_and_redact_room_ids() {
+    let request_id = fake_request_id();
+    let room_id = "!tagged-room:example.test".to_owned();
+    let commands = vec![
+        CoreCommand::Room(RoomCommand::SetTag {
+            request_id,
+            room_id: room_id.clone(),
+            tag: RoomTagKind::Favourite,
+            order: Some(0.25),
+        }),
+        CoreCommand::Room(RoomCommand::RemoveTag {
+            request_id,
+            room_id: room_id.clone(),
+            tag: RoomTagKind::LowPriority,
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(!debug.contains(&room_id));
+        assert!(debug.contains("RoomId(..)"));
     }
 }
 
@@ -797,6 +824,7 @@ fn room_summary(room_id: &str) -> RoomSummary {
         display_name: "QA Room".to_owned(),
         avatar: None,
         is_dm: false,
+        tags: RoomTags::default(),
         unread_count: 0,
         notification_count: 0,
         highlight_count: 0,

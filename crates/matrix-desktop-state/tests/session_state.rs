@@ -1,8 +1,8 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AuthDiscoveryState, AuthSecret, E2eeRecoveryState, LoginFlow,
     LoginFlowKind, LoginRequest, NavigationState, RecoveryMethod, RecoveryRequest, RoomSummary,
-    SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadPaneState,
-    TimelinePaneState, UiEvent, reduce,
+    RoomTags, SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState,
+    ThreadPaneState, TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -255,6 +255,7 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
             display_name: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
+            tags: RoomTags::default(),
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,
@@ -459,6 +460,7 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
             display_name: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
+            tags: RoomTags::default(),
             unread_count: 3,
             notification_count: 3,
             highlight_count: 0,
@@ -581,6 +583,7 @@ fn logout_clears_session_views_and_notifies_ui() {
             display_name: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
+            tags: RoomTags::default(),
             unread_count: 3,
             notification_count: 3,
             highlight_count: 0,

@@ -151,8 +151,8 @@ An in-process actor system in `matrix-desktop-core`:
   (starting/running/reconnecting/failed/stopped).
 - `RoomActor` — room list normalization
   (`SpaceSummary`/`RoomSummary`/`InvitePreview`), create/invite/join/space
-  operations, invite accept/decline, DM start, unread counts, and DM
-  classification.
+  operations, invite accept/decline, DM start, unread counts, DM
+  classification, and Matrix room tags (`m.tag` favourite / low priority).
   On the sliding-sync backend it consumes the one `RoomListService` owned by
   the running `SyncService`; constructing additional ad-hoc
   `RoomListService` instances is prohibited — they are not driven by the
@@ -160,7 +160,10 @@ An in-process actor system in `matrix-desktop-core`:
   (e.g. `m.room.create` for space classification) the live service
   requests. Its live entries adapter uses a non-left filter so invited-room
   diffs also wake Rust-owned invite projection; joined-only observation leaves
-  `AppState.invites` stale.
+  `AppState.invites` stale. Room tags are projected into
+  `RoomSummary.tags` by the same Rust-owned room-list normalization path;
+  React must not derive favourite or low-priority membership from local UI
+  state.
 - `TimelineActor` (per room/thread/focused timeline) — subscription, diffs,
   pagination, send/edit/redaction relay, media/file projection, upload
   progress, room-scoped live signals, and Rust-only media download effects.

@@ -77,6 +77,36 @@ Phase B GUI/browser-headless work for the same issue follows
   the action channel, not as a best-effort notification that can leave settings
   controls stuck in a saving state.
 
+## Room Tags Phase A Notes
+
+- `RoomSummary.tags` is the Rust-owned source of truth for Matrix `m.tag`
+  favourite and low-priority state. React may render tag affordances and dispatch
+  `set_room_tag` / `remove_room_tag`, but it must not keep local tag membership
+  or repair room-list sections after the fact.
+- Favourite and low-priority are mutually exclusive in
+  `matrix-desktop-state`. Keep this reducer rule in sync with the SDK wrappers:
+  use `matrix-desktop-sdk`'s `set_room_tag` / `remove_room_tag`, which delegate
+  to `Room::set_is_favourite` and `Room::set_is_low_priority`; do not patch the
+  vendored SDK for this behavior.
+- Tag command success must not immediately request a room-list refresh. The SDK
+  tag calls send account-data changes to the homeserver, and the local SDK room
+  snapshot can remain stale until the next sync. Project the successful command
+  through `RoomTagSet` / `RoomTagRemoved` reducer actions, then let the next
+  sync snapshot become canonical.
+- When adding fields to `RoomSummary`, update every projection and fake snapshot
+  in the same change: `matrix-desktop-core::room::normalize_rooms`,
+  `matrix-desktop-state::sidebar::RoomListItem`, `apps/desktop/src-tauri/src/dto.rs`,
+  `apps/desktop/src/domain/types.ts`, `browserFakeApi.ts`,
+  `appHarnessMain.tsx`, and any Rust/TS fixtures that construct `RoomSummary`.
+- New tag command/event variants must keep all three IPC surfaces in sync:
+  `serialize_core_event`, `apps/desktop/src/domain/coreEvents.ts`, and
+  `apps/desktop/src/domain/coreEvents.generated.json`. Verify with
+  `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact`.
+- Phase B room-list sections (Favourites / People / Rooms / Low priority) must
+  derive from Rust snapshots (`RoomSummary.tags` + `is_dm`). Do not introduce
+  React-only section membership while wiring context menus or browser-headless
+  tests.
+
 ## Live Signals Phase A Notes
 
 - `AppState.live_signals` is the Rust-owned source of truth for read receipts,
