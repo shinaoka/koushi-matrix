@@ -149,7 +149,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   setting `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`. The test treats
   `security set-key-partition-list` as best-effort on hosted runners; the
   pass/fail proof is the real backend set/get/delete plus locked-keychain
-  fail-closed assertion.
+  fail-closed assertion. The test temporarily makes the throwaway keychain the
+  user default keychain and restores the prior default in a guard, because the
+  macOS `keyring` backend writes generic passwords through the default
+  keychain.
 
 ## Native Attention QA
 

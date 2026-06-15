@@ -106,13 +106,32 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
             .collect())
     }
 
+    fn current_default_keychain() -> Result<Option<String>, String> {
+        let output = run_security(&["default-keychain".into(), "-d".into(), "user".into()])?;
+        Ok(output
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(|line| line.trim_matches('"').to_owned()))
+    }
+
     struct KeychainGuard {
         path: String,
         previous_keychains: Vec<String>,
+        previous_default_keychain: Option<String>,
     }
 
     impl Drop for KeychainGuard {
         fn drop(&mut self) {
+            if let Some(previous_default_keychain) = &self.previous_default_keychain {
+                let _ = run_security(&[
+                    "default-keychain".to_owned(),
+                    "-d".to_owned(),
+                    "user".to_owned(),
+                    "-s".to_owned(),
+                    previous_default_keychain.clone(),
+                ]);
+            }
             let mut restore_args = vec![
                 "list-keychains".to_owned(),
                 "-d".to_owned(),
@@ -141,9 +160,11 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
     ));
     let path = path.to_string_lossy().into_owned();
     let previous_keychains = current_user_keychains()?;
+    let previous_default_keychain = current_default_keychain()?;
     let guard = KeychainGuard {
         path: path.clone(),
         previous_keychains,
+        previous_default_keychain,
     };
 
     run_security(&[
@@ -162,6 +183,13 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
         "unlock-keychain".to_owned(),
         "-p".to_owned(),
         PASSWORD.to_owned(),
+        path.clone(),
+    ])?;
+    run_security(&[
+        "default-keychain".to_owned(),
+        "-d".to_owned(),
+        "user".to_owned(),
+        "-s".to_owned(),
         path.clone(),
     ])?;
 
