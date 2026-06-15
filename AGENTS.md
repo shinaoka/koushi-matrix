@@ -38,7 +38,10 @@ batch Rust-owned Phase A contracts first, then serialize the shared GUI
 surface, then run the #9/#31 integration gate.
 The umbrella #12 implementation batch follows
 [docs/superpowers/plans/2026-06-15-remaining-core-phase-a-batch-implementation.md](docs/superpowers/plans/2026-06-15-remaining-core-phase-a-batch-implementation.md)
-after that plan is approved.
+after that plan is approved. Before starting each new task in that batch,
+refresh open GitHub issues and apply the plan's issue reconciliation addendum;
+new GUI-only presentation items such as space tooltips do not bypass the
+Rust-owned Phase A rule for product behavior.
 All agents implementing media/file timeline support follow
 [docs/superpowers/plans/2026-06-15-media-phase-a.md](docs/superpowers/plans/2026-06-15-media-phase-a.md)
 for Phase A Rust/headless work before Phase B GUI wiring.
