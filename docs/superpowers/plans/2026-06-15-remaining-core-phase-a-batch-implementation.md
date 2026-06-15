@@ -15,6 +15,9 @@
 - This plan is not an implementation approval by itself. Execute it only after
   the user approves this plan as a batch.
 - Keep a single durable batch branch/worktree based on current `origin/main`.
+- Before starting any new task, refresh the GitHub open-issue inventory and
+  reconcile new/updated issues into this plan or #12. Do not start a new
+  implementation task from a stale issue queue.
 - Keep child issues feature-scoped. Comment on each issue when its Phase A or
   Phase B slice lands. Close an issue only when its own acceptance criteria are
   satisfied.
@@ -75,6 +78,44 @@ Scope:
 - Shared contract changes requested:
 - Issue comment draft:
 ```
+
+## Issue Reconciliation Addendum - 2026-06-15 After Task 7
+
+The open issue inventory was refreshed before starting Task 8. #21 and #12
+were only updated by the Task 7 completion comments. New or materially updated
+items were #65, #64, #63/#62, and #7. Reconcile them as follows:
+
+- **Task 8 remains #23 Activity core.** None of the new issues change the
+  Activity Phase A contract or its dependency edges.
+- **#7 Task 9 is expanded.** It must include the Tier 1 / Tier 2 / Tier 3
+  credential-store verification strategy from #7, not only the coarse
+  `AppState.local_encryption` DTO. Tier 1 is a trait-backed fake/in-memory
+  backend tested headlessly on any OS. Tier 2 is an env-gated
+  `#[cfg(target_os = "macos")]` temporary-Keychain round trip and
+  fail-closed-when-locked test. Tier 3 is attended-only documentation for
+  consent dialogs, Touch ID, locked login-keychain UX, and signed-build ACL
+  behavior.
+- **#64 is a post-Core-Batch-A parity gap unless pulled forward explicitly.**
+  It needs Phase A first: extend the Rust-owned read-receipt projection so each
+  receipt reader carries or resolves display label, avatar MXC, timestamp,
+  stable most-recent-first ordering, cap, and overflow count. Then Phase B can
+  replace dots with stacked avatars and Tooltip-backed reader details. This
+  belongs near the live-signals/timeline surface, not in #23 Activity core.
+- **#65 is GUI-only and does not need a Rust Phase A.** Tooltip visibility,
+  open delay, focus handling, Escape dismissal, and positioning are ephemeral
+  React presentation state. The tooltip text still comes from Rust-owned
+  `space.display_name`. Slot this into GUI Batch B with #11/#49 shell polish
+  or any earlier serialized rail work that already edits `App.tsx` and
+  `styles.css`.
+- **#63 is a distinctive feature tracked by #62.** It needs its own Phase A
+  after base projection contracts are stable: account-data-backed alias map,
+  set/clear/list commands, central name-resolution helper, hydration on
+  session-ready, and private-data-free QA. It should precede any claim that
+  timeline sender, member list, DM title, receipt hover, reply quote, mention,
+  or notification display names are alias-complete.
+- **#62 remains a living index.** Do not close #62 as part of #12. Close or
+  explicitly defer the promoted implementation issues (#56, #58, #60, #63,
+  etc.) instead.
 
 ## Task 1: Batch Branch And Baseline Inventory
 
@@ -578,7 +619,7 @@ directory_query=ok
 directory_join=ok
 ```
 
-- [ ] **Step 5: Run focused checks**
+- [x] **Step 5: Run focused checks**
 
 Run:
 
@@ -701,7 +742,7 @@ gh issue comment 21 --body "Phase A room management core landed on branch \`code
 - Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
 - Test: `crates/matrix-desktop-state/tests/activity_state.rs`
 
-- [ ] **Step 1: Write failing activity state tests**
+- [x] **Step 1: Write failing activity state tests**
 
 Test:
 
@@ -723,7 +764,7 @@ cargo test -p matrix-desktop-state --test activity_state
 
 Expected: failing tests before implementation.
 
-- [ ] **Step 2: Add Activity state and row DTOs**
+- [x] **Step 2: Add Activity state and row DTOs**
 
 Add:
 
@@ -736,7 +777,7 @@ pub struct ActivityRow { /* room label, sender label, preview, timestamp, event 
 Store event references in a way that can drive `OpenFocusedContext` without
 printing event IDs in QA output.
 
-- [ ] **Step 3: Add core projection and mark-read commands**
+- [x] **Step 3: Add core projection and mark-read commands**
 
 Project account-wide rows from Rust-owned timeline/live-signal data. Reuse
 fully-read state from #16 and room tag data from #22. Add commands:
@@ -747,10 +788,10 @@ CloseActivityView
 SetActivityTab
 PaginateActivity
 MarkActivityRead
-MarkAllActivityRead
+MarkActivityRead { target: All }
 ```
 
-- [ ] **Step 4: Add headless QA**
+- [x] **Step 4: Add headless QA**
 
 Add tokens:
 
@@ -762,7 +803,7 @@ activity_markread=ok
 
 Include a stale-unread room in the scenario.
 
-- [ ] **Step 5: Run focused checks**
+- [x] **Step 5: Run focused checks**
 
 Run:
 
@@ -773,7 +814,7 @@ cargo test -p matrix-desktop-core activity
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Commit and comment**
+- [x] **Step 6: Commit and comment**
 
 Run:
 
@@ -793,8 +834,11 @@ gh issue comment 23 --body "Phase A Activity core landed on branch \`codex/core-
 - Modify: `crates/matrix-desktop-core/src/account.rs`
 - Modify: `crates/matrix-desktop-core/src/failure.rs`
 - Modify: `crates/matrix-desktop-key/src/lib.rs`
+- Modify: `docs/policies/engineering-rules.md`
+- Modify: `docs/qa/macos-attended-smoke.md`
 - Test: `crates/matrix-desktop-state/tests/local_encryption_state.rs`
 - Test: `crates/matrix-desktop-key/tests/key_management.rs`
+- Test: `crates/matrix-desktop-key/tests/credential_backend.rs`
 
 - [ ] **Step 1: Write failing health state tests**
 
@@ -817,7 +861,30 @@ cargo test -p matrix-desktop-state --test local_encryption_state
 
 Expected: failing tests before implementation.
 
-- [ ] **Step 2: Add health DTO and reducer actions**
+- [ ] **Step 2: Write failing credential backend tests**
+
+Add a trait-backed test for a fake credential backend and an env-gated macOS
+temporary-Keychain integration test:
+
+```text
+fake backend round-trips one local unlock secret
+fake backend reports missing credential without raw error text
+fake backend locked state maps to LockedOrInaccessible
+release mode ignores debug/test file credential env variables
+macOS temporary keychain test is ignored unless MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1
+```
+
+Run:
+
+```bash
+cargo test -p matrix-desktop-key credential_backend
+```
+
+Expected: failing tests before implementation on the generic fake backend.
+The macOS real-Keychain case must be `#[ignore]` or env-gated so non-macOS
+and normal Linux agent runs skip it cleanly.
+
+- [ ] **Step 3: Add health DTO and reducer actions**
 
 Use private-data-free coarse states:
 
@@ -835,18 +902,51 @@ pub enum LocalEncryptionHealthKind {
 The snapshot must not include raw OS errors, local paths, account identifiers,
 tokens, store keys, or recovery material.
 
-- [ ] **Step 3: Feed health from StoreActor**
+- [ ] **Step 4: Add credential backend trait and fake implementation**
+
+Keep the public `matrix-desktop-key` API secret-safe while routing OS keyring
+calls through a trait that can be replaced by an in-memory fake in tests. The
+trait result surface must be coarse enough for #7:
+
+```rust
+pub enum CredentialBackendErrorKind {
+    Unavailable,
+    LockedOrInaccessible,
+    MissingCredential,
+    Corrupt,
+}
+```
+
+The fake backend may store synthetic non-secret test bytes, but test failure
+messages and Debug output must not include real account ids, service labels,
+secret values, OS error text, or local paths.
+
+- [ ] **Step 5: Feed health from StoreActor**
 
 Map existing store outcomes into health actions. Keep debug/test file store
 behind the existing debug/test-only configuration. Release builds must ignore
 file credential env variables.
 
-- [ ] **Step 4: Run focused checks**
+- [ ] **Step 6: Document Tier 2 and Tier 3 verification**
+
+Update policy/QA docs to record:
+
+```text
+Tier 1: headless fake/in-memory backend logic on any OS.
+Tier 2: env-gated macOS CI lane with temporary keychain set/get/delete and locked fail-closed proof.
+Tier 3: attended-only consent prompt, Touch ID, locked login-keychain UX, and signed-build ACL behavior.
+```
+
+The docs must state that macOS has no Xvfb-equivalent lane and that
+`tauri-driver` does not cover native macOS GUI automation.
+
+- [ ] **Step 7: Run focused checks**
 
 Run:
 
 ```bash
 cargo test -p matrix-desktop-state --test local_encryption_state
+cargo test -p matrix-desktop-key credential_backend
 cargo test -p matrix-desktop-key
 cargo test -p matrix-desktop-core store
 node scripts/desktop-release-gate-check.mjs --no-compile
@@ -854,7 +954,7 @@ node scripts/desktop-release-gate-check.mjs --no-compile
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Commit and comment**
+- [ ] **Step 8: Commit and comment**
 
 Run:
 
@@ -1154,7 +1254,7 @@ Included Phase A slices: #19, #18, #20, #21, #23, #7, #10, #30, #32.
 
 Verification evidence is recorded in the implementation comments for each child issue and in the command output from the Core Batch A integration gate.
 
-Remaining: GUI Batch B and QA Batch Z."
+Remaining: GUI Batch B, QA Batch Z, and reconciled post-batch roadmap items #64/#63/#65/#62 as scheduled in the issue reconciliation addendum."
 ```
 
 Do not close feature issues except #30 if Task 11 closed it.

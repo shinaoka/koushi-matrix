@@ -4,8 +4,10 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    CrossSigningStatus, IdentityResetState, KeyBackupStatus, LiveRoomSignalUpdate, PresenceKind,
-    RoomTagKind, VerificationFlowState,
+    ActivityStream, ActivityTab, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
+    IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate,
+    LocalEncryptionHealth, NativeAttentionSummary, PinnedEvent, PresenceKind, ReplyQuote,
+    RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, VerificationFlowState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,10 +28,116 @@ pub enum CoreEvent {
     LiveSignals(LiveSignalsEvent),
     Search(SearchEvent),
     E2eeTrust(E2eeTrustEvent),
+    Activity(ActivityEvent),
+    LocalEncryption(LocalEncryptionEvent),
+    NativeAttention(NativeAttentionEvent),
+    CjkTextPolicy(CjkTextPolicyEvent),
     OperationFailed {
         request_id: RequestId,
         failure: CoreFailure,
     },
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ActivityEvent {
+    Opened {
+        request_id: RequestId,
+    },
+    Closed {
+        request_id: RequestId,
+    },
+    SnapshotLoaded {
+        request_id: RequestId,
+        active_tab: ActivityTab,
+        recent: ActivityStream,
+        unread: ActivityStream,
+    },
+    TabSelected {
+        request_id: RequestId,
+        tab: ActivityTab,
+    },
+    MarkedRead {
+        request_id: RequestId,
+        cleared_event_ids: Vec<String>,
+    },
+}
+
+impl fmt::Debug for ActivityEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Opened { request_id } => formatter
+                .debug_struct("ActivityOpened")
+                .field("request_id", request_id)
+                .finish(),
+            Self::Closed { request_id } => formatter
+                .debug_struct("ActivityClosed")
+                .field("request_id", request_id)
+                .finish(),
+            Self::SnapshotLoaded {
+                request_id,
+                active_tab,
+                recent,
+                unread,
+            } => formatter
+                .debug_struct("ActivitySnapshotLoaded")
+                .field("request_id", request_id)
+                .field("active_tab", active_tab)
+                .field("recent", recent)
+                .field("unread", unread)
+                .finish(),
+            Self::TabSelected { request_id, tab } => formatter
+                .debug_struct("ActivityTabSelected")
+                .field("request_id", request_id)
+                .field("tab", tab)
+                .finish(),
+            Self::MarkedRead {
+                request_id,
+                cleared_event_ids,
+            } => formatter
+                .debug_struct("ActivityMarkedRead")
+                .field("request_id", request_id)
+                .field(
+                    "cleared_event_ids",
+                    &format_args!("{} event id(s)", cleared_event_ids.len()),
+                )
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LocalEncryptionEvent {
+    HealthChanged { health: LocalEncryptionHealth },
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum NativeAttentionEvent {
+    SummaryUpdated { summary: NativeAttentionSummary },
+}
+
+impl fmt::Debug for NativeAttentionEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SummaryUpdated { summary } => formatter
+                .debug_struct("SummaryUpdated")
+                .field("unread_count", &summary.unread_count)
+                .field("highlight_count", &summary.highlight_count)
+                .field("badge_count", &summary.badge_count)
+                .field(
+                    "candidate",
+                    &summary.candidate.as_ref().map(|_| "AttentionCandidate(..)"),
+                )
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CjkTextPolicyEvent {
+    JapaneseCatalogProfileChanged { profile: JapaneseCatalogProfile },
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -320,6 +428,38 @@ pub enum RoomEvent {
         room_id: String,
         tag: RoomTagKind,
     },
+    PinnedEventsUpdated {
+        room_id: String,
+        pinned: Vec<PinnedEvent>,
+    },
+    PinEventCompleted {
+        request_id: RequestId,
+        room_id: String,
+    },
+    UnpinEventCompleted {
+        request_id: RequestId,
+        room_id: String,
+    },
+    DirectoryQueryCompleted {
+        request_id: RequestId,
+        query: DirectoryQuery,
+        rooms: Vec<DirectoryRoomSummary>,
+        next_batch: Option<String>,
+    },
+    RoomSettingsLoaded {
+        request_id: RequestId,
+        settings: RoomSettingsSnapshot,
+    },
+    RoomSettingUpdated {
+        request_id: RequestId,
+        settings: RoomSettingsSnapshot,
+    },
+    RoomMemberModerated {
+        request_id: RequestId,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+    },
     RoomListUpdated,
 }
 
@@ -393,6 +533,48 @@ impl fmt::Debug for RoomEvent {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("tag", tag)
+                .finish(),
+            Self::PinnedEventsUpdated { pinned, .. } => formatter
+                .debug_struct("PinnedEventsUpdated")
+                .field("room_id", &"RoomId(..)")
+                .field("pinned_count", &pinned.len())
+                .finish(),
+            Self::PinEventCompleted { request_id, .. } => formatter
+                .debug_struct("PinEventCompleted")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::UnpinEventCompleted { request_id, .. } => formatter
+                .debug_struct("UnpinEventCompleted")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::DirectoryQueryCompleted {
+                request_id, rooms, ..
+            } => formatter
+                .debug_struct("DirectoryQueryCompleted")
+                .field("request_id", request_id)
+                .field("query", &"DirectoryQuery(..)")
+                .field("rooms_count", &rooms.len())
+                .finish(),
+            Self::RoomSettingsLoaded { request_id, .. } => formatter
+                .debug_struct("RoomSettingsLoaded")
+                .field("request_id", request_id)
+                .field("settings", &"RoomSettingsSnapshot(..)")
+                .finish(),
+            Self::RoomSettingUpdated { request_id, .. } => formatter
+                .debug_struct("RoomSettingUpdated")
+                .field("request_id", request_id)
+                .field("settings", &"RoomSettingsSnapshot(..)")
+                .finish(),
+            Self::RoomMemberModerated {
+                request_id, action, ..
+            } => formatter
+                .debug_struct("RoomMemberModerated")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
                 .finish(),
             Self::RoomListUpdated => formatter.write_str("RoomListUpdated"),
         }
@@ -612,6 +794,8 @@ pub struct TimelineItem {
     pub body: Option<String>,
     pub timestamp_ms: Option<u64>,
     pub in_reply_to_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_quote: Option<ReplyQuote>,
     #[serde(default)]
     pub thread_root: Option<String>,
     #[serde(default)]
@@ -642,7 +826,14 @@ impl fmt::Debug for TimelineItem {
             .field("sender", &self.sender)
             .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
             .field("timestamp_ms", &self.timestamp_ms)
-            .field("in_reply_to_event_id", &self.in_reply_to_event_id)
+            .field(
+                "in_reply_to_event_id",
+                &self.in_reply_to_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "reply_quote",
+                &self.reply_quote.as_ref().map(|quote| quote.state.as_str()),
+            )
             .field("thread_root", &self.thread_root)
             .field(
                 "thread_summary",
@@ -785,6 +976,74 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn fake_rid(sequence: u64) -> RequestId {
+        RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(7),
+            sequence,
+        }
+    }
+
+    fn activity_row(
+        room_id: &str,
+        event_id: &str,
+        timestamp_ms: u64,
+    ) -> matrix_desktop_state::ActivityRow {
+        matrix_desktop_state::ActivityRow {
+            room_id: room_id.to_owned(),
+            event_id: event_id.to_owned(),
+            room_label: "Private Room".to_owned(),
+            sender_label: Some("Private Sender".to_owned()),
+            preview: Some("private message body".to_owned()),
+            timestamp_ms,
+            unread: true,
+            highlight: false,
+        }
+    }
+
+    fn activity_stream(
+        rows: Vec<matrix_desktop_state::ActivityRow>,
+    ) -> matrix_desktop_state::ActivityStream {
+        matrix_desktop_state::ActivityStream {
+            rows,
+            next_batch: Some("private-page-token".to_owned()),
+        }
+    }
+
+    #[test]
+    fn activity_events_debug_redacts_rows_targets_and_page_tokens() {
+        let snapshot = ActivityEvent::SnapshotLoaded {
+            request_id: fake_rid(1),
+            active_tab: matrix_desktop_state::ActivityTab::Recent,
+            recent: activity_stream(vec![activity_row(
+                "!private-room:example.invalid",
+                "$private-event:example.invalid",
+                20,
+            )]),
+            unread: activity_stream(vec![activity_row(
+                "!private-room:example.invalid",
+                "$private-unread:example.invalid",
+                10,
+            )]),
+        };
+        let marked = ActivityEvent::MarkedRead {
+            request_id: fake_rid(2),
+            cleared_event_ids: vec!["$private-event:example.invalid".to_owned()],
+        };
+
+        for debug in [format!("{snapshot:?}"), format!("{marked:?}")] {
+            assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+            assert!(!debug.contains("$private-event:example.invalid"), "{debug}");
+            assert!(
+                !debug.contains("$private-unread:example.invalid"),
+                "{debug}"
+            );
+            assert!(!debug.contains("Private Room"), "{debug}");
+            assert!(!debug.contains("Private Sender"), "{debug}");
+            assert!(!debug.contains("private message body"), "{debug}");
+            assert!(!debug.contains("private-page-token"), "{debug}");
+        }
+    }
+
     #[test]
     fn timeline_item_serializes_thread_fields_reactions_and_redaction_affordances() {
         let item = TimelineItem {
@@ -795,6 +1054,7 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: Some("$root:test".to_owned()),
             thread_summary: Some(ThreadSummaryDto {
                 reply_count: 2,
@@ -850,6 +1110,51 @@ mod tests {
     }
 
     #[test]
+    fn timeline_item_serializes_reply_quote_without_debugging_body() {
+        let item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: "$reply:test".to_owned(),
+            },
+            sender: Some("@alice:example.invalid".to_owned()),
+            body: Some("reply body".to_owned()),
+            timestamp_ms: Some(1_234),
+            in_reply_to_event_id: Some("$root:test".to_owned()),
+            reply_quote: Some(matrix_desktop_state::ReplyQuote {
+                event_id: "$root:test".to_owned(),
+                sender: Some("@bob:example.invalid".to_owned()),
+                body_preview: Some("quoted body".to_owned()),
+                state: matrix_desktop_state::ReplyQuoteState::Ready,
+            }),
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: false,
+            can_edit: false,
+            send_state: None,
+        };
+
+        let value = serde_json::to_value(&item).expect("timeline item serializes");
+
+        assert_eq!(
+            value["reply_quote"],
+            json!({
+                "event_id": "$root:test",
+                "sender": "@bob:example.invalid",
+                "body_preview": "quoted body",
+                "state": "ready"
+            })
+        );
+        let debug = format!("{item:?}");
+        assert!(debug.contains("reply_quote"));
+        assert!(!debug.contains("quoted body"), "{debug}");
+        assert!(!debug.contains("$root:test"), "{debug}");
+    }
+
+    #[test]
     fn timeline_item_serializes_outbound_send_state_without_raw_error() {
         let item = TimelineItem {
             id: TimelineItemId::Transaction {
@@ -859,6 +1164,7 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -897,6 +1203,7 @@ mod tests {
             body: Some("synthetic caption".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: Some(TimelineMedia {

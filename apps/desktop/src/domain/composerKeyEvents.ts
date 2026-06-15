@@ -1,4 +1,4 @@
-import type { ComposerKeyEvent } from "./types";
+import type { ComposerKeyEvent, ComposerSelection } from "./types";
 
 export interface ComposerKeyboardEventFacts {
   key: string;
@@ -20,7 +20,14 @@ export function shouldResolveComposerKeyEvent(event: ComposerKeyboardEventFacts)
   return event.key === "Enter" || event.key === "Escape";
 }
 
-export function composerKeyEventFromDom(event: ComposerKeyboardEventFacts): ComposerKeyEvent {
+export function shouldLetNativeImeHandleComposerKeyEvent(event: ComposerKeyEvent): boolean {
+  return event.is_composing;
+}
+
+export function composerKeyEventFromDom(
+  event: ComposerKeyboardEventFacts,
+  selection: ComposerSelection | null = null
+): ComposerKeyEvent {
   return {
     key: event.key === "Enter" ? "enter" : event.key === "Escape" ? "escape" : "other",
     modifiers: {
@@ -29,7 +36,8 @@ export function composerKeyEventFromDom(event: ComposerKeyboardEventFacts): Comp
       shift: event.shiftKey,
       alt: event.altKey
     },
-    is_composing: Boolean(event.nativeEvent?.isComposing)
+    is_composing: Boolean(event.nativeEvent?.isComposing),
+    selection
   };
 }
 

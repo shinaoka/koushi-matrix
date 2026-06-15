@@ -53,6 +53,15 @@ conflict is being resolved.
   `CoreCommand` / `CoreEvent` against disposable local Conduit/Tuwunel QA,
   and only then is wired to Tauri/React. GUI-first Matrix behavior is
   prohibited.
+- This headless-first rule is operationalized as two phases per work item.
+  **Phase A (headless contract):** model the feature as serializable
+  `AppState` / reducers and `CoreCommand` / `CoreEvent` in
+  `matrix-desktop-state` / `matrix-desktop-core`, proven against disposable
+  local Conduit/Tuwunel homeserver QA; exit when the relevant local core QA
+  scenario is green. **Phase B (GUI wiring):** a thin Tauri/React view over
+  that same Rust state; exit when the browser-headless and, where that gate
+  applies, Linux virtual-display GUI tests are green. Issues are split along
+  this A/B boundary, and QA tokens stay private-data-free.
 - Product logic and state that decide Matrix operation semantics live in Rust:
   `matrix-desktop-state` for serializable state/reducers and
   `matrix-desktop-core` for actors, commands, events, and runtime ownership.

@@ -1,14 +1,17 @@
 use std::fmt;
 
 use crate::state::{
-    BasicOperationRequest, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType,
-    LiveEventReceipts, LiveRoomSignalUpdate, LoginFlow, OwnProfile, PresenceKind,
-    ProfileUpdateRequest, RecoveryMethod, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab, BasicOperationRequest,
+    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState,
+    IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate,
+    LocalEncryptionHealth, LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile,
+    PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomModerationAction,
+    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
     SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
     TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum AppAction {
     AppStarted,
     RestoreSessionSucceeded(SessionInfo),
@@ -191,6 +194,164 @@ pub enum AppAction {
         room_id: String,
         tag: RoomTagKind,
     },
+    RoomPinnedEventsUpdated {
+        room_id: String,
+        pinned: Vec<PinnedEvent>,
+    },
+    PinEventRequested {
+        request_id: u64,
+        room_id: String,
+        event_id: String,
+    },
+    PinEventCompleted {
+        request_id: u64,
+        room_id: String,
+    },
+    PinEventFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
+    },
+    UnpinEventRequested {
+        request_id: u64,
+        room_id: String,
+        event_id: String,
+    },
+    UnpinEventCompleted {
+        request_id: u64,
+        room_id: String,
+    },
+    UnpinEventFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
+    },
+    DirectoryQueryRequested {
+        request_id: u64,
+        query: DirectoryQuery,
+    },
+    DirectoryQuerySucceeded {
+        request_id: u64,
+        query: DirectoryQuery,
+        rooms: Vec<DirectoryRoomSummary>,
+        next_batch: Option<String>,
+    },
+    DirectoryQueryFailed {
+        request_id: u64,
+        query: DirectoryQuery,
+        kind: OperationFailureKind,
+    },
+    DirectoryJoinRequested {
+        request_id: u64,
+        alias: String,
+        via_server: Option<String>,
+    },
+    DirectoryJoinSucceeded {
+        request_id: u64,
+        room_id: String,
+    },
+    DirectoryJoinFailed {
+        request_id: u64,
+        alias: String,
+        via_server: Option<String>,
+        kind: OperationFailureKind,
+    },
+    RoomSettingsSnapshotLoaded {
+        room_id: String,
+        settings: RoomSettingsSnapshot,
+    },
+    RoomSettingUpdateRequested {
+        request_id: u64,
+        room_id: String,
+        change: RoomSettingChange,
+    },
+    RoomSettingUpdateSucceeded {
+        request_id: u64,
+        room_id: String,
+        settings: RoomSettingsSnapshot,
+    },
+    RoomSettingUpdateFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
+    },
+    RoomModerationRequested {
+        request_id: u64,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+        reason: Option<String>,
+    },
+    RoomModerationSucceeded {
+        request_id: u64,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+    },
+    RoomModerationFailed {
+        request_id: u64,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+        kind: OperationFailureKind,
+    },
+    ActivityOpened {
+        request_id: u64,
+    },
+    ActivityClosed,
+    ActivitySnapshotLoaded {
+        request_id: u64,
+        active_tab: ActivityTab,
+        recent: ActivityStream,
+        unread: ActivityStream,
+        excluded_room_ids: Vec<String>,
+    },
+    ActivityRowsObserved {
+        rows: Vec<ActivityRow>,
+    },
+    ActivityRowsUpdated {
+        recent: ActivityStream,
+        unread: ActivityStream,
+        excluded_room_ids: Vec<String>,
+    },
+    ActivityTabSelected {
+        tab: ActivityTab,
+    },
+    ActivityMarkReadRequested {
+        request_id: u64,
+        target: ActivityMarkReadTarget,
+    },
+    ActivityMarkReadSucceeded {
+        request_id: u64,
+        cleared_event_ids: Vec<String>,
+    },
+    ActivityMarkReadFailed {
+        request_id: u64,
+        target: ActivityMarkReadTarget,
+        kind: OperationFailureKind,
+    },
+    LocalEncryptionProbeRequested {
+        request_id: u64,
+    },
+    LocalEncryptionHealthChanged {
+        request_id: u64,
+        health: LocalEncryptionHealth,
+    },
+    ResetLocalDataRequested {
+        request_id: u64,
+    },
+    ResetLocalDataCompleted {
+        request_id: u64,
+    },
+    ResetLocalDataFailed {
+        request_id: u64,
+    },
+    NativeAttentionUpdated {
+        attention: NativeAttentionState,
+    },
+    JapaneseCatalogProfileChanged {
+        profile: JapaneseCatalogProfile,
+    },
     InviteListUpdated {
         invites: Vec<crate::state::InvitePreview>,
     },
@@ -327,6 +488,200 @@ pub enum AppAction {
         event_id: String,
     },
     ComposerReplyCancelled,
+}
+
+impl fmt::Debug for AppAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LoginSubmitted(request) => formatter
+                .debug_tuple("LoginSubmitted")
+                .field(request)
+                .finish(),
+            Self::DirectoryQueryRequested { request_id, query } => formatter
+                .debug_struct("DirectoryQueryRequested")
+                .field("request_id", request_id)
+                .field("query", query)
+                .finish(),
+            Self::DirectoryQuerySucceeded {
+                request_id,
+                query,
+                rooms,
+                next_batch,
+            } => formatter
+                .debug_struct("DirectoryQuerySucceeded")
+                .field("request_id", request_id)
+                .field("query", query)
+                .field("rooms", rooms)
+                .field("next_batch", &next_batch.as_ref().map(|_| "PageToken(..)"))
+                .finish(),
+            Self::DirectoryQueryFailed {
+                request_id,
+                query,
+                kind,
+            } => formatter
+                .debug_struct("DirectoryQueryFailed")
+                .field("request_id", request_id)
+                .field("query", query)
+                .field("kind", kind)
+                .finish(),
+            Self::DirectoryJoinRequested {
+                request_id,
+                via_server,
+                ..
+            } => formatter
+                .debug_struct("DirectoryJoinRequested")
+                .field("request_id", request_id)
+                .field("alias", &"RoomAlias(..)")
+                .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
+                .finish(),
+            Self::DirectoryJoinSucceeded { request_id, .. } => formatter
+                .debug_struct("DirectoryJoinSucceeded")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::DirectoryJoinFailed {
+                request_id,
+                via_server,
+                kind,
+                ..
+            } => formatter
+                .debug_struct("DirectoryJoinFailed")
+                .field("request_id", request_id)
+                .field("alias", &"RoomAlias(..)")
+                .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
+                .field("kind", kind)
+                .finish(),
+            Self::RoomSettingsSnapshotLoaded { .. } => formatter
+                .debug_struct("RoomSettingsSnapshotLoaded")
+                .field("room_id", &"RoomId(..)")
+                .field("settings", &"RoomSettingsSnapshot(..)")
+                .finish(),
+            Self::RoomSettingUpdateRequested {
+                request_id, change, ..
+            } => formatter
+                .debug_struct("RoomSettingUpdateRequested")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("change", change)
+                .finish(),
+            Self::RoomSettingUpdateSucceeded { request_id, .. } => formatter
+                .debug_struct("RoomSettingUpdateSucceeded")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("settings", &"RoomSettingsSnapshot(..)")
+                .finish(),
+            Self::RoomSettingUpdateFailed {
+                request_id, kind, ..
+            } => formatter
+                .debug_struct("RoomSettingUpdateFailed")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("kind", kind)
+                .finish(),
+            Self::RoomModerationRequested {
+                request_id, action, ..
+            } => formatter
+                .debug_struct("RoomModerationRequested")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
+                .field("reason", &"ModerationReason(..)")
+                .finish(),
+            Self::RoomModerationSucceeded {
+                request_id, action, ..
+            } => formatter
+                .debug_struct("RoomModerationSucceeded")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
+                .finish(),
+            Self::RoomModerationFailed {
+                request_id,
+                action,
+                kind,
+                ..
+            } => formatter
+                .debug_struct("RoomModerationFailed")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
+                .field("kind", kind)
+                .finish(),
+            Self::ActivityOpened { request_id } => formatter
+                .debug_struct("ActivityOpened")
+                .field("request_id", request_id)
+                .finish(),
+            Self::ActivityClosed => formatter.write_str("ActivityClosed"),
+            Self::ActivitySnapshotLoaded {
+                request_id,
+                active_tab,
+                recent,
+                unread,
+                excluded_room_ids,
+            } => formatter
+                .debug_struct("ActivitySnapshotLoaded")
+                .field("request_id", request_id)
+                .field("active_tab", active_tab)
+                .field("recent", recent)
+                .field("unread", unread)
+                .field(
+                    "excluded_room_ids",
+                    &format_args!("{} room id(s)", excluded_room_ids.len()),
+                )
+                .finish(),
+            Self::ActivityRowsObserved { rows } => formatter
+                .debug_struct("ActivityRowsObserved")
+                .field("rows", &format_args!("{} row(s)", rows.len()))
+                .finish(),
+            Self::ActivityRowsUpdated {
+                recent,
+                unread,
+                excluded_room_ids,
+            } => formatter
+                .debug_struct("ActivityRowsUpdated")
+                .field("recent", recent)
+                .field("unread", unread)
+                .field(
+                    "excluded_room_ids",
+                    &format_args!("{} room id(s)", excluded_room_ids.len()),
+                )
+                .finish(),
+            Self::ActivityTabSelected { tab } => formatter
+                .debug_struct("ActivityTabSelected")
+                .field("tab", tab)
+                .finish(),
+            Self::ActivityMarkReadRequested { request_id, target } => formatter
+                .debug_struct("ActivityMarkReadRequested")
+                .field("request_id", request_id)
+                .field("target", target)
+                .finish(),
+            Self::ActivityMarkReadSucceeded {
+                request_id,
+                cleared_event_ids,
+            } => formatter
+                .debug_struct("ActivityMarkReadSucceeded")
+                .field("request_id", request_id)
+                .field(
+                    "cleared_event_ids",
+                    &format_args!("{} event id(s)", cleared_event_ids.len()),
+                )
+                .finish(),
+            Self::ActivityMarkReadFailed {
+                request_id,
+                target,
+                kind,
+            } => formatter
+                .debug_struct("ActivityMarkReadFailed")
+                .field("request_id", request_id)
+                .field("target", target)
+                .field("kind", kind)
+                .finish(),
+            _ => formatter.write_str("AppAction(..)"),
+        }
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]

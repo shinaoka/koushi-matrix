@@ -33,7 +33,8 @@ describe("TauriDesktopApi", () => {
       {
         key: "enter",
         modifiers: { ctrl: false, meta: true, shift: false, alt: false },
-        is_composing: false
+        is_composing: false,
+        selection: { start: 1, end: 3 }
       },
       { autocomplete_open: false, send_enabled: true }
     );
@@ -43,7 +44,8 @@ describe("TauriDesktopApi", () => {
       keyEvent: {
         key: "enter",
         modifiers: { ctrl: false, meta: true, shift: false, alt: false },
-        is_composing: false
+        is_composing: false,
+        selection: { start: 1, end: 3 }
       },
       autocompleteOpen: false,
       sendEnabled: true
@@ -154,5 +156,98 @@ describe("TauriDesktopApi", () => {
       roomId: "!room:example.invalid",
       userId: "@target:example.invalid"
     });
+  });
+
+  test("passes public directory actions to Rust-owned room commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.queryDirectory({
+      term: "public rooms",
+      server_name: "example.invalid",
+      limit: 20,
+      since: "page-2"
+    });
+    await api.joinDirectoryRoom("#public:example.invalid", "example.invalid");
+
+    expect(invoke).toHaveBeenCalledWith("query_directory", {
+      term: "public rooms",
+      serverName: "example.invalid",
+      limit: 20,
+      since: "page-2"
+    });
+    expect(invoke).toHaveBeenCalledWith("join_directory_room", {
+      alias: "#public:example.invalid",
+      viaServer: "example.invalid"
+    });
+  });
+
+  test("passes room management actions to Rust-owned room commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.loadRoomSettings("!room:example.invalid");
+    await api.updateRoomSetting("!room:example.invalid", {
+      topic: "Private topic"
+    });
+    await api.moderateRoomMember(
+      "!room:example.invalid",
+      "@target:example.invalid",
+      "kick",
+      "Private reason"
+    );
+
+    expect(invoke).toHaveBeenCalledWith("load_room_settings", {
+      roomId: "!room:example.invalid"
+    });
+    expect(invoke).toHaveBeenCalledWith("update_room_setting", {
+      roomId: "!room:example.invalid",
+      change: { topic: "Private topic" }
+    });
+    expect(invoke).toHaveBeenCalledWith("moderate_room_member", {
+      roomId: "!room:example.invalid",
+      targetUserId: "@target:example.invalid",
+      action: "kick",
+      reason: "Private reason"
+    });
+  });
+
+  test("passes activity actions to Rust-owned activity commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.openActivity();
+    await api.setActivityTab("unread");
+    await api.paginateActivity("recent", "recent-page-2");
+    await api.markActivityRead({
+      kind: "room",
+      room_id: "!room:example.invalid",
+      up_to_event_id: "$event:example.invalid"
+    });
+    await api.closeActivity();
+
+    expect(invoke).toHaveBeenCalledWith("open_activity");
+    expect(invoke).toHaveBeenCalledWith("set_activity_tab", { tab: "unread" });
+    expect(invoke).toHaveBeenCalledWith("paginate_activity", {
+      tab: "recent",
+      cursor: "recent-page-2"
+    });
+    expect(invoke).toHaveBeenCalledWith("mark_activity_read", {
+      target: {
+        kind: "room",
+        room_id: "!room:example.invalid",
+        up_to_event_id: "$event:example.invalid"
+      }
+    });
+    expect(invoke).toHaveBeenCalledWith("close_activity");
+  });
+
+  test("passes credential health probe to Rust-owned account command", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.probeLocalEncryptionHealth();
+
+    expect(invoke).toHaveBeenCalledWith("probe_local_encryption_health");
   });
 });

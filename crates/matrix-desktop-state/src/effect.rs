@@ -88,5 +88,12 @@ pub enum UiEvent {
     SearchChanged,
     LiveSignalsChanged,
     E2eeTrustChanged,
+    RoomInteractionsChanged,
+    DirectoryChanged,
+    ActivityChanged,
+    RoomManagementChanged,
+    LocalEncryptionChanged,
+    NativeAttentionChanged,
+    CjkTextPolicyChanged,
     ErrorChanged,
 }

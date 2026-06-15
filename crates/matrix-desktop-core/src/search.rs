@@ -49,6 +49,7 @@ use std::sync::Arc;
 use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_search::{
     SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
+    cjk_search_query_variants,
 };
 use matrix_desktop_state::AppAction;
 use tokio::sync::{broadcast, mpsc};
@@ -265,6 +266,7 @@ impl SearchActor {
     }
 
     async fn handle_query(&self, request_id: RequestId, query: &str, scope: SearchScope) {
+        let query = query.trim();
         if query.trim().is_empty() {
             self.emit_search_succeeded(request_id, Vec::new()).await;
             self.emit(CoreEvent::Search(SearchEvent::Results {
@@ -274,27 +276,54 @@ impl SearchActor {
             return;
         }
 
-        let candidates = matrix_desktop_sdk::search_message_candidates(
-            &self.session,
-            query,
-            SEARCH_CANDIDATE_LIMIT,
-        )
-        .await;
+        let mut candidates_by_key: HashMap<
+            (String, String),
+            matrix_desktop_sdk::MatrixSearchCandidate,
+        > = HashMap::new();
+        for query_variant in cjk_search_query_variants(query) {
+            let candidates = matrix_desktop_sdk::search_message_candidates(
+                &self.session,
+                &query_variant,
+                SEARCH_CANDIDATE_LIMIT,
+            )
+            .await;
 
-        let candidates = match candidates {
-            Ok(c) => c,
-            Err(_) => {
-                self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
-                    .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::SearchFailed {
-                        kind: SearchFailureKind::IndexUnavailable,
-                    },
-                );
-                return;
+            let candidates = match candidates {
+                Ok(c) => c,
+                Err(_) => {
+                    self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
+                        .await;
+                    self.emit_failure(
+                        request_id,
+                        CoreFailure::SearchFailed {
+                            kind: SearchFailureKind::IndexUnavailable,
+                        },
+                    );
+                    return;
+                }
+            };
+
+            for candidate in candidates {
+                let key = (candidate.room_id.clone(), candidate.event_id.clone());
+                candidates_by_key
+                    .entry(key)
+                    .and_modify(|current| {
+                        if candidate.score_millis > current.score_millis {
+                            *current = candidate.clone();
+                        }
+                    })
+                    .or_insert(candidate);
             }
-        };
+        }
+
+        let mut candidates = candidates_by_key.into_values().collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            right
+                .score_millis
+                .cmp(&left.score_millis)
+                .then_with(|| left.room_id.cmp(&right.room_id))
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
 
         // Apply scope filter.
         let candidates = match &scope {

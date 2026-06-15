@@ -1,4 +1,5 @@
 import type { MessageId } from "../i18n/messages";
+import type { RoomTags } from "./types";
 
 export type ContextMenuKind = "message" | "room" | "space" | "account";
 
@@ -9,6 +10,10 @@ export type ContextMenuActionId =
   | "selectRoom"
   | "openRoomInfo"
   | "searchInRoom"
+  | "setRoomFavourite"
+  | "removeRoomFavourite"
+  | "setRoomLowPriority"
+  | "removeRoomLowPriority"
   | "selectSpace"
   | "openSpaceInfo"
   | "openUserSettings"
@@ -29,6 +34,7 @@ export type ContextMenuRequest =
     }
   | {
       kind: "room";
+      tags?: RoomTags;
     }
   | {
       kind: "space";
@@ -58,7 +64,13 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
       return [
         { id: "selectRoom", labelMessageId: "context.selectRoom" },
         { id: "openRoomInfo", labelMessageId: "context.openRoomInfo" },
-        { id: "searchInRoom", labelMessageId: "context.searchInRoom" }
+        { id: "searchInRoom", labelMessageId: "context.searchInRoom" },
+        request.tags?.favourite
+          ? { id: "removeRoomFavourite", labelMessageId: "context.removeFromFavourites" }
+          : { id: "setRoomFavourite", labelMessageId: "context.addToFavourites" },
+        request.tags?.low_priority
+          ? { id: "removeRoomLowPriority", labelMessageId: "context.removeFromLowPriority" }
+          : { id: "setRoomLowPriority", labelMessageId: "context.addToLowPriority" }
       ];
     case "space":
       return [

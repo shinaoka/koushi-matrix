@@ -1,4 +1,71 @@
 {
+  "activityOpened": {
+    "event": {
+      "Opened": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Activity"
+  },
+  "activityMarkedRead": {
+    "event": {
+      "MarkedRead": {
+        "cleared_event_ids": [
+          "$activity-unread:example.test"
+        ],
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Activity"
+  },
+  "activitySnapshotLoaded": {
+    "event": {
+      "SnapshotLoaded": {
+        "active_tab": "unread",
+        "recent": {
+          "next_batch": "recent-next",
+          "rows": [
+            {
+              "event_id": "$activity-recent:example.test",
+              "highlight": false,
+              "preview": "Recent preview",
+              "room_id": "!activity-recent:example.test",
+              "room_label": "Recent room",
+              "sender_label": "Recent sender",
+              "timestamp_ms": 20,
+              "unread": false
+            }
+          ]
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "unread": {
+          "next_batch": "unread-next",
+          "rows": [
+            {
+              "event_id": "$activity-unread:example.test",
+              "highlight": true,
+              "preview": "Unread preview",
+              "room_id": "!activity-unread:example.test",
+              "room_label": "Unread room",
+              "sender_label": "Unread sender",
+              "timestamp_ms": 10,
+              "unread": true
+            }
+          ]
+        }
+      }
+    },
+    "kind": "Activity"
+  },
   "accountProfileUpdated": {
     "event": {
       "ProfileUpdated": {
@@ -28,6 +95,19 @@
       }
     },
     "kind": "Account"
+  },
+  "cjkTextPolicyJapaneseCatalogProfileChanged": {
+    "event": {
+      "kind": "japaneseCatalogProfileChanged",
+      "profile": {
+        "catalog_locale": "ja",
+        "complete": false,
+        "missing_message_ids": [
+          "settings.title"
+        ]
+      }
+    },
+    "kind": "CjkTextPolicy"
   },
   "e2eeTrustIdentityResetChanged": {
     "event": {
@@ -61,6 +141,13 @@
       }
     },
     "kind": "E2eeTrust"
+  },
+  "localEncryptionHealthChanged": {
+    "event": {
+      "health": "healthy",
+      "kind": "healthChanged"
+    },
+    "kind": "LocalEncryption"
   },
   "liveSignalsPresenceSet": {
     "event": {
@@ -97,6 +184,25 @@
     },
     "kind": "LiveSignals"
   },
+  "nativeAttentionSummaryUpdated": {
+    "event": {
+      "kind": "summaryUpdated",
+      "summary": {
+        "badge_count": 3,
+        "candidate": null,
+        "capabilities": {
+          "activation": "available",
+          "badge": "available",
+          "notifications": "available",
+          "sound": "unavailable",
+          "tray": "unknown"
+        },
+        "highlight_count": 1,
+        "unread_count": 3
+      }
+    },
+    "kind": "NativeAttention"
+  },
   "operationFailedSessionNotFound": {
     "failure": "SessionNotFound",
     "kind": "OperationFailed",
@@ -104,6 +210,36 @@
       "connection_id": 3,
       "sequence": 7
     }
+  },
+  "roomDirectoryQueryCompleted": {
+    "event": {
+      "DirectoryQueryCompleted": {
+        "next_batch": "page-3",
+        "query": {
+          "limit": 20,
+          "server_name": "example.test",
+          "since": "page-2",
+          "term": "public"
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "rooms": [
+          {
+            "avatar_url": null,
+            "canonical_alias": "#public:example.test",
+            "guest_can_join": false,
+            "joined_members": 5,
+            "name": "Public Room",
+            "room_id": "!public:example.test",
+            "topic": "Directory sample",
+            "world_readable": true
+          }
+        ]
+      }
+    },
+    "kind": "Room"
   },
   "roomDirectMessageStarted": {
     "event": {
@@ -149,6 +285,70 @@
           "sequence": 7
         },
         "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Room"
+  },
+  "roomMemberModerated": {
+    "event": {
+      "RoomMemberModerated": {
+        "action": "kick",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "room_id": "!r:example.test",
+        "target_user_id": "@target:example.test"
+      }
+    },
+    "kind": "Room"
+  },
+  "roomSettingUpdated": {
+    "event": {
+      "RoomSettingUpdated": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "settings": {
+          "avatar_url": "mxc://example.test/avatar",
+          "history_visibility": "shared",
+          "join_rule": "invite",
+          "name": "Room Settings Sample",
+          "permissions": {
+            "can_ban": true,
+            "can_edit_settings": true,
+            "can_kick": true,
+            "can_unban": true
+          },
+          "room_id": "!r:example.test",
+          "topic": "Private topic sample"
+        }
+      }
+    },
+    "kind": "Room"
+  },
+  "roomSettingsLoaded": {
+    "event": {
+      "RoomSettingsLoaded": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "settings": {
+          "avatar_url": "mxc://example.test/avatar",
+          "history_visibility": "shared",
+          "join_rule": "invite",
+          "name": "Room Settings Sample",
+          "permissions": {
+            "can_ban": true,
+            "can_edit_settings": true,
+            "can_kick": true,
+            "can_unban": true
+          },
+          "room_id": "!r:example.test",
+          "topic": "Private topic sample"
+        }
       }
     },
     "kind": "Room"
@@ -419,6 +619,53 @@
         },
         "request_id": null,
         "state": "EndReached"
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineReplyQuoteInitialItems": {
+    "event": {
+      "InitialItems": {
+        "generation": 4,
+        "items": [
+          {
+            "body": "reply body",
+            "can_edit": false,
+            "can_react": true,
+            "can_redact": true,
+            "id": {
+              "Event": {
+                "event_id": "$reply1"
+              }
+            },
+            "in_reply_to_event_id": "$root1",
+            "is_edited": false,
+            "is_redacted": false,
+            "reactions": [],
+            "reply_quote": {
+              "body_preview": "quoted preview",
+              "event_id": "$root1",
+              "sender": "@other:example.test",
+              "state": "ready"
+            },
+            "sender": "@u:example.test",
+            "thread_root": null,
+            "thread_summary": null,
+            "timestamp_ms": 987
+          }
+        ],
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
       }
     },
     "kind": "Timeline"

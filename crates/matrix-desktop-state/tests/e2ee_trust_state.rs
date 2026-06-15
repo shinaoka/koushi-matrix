@@ -49,6 +49,55 @@ fn e2ee_trust_state_defaults_to_private_data_free_unknowns() {
 }
 
 #[test]
+fn restore_key_backup_starts_with_open_joined_room_hydration_total() {
+    let mut state = ready_state();
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::RestoreKeyBackupRequested {
+                request_id: 30,
+                version: Some("v1".to_owned()),
+            },
+        ),
+        vec![
+            AppEffect::RestoreKeyBackup {
+                request_id: 30,
+                version: Some("v1".to_owned()),
+            },
+            AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+        ]
+    );
+    assert_eq!(
+        state.e2ee_trust.key_backup,
+        KeyBackupStatus::Restoring {
+            request_id: 30,
+            version: Some("v1".to_owned()),
+            restored_rooms: 0,
+            total_rooms: None,
+        }
+    );
+
+    reduce(
+        &mut state,
+        AppAction::KeyBackupRestoreProgress {
+            request_id: 30,
+            restored_rooms: 1,
+            total_rooms: Some(2),
+        },
+    );
+    assert_eq!(
+        state.e2ee_trust.key_backup,
+        KeyBackupStatus::Restoring {
+            request_id: 30,
+            version: Some("v1".to_owned()),
+            restored_rooms: 1,
+            total_rooms: Some(2),
+        }
+    );
+}
+
+#[test]
 fn verification_flow_is_rust_owned_guarded_and_request_correlated() {
     let mut state = ready_state();
     let target = target();

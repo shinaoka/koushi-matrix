@@ -67,7 +67,9 @@ use matrix_desktop_core::event::{
 use matrix_desktop_core::failure::{CoreFailure, RecoveryFailureKind};
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
-use matrix_desktop_state::{AppState, AuthSecret, LoginRequest, RecoveryRequest, SessionState};
+use matrix_desktop_state::{
+    AppState, AuthSecret, LoginRequest, MentionIntent, RecoveryRequest, SessionState,
+};
 
 // ---------------------------------------------------------------------------
 // Env var constants
@@ -673,6 +675,7 @@ async fn run_async_inner(
         key: timeline_key.clone(),
         transaction_id: txn1,
         body: message_plan.msg1_body.clone(),
+        mentions: MentionIntent::default(),
     }))
     .await
     .map_err(|e| format!("send message 1 command submit failed: {e}"))?;
@@ -691,6 +694,7 @@ async fn run_async_inner(
         key: timeline_key.clone(),
         transaction_id: txn_search,
         body: message_plan.search_probe_body.clone(),
+        mentions: MentionIntent::default(),
     }))
     .await
     .map_err(|e| format!("send search probe command submit failed: {e}"))?;
@@ -714,6 +718,7 @@ async fn run_async_inner(
         key: timeline_key.clone(),
         transaction_id: txn2,
         body: message_plan.msg2_body.clone(),
+        mentions: MentionIntent::default(),
     }))
     .await
     .map_err(|e| format!("send message 2 command submit failed: {e}"))?;
@@ -736,6 +741,7 @@ async fn run_async_inner(
         transaction_id: txn_reply,
         in_reply_to_event_id: event1_id.clone(),
         body: message_plan.reply_body.clone(),
+        mentions: MentionIntent::default(),
     }))
     .await
     .map_err(|e| format!("send reply command submit failed: {e}"))?;

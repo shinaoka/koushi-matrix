@@ -616,6 +616,14 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
         CoreEvent::LiveSignals(e) => serde_json::json!({ "kind": "LiveSignals", "event": e }),
         CoreEvent::Search(e) => serde_json::json!({ "kind": "Search", "event": e }),
         CoreEvent::E2eeTrust(e) => serde_json::json!({ "kind": "E2eeTrust", "event": e }),
+        CoreEvent::Activity(e) => serde_json::json!({ "kind": "Activity", "event": e }),
+        CoreEvent::LocalEncryption(e) => {
+            serde_json::json!({ "kind": "LocalEncryption", "event": e })
+        }
+        CoreEvent::NativeAttention(e) => {
+            serde_json::json!({ "kind": "NativeAttention", "event": e })
+        }
+        CoreEvent::CjkTextPolicy(e) => serde_json::json!({ "kind": "CjkTextPolicy", "event": e }),
         CoreEvent::OperationFailed {
             request_id,
             failure,
@@ -736,6 +744,7 @@ pub fn run() {
             commands::logout,
             commands::restart_sync,
             commands::update_settings,
+            commands::probe_local_encryption_health,
             commands::bootstrap_cross_signing,
             commands::enable_key_backup,
             commands::accept_verification,
@@ -768,11 +777,23 @@ pub fn run() {
             commands::forget_room,
             commands::set_room_tag,
             commands::remove_room_tag,
+            commands::pin_event,
+            commands::unpin_event,
+            commands::load_room_settings,
+            commands::update_room_setting,
+            commands::moderate_room_member,
+            commands::open_activity,
+            commands::close_activity,
+            commands::set_activity_tab,
+            commands::paginate_activity,
+            commands::mark_activity_read,
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
+            commands::query_directory,
             commands::create_room,
             commands::create_space,
+            commands::join_directory_room,
             commands::set_space_child,
             commands::accept_invite,
             commands::decline_invite,
@@ -1162,7 +1183,8 @@ mod tests {
         use matrix_desktop_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
-                AccountEvent, E2eeTrustEvent, LiveSignalsEvent, MediaTransferProgress,
+                AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LiveSignalsEvent,
+                LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent,
                 PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineEvent,
                 TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
                 TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
@@ -1172,9 +1194,13 @@ mod tests {
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
-            IdentityResetAuthType, IdentityResetState, LiveEventReceipts, LiveReadReceipt,
-            LiveRoomSignalUpdate, PresenceKind, RoomTagKind, SasEmoji, VerificationFlowState,
-            VerificationTarget,
+            ActivityRow, ActivityStream, ActivityTab, DirectoryQuery, DirectoryRoomSummary,
+            IdentityResetAuthType, IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts,
+            LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
+            NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
+            PresenceKind, ReplyQuote, ReplyQuoteState,
+            RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomPermissionFacts,
+            RoomSettingsSnapshot, RoomTagKind, SasEmoji, VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -1191,6 +1217,7 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(123),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -1216,6 +1243,7 @@ mod tests {
             body: Some("caption".to_owned()),
             timestamp_ms: Some(456),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: Some(TimelineMedia {
@@ -1258,6 +1286,7 @@ mod tests {
             body: Some("queued".to_owned()),
             timestamp_ms: Some(789),
             in_reply_to_event_id: None,
+            reply_quote: None,
             thread_root: None,
             thread_summary: None,
             media: None,
@@ -1270,6 +1299,31 @@ mod tests {
             send_state: Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
             }),
+        };
+        let reply_quote_item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: "$reply1".to_owned(),
+            },
+            sender: Some("@u:example.test".to_owned()),
+            body: Some("reply body".to_owned()),
+            timestamp_ms: Some(987),
+            in_reply_to_event_id: Some("$root1".to_owned()),
+            reply_quote: Some(ReplyQuote {
+                event_id: "$root1".to_owned(),
+                sender: Some("@other:example.test".to_owned()),
+                body_preview: Some("quoted preview".to_owned()),
+                state: ReplyQuoteState::Ready,
+            }),
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: false,
+            can_edit: false,
+            send_state: None,
         };
 
         // InitialItems envelope + payload
@@ -1388,6 +1442,24 @@ mod tests {
             json!({
                 "kind": "notSent",
                 "reason": "recoverable"
+            })
+        );
+
+        let reply_quote_initial =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(request_id),
+                key: key.clone(),
+                generation: TimelineGeneration(4),
+                items: vec![reply_quote_item],
+            }))
+            .expect("serialize reply quote initial items");
+        assert_eq!(
+            reply_quote_initial["event"]["InitialItems"]["items"][0]["reply_quote"],
+            json!({
+                "event_id": "$root1",
+                "sender": "@other:example.test",
+                "body_preview": "quoted preview",
+                "state": "ready"
             })
         );
 
@@ -1518,6 +1590,70 @@ mod tests {
             tag: RoomTagKind::LowPriority,
         }))
         .expect("serialize room tag removed");
+        let directory_query_completed =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::DirectoryQueryCompleted {
+                request_id,
+                query: DirectoryQuery {
+                    term: Some("public".to_owned()),
+                    server_name: Some("example.test".to_owned()),
+                    limit: Some(20),
+                    since: Some("page-2".to_owned()),
+                },
+                rooms: vec![DirectoryRoomSummary {
+                    room_id: "!public:example.test".to_owned(),
+                    canonical_alias: Some("#public:example.test".to_owned()),
+                    name: "Public Room".to_owned(),
+                    topic: Some("Directory sample".to_owned()),
+                    avatar_url: None,
+                    joined_members: 5,
+                    world_readable: true,
+                    guest_can_join: false,
+                }],
+                next_batch: Some("page-3".to_owned()),
+            }))
+            .expect("serialize directory query completion");
+        let room_settings_snapshot = RoomSettingsSnapshot {
+            room_id: "!r:example.test".to_owned(),
+            name: Some("Room Settings Sample".to_owned()),
+            topic: Some("Private topic sample".to_owned()),
+            avatar_url: Some("mxc://example.test/avatar".to_owned()),
+            join_rule: RoomJoinRule::Invite,
+            history_visibility: RoomHistoryVisibility::Shared,
+            permissions: RoomPermissionFacts {
+                can_edit_settings: true,
+                can_kick: true,
+                can_ban: true,
+                can_unban: true,
+            },
+        };
+        let room_settings_loaded =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::RoomSettingsLoaded {
+                request_id,
+                settings: room_settings_snapshot.clone(),
+            }))
+            .expect("serialize room settings loaded");
+        let room_setting_updated =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::RoomSettingUpdated {
+                request_id,
+                settings: room_settings_snapshot,
+            }))
+            .expect("serialize room setting updated");
+        let room_member_moderated =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::RoomMemberModerated {
+                request_id,
+                room_id: "!r:example.test".to_owned(),
+                target_user_id: "@target:example.test".to_owned(),
+                action: RoomModerationAction::Kick,
+            }))
+            .expect("serialize room member moderated");
+        assert_eq!(
+            room_settings_loaded["event"]["RoomSettingsLoaded"]["settings"]["permissions"]["can_edit_settings"],
+            json!(true)
+        );
+        assert_eq!(
+            room_member_moderated["event"]["RoomMemberModerated"]["action"],
+            json!("kick")
+        );
 
         let e2ee_trust = serialize_core_event(&CoreEvent::E2eeTrust(
             E2eeTrustEvent::VerificationProgress {
@@ -1587,18 +1723,136 @@ mod tests {
             .expect("serialize live presence event");
         assert_eq!(live_presence["event"]["kind"], json!("presenceSet"));
 
+        let activity_opened =
+            serialize_core_event(&CoreEvent::Activity(ActivityEvent::Opened { request_id }))
+                .expect("serialize activity event");
+        assert_eq!(activity_opened["kind"], json!("Activity"));
+        assert_eq!(
+            activity_opened["event"]["Opened"]["request_id"],
+            json!({ "connection_id": 3, "sequence": 7 })
+        );
+        let activity_snapshot_loaded = serialize_core_event(&CoreEvent::Activity(
+            ActivityEvent::SnapshotLoaded {
+                request_id,
+                active_tab: ActivityTab::Unread,
+                recent: ActivityStream {
+                    rows: vec![ActivityRow {
+                        room_id: "!activity-recent:example.test".to_owned(),
+                        event_id: "$activity-recent:example.test".to_owned(),
+                        room_label: "Recent room".to_owned(),
+                        sender_label: Some("Recent sender".to_owned()),
+                        preview: Some("Recent preview".to_owned()),
+                        timestamp_ms: 20,
+                        unread: false,
+                        highlight: false,
+                    }],
+                    next_batch: Some("recent-next".to_owned()),
+                },
+                unread: ActivityStream {
+                    rows: vec![ActivityRow {
+                        room_id: "!activity-unread:example.test".to_owned(),
+                        event_id: "$activity-unread:example.test".to_owned(),
+                        room_label: "Unread room".to_owned(),
+                        sender_label: Some("Unread sender".to_owned()),
+                        preview: Some("Unread preview".to_owned()),
+                        timestamp_ms: 10,
+                        unread: true,
+                        highlight: true,
+                    }],
+                    next_batch: Some("unread-next".to_owned()),
+                },
+            },
+        ))
+        .expect("serialize activity snapshot event");
+        assert_eq!(
+            activity_snapshot_loaded["event"]["SnapshotLoaded"]["active_tab"],
+            json!("unread")
+        );
+        assert_eq!(
+            activity_snapshot_loaded["event"]["SnapshotLoaded"]["unread"]["rows"][0]["highlight"],
+            json!(true)
+        );
+        let activity_marked_read =
+            serialize_core_event(&CoreEvent::Activity(ActivityEvent::MarkedRead {
+                request_id,
+                cleared_event_ids: vec!["$activity-unread:example.test".to_owned()],
+            }))
+            .expect("serialize activity marked-read event");
+        assert_eq!(
+            activity_marked_read["event"]["MarkedRead"]["cleared_event_ids"],
+            json!(["$activity-unread:example.test"])
+        );
+
+        let local_encryption = serialize_core_event(&CoreEvent::LocalEncryption(
+            LocalEncryptionEvent::HealthChanged {
+                health: LocalEncryptionHealth::Healthy,
+            },
+        ))
+        .expect("serialize local encryption event");
+        assert_eq!(local_encryption["event"]["kind"], json!("healthChanged"));
+        assert_eq!(local_encryption["event"]["health"], json!("healthy"));
+
+        let native_attention = serialize_core_event(&CoreEvent::NativeAttention(
+            NativeAttentionEvent::SummaryUpdated {
+                summary: NativeAttentionSummary {
+                    unread_count: 3,
+                    highlight_count: 1,
+                    badge_count: 3,
+                    candidate: None,
+                    capabilities: NativeAttentionCapabilities {
+                        notifications: NativeAttentionCapability::Available,
+                        badge: NativeAttentionCapability::Available,
+                        sound: NativeAttentionCapability::Unavailable,
+                        tray: NativeAttentionCapability::Unknown,
+                        activation: NativeAttentionCapability::Available,
+                    },
+                },
+            },
+        ))
+        .expect("serialize native attention event");
+        assert_eq!(native_attention["event"]["kind"], json!("summaryUpdated"));
+        assert_eq!(
+            native_attention["event"]["summary"]["badge_count"],
+            json!(3)
+        );
+
+        let cjk_text_policy = serialize_core_event(&CoreEvent::CjkTextPolicy(
+            CjkTextPolicyEvent::JapaneseCatalogProfileChanged {
+                profile: JapaneseCatalogProfile {
+                    catalog_locale: "ja".to_owned(),
+                    complete: false,
+                    missing_message_ids: vec!["settings.title".to_owned()],
+                },
+            },
+        ))
+        .expect("serialize cjk text policy event");
+        assert_eq!(
+            cjk_text_policy["event"]["kind"],
+            json!("japaneseCatalogProfileChanged")
+        );
+
         let actual_contract = json!({
+            "activityOpened": activity_opened,
+            "activityMarkedRead": activity_marked_read,
+            "activitySnapshotLoaded": activity_snapshot_loaded,
+            "cjkTextPolicyJapaneseCatalogProfileChanged": cjk_text_policy,
             "e2eeTrustIdentityResetChanged": e2ee_identity_reset,
             "accountProfileUpdated": profile_updated,
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
+            "localEncryptionHealthChanged": local_encryption,
             "liveSignalsPresenceSet": live_presence,
             "liveSignalsRoomSignalsUpdated": live_signals,
+            "nativeAttentionSummaryUpdated": native_attention,
             "operationFailedSessionNotFound": failed,
+            "roomDirectoryQueryCompleted": directory_query_completed,
             "roomDirectMessageStarted": room_direct_message_started,
             "roomInviteAccepted": room_invite_accepted,
             "roomInviteDeclined": room_invite_declined,
             "roomLeft": room_left,
+            "roomMemberModerated": room_member_moderated,
+            "roomSettingUpdated": room_setting_updated,
+            "roomSettingsLoaded": room_settings_loaded,
             "roomTagRemoved": room_tag_removed,
             "roomTagSet": room_tag_set,
             "timelineInitialItems": initial,
@@ -1615,6 +1869,7 @@ mod tests {
                 },
             ))
             .expect("serialize"),
+            "timelineReplyQuoteInitialItems": reply_quote_initial,
             "timelineResyncRequired": resync,
             "timelineSendStateInitialItems": send_state_initial,
         });

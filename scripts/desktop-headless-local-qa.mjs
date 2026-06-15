@@ -24,7 +24,13 @@ const checks = [
   "scenario e2ee_trust",
   "scenario invites_dm",
   "scenario room_space",
+  "scenario directory",
+  "scenario room_management",
   "scenario timeline",
+  "scenario activity",
+  "scenario composer",
+  "scenario credential_health",
+  "scenario native_attention",
   "scenario reply",
   "scenario media",
   "scenario live_signals",
@@ -379,7 +385,7 @@ function safeTimestamp() {
 
 function printUsage() {
   console.log(
-    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both] [--scenario=all|send_queue|live_signals] [--core] [--core-backend=probed|legacy|both]"
+    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|both] [--scenario=all|directory|room_management|activity|composer|credential_health|native_attention|send_queue|live_signals] [--core] [--core-backend=probed|legacy|both]"
   );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
   console.log("  --core  Also run the headless-core-qa binary (Phase 2+ core runtime QA).");

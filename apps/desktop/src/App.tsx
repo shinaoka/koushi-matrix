@@ -19,6 +19,8 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
+  Pin,
+  PinOff,
   Plus,
   Search,
   RefreshCw,
@@ -49,6 +51,7 @@ import { setActiveLocaleProfile, t } from "./i18n/messages";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   TimelineView,
+  renderTimelineMessageText,
   type TimelineRowActionHandlers,
   type TimelineTransport
 } from "./components/TimelineView";
@@ -76,8 +79,10 @@ import {
 import {
   composerKeyEventFromDom,
   insertNewlineAtSelection,
+  shouldLetNativeImeHandleComposerKeyEvent,
   shouldResolveComposerKeyEvent
 } from "./domain/composerKeyEvents";
+import { roomListSections } from "./domain/desktopModel";
 import {
   restoreTimelineAnchor,
   timelinePaginationAnchorEventId
@@ -111,13 +116,17 @@ import type {
   ComposerMode,
   DesktopSnapshot,
   LocaleDisplayProfile,
+  MentionIntent,
+  MentionTarget,
   ResolveComposerKeyAction,
   RoomListItem,
+  RoomTags,
   SavedSessionInfo,
   SearchResult,
   SearchScopeKind,
   SettingsPatch,
-  TimelineMessage
+  TimelineMessage,
+  UserProfile
 } from "./domain/types";
 
 const api = createDesktopApi();
@@ -125,6 +134,8 @@ const DEFAULT_HOMESERVER = "https://matrix.org";
 const MENU_EVENT_NAME = "matrix-desktop://menu";
 const STATE_EVENT_NAME = "matrix-desktop://state";
 const CORE_EVENT_NAME = "matrix-desktop://event";
+const EMPTY_ROOM_TAGS: RoomTags = { favourite: null, low_priority: null };
+const EMPTY_MENTION_INTENT: MentionIntent = { targets: [] };
 
 /**
  * Tauri transport for the event-driven timeline (Async rule 4: timeline data
@@ -202,6 +213,12 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       async redactMessage(roomId: string, eventId: string) {
         await invoke("redact_message", { roomId, eventId });
       },
+      async pinEvent(roomId: string, eventId: string) {
+        await invoke("pin_event", { roomId, eventId });
+      },
+      async unpinEvent(roomId: string, eventId: string) {
+        await invoke("unpin_event", { roomId, eventId });
+      },
       async downloadMedia(roomId: string, eventId: string) {
         await invoke("download_media", { roomId, eventId });
       }
@@ -232,7 +249,7 @@ type InviteUserDialogState = {
   title: string;
 } | null;
 
-const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "ignore";
+const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 
 /**
  * React-local view of the composer mode. Matrix semantics (the reply target)
@@ -242,6 +259,13 @@ const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "ignore";
 type ComposerModeProp =
   | { kind: "plain" }
   | { kind: "reply"; in_reply_to_event_id: string };
+
+type MentionCandidate = {
+  key: string;
+  label: string;
+  searchText: string;
+  target: MentionTarget;
+};
 
 function composerModeProp(mode: ComposerMode): ComposerModeProp {
   return mode === "Plain"
@@ -267,6 +291,7 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerDraft, setComposerDraft] = useState("");
+  const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginDeviceName, setLoginDeviceName] = useState("Matrix Desktop");
@@ -948,8 +973,13 @@ export function App() {
     try {
       const nextSnapshot =
         composerMode === "Plain"
-          ? await api.sendText(roomId, body)
-          : await api.sendReply(roomId, composerMode.Reply.in_reply_to_event_id, body);
+          ? await api.sendText(roomId, body, composerMentions)
+          : await api.sendReply(
+              roomId,
+              composerMode.Reply.in_reply_to_event_id,
+              body,
+              composerMentions
+            );
       setSnapshot(nextSnapshot);
       if (!isTauriRuntime()) {
         const completionStatus = qaSendSmokeCompletionStatus(
@@ -966,6 +996,12 @@ export function App() {
       return;
     }
     setComposerDraft("");
+    setComposerMentions(EMPTY_MENTION_INTENT);
+  }
+
+  function updateComposerDraft(value: string) {
+    setComposerDraft(value);
+    setComposerMentions((mentions) => pruneMentionIntentForDraft(mentions, value));
   }
 
   async function uploadMediaFile(file: File) {
@@ -997,6 +1033,10 @@ export function App() {
 
   async function redactMessage(roomId: string, eventId: string) {
     setSnapshot(await api.redactMessage(roomId, eventId));
+  }
+
+  async function unpinPinnedEvent(roomId: string, eventId: string) {
+    setSnapshot(await api.unpinEvent(roomId, eventId));
   }
 
   async function openThread(roomId: string, rootEventId: string) {
@@ -1082,6 +1122,25 @@ export function App() {
           return;
         default:
           return;
+      }
+    }
+
+    if (target.kind === "room") {
+      switch (actionId) {
+        case "setRoomFavourite":
+          void api.setRoomTag(target.roomId, "favourite").then(setSnapshot);
+          return;
+        case "removeRoomFavourite":
+          void api.removeRoomTag(target.roomId, "favourite").then(setSnapshot);
+          return;
+        case "setRoomLowPriority":
+          void api.setRoomTag(target.roomId, "lowPriority").then(setSnapshot);
+          return;
+        case "removeRoomLowPriority":
+          void api.removeRoomTag(target.roomId, "lowPriority").then(setSnapshot);
+          return;
+        default:
+          break;
       }
     }
 
@@ -1242,6 +1301,7 @@ export function App() {
             activeRoomName={activeRoom?.display_name ?? t("room.noRoomSelected")}
             composerDraft={composerDraft}
             composerMode={composerModeProp(snapshot.state.timeline.composer.mode)}
+            mentionIntent={composerMentions}
             resolveComposerKeyAction={resolveComposerKeyAction}
             searchQuery={searchQuery}
             searchResults={searchResults}
@@ -1253,7 +1313,8 @@ export function App() {
             onAttachFile={(file) => {
               void uploadMediaFile(file);
             }}
-            onComposerDraftChange={setComposerDraft}
+            onComposerDraftChange={updateComposerDraft}
+            onMentionIntentChange={setComposerMentions}
             onOpenThread={openThread}
             onPaginateBackwards={paginateTimelineBackwards}
             onReply={(roomId, eventId) => {
@@ -1264,6 +1325,7 @@ export function App() {
             onOpenContextMenu={openContextMenu}
             onRedactMessage={redactMessage}
             onResultSelect={selectSearchResult}
+            onUnpinPinnedEvent={unpinPinnedEvent}
             onToggleThread={() => {
               if (rightPanelOpen) {
                 if (effectiveRightPanelMode === "thread") {
@@ -2059,6 +2121,7 @@ function Sidebar({
   onOpenSpaceInfo: () => void;
   onSelectRoom: (roomId: string) => void;
 }) {
+  const sections = roomListSections(snapshot.sidebar);
   return (
     <aside className="sidebar" aria-label={t("workspace.rooms")}>
       <div className="workspace-header">
@@ -2105,30 +2168,86 @@ function Sidebar({
           label={t("workspace.invites")}
           onClick={onOpenInvites}
         />
-        <SectionTitle label={t("workspace.rooms")} />
-        {snapshot.sidebar.space_rooms.map((room) => (
-          <RoomButton
-            activeRoomId={activeRoomId}
-            kind="room"
-            key={room.room_id}
-            room={room}
-            onOpenContextMenu={onOpenContextMenu}
-            onSelectRoom={onSelectRoom}
-          />
-        ))}
-        <SectionTitle label={t("workspace.people")} />
-        {snapshot.sidebar.global_dms.map((room) => (
-          <RoomButton
-            activeRoomId={activeRoomId}
-            kind="dm"
-            key={room.room_id}
-            room={room}
-            onOpenContextMenu={onOpenContextMenu}
-            onSelectRoom={onSelectRoom}
-          />
-        ))}
+        <RoomSection
+          activeRoomId={activeRoomId}
+          id="favourites"
+          kind="room"
+          label={t("workspace.favourites")}
+          rooms={sections.favourites}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
+        <RoomSection
+          activeRoomId={activeRoomId}
+          id="rooms"
+          kind="room"
+          label={t("workspace.rooms")}
+          rooms={sections.rooms}
+          showWhenEmpty={true}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
+        <RoomSection
+          activeRoomId={activeRoomId}
+          id="people"
+          kind="dm"
+          label={t("workspace.people")}
+          rooms={sections.people}
+          showWhenEmpty={true}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
+        <RoomSection
+          activeRoomId={activeRoomId}
+          id="low-priority"
+          kind="room"
+          label={t("workspace.lowPriority")}
+          rooms={sections.lowPriority}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
       </div>
     </aside>
+  );
+}
+
+function RoomSection({
+  activeRoomId,
+  id,
+  kind,
+  label,
+  rooms,
+  showWhenEmpty = false,
+  onOpenContextMenu,
+  onSelectRoom
+}: {
+  activeRoomId: string | null;
+  id: string;
+  kind: "room" | "dm";
+  label: string;
+  rooms: RoomListItem[];
+  showWhenEmpty?: boolean;
+  onOpenContextMenu: OpenContextMenu;
+  onSelectRoom: (roomId: string) => void;
+}) {
+  if (!showWhenEmpty && rooms.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="room-section" data-room-section={id} aria-label={label}>
+      <SectionTitle label={label} />
+      {rooms.map((room) => (
+        <RoomButton
+          activeRoomId={activeRoomId}
+          kind={kind}
+          key={room.room_id}
+          room={room}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
+      ))}
+    </section>
   );
 }
 
@@ -2192,7 +2311,7 @@ function RoomButton({
         onOpenContextMenu(
           event,
           { kind: "room", roomId: room.room_id },
-          contextMenuItems({ kind: "room" })
+          contextMenuItems({ kind: "room", tags: room.tags ?? EMPTY_ROOM_TAGS })
         )
       }
     >
@@ -2378,6 +2497,7 @@ function TimelinePane({
   activeRoomName,
   composerDraft,
   composerMode,
+  mentionIntent,
   resolveComposerKeyAction,
   searchQuery,
   searchResults,
@@ -2386,6 +2506,7 @@ function TimelinePane({
   onCancelReply,
   onAttachFile,
   onComposerDraftChange,
+  onMentionIntentChange,
   onEditMessage,
   onOpenContextMenu,
   onOpenThread,
@@ -2394,12 +2515,14 @@ function TimelinePane({
   onReply,
   onResultSelect,
   onSendText,
+  onUnpinPinnedEvent,
   onToggleThread,
   onOpenRoomInfo
 }: {
   activeRoomName: string;
   composerDraft: string;
   composerMode: ComposerModeProp;
+  mentionIntent: MentionIntent;
   resolveComposerKeyAction: ResolveComposerKeyAction;
   searchQuery: string;
   searchResults: SearchResult[];
@@ -2408,6 +2531,7 @@ function TimelinePane({
   onCancelReply: () => void;
   onAttachFile: (file: File) => void | Promise<void>;
   onComposerDraftChange: (value: string) => void;
+  onMentionIntentChange: (intent: MentionIntent) => void;
   onEditMessage: (message: TimelineMessage) => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenThread: (roomId: string, rootEventId: string) => void;
@@ -2416,6 +2540,7 @@ function TimelinePane({
   onReply: TimelineRowActionHandlers["onReply"];
   onResultSelect: (roomId: string, eventId: string) => void;
   onSendText: () => void;
+  onUnpinPinnedEvent: (roomId: string, eventId: string) => void;
   onToggleThread: () => void;
   onOpenRoomInfo: () => void;
 }) {
@@ -2424,6 +2549,8 @@ function TimelinePane({
   const activeRoom = timelineRoomId
     ? snapshot.state.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
+  const pinnedEvents = pinnedEventsForRoom(snapshot, timelineRoomId);
+  const pinnedEventIds = pinnedEvents.map((event) => event.event_id);
 
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
@@ -2455,6 +2582,13 @@ function TimelinePane({
         </button>
       </nav>
       <section className="timeline-scroll">
+        {timelineRoomId && pinnedEvents.length > 0 ? (
+          <PinnedEventsList
+            roomId={timelineRoomId}
+            pinnedEvents={pinnedEvents}
+            onUnpin={onUnpinPinnedEvent}
+          />
+        ) : null}
         {showSearchResults ? (
           <SearchResults
             query={searchQuery}
@@ -2496,6 +2630,7 @@ function TimelinePane({
               resolveComposerKeyAction={resolveComposerKeyAction}
               liveSignals={snapshot.state.live_signals}
               profileUsers={snapshot.state.profile.users}
+              pinnedEventIds={pinnedEventIds}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -2509,6 +2644,7 @@ function TimelinePane({
                 onEditMessage={onEditMessage}
                 onOpenThread={onOpenThread}
                 onRedactMessage={onRedactMessage}
+                profileUsers={snapshot.state.profile.users}
               />
             ))
           )}
@@ -2517,16 +2653,143 @@ function TimelinePane({
       <Composer
         composerMode={composerMode}
         isSending={Boolean(snapshot.state.timeline.composer.pending_transaction_id)}
+        mentionCandidates={mentionCandidatesFromSnapshot(snapshot)}
+        mentionIntent={mentionIntent}
         resolveComposerKeyAction={resolveComposerKeyAction}
         roomName={activeRoomName}
         value={composerDraft}
         onCancelReply={onCancelReply}
         onAttachFile={onAttachFile}
+        onMentionIntentChange={onMentionIntentChange}
         onSend={onSendText}
         onValueChange={onComposerDraftChange}
       />
     </main>
   );
+}
+
+function PinnedEventsList({
+  roomId,
+  pinnedEvents,
+  onUnpin
+}: {
+  roomId: string;
+  pinnedEvents: DesktopSnapshot["state"]["room_interactions"][string]["pinned_events"];
+  onUnpin: (roomId: string, eventId: string) => void;
+}) {
+  return (
+    <section className="pinned-events" aria-label={t("timeline.pinnedMessages")}>
+      <div className="pinned-events-heading">
+        <Pin size={15} aria-hidden="true" />
+        <span>{t("timeline.pinnedMessages")}</span>
+      </div>
+      <div className="pinned-events-list">
+        {pinnedEvents.map((event) => (
+          <div className="pinned-event" key={event.event_id}>
+            <div className="pinned-event-main">
+              {event.sender ? (
+                <span className="pinned-event-sender" dir="auto">
+                  {event.sender}
+                </span>
+              ) : null}
+              <span className="pinned-event-body" dir="auto">
+                {event.redacted
+                  ? t("timeline.redactedMessage")
+                  : event.body_preview ?? t("timeline.pinnedMessage")}
+              </span>
+            </div>
+            <button
+              className="pinned-event-action"
+              type="button"
+              aria-label={t("timeline.unpinMessage")}
+              onClick={() => onUnpin(roomId, event.event_id)}
+            >
+              <PinOff size={14} aria-hidden="true" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function pinnedEventsForRoom(
+  snapshot: DesktopSnapshot,
+  roomId: string | null | undefined
+): DesktopSnapshot["state"]["room_interactions"][string]["pinned_events"] {
+  return roomId ? snapshot.state.room_interactions[roomId]?.pinned_events ?? [] : [];
+}
+
+function mentionCandidatesFromSnapshot(snapshot: DesktopSnapshot): MentionCandidate[] {
+  return Object.values(snapshot.state.profile.users)
+    .map((profile) => {
+      const label = mentionLabel(profile);
+      const target: MentionTarget = {
+        kind: "user",
+        user_id: profile.user_id,
+        display_label: label
+      };
+      return {
+        key: profile.user_id,
+        label,
+        searchText: `${label} ${profile.user_id}`.toLowerCase(),
+        target
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) ||
+        a.key.localeCompare(b.key)
+    );
+}
+
+function mentionLabel(profile: UserProfile): string {
+  return profile.display_name?.trim() || profile.user_id;
+}
+
+function activeMentionQuery(value: string): { start: number; end: number; query: string } | null {
+  const match = /(^|\s)@([^\s@]*)$/u.exec(value);
+  if (!match) {
+    return null;
+  }
+  const query = match[2] ?? "";
+  return {
+    start: value.length - query.length - 1,
+    end: value.length,
+    query
+  };
+}
+
+function appendMentionTarget(intent: MentionIntent, target: MentionTarget): MentionIntent {
+  const targetKey = mentionTargetKey(target);
+  if (intent.targets.some((candidate) => mentionTargetKey(candidate) === targetKey)) {
+    return intent;
+  }
+  return { targets: [...intent.targets, target] };
+}
+
+function mentionTargetKey(target: MentionTarget): string {
+  switch (target.kind) {
+    case "user":
+      return `user:${target.user_id}`;
+    case "room":
+      return `room:${target.room_id}`;
+    case "roomMention":
+      return "roomMention";
+  }
+}
+
+function mentionDraftToken(target: MentionTarget): string {
+  return `@${target.display_label}`;
+}
+
+function mentionPillLabel(target: MentionTarget): string {
+  return mentionDraftToken(target);
+}
+
+function pruneMentionIntentForDraft(intent: MentionIntent, draft: string): MentionIntent {
+  const targets = intent.targets.filter((target) => draft.includes(mentionDraftToken(target)));
+  return targets.length === intent.targets.length ? intent : { targets };
 }
 
 function SearchResults({
@@ -2588,7 +2851,8 @@ function MessageArticle({
   onOpenContextMenu,
   onEditMessage,
   onOpenThread,
-  onRedactMessage
+  onRedactMessage,
+  profileUsers
 }: {
   currentUserId: string | null;
   message: TimelineMessage;
@@ -2597,6 +2861,7 @@ function MessageArticle({
   onEditMessage: (message: TimelineMessage) => void;
   onOpenThread: (roomId: string, rootEventId: string) => void;
   onRedactMessage: (roomId: string, eventId: string) => void;
+  profileUsers: Record<string, UserProfile>;
 }) {
   const canManage = currentUserId === message.sender;
 
@@ -2647,7 +2912,9 @@ function MessageArticle({
             </span>
           ) : null}
         </div>
-        <div className="message-body" dir="auto">{highlightQueryLines(message.body, query)}</div>
+        <div className="message-body" dir="auto">
+          {renderTimelineMessageText(message.body, query, profileUsers)}
+        </div>
         {message.attachment_filename ? (
           <div className="attachment">
             <Paperclip size={16} />
@@ -2671,25 +2938,118 @@ function MessageArticle({
 export function Composer({
   composerMode,
   isSending,
+  mentionCandidates = [],
+  mentionIntent = EMPTY_MENTION_INTENT,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   roomName,
   value,
   onCancelReply,
   onAttachFile = async () => undefined,
+  onMentionIntentChange = () => undefined,
   onSend,
   onValueChange
 }: {
   composerMode: ComposerModeProp;
   isSending: boolean;
+  mentionCandidates?: MentionCandidate[];
+  mentionIntent?: MentionIntent;
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   roomName: string;
   value: string;
   onCancelReply: () => void;
   onAttachFile?: (file: File) => void | Promise<void>;
+  onMentionIntentChange?: (intent: MentionIntent) => void;
   onSend: () => void | Promise<void>;
   onValueChange: (value: string) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const activeMention = activeMentionQuery(value);
+  const activeMentionSuggestions =
+    activeMention === null
+      ? []
+      : mentionCandidates
+          .filter((candidate) => candidate.searchText.includes(activeMention.query.toLowerCase()))
+          .slice(0, 5);
+  const autocompleteOpen = activeMentionSuggestions.length > 0;
+
+  function replaceTextRange(
+    start: number,
+    end: number,
+    replacement: string,
+    cursorOffset = replacement.length
+  ) {
+    const nextValue = `${value.slice(0, start)}${replacement}${value.slice(end)}`;
+    const cursor = start + cursorOffset;
+    onValueChange(nextValue);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(cursor, cursor);
+    });
+  }
+
+  function selectionRange(): { start: number; end: number } {
+    const textarea = textareaRef.current;
+    return {
+      start: textarea?.selectionStart ?? value.length,
+      end: textarea?.selectionEnd ?? value.length
+    };
+  }
+
+  function keepComposerFocus(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+  }
+
+  function applyInlineMarkdown(prefix: string, suffix = prefix, placeholder = "") {
+    const { start, end } = selectionRange();
+    const selected = value.slice(start, end) || placeholder;
+    replaceTextRange(
+      start,
+      end,
+      `${prefix}${selected}${suffix}`,
+      prefix.length + selected.length + suffix.length
+    );
+  }
+
+  function applyLinkMarkdown() {
+    const { start, end } = selectionRange();
+    const selected = value.slice(start, end) || "link";
+    const replacement = `[${selected}](https://)`;
+    replaceTextRange(start, end, replacement, replacement.length - 1);
+  }
+
+  function applyListMarkdown() {
+    const { start, end } = selectionRange();
+    const selected = value.slice(start, end);
+    if (!selected) {
+      replaceTextRange(start, end, "- ", 2);
+      return;
+    }
+    const replacement = selected
+      .split("\n")
+      .map((line) => (line.startsWith("- ") ? line : `- ${line}`))
+      .join("\n");
+    replaceTextRange(start, end, replacement);
+  }
+
+  function insertMentionTrigger() {
+    const { start, end } = selectionRange();
+    replaceTextRange(start, end, "@");
+  }
+
+  function acceptMention(candidate: MentionCandidate) {
+    if (!activeMention) {
+      return;
+    }
+    const token = `${mentionDraftToken(candidate.target)} `;
+    onValueChange(`${value.slice(0, activeMention.start)}${token}${value.slice(activeMention.end)}`);
+    onMentionIntentChange(appendMentionTarget(mentionIntent, candidate.target));
+    const cursor = activeMention.start + token.length;
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(cursor, cursor);
+    });
+  }
 
   async function onAttachFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0] ?? null;
@@ -2709,16 +3069,24 @@ export function Composer({
       return;
     }
 
-    const keyEvent = composerKeyEventFromDom(event);
     const textarea = event.currentTarget;
     const selectionStart = textarea.selectionStart;
     const selectionEnd = textarea.selectionEnd;
+    const keyEvent = composerKeyEventFromDom(event, {
+      start: selectionStart,
+      end: selectionEnd
+    });
+    const resolverOptions = {
+      autocomplete_open: autocompleteOpen,
+      send_enabled: !isSending && value.trim().length > 0
+    };
+    if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
+      void resolveComposerKeyAction("main", keyEvent, resolverOptions).catch(() => undefined);
+      return;
+    }
     event.preventDefault();
 
-    void resolveComposerKeyAction("main", keyEvent, {
-      autocomplete_open: false,
-      send_enabled: !isSending && value.trim().length > 0
-    })
+    void resolveComposerKeyAction("main", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
           void onSend();
@@ -2731,6 +3099,13 @@ export function Composer({
             textarea.selectionStart = nextValue.cursor;
             textarea.selectionEnd = nextValue.cursor;
           });
+          return;
+        }
+        if (action === "acceptAutocomplete") {
+          const firstSuggestion = activeMentionSuggestions[0];
+          if (firstSuggestion) {
+            acceptMention(firstSuggestion);
+          }
           return;
         }
         if (action === "cancel" && composerMode.kind === "reply") {
@@ -2756,23 +3131,92 @@ export function Composer({
         </div>
       ) : null}
       <div className="composer-tools">
-        <button className="icon-button" type="button" aria-label={t("composer.bold")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.bold")}
+          onMouseDown={keepComposerFocus}
+          onClick={() => applyInlineMarkdown("**", "**", "bold")}
+        >
           <Bold size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label={t("composer.italic")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.italic")}
+          onMouseDown={keepComposerFocus}
+          onClick={() => applyInlineMarkdown("_", "_", "italic")}
+        >
           <Italic size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label={t("composer.link")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.link")}
+          onMouseDown={keepComposerFocus}
+          onClick={applyLinkMarkdown}
+        >
           <Link2 size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label={t("composer.list")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.list")}
+          onMouseDown={keepComposerFocus}
+          onClick={applyListMarkdown}
+        >
           <List size={17} />
         </button>
-        <button className="icon-button" type="button" aria-label={t("composer.code")}>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("composer.code")}
+          onMouseDown={keepComposerFocus}
+          onClick={() => applyInlineMarkdown("`", "`", "code")}
+        >
           <Code2 size={17} />
         </button>
       </div>
+      {mentionIntent.targets.length ? (
+        <div className="composer-mention-pills" aria-label={t("composer.selectedMentions")}>
+          {mentionIntent.targets.map((target) => (
+            <span className="mention-pill" key={mentionTargetKey(target)} dir="auto">
+              {mentionPillLabel(target)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {autocompleteOpen ? (
+        <div
+          className="composer-autocomplete"
+          role="listbox"
+          aria-label={t("composer.mentionSuggestions")}
+        >
+          {activeMentionSuggestions.map((candidate) => (
+            <button
+              className="composer-autocomplete-option"
+              key={candidate.key}
+              type="button"
+              role="option"
+              aria-label={candidate.label}
+              aria-selected="false"
+              onMouseDown={keepComposerFocus}
+              onClick={() => acceptMention(candidate)}
+            >
+              <span className="mention-option-label" dir="auto">
+                {candidate.label}
+              </span>
+              {candidate.target.kind === "user" ? (
+                <span className="mention-option-meta" dir="auto" aria-hidden="true">
+                  {candidate.target.user_id}
+                </span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <textarea
+        ref={textareaRef}
         aria-label={t("composer.messageComposer")}
         value={value}
         placeholder={t("composer.placeholder", { roomName })}
@@ -2798,7 +3242,13 @@ export function Composer({
           >
             <Paperclip size={18} />
           </button>
-          <button className="icon-button" type="button" aria-label={t("composer.mention")}>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("composer.mention")}
+            onMouseDown={keepComposerFocus}
+            onClick={insertMentionTrigger}
+          >
             <AtSign size={18} />
           </button>
           <button className="icon-button" type="button" aria-label={t("composer.emoji")}>
@@ -3010,6 +3460,9 @@ export function ContextualRightPanel({
         ? focusedContext.room_id
         : null;
     const focusedTimelineTransport = timelineTransport;
+    const focusedPinnedEventIds = pinnedEventsForRoom(snapshot, focusedRoomId).map(
+      (event) => event.event_id
+    );
 
     return (
       <aside className="thread-pane" aria-label={t("panel.context")}>
@@ -3033,6 +3486,7 @@ export function ContextualRightPanel({
               resolveComposerKeyAction={onResolveComposerKeyAction}
               liveSignals={snapshot.state.live_signals}
               profileUsers={snapshot.state.profile.users}
+              pinnedEventIds={focusedPinnedEventIds}
             />
           </section>
         ) : null}
@@ -3063,6 +3517,9 @@ export function ContextualRightPanel({
     currentUserId && timelineTransport && threadRoomId && rootEventId
       ? threadTimelineKey(currentUserId, threadRoomId, rootEventId)
       : null;
+  const threadPinnedEventIds = pinnedEventsForRoom(snapshot, threadRoomId).map(
+    (event) => event.event_id
+  );
 
   return (
     <aside className="thread-pane" aria-label={t("panel.context")}>
@@ -3079,6 +3536,7 @@ export function ContextualRightPanel({
             resolveComposerKeyAction={onResolveComposerKeyAction}
             liveSignals={snapshot.state.live_signals}
             profileUsers={snapshot.state.profile.users}
+            pinnedEventIds={threadPinnedEventIds}
           />
         ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>
@@ -3126,16 +3584,24 @@ function ThreadComposer({
       return;
     }
 
-    const keyEvent = composerKeyEventFromDom(event);
     const textarea = event.currentTarget;
     const selectionStart = textarea.selectionStart;
     const selectionEnd = textarea.selectionEnd;
-    event.preventDefault();
-
-    void resolveComposerKeyAction("thread", keyEvent, {
+    const keyEvent = composerKeyEventFromDom(event, {
+      start: selectionStart,
+      end: selectionEnd
+    });
+    const resolverOptions = {
       autocomplete_open: false,
       send_enabled: canSend
-    })
+    };
+    if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
+      void resolveComposerKeyAction("thread", keyEvent, resolverOptions).catch(() => undefined);
+      return;
+    }
+    event.preventDefault();
+
+    void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
           void onSend();

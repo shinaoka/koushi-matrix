@@ -242,6 +242,34 @@ closed only after their Phase B GUI-operation checks and required Linux
 virtual-display evidence are present, unless the issue is explicitly a
 decision-only item such as #30.
 
+### 2026-06-15 Reconciliation Addendum
+
+The issue inventory changed after this batch design was approved. The execution
+model remains valid, but the umbrella scope must include the later roadmap
+issues and classify them by the same Phase A / Phase B ownership rule:
+
+- **#64 read-receipt reader avatars** is a normal parity gap under the already
+  closed #16 area. It needs a Rust-owned receipt reader projection first
+  (reader display label, avatar URL, timestamp, ordering, overflow), then a
+  serialized TimelineView GUI slice. It does not block #23 Activity core.
+- **#65 space icon tooltip** is GUI-only because tooltip visibility, delay, and
+  positioning are ephemeral presentation state. The displayed name still comes
+  from Rust-owned `space.display_name`, so no new Core Batch A contract is
+  required.
+- **#63 local/personal user aliases** is a distinctive feature tracked by #62.
+  It needs its own Rust-owned account-data-backed alias map and name-resolution
+  projection before any GUI work. Because it affects timeline senders, member
+  lists, DM titles, receipts, reply quotes, mentions, and notifications, it
+  should run after the base projection contracts are stable and before those
+  GUI surfaces claim alias completeness.
+- **#62 distinctive features** remains a living index, not a directly closable
+  implementation unit. Promoted child issues such as #56, #58, #60, and #63
+  are the acceptance units.
+- **#7 credential-store health** now includes a verification-tier decision:
+  Tier 1 is trait-backed fake/in-memory logic and status tests on any OS; Tier
+  2 is an env-gated macOS temporary-Keychain integration lane; Tier 3 is
+  attended-only consent/Touch ID/signed-build behavior.
+
 ## Required Follow-Up Specs
 
 This batch design is not a substitute for every feature's implementation plan.
@@ -259,6 +287,8 @@ approved spec or create one of these narrower specs:
 - #10: notification/native attention design extension.
 - #32: Japanese/CJK design covering catalog, normalization, collation, and IME
   resolver behavior.
+- #64: read-receipt reader-avatar projection and Tooltip reuse design.
+- #63: local/personal alias account-data and name-resolution design.
 
 The implementation plan may group these specs into one Core Batch A plan when
 the shared contract allocation is clear.

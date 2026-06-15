@@ -12,6 +12,25 @@ media/file sends and downloads, and other destructive Matrix operations are
 iterated only against disposable local Conduit/Tuwunel homeservers. matrix.org
 is a final compatibility gate, not a GUI development or retry loop.
 
+## Local homeserver binary search path
+
+Local homeserver runners start `conduit` and `tuwunel` by command name, using
+the sanitized child process `PATH`. They do not probe a hidden absolute-path
+list. The effective search order is the child process `PATH` order after any
+agent-added prepends. Put disposable QA binaries in front of `PATH` before
+local runs:
+
+```text
+/tmp/matrix-desktop-local-qa-bin        host fast lane, preferred
+/tmp/matrix-desktop-local-qa-bin-test   host fallback/test binaries
+/usr/local/bin                          Docker lane inside the committed image
+%TEMP%\matrix-desktop-local-qa-bin      Windows/manual equivalent
+existing PATH entries                   searched after the QA bin directories
+```
+
+The paths are operational search locations only; they are not product state,
+not secrets, and not committed artifacts.
+
 ## Local headless lane
 
 Run:
@@ -28,13 +47,35 @@ Required success tokens:
 ```text
 safety=ok
 login_sync=ok
+credential_health=ok
+fail_closed=ok
+notification_candidate=ok
+badge_state=ok
+suppress_focus=ok
+clear_badge=ok
 invite_recv=ok
 invite_accept=ok
 invite_decline=ok
 dm_start=ok
 room_space=ok
+directory_query=ok
+directory_join=ok
+room_settings=ok
+moderation=ok
+permission_guard=ok
 timeline=ok
+activity_recent=ok
+activity_unread=ok
+activity_markread=ok
 reply=ok
+reply_quote=ok
+pin_event=ok
+pinned_state=ok
+unpin_event=ok
+mention_send=ok
+markdown_send=ok
+slash_command=ok
+ime_guard=ok
 thread_hidden=ok
 thread_summary=ok
 thread_recv=ok
@@ -60,6 +101,34 @@ restore_cleanup=ok
 server/SDK path does not surface a root `thread_summary` for the threaded
 reply.
 
+`reply_quote=ok`, `pin_event=ok`, `pinned_state=ok`, and `unpin_event=ok` are
+the Phase A message-interaction proof. The core lane projects reply quote DTOs
+and routes pin/unpin through Rust-owned room state before any GUI affordance is
+considered.
+
+`directory_query=ok` and `directory_join=ok` are the Phase A public-directory
+proof. The core lane creates a disposable public alias room through a Rust core
+command, queries the homeserver public directory through `RoomCommand`, and
+joins by alias/server through Rust-owned directory state. The lane must not
+print room IDs, aliases, server names, query text, pagination tokens, or raw SDK
+errors as success output.
+
+`room_settings=ok`, `moderation=ok`, and `permission_guard=ok` are the Phase A
+room-management proof. The core lane creates a disposable management room,
+loads Rust-owned settings/permission facts, updates a setting through
+`RoomCommand`, rejects an unauthorized moderation command before SDK mutation,
+and performs an authorized moderation action. The lane must not print room IDs,
+user IDs, room names/topics, reasons, avatar URLs, or raw SDK errors as success
+output.
+
+`mention_send=ok`, `markdown_send=ok`, `slash_command=ok`, and `ime_guard=ok`
+are the Phase A composer-semantics proof. The core lane sends typed
+`MentionIntent` data through `TimelineCommand::SendText`, builds markdown/html
+and `/me` emote content in Rust before SDK send, and verifies composing Enter
+resolves to `CommitImeCandidate` rather than send or autocomplete acceptance.
+The composer stage prints only these tokens and must not print mentioned Matrix
+IDs, message bodies, raw SDK errors, or composer transaction/event IDs.
+
 `send_media=ok` and `recv_media=ok` are the Phase A media/file state-machine
 signals. The core lane sends a synthetic file through
 `TimelineCommand::UploadAndSendMedia`, observes Rust-owned upload progress and
@@ -81,6 +150,13 @@ debug/test `SyncOnce` on the observer account after `SetTyping` is acknowledged
 because local sliding-sync typing delivery does not reliably wake the SDK room
 typing observer. That nudge is part of the headless QA harness only; product
 sync policy remains Rust-owned.
+
+`activity_recent=ok`, `activity_unread=ok`, and `activity_markread=ok` are the
+Phase A account-wide Activity proof. The core lane opens Activity through
+`CoreCommand`, verifies Rust-owned Recent and Unread streams from timeline
+observations plus room unread facts, and clears unread rows only through the
+Rust mark-read substate. This stage must not print Matrix room IDs, event IDs,
+sender IDs, message previews, pagination tokens, or raw SDK errors.
 
 `send_fail=ok`, `resend=ok`, `cancel_send=ok`, `fifo=ok`, and
 `unsent_restart=ok` are the Phase A outbound send-queue proof. The core lane
@@ -110,15 +186,17 @@ loop; joined-only observation can leave the invite snapshot stale.
 
 `e2ee_trust=ok` is the Phase A E2EE trust signal. The core lane proves
 cross-signing bootstrap, encrypted seed-room backup upload, passphrase-backed
-key-backup enable, wrong-secret restore failure, successful restore on a second
-same-user device, SAS verification, and identity reset through
+key-backup enable, wrong-secret restore failure, successful joined-room restore
+on a second same-user device, SAS verification, and identity reset through
 `CoreCommand`/`CoreEvent` only. The runner must not print account keys,
 verification target user/device ids, backup versions, room ids, event ids,
 recovery secrets, or raw SDK errors for this stage. It is a separate Rust-owned
 trust proof and runs after the ordinary room/timeline/search operations in the
 aggregate local lane. The local runner registers separate synthetic users for
 each core backend leg so the trust proof is not affected by devices created by
-the SDK smoke lane.
+the SDK smoke lane. Until a broader SDK/public API path exists, "successful
+restore" means recovery secret import plus currently joined-room key hydration;
+the token must not be described as exhaustive backup-wide restore.
 
 For room/space checks, the core lane performs bounded `SyncOnce` refreshes
 before asserting `rooms` vs `spaces`. Local homeservers can briefly report a
@@ -130,10 +208,52 @@ Focused local proof:
 ```bash
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=invites_dm --core --core-backend=probed --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=directory --core --core-backend=both --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=room_management --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=media --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=live_signals --core --core-backend=probed --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=activity --core --core-backend=both --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=native_attention --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=send_queue --core --core-backend=both --timeout-ms=240000
 ```
+
+Core Batch A adds focused Phase A token contracts before the aggregate lane is
+expanded. These tokens are private-data-free and become required only in the
+slice that implements the corresponding state machine:
+
+```text
+credential_health=ok
+fail_closed=ok
+notification_candidate=ok
+badge_state=ok
+suppress_focus=ok
+clear_badge=ok
+activity_recent=ok
+activity_unread=ok
+activity_markread=ok
+ja_catalog=ok
+cjk_normalize=ok
+cjk_collation=ok
+joined_room_restore=ok
+```
+
+`credential_health=ok` / `fail_closed=ok` prove StoreActor-fed, Rust-owned
+`LocalEncryptionState` transitions and kind-only credential-store failure
+projection. The headless lane runs under the debug/test file credential-store
+guard and must refuse to touch the OS keychain.
+`notification_candidate=ok`, `badge_state=ok`, `suppress_focus=ok`, and
+`clear_badge=ok` prove Rust-owned native attention candidates and platform
+capability mapping without message bodies or identifiers.
+`activity_recent=ok`, `activity_unread=ok`, and `activity_markread=ok` prove the
+Rust-owned Activity projection and mark-read substate without leaking event
+identity or previews. `ja_catalog=ok`, `cjk_normalize=ok`, `cjk_collation=ok`,
+and `ime_guard=ok` prove Japanese/CJK catalog, normalization, ordering, and IME
+send-vs-commit contracts.
+`joined_room_restore=ok` proves the explicit #30 MVP restore scope from
+Rust-observed joined-room hydration progress. It must not be described as a
+backup-wide restore token.
 
 ## Headless browser IPC-contract lane
 
@@ -242,6 +362,8 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-space --se
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-invites-dm --server=conduit --artifact-dir=artifacts/linux-gui-local-invites-dm --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --artifact-dir=artifacts/linux-gui-local-media --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --artifact-dir=artifacts/linux-gui-local-room-tags --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
 ```
 
@@ -269,6 +391,25 @@ only `gui_local_media=ok`; it must not open native file dialogs, use
 real/private filenames, print MXC URIs, expose downloaded bytes, monkeypatch
 Tauri internals from WebDriver, or synthesize upload/download lifecycle state in
 React.
+
+`local-room-tags` opens the seeded synthetic room row's real context menu in the
+Linux Tauri WebView, clicks `Add to Favourites`, waits for the row to move from
+the Rooms section to Favourites from the Rust-owned `RoomSummary.tags` snapshot,
+then clicks `Remove from Favourites` and waits for the row to return to Rooms.
+The lane prints only `gui_local_room_tag_set=ok` and
+`gui_local_room_tag_removed=ok`; it must not monkeypatch Tauri IPC, synthesize
+React-local room-list membership, or print Matrix room IDs / raw SDK errors.
+
+`local-composer` registers a synthetic helper account, gives it a synthetic
+display name, joins it to the seeded local room, and sends one helper seed
+message so the Rust-owned `ProfileState.users` projection can populate member
+mention candidates. The lane drives the real composer controls in the Linux
+Tauri WebView: type `@`, select the member autocomplete option, send the
+mention, select text and click Bold, then send a slash command. It prints only
+`gui_local_mention=ok`, `gui_local_markdown=ok`, and `gui_local_slash=ok`; it
+must not monkeypatch Tauri IPC, synthesize `m.mentions` or formatted HTML in
+React, print Matrix IDs, or treat DOM-local text insertion as enough evidence
+before the Rust-owned send state reaches `send=sent` and the composer clears.
 
 `local-invites-dm` registers a synthetic helper account on the same disposable
 homeserver, has that helper create and invite the QA user to a synthetic room,
@@ -312,6 +453,8 @@ gui_local_invite_accept=ok
 gui_local_dm_start=ok
 gui_local_reply=ok
 gui_local_media=ok
+gui_local_room_tag_set=ok
+gui_local_room_tag_removed=ok
 gui_local_settings=ok
 gui_local_trust_settings=ok
 ```

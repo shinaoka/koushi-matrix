@@ -7,11 +7,13 @@
 //! - state snapshots: latest-wins watch, coalesced to at most one
 //!   `StateChanged` per processed command batch
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, ProfileUpdateRequest, SearchScope as AppSearchScope,
+    ActivityMarkReadTarget, ActivityRow, ActivityState, ActivityStream, ActivityTab, AppAction,
+    AppEffect, AppState, ProfileUpdateRequest, RoomSummary, SearchScope as AppSearchScope,
     SessionState, ThreadPaneState, reduce,
 };
 use tokio::sync::{broadcast, mpsc, watch};
@@ -20,7 +22,7 @@ use crate::account::{AccountActorHandle, AccountMessage};
 use crate::command::{
     AccountCommand, AppCommand, CoreCommand, SearchCommand, SearchScope, TimelineCommand,
 };
-use crate::event::{AppStateSnapshot, CoreEvent};
+use crate::event::{ActivityEvent, AppStateSnapshot, CoreEvent};
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
@@ -107,6 +109,7 @@ impl CoreRuntime {
             state: initial_state,
             settings_store,
             account_actor,
+            activity_projection: ActivityProjection::default(),
         };
         let actor = executor::spawn(actor.run());
 
@@ -215,6 +218,181 @@ struct AppActor {
     state: AppState,
     settings_store: SettingsStore,
     account_actor: AccountActorHandle,
+    activity_projection: ActivityProjection,
+}
+
+#[derive(Default)]
+struct ActivityProjection {
+    rows_by_event_id: BTreeMap<String, ActivityRow>,
+    cleared_event_ids: BTreeSet<String>,
+}
+
+impl ActivityProjection {
+    fn ingest(&mut self, rows: Vec<ActivityRow>) {
+        for mut row in rows {
+            if row.event_id.trim().is_empty() || row.room_id.trim().is_empty() {
+                continue;
+            }
+            row.room_label.clear();
+            row.unread = false;
+            self.rows_by_event_id.insert(row.event_id.clone(), row);
+        }
+    }
+
+    fn mark_read(&mut self, state: &AppState, target: &ActivityMarkReadTarget) -> Vec<String> {
+        let (_recent, unread, _excluded) = self.snapshot(state);
+        let cleared = match target {
+            ActivityMarkReadTarget::All => unread
+                .rows
+                .into_iter()
+                .map(|row| row.event_id)
+                .collect::<Vec<_>>(),
+            ActivityMarkReadTarget::Room {
+                room_id,
+                up_to_event_id,
+            } => {
+                let target_timestamp = unread
+                    .rows
+                    .iter()
+                    .find(|row| row.room_id == *room_id && row.event_id == *up_to_event_id)
+                    .map(|row| row.timestamp_ms);
+                unread
+                    .rows
+                    .into_iter()
+                    .filter(|row| {
+                        row.room_id == *room_id
+                            && target_timestamp
+                                .map(|timestamp| row.timestamp_ms <= timestamp)
+                                .unwrap_or(true)
+                    })
+                    .map(|row| row.event_id)
+                    .collect::<Vec<_>>()
+            }
+        };
+        for event_id in &cleared {
+            self.cleared_event_ids.insert(event_id.clone());
+        }
+        cleared
+    }
+
+    fn fully_read_marker_updates(
+        &self,
+        state: &AppState,
+        target: &ActivityMarkReadTarget,
+    ) -> Vec<(String, String)> {
+        match target {
+            ActivityMarkReadTarget::Room {
+                room_id,
+                up_to_event_id,
+            } => vec![(room_id.clone(), up_to_event_id.clone())],
+            ActivityMarkReadTarget::All => {
+                let (_recent, unread, _excluded) = self.snapshot(state);
+                let mut latest_by_room: BTreeMap<String, (u64, String)> = BTreeMap::new();
+                for row in unread.rows {
+                    latest_by_room
+                        .entry(row.room_id)
+                        .and_modify(|(timestamp_ms, event_id)| {
+                            if row.timestamp_ms > *timestamp_ms {
+                                *timestamp_ms = row.timestamp_ms;
+                                *event_id = row.event_id.clone();
+                            }
+                        })
+                        .or_insert((row.timestamp_ms, row.event_id));
+                }
+                latest_by_room
+                    .into_iter()
+                    .map(|(room_id, (_timestamp_ms, event_id))| (room_id, event_id))
+                    .collect()
+            }
+        }
+    }
+
+    fn update_action_for_open_state(&self, state: &AppState) -> Option<AppAction> {
+        if !matches!(state.activity, ActivityState::Open { .. }) {
+            return None;
+        }
+        let (recent, unread, excluded_room_ids) = self.snapshot(state);
+        Some(AppAction::ActivityRowsUpdated {
+            recent,
+            unread,
+            excluded_room_ids,
+        })
+    }
+
+    fn snapshot(&self, state: &AppState) -> (ActivityStream, ActivityStream, Vec<String>) {
+        let rooms_by_id: HashMap<&str, &RoomSummary> = state
+            .rooms
+            .iter()
+            .map(|room| (room.room_id.as_str(), room))
+            .collect();
+        let excluded_room_ids = state
+            .rooms
+            .iter()
+            .filter(|room| room.tags.low_priority.is_some())
+            .map(|room| room.room_id.clone())
+            .collect::<Vec<_>>();
+        let excluded: BTreeSet<&str> = excluded_room_ids.iter().map(String::as_str).collect();
+
+        let mut recent = Vec::new();
+        let mut unread = Vec::new();
+        for row in self.rows_by_event_id.values() {
+            if excluded.contains(row.room_id.as_str()) {
+                continue;
+            }
+            let Some(room) = rooms_by_id.get(row.room_id.as_str()) else {
+                continue;
+            };
+            let fully_read_event_id = state
+                .live_signals
+                .rooms
+                .get(row.room_id.as_str())
+                .and_then(|signals| signals.fully_read_event_id.as_deref());
+            let unread_by_marker = match fully_read_event_id {
+                Some(event_id) if event_id == row.event_id => false,
+                Some(event_id) => self
+                    .rows_by_event_id
+                    .get(event_id)
+                    .map(|fully_read_row| row.timestamp_ms > fully_read_row.timestamp_ms)
+                    .unwrap_or(room.unread_count > 0),
+                None => room.unread_count > 0,
+            };
+            let unread_row = unread_by_marker && !self.cleared_event_ids.contains(&row.event_id);
+            let row = ActivityRow {
+                room_label: room.display_name.clone(),
+                unread: unread_row,
+                highlight: row.highlight || (unread_row && room.highlight_count > 0),
+                ..row.clone()
+            };
+            if unread_row {
+                unread.push(row.clone());
+            }
+            recent.push(row);
+        }
+
+        sort_activity_rows(&mut recent);
+        sort_activity_rows(&mut unread);
+
+        (
+            ActivityStream {
+                rows: recent,
+                next_batch: None,
+            },
+            ActivityStream {
+                rows: unread,
+                next_batch: None,
+            },
+            excluded_room_ids,
+        )
+    }
+}
+
+fn sort_activity_rows(rows: &mut [ActivityRow]) {
+    rows.sort_by(|left, right| {
+        right
+            .timestamp_ms
+            .cmp(&left.timestamp_ms)
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
 }
 
 impl AppActor {
@@ -237,6 +415,9 @@ impl AppActor {
                     let Some(actions) = actions else { break };
                     let mut state_changed = false;
                     for action in actions {
+                        if let AppAction::ActivityRowsObserved { rows } = &action {
+                            self.activity_projection.ingest(rows.clone());
+                        }
                         // Actor-originated actions are post-side-effect
                         // projections: the owner actor has already performed
                         // the corresponding Matrix/store/sync operation.
@@ -244,6 +425,12 @@ impl AppActor {
                         // actor-projection effects here would double-execute
                         // login, restore, sync, or recovery work.
                         let _post_projection_effects = reduce(&mut self.state, action);
+                        if let Some(activity_update) = self
+                            .activity_projection
+                            .update_action_for_open_state(&self.state)
+                        {
+                            let _activity_effects = reduce(&mut self.state, activity_update);
+                        }
                         state_changed = true;
                     }
                     if state_changed {
@@ -404,6 +591,151 @@ impl AppActor {
                             request_id: request_id.sequence,
                             patch,
                         },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::OpenActivity { request_id } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::ActivityOpened {
+                            request_id: request_id.sequence,
+                        },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    let (recent, unread, excluded_room_ids) =
+                        self.activity_projection.snapshot(&self.state);
+                    let snapshot_effects = reduce(
+                        &mut self.state,
+                        AppAction::ActivitySnapshotLoaded {
+                            request_id: request_id.sequence,
+                            active_tab: ActivityTab::Recent,
+                            recent: recent.clone(),
+                            unread: unread.clone(),
+                            excluded_room_ids,
+                        },
+                    );
+                    self.handle_app_effects(request_id, snapshot_effects).await;
+                    self.emit(CoreEvent::Activity(ActivityEvent::Opened { request_id }));
+                    self.emit(CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
+                        request_id,
+                        active_tab: ActivityTab::Recent,
+                        recent,
+                        unread,
+                    }));
+                    true
+                }
+                AppCommand::CloseActivity { request_id } => {
+                    let effects = reduce(&mut self.state, AppAction::ActivityClosed);
+                    self.handle_app_effects(request_id, effects).await;
+                    self.emit(CoreEvent::Activity(ActivityEvent::Closed { request_id }));
+                    true
+                }
+                AppCommand::SetActivityTab { request_id, tab } => {
+                    let effects = reduce(&mut self.state, AppAction::ActivityTabSelected { tab });
+                    self.handle_app_effects(request_id, effects).await;
+                    self.emit(CoreEvent::Activity(ActivityEvent::TabSelected {
+                        request_id,
+                        tab,
+                    }));
+                    true
+                }
+                AppCommand::PaginateActivity {
+                    request_id, tab, ..
+                } => {
+                    let (recent, unread, excluded_room_ids) =
+                        self.activity_projection.snapshot(&self.state);
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::ActivityRowsUpdated {
+                            recent: recent.clone(),
+                            unread: unread.clone(),
+                            excluded_room_ids,
+                        },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    self.emit(CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
+                        request_id,
+                        active_tab: tab,
+                        recent,
+                        unread,
+                    }));
+                    true
+                }
+                AppCommand::MarkActivityRead { request_id, target } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::ActivityMarkReadRequested {
+                            request_id: request_id.sequence,
+                            target: target.clone(),
+                        },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    let fully_read_updates = self
+                        .activity_projection
+                        .fully_read_marker_updates(&self.state, &target);
+                    let cleared_event_ids =
+                        self.activity_projection.mark_read(&self.state, &target);
+                    let success_effects = reduce(
+                        &mut self.state,
+                        AppAction::ActivityMarkReadSucceeded {
+                            request_id: request_id.sequence,
+                            cleared_event_ids: cleared_event_ids.clone(),
+                        },
+                    );
+                    self.handle_app_effects(request_id, success_effects).await;
+                    for (room_id, event_id) in fully_read_updates {
+                        let marker_effects = reduce(
+                            &mut self.state,
+                            AppAction::FullyReadMarkerUpdated {
+                                room_id,
+                                event_id: Some(event_id),
+                            },
+                        );
+                        self.handle_app_effects(request_id, marker_effects).await;
+                    }
+                    self.emit(CoreEvent::Activity(ActivityEvent::MarkedRead {
+                        request_id,
+                        cleared_event_ids,
+                    }));
+                    true
+                }
+                AppCommand::RecordLocalEncryptionHealth { request_id, health } => {
+                    let probe_effects = reduce(
+                        &mut self.state,
+                        AppAction::LocalEncryptionProbeRequested {
+                            request_id: request_id.sequence,
+                        },
+                    );
+                    self.handle_app_effects(request_id, probe_effects).await;
+                    let health_effects = reduce(
+                        &mut self.state,
+                        AppAction::LocalEncryptionHealthChanged {
+                            request_id: request_id.sequence,
+                            health,
+                        },
+                    );
+                    self.handle_app_effects(request_id, health_effects).await;
+                    true
+                }
+                AppCommand::UpdateNativeAttentionState {
+                    request_id,
+                    attention,
+                } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::NativeAttentionUpdated { attention },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::UpdateJapaneseCatalogProfile {
+                    request_id,
+                    profile,
+                } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::JapaneseCatalogProfileChanged { profile },
                     );
                     self.handle_app_effects(request_id, effects).await;
                     true
@@ -747,6 +1079,11 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
             request_id: request_id.sequence,
         }),
+        AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
+            Some(AppAction::LocalEncryptionProbeRequested {
+                request_id: request_id.sequence,
+            })
+        }
         AccountCommand::SubmitIdentityResetAuth { flow_id, .. } => {
             Some(AppAction::ResetIdentityAuthSubmitted {
                 request_id: *flow_id,

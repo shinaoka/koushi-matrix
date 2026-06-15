@@ -1,4 +1,8 @@
-use std::fmt;
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use base64::{
     Engine as _,
@@ -22,6 +26,8 @@ const SAVED_SESSIONS_ACCOUNT_NAME: &str = "matrix-desktop:saved-sessions:v1";
 pub enum LocalSecretError {
     #[error("credential store error: {0}")]
     CredentialStore(#[from] keyring::Error),
+    #[error("credential backend error: {0}")]
+    CredentialBackend(CredentialBackendErrorKind),
     #[error("key derivation failed")]
     Derivation,
     #[error("base64 decode error: {0}")]
@@ -30,6 +36,166 @@ pub enum LocalSecretError {
     InvalidSecretLength { expected: usize, actual: usize },
     #[error("JSON serialization error: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialBackendErrorKind {
+    Unavailable,
+    LockedOrInaccessible,
+    MissingCredential,
+    Corrupt,
+}
+
+impl CredentialBackendErrorKind {
+    fn from_keyring_error(error: keyring::Error) -> Self {
+        match error {
+            keyring::Error::NoEntry => Self::MissingCredential,
+            keyring::Error::NoStorageAccess(_) => Self::LockedOrInaccessible,
+            keyring::Error::BadEncoding(_) | keyring::Error::Ambiguous(_) => Self::Corrupt,
+            keyring::Error::PlatformFailure(_)
+            | keyring::Error::TooLong(_, _)
+            | keyring::Error::Invalid(_, _) => Self::Unavailable,
+            _ => Self::Unavailable,
+        }
+    }
+}
+
+impl fmt::Display for CredentialBackendErrorKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable => formatter.write_str("unavailable"),
+            Self::LockedOrInaccessible => formatter.write_str("locked or inaccessible"),
+            Self::MissingCredential => formatter.write_str("missing credential"),
+            Self::Corrupt => formatter.write_str("corrupt"),
+        }
+    }
+}
+
+pub trait CredentialBackend: Clone + fmt::Debug + Send + Sync + 'static {
+    fn set_password(
+        &self,
+        service_name: &str,
+        account_name: &str,
+        value: &str,
+    ) -> Result<(), CredentialBackendErrorKind>;
+
+    fn get_password(
+        &self,
+        service_name: &str,
+        account_name: &str,
+    ) -> Result<String, CredentialBackendErrorKind>;
+
+    fn delete_password(
+        &self,
+        service_name: &str,
+        account_name: &str,
+    ) -> Result<(), CredentialBackendErrorKind>;
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct KeyringCredentialBackend;
+
+impl CredentialBackend for KeyringCredentialBackend {
+    fn set_password(
+        &self,
+        service_name: &str,
+        account_name: &str,
+        value: &str,
+    ) -> Result<(), CredentialBackendErrorKind> {
+        Entry::new(service_name, account_name)
+            .map_err(CredentialBackendErrorKind::from_keyring_error)?
+            .set_password(value)
+            .map_err(CredentialBackendErrorKind::from_keyring_error)
+    }
+
+    fn get_password(
+        &self,
+        service_name: &str,
+        account_name: &str,
+    ) -> Result<String, CredentialBackendErrorKind> {
+        Entry::new(service_name, account_name)
+            .map_err(CredentialBackendErrorKind::from_keyring_error)?
+            .get_password()
+            .map_err(CredentialBackendErrorKind::from_keyring_error)
+    }
+
+    fn delete_password(
+        &self,
+        service_name: &str,
+        account_name: &str,
+    ) -> Result<(), CredentialBackendErrorKind> {
+        Entry::new(service_name, account_name)
+            .map_err(CredentialBackendErrorKind::from_keyring_error)?
+            .delete_credential()
+            .map_err(CredentialBackendErrorKind::from_keyring_error)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InMemoryCredentialBackend {
+    inner: Arc<Mutex<InMemoryCredentialBackendState>>,
+}
+
+#[derive(Debug, Default)]
+struct InMemoryCredentialBackendState {
+    entries: BTreeMap<(String, String), String>,
+    error: Option<CredentialBackendErrorKind>,
+}
+
+impl InMemoryCredentialBackend {
+    pub fn set_error(&self, error: CredentialBackendErrorKind) {
+        self.inner.lock().expect("in-memory backend mutex").error = Some(error);
+    }
+}
+
+impl CredentialBackend for InMemoryCredentialBackend {
+    fn set_password(
+        &self,
+        service_name: &str,
+        account_name: &str,
+        value: &str,
+    ) -> Result<(), CredentialBackendErrorKind> {
+        let mut state = self.inner.lock().expect("in-memory backend mutex");
+        if let Some(error) = state.error {
+            return Err(error);
+        }
+        state.entries.insert(
+            (service_name.to_owned(), account_name.to_owned()),
+            value.to_owned(),
+        );
+        Ok(())
+    }
+
+    fn get_password(
+        &self,
+        service_name: &str,
+        account_name: &str,
+    ) -> Result<String, CredentialBackendErrorKind> {
+        let state = self.inner.lock().expect("in-memory backend mutex");
+        if let Some(error) = state.error {
+            return Err(error);
+        }
+        state
+            .entries
+            .get(&(service_name.to_owned(), account_name.to_owned()))
+            .cloned()
+            .ok_or(CredentialBackendErrorKind::MissingCredential)
+    }
+
+    fn delete_password(
+        &self,
+        service_name: &str,
+        account_name: &str,
+    ) -> Result<(), CredentialBackendErrorKind> {
+        let mut state = self.inner.lock().expect("in-memory backend mutex");
+        if let Some(error) = state.error {
+            return Err(error);
+        }
+        state
+            .entries
+            .remove(&(service_name.to_owned(), account_name.to_owned()));
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -308,16 +474,15 @@ impl LocalUnlockSecret {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CredentialStore {
+#[derive(Clone, Debug)]
+pub struct CredentialStore<B = KeyringCredentialBackend> {
     service_name: String,
+    backend: B,
 }
 
-impl CredentialStore {
+impl CredentialStore<KeyringCredentialBackend> {
     pub fn new(service_name: impl Into<String>) -> Self {
-        Self {
-            service_name: service_name.into(),
-        }
+        Self::with_backend(service_name, KeyringCredentialBackend)
     }
 
     pub fn last_session_account_name() -> &'static str {
@@ -327,6 +492,15 @@ impl CredentialStore {
     pub fn saved_sessions_account_name() -> &'static str {
         SAVED_SESSIONS_ACCOUNT_NAME
     }
+}
+
+impl<B: CredentialBackend> CredentialStore<B> {
+    pub fn with_backend(service_name: impl Into<String>, backend: B) -> Self {
+        Self {
+            service_name: service_name.into(),
+            backend,
+        }
+    }
 
     pub fn save(
         &self,
@@ -334,22 +508,22 @@ impl CredentialStore {
         secret: &LocalUnlockSecret,
     ) -> Result<(), LocalSecretError> {
         let storage_string = secret.to_storage_string();
-        self.entry(key_id)?
-            .set_password(storage_string.as_str())
-            .map_err(LocalSecretError::CredentialStore)
+        self.backend
+            .set_password(
+                &self.service_name,
+                &key_id.local_unlock_account_name(),
+                storage_string.as_str(),
+            )
+            .map_err(LocalSecretError::CredentialBackend)
     }
 
     pub fn load(&self, key_id: &SessionKeyId) -> Result<LocalUnlockSecret, LocalSecretError> {
-        let stored_secret = Zeroizing::new(
-            self.entry(key_id)?
-                .get_password()
-                .map_err(LocalSecretError::CredentialStore)?,
-        );
+        let stored_secret = Zeroizing::new(self.load_raw(&key_id.local_unlock_account_name())?);
         LocalUnlockSecret::from_storage_string(stored_secret.as_str())
     }
 
     pub fn delete(&self, key_id: &SessionKeyId) -> Result<(), LocalSecretError> {
-        map_delete_result(self.entry(key_id)?.delete_credential())
+        self.delete_raw(&key_id.local_unlock_account_name())
     }
 
     pub fn save_matrix_session(
@@ -357,45 +531,31 @@ impl CredentialStore {
         key_id: &SessionKeyId,
         session: &StoredMatrixSession,
     ) -> Result<(), LocalSecretError> {
-        self.entry_for_account_name(&key_id.matrix_session_account_name())?
-            .set_password(session.as_str())
-            .map_err(LocalSecretError::CredentialStore)
+        self.save_raw(&key_id.matrix_session_account_name(), session.as_str())
     }
 
     pub fn load_matrix_session(
         &self,
         key_id: &SessionKeyId,
     ) -> Result<StoredMatrixSession, LocalSecretError> {
-        let stored_session = Zeroizing::new(
-            self.entry_for_account_name(&key_id.matrix_session_account_name())?
-                .get_password()
-                .map_err(LocalSecretError::CredentialStore)?,
-        );
+        let stored_session = Zeroizing::new(self.load_raw(&key_id.matrix_session_account_name())?);
         Ok(StoredMatrixSession {
             value: stored_session,
         })
     }
 
     pub fn delete_matrix_session(&self, key_id: &SessionKeyId) -> Result<(), LocalSecretError> {
-        map_delete_result(
-            self.entry_for_account_name(&key_id.matrix_session_account_name())?
-                .delete_credential(),
-        )
+        self.delete_raw(&key_id.matrix_session_account_name())
     }
 
     pub fn save_last_session(&self, key_id: &SessionKeyId) -> Result<(), LocalSecretError> {
         let pointer = LastSessionPointer::new(key_id.clone());
         let pointer_json = Zeroizing::new(pointer.to_json()?);
-        self.entry_for_account_name(Self::last_session_account_name())?
-            .set_password(pointer_json.as_str())
-            .map_err(LocalSecretError::CredentialStore)
+        self.save_raw(LAST_SESSION_ACCOUNT_NAME, pointer_json.as_str())
     }
 
     pub fn load_last_session(&self) -> Result<Option<SessionKeyId>, LocalSecretError> {
-        let result = self
-            .entry_for_account_name(Self::last_session_account_name())?
-            .get_password();
-        match result {
+        match self.load_raw(LAST_SESSION_ACCOUNT_NAME) {
             Ok(pointer_json) => {
                 let pointer_json = Zeroizing::new(pointer_json);
                 Ok(Some(
@@ -404,37 +564,29 @@ impl CredentialStore {
                         .clone(),
                 ))
             }
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(LocalSecretError::CredentialStore(error)),
+            Err(err) if is_missing_credential_error(&err) => Ok(None),
+            Err(err) => Err(err),
         }
     }
 
     pub fn delete_last_session(&self) -> Result<(), LocalSecretError> {
-        map_delete_result(
-            self.entry_for_account_name(Self::last_session_account_name())?
-                .delete_credential(),
-        )
+        self.delete_raw(LAST_SESSION_ACCOUNT_NAME)
     }
 
     pub fn load_saved_sessions(&self) -> Result<SavedSessionIndex, LocalSecretError> {
-        let result = self
-            .entry_for_account_name(Self::saved_sessions_account_name())?
-            .get_password();
-        match result {
+        match self.load_raw(SAVED_SESSIONS_ACCOUNT_NAME) {
             Ok(index_json) => {
                 let index_json = Zeroizing::new(index_json);
                 SavedSessionIndex::from_json(index_json.as_str())
             }
-            Err(keyring::Error::NoEntry) => Ok(SavedSessionIndex::new()),
-            Err(error) => Err(LocalSecretError::CredentialStore(error)),
+            Err(err) if is_missing_credential_error(&err) => Ok(SavedSessionIndex::new()),
+            Err(err) => Err(err),
         }
     }
 
     pub fn save_saved_sessions(&self, index: &SavedSessionIndex) -> Result<(), LocalSecretError> {
         let index_json = Zeroizing::new(index.to_json()?);
-        self.entry_for_account_name(Self::saved_sessions_account_name())?
-            .set_password(index_json.as_str())
-            .map_err(LocalSecretError::CredentialStore)
+        self.save_raw(SAVED_SESSIONS_ACCOUNT_NAME, index_json.as_str())
     }
 
     pub fn remember_saved_session(&self, key_id: &SessionKeyId) -> Result<(), LocalSecretError> {
@@ -449,12 +601,26 @@ impl CredentialStore {
         self.save_saved_sessions(&index)
     }
 
-    fn entry(&self, key_id: &SessionKeyId) -> Result<Entry, LocalSecretError> {
-        self.entry_for_account_name(&key_id.local_unlock_account_name())
+    fn save_raw(&self, account_name: &str, value: &str) -> Result<(), LocalSecretError> {
+        self.backend
+            .set_password(&self.service_name, account_name, value)
+            .map_err(LocalSecretError::CredentialBackend)
     }
 
-    fn entry_for_account_name(&self, account_name: &str) -> Result<Entry, LocalSecretError> {
-        Entry::new(&self.service_name, account_name).map_err(LocalSecretError::CredentialStore)
+    fn load_raw(&self, account_name: &str) -> Result<String, LocalSecretError> {
+        self.backend
+            .get_password(&self.service_name, account_name)
+            .map_err(LocalSecretError::CredentialBackend)
+    }
+
+    fn delete_raw(&self, account_name: &str) -> Result<(), LocalSecretError> {
+        match self
+            .backend
+            .delete_password(&self.service_name, account_name)
+        {
+            Ok(()) | Err(CredentialBackendErrorKind::MissingCredential) => Ok(()),
+            Err(error) => Err(LocalSecretError::CredentialBackend(error)),
+        }
     }
 }
 
@@ -469,5 +635,13 @@ pub fn is_missing_credential_error(error: &LocalSecretError) -> bool {
     matches!(
         error,
         LocalSecretError::CredentialStore(keyring::Error::NoEntry)
+            | LocalSecretError::CredentialBackend(CredentialBackendErrorKind::MissingCredential)
+    )
+}
+
+pub fn is_locked_or_inaccessible_error(error: &LocalSecretError) -> bool {
+    matches!(
+        error,
+        LocalSecretError::CredentialBackend(CredentialBackendErrorKind::LockedOrInaccessible)
     )
 }

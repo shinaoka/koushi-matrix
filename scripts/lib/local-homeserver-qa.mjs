@@ -175,6 +175,60 @@ export async function inviteUser(homeserver, accessToken, roomId, userId) {
   }
 }
 
+export async function joinRoom(homeserver, accessToken, roomIdOrAlias) {
+  const response = await fetch(
+    `${homeserver}/_matrix/client/v3/join/${encodeURIComponent(roomIdOrAlias)}`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({})
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`joinRoom failed with HTTP ${response.status}`);
+  }
+}
+
+export async function sendRoomMessage(homeserver, accessToken, roomId, body, transactionId) {
+  const path =
+    `${homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}` +
+    `/send/m.room.message/${encodeURIComponent(transactionId)}`;
+  const response = await fetch(
+    path,
+    {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ msgtype: "m.text", body })
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`sendRoomMessage failed with HTTP ${response.status}`);
+  }
+}
+
+export async function setDisplayName(homeserver, accessToken, userId, displayName) {
+  const response = await fetch(
+    `${homeserver}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/displayname`,
+    {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ displayname: displayName })
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`setDisplayName failed with HTTP ${response.status}`);
+  }
+}
+
 export function freePort() {
   return new Promise((resolvePromise, rejectPromise) => {
     const server = net.createServer();

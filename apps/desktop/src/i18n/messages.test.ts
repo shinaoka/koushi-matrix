@@ -8,7 +8,8 @@ import {
   pseudoLocalize,
   setActiveLocaleProfile,
   t,
-  type Locale
+  type Locale,
+  type MessageId
 } from "./messages";
 
 describe("i18n message catalog", () => {
@@ -26,8 +27,17 @@ describe("i18n message catalog", () => {
     );
   });
 
-  test("keeps Japanese locale on the English fallback until localization is staffed", () => {
-    expect(t("composer.replying", {}, "ja")).toBe("Replying");
+  test("Japanese catalog localizes shipped message ids except the named allowlist", () => {
+    const identicalMessageIds = (Object.keys(catalogs.en) as MessageId[]).filter(
+      (id) => catalogs.ja[id] === catalogs.en[id] && !japaneseIdenticalMessageAllowlist.has(id)
+    );
+
+    expect(identicalMessageIds).toEqual([]);
+  });
+
+  test("Japanese catalog provides representative localized labels", () => {
+    expect(t("composer.replying", {}, "ja")).toBe("返信中");
+    expect(t("action.send", {}, "ja")).toBe("送信");
   });
 
   test("pseudo locale expands labels while preserving interpolation placeholders", () => {
@@ -149,6 +159,13 @@ describe("i18n message catalog", () => {
     expect(ids.every((id) => messageIds.has(id))).toBe(true);
   });
 });
+
+const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
+  "auth.matrixDesktop",
+  "settings.fontInter",
+  "settings.twemojiColr",
+  "timeline.mediaUploadProgress"
+]);
 
 function lineNumberAt(sourceFile: ts.SourceFile, node: ts.Node): number {
   return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;

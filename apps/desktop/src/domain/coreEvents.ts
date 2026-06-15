@@ -61,6 +61,7 @@ export type TimelineFailureKind =
   | "InvalidReactionState"
   | "InvalidSendTarget"
   | "InvalidSendState"
+  | "UnsupportedSlashCommand"
   | "Forbidden"
   | "Network"
   | "Timeout"
@@ -127,6 +128,7 @@ export interface TimelineItem {
   body: string | null;
   timestamp_ms: number | null;
   in_reply_to_event_id: string | null;
+  reply_quote?: ReplyQuote | null;
   thread_root: string | null;
   thread_summary: ThreadSummaryDto | null;
   media?: TimelineMedia | null;
@@ -289,9 +291,87 @@ export type RoomEvent =
   | { RoomForgotten: { request_id: RequestId; room_id: string } }
   | { RoomTagSet: { request_id: RequestId; room_id: string; tag: RoomTagKind } }
   | { RoomTagRemoved: { request_id: RequestId; room_id: string; tag: RoomTagKind } }
+  | { PinnedEventsUpdated: { room_id: string; pinned: PinnedEvent[] } }
+  | { PinEventCompleted: { request_id: RequestId; room_id: string } }
+  | { UnpinEventCompleted: { request_id: RequestId; room_id: string } }
+  | {
+      DirectoryQueryCompleted: {
+        request_id: RequestId;
+        query: DirectoryQuery;
+        rooms: DirectoryRoomSummary[];
+        next_batch: string | null;
+      };
+    }
+  | { RoomSettingsLoaded: { request_id: RequestId; settings: RoomSettingsSnapshot } }
+  | { RoomSettingUpdated: { request_id: RequestId; settings: RoomSettingsSnapshot } }
+  | {
+      RoomMemberModerated: {
+        request_id: RequestId;
+        room_id: string;
+        target_user_id: string;
+        action: RoomModerationAction;
+      };
+    }
   | "RoomListUpdated";
 
 export type RoomTagKind = "favourite" | "lowPriority";
+
+export interface PinnedEvent {
+  event_id: string;
+  sender: string | null;
+  body_preview: string | null;
+  redacted: boolean;
+}
+
+export interface ReplyQuote {
+  event_id: string;
+  sender: string | null;
+  body_preview: string | null;
+  state: ReplyQuoteState;
+}
+
+export type ReplyQuoteState = "ready" | "redacted" | "missing" | "unsupported";
+
+export interface DirectoryQuery {
+  term: string | null;
+  server_name: string | null;
+  limit: number | null;
+  since: string | null;
+}
+
+export interface DirectoryRoomSummary {
+  room_id: string;
+  canonical_alias: string | null;
+  name: string;
+  topic: string | null;
+  avatar_url: string | null;
+  joined_members: number;
+  world_readable: boolean;
+  guest_can_join: boolean;
+}
+
+export interface RoomSettingsSnapshot {
+  room_id: string;
+  name: string | null;
+  topic: string | null;
+  avatar_url: string | null;
+  join_rule: RoomJoinRule;
+  history_visibility: RoomHistoryVisibility;
+  permissions: RoomPermissionFacts;
+}
+
+export type RoomJoinRule = "public" | "invite" | "knock" | "restricted" | "private";
+
+export type RoomHistoryVisibility = "worldReadable" | "shared" | "invited" | "joined";
+
+export interface RoomPermissionFacts {
+  can_edit_settings: boolean;
+  can_kick: boolean;
+  can_ban: boolean;
+  can_unban: boolean;
+}
+
+export type RoomModerationAction = "kick" | "ban" | "unban";
 
 export type PresenceKind = "online" | "away" | "offline";
 
@@ -454,6 +534,102 @@ export type E2eeTrustEvent =
       state: IdentityResetState;
     };
 
+export type ActivityEvent =
+  | { Opened: { request_id: RequestId } }
+  | { Closed: { request_id: RequestId } }
+  | {
+      SnapshotLoaded: {
+        request_id: RequestId;
+        active_tab: ActivityTab;
+        recent: ActivityStream;
+        unread: ActivityStream;
+      };
+    }
+  | { TabSelected: { request_id: RequestId; tab: ActivityTab } }
+  | { MarkedRead: { request_id: RequestId; cleared_event_ids: string[] } };
+
+export type ActivityTab = "recent" | "unread";
+
+export interface ActivityStream {
+  rows: ActivityRow[];
+  next_batch: string | null;
+}
+
+export interface ActivityRow {
+  room_id: string;
+  event_id: string;
+  room_label: string;
+  sender_label: string | null;
+  preview: string | null;
+  timestamp_ms: number;
+  unread: boolean;
+  highlight: boolean;
+}
+
+export type LocalEncryptionHealth =
+  | "unknown"
+  | "healthy"
+  | "unavailable"
+  | "lockedOrInaccessible"
+  | "missingCredential"
+  | "resetRequired";
+
+export type LocalEncryptionEvent = {
+  kind: "healthChanged";
+  health: LocalEncryptionHealth;
+};
+
+export type OperationFailureKind =
+  | "forbidden"
+  | "notFound"
+  | "network"
+  | "timeout"
+  | "invalid"
+  | "sdk";
+
+export interface NativeAttentionSummary {
+  unread_count: number;
+  highlight_count: number;
+  badge_count: number;
+  candidate: NativeAttentionCandidate | null;
+  capabilities: NativeAttentionCapabilities;
+}
+
+export interface NativeAttentionCandidate {
+  room_display_name: string;
+  kind: RoomAttentionKind;
+  unread_count: number;
+  highlight_count: number;
+}
+
+export type RoomAttentionKind = "mention" | "dm" | "message";
+
+export interface NativeAttentionCapabilities {
+  notifications: NativeAttentionCapability;
+  badge: NativeAttentionCapability;
+  sound: NativeAttentionCapability;
+  tray: NativeAttentionCapability;
+  activation: NativeAttentionCapability;
+}
+
+export type NativeAttentionCapability = "available" | "unavailable" | "unknown";
+
+export type NativeAttentionEvent = {
+  kind: "summaryUpdated";
+  summary: NativeAttentionSummary;
+};
+
+export interface JapaneseCatalogProfile {
+  catalog_locale: string;
+  complete: boolean;
+  missing_message_ids: string[];
+}
+
+export type CjkTextPolicyEvent = {
+  kind: "japaneseCatalogProfileChanged";
+  profile: JapaneseCatalogProfile;
+};
+
 // ---------------------------------------------------------------------------
 // Failures (externally tagged; unit variants are bare strings)
 // ---------------------------------------------------------------------------
@@ -484,6 +660,10 @@ export type CoreEventPayload =
   | { kind: "LiveSignals"; event: LiveSignalsEvent }
   | { kind: "Search"; event: SearchEvent }
   | { kind: "E2eeTrust"; event: E2eeTrustEvent }
+  | { kind: "Activity"; event: ActivityEvent }
+  | { kind: "LocalEncryption"; event: LocalEncryptionEvent }
+  | { kind: "NativeAttention"; event: NativeAttentionEvent }
+  | { kind: "CjkTextPolicy"; event: CjkTextPolicyEvent }
   | {
       kind: "OperationFailed";
       request_id: RequestId | null;

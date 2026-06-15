@@ -40,7 +40,9 @@ use matrix_desktop_state::{
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
-use crate::event::{AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent};
+use crate::event::{
+    AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
+};
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId};
 use crate::room::{RoomActorHandle, RoomMessage};
@@ -341,13 +343,19 @@ impl AccountActor {
 
     /// Route a SyncCommand to the SyncActor, or emit SessionRequired if no
     /// store-backed session is active yet.
-    async fn route_sync_command(&self, command: SyncCommand) {
+    async fn route_sync_command(&mut self, command: SyncCommand) {
         let request_id = match &command {
             SyncCommand::Start { request_id }
             | SyncCommand::Stop { request_id }
             | SyncCommand::Restart { request_id }
             | SyncCommand::SyncOnce { request_id } => *request_id,
         };
+
+        if self.sync_actor.is_none()
+            && let Some(session) = &self.session
+        {
+            self.spawn_sync_actor(session.clone());
+        }
 
         match &self.sync_actor {
             Some(handle) => {
@@ -540,6 +548,9 @@ impl AccountActor {
             }
             AccountCommand::QuerySavedSessions { request_id } => {
                 self.handle_query_saved_sessions(request_id);
+            }
+            AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
+                self.handle_probe_local_encryption_health(request_id);
             }
             AccountCommand::Logout { request_id } => {
                 self.handle_logout(request_id).await;
@@ -2016,6 +2027,21 @@ impl AccountActor {
             .map(|session| AccountKey(session.info.user_id.clone()))
     }
 
+    fn handle_probe_local_encryption_health(&self, request_id: RequestId) {
+        let health = self
+            .session_key_id
+            .as_ref()
+            .map(|key_id| self.store.probe_local_encryption_health(key_id))
+            .unwrap_or(matrix_desktop_state::LocalEncryptionHealth::Unknown);
+        self.reduce(vec![AppAction::LocalEncryptionHealthChanged {
+            request_id: request_id.sequence,
+            health,
+        }]);
+        self.emit(CoreEvent::LocalEncryption(
+            LocalEncryptionEvent::HealthChanged { health },
+        ));
+    }
+
     fn reduce(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.try_send(actions);
     }
@@ -3048,6 +3074,7 @@ mod tests {
             request_id,
             AccountKey("@alice:example.test".to_owned()),
             Ok(matrix_desktop_sdk::KeyBackupRestoreSummary {
+                scope: matrix_desktop_sdk::KeyBackupRestoreScope::JoinedRooms,
                 version: Some("available".to_owned()),
                 restored_rooms: 2,
                 total_rooms: Some(3),

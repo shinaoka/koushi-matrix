@@ -180,6 +180,10 @@ function defaultSnapshotResponse() {
       spaces: [],
       rooms: [],
       invites: [],
+      room_interactions: {},
+      directory: { query: { kind: "closed" }, join: { kind: "idle" } },
+      room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
+      activity: { kind: "closed" },
       timeline: {
         room_id: null,
         is_subscribed: false,
@@ -198,6 +202,40 @@ function defaultSnapshotResponse() {
         key_backup: { kind: "unknown" },
         identity_reset: { kind: "idle" },
         devices: []
+      },
+      local_encryption: { kind: "unknown" },
+      native_attention: {
+        summary: {
+          unread_count: 0,
+          highlight_count: 0,
+          badge_count: 0,
+          candidate: null,
+          capabilities: {
+            notifications: "unknown",
+            badge: "unknown",
+            sound: "unknown",
+            tray: "unknown",
+            activation: "unknown"
+          }
+        },
+        dispatch: { kind: "idle" }
+      },
+      cjk_text_policy: {
+        japanese_catalog: {
+          catalog_locale: "en",
+          complete: true,
+          missing_message_ids: []
+        },
+        normalization: {
+          form: "nfkc",
+          width_fold: true,
+          kana_fold: true
+        },
+        collation: {
+          locale: "ja",
+          numeric: true,
+          case_first: null
+        }
       }
     },
     sidebar: {

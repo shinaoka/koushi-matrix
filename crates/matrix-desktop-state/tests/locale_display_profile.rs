@@ -1,6 +1,7 @@
 use matrix_desktop_state::{
     CatalogLocale, DisplayPlatform, LocaleDirection, LocaleSettings, PseudoLocaleMode,
-    TextDirectionPreference, resolve_locale_display_profile,
+    TextDirectionPreference, cjk_display_sort_key, normalize_cjk_search_text,
+    resolve_locale_display_profile,
 };
 use serde_json::json;
 
@@ -41,6 +42,37 @@ fn supported_cjk_locale_resolves_to_catalog_language_without_raw_region_branchin
     assert_eq!(profile.dir, LocaleDirection::Ltr);
     assert_eq!(profile.catalog_locale, CatalogLocale::Ja);
     assert_eq!(profile.pseudo_locale, PseudoLocaleMode::None);
+}
+
+#[test]
+fn cjk_search_normalization_folds_width_case_and_kana_variants() {
+    assert_eq!(normalize_cjk_search_text("ＡＢＣ１２３"), "abc123");
+    assert_eq!(
+        normalize_cjk_search_text("ﾊﾝｶｸ"),
+        normalize_cjk_search_text("ハンカク")
+    );
+    assert_eq!(normalize_cjk_search_text("ﾊﾞﾅﾅ"), "バナナ");
+    assert_eq!(normalize_cjk_search_text("ﾊﾟﾝ"), "パン");
+    assert_eq!(normalize_cjk_search_text("ｳﾞｨｵﾗ"), "ヴィオラ");
+    assert_eq!(normalize_cjk_search_text("ハ\u{3099}ナナ"), "バナナ");
+}
+
+#[test]
+fn cjk_room_and_people_sort_keys_are_deterministic_for_mixed_scripts() {
+    assert_eq!(
+        cjk_display_sort_key("Alpha"),
+        cjk_display_sort_key("ａｌｐｈａ")
+    );
+    assert_eq!(cjk_display_sort_key("アイ"), cjk_display_sort_key("ｱｲ"));
+    assert!(cjk_display_sort_key("会議2") < cjk_display_sort_key("会議10"));
+
+    let mut names = vec!["会議10", "ａｌｐｈａ", "アイ", "会議2", "Alpha", "ｱｲ"];
+    names.sort_by_key(|name| cjk_display_sort_key(name));
+
+    assert_eq!(
+        names,
+        vec!["ａｌｐｈａ", "Alpha", "アイ", "ｱｲ", "会議2", "会議10"]
+    );
 }
 
 #[test]

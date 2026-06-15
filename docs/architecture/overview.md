@@ -66,12 +66,37 @@ Crate responsibilities:
   async transport boundary, GUI code captures key facts and textarea selection
   synchronously, prevents default only for resolver-owned keys, and applies
   newline/send/cancel only from the returned action. Resolver failures are
-  no-ops; React must not fall back to local send semantics.
+  no-ops; React must not fall back to local send semantics. Composition key
+  events keep the native browser default so IME candidate commits are not
+  blocked by the async resolver boundary; Rust still owns the returned product
+  action (`CommitImeCandidate`). Composer send payload semantics are also owned
+  by Rust/core: intentional mentions are typed `MentionIntent` data,
+  markdown/html and `/me` emote conversion are built before SDK send, and
+  unsupported slash commands fail locally with structured private-data-free
+  failure kinds. React does not construct `m.mentions`, formatted bodies, or
+  slash-command dispatch.
+  Room management is likewise Rust-owned: room settings snapshots, permission
+  facts, setting changes, and kick/ban/unban moderation operations live in
+  `AppState.room_management` and `RoomCommand` / `RoomEvent`. React renders
+  `settings.permissions` and dispatches typed commands only; it must not decide
+  whether a user can edit settings or moderate members locally.
+  Core Batch A0 ownership also lives in this crate: local encryption /
+  credential-store health, native attention candidates and capabilities,
+  Japanese/CJK display/search policy, and backup restore scope are
+  serializable Rust state or DTO contracts. React renders those contracts and
+  dispatches typed commands; it does not decide credential health, notification
+  eligibility, CJK collation/normalization, IME send-vs-commit behavior, or
+  whether key-backup restore is complete.
 - `matrix-desktop-sdk` — low-level SDK adapter (login, restore, recovery,
   sync, room, timeline, search primitives). No app state, no QA orchestration.
   E2EE key-backup restore wrappers consume recovery secrets internally and
-  return private-data-free restore summaries; they do not expose SDK backup
-  keys, room keys, or raw backup versions across the command/event boundary.
+  return private-data-free restore summaries whose scope is explicitly
+  `JoinedRooms`; they do not expose SDK backup keys, room keys, or raw backup
+  versions across the command/event boundary. The MVP restore scope is
+  recovery secret import plus currently joined-room key hydration through
+  public SDK APIs. Product state, QA evidence, and UI copy must not claim
+  exhaustive backup-wide restore until a public SDK API or reviewed vendored
+  patch proves that broader scope.
 - `matrix-desktop-core` — actor lifecycle, command routing, event emission,
   SDK session handles, background tasks, AppState projection, headless QA
   binaries. Production Matrix behavior lives here and nowhere else.
@@ -144,15 +169,19 @@ rewriting the runtime.
 An in-process actor system in `matrix-desktop-core`:
 
 - `AppActor` — command entry point, routing, active account, ordered event
-  broadcast and snapshots.
+  broadcast and snapshots. It also owns the account-wide Activity projection
+  cache: room timeline actors may report message rows, but Recent/Unread
+  ordering, unread membership, low-priority exclusion, and mark-read clearing
+  are materialized into `AppState.activity` by Rust before React sees them.
 - `AccountActor` (per account/device) — SDK session ownership,
   login/restore/recovery/logout, account switch, child shutdown.
 - `SyncActor` — continuous sync lifecycle
   (starting/running/reconnecting/failed/stopped).
 - `RoomActor` — room list normalization
   (`SpaceSummary`/`RoomSummary`/`InvitePreview`), create/invite/join/space
-  operations, invite accept/decline, DM start, unread counts, DM
-  classification, and Matrix room tags (`m.tag` favourite / low priority).
+  operations, invite accept/decline, DM start, public directory query and
+  join-by-alias, unread counts, DM classification, and Matrix room tags
+  (`m.tag` favourite / low priority).
   On the sliding-sync backend it consumes the one `RoomListService` owned by
   the running `SyncService`; constructing additional ad-hoc
   `RoomListService` instances is prohibited — they are not driven by the
@@ -189,10 +218,19 @@ An in-process actor system in `matrix-desktop-core`:
   Reaction groups are projected the same way from SDK aggregation data; React
   renders the grouped DTO and dispatches typed reaction commands only, while
   Rust guards current state before delegating to the SDK toggle helper.
+  Reply quote previews are projected into `TimelineItem.reply_quote`; React
+  renders the quote state and does not resolve Matrix reply bodies. Pinned
+  events live in `AppState.room_interactions`, and pin/unpin commands route
+  through `RoomActor` before the Rust snapshot/event stream updates the GUI.
   Read receipts, fully-read markers, and typing notifications are projected
   from SDK timeline/room signals into `AppState.live_signals`; React may render
   that snapshot and dispatch typed commands, but it must not synthesize receipt,
   marker, or typing lifecycle locally.
+- Account-wide Activity is projected in `AppActor` from Rust-owned timeline
+  observations plus room unread/tag summaries. `TimelineView` and focused
+  timelines remain event-driven render surfaces; they do not own the Activity
+  state machine. React dispatches typed Activity commands and focused-context
+  opens using event references supplied by Rust.
 - Account-level live signals such as presence are Rust-owned state in
   `AppState.live_signals.presence`. In the current Phase A contract,
   `AccountCommand::SetPresence` records the requested presence and emits typed
@@ -299,10 +337,11 @@ pub enum TimelineFailureKind {
 ```
 
 Timeline item events carry app-owned DTOs. `TimelineItem` includes stable
-identity, sender/body/timestamp fields, `in_reply_to_event_id`, reactions and
-edit/redact affordances, plus thread fields: `thread_root: Option<String>` for
-items that are in a thread, and `thread_summary: Option<ThreadSummaryDto>` on
-thread root items. `ThreadSummaryDto` contains `reply_count`, `latest_sender`,
+identity, sender/body/timestamp fields, `in_reply_to_event_id`,
+`reply_quote`, reactions and edit/redact affordances, plus thread fields:
+`thread_root: Option<String>` for items that are in a thread, and
+`thread_summary: Option<ThreadSummaryDto>` on thread root items.
+`ThreadSummaryDto` contains `reply_count`, `latest_sender`,
 `latest_body_preview`, and `latest_timestamp_ms`; the `latest_*` fields are
 `None` when the SDK has not loaded the latest event details.
 
@@ -457,6 +496,13 @@ default, and any future preview option requires an explicit settings design and
 new tests. Private-data-free QA title tokens may expose only aggregate values
 such as `unread=N`, `badge=N`, and `notify=<kind|none>`.
 
+Native attention is Rust-owned candidate data plus a platform capability
+profile. The core decides whether a room, thread, mention, focus change, or
+read-marker transition creates, suppresses, updates, or clears an attention
+candidate. The adapter may only map that private-data-minimized candidate to
+macOS, Windows, Linux, or no-op capabilities; React must not branch on platform
+notification semantics or synthesize badge/window-title state locally.
+
 Initial channel capacities are named constants, not scattered literals:
 
 - command inbox per runtime: 256
@@ -532,7 +578,11 @@ architectural invariants:
   encryption, or search index encryption cannot be initialized, the core refuses
   login/restore/startup for that account and emits a redacted
   `LocalEncryptionUnavailable` failure. There is no production fallback to
-  plaintext stores or plaintext search indexes.
+  plaintext stores or plaintext search indexes. Credential-store health is
+  reported as one of the Rust-owned coarse states `unknown`, `healthy`,
+  `unavailable`, `locked_or_inaccessible`, `missing_credential`, or
+  `reset_required`; raw OS/keyring errors never cross into snapshots, logs, or
+  UI decisions.
 - **Webview threat model.** The React webview is the least-trusted layer.
   Secrets entered there (password, recovery key) flow one way: webview →
   Tauri IPC → core. The core never returns secret material to the webview.
@@ -572,10 +622,11 @@ architectural invariants:
   `AccountActor`. The local core `e2ee_trust` proof exercises same-user
   two-device SAS verification, cross-signing bootstrap, passphrase-backed
   key-backup enable, encrypted seed-room backup upload, wrong-secret restore
-  failure, successful restore on the second device, and identity reset on
-  disposable local homeservers through the probed SyncService core leg before
-  GUI wiring. No design doc may claim exhaustive backup-wide restore until the
-  exact supported restore scope is proven or split into an explicit follow-up.
+  failure, successful joined-room restore on the second device, and identity
+  reset on disposable local homeservers through the probed SyncService core leg
+  before GUI wiring. No design doc may claim exhaustive backup-wide restore
+  until the exact supported restore scope is proven or split into an explicit
+  follow-up.
 
 ## QA Model
 

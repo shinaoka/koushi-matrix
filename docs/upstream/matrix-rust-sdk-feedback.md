@@ -1,6 +1,6 @@
 # Matrix Rust SDK Feedback Packet
 
-Date: 2026-06-12
+Date: 2026-06-15
 
 This note separates SDK-upstreamable material from desktop-product decisions. Element Desktop/Web compatibility work in this repository is UX-only and is intentionally out of scope for the SDK feedback.
 
@@ -38,6 +38,9 @@ Current SDK-only patch area:
 - Should `SearchIndexStoreKind::EncryptedDirectory*` have an SDK-boundary test for wrong-secret open failure, in addition to the lower-level encrypted directory tests in `matrix-sdk-search`?
 - Should the public SDK API expose ngram presets for CJK use cases rather than only raw `min_gram` / `max_gram` bounds?
 - Should SDK search return candidate event IDs only, leaving snippet/highlight verification to apps, or should it expose a first-class verified-result mode?
+- Should key-backup restore expose a public backup-wide room-key download API
+  with private-data-free progress/counter semantics, or should apps continue to
+  hydrate keys room-by-room for currently joined rooms?
 
 ## Desktop Integration Findings
 
@@ -52,6 +55,11 @@ Current SDK-only patch area:
 - Tauri native menu accelerators, Element-like right-panel modes, settings placement, and keyboard shortcut parity are app-shell behavior only.
 - Element Desktop/Web was used as a UX reference. No Element Web/Desktop source code, assets, or icons have been copied into this repository.
 - Search results in the desktop app remain exact-verified before display; raw ngram candidates are not a user-facing result type.
+- MVP key-backup restore in matrix-desktop uses public SDK APIs only: import the
+  recovery secret, then hydrate currently joined rooms. The desktop app will not
+  add a vendored SDK accessor for private backup-wide internals merely for
+  convenience; its restore summary scope is `JoinedRooms`. Broader restore
+  requires a public SDK API or a separately reviewed minimal upstreamable patch.
 
 ## Verified SDK Checks
 

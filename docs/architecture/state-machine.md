@@ -233,6 +233,66 @@ reaction counts, ownership, target eligibility, or toggle semantics.
   present. If the projection does not support the requested transition, settle
   it as an invalid reaction failure instead of guessing from React state.
 
+## Timeline Reply Quotes And Pins
+
+Reply quote previews and pinned-event state are Rust-owned message-interaction
+projections. `TimelineItem.reply_quote` is projected in
+`matrix-desktop-core` from SDK reply details; React renders that DTO and must
+not resolve reply bodies, classify redactions, or repair missing quote state.
+
+`AppState.room_interactions[room_id]` carries the room's pinned-event
+projection plus the current pin/unpin operation state:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> PendingPin: PinEventRequested
+    Idle --> PendingUnpin: UnpinEventRequested
+    PendingPin --> Idle: PinEventCompleted [matching request_id]
+    PendingPin --> FailedPin: PinEventFailed [matching request_id]
+    PendingUnpin --> Idle: UnpinEventCompleted [matching request_id]
+    PendingUnpin --> FailedUnpin: UnpinEventFailed [matching request_id]
+    FailedPin --> PendingPin: PinEventRequested [recoverable]
+    FailedPin --> PendingUnpin: UnpinEventRequested [recoverable]
+    FailedUnpin --> PendingPin: PinEventRequested [recoverable]
+    FailedUnpin --> PendingUnpin: UnpinEventRequested [recoverable]
+    Idle --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+    PendingPin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+    PendingUnpin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+    FailedPin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+    FailedUnpin --> [*]: LogoutRequested/LogoutFinished/SessionCleared
+```
+
+- `ReplyQuoteState` is one of `Ready`, `Redacted`, `Missing`, or
+  `Unsupported`. `Ready` may include a sender and body preview; redacted,
+  missing, and unsupported quotes never require React to inspect Matrix event
+  content.
+- `RoomPinnedEventsUpdated { room_id, pinned }` replaces only that room's
+  pinned-event list and emits `RoomInteractionsChanged` when the list changes.
+  It may arrive from sync or as the post-command refresh after successful
+  pin/unpin. It does not synthesize a room summary and does not settle a
+  pending operation by itself.
+- `PinEventRequested` and `UnpinEventRequested` are accepted only for a Ready
+  session, a known room, a non-empty event id, and an `Idle` or recoverable
+  `Failed` pin operation. Requests while another pin/unpin is pending are
+  ignored.
+- Completion and failure actions settle only the matching request id and
+  operation kind. Stale completions, duplicate completions, and opposite
+  operation completions are ignored.
+- Failures store a recoverable `Failed` state and push only a coarse
+  private-data-free `AppError`; raw SDK errors, room ids, event ids, and
+  message bodies must not appear in ordinary logs or QA output.
+- `RoomCommand::PinEvent` and `RoomCommand::UnpinEvent` route through
+  `RoomActor` and `matrix-desktop-sdk`; successful commands emit typed
+  completion events and then refresh the Rust pinned-event projection. The
+  completion action settles `Pending` before the follow-up pinned-state reload:
+  if that reload fails, the command is still no longer pending and the failure
+  is reported as a coarse operation failure. GUI code dispatches typed commands
+  and renders the next Rust snapshot/event only.
+- The local core `reply` QA scenario proves this Phase A slice with
+  `reply_quote=ok pin_event=ok pinned_state=ok unpin_event=ok`. Its stdout must
+  remain private-data-free.
+
 ## Timeline Media
 
 Timeline media is a core-owned operation/effect state, not React-local logic.
@@ -312,6 +372,11 @@ stateDiagram-v2
 
 - Profile actions are accepted only for a Ready session. Late profile snapshots
   after logout, lock, or account switch are ignored.
+- Joined-room member profiles enter `AppState.profile.users` through the
+  Rust-owned room-list observation path (`RoomActor` normalizes SDK active
+  member profiles and emits `UserProfilesUpdated`). GUI mention autocomplete
+  and member/person surfaces consume this projection; React must not query
+  Matrix profiles or create member candidates from DOM/timeline strings.
 - `ProfileUpdateRequested { request_id, request }` is accepted only when no
   profile update is in flight. It records either `SettingDisplayName` or
   `SettingAvatar` and emits `ProfileChanged`.
@@ -587,6 +652,125 @@ stateDiagram-v2
   events around the `CreateRoom` / `CreateSpace` / `SetSpaceChild` SDK calls,
   using the command's `request_id` (its `sequence`) as the correlation id.
 
+## Room Management
+
+Room settings and moderation are Rust-owned state in
+`AppState.room_management`. React may render the loaded settings snapshot and
+permission facts, but it must not decide whether a setting change or moderation
+action is allowed. GUI code dispatches typed room-management commands and waits
+for Rust-owned state/events to settle.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Idle: RoomSettingsSnapshotLoaded
+    Idle --> PendingSettings: RoomSettingUpdateRequested [Ready + can_edit_settings]
+    Idle --> PendingModeration: RoomModerationRequested [Ready + matching permission fact]
+    Idle --> FailedPermissions: RoomSettingUpdateRequested [permission denied]
+    Idle --> FailedPermissions: RoomModerationRequested [permission denied]
+    PendingSettings --> Idle: RoomSettingUpdateSucceeded [matching request_id]
+    PendingSettings --> FailedSettings: RoomSettingUpdateFailed [matching request_id]
+    PendingModeration --> Idle: RoomModerationSucceeded [matching request_id]
+    PendingModeration --> FailedModeration: RoomModerationFailed [matching request_id]
+    FailedSettings --> PendingSettings: RoomSettingUpdateRequested
+    FailedModeration --> PendingModeration: RoomModerationRequested
+    FailedPermissions --> PendingSettings: RoomSettingUpdateRequested [permission now allowed]
+    FailedPermissions --> PendingModeration: RoomModerationRequested [permission now allowed]
+    PendingSettings --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    PendingModeration --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    FailedSettings --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    FailedModeration --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    FailedPermissions --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+- `RoomSettingsSnapshot` carries the selected room id, name, topic, avatar URL,
+  join rule, history visibility, and `RoomPermissionFacts`. It is app-owned DTO
+  data mapped from the SDK before crossing the command/event boundary.
+- The command surface is `RoomCommand::LoadRoomSettings`,
+  `RoomCommand::UpdateRoomSetting`, and `RoomCommand::ModerateRoomMember`.
+  Tauri handlers are transport adapters: they allocate a request id, submit the
+  typed command, wait for the correlated `RoomEvent`, and do not call SDK
+  wrappers directly.
+- Setting updates are accepted only with a `Ready` session and
+  `can_edit_settings=true` in the current snapshot. Moderation is accepted only
+  when the matching permission fact allows the action:
+  `can_kick`, `can_ban`, or `can_unban`.
+- Permission-denied requests settle as a failed `permissions` operation before
+  SDK mutation. A GUI control may be disabled from the snapshot, but Rust still
+  enforces the guard for direct commands and tests.
+- Settings and moderation completions are request-correlated. Stale successes,
+  stale failures, duplicate completions, and completions for a room that is no
+  longer selected are ignored.
+- SDK state-event mutation calls can return before the SDK room cache reflects
+  the sent state event. The SDK adapter must project the submitted setting
+  change into the success snapshot or otherwise wait for a refreshed cache
+  before emitting `RoomSettingUpdated`; React must not patch the visible
+  settings state locally.
+- Failure state stores only coarse `RoomFailureKind` values. Room IDs, user IDs,
+  room names/topics, avatar URLs, moderation reasons, raw SDK errors, and event
+  identifiers must not appear in `Debug` output or QA stdout.
+- Logout, account switch, and session clearing reset `room_management` to its
+  default idle state and drop selected-room settings.
+- Headless core QA covers this with the `room_management` scenario and
+  private-data-free tokens `room_settings=ok`, `permission_guard=ok`, and
+  `moderation=ok`. The lane uses a disposable management room so timeline and
+  room/space stages are not disrupted.
+
+## Public Directory
+
+Public room directory state is Rust-owned and split into two independent
+submachines so a query result can stay visible while a join is pending or
+failed:
+
+```mermaid
+stateDiagram-v2
+    [*] --> QueryClosed
+    QueryClosed --> Querying: DirectoryQueryRequested
+    Querying --> Results: DirectoryQuerySucceeded [matching request_id]
+    Querying --> Failed: DirectoryQueryFailed [matching request_id]
+    Results --> Querying: DirectoryQueryRequested
+    Failed --> Querying: DirectoryQueryRequested
+    Querying --> QueryClosed: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Results --> QueryClosed: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Failed --> QueryClosed: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> JoinIdle
+    JoinIdle --> Joining: DirectoryJoinRequested
+    Joining --> JoinIdle: DirectoryJoinSucceeded [matching request_id]
+    Joining --> JoinFailed: DirectoryJoinFailed [matching request_id, alias, via_server]
+    JoinFailed --> Joining: DirectoryJoinRequested
+    Joining --> JoinIdle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    JoinFailed --> JoinIdle: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+- `AppState.directory.query` carries `Closed`, `Querying`, `Results`, or
+  `Failed`. Results include `DirectoryRoomSummary` rows, canonical alias when
+  supplied by the homeserver, and an optional pagination token. React must not
+  synthesize query completion, pagination, or failure state.
+- `AppState.directory.join` carries `Idle`, `Joining`, or `Failed`. Join is
+  alias-based; the SDK wrapper rejects bare room IDs for this directory flow.
+  GUI code passes the canonical alias and optional server hint from the Rust
+  directory result.
+- Query and join actions are accepted only with a `Ready` session. Stale query
+  completions are ignored unless their `request_id` matches the current
+  `Querying` state. Join success is accepted only when its `request_id`
+  matches the current `Joining` state; join failure is accepted only when its
+  `request_id`, alias, and server hint match the current `Joining` state.
+- `RoomActor` routes `RoomCommand::QueryDirectory` through the SDK public-room
+  directory API and emits `RoomEvent::DirectoryQueryCompleted` on success.
+  `RoomCommand::JoinDirectoryRoom` routes through SDK join-by-alias/server
+  APIs and emits `RoomEvent::RoomJoined` on success. Failures are coarse
+  `RoomFailureKind` / `OperationFailureKind` values only; raw SDK errors,
+  aliases, server names, query text, and page tokens must not appear in Debug
+  output or QA stdout.
+- Logout, account switch, or session clear resets both submachines to
+  `query=Closed` and `join=Idle`.
+- Headless core QA covers this with the `directory` scenario and private-data-
+  free tokens `directory_query=ok` and `directory_join=ok`.
+
 ## E2EE Trust, Verification, And Key Backup
 
 Account-level E2EE trust UX is Rust-owned state in `AppState.e2ee_trust`.
@@ -811,6 +995,255 @@ stateDiagram-v2
 - The fixture/demo backend reports E2EE trust effects as unavailable until the
   `AccountActor` SDK implementation lands. It must not silently discard those
   effects.
+
+## Local Encryption Health
+
+Local encryption and credential-store health are Rust-owned state in
+`AppState.local_encryption`. React may render status and dispatch typed reset or
+retry commands, but it must not inspect OS/keyring errors, decide fail-open
+fallbacks, or recreate local keys.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+    Unknown --> Probing: LocalEncryptionProbeRequested
+    Probing --> Healthy: LocalEncryptionHealthChanged(healthy) [matching request_id]
+    Probing --> Unavailable: LocalEncryptionHealthChanged(unavailable) [matching request_id]
+    Probing --> LockedOrInaccessible: LocalEncryptionHealthChanged(locked_or_inaccessible) [matching request_id]
+    Probing --> MissingCredential: LocalEncryptionHealthChanged(missing_credential) [matching request_id]
+    Probing --> ResetRequired: LocalEncryptionHealthChanged(reset_required) [matching request_id]
+    Unavailable --> Probing: LocalEncryptionProbeRequested
+    LockedOrInaccessible --> Probing: LocalEncryptionProbeRequested
+    MissingCredential --> Probing: LocalEncryptionProbeRequested
+    ResetRequired --> Resetting: ResetLocalDataRequested
+    MissingCredential --> Resetting: ResetLocalDataRequested
+    Resetting --> Unknown: ResetLocalDataCompleted [matching request_id]
+    Resetting --> ResetRequired: ResetLocalDataFailed [matching request_id]
+    Healthy --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Unavailable --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    LockedOrInaccessible --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    MissingCredential --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    ResetRequired --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Probing --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Resetting --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+- The coarse health states are exactly `unknown`, `healthy`, `unavailable`,
+  `locked_or_inaccessible`, `missing_credential`, and `reset_required`.
+- Probes are accepted after the account runtime is ready and on explicit retry.
+  GUI code requests a probe through the typed `probe_local_encryption_health`
+  command; it never reads OS/keyring errors directly.
+- Commands that open encrypted SDK/search storage fail closed inside the
+  StoreActor/credential backend path. `AppState.local_encryption` is the
+  public coarse status projection for UI and QA, not a React-side authorization
+  switch.
+- Health and reset completions carry a request id owned by Rust. Stale
+  completions and duplicate completions are ignored; logout, lock, and account
+  switch clear any account-specific health state before another account can
+  observe it.
+- Failure behavior is fail-closed. Public state stores only kind-only failure
+  data; raw OS/keyring errors, local paths, keys, and recovery material never
+  enter `AppState`, `CoreEvent`, `Debug`, or QA tokens.
+- Logout, lock, account switch, and local-data removal clear account-scoped
+  health to `Unknown` and cancel pending probe/reset correlation. Platform
+  capability facts may be recomputed after the next startup/login probe.
+
+## Account Activity
+
+Account-wide Recent/Unread Activity is a Rust-owned state machine. It may be
+rendered by React as tabs or a rail, but the list membership, ordering,
+low-priority exclusion, unread clearing, and focused-context references are
+computed before the GUI layer.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Opening: OpenActivity
+    Opening --> Open: ActivitySnapshotLoaded [matching request_id]
+    Opening --> Closed: CloseActivity
+    Open --> Open: SetActivityTab
+    Open --> Open: ActivityRowsUpdated
+    Open --> Open: PaginateActivity/ActivitySnapshotLoaded
+    Open --> MarkReadPending: MarkActivityRead(room|all)
+    MarkReadPending --> Open: ActivityMarkReadSucceeded [matching request_id]
+    MarkReadPending --> Open: ActivityMarkReadFailed [matching request_id]
+    Open --> Closed: CloseActivity
+```
+
+- Accepted inputs are `ActivityRowsObserved` from room `TimelineActor`s, room
+  unread/highlight counts, room tag facts, explicit Activity commands, and
+  request-correlated Activity completions. Thread and focused timelines do not
+  duplicate account-wide Activity rows; the room live timeline is the source.
+- `AppActor` owns the Activity projection cache. It fills safe room labels,
+  unread/highlight flags, and low-priority exclusions from `AppState`; React
+  must not infer Activity rows from timeline DOM, browser-local state, or IPC
+  mock convenience data.
+- Recent and Unread are separate `ActivityStream`s. Changing tabs only updates
+  `active_tab`; viewing Unread does not mark rows read. Mark-read commands
+  transition the Rust `mark_read` substate to pending, then clear projection
+  rows only after a matching success action. Any future SDK fully-read side
+  effect must remain behind this typed command path.
+- `ActivityRow` carries event references so the GUI can dispatch a focused
+  context open without inventing navigation semantics. QA tokens and logs must
+  not print room IDs, event IDs, sender IDs, message previews, pagination
+  tokens, or raw SDK errors.
+- Logout, lock, account switch, and session clearing close Activity and discard
+  account-derived rows. Non-secret UI preferences such as the last selected tab
+  may be remembered only if they are not coupled to room or event identity.
+
+## Native Attention
+
+Native notifications, badges, title hints, sounds, tray state, and activation
+requests are Rust-owned attention decisions in `AppState.native_attention`.
+React may render settings and visible affordances, but it must not decide
+whether a Matrix event should notify, badge, suppress, dedupe, or clear.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Candidate: AttentionCandidateRaised
+    Candidate --> Candidate: AttentionCandidateUpdated
+    Candidate --> Suppressed: AttentionSuppressed
+    Candidate --> Dispatching: NativeAttentionDispatchRequested
+    Dispatching --> Delivered: NativeAttentionDelivered [matching request_id]
+    Dispatching --> Failed: NativeAttentionFailed [matching request_id]
+    Delivered --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+    Suppressed --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+    Failed --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+    Candidate --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+    Dispatching --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+```
+
+- Accepted inputs are Rust-owned room/timeline activity observations,
+  notification settings changes, room muted/low-priority state changes, window
+  focus changes, mark-read/read-receipt actions, platform capability updates,
+  and dispatch completion/failure events from the Tauri adapter.
+- The Phase A core projection is `native_attention_state_from_rooms`. It
+  aggregates unread/highlight counts from eligible rooms, excludes low-priority
+  and muted rooms, prefers `mention` over `dm` over `message` candidates,
+  suppresses initial sync/backfill/self/focused-room observations, suppresses
+  duplicate candidates, and clears badge/candidate state when unread attention
+  reaches zero.
+- Candidates carry only private-data-minimized fields allowed by the security
+  rules: safe room display label, attention kind (`mention`, `dm`, `message`),
+  aggregate unread/highlight counts, and coarse capability tokens. They must not
+  carry message bodies, sender identifiers, room IDs, event IDs, transaction IDs,
+  raw SDK errors, or secrets.
+- Candidate generation, dedupe, suppression while focused, badge count, sound
+  eligibility, tray visibility, and activation behavior are reducer/core
+  semantics. Platform adapters only map candidates to macOS, Windows, Linux, or
+  no-op capabilities.
+- Dispatch completions are request-correlated. Stale dispatch results are
+  ignored, and adapter failures settle as private-data-free `Failed(kind)`
+  states that can be cleared by read/focus transitions.
+- Logout, lock, account switch, and session clearing remove all account-derived
+  summaries, candidates, and badge counts. Non-secret platform capability data
+  may survive as a process-level profile, but it cannot carry account activity.
+
+## Japanese/CJK Display And Search
+
+Japanese catalog completeness, CJK normalization, CJK collation, search/display
+matching, and IME send-vs-commit behavior are Rust-owned contracts. GUI code
+may render the resolved locale/search policy and pass typed key facts, but it
+must not choose catalog fallback, sort keys, normalization, highlight offsets, or
+whether an IME composition keypress sends a message.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unresolved
+    Unresolved --> Resolved: LocaleProfileResolved/CjkPolicyResolved
+    Resolved --> Resolved: SettingsLoaded/SettingsUpdateRequested/CjkPolicyResolved
+    Resolved --> Failed: CjkPolicyFailed
+    Failed --> Resolved: LocaleProfileResolved/CjkPolicyResolved
+    Resolved --> Unresolved: SessionCleared
+    Failed --> Unresolved: SessionCleared
+```
+
+- `ja-*` resolves to a Japanese catalog selector in Rust. A Japanese catalog may
+  intentionally fall back to English only when the catalog registry records the
+  missing IDs; silent component-local English strings are defects.
+- Accepted inputs are settings/profile updates, catalog coverage results,
+  CJK policy resolution results, search submissions/results, and typed composer
+  key facts from any composer surface. Search queries and message bodies stay
+  outside diagnostics even when they trigger policy failures.
+- CJK normalization, collation keys for room/person ordering, and search
+  comparison policy are produced by Rust-owned profile data. React receives sort
+  order, display strings, snippets, and verified highlight spans; it does not
+  tokenize Japanese text, generate search candidates, or compute collation.
+- Composer key evaluation accepts typed key facts, including `is_composing`.
+  When `is_composing` is true, Enter-like keys are treated as IME commit input
+  and must not send, insert a product newline, accept autocomplete, or close a
+  composer. React must not fall back to local send behavior if the Rust resolver
+  fails. Because the resolver crosses async IPC, GUI handlers must not prevent
+  the native browser default for `is_composing` key events; candidate commit is
+  the platform/editor default, while Rust still owns the app-level action.
+- Composer send intent is also Rust-owned. GUI code may pass typed draft,
+  mention, and selection facts only; Rust builds the final message content:
+  `MentionIntent` becomes Matrix `m.mentions`, supported markdown becomes a
+  plain body plus safe HTML formatted body, `/me` becomes an emote message, and
+  unsupported slash commands fail locally as `UnsupportedSlashCommand` before
+  a submitted composer transaction clears draft state.
+- Mention autocomplete candidates are Rust-owned profile/member DTOs. React may
+  show the popover, track selected draft pills, and pass a typed
+  `MentionIntent`; it must not synthesize Matrix mention content, infer members
+  from rendered timeline text, or repair send behavior if the Rust resolver
+  returns `noop`/failure.
+- Timeline mention pills are presentation over Rust-owned timeline body text
+  and Rust-owned `ProfileState.users`. They do not create, modify, or infer
+  Matrix `m.mentions`; send semantics remain in the Rust composer path.
+- CJK policy updates carry a generation or request id. Stale profile/search
+  results for an older locale/settings generation are ignored.
+- Failure behavior falls back to safe default display/search policy with a
+  private-data-free error kind. Raw locale input, search query text, message
+  bodies, snippets from real accounts, and raw normalization errors must not be
+  logged or emitted as diagnostics.
+- Logout and account switch clear account-scoped search and composer context.
+  Device-local locale settings and non-secret resolved profile data may remain,
+  but any pending search result, autocomplete, or composer resolution tied to the
+  previous account is ignored.
+
+## Backup Restore Scope
+
+Key-backup restore progress is Rust-owned and request-correlated. The current
+MVP scope is recovery secret import plus currently joined-room key hydration.
+The app must not claim exhaustive backup-wide restore until the SDK exposes a
+public API for that broader scope or a reviewed vendored patch lands.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> ImportingRecoverySecret: RestoreKeyBackupRequested
+    ImportingRecoverySecret --> HydratingJoinedRooms: RecoverySecretImported [matching request_id]
+    HydratingJoinedRooms --> HydratingJoinedRooms: JoinedRoomHydrationProgress [matching request_id]
+    HydratingJoinedRooms --> CompletedJoinedRooms: JoinedRoomHydrationCompleted [matching request_id]
+    ImportingRecoverySecret --> Failed: KeyBackupRestoreFailed [matching request_id]
+    HydratingJoinedRooms --> Failed: KeyBackupRestoreFailed [matching request_id]
+    CompletedJoinedRooms --> ImportingRecoverySecret: RestoreKeyBackupRequested
+    Failed --> ImportingRecoverySecret: RestoreKeyBackupRequested
+    ImportingRecoverySecret --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    HydratingJoinedRooms --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    CompletedJoinedRooms --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Failed --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+- `RestoreKeyBackupRequested` is accepted for a Ready, `NeedsRecovery`, or
+  `Recovering` authenticated session with an encrypted store-backed SDK client.
+  The recovery secret stays inside `CoreCommand::Account` / `AccountActor` and
+  never enters reducer state or snapshots.
+- Progress counters describe the joined-room hydration set only:
+  `restored_rooms` / `total_rooms` are not backup-wide counts. Product copy,
+  issue evidence, and QA tokens must use "joined-room restore" language unless
+  a later implementation proves broader semantics. The SDK adapter summary
+  exposes this as `KeyBackupRestoreSummary.scope = JoinedRooms`; any broader
+  scope needs a new explicit enum value plus upstream/API rationale.
+- Restore events are request-correlated. Stale progress, duplicate completions,
+  and completions from an account that is no longer active are ignored.
+- Failure behavior emits only `TrustOperationFailureKind` or a restore-specific
+  kind-only failure. Raw backup versions, room keys, recovery secrets, room IDs,
+  event IDs, and SDK errors remain private.
+- Logout, lock, account switch, and account shutdown cancel in-flight restore
+  handles, clear progress to `Idle`, and drop secret material inside the actor.
+  React cannot repair or complete restore state after those transitions.
 
 ## Search
 

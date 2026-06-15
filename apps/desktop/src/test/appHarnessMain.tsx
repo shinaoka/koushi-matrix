@@ -142,6 +142,10 @@ function readySnapshot(
         }
       ],
       invites: [],
+      room_interactions: {},
+      directory: { query: { kind: "closed" }, join: { kind: "idle" } },
+      room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
+      activity: { kind: "closed" },
       timeline: {
         room_id: ROOM_ID,
         is_subscribed: true,
@@ -158,7 +162,10 @@ function readySnapshot(
       errors: [],
       basic_operation: basicOperation,
       live_signals: defaultLiveSignalsState(),
-      e2ee_trust: overrides.e2eeTrust ?? defaultE2eeTrustState()
+      e2ee_trust: overrides.e2eeTrust ?? defaultE2eeTrustState(),
+      local_encryption: { kind: "unknown" },
+      native_attention: defaultNativeAttentionState(),
+      cjk_text_policy: defaultCjkTextPolicyState()
     },
     sidebar: {
       active_space_id: null,
@@ -208,6 +215,45 @@ function defaultLiveSignalsState(): DesktopSnapshot["state"]["live_signals"] {
   return {
     rooms: {},
     presence: {}
+  };
+}
+
+function defaultNativeAttentionState(): DesktopSnapshot["state"]["native_attention"] {
+  return {
+    summary: {
+      unread_count: 0,
+      highlight_count: 0,
+      badge_count: 0,
+      candidate: null,
+      capabilities: {
+        notifications: "unknown",
+        badge: "unknown",
+        sound: "unknown",
+        tray: "unknown",
+        activation: "unknown"
+      }
+    },
+    dispatch: { kind: "idle" }
+  };
+}
+
+function defaultCjkTextPolicyState(): DesktopSnapshot["state"]["cjk_text_policy"] {
+  return {
+    japanese_catalog: {
+      catalog_locale: "en",
+      complete: true,
+      missing_message_ids: []
+    },
+    normalization: {
+      form: "nfkc",
+      width_fold: true,
+      kana_fold: true
+    },
+    collation: {
+      locale: "ja",
+      numeric: true,
+      case_first: null
+    }
   };
 }
 
@@ -326,13 +372,13 @@ function resolveComposerKeyActionFromSettings(
 ): ComposerResolvedAction {
   void surface;
   if (keyEvent.is_composing) {
-    return "ignore";
+    return "commitImeCandidate";
   }
   if (keyEvent.key === "escape") {
     return "cancel";
   }
   if (keyEvent.key !== "enter") {
-    return "ignore";
+    return "noop";
   }
   if (keyEvent.modifiers.shift || keyEvent.modifiers.alt) {
     return "insertNewline";
@@ -346,7 +392,7 @@ function resolveComposerKeyActionFromSettings(
   if (!wantsSend) {
     return "insertNewline";
   }
-  return options.send_enabled ? "send" : "ignore";
+  return options.send_enabled ? "send" : "noop";
 }
 
 // A reply-mode composer snapshot (composer.mode = Reply) used as the
@@ -811,6 +857,10 @@ mock.setCommandResponse("send_reaction", () => currentSnapshot);
 mock.setCommandResponse("redact_reaction", () => currentSnapshot);
 mock.setCommandResponse("edit_message", () => currentSnapshot);
 mock.setCommandResponse("redact_message", () => currentSnapshot);
+mock.setCommandResponse("set_room_tag", () => currentSnapshot);
+mock.setCommandResponse("remove_room_tag", () => currentSnapshot);
+mock.setCommandResponse("pin_event", () => currentSnapshot);
+mock.setCommandResponse("unpin_event", () => currentSnapshot);
 mock.setCommandResponse("upload_media", () => currentSnapshot);
 mock.setCommandResponse("download_media", () => currentSnapshot);
 mock.setCommandResponse("send_read_receipt", () => currentSnapshot);

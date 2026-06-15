@@ -28,14 +28,18 @@ import {
   FileText,
   ImageIcon,
   MessageCircle,
+  Pin,
+  PinOff,
   RefreshCw,
   SmilePlus,
   Trash2,
   XCircle
 } from "lucide-react";
 import {
+  Fragment,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -67,6 +71,7 @@ import {
 import {
   composerKeyEventFromDom,
   insertNewlineAtSelection,
+  shouldLetNativeImeHandleComposerKeyEvent,
   shouldResolveComposerKeyEvent
 } from "../domain/composerKeyEvents";
 import type {
@@ -109,6 +114,10 @@ export interface TimelineTransport {
   editMessage(roomId: string, eventId: string, body: string): Promise<void>;
   /** Redact a timeline event. */
   redactMessage(roomId: string, eventId: string): Promise<void>;
+  /** Pin a timeline event in the room. */
+  pinEvent(roomId: string, eventId: string): Promise<void>;
+  /** Unpin a timeline event in the room. */
+  unpinEvent(roomId: string, eventId: string): Promise<void>;
   /** Download an event-backed media attachment. */
   downloadMedia(roomId: string, eventId: string): Promise<void>;
 }
@@ -131,6 +140,8 @@ export interface TimelineRowActionHandlers {
   ) => void;
   onEdit: (roomId: string, eventId: string, body: string) => void;
   onRedact: (roomId: string, eventId: string) => void;
+  onPin: (roomId: string, eventId: string) => void;
+  onUnpin: (roomId: string, eventId: string) => void;
   onDownloadMedia: (roomId: string, eventId: string) => void;
   onRetrySend: (roomId: string, transactionId: string) => void;
   onCancelSend: (roomId: string, transactionId: string) => void;
@@ -185,8 +196,135 @@ function cssEscape(value: string): string {
 const AUTO_BACKFILL_THRESHOLD_PX = 80;
 const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
-const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "ignore";
+const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 const ignoreSendQueueAction = () => undefined;
+
+type TimelineMentionToken = {
+  token: string;
+  userId: string;
+};
+
+export function renderTimelineMessageText(
+  text: string,
+  query = "",
+  profileUsers: Record<string, UserProfile> = {}
+) {
+  const mentionTokens = timelineMentionTokens(profileUsers);
+  return text.split("\n").map((line, index) => (
+    <span key={`${line}:${index}`}>
+      {index > 0 ? <br /> : null}
+      {renderTimelineMessageLine(line, query, mentionTokens)}
+    </span>
+  ));
+}
+
+function renderTimelineMessageLine(
+  line: string,
+  query: string,
+  mentionTokens: TimelineMentionToken[]
+): ReactNode {
+  if (mentionTokens.length === 0) {
+    return renderQueryHighlight(line, query);
+  }
+
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  while (cursor < line.length) {
+    const next = findNextMentionToken(line, cursor, mentionTokens);
+    if (!next) {
+      nodes.push(
+        <Fragment key={`text:${cursor}`}>{renderQueryHighlight(line.slice(cursor), query)}</Fragment>
+      );
+      break;
+    }
+    if (next.start > cursor) {
+      nodes.push(
+        <Fragment key={`text:${cursor}`}>
+          {renderQueryHighlight(line.slice(cursor, next.start), query)}
+        </Fragment>
+      );
+    }
+    const token = line.slice(next.start, next.end);
+    nodes.push(
+      <span
+        className="message-mention-pill"
+        data-mention-user-id={next.userId}
+        dir="auto"
+        key={`${next.userId}:${next.start}`}
+      >
+        {renderQueryHighlight(token, query)}
+      </span>
+    );
+    cursor = next.end;
+  }
+
+  return nodes.length > 0 ? nodes : renderQueryHighlight(line, query);
+}
+
+function renderQueryHighlight(text: string, query: string): ReactNode {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return text;
+  }
+  const index = text.indexOf(trimmed);
+  if (index < 0) {
+    return text;
+  }
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark>{text.slice(index, index + trimmed.length)}</mark>
+      {text.slice(index + trimmed.length)}
+    </>
+  );
+}
+
+function findNextMentionToken(
+  line: string,
+  start: number,
+  mentionTokens: TimelineMentionToken[]
+): { start: number; end: number; userId: string } | null {
+  for (let index = start; index < line.length; index += 1) {
+    for (const mention of mentionTokens) {
+      const end = index + mention.token.length;
+      if (
+        line.startsWith(mention.token, index) &&
+        hasMentionTokenBoundary(line, index, end)
+      ) {
+        return { start: index, end, userId: mention.userId };
+      }
+    }
+  }
+  return null;
+}
+
+function timelineMentionTokens(
+  profileUsers: Record<string, UserProfile>
+): TimelineMentionToken[] {
+  const tokens = new Map<string, string>();
+  for (const profile of Object.values(profileUsers)) {
+    const displayName = profile.display_name?.trim();
+    if (displayName) {
+      tokens.set(displayName.startsWith("@") ? displayName : `@${displayName}`, profile.user_id);
+    }
+    tokens.set(profile.user_id, profile.user_id);
+  }
+  return Array.from(tokens, ([token, userId]) => ({ token, userId }))
+    .filter((mention) => mention.token.length > 1)
+    .sort((a, b) => b.token.length - a.token.length || a.token.localeCompare(b.token));
+}
+
+function hasMentionTokenBoundary(line: string, start: number, end: number): boolean {
+  return isMentionStartBoundary(line[start - 1]) && isMentionEndBoundary(line[end]);
+}
+
+function isMentionStartBoundary(value: string | undefined): boolean {
+  return value === undefined || /\s|[([{<]/u.test(value);
+}
+
+function isMentionEndBoundary(value: string | undefined): boolean {
+  return value === undefined || /\s|[.,!?;:)\]}>]/u.test(value);
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -201,6 +339,7 @@ export function TimelineView({
   resolveComposerKeyAction = ignoreComposerKeyAction,
   liveSignals,
   profileUsers = {},
+  pinnedEventIds = [],
   suppressPaginationUi = false
 }: {
   timelineKey: TimelineKey;
@@ -211,6 +350,7 @@ export function TimelineView({
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   liveSignals?: LiveSignalsState;
   profileUsers?: Record<string, UserProfile>;
+  pinnedEventIds?: readonly string[];
   suppressPaginationUi?: boolean;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -342,6 +482,18 @@ export function TimelineView({
   const onRedact = useCallback(
     (targetRoomId: string, eventId: string) => {
       void transport.redactMessage(targetRoomId, eventId).catch(() => undefined);
+    },
+    [transport]
+  );
+  const onPin = useCallback(
+    (targetRoomId: string, eventId: string) => {
+      void transport.pinEvent(targetRoomId, eventId).catch(() => undefined);
+    },
+    [transport]
+  );
+  const onUnpin = useCallback(
+    (targetRoomId: string, eventId: string) => {
+      void transport.unpinEvent(targetRoomId, eventId).catch(() => undefined);
     },
     [transport]
   );
@@ -477,11 +629,15 @@ export function TimelineView({
               onRedactReaction={onRedactReaction}
               onEdit={onEdit}
               onRedact={onRedact}
+              isPinned={eventId ? pinnedEventIds.includes(eventId) : false}
+              onPin={onPin}
+              onUnpin={onUnpin}
               onDownloadMedia={onDownloadMedia}
               onRetrySend={onRetrySend}
               onCancelSend={onCancelSend}
               presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
               profile={item.sender ? profileUsers[item.sender] : undefined}
+              mentionProfileUsers={profileUsers}
               receipts={eventId ? roomSignals?.receipts_by_event[eventId] ?? [] : []}
             />
           </div>
@@ -507,11 +663,15 @@ export function TimelineItemRow({
   onRedactReaction,
   onEdit,
   onRedact,
+  isPinned = false,
+  onPin = () => undefined,
+  onUnpin = () => undefined,
   onDownloadMedia = () => undefined,
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
   presence,
   profile,
+  mentionProfileUsers = {},
   receipts = []
 }: {
   item: TimelineItem;
@@ -524,11 +684,15 @@ export function TimelineItemRow({
   onRedactReaction: TimelineRowActionHandlers["onRedactReaction"];
   onEdit: TimelineRowActionHandlers["onEdit"];
   onRedact: TimelineRowActionHandlers["onRedact"];
+  isPinned?: boolean;
+  onPin?: TimelineRowActionHandlers["onPin"];
+  onUnpin?: TimelineRowActionHandlers["onUnpin"];
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
   presence?: PresenceKind;
   profile?: UserProfile;
+  mentionProfileUsers?: Record<string, UserProfile>;
   receipts?: LiveReadReceipt[];
 }) {
   const domId = timelineItemDomId(item.id);
@@ -618,16 +782,24 @@ export function TimelineItemRow({
         return;
       }
 
-      const keyEvent = composerKeyEventFromDom(event);
       const textarea = event.currentTarget;
       const selectionStart = textarea.selectionStart;
       const selectionEnd = textarea.selectionEnd;
-      event.preventDefault();
-
-      void resolveComposerKeyAction("edit", keyEvent, {
+      const keyEvent = composerKeyEventFromDom(event, {
+        start: selectionStart,
+        end: selectionEnd
+      });
+      const resolverOptions = {
         autocomplete_open: false,
         send_enabled: Boolean(eventId && editDraft.trim())
-      })
+      };
+      if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
+        void resolveComposerKeyAction("edit", keyEvent, resolverOptions).catch(() => undefined);
+        return;
+      }
+      event.preventDefault();
+
+      void resolveComposerKeyAction("edit", keyEvent, resolverOptions)
         .then((action) => {
           if (action === "send") {
             if (eventId && editDraft.trim()) {
@@ -700,6 +872,18 @@ export function TimelineItemRow({
     }
     onRedact(roomId, eventId);
   }, [eventId, onRedact, roomId]);
+  const submitPin = useCallback(() => {
+    if (!eventId) {
+      return;
+    }
+    onPin(roomId, eventId);
+  }, [eventId, onPin, roomId]);
+  const submitUnpin = useCallback(() => {
+    if (!eventId) {
+      return;
+    }
+    onUnpin(roomId, eventId);
+  }, [eventId, onUnpin, roomId]);
   const submitDownloadMedia = useCallback(() => {
     if (!eventId) {
       return;
@@ -739,6 +923,17 @@ export function TimelineItemRow({
         item.thread_summary.latest_body_preview
       )
     : "";
+  const replyQuoteContent =
+    !isRedacted && item.reply_quote ? (
+      <div className="reply-quote" data-reply-state={item.reply_quote.state}>
+        <div className="reply-quote-sender" dir="auto">
+          {item.reply_quote.sender ?? t("timeline.replyQuoteUnknownSender")}
+        </div>
+        <div className="reply-quote-body" dir="auto">
+          {replyQuoteBody(item.reply_quote)}
+        </div>
+      </div>
+    ) : null;
   const bodyContent = isRedacted ? (
     <div className="message-body message-redacted" dir="auto">
       {t("timeline.redactedMessage")}
@@ -768,7 +963,7 @@ export function TimelineItemRow({
     </form>
   ) : (
     <div className="message-body" dir="auto">
-      {item.body ?? ""}
+      {renderTimelineMessageText(item.body ?? "", "", mentionProfileUsers)}
     </div>
   );
   const mediaContent =
@@ -814,6 +1009,7 @@ export function TimelineItemRow({
             </span>
           ) : null}
         </div>
+        {replyQuoteContent}
         {bodyContent}
         {mediaContent}
         {transactionId && sendStateKind === "notSent" ? (
@@ -979,6 +1175,17 @@ export function TimelineItemRow({
             <MessageCircle size={14} />
           </button>
         ) : null}
+        {!isEditing && canShowActionButtons ? (
+          <button
+            className="message-action"
+            type="button"
+            aria-label={isPinned ? t("timeline.unpinMessage") : t("timeline.pinMessage")}
+            aria-pressed={isPinned}
+            onClick={isPinned ? submitUnpin : submitPin}
+          >
+            {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
+          </button>
+        ) : null}
         {!isEditing && canShowActionButtons && item.can_redact ? (
           <button
             className="message-action"
@@ -1020,6 +1227,22 @@ function presenceLabel(presence: PresenceKind): string {
     return t("timeline.presenceAway");
   }
   return t("timeline.presenceOffline");
+}
+
+function replyQuoteBody(quote: NonNullable<TimelineItem["reply_quote"]>): string {
+  if (quote.body_preview) {
+    return quote.body_preview;
+  }
+  if (quote.state === "redacted") {
+    return t("timeline.redactedMessage");
+  }
+  if (quote.state === "missing") {
+    return t("timeline.replyQuoteMissing");
+  }
+  if (quote.state === "unsupported") {
+    return t("timeline.replyQuoteUnsupported");
+  }
+  return t("timeline.replyQuoteUnavailable");
 }
 
 function senderInitials(sender: string | null): string {

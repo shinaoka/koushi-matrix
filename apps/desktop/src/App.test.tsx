@@ -145,6 +145,45 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain('dir="auto"');
   });
 
+  test("TimelineItemRow renders mention pills from Rust-owned profile data", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={{
+          id: { Event: { event_id: "$event:example.invalid" } },
+          sender: "@alice:example.invalid",
+          body: "Hello @Alice and @alice:example.invalid",
+          timestamp_ms: 1_800_000_000_000,
+          in_reply_to_event_id: null,
+          thread_root: null,
+          thread_summary: null,
+          can_react: true,
+          is_redacted: false,
+          can_redact: false,
+          is_edited: false,
+          can_edit: true,
+          reactions: []
+        }}
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+        mentionProfileUsers={{
+          "@alice:example.invalid": {
+            user_id: "@alice:example.invalid",
+            display_name: "Alice",
+            avatar: null
+          }
+        }}
+      />
+    );
+
+    expect(markup).toContain('class="message-mention-pill"');
+    expect(markup).toContain('data-mention-user-id="@alice:example.invalid"');
+    expect(markup).toContain("@Alice");
+  });
+
   test("TimelineItemRow renders add reaction affordance only for reactable events", () => {
     const reactableMarkup = renderToStaticMarkup(
       <TimelineItemRow
@@ -481,6 +520,8 @@ describe("ContextualRightPanel", () => {
             setTyping: async () => undefined,
             editMessage: async () => undefined,
             redactMessage: async () => undefined,
+            pinEvent: async () => undefined,
+            unpinEvent: async () => undefined,
             downloadMedia: async () => undefined
           } as const
         }
@@ -544,6 +585,8 @@ describe("ContextualRightPanel", () => {
             setTyping: async () => undefined,
             editMessage: async () => undefined,
             redactMessage: async () => undefined,
+            pinEvent: async () => undefined,
+            unpinEvent: async () => undefined,
             downloadMedia: async () => undefined
           } as const
         }
@@ -621,6 +664,8 @@ describe("ContextualRightPanel", () => {
             setTyping: async () => undefined,
             editMessage: async () => undefined,
             redactMessage: async () => undefined,
+            pinEvent: async () => undefined,
+            unpinEvent: async () => undefined,
             downloadMedia: async () => undefined
           } as const
         }
@@ -928,6 +973,99 @@ describe("TopBar sync state rendering", () => {
 });
 
 describe("Timeline item row rendering", () => {
+  test("renders reply quote block from Rust-owned timeline item data", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={
+          {
+            id: { Event: { event_id: "$reply:example.invalid" } },
+            sender: "@me:example.invalid",
+            body: "Reply body",
+            timestamp_ms: 1_820_000_000_000,
+            in_reply_to_event_id: "$root:example.invalid",
+            reply_quote: {
+              event_id: "$root:example.invalid",
+              sender: "@alice:example.invalid",
+              body_preview: "Original quoted body",
+              state: "ready"
+            },
+            thread_root: null,
+            thread_summary: null,
+            can_react: true,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            reactions: []
+          } as TimelineItem
+        }
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('class="reply-quote"');
+    expect(markup).toContain("@alice:example.invalid");
+    expect(markup).toContain("Original quoted body");
+    expect(markup).not.toContain("$root:example.invalid");
+  });
+
+  test("renders pin or unpin row action from Rust-owned pinned state", () => {
+    const item = {
+      id: { Event: { event_id: "$pin-target:example.invalid" } },
+      sender: "@me:example.invalid",
+      body: "Pinnable message",
+      timestamp_ms: 1_820_000_000_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      can_react: true,
+      is_redacted: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      reactions: []
+    } as TimelineItem;
+
+    const unpinned = renderToStaticMarkup(
+      <TimelineItemRow
+        item={item}
+        roomId="!room:example.invalid"
+        isPinned={false}
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+        onPin={() => undefined}
+        onUnpin={() => undefined}
+      />
+    );
+    expect(unpinned).toContain('aria-label="Pin message"');
+    expect(unpinned).not.toContain('aria-label="Unpin message"');
+
+    const pinned = renderToStaticMarkup(
+      <TimelineItemRow
+        item={item}
+        roomId="!room:example.invalid"
+        isPinned={true}
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+        onPin={() => undefined}
+        onUnpin={() => undefined}
+      />
+    );
+    expect(pinned).toContain('aria-label="Unpin message"');
+    expect(pinned).not.toContain('aria-label="Pin message"');
+  });
+
   test("renders send queue status from Rust-owned send_state only", () => {
     const transactionWithoutState = renderToStaticMarkup(
       <TimelineItemRow

@@ -2,12 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { createBrowserFakeApi, type DesktopApi } from "./browserFakeApi";
 import type {
+  ActivityMarkReadTarget,
+  ActivityTab,
   DesktopSnapshot,
   ComposerKeyEvent,
   ComposerResolvedAction,
   ComposerResolverOptions,
   ComposerSurface,
+  DirectoryQuery,
+  MentionIntent,
   PresenceKind,
+  RoomModerationAction,
+  RoomSettingChange,
   RoomTagKind,
   SavedSessionInfo,
   SearchScopeKind,
@@ -67,6 +73,10 @@ class TauriDesktopApi implements DesktopApi {
 
   async updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("update_settings", { patch });
+  }
+
+  async probeLocalEncryptionHealth(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("probe_local_encryption_health");
   }
 
   async bootstrapCrossSigning(): Promise<DesktopSnapshot> {
@@ -129,8 +139,12 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("paginate_timeline_backwards", { roomId });
   }
 
-  async sendText(roomId: string, body: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("send_text", { roomId, body });
+  async sendText(
+    roomId: string,
+    body: string,
+    mentions: MentionIntent = { targets: [] }
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("send_text", { roomId, body, mentions });
   }
 
   async retrySend(roomId: string, transactionId: string): Promise<DesktopSnapshot> {
@@ -215,6 +229,62 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("remove_room_tag", { roomId, tag });
   }
 
+  async pinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("pin_event", { roomId, eventId });
+  }
+
+  async unpinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("unpin_event", { roomId, eventId });
+  }
+
+  async loadRoomSettings(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("load_room_settings", { roomId });
+  }
+
+  async updateRoomSetting(
+    roomId: string,
+    change: RoomSettingChange
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("update_room_setting", { roomId, change });
+  }
+
+  async moderateRoomMember(
+    roomId: string,
+    targetUserId: string,
+    action: RoomModerationAction,
+    reason: string | null = null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("moderate_room_member", {
+      roomId,
+      targetUserId,
+      action,
+      reason
+    });
+  }
+
+  async openActivity(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("open_activity");
+  }
+
+  async closeActivity(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("close_activity");
+  }
+
+  async setActivityTab(tab: ActivityTab): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_activity_tab", { tab });
+  }
+
+  async paginateActivity(
+    tab: ActivityTab,
+    cursor: string | null = null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("paginate_activity", { tab, cursor });
+  }
+
+  async markActivityRead(target: ActivityMarkReadTarget): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("mark_activity_read", { target });
+  }
+
   async openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("open_thread", { roomId, rootEventId });
   }
@@ -249,6 +319,22 @@ class TauriDesktopApi implements DesktopApi {
 
   async submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("submit_search", { query, scope });
+  }
+
+  async queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("query_directory", {
+      term: query.term,
+      serverName: query.server_name,
+      limit: query.limit,
+      since: query.since
+    });
+  }
+
+  async joinDirectoryRoom(
+    alias: string,
+    viaServer: string | null = null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("join_directory_room", { alias, viaServer });
   }
 
   async createRoom(name: string): Promise<DesktopSnapshot> {
@@ -287,8 +373,13 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("cancel_composer_reply");
   }
 
-  async sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("send_reply", { roomId, inReplyToEventId, body });
+  async sendReply(
+    roomId: string,
+    inReplyToEventId: string,
+    body: string,
+    mentions: MentionIntent = { targets: [] }
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("send_reply", { roomId, inReplyToEventId, body, mentions });
   }
 }
 

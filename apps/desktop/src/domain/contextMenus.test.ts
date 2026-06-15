@@ -27,10 +27,17 @@ describe("context menu registry", () => {
   });
 
   test("room, space, and account menus only include implemented shell actions", () => {
-    expect(contextMenuItems({ kind: "room" }).map((item) => item.id)).toEqual([
+    expect(
+      contextMenuItems({
+        kind: "room",
+        tags: { favourite: null, low_priority: null }
+      }).map((item) => item.id)
+    ).toEqual([
       "selectRoom",
       "openRoomInfo",
-      "searchInRoom"
+      "searchInRoom",
+      "setRoomFavourite",
+      "setRoomLowPriority"
     ]);
     expect(contextMenuItems({ kind: "space" }).map((item) => item.id)).toEqual([
       "selectSpace",
@@ -41,5 +48,20 @@ describe("context menu registry", () => {
       "openKeyboardSettings",
       "switchAccount"
     ]);
+  });
+
+  test("room tag menu actions reflect Rust-owned tag state", () => {
+    expect(
+      contextMenuItems({
+        kind: "room",
+        tags: { favourite: { order: "0.1" }, low_priority: null }
+      }).map((item) => item.id)
+    ).toContain("removeRoomFavourite");
+    expect(
+      contextMenuItems({
+        kind: "room",
+        tags: { favourite: null, low_priority: { order: "0.9" } }
+      }).map((item) => item.id)
+    ).toContain("removeRoomLowPriority");
   });
 });

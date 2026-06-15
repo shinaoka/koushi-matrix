@@ -57,7 +57,10 @@ Rules:
    room display label, notification kind (`mention`, `dm`, `message`), and
    aggregate unread/highlight counts. They must not include message bodies,
    sender identifiers, room IDs, event IDs, transaction IDs, raw SDK errors,
-   or secrets.
+   or secrets. Native attention candidates and platform capability profiles are
+   Rust-owned DTOs; React and platform adapters must not add account/content
+   fields while mapping them to macOS, Windows, Linux, tray, sound, badge, or
+   no-op behavior.
 10. Device-local settings are non-secret product state, but they are still a
    privacy boundary. Settings files may contain only typed preferences such as
    locale, theme, font/emoji choice, keyboard behavior, and notification
@@ -75,8 +78,22 @@ Rules:
    the UI, but normal `Debug`, QA logs, and window-title tokens must redact
    account keys, verification target user/device IDs, backup versions, raw SDK
    errors, identity-reset auth details beyond UIAA/OAuth/unknown, and all key
-   material.
-12. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
+   material. Key-backup restore progress/copy must say joined-room hydration
+   when that is the implemented scope; it must not imply exhaustive backup-wide
+   restore. `KeyBackupRestoreSummary.scope` stays `JoinedRooms` for the MVP
+   path unless a later upstream/public API decision explicitly broadens it.
+12. Credential-store health diagnostics are kind-only. Public state may report
+   only `unknown`, `healthy`, `unavailable`, `locked_or_inaccessible`,
+   `missing_credential`, or `reset_required`, with optional private-data-free
+   remediation hints. Raw OS/keyring errors, local paths, account identifiers,
+   key labels, local unlock secrets, SDK/search keys, and recovery material must
+   stay inside `StoreActor`/adapter diagnostics gated for debug/test. OS
+   credential calls go through the `matrix-desktop-key` credential backend
+   abstraction and the StoreActor path; GUI code may only dispatch typed probe
+   or reset commands and render `AppState.local_encryption`. Debug/test file
+   credential stores remain behind debug/test-only cfg, and release builds must
+   ignore those environment variables.
+13. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
    filename, caption, mimetype, dimensions, and bytes when sending media, and
    `TimelineItem.media` may expose safe render metadata. Normal `Debug`, QA
    logs, errors, window-title tokens, and docs examples must not expose
@@ -84,7 +101,7 @@ Rules:
    keys/hashes, room IDs, event IDs, or raw SDK errors. Download effects emit
    byte counts or app-owned handles only; downloaded bytes stay in Rust-owned
    effects or platform ports.
-13. Profile/avatar diagnostics are metadata-minimized. Display names and avatar
+14. Profile/avatar diagnostics are metadata-minimized. Display names and avatar
    bytes may cross only the typed command or snapshot boundaries needed for the
    UI; normal `Debug`, QA logs, errors, window-title tokens, and issue evidence
    must not expose real display names, avatar MXC URIs, avatar bytes, local
@@ -164,6 +181,19 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    reaches the DOM root (`lang`, `dir`, catalog, pseudo mode), remote/user text
    keeps `dir="auto"`, pseudo/CJK/RTL samples do not overflow the shell, and
    raw user-facing strings/logical-CSS contracts are covered by headless tests.
+   Headless helpers that seed fake event-driven timeline rows must wait for the
+   resulting DOM identity (`data-item-id`) and fail if the CoreEvent was not
+   applied; fixed-count fire-and-forget event emission is not valid evidence.
+   Room-list section tests must prove tag-driven movement from Rust-shaped
+   `RoomSummary.tags` snapshots, not from React-local menu state after
+   `set_room_tag` or `remove_room_tag` is clicked.
+   Composer mention GUI tests must use Rust-shaped `ProfileState.users` member
+   profiles for autocomplete candidates. React may render the popover/pills and
+   pass a typed `MentionIntent`, but it must not synthesize Matrix
+   `m.mentions`, formatted HTML, slash semantics, or fallback send behavior.
+   Timeline mention pills are display-only decoration over Rust-owned
+   timeline body/profile snapshots; React must not infer mention semantics from
+   rendered text.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.
@@ -224,6 +254,13 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    `matrix-desktop-state` and `matrix-desktop-search` must compile for
    `wasm32-unknown-unknown`. See Platform Portability in
    `docs/architecture/overview.md`.
+7. Japanese/CJK product semantics remain Rust-owned and platform-portable.
+   Catalog completeness is tested in `apps/desktop/src/i18n`, but CJK
+   normalization, display sort keys, search query variants, and highlight
+   offsets live in `matrix-desktop-state`, `matrix-desktop-search`, and
+   `matrix-desktop-core`. React may render the resolved catalog and Rust-owned
+   ordering only; it must not compute local CJK normalization, collation, or
+   highlight repair.
 
 ## Documentation
 

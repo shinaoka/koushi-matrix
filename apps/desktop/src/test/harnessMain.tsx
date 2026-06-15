@@ -91,6 +91,12 @@ const transport: TimelineTransport = {
   redactMessage(roomId, eventId) {
     return ipc.invoke("redact_message", { roomId, eventId });
   },
+  pinEvent(roomId, eventId) {
+    return ipc.invoke("pin_event", { roomId, eventId });
+  },
+  unpinEvent(roomId, eventId) {
+    return ipc.invoke("unpin_event", { roomId, eventId });
+  },
   downloadMedia(roomId, eventId) {
     return ipc.invoke("download_media", { roomId, eventId });
   }

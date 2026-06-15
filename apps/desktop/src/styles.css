@@ -826,6 +826,79 @@ button {
   padding: 0 0 18px;
 }
 
+.pinned-events {
+  margin: 8px 0 2px;
+  border-block: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.pinned-events-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 20px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.pinned-events-list {
+  display: grid;
+}
+
+.pinned-event {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 8px;
+  align-items: center;
+  min-height: 40px;
+  padding: 6px 20px 8px;
+  border-top: 1px solid var(--line);
+}
+
+.pinned-event-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.pinned-event-sender {
+  max-width: 16rem;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pinned-event-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pinned-event-action {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.pinned-event-action:hover,
+.pinned-event-action:focus-visible {
+  color: var(--brand-contrast);
+  background: var(--brand);
+}
+
 .search-results {
   margin: 12px 20px 4px;
   border: 1px solid var(--line);
@@ -1330,6 +1403,52 @@ button {
   line-height: 1.48;
 }
 
+.message-mention-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(240px, 100%);
+  min-height: 20px;
+  padding: 0 6px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--brand);
+  background: var(--surface-hover);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.reply-quote {
+  display: grid;
+  gap: 2px;
+  max-width: min(560px, 100%);
+  margin-top: 6px;
+  padding: 6px 9px;
+  border-inline-start: 3px solid var(--brand);
+  background: var(--surface-hover);
+}
+
+.reply-quote-sender {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-quote-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: var(--font-message);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .message-edit-form {
   display: grid;
   gap: 8px;
@@ -1664,6 +1783,78 @@ mark {
   border-bottom: 1px solid var(--line);
   color: var(--text-faint);
   background: var(--surface-hover);
+}
+
+.composer-mention-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 32px;
+  padding: 7px 10px 0;
+}
+
+.mention-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 180px;
+  height: 24px;
+  padding: 0 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--brand);
+  background: var(--surface-hover);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-autocomplete {
+  display: grid;
+  gap: 2px;
+  max-height: 150px;
+  margin: 8px 10px 0;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 16px 32px rgb(15 27 45 / 18%);
+}
+
+.composer-autocomplete-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  min-height: 38px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: start;
+}
+
+.composer-autocomplete-option:hover,
+.composer-autocomplete-option:focus-visible {
+  background: var(--surface-hover);
+}
+
+.mention-option-label,
+.mention-option-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-option-label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.mention-option-meta {
+  color: var(--text-faint);
+  font-size: 12px;
 }
 
 .composer textarea,

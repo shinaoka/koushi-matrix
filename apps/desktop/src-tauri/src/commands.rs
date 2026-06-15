@@ -20,9 +20,10 @@ use matrix_desktop_core::{
     UploadMediaKind, UploadMediaRequest,
 };
 use matrix_desktop_state::{
-    AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
-    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, RoomTagKind,
-    SessionInfo, SettingsPatch, VerificationCancelReason,
+    ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
+    ComposerResolverContext, ComposerSurface, DirectoryQuery, IdentityResetAuthRequest,
+    LoginRequest, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
+    RoomTagKind, SessionInfo, SettingsPatch, VerificationCancelReason,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -437,6 +438,21 @@ pub async fn update_settings(
 }
 
 #[tauri::command]
+pub async fn probe_local_encryption_health(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_probe_local_encryption_health_command(request_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn bootstrap_cross_signing(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
@@ -746,6 +762,7 @@ pub async fn paginate_thread_timeline_backwards(
 pub async fn send_text(
     room_id: String,
     body: String,
+    mentions: Option<matrix_desktop_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -759,9 +776,14 @@ pub async fn send_text(
     );
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_send_text_command(request_id, account_key, room_id, transaction_id, body)
-    {
+    if let Some(command) = build_send_text_command(
+        request_id,
+        account_key,
+        room_id,
+        transaction_id,
+        body,
+        mentions.unwrap_or_default(),
+    ) {
         submit_core_command(state.inner(), command).await?;
     }
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -1147,6 +1169,213 @@ pub async fn remove_room_tag(
 }
 
 #[tauri::command]
+pub async fn pin_event(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_pin_event_command(request_id, room_id, event_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn unpin_event(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_unpin_event_command(request_id, room_id, event_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn load_room_settings(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_load_room_settings_command(request_id, room_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomSettingsLoaded { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room settings load did not complete",
+        "room settings load failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn update_room_setting(
+    room_id: String,
+    change: RoomSettingChange,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_update_room_setting_command(
+            request_id, room_id, change,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomSettingUpdated { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room setting update did not complete",
+        "room setting update failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn moderate_room_member(
+    room_id: String,
+    target_user_id: String,
+    action: RoomModerationAction,
+    reason: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_moderate_room_member_command(
+            request_id,
+            room_id,
+            target_user_id,
+            action,
+            optional_non_blank(reason),
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomMemberModerated { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room member moderation did not complete",
+        "room member moderation failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn open_activity(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_open_activity_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn close_activity(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_close_activity_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_activity_tab(
+    tab: ActivityTab,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_activity_tab_command(request_id, tab),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn paginate_activity(
+    tab: ActivityTab,
+    cursor: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_paginate_activity_command(request_id, tab, cursor),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn mark_activity_read(
+    target: ActivityMarkReadTarget,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_mark_activity_read_command(request_id, target),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn open_thread(
     room_id: String,
     root_event_id: String,
@@ -1197,6 +1426,45 @@ pub async fn submit_search(
     submit_core_command(
         state.inner(),
         build_submit_search_command(request_id, query, search_scope),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn query_directory(
+    term: Option<String>,
+    server_name: Option<String>,
+    limit: Option<u32>,
+    since: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_query_directory_command(
+            request_id,
+            term,
+            server_name,
+            limit,
+            since,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::DirectoryQueryCompleted { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "directory query did not complete",
+        "directory query failed",
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -1320,6 +1588,42 @@ pub async fn create_space(
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
     wait_for_space_created(&mut event_conn, request_id, CREATE_EVENT_TIMEOUT).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn join_directory_room(
+    alias: String,
+    via_server: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    let Some(command) = build_join_directory_room_command(request_id, alias, via_server) else {
+        update_qa_window_title_from_state(&app, state.inner()).await;
+        return current_snapshot(state.inner()).await;
+    };
+
+    event_conn
+        .command(command)
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomJoined { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "directory room join did not complete",
+        "directory room join failed",
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -1522,6 +1826,7 @@ pub async fn send_reply(
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
+    mentions: Option<matrix_desktop_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -1542,6 +1847,7 @@ pub async fn send_reply(
         transaction_id,
         in_reply_to_event_id,
         body,
+        mentions.unwrap_or_default(),
     ) {
         submit_core_command(state.inner(), command).await?;
     }
@@ -1628,6 +1934,50 @@ pub(crate) fn build_update_settings_command(
     patch: SettingsPatch,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::UpdateSettings { request_id, patch })
+}
+
+pub(crate) fn build_probe_local_encryption_health_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ProbeLocalEncryptionHealth { request_id })
+}
+
+pub(crate) fn build_open_activity_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::OpenActivity { request_id })
+}
+
+pub(crate) fn build_close_activity_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::CloseActivity { request_id })
+}
+
+pub(crate) fn build_set_activity_tab_command(
+    request_id: matrix_desktop_core::RequestId,
+    tab: ActivityTab,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::SetActivityTab { request_id, tab })
+}
+
+pub(crate) fn build_paginate_activity_command(
+    request_id: matrix_desktop_core::RequestId,
+    tab: ActivityTab,
+    cursor: Option<String>,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::PaginateActivity {
+        request_id,
+        tab,
+        cursor: optional_non_blank(cursor),
+    })
+}
+
+pub(crate) fn build_mark_activity_read_command(
+    request_id: matrix_desktop_core::RequestId,
+    target: ActivityMarkReadTarget,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::MarkActivityRead { request_id, target })
 }
 
 pub(crate) fn build_bootstrap_cross_signing_command(
@@ -1804,6 +2154,7 @@ pub(crate) fn build_send_text_command(
     room_id: String,
     transaction_id: String,
     body: String,
+    mentions: matrix_desktop_state::MentionIntent,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -1813,6 +2164,7 @@ pub(crate) fn build_send_text_command(
         key: build_timeline_key(account_key, room_id),
         transaction_id,
         body,
+        mentions,
     }))
 }
 
@@ -2120,6 +2472,68 @@ pub(crate) fn build_remove_room_tag_command(
     })
 }
 
+pub(crate) fn build_pin_event_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    event_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::PinEvent {
+        request_id,
+        room_id,
+        event_id,
+    })
+}
+
+pub(crate) fn build_unpin_event_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    event_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::UnpinEvent {
+        request_id,
+        room_id,
+        event_id,
+    })
+}
+
+pub(crate) fn build_load_room_settings_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::LoadRoomSettings {
+        request_id,
+        room_id,
+    })
+}
+
+pub(crate) fn build_update_room_setting_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    change: RoomSettingChange,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+        request_id,
+        room_id,
+        change,
+    })
+}
+
+pub(crate) fn build_moderate_room_member_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    target_user_id: String,
+    action: RoomModerationAction,
+    reason: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::ModerateRoomMember {
+        request_id,
+        room_id,
+        target_user_id,
+        action,
+        reason,
+    })
+}
+
 pub(crate) fn build_submit_search_command(
     request_id: matrix_desktop_core::RequestId,
     query: String,
@@ -2148,6 +2562,47 @@ pub(crate) fn build_create_space_command(
     name: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::CreateSpace { request_id, name })
+}
+
+pub(crate) fn build_query_directory_command(
+    request_id: matrix_desktop_core::RequestId,
+    term: Option<String>,
+    server_name: Option<String>,
+    limit: Option<u32>,
+    since: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::QueryDirectory {
+        request_id,
+        query: DirectoryQuery {
+            term: optional_non_blank(term),
+            server_name: optional_non_blank(server_name),
+            limit,
+            since: optional_non_blank(since),
+        },
+    })
+}
+
+pub(crate) fn build_join_directory_room_command(
+    request_id: matrix_desktop_core::RequestId,
+    alias: String,
+    via_server: Option<String>,
+) -> Option<CoreCommand> {
+    let alias = alias.trim().to_owned();
+    if alias.is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
+        request_id,
+        alias,
+        via_server: optional_non_blank(via_server),
+    }))
+}
+
+fn optional_non_blank(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    })
 }
 
 pub(crate) fn build_set_space_child_command(
@@ -2213,6 +2668,7 @@ pub(crate) fn build_send_reply_command(
     transaction_id: String,
     in_reply_to_event_id: String,
     body: String,
+    mentions: matrix_desktop_state::MentionIntent,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -2223,6 +2679,7 @@ pub(crate) fn build_send_reply_command(
         transaction_id,
         in_reply_to_event_id,
         body,
+        mentions,
     }))
 }
 
@@ -2263,6 +2720,7 @@ pub(crate) fn build_send_thread_reply_command(
         transaction_id,
         in_reply_to_event_id: root_event_id,
         body,
+        mentions: matrix_desktop_state::MentionIntent::default(),
     }))
 }
 
@@ -2532,11 +2990,12 @@ mod tests {
         RoomCommand, SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
     };
     use matrix_desktop_state::{
-        AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, SessionInfo, SessionState,
-        VerificationCancelReason,
+        AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent,
+        MentionTarget, SessionInfo, SessionState, VerificationCancelReason,
     };
     use matrix_desktop_state::{
-        AppearanceSettings, LocaleSettings, SettingsPatch, TextDirectionPreference, ThemePreference,
+        ActivityMarkReadTarget, ActivityTab, AppearanceSettings, LocaleSettings, SettingsPatch,
+        TextDirectionPreference, ThemePreference,
     };
 
     use super::QaControlCommand;
@@ -2547,26 +3006,35 @@ mod tests {
         build_cancel_verification_command, build_confirm_sas_verification_command,
         build_create_room_command, build_create_space_command, build_decline_invite_command,
         build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
-        build_forget_room_command, build_invite_user_command, build_leave_room_command,
-        build_logout_command, build_paginate_thread_timeline_backwards_command,
-        build_paginate_timeline_backwards_command, build_redact_message_command,
-        build_redact_reaction_command, build_remove_room_tag_command, build_reset_identity_command,
-        build_restart_sync_command, build_retry_send_command, build_select_room_command,
-        build_select_space_command, build_send_reaction_command, build_send_read_receipt_command,
-        build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
-        build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
-        build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
+        build_forget_room_command, build_invite_user_command, build_join_directory_room_command,
+        build_leave_room_command, build_load_room_settings_command, build_logout_command,
+        build_moderate_room_member_command, build_paginate_thread_timeline_backwards_command,
+        build_paginate_timeline_backwards_command, build_pin_event_command,
+        build_probe_local_encryption_health_command,
+        build_query_directory_command, build_redact_message_command, build_redact_reaction_command,
+        build_remove_room_tag_command, build_reset_identity_command, build_restart_sync_command,
+        build_retry_send_command, build_select_room_command, build_select_space_command,
+        build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
+        build_send_text_command, build_send_thread_reply_command, build_set_avatar_command,
+        build_set_display_name_command, build_set_fully_read_command, build_set_presence_command,
+        build_set_room_tag_command, build_set_space_child_command,
         build_set_thread_composer_draft_command, build_set_typing_command,
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
         build_submit_identity_reset_password_command, build_submit_login_command,
         build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
-        build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
+        build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
+        build_update_room_setting_command, build_update_settings_command,
         build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
         qa_recovery_prompt_is_available, qa_window_title_string,
-        resolve_search_scope_from_active_room,
+        resolve_search_scope_from_active_room, build_open_activity_command,
+        build_close_activity_command, build_set_activity_tab_command,
+        build_paginate_activity_command, build_mark_activity_read_command,
     };
-    use matrix_desktop_state::{PresenceKind, RoomSummary, RoomTagKind, RoomTags};
+    use matrix_desktop_state::{
+        PresenceKind, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
+        RoomSummary, RoomTagKind, RoomTags,
+    };
 
     #[test]
     fn qa_login_pipe_payload_maps_to_login_request_without_debugging_secret() {
@@ -2819,6 +3287,12 @@ mod tests {
             room_id.clone(),
             transaction_id.clone(),
             body.clone(),
+            MentionIntent {
+                targets: vec![MentionTarget::User {
+                    user_id: "@alice:example.invalid".to_owned(),
+                    display_label: "Alice".to_owned(),
+                }],
+            },
         )
         .expect("send_text should build a command")
         {
@@ -2827,8 +3301,18 @@ mod tests {
                 key,
                 transaction_id: route_transaction_id,
                 body: route_body,
+                mentions,
             }) => {
                 assert_eq!(request_id, fake_request_id(10));
+                assert_eq!(
+                    mentions,
+                    MentionIntent {
+                        targets: vec![MentionTarget::User {
+                            user_id: "@alice:example.invalid".to_owned(),
+                            display_label: "Alice".to_owned(),
+                        }],
+                    }
+                );
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -3469,6 +3953,153 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_pin_event_command(
+            fake_request_id(25),
+            "!room:example.org".to_owned(),
+            "$event:example.org".to_owned(),
+        ) {
+            CoreCommand::Room(RoomCommand::PinEvent {
+                request_id,
+                room_id,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(25));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(event_id, "$event:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_unpin_event_command(
+            fake_request_id(26),
+            "!room:example.org".to_owned(),
+            "$event:example.org".to_owned(),
+        ) {
+            CoreCommand::Room(RoomCommand::UnpinEvent {
+                request_id,
+                room_id,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(26));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(event_id, "$event:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_query_directory_command(
+            fake_request_id(27),
+            Some("public rooms".to_owned()),
+            Some("example.org".to_owned()),
+            Some(20),
+            Some("page-2".to_owned()),
+        ) {
+            CoreCommand::Room(RoomCommand::QueryDirectory { request_id, query }) => {
+                assert_eq!(request_id, fake_request_id(27));
+                assert_eq!(query.term.as_deref(), Some("public rooms"));
+                assert_eq!(query.server_name.as_deref(), Some("example.org"));
+                assert_eq!(query.limit, Some(20));
+                assert_eq!(query.since.as_deref(), Some("page-2"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_join_directory_room_command(
+            fake_request_id(28),
+            "#public:example.org".to_owned(),
+            Some("example.org".to_owned()),
+        )
+        .expect("directory join should build a command")
+        {
+            CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
+                request_id,
+                alias,
+                via_server,
+            }) => {
+                assert_eq!(request_id, fake_request_id(28));
+                assert_eq!(alias, "#public:example.org");
+                assert_eq!(via_server.as_deref(), Some("example.org"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert!(
+            build_join_directory_room_command(fake_request_id(29), "   ".to_owned(), None,)
+                .is_none()
+        );
+
+        match build_load_room_settings_command(fake_request_id(30), "!room:example.org".to_owned())
+        {
+            CoreCommand::Room(RoomCommand::LoadRoomSettings {
+                request_id,
+                room_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(30));
+                assert_eq!(room_id, "!room:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        for (offset, change) in [
+            (
+                31,
+                RoomSettingChange::Name(Some("Private room name".to_owned())),
+            ),
+            (
+                32,
+                RoomSettingChange::Topic(Some("Private room topic".to_owned())),
+            ),
+            (
+                33,
+                RoomSettingChange::AvatarUrl(Some("mxc://example.org/private".to_owned())),
+            ),
+            (34, RoomSettingChange::JoinRule(RoomJoinRule::Invite)),
+            (
+                35,
+                RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Shared),
+            ),
+        ] {
+            match build_update_room_setting_command(
+                fake_request_id(offset),
+                "!room:example.org".to_owned(),
+                change.clone(),
+            ) {
+                CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+                    request_id,
+                    room_id,
+                    change: routed_change,
+                }) => {
+                    assert_eq!(request_id, fake_request_id(offset));
+                    assert_eq!(room_id, "!room:example.org");
+                    assert_eq!(routed_change, change);
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+
+        match build_moderate_room_member_command(
+            fake_request_id(36),
+            "!room:example.org".to_owned(),
+            "@target:example.org".to_owned(),
+            RoomModerationAction::Kick,
+            Some("private reason".to_owned()),
+        ) {
+            CoreCommand::Room(RoomCommand::ModerateRoomMember {
+                request_id,
+                room_id,
+                target_user_id,
+                action,
+                reason,
+            }) => {
+                assert_eq!(request_id, fake_request_id(36));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(target_user_id, "@target:example.org");
+                assert_eq!(action, RoomModerationAction::Kick);
+                assert_eq!(reason.as_deref(), Some("private reason"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_send_reply_command(
             fake_request_id(23),
             active_account_key.clone(),
@@ -3476,6 +4107,7 @@ mod tests {
             "desktop-reply-1".to_owned(),
             "$root".to_owned(),
             "reply body".to_owned(),
+            MentionIntent::default(),
         )
         .expect("send_reply should build a command")
         {
@@ -3485,8 +4117,10 @@ mod tests {
                 transaction_id,
                 in_reply_to_event_id,
                 body,
+                mentions,
             }) => {
                 assert_eq!(request_id, fake_request_id(23));
+                assert_eq!(mentions, matrix_desktop_state::MentionIntent::default());
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -3517,8 +4151,10 @@ mod tests {
                 transaction_id,
                 in_reply_to_event_id,
                 body,
+                mentions,
             }) => {
                 assert_eq!(request_id, fake_request_id(24));
+                assert_eq!(mentions, matrix_desktop_state::MentionIntent::default());
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -3553,6 +4189,69 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+
+        match build_open_activity_command(fake_request_id(37)) {
+            CoreCommand::App(AppCommand::OpenActivity { request_id }) => {
+                assert_eq!(request_id, fake_request_id(37));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_activity_tab_command(fake_request_id(38), ActivityTab::Unread) {
+            CoreCommand::App(AppCommand::SetActivityTab { request_id, tab }) => {
+                assert_eq!(request_id, fake_request_id(38));
+                assert_eq!(tab, ActivityTab::Unread);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_paginate_activity_command(
+            fake_request_id(39),
+            ActivityTab::Recent,
+            Some("page-2".to_owned()),
+        ) {
+            CoreCommand::App(AppCommand::PaginateActivity {
+                request_id,
+                tab,
+                cursor,
+            }) => {
+                assert_eq!(request_id, fake_request_id(39));
+                assert_eq!(tab, ActivityTab::Recent);
+                assert_eq!(cursor.as_deref(), Some("page-2"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert!(matches!(
+            build_paginate_activity_command(
+                fake_request_id(40),
+                ActivityTab::Unread,
+                Some("  ".to_owned())
+            ),
+            CoreCommand::App(AppCommand::PaginateActivity { cursor: None, .. })
+        ));
+
+        let target = ActivityMarkReadTarget::Room {
+            room_id: "!room:example.org".to_owned(),
+            up_to_event_id: "$event:example.org".to_owned(),
+        };
+        match build_mark_activity_read_command(fake_request_id(41), target.clone()) {
+            CoreCommand::App(AppCommand::MarkActivityRead {
+                request_id,
+                target: routed_target,
+            }) => {
+                assert_eq!(request_id, fake_request_id(41));
+                assert_eq!(routed_target, target);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_close_activity_command(fake_request_id(42)) {
+            CoreCommand::App(AppCommand::CloseActivity { request_id }) => {
+                assert_eq!(request_id, fake_request_id(42));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]
@@ -3567,6 +4266,7 @@ mod tests {
                 room_id.clone(),
                 "desktop-14".to_owned(),
                 "   ".to_owned(),
+                MentionIntent::default(),
             )
             .is_none()
         );
@@ -3750,6 +4450,52 @@ mod tests {
     }
 
     #[test]
+    fn activity_tauri_command_contracts_are_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        for (command_name, route_name, registration_name) in [
+            (
+                "pub async fn open_activity",
+                "build_open_activity_command",
+                "commands::open_activity",
+            ),
+            (
+                "pub async fn close_activity",
+                "build_close_activity_command",
+                "commands::close_activity",
+            ),
+            (
+                "pub async fn set_activity_tab",
+                "build_set_activity_tab_command",
+                "commands::set_activity_tab",
+            ),
+            (
+                "pub async fn paginate_activity",
+                "build_paginate_activity_command",
+                "commands::paginate_activity",
+            ),
+            (
+                "pub async fn mark_activity_read",
+                "build_mark_activity_read_command",
+                "commands::mark_activity_read",
+            ),
+        ] {
+            assert!(
+                commands_source.contains(command_name),
+                "Tauri command should expose {command_name}"
+            );
+            assert!(
+                commands_source.contains(route_name),
+                "Tauri command should route through {route_name}"
+            );
+            assert!(
+                lib_source.contains(registration_name),
+                "Tauri command should register {registration_name}"
+            );
+        }
+    }
+
+    #[test]
     fn update_settings_command_routes_patch_to_app_update_settings() {
         let command = build_update_settings_command(
             fake_request_id(23),
@@ -3915,6 +4661,43 @@ mod tests {
         assert!(
             commands_source.contains(route_name),
             "Tauri command should route through the Rust settings state machine"
+        );
+        assert!(
+            lib_source.contains(registration_name),
+            "Tauri command should be registered in generate_handler"
+        );
+    }
+
+    #[test]
+    fn credential_health_command_routes_to_account_state_machine() {
+        match build_probe_local_encryption_health_command(fake_request_id(47)) {
+            CoreCommand::Account(AccountCommand::ProbeLocalEncryptionHealth { request_id }) => {
+                assert_eq!(request_id, fake_request_id(47));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_health_tauri_command_contract_is_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        let command_name = "pub async fn probe_local_encryption_health";
+        let builder_name = "build_probe_local_encryption_health_command";
+        let route_name = "AccountCommand::ProbeLocalEncryptionHealth";
+        let registration_name = "commands::probe_local_encryption_health";
+
+        assert!(
+            commands_source.contains(command_name),
+            "Tauri command should expose probe_local_encryption_health"
+        );
+        assert!(
+            commands_source.contains(builder_name),
+            "Tauri command should keep a testable local encryption probe builder"
+        );
+        assert!(
+            commands_source.contains(route_name),
+            "Tauri command should route through the Rust credential health state machine"
         );
         assert!(
             lib_source.contains(registration_name),
@@ -4187,6 +4970,41 @@ mod tests {
     }
 
     #[test]
+    fn room_management_tauri_commands_wait_for_correlated_core_events() {
+        let source = include_str!("commands.rs");
+
+        for (fn_name, event_token) in [
+            ("pub async fn load_room_settings", "RoomSettingsLoaded"),
+            ("pub async fn update_room_setting", "RoomSettingUpdated"),
+            ("pub async fn moderate_room_member", "RoomMemberModerated"),
+        ] {
+            let fn_offset = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} command should exist"));
+            let rest = &source[fn_offset..];
+            let end = rest.find("\n#[tauri::command]").unwrap_or(rest.len());
+            let command_source = &rest[..end];
+
+            assert!(
+                command_source.contains("wait_for_room_operation"),
+                "{fn_name} should wait for the correlated RoomEvent before returning a snapshot"
+            );
+            assert!(
+                command_source.contains(event_token),
+                "{fn_name} should wait for {event_token}"
+            );
+            assert!(
+                command_source.contains("update_qa_window_title_from_state"),
+                "{fn_name} should refresh the QA title after state changes"
+            );
+            assert!(
+                command_source.contains("current_snapshot"),
+                "{fn_name} should return the current snapshot"
+            );
+        }
+    }
+
+    #[test]
     fn build_subscribe_focused_timeline_command_routes_to_focused_timeline_kind() {
         let account_key = AccountKey("@alice:example.org".to_owned());
         let command = build_subscribe_focused_timeline_command(
@@ -4252,6 +5070,7 @@ mod tests {
             room_id.clone(),
             "desktop-18".to_owned(),
             "sensitive body".to_owned(),
+            MentionIntent::default(),
         )
         .expect("send_text should build a command");
         let edit = build_edit_message_command(

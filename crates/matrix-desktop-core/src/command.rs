@@ -4,8 +4,10 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, RoomTagKind,
-    SettingsPatch, VerificationCancelReason, VerificationTarget,
+    ActivityMarkReadTarget, ActivityTab, DirectoryQuery, IdentityResetAuthRequest,
+    JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest, MentionIntent,
+    NativeAttentionState, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
+    RoomTagKind, SettingsPatch, VerificationCancelReason, VerificationTarget,
 };
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
@@ -33,13 +35,22 @@ impl CoreCommand {
                 | AppCommand::CloseThread { request_id }
                 | AppCommand::OpenFocusedContext { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
-                | AppCommand::UpdateSettings { request_id, .. },
+                | AppCommand::UpdateSettings { request_id, .. }
+                | AppCommand::OpenActivity { request_id }
+                | AppCommand::CloseActivity { request_id }
+                | AppCommand::SetActivityTab { request_id, .. }
+                | AppCommand::PaginateActivity { request_id, .. }
+                | AppCommand::MarkActivityRead { request_id, .. }
+                | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
+                | AppCommand::UpdateNativeAttentionState { request_id, .. }
+                | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. },
             ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
                 | AccountCommand::RestoreSession { request_id, .. }
                 | AccountCommand::RestoreLastSession { request_id }
                 | AccountCommand::QuerySavedSessions { request_id }
+                | AccountCommand::ProbeLocalEncryptionHealth { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
                 | AccountCommand::RequestVerification { request_id, .. }
                 | AccountCommand::AcceptVerification { request_id, .. }
@@ -64,6 +75,7 @@ impl CoreCommand {
             },
             Self::Room(command) => match command {
                 RoomCommand::CreateRoom { request_id, .. }
+                | RoomCommand::CreatePublicDirectoryRoom { request_id, .. }
                 | RoomCommand::CreateSpace { request_id, .. }
                 | RoomCommand::SetSpaceChild { request_id, .. }
                 | RoomCommand::InviteUser { request_id, .. }
@@ -75,6 +87,13 @@ impl CoreCommand {
                 | RoomCommand::ForgetRoom { request_id, .. }
                 | RoomCommand::SetTag { request_id, .. }
                 | RoomCommand::RemoveTag { request_id, .. }
+                | RoomCommand::PinEvent { request_id, .. }
+                | RoomCommand::UnpinEvent { request_id, .. }
+                | RoomCommand::QueryDirectory { request_id, .. }
+                | RoomCommand::JoinDirectoryRoom { request_id, .. }
+                | RoomCommand::LoadRoomSettings { request_id, .. }
+                | RoomCommand::UpdateRoomSetting { request_id, .. }
+                | RoomCommand::ModerateRoomMember { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
                 | RoomCommand::SelectRoom { request_id, .. } => *request_id,
             },
@@ -104,14 +123,17 @@ impl CoreCommand {
     }
 
     /// Commands that require a `Ready` session before they are routed.
+    ///
+    /// `SyncCommand` is intentionally not included here: the reducer's
+    /// authenticated-session contract allows sync while E2EE recovery is
+    /// pending, and `AccountActor` / `SyncActor` still enforce that a
+    /// store-backed Matrix session exists.
     pub fn requires_ready_session(&self) -> bool {
-        matches!(
-            self,
-            Self::Sync(_) | Self::Room(_) | Self::Timeline(_) | Self::Search(_)
-        ) || matches!(
-            self,
-            Self::Account(command) if command.requires_ready_session()
-        )
+        matches!(self, Self::Room(_) | Self::Timeline(_) | Self::Search(_))
+            || matches!(
+                self,
+                Self::Account(command) if command.requires_ready_session()
+            )
     }
 }
 
@@ -152,6 +174,37 @@ pub enum AppCommand {
     UpdateSettings {
         request_id: RequestId,
         patch: SettingsPatch,
+    },
+    OpenActivity {
+        request_id: RequestId,
+    },
+    CloseActivity {
+        request_id: RequestId,
+    },
+    SetActivityTab {
+        request_id: RequestId,
+        tab: ActivityTab,
+    },
+    PaginateActivity {
+        request_id: RequestId,
+        tab: ActivityTab,
+        cursor: Option<String>,
+    },
+    MarkActivityRead {
+        request_id: RequestId,
+        target: ActivityMarkReadTarget,
+    },
+    RecordLocalEncryptionHealth {
+        request_id: RequestId,
+        health: LocalEncryptionHealth,
+    },
+    UpdateNativeAttentionState {
+        request_id: RequestId,
+        attention: NativeAttentionState,
+    },
+    UpdateJapaneseCatalogProfile {
+        request_id: RequestId,
+        profile: JapaneseCatalogProfile,
     },
 }
 
@@ -220,6 +273,68 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("patch_fields", &settings_patch_field_names(patch))
                 .finish(),
+            Self::OpenActivity { request_id } => formatter
+                .debug_struct("OpenActivity")
+                .field("request_id", request_id)
+                .finish(),
+            Self::CloseActivity { request_id } => formatter
+                .debug_struct("CloseActivity")
+                .field("request_id", request_id)
+                .finish(),
+            Self::SetActivityTab { request_id, tab } => formatter
+                .debug_struct("SetActivityTab")
+                .field("request_id", request_id)
+                .field("tab", tab)
+                .finish(),
+            Self::PaginateActivity {
+                request_id,
+                tab,
+                cursor,
+            } => formatter
+                .debug_struct("PaginateActivity")
+                .field("request_id", request_id)
+                .field("tab", tab)
+                .field("cursor", &cursor.as_ref().map(|_| "PageToken(..)"))
+                .finish(),
+            Self::MarkActivityRead { request_id, target } => formatter
+                .debug_struct("MarkActivityRead")
+                .field("request_id", request_id)
+                .field("target", target)
+                .finish(),
+            Self::RecordLocalEncryptionHealth { request_id, health } => formatter
+                .debug_struct("RecordLocalEncryptionHealth")
+                .field("request_id", request_id)
+                .field("health", health)
+                .finish(),
+            Self::UpdateNativeAttentionState {
+                request_id,
+                attention,
+            } => formatter
+                .debug_struct("UpdateNativeAttentionState")
+                .field("request_id", request_id)
+                .field("unread_count", &attention.summary.unread_count)
+                .field("highlight_count", &attention.summary.highlight_count)
+                .field("badge_count", &attention.summary.badge_count)
+                .field("dispatch", &attention.dispatch.kind())
+                .field(
+                    "candidate",
+                    &attention
+                        .summary
+                        .candidate
+                        .as_ref()
+                        .map(|_| "AttentionCandidate(..)"),
+                )
+                .finish(),
+            Self::UpdateJapaneseCatalogProfile {
+                request_id,
+                profile,
+            } => formatter
+                .debug_struct("UpdateJapaneseCatalogProfile")
+                .field("request_id", request_id)
+                .field("catalog_locale", &profile.catalog_locale)
+                .field("complete", &profile.complete)
+                .field("missing_count", &profile.missing_message_ids.len())
+                .finish(),
         }
     }
 }
@@ -263,6 +378,9 @@ pub enum AccountCommand {
     /// List saved sessions (homeserver / user_id / device_id only — never
     /// secrets). Answered by `AccountEvent::SavedSessionsListed`.
     QuerySavedSessions {
+        request_id: RequestId,
+    },
+    ProbeLocalEncryptionHealth {
         request_id: RequestId,
     },
     SubmitRecovery {
@@ -343,6 +461,7 @@ impl AccountCommand {
                 | Self::SetPresence { .. }
                 | Self::SetDisplayName { .. }
                 | Self::SetAvatar { .. }
+                | Self::ProbeLocalEncryptionHealth { .. }
         )
     }
 }
@@ -389,6 +508,10 @@ impl fmt::Debug for AccountCommand {
                 .finish(),
             Self::QuerySavedSessions { request_id } => formatter
                 .debug_struct("QuerySavedSessions")
+                .field("request_id", request_id)
+                .finish(),
+            Self::ProbeLocalEncryptionHealth { request_id } => formatter
+                .debug_struct("ProbeLocalEncryptionHealth")
                 .field("request_id", request_id)
                 .finish(),
             Self::SubmitRecovery {
@@ -520,6 +643,11 @@ pub enum RoomCommand {
         name: String,
         encrypted: bool,
     },
+    CreatePublicDirectoryRoom {
+        request_id: RequestId,
+        name: String,
+        alias_localpart: String,
+    },
     CreateSpace {
         request_id: RequestId,
         name: String,
@@ -570,6 +698,41 @@ pub enum RoomCommand {
         room_id: String,
         tag: RoomTagKind,
     },
+    PinEvent {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    },
+    UnpinEvent {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    },
+    QueryDirectory {
+        request_id: RequestId,
+        query: DirectoryQuery,
+    },
+    JoinDirectoryRoom {
+        request_id: RequestId,
+        alias: String,
+        via_server: Option<String>,
+    },
+    LoadRoomSettings {
+        request_id: RequestId,
+        room_id: String,
+    },
+    UpdateRoomSetting {
+        request_id: RequestId,
+        room_id: String,
+        change: RoomSettingChange,
+    },
+    ModerateRoomMember {
+        request_id: RequestId,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+        reason: Option<String>,
+    },
     SelectSpace {
         request_id: RequestId,
         space_id: Option<String>,
@@ -592,6 +755,12 @@ impl fmt::Debug for RoomCommand {
                 .field("request_id", request_id)
                 .field("name", &"RoomName(..)")
                 .field("encrypted", encrypted)
+                .finish(),
+            Self::CreatePublicDirectoryRoom { request_id, .. } => formatter
+                .debug_struct("CreatePublicDirectoryRoom")
+                .field("request_id", request_id)
+                .field("name", &"RoomName(..)")
+                .field("alias_localpart", &"RoomAliasLocalpart(..)")
                 .finish(),
             Self::CreateSpace { request_id, .. } => formatter
                 .debug_struct("CreateSpace")
@@ -660,6 +829,58 @@ impl fmt::Debug for RoomCommand {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("tag", tag)
+                .finish(),
+            Self::PinEvent { request_id, .. } => formatter
+                .debug_struct("PinEvent")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::UnpinEvent { request_id, .. } => formatter
+                .debug_struct("UnpinEvent")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::QueryDirectory { request_id, query } => formatter
+                .debug_struct("QueryDirectory")
+                .field("request_id", request_id)
+                .field("term", &query.term.as_ref().map(|_| "DirectoryQuery(..)"))
+                .field(
+                    "server_name",
+                    &query.server_name.as_ref().map(|_| "ServerName(..)"),
+                )
+                .field("limit", &query.limit)
+                .field("since", &query.since.as_ref().map(|_| "PageToken(..)"))
+                .finish(),
+            Self::JoinDirectoryRoom { request_id, .. } => formatter
+                .debug_struct("JoinDirectoryRoom")
+                .field("request_id", request_id)
+                .field("alias", &"RoomAlias(..)")
+                .field("via_server", &"ServerName(..)")
+                .finish(),
+            Self::LoadRoomSettings { request_id, .. } => formatter
+                .debug_struct("LoadRoomSettings")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::UpdateRoomSetting {
+                request_id, change, ..
+            } => formatter
+                .debug_struct("UpdateRoomSetting")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("change", change)
+                .finish(),
+            Self::ModerateRoomMember {
+                request_id, action, ..
+            } => formatter
+                .debug_struct("ModerateRoomMember")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
+                .field("reason", &"ModerationReason(..)")
                 .finish(),
             Self::SelectSpace {
                 request_id,
@@ -739,6 +960,7 @@ pub enum TimelineCommand {
         key: TimelineKey,
         transaction_id: String,
         body: String,
+        mentions: MentionIntent,
     },
     SendReply {
         request_id: RequestId,
@@ -746,6 +968,7 @@ pub enum TimelineCommand {
         transaction_id: String,
         in_reply_to_event_id: String,
         body: String,
+        mentions: MentionIntent,
     },
     RetrySend {
         request_id: RequestId,
@@ -855,6 +1078,7 @@ impl fmt::Debug for TimelineCommand {
                 .field("key", key)
                 .field("transaction_id", transaction_id)
                 .field("body", &"MessageBody(..)")
+                .field("mentions", &"MentionIntent(..)")
                 .finish(),
             Self::SendReply {
                 request_id,
@@ -868,6 +1092,7 @@ impl fmt::Debug for TimelineCommand {
                 .field("transaction_id", transaction_id)
                 .field("in_reply_to_event_id", &"EventId(..)")
                 .field("body", &"MessageBody(..)")
+                .field("mentions", &"MentionIntent(..)")
                 .finish(),
             Self::RetrySend { request_id, .. } => formatter
                 .debug_struct("RetrySend")
@@ -1018,6 +1243,12 @@ impl fmt::Debug for SearchCommand {
 
 #[cfg(test)]
 mod tests {
+    use matrix_desktop_state::{
+        MentionIntent, MentionTarget, NativeAttentionCandidate, NativeAttentionCapabilities,
+        NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionState,
+        NativeAttentionSummary, NativeAttentionSuppressionReason, RoomAttentionKind,
+    };
+
     use super::*;
 
     fn fake_rid(seq: u64) -> RequestId {
@@ -1028,6 +1259,29 @@ mod tests {
     }
 
     #[test]
+    fn send_text_debug_redacts_body_and_mentions() {
+        let command = TimelineCommand::SendText {
+            request_id: fake_rid(6),
+            key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test"),
+            transaction_id: "txn-text".to_owned(),
+            body: "secret text body".to_owned(),
+            mentions: MentionIntent {
+                targets: vec![MentionTarget::User {
+                    user_id: "@alice:example.test".to_owned(),
+                    display_label: "Alice".to_owned(),
+                }],
+            },
+        };
+
+        let debug = format!("{command:?}");
+        assert!(debug.contains("SendText"), "{debug}");
+        assert!(debug.contains("txn-text"), "{debug}");
+        assert!(!debug.contains("secret text body"), "{debug}");
+        assert!(!debug.contains("@alice:example.test"), "{debug}");
+        assert!(!debug.contains("Alice"), "{debug}");
+    }
+
+    #[test]
     fn send_reply_debug_redacts_body_and_event_ids() {
         let command = TimelineCommand::SendReply {
             request_id: fake_rid(7),
@@ -1035,6 +1289,7 @@ mod tests {
             transaction_id: "txn-reply".to_owned(),
             in_reply_to_event_id: "$event:test".to_owned(),
             body: "secret reply body".to_owned(),
+            mentions: MentionIntent::default(),
         };
 
         let debug = format!("{command:?}");
@@ -1091,6 +1346,240 @@ mod tests {
             assert!(!debug.contains("txn-private"), "{debug}");
             assert!(debug.contains("TransactionId(..)"), "{debug}");
         }
+    }
+
+    #[test]
+    fn pin_event_debug_redacts_room_and_event_ids() {
+        let pin = RoomCommand::PinEvent {
+            request_id: fake_rid(11),
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$event:example.invalid".to_owned(),
+        };
+        let unpin = RoomCommand::UnpinEvent {
+            request_id: fake_rid(12),
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$event:example.invalid".to_owned(),
+        };
+
+        for debug in [format!("{pin:?}"), format!("{unpin:?}")] {
+            assert!(debug.contains("RoomId(..)"), "{debug}");
+            assert!(debug.contains("EventId(..)"), "{debug}");
+            assert!(!debug.contains("!room:example.invalid"), "{debug}");
+            assert!(!debug.contains("$event:example.invalid"), "{debug}");
+        }
+    }
+
+    #[test]
+    fn directory_commands_debug_redacts_query_alias_and_server() {
+        let query = RoomCommand::QueryDirectory {
+            request_id: fake_rid(13),
+            query: DirectoryQuery {
+                term: Some("private search".to_owned()),
+                server_name: Some("example.invalid".to_owned()),
+                limit: Some(10),
+                since: Some("opaque-page-token".to_owned()),
+            },
+        };
+        let join_request_id = fake_rid(14);
+        let join = RoomCommand::JoinDirectoryRoom {
+            request_id: join_request_id,
+            alias: "#private-room:example.invalid".to_owned(),
+            via_server: Some("example.invalid".to_owned()),
+        };
+        let create_request_id = fake_rid(15);
+        let create_public = RoomCommand::CreatePublicDirectoryRoom {
+            request_id: create_request_id,
+            name: "Private Public Room Name".to_owned(),
+            alias_localpart: "private-public-alias".to_owned(),
+        };
+
+        assert_eq!(
+            CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
+                request_id: join_request_id,
+                alias: "#private-room:example.invalid".to_owned(),
+                via_server: Some("example.invalid".to_owned()),
+            })
+            .request_id(),
+            join_request_id
+        );
+        assert_eq!(
+            CoreCommand::Room(RoomCommand::CreatePublicDirectoryRoom {
+                request_id: create_request_id,
+                name: "Private Public Room Name".to_owned(),
+                alias_localpart: "private-public-alias".to_owned(),
+            })
+            .request_id(),
+            create_request_id
+        );
+        for debug in [
+            format!("{query:?}"),
+            format!("{join:?}"),
+            format!("{create_public:?}"),
+        ] {
+            assert!(!debug.contains("private search"), "{debug}");
+            assert!(!debug.contains("#private-room:example.invalid"), "{debug}");
+            assert!(!debug.contains("Private Public Room Name"), "{debug}");
+            assert!(!debug.contains("private-public-alias"), "{debug}");
+            assert!(!debug.contains("example.invalid"), "{debug}");
+            assert!(!debug.contains("opaque-page-token"), "{debug}");
+        }
+    }
+
+    #[test]
+    fn room_management_commands_debug_redacts_room_user_and_settings_values() {
+        use matrix_desktop_state::{RoomJoinRule, RoomModerationAction, RoomSettingChange};
+
+        let load_request_id = fake_rid(16);
+        let load = RoomCommand::LoadRoomSettings {
+            request_id: load_request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+        };
+        let update_request_id = fake_rid(17);
+        let update = RoomCommand::UpdateRoomSetting {
+            request_id: update_request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+            change: RoomSettingChange::Name(Some("Private Room Name".to_owned())),
+        };
+        let moderation_request_id = fake_rid(18);
+        let moderation = RoomCommand::ModerateRoomMember {
+            request_id: moderation_request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+            target_user_id: "@private-target:example.invalid".to_owned(),
+            action: RoomModerationAction::Ban,
+            reason: Some("Private moderation reason".to_owned()),
+        };
+
+        assert_eq!(CoreCommand::Room(load).request_id(), load_request_id);
+        assert_eq!(
+            CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+                request_id: update_request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                change: RoomSettingChange::JoinRule(RoomJoinRule::Public),
+            })
+            .request_id(),
+            update_request_id
+        );
+        assert_eq!(
+            CoreCommand::Room(RoomCommand::ModerateRoomMember {
+                request_id: moderation_request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                target_user_id: "@private-target:example.invalid".to_owned(),
+                action: RoomModerationAction::Kick,
+                reason: None,
+            })
+            .request_id(),
+            moderation_request_id
+        );
+
+        for debug in [
+            format!(
+                "{:?}",
+                RoomCommand::LoadRoomSettings {
+                    request_id: fake_rid(19),
+                    room_id: "!private-room:example.invalid".to_owned(),
+                }
+            ),
+            format!("{update:?}"),
+            format!("{moderation:?}"),
+        ] {
+            assert!(debug.contains("RoomId(..)"), "{debug}");
+            assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+            assert!(
+                !debug.contains("@private-target:example.invalid"),
+                "{debug}"
+            );
+            assert!(!debug.contains("Private Room Name"), "{debug}");
+            assert!(!debug.contains("Private moderation reason"), "{debug}");
+        }
+    }
+
+    #[test]
+    fn activity_commands_debug_redacts_targets_and_carry_request_ids() {
+        use matrix_desktop_state::{ActivityMarkReadTarget, ActivityTab};
+
+        let set_tab_request_id = fake_rid(21);
+        let set_tab = AppCommand::SetActivityTab {
+            request_id: set_tab_request_id,
+            tab: ActivityTab::Unread,
+        };
+        let paginate_request_id = fake_rid(22);
+        let paginate = AppCommand::PaginateActivity {
+            request_id: paginate_request_id,
+            tab: ActivityTab::Recent,
+            cursor: Some("private-page-token".to_owned()),
+        };
+        let mark_request_id = fake_rid(23);
+        let mark = AppCommand::MarkActivityRead {
+            request_id: mark_request_id,
+            target: ActivityMarkReadTarget::Room {
+                room_id: "!private-room:example.invalid".to_owned(),
+                up_to_event_id: "$private-event:example.invalid".to_owned(),
+            },
+        };
+
+        assert_eq!(CoreCommand::App(set_tab).request_id(), set_tab_request_id);
+        assert_eq!(CoreCommand::App(paginate).request_id(), paginate_request_id);
+        assert_eq!(
+            CoreCommand::App(AppCommand::MarkActivityRead {
+                request_id: mark_request_id,
+                target: ActivityMarkReadTarget::All,
+            })
+            .request_id(),
+            mark_request_id
+        );
+
+        for debug in [
+            format!(
+                "{:?}",
+                AppCommand::PaginateActivity {
+                    request_id: fake_rid(24),
+                    tab: ActivityTab::Unread,
+                    cursor: Some("private-page-token".to_owned()),
+                }
+            ),
+            format!("{mark:?}"),
+        ] {
+            assert!(!debug.contains("private-page-token"), "{debug}");
+            assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+            assert!(!debug.contains("$private-event:example.invalid"), "{debug}");
+        }
+    }
+
+    #[test]
+    fn native_attention_command_debug_redacts_candidate_labels() {
+        let command = AppCommand::UpdateNativeAttentionState {
+            request_id: fake_rid(27),
+            attention: NativeAttentionState {
+                summary: NativeAttentionSummary {
+                    unread_count: 4,
+                    highlight_count: 1,
+                    badge_count: 4,
+                    candidate: Some(NativeAttentionCandidate {
+                        room_display_name: "Private Room Name".to_owned(),
+                        kind: RoomAttentionKind::Mention,
+                        unread_count: 4,
+                        highlight_count: 1,
+                    }),
+                    capabilities: NativeAttentionCapabilities {
+                        notifications: NativeAttentionCapability::Available,
+                        badge: NativeAttentionCapability::Available,
+                        sound: NativeAttentionCapability::Unknown,
+                        tray: NativeAttentionCapability::Unavailable,
+                        activation: NativeAttentionCapability::Unknown,
+                    },
+                },
+                dispatch: NativeAttentionDispatchState::Suppressed {
+                    reason: NativeAttentionSuppressionReason::WindowFocused,
+                },
+            },
+        };
+
+        let debug = format!("{command:?}");
+
+        assert!(debug.contains("UpdateNativeAttentionState"), "{debug}");
+        assert!(debug.contains("unread_count"), "{debug}");
+        assert!(debug.contains("suppressed"), "{debug}");
+        assert!(!debug.contains("Private Room Name"), "{debug}");
     }
 
     #[test]

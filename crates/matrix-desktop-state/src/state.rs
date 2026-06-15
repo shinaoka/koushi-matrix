@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,10 @@ pub struct AppState {
     pub spaces: Vec<SpaceSummary>,
     pub rooms: Vec<RoomSummary>,
     pub invites: Vec<InvitePreview>,
+    pub room_interactions: BTreeMap<String, RoomInteractionState>,
+    pub directory: DirectoryState,
+    pub room_management: RoomManagementState,
+    pub activity: ActivityState,
     pub timeline: TimelinePaneState,
     pub thread: ThreadPaneState,
     pub focused_context: FocusedContextState,
@@ -20,6 +24,9 @@ pub struct AppState {
     pub basic_operation: BasicOperationState,
     pub live_signals: LiveSignalsState,
     pub e2ee_trust: E2eeTrustState,
+    pub local_encryption: LocalEncryptionState,
+    pub native_attention: NativeAttentionState,
+    pub cjk_text_policy: CjkTextPolicyState,
     pub errors: Vec<AppError>,
 }
 
@@ -35,6 +42,10 @@ impl Default for AppState {
             spaces: Vec::new(),
             rooms: Vec::new(),
             invites: Vec::new(),
+            room_interactions: BTreeMap::new(),
+            directory: DirectoryState::default(),
+            room_management: RoomManagementState::default(),
+            activity: ActivityState::Closed,
             timeline: TimelinePaneState::default(),
             thread: ThreadPaneState::Closed,
             focused_context: FocusedContextState::Closed,
@@ -42,6 +53,9 @@ impl Default for AppState {
             basic_operation: BasicOperationState::Idle,
             live_signals: LiveSignalsState::default(),
             e2ee_trust: E2eeTrustState::default(),
+            local_encryption: LocalEncryptionState::Unknown,
+            native_attention: NativeAttentionState::default(),
+            cjk_text_policy: CjkTextPolicyState::default(),
             errors: Vec::new(),
         }
     }
@@ -675,12 +689,1004 @@ pub fn room_attention_summary(
     let kind = room_attention_kind(is_dm, notification_count, highlight_count, unread_count)?;
 
     Some(RoomAttentionSummary {
-        room_display_name,
+        room_display_name: private_safe_room_display_name(room_display_name),
         kind,
         notification_count,
         highlight_count,
         unread_count,
     })
+}
+
+fn private_safe_room_display_name(room_display_name: String) -> String {
+    if room_display_name.trim().is_empty() {
+        "Room".to_owned()
+    } else {
+        room_display_name
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomInteractionState {
+    pub pinned_events: Vec<PinnedEvent>,
+    pub pin_operation: PinOperationState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PinnedEvent {
+    pub event_id: String,
+    pub sender: Option<String>,
+    pub body_preview: Option<String>,
+    pub redacted: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReplyQuote {
+    pub event_id: String,
+    pub sender: Option<String>,
+    pub body_preview: Option<String>,
+    pub state: ReplyQuoteState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReplyQuoteState {
+    Ready,
+    Redacted,
+    Missing,
+    Unsupported,
+}
+
+impl ReplyQuoteState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Redacted => "redacted",
+            Self::Missing => "missing",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PinOp {
+    Pin,
+    Unpin,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PinOperationState {
+    #[default]
+    Idle,
+    Pending {
+        request_id: u64,
+        room_id: String,
+        event_id: String,
+        op: PinOp,
+    },
+    Failed {
+        room_id: String,
+        event_id: String,
+        op: PinOp,
+        recoverable: bool,
+    },
+}
+
+impl PinOperationState {
+    pub fn request_id(&self) -> Option<u64> {
+        match self {
+            Self::Idle => None,
+            Self::Pending { request_id, .. } => Some(*request_id),
+            Self::Failed { .. } => None,
+        }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
+    pub fn accepts_new_request(&self) -> bool {
+        matches!(
+            self,
+            Self::Idle
+                | Self::Failed {
+                    recoverable: true,
+                    ..
+                }
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationFailureKind {
+    Forbidden,
+    NotFound,
+    Network,
+    Timeout,
+    Invalid,
+    Sdk,
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ActivityState {
+    #[default]
+    Closed,
+    Opening {
+        request_id: u64,
+        tab: ActivityTab,
+    },
+    Open {
+        active_tab: ActivityTab,
+        recent: ActivityStream,
+        unread: ActivityStream,
+        mark_read: ActivityMarkReadState,
+    },
+}
+
+impl ActivityState {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Opening { .. } => "opening",
+            Self::Open { .. } => "open",
+        }
+    }
+}
+
+impl fmt::Debug for ActivityState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed => formatter.write_str("ActivityState::Closed"),
+            Self::Opening { request_id, tab } => formatter
+                .debug_struct("ActivityOpening")
+                .field("request_id", request_id)
+                .field("tab", tab)
+                .finish(),
+            Self::Open {
+                active_tab,
+                recent,
+                unread,
+                mark_read,
+            } => formatter
+                .debug_struct("ActivityOpen")
+                .field("active_tab", active_tab)
+                .field("recent", recent)
+                .field("unread", unread)
+                .field("mark_read", mark_read)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityTab {
+    #[default]
+    Recent,
+    Unread,
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ActivityStream {
+    pub rows: Vec<ActivityRow>,
+    pub next_batch: Option<String>,
+}
+
+impl fmt::Debug for ActivityStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ActivityStream")
+            .field("rows", &format_args!("{} row(s)", self.rows.len()))
+            .field(
+                "next_batch",
+                &self.next_batch.as_ref().map(|_| "PageToken(..)"),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ActivityRow {
+    pub room_id: String,
+    pub event_id: String,
+    pub room_label: String,
+    pub sender_label: Option<String>,
+    pub preview: Option<String>,
+    pub timestamp_ms: u64,
+    pub unread: bool,
+    pub highlight: bool,
+}
+
+impl fmt::Debug for ActivityRow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ActivityRow")
+            .field("room_id", &"RoomId(..)")
+            .field("event_id", &"EventId(..)")
+            .field("room_label", &"RoomLabel(..)")
+            .field(
+                "sender_label",
+                &self.sender_label.as_ref().map(|_| "SenderLabel(..)"),
+            )
+            .field("preview", &self.preview.as_ref().map(|_| "Preview(..)"))
+            .field("timestamp_ms", &self.timestamp_ms)
+            .field("unread", &self.unread)
+            .field("highlight", &self.highlight)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ActivityMarkReadState {
+    #[default]
+    Idle,
+    Pending {
+        request_id: u64,
+        target: ActivityMarkReadTarget,
+    },
+    Failed {
+        target: ActivityMarkReadTarget,
+        failure_kind: OperationFailureKind,
+    },
+}
+
+impl fmt::Debug for ActivityMarkReadState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Idle => formatter.write_str("ActivityMarkReadState::Idle"),
+            Self::Pending { request_id, target } => formatter
+                .debug_struct("ActivityMarkReadPending")
+                .field("request_id", request_id)
+                .field("target", target)
+                .finish(),
+            Self::Failed {
+                target,
+                failure_kind,
+            } => formatter
+                .debug_struct("ActivityMarkReadFailed")
+                .field("target", target)
+                .field("kind", failure_kind)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ActivityMarkReadTarget {
+    Room {
+        room_id: String,
+        up_to_event_id: String,
+    },
+    All,
+}
+
+impl fmt::Debug for ActivityMarkReadTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Room { .. } => formatter
+                .debug_struct("ActivityMarkReadTarget::Room")
+                .field("room_id", &"RoomId(..)")
+                .field("up_to_event_id", &"EventId(..)")
+                .finish(),
+            Self::All => formatter.write_str("ActivityMarkReadTarget::All"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DirectoryState {
+    pub query: DirectoryQueryState,
+    pub join: DirectoryJoinState,
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DirectoryQueryState {
+    #[default]
+    Closed,
+    Querying {
+        request_id: u64,
+        query: DirectoryQuery,
+    },
+    Results {
+        request_id: u64,
+        query: DirectoryQuery,
+        rooms: Vec<DirectoryRoomSummary>,
+        next_batch: Option<String>,
+    },
+    Failed {
+        request_id: u64,
+        query: DirectoryQuery,
+        #[serde(rename = "failureKind")]
+        kind: OperationFailureKind,
+    },
+}
+
+impl fmt::Debug for DirectoryQueryState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed => formatter.write_str("Closed"),
+            Self::Querying { request_id, query } => formatter
+                .debug_struct("Querying")
+                .field("request_id", request_id)
+                .field("query", query)
+                .finish(),
+            Self::Results {
+                request_id,
+                query,
+                rooms,
+                next_batch,
+            } => formatter
+                .debug_struct("Results")
+                .field("request_id", request_id)
+                .field("query", query)
+                .field("rooms", rooms)
+                .field("next_batch", &next_batch.as_ref().map(|_| "PageToken(..)"))
+                .finish(),
+            Self::Failed {
+                request_id,
+                query,
+                kind,
+            } => formatter
+                .debug_struct("Failed")
+                .field("request_id", request_id)
+                .field("query", query)
+                .field("kind", kind)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DirectoryJoinState {
+    #[default]
+    Idle,
+    Joining {
+        request_id: u64,
+        alias: String,
+        via_server: Option<String>,
+    },
+    Failed {
+        request_id: u64,
+        alias: String,
+        via_server: Option<String>,
+        #[serde(rename = "failureKind")]
+        kind: OperationFailureKind,
+    },
+}
+
+impl fmt::Debug for DirectoryJoinState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Idle => formatter.write_str("Idle"),
+            Self::Joining {
+                request_id,
+                via_server,
+                ..
+            } => formatter
+                .debug_struct("Joining")
+                .field("request_id", request_id)
+                .field("alias", &"RoomAlias(..)")
+                .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
+                .finish(),
+            Self::Failed {
+                request_id,
+                via_server,
+                kind,
+                ..
+            } => formatter
+                .debug_struct("Failed")
+                .field("request_id", request_id)
+                .field("alias", &"RoomAlias(..)")
+                .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
+                .field("kind", kind)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DirectoryQuery {
+    pub term: Option<String>,
+    pub server_name: Option<String>,
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub since: Option<String>,
+}
+
+impl fmt::Debug for DirectoryQuery {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DirectoryQuery")
+            .field("term", &self.term.as_ref().map(|_| "QueryText(..)"))
+            .field(
+                "server_name",
+                &self.server_name.as_ref().map(|_| "ServerName(..)"),
+            )
+            .field("limit", &self.limit)
+            .field("since", &self.since.as_ref().map(|_| "PageToken(..)"))
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DirectoryRoomSummary {
+    pub room_id: String,
+    pub canonical_alias: Option<String>,
+    pub name: String,
+    pub topic: Option<String>,
+    pub avatar_url: Option<String>,
+    pub joined_members: u64,
+    pub world_readable: bool,
+    pub guest_can_join: bool,
+}
+
+impl fmt::Debug for DirectoryRoomSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DirectoryRoomSummary")
+            .field("room_id", &"RoomId(..)")
+            .field(
+                "canonical_alias",
+                &self.canonical_alias.as_ref().map(|_| "RoomAlias(..)"),
+            )
+            .field("name", &"RoomName(..)")
+            .field("topic", &self.topic.as_ref().map(|_| "RoomTopic(..)"))
+            .field(
+                "avatar_url",
+                &self.avatar_url.as_ref().map(|_| "MxcUri(..)"),
+            )
+            .field("joined_members", &self.joined_members)
+            .field("world_readable", &self.world_readable)
+            .field("guest_can_join", &self.guest_can_join)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomManagementState {
+    pub selected_room_id: Option<String>,
+    pub settings: Option<RoomSettingsSnapshot>,
+    pub operation: RoomManagementOperationState,
+}
+
+impl fmt::Debug for RoomManagementState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomManagementState")
+            .field(
+                "selected_room_id",
+                &self.selected_room_id.as_ref().map(|_| "RoomId(..)"),
+            )
+            .field(
+                "settings",
+                &self.settings.as_ref().map(|_| "RoomSettingsSnapshot(..)"),
+            )
+            .field("operation", &self.operation)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoomManagementOperationState {
+    #[default]
+    Idle,
+    Pending {
+        request_id: u64,
+        room_id: String,
+        operation: RoomManagementOperationKind,
+    },
+    Failed {
+        request_id: u64,
+        room_id: String,
+        operation: RoomManagementOperationKind,
+        #[serde(rename = "failureKind")]
+        kind: OperationFailureKind,
+    },
+}
+
+impl fmt::Debug for RoomManagementOperationState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Idle => formatter.write_str("Idle"),
+            Self::Pending {
+                request_id,
+                operation,
+                ..
+            } => formatter
+                .debug_struct("Pending")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("operation", operation)
+                .finish(),
+            Self::Failed {
+                request_id,
+                operation,
+                kind,
+                ..
+            } => formatter
+                .debug_struct("Failed")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("operation", operation)
+                .field("kind", kind)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomManagementOperationKind {
+    Settings,
+    Moderation,
+    Permissions,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomSettingsSnapshot {
+    pub room_id: String,
+    pub name: Option<String>,
+    pub topic: Option<String>,
+    pub avatar_url: Option<String>,
+    pub join_rule: RoomJoinRule,
+    pub history_visibility: RoomHistoryVisibility,
+    pub permissions: RoomPermissionFacts,
+}
+
+impl fmt::Debug for RoomSettingsSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomSettingsSnapshot")
+            .field("room_id", &"RoomId(..)")
+            .field("name", &self.name.as_ref().map(|_| "RoomName(..)"))
+            .field("topic", &self.topic.as_ref().map(|_| "RoomTopic(..)"))
+            .field(
+                "avatar_url",
+                &self.avatar_url.as_ref().map(|_| "MxcUri(..)"),
+            )
+            .field("join_rule", &self.join_rule)
+            .field("history_visibility", &self.history_visibility)
+            .field("permissions", &self.permissions)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomJoinRule {
+    Public,
+    Invite,
+    Knock,
+    Restricted,
+    Private,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomHistoryVisibility {
+    WorldReadable,
+    Shared,
+    Invited,
+    Joined,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomPermissionFacts {
+    pub can_edit_settings: bool,
+    pub can_kick: bool,
+    pub can_ban: bool,
+    pub can_unban: bool,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomSettingChange {
+    Name(Option<String>),
+    Topic(Option<String>),
+    AvatarUrl(Option<String>),
+    JoinRule(RoomJoinRule),
+    HistoryVisibility(RoomHistoryVisibility),
+}
+
+impl fmt::Debug for RoomSettingChange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Name(value) => formatter
+                .debug_tuple("Name")
+                .field(&value.as_ref().map(|_| "RoomName(..)"))
+                .finish(),
+            Self::Topic(value) => formatter
+                .debug_tuple("Topic")
+                .field(&value.as_ref().map(|_| "RoomTopic(..)"))
+                .finish(),
+            Self::AvatarUrl(value) => formatter
+                .debug_tuple("AvatarUrl")
+                .field(&value.as_ref().map(|_| "MxcUri(..)"))
+                .finish(),
+            Self::JoinRule(rule) => formatter.debug_tuple("JoinRule").field(rule).finish(),
+            Self::HistoryVisibility(visibility) => formatter
+                .debug_tuple("HistoryVisibility")
+                .field(visibility)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomModerationAction {
+    Kick,
+    Ban,
+    Unban,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LocalEncryptionState {
+    #[default]
+    Unknown,
+    Probing {
+        request_id: u64,
+    },
+    Healthy,
+    Unavailable,
+    LockedOrInaccessible,
+    MissingCredential,
+    ResetRequired,
+    Resetting {
+        request_id: u64,
+    },
+}
+
+impl LocalEncryptionState {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Probing { .. } => "probing",
+            Self::Healthy => "healthy",
+            Self::Unavailable => "unavailable",
+            Self::LockedOrInaccessible => "locked_or_inaccessible",
+            Self::MissingCredential => "missing_credential",
+            Self::ResetRequired => "reset_required",
+            Self::Resetting { .. } => "resetting",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalEncryptionHealth {
+    Unknown,
+    Healthy,
+    Unavailable,
+    LockedOrInaccessible,
+    MissingCredential,
+    ResetRequired,
+}
+
+impl From<LocalEncryptionHealth> for LocalEncryptionState {
+    fn from(health: LocalEncryptionHealth) -> Self {
+        match health {
+            LocalEncryptionHealth::Unknown => Self::Unknown,
+            LocalEncryptionHealth::Healthy => Self::Healthy,
+            LocalEncryptionHealth::Unavailable => Self::Unavailable,
+            LocalEncryptionHealth::LockedOrInaccessible => Self::LockedOrInaccessible,
+            LocalEncryptionHealth::MissingCredential => Self::MissingCredential,
+            LocalEncryptionHealth::ResetRequired => Self::ResetRequired,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionState {
+    pub summary: NativeAttentionSummary,
+    pub dispatch: NativeAttentionDispatchState,
+}
+
+impl NativeAttentionState {
+    pub fn kind(&self) -> &'static str {
+        self.dispatch.kind()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionSummary {
+    pub unread_count: u64,
+    pub highlight_count: u64,
+    pub badge_count: u64,
+    pub candidate: Option<NativeAttentionCandidate>,
+    pub capabilities: NativeAttentionCapabilities,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionCandidate {
+    pub room_display_name: String,
+    pub kind: RoomAttentionKind,
+    pub unread_count: u64,
+    pub highlight_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeAttentionObservationKind {
+    Live,
+    InitialSync,
+    Backfill,
+    SelfEvent,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NativeAttentionProjectionInput<'a> {
+    pub rooms: &'a [RoomSummary],
+    pub active_room_id: Option<&'a str>,
+    pub muted_room_ids: &'a [String],
+    pub window_focused: bool,
+    pub observation: NativeAttentionObservationKind,
+    pub previous_candidate: Option<&'a NativeAttentionCandidate>,
+    pub capabilities: NativeAttentionCapabilities,
+}
+
+struct NativeAttentionCandidateEntry<'a> {
+    room_id: &'a str,
+    candidate: NativeAttentionCandidate,
+}
+
+pub fn native_attention_state_from_rooms(
+    input: NativeAttentionProjectionInput<'_>,
+) -> NativeAttentionState {
+    let mut unread_count = 0;
+    let mut highlight_count = 0;
+    let mut candidates = Vec::new();
+
+    for room in input.rooms {
+        if room.tags.low_priority.is_some()
+            || input
+                .muted_room_ids
+                .iter()
+                .any(|room_id| room_id == &room.room_id)
+        {
+            continue;
+        }
+
+        unread_count += room.unread_count;
+        highlight_count += room.highlight_count;
+
+        if let Some(summary) = room_attention_summary(
+            room.display_name.clone(),
+            room.is_dm,
+            room.notification_count,
+            room.highlight_count,
+            room.unread_count,
+        ) {
+            candidates.push(NativeAttentionCandidateEntry {
+                room_id: &room.room_id,
+                candidate: NativeAttentionCandidate {
+                    room_display_name: summary.room_display_name,
+                    kind: summary.kind,
+                    unread_count: summary.unread_count,
+                    highlight_count: summary.highlight_count,
+                },
+            });
+        }
+    }
+
+    candidates.sort_by(|left, right| {
+        attention_kind_priority(right.candidate.kind)
+            .cmp(&attention_kind_priority(left.candidate.kind))
+            .then_with(|| {
+                right
+                    .candidate
+                    .highlight_count
+                    .cmp(&left.candidate.highlight_count)
+            })
+            .then_with(|| {
+                right
+                    .candidate
+                    .unread_count
+                    .cmp(&left.candidate.unread_count)
+            })
+            .then_with(|| {
+                left.candidate
+                    .room_display_name
+                    .cmp(&right.candidate.room_display_name)
+            })
+    });
+
+    let candidate_entry = candidates.first();
+    let mut candidate = candidate_entry.map(|entry| entry.candidate.clone());
+    let mut dispatch = NativeAttentionDispatchState::Idle;
+
+    if let Some(entry) = candidate_entry {
+        if let Some(reason) = native_attention_suppression_reason(input, entry) {
+            candidate = None;
+            dispatch = NativeAttentionDispatchState::Suppressed { reason };
+        }
+    }
+
+    let badge_count = match input.capabilities.badge {
+        NativeAttentionCapability::Unavailable => 0,
+        NativeAttentionCapability::Available | NativeAttentionCapability::Unknown => unread_count,
+    };
+
+    NativeAttentionState {
+        summary: NativeAttentionSummary {
+            unread_count,
+            highlight_count,
+            badge_count,
+            candidate,
+            capabilities: input.capabilities,
+        },
+        dispatch,
+    }
+}
+
+fn attention_kind_priority(kind: RoomAttentionKind) -> u8 {
+    match kind {
+        RoomAttentionKind::Mention => 3,
+        RoomAttentionKind::Dm => 2,
+        RoomAttentionKind::Message => 1,
+    }
+}
+
+fn native_attention_suppression_reason(
+    input: NativeAttentionProjectionInput<'_>,
+    entry: &NativeAttentionCandidateEntry<'_>,
+) -> Option<NativeAttentionSuppressionReason> {
+    match input.observation {
+        NativeAttentionObservationKind::InitialSync => {
+            return Some(NativeAttentionSuppressionReason::InitialSync);
+        }
+        NativeAttentionObservationKind::Backfill => {
+            return Some(NativeAttentionSuppressionReason::Backfill);
+        }
+        NativeAttentionObservationKind::SelfEvent => {
+            return Some(NativeAttentionSuppressionReason::SelfMessage);
+        }
+        NativeAttentionObservationKind::Live => {}
+    }
+
+    if input.window_focused && input.active_room_id == Some(entry.room_id) {
+        return Some(NativeAttentionSuppressionReason::WindowFocused);
+    }
+
+    if input.capabilities.notifications == NativeAttentionCapability::Unavailable {
+        return Some(NativeAttentionSuppressionReason::CapabilityUnavailable);
+    }
+
+    if input.previous_candidate == Some(&entry.candidate) {
+        return Some(NativeAttentionSuppressionReason::Duplicate);
+    }
+
+    None
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionCapabilities {
+    pub notifications: NativeAttentionCapability,
+    pub badge: NativeAttentionCapability,
+    pub sound: NativeAttentionCapability,
+    pub tray: NativeAttentionCapability,
+    pub activation: NativeAttentionCapability,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAttentionCapability {
+    Available,
+    Unavailable,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum NativeAttentionDispatchState {
+    #[default]
+    Idle,
+    Dispatching {
+        request_id: u64,
+    },
+    Delivered {
+        request_id: u64,
+    },
+    Suppressed {
+        reason: NativeAttentionSuppressionReason,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: OperationFailureKind,
+    },
+}
+
+impl NativeAttentionDispatchState {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Dispatching { .. } => "dispatching",
+            Self::Delivered { .. } => "delivered",
+            Self::Suppressed { .. } => "suppressed",
+            Self::Failed { .. } => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAttentionSuppressionReason {
+    InitialSync,
+    Backfill,
+    SelfMessage,
+    WindowFocused,
+    RoomMuted,
+    LowPriority,
+    Duplicate,
+    CapabilityUnavailable,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CjkTextPolicyState {
+    pub japanese_catalog: JapaneseCatalogProfile,
+    pub normalization: CjkNormalizationProfile,
+    pub collation: CjkCollationProfile,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JapaneseCatalogProfile {
+    pub catalog_locale: String,
+    pub complete: bool,
+    pub missing_message_ids: Vec<String>,
+}
+
+impl Default for JapaneseCatalogProfile {
+    fn default() -> Self {
+        Self {
+            catalog_locale: "en".to_owned(),
+            complete: true,
+            missing_message_ids: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CjkNormalizationProfile {
+    pub form: String,
+    pub width_fold: bool,
+    pub kana_fold: bool,
+}
+
+impl Default for CjkNormalizationProfile {
+    fn default() -> Self {
+        Self {
+            form: "nfkc".to_owned(),
+            width_fold: true,
+            kana_fold: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CjkCollationProfile {
+    pub locale: String,
+    pub numeric: bool,
+    pub case_first: Option<String>,
+}
+
+impl Default for CjkCollationProfile {
+    fn default() -> Self {
+        Self {
+            locale: "ja".to_owned(),
+            numeric: true,
+            case_first: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

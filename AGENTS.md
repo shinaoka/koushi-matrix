@@ -38,7 +38,10 @@ batch Rust-owned Phase A contracts first, then serialize the shared GUI
 surface, then run the #9/#31 integration gate.
 The umbrella #12 implementation batch follows
 [docs/superpowers/plans/2026-06-15-remaining-core-phase-a-batch-implementation.md](docs/superpowers/plans/2026-06-15-remaining-core-phase-a-batch-implementation.md)
-after that plan is approved.
+after that plan is approved. Before starting each new task in that batch,
+refresh open GitHub issues and apply the plan's issue reconciliation addendum;
+new GUI-only presentation items such as space tooltips do not bypass the
+Rust-owned Phase A rule for product behavior.
 All agents implementing media/file timeline support follow
 [docs/superpowers/plans/2026-06-15-media-phase-a.md](docs/superpowers/plans/2026-06-15-media-phase-a.md)
 for Phase A Rust/headless work before Phase B GUI wiring.
@@ -61,6 +64,138 @@ All agents implementing cross-platform font/emoji substrate Phase A follow
 before any Phase B font asset or CSS wiring.
 Phase B GUI/browser-headless work for the same issue follows
 [docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md](docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md).
+
+## Out of Scope (deferred)
+
+Real-time and recorded audio/video are deferred for now and are intentionally
+absent from the product roadmap:
+
+- Voice / video calls — MatrixRTC / Element Call (MSC4143, MSC3401), including
+  1:1 and group calling.
+- Voice messages — recorded audio clips with waveform record/playback UI
+  (MSC3245).
+
+This is a conscious "not yet" decision, not a permanent exclusion; revisit
+before GA. Do not open feature issues for these without re-deciding scope here.
+
+## Core Batch A DTO Mirrors
+
+- When `AppState` gains a Core Batch A field, update the hand-maintained Tauri
+  `FrontendAppState` DTO, TypeScript `AppState`, browser fake snapshots, app
+  harness snapshots, and Tauri IPC mock snapshots in the same change. The real
+  WebView consumes the Tauri DTO, while headless tests often consume the
+  TypeScript fakes; updating only one side can leave a green browser tier and a
+  crashing Tauri lane.
+- Focused checks for the shared skeleton are
+  `cargo test -p matrix-desktop-state --test core_batch_a_state`,
+  `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact`,
+  and `npm --prefix apps/desktop run typecheck`.
+
+## Japanese / CJK Phase A Notes
+
+- Japanese/CJK product semantics stay Rust-owned. React may render the
+  `ja` catalog and Rust-owned ordering/highlight data, but it must not compute
+  CJK normalization, collation, query folding, or highlight repair locally.
+- Search/review paths for this area are:
+  `apps/desktop/src/i18n/messages.ts`,
+  `apps/desktop/src/i18n/messages.test.ts`,
+  `crates/matrix-desktop-state/src/locale_profile.rs`,
+  `crates/matrix-desktop-state/tests/locale_display_profile.rs`,
+  `crates/matrix-desktop-search/src/document.rs`,
+  `crates/matrix-desktop-search/src/verify.rs`,
+  `crates/matrix-desktop-search/tests/search_adapter.rs`, and
+  `crates/matrix-desktop-core/src/search.rs`.
+- Fast focused checks are:
+  `npm --prefix apps/desktop run test -- --run src/i18n/messages.test.ts`,
+  `cargo test -p matrix-desktop-search --test search_adapter`,
+  `cargo test -p matrix-desktop-state --test locale_display_profile`, and
+  `npm --prefix apps/desktop run typecheck`.
+
+## Credential Health QA
+
+- Local-encryption / credential-store health is Rust-owned
+  `AppState.local_encryption`; GUI code must dispatch typed probe/reset
+  commands and render the snapshot, not infer OS/keyring semantics.
+- Fast Tier 1 checks are:
+  `cargo test -p matrix-desktop-state --test local_encryption_state`,
+  `cargo test -p matrix-desktop-key credential_backend`, and
+  `cargo test -p matrix-desktop-core store_actor_probe_maps_credential_backend_health_without_raw_errors`.
+- The local headless proof is
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000`.
+  It runs under the debug/test file credential-store guard and must refuse to
+  touch the OS keychain.
+- macOS Tier 2 real-Keychain proof is opt-in:
+  `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1 cargo test -p matrix-desktop-key credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture`.
+  Run it only on a real macOS session/CI runner. Consent dialogs, Touch ID,
+  locked login-keychain UX, and signed-build ACL behavior remain attended-only.
+
+## Native Attention QA
+
+- Notification, badge, sound, tray, and activation decisions are Rust-owned
+  `AppState.native_attention` projections. GUI/native adapter code must render
+  or dispatch from the snapshot/capability DTOs; it must not invent notification
+  candidates, badge counts, dedupe, or suppression semantics.
+- Candidate projection uses private-data-minimized room labels and counts only.
+  It must not expose message bodies, sender IDs, room IDs, event IDs,
+  transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,
+  QA artifacts, or issue evidence.
+- Fast checks are:
+  `cargo test -p matrix-desktop-state --test attention_surface`,
+  `cargo test -p matrix-desktop-sdk --test attention_surface`, and
+  `cargo test -p matrix-desktop-core --features qa-bin --bin headless-core-qa`.
+- The local headless proof is
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=native_attention --core --core-backend=both --timeout-ms=240000`.
+  It prints only `notification_candidate=ok`, `badge_state=ok`,
+  `suppress_focus=ok`, and `clear_badge=ok`.
+
+## Public Directory Phase A Notes
+
+- Public directory semantics are Rust-owned. `AppState.directory.query` and
+  `AppState.directory.join` are separate state machines; React must render
+  those DTOs and dispatch typed `query_directory` / `join_directory_room`
+  commands only. Do not recreate query, pagination, join success, or failure
+  state in React.
+- Directory join is alias-based. The SDK wrapper rejects bare room IDs for the
+  directory flow; GUI code should pass the canonical alias and optional server
+  hint from the Rust directory result.
+- When adding or changing public directory fields, update
+  `apps/desktop/src/domain/types.ts`,
+  `apps/desktop/src/domain/coreEvents.ts`,
+  `apps/desktop/src/domain/coreEvents.generated.json`,
+  Tauri DTO tests, browser fake snapshots, app harness snapshots, and the Tauri
+  IPC mock in the same change.
+- The local core QA `directory` scenario proves public directory query and
+  alias join through token-only stdout (`directory_query=ok`,
+  `directory_join=ok`). Do not print room IDs, aliases, server names, query
+  text, pagination tokens, or raw SDK errors for this stage.
+
+## Message Interactions Phase A Notes
+
+- `TimelineItem.reply_quote` is a Rust-owned projection. React renders the
+  `ReplyQuoteState` and optional preview only; it must not look up reply
+  bodies, classify redactions, or patch quote state after a send.
+- `AppState.room_interactions` is the Rust-owned source of truth for
+  `pinned_events` and `pin_operation`. GUI code dispatches typed `pin_event` /
+  `unpin_event` commands and waits for Rust-shaped snapshots/events instead of
+  mutating local pin lists.
+- Recoverable pin/unpin failures must remain retryable in the reducer. Do not
+  clear failed pin state from React; a new typed request transitions the Rust
+  state from `Failed` to `Pending`.
+- Pin/unpin command success settles the Rust pending state before the follow-up
+  pinned-event reload. A reload failure may emit a coarse operation failure, but
+  it must not leave the GUI stuck in `Pending`.
+- Browser fakes must enforce the same known-room guard as the Rust reducer and
+  `RoomActor`; do not let tests create `room_interactions[roomId]` for a room
+  absent from `state.rooms`.
+- When changing `TimelineItem.reply_quote`, `PinnedEvent`,
+  `RoomInteractionState`, or pin/unpin command/event variants, update the Tauri
+  DTO, TypeScript domain types, `coreEvents.generated.json`, browser fake,
+  app/IPC harness snapshots, and serialization-contract tests in the same
+  change.
+- The local core `reply` QA stage uses token-only evidence:
+  `reply_quote=ok`, `pin_event=ok`, `pinned_state=ok`, and `unpin_event=ok`.
+  Do not print Matrix room IDs, event IDs, sender IDs, message bodies, or raw
+  SDK errors for this stage.
 
 ## User Profiles Phase Notes
 
@@ -114,6 +249,11 @@ Phase B GUI/browser-headless work for the same issue follows
   derive from Rust snapshots (`RoomSummary.tags` + `is_dm`). Do not introduce
   React-only section membership while wiring context menus or browser-headless
   tests.
+- Phase B room-tag GUI tests should stub `set_room_tag` / `remove_room_tag`
+  to return the current snapshot first, assert the row does not move
+  immediately, then push a Rust-shaped snapshot with updated `RoomSummary.tags`
+  / sidebar room tags and assert the section movement. This catches accidental
+  React-local room-list repair.
 
 ## Outbound Send Queue Notes
 
@@ -184,6 +324,33 @@ Phase B GUI/browser-headless work for the same issue follows
   `SyncOnce` on the observer account after `SetTyping` is acknowledged to wake
   the same Rust-owned typing observer. Do not replace this with React polling or
   local UI timers.
+
+## Activity Phase A Notes
+
+- `AppState.activity` is the Rust-owned source of truth for account-wide
+  Recent/Unread Activity. React may render `ActivityState`, switch tabs through
+  `set_activity_tab`, request pagination, open focused context from the row's
+  event reference, and dispatch `mark_activity_read`; it must not sort,
+  synthesize unread membership, clear rows locally, or derive account-wide
+  Activity from `TimelineView` DOM state.
+- Activity rows are observed by room `TimelineActor`s as `ActivityRowsObserved`
+  and materialized by the `AppActor`'s Activity projection cache. The projection
+  fills room labels, unread flags, highlight flags, and low-priority exclusion
+  from Rust-owned `AppState` facts. Keep this cache outside React and outside
+  per-view browser fake state.
+- Opening or paginating Activity snapshots the Rust projection into separate
+  Recent and Unread streams. Viewing the Unread tab does not mark anything read.
+  `MarkActivityRead` settles both room targets and the all-activity target
+  through the Rust `mark_read` substate and then updates Activity streams;
+  future SDK fully-read writes must stay behind the same typed command boundary.
+- When adding or changing `ActivityState`, `ActivityRow`, `ActivityEvent`, or
+  Activity command shapes, update the Tauri DTO, TypeScript domain types,
+  checked-in CoreEvent contract artifact, browser fake, Tauri IPC mock, app
+  harness snapshots, and serialization-contract tests in the same change.
+- The local core QA `activity` scenario is token-only:
+  `activity_recent=ok`, `activity_unread=ok`, and `activity_markread=ok`. Do not
+  print Matrix room IDs, event IDs, sender IDs, message bodies, pagination
+  tokens, or raw SDK errors for this stage.
 
 ## Live Signals Phase B Notes
 
@@ -371,6 +538,19 @@ Phase B GUI/browser-headless work for the same issue follows
   `matrix-desktop-state`, shared by main, thread, and edit composer surfaces.
   GUI code normalizes DOM/native key input into typed resolver facts and then
   dispatches/renders the returned action.
+- Composer send semantics also stay Rust-owned. `MentionIntent`,
+  markdown/html formatting, `/me` slash-command emote conversion, and
+  unsupported slash-command failures are derived in Rust/core before SDK send.
+  React may pass typed draft/key/selection facts, but it must not synthesize
+  `m.mentions`, formatted bodies, slash-command dispatch, or a local fallback
+  send path when the resolver returns `noop` or `commitImeCandidate`.
+  Because the resolver crosses an async IPC boundary, GUI key handlers must not
+  call `preventDefault()` for `is_composing` key events; native IME commit owns
+  that browser default while Rust still owns the product action (`CommitImeCandidate`).
+- The focused local composer QA lane is:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000`.
+  Required private-data-free tokens are `mention_send=ok`,
+  `markdown_send=ok`, `slash_command=ok`, and `ime_guard=ok`.
 - When `AppState.settings` or any settings enum changes, update the Tauri DTO,
   TypeScript domain types, `browserFakeApi` defaults, `tauriIpcMock`, app
   harness snapshots, and the DTO serialization-contract test in the same
@@ -395,6 +575,14 @@ Phase B GUI/browser-headless work for the same issue follows
 - There is no hosted CI in this repo yet; these gates run locally and in
   `release:preflight`. Wire them into CI when CI infrastructure appears.
 
+## Key Backup Restore Scope QA
+
+- `joined_room_restore=ok` is the #30 MVP proof token for recovery secret
+  import plus currently joined-room key hydration. It is not proof of
+  exhaustive backup-wide restore. `KeyBackupRestoreSummary.scope` must remain
+  `JoinedRooms` unless docs/policies and upstream SDK feedback record a broader
+  public API or reviewed vendored patch decision.
+
 ## Headless UI (Playwright) Flakes
 
 - `e2e/basic-operations.spec.ts:81` ("submitting the composer in reply mode
@@ -417,6 +605,11 @@ Phase B GUI/browser-headless work for the same issue follows
   with `ItemsUpdated.Set` at generation `1`. A one-off `InitialItems` emitted
   around the same snapshot refresh can be swallowed by harness timing and leave
   the seed row visible, even though the root `lang`/`dir` update succeeded.
+- When a Playwright helper seeds event-driven timeline rows with fake
+  `CoreEvent::Timeline::InitialItems`, make the helper wait until every target
+  `data-item-id` is visible and fail on timeout. Do not fire a fixed number of
+  events and let the test continue: full-spec runs can otherwise hide a
+  dropped harness event until a later unrelated assertion times out.
 - File attachment GUI tests must not open a native file dialog. Use the
   Composer's hidden `input[type=file][aria-label="Attach file input"]` and
   Playwright `setInputFiles()` with synthetic bytes. The visible button should
@@ -460,9 +653,28 @@ Phase B GUI/browser-headless work for the same issue follows
 
 - After the one-time host package install, run the GUI QA lanes as a normal
   user; no `su` or root shell is needed for the fast loop.
-- Prepend the local homeserver binaries when iterating so the host lanes use
-  the checked-in QA binaries first:
-  `export PATH=/tmp/matrix-desktop-local-qa-bin:$PATH`
+- Local homeserver QA runners resolve `conduit` and `tuwunel` from the child
+  process `PATH`; they do not maintain a separate absolute-path probe list.
+  Prepend local QA binary directories before running headless/local GUI lanes.
+- The canonical durable search-path list lives in
+  [docs/qa/headless-basic-operations.md](docs/qa/headless-basic-operations.md#local-homeserver-binary-search-path);
+  keep this operational note in sync when changing it.
+- Search path list for local homeserver binaries:
+  - Host fast lane, preferred:
+    `/tmp/matrix-desktop-local-qa-bin`
+  - Host fallback/test binaries:
+    `/tmp/matrix-desktop-local-qa-bin-test`
+  - Docker lane:
+    `/usr/local/bin` inside the committed Linux GUI image
+  - Windows/manual equivalent:
+    `%TEMP%\matrix-desktop-local-qa-bin` or another synthetic, ignored QA bin
+    directory prepended to `PATH`
+  - Existing user/system `PATH` entries after the QA bin directories
+- POSIX host example:
+  `export PATH=/tmp/matrix-desktop-local-qa-bin:/tmp/matrix-desktop-local-qa-bin-test:$PATH`
+- Quick verification:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH conduit --version` and
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH tuwunel --version`.
 - Build the debug app once, then reuse it with `--skip-build` (optionally
   `--app-binary=PATH`) so each scenario trial skips the full Tauri rebuild:
   `npm --prefix apps/desktop run tauri build -- --debug --no-bundle`, then
@@ -480,6 +692,19 @@ Phase B GUI/browser-headless work for the same issue follows
   waits for `timeline_room=true` and the Rust-owned `TimelineItem.media` row in
   the real Tauri WebView, clicks Download, and prints `gui_local_media=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000`
+- Room-tag GUI iteration has a focused virtual-display lane:
+  `--scenario=local-room-tags`. It opens the real room row context menu in the
+  Linux Tauri WebView, clicks Add/Remove Favourites, and waits for the row to
+  move between Rooms and Favourites from Rust-owned `RoomSummary.tags`; it
+  prints `gui_local_room_tag_set=ok` and `gui_local_room_tag_removed=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-tags-fast --timeout-ms=180000`
+- Composer GUI iteration has a focused virtual-display lane:
+  `--scenario=local-composer`. It seeds a synthetic helper member, waits for
+  Rust-owned `ProfileState.users` to feed the mention autocomplete, drives the
+  real composer mention option, Bold toolbar, and slash input, then waits for
+  Rust-owned send state (`send=sent`) plus composer clear. It prints `gui_local_mention=ok`,
+  `gui_local_markdown=ok`, and `gui_local_slash=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-composer-fast --timeout-ms=180000`
 - When you only need a quick window-state sanity check, use the lane's cheap
   QA title helpers such as `--qa-title-ready` and `--qa-title-send-ready`
   before starting a full scenario run.
@@ -554,6 +779,26 @@ Phase B GUI/browser-headless work for the same issue follows
   `coreEvents.generated.json` contract artifact. The src-tauri
   `core_event_wire_format_matches_checked_in_contract_artifact` test catches
   drift.
+- Room-management GUI work must render only `AppState.room_management`.
+  Settings snapshots and permission facts are Rust-owned; React should disable
+  controls from `settings.permissions` and dispatch typed commands, but it must
+  not decide or repair permission, setting, or kick/ban/unban state locally.
+  Tauri room-management commands wait for correlated `RoomEvent`s and must not
+  call SDK wrappers directly.
+- SDK room-setting state events can return before the SDK room cache reflects
+  the just-sent state event. The success snapshot must project the submitted
+  setting change or wait for a refreshed cache; do not make React patch the
+  visible room-management state after a command returns.
+- The headless `room_management` scenario uses a disposable management room so
+  topic edits and moderation membership changes do not disturb timeline,
+  room/space, or reply stages. Permission-guard QA must observe both the
+  `OperationFailed(Forbidden)` event and the failed `room_management`
+  snapshot; event delivery can lead the connection snapshot by one
+  `StateChanged` event.
+- Room-management QA output must stay private-data-free: no room IDs, user IDs,
+  room names/topics, avatar URLs, moderation reasons, event IDs, or raw SDK
+  errors. Success output is limited to `room_settings=ok`,
+  `permission_guard=ok`, `moderation=ok`, and cleanup tokens.
 - E2EE trust Phase A commands/events are Rust-owned contracts only until the
   AccountActor SDK implementation lands. The fixture/demo backend should return
   typed unavailable/failure actions for trust effects and must not silently
@@ -613,6 +858,18 @@ Phase B GUI/browser-headless work for the same issue follows
   do not provide a reliable app-world command recorder. If the lane fails,
   inspect the scenario-specific artifact run log; the lane uses synthetic
   filenames/content only and must not write real/private media data.
+- `local-room-tags` must use the real context menu and wait for section
+  movement from Rust-owned `RoomSummary.tags`. Do not mutate React state,
+  monkeypatch Tauri IPC, or treat menu click completion as evidence until the
+  row is observed in the expected section.
+- `local-composer` mention candidates must come from Rust-owned
+  `ProfileState.users`, which is projected from SDK room member profiles during
+  room-list observation. React may track selected draft mention pills and pass a
+  typed `MentionIntent`, but it must not synthesize Matrix `m.mentions`,
+  formatted HTML, slash command semantics, or fallback send behavior.
+  Timeline mention pills are display-only rendering over Rust-owned timeline
+  body text plus `ProfileState.users`; they must not become a React-owned
+  source of mention semantics.
 
 ## macOS GUI Smoke Failures
 
