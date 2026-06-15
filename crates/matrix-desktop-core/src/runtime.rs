@@ -718,13 +718,13 @@ impl AppActor {
                     self.handle_app_effects(request_id, health_effects).await;
                     true
                 }
-                AppCommand::UpdateNativeAttentionSummary {
+                AppCommand::UpdateNativeAttentionState {
                     request_id,
-                    summary,
+                    attention,
                 } => {
                     let effects = reduce(
                         &mut self.state,
-                        AppAction::NativeAttentionUpdated { summary },
+                        AppAction::NativeAttentionUpdated { attention },
                     );
                     self.handle_app_effects(request_id, effects).await;
                     true

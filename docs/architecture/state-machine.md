@@ -1113,6 +1113,12 @@ stateDiagram-v2
   notification settings changes, room muted/low-priority state changes, window
   focus changes, mark-read/read-receipt actions, platform capability updates,
   and dispatch completion/failure events from the Tauri adapter.
+- The Phase A core projection is `native_attention_state_from_rooms`. It
+  aggregates unread/highlight counts from eligible rooms, excludes low-priority
+  and muted rooms, prefers `mention` over `dm` over `message` candidates,
+  suppresses initial sync/backfill/self/focused-room observations, suppresses
+  duplicate candidates, and clears badge/candidate state when unread attention
+  reaches zero.
 - Candidates carry only private-data-minimized fields allowed by the security
   rules: safe room display label, attention kind (`mention`, `dm`, `message`),
   aggregate unread/highlight counts, and coarse capability tokens. They must not

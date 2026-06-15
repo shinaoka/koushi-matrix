@@ -6,7 +6,7 @@ use std::fmt;
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, DirectoryQuery, IdentityResetAuthRequest,
     JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest, MentionIntent,
-    NativeAttentionSummary, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
+    NativeAttentionState, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
     RoomTagKind, SettingsPatch, VerificationCancelReason, VerificationTarget,
 };
 
@@ -42,7 +42,7 @@ impl CoreCommand {
                 | AppCommand::PaginateActivity { request_id, .. }
                 | AppCommand::MarkActivityRead { request_id, .. }
                 | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
-                | AppCommand::UpdateNativeAttentionSummary { request_id, .. }
+                | AppCommand::UpdateNativeAttentionState { request_id, .. }
                 | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. },
             ) => *request_id,
             Self::Account(command) => match command {
@@ -195,9 +195,9 @@ pub enum AppCommand {
         request_id: RequestId,
         health: LocalEncryptionHealth,
     },
-    UpdateNativeAttentionSummary {
+    UpdateNativeAttentionState {
         request_id: RequestId,
-        summary: NativeAttentionSummary,
+        attention: NativeAttentionState,
     },
     UpdateJapaneseCatalogProfile {
         request_id: RequestId,
@@ -303,18 +303,23 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("health", health)
                 .finish(),
-            Self::UpdateNativeAttentionSummary {
+            Self::UpdateNativeAttentionState {
                 request_id,
-                summary,
+                attention,
             } => formatter
-                .debug_struct("UpdateNativeAttentionSummary")
+                .debug_struct("UpdateNativeAttentionState")
                 .field("request_id", request_id)
-                .field("unread_count", &summary.unread_count)
-                .field("highlight_count", &summary.highlight_count)
-                .field("badge_count", &summary.badge_count)
+                .field("unread_count", &attention.summary.unread_count)
+                .field("highlight_count", &attention.summary.highlight_count)
+                .field("badge_count", &attention.summary.badge_count)
+                .field("dispatch", &attention.dispatch.kind())
                 .field(
                     "candidate",
-                    &summary.candidate.as_ref().map(|_| "AttentionCandidate(..)"),
+                    &attention
+                        .summary
+                        .candidate
+                        .as_ref()
+                        .map(|_| "AttentionCandidate(..)"),
                 )
                 .finish(),
             Self::UpdateJapaneseCatalogProfile {
@@ -1235,7 +1240,11 @@ impl fmt::Debug for SearchCommand {
 
 #[cfg(test)]
 mod tests {
-    use matrix_desktop_state::{MentionIntent, MentionTarget};
+    use matrix_desktop_state::{
+        MentionIntent, MentionTarget, NativeAttentionCandidate, NativeAttentionCapabilities,
+        NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionState,
+        NativeAttentionSummary, NativeAttentionSuppressionReason, RoomAttentionKind,
+    };
 
     use super::*;
 
@@ -1531,6 +1540,43 @@ mod tests {
             assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
             assert!(!debug.contains("$private-event:example.invalid"), "{debug}");
         }
+    }
+
+    #[test]
+    fn native_attention_command_debug_redacts_candidate_labels() {
+        let command = AppCommand::UpdateNativeAttentionState {
+            request_id: fake_rid(27),
+            attention: NativeAttentionState {
+                summary: NativeAttentionSummary {
+                    unread_count: 4,
+                    highlight_count: 1,
+                    badge_count: 4,
+                    candidate: Some(NativeAttentionCandidate {
+                        room_display_name: "Private Room Name".to_owned(),
+                        kind: RoomAttentionKind::Mention,
+                        unread_count: 4,
+                        highlight_count: 1,
+                    }),
+                    capabilities: NativeAttentionCapabilities {
+                        notifications: NativeAttentionCapability::Available,
+                        badge: NativeAttentionCapability::Available,
+                        sound: NativeAttentionCapability::Unknown,
+                        tray: NativeAttentionCapability::Unavailable,
+                        activation: NativeAttentionCapability::Unknown,
+                    },
+                },
+                dispatch: NativeAttentionDispatchState::Suppressed {
+                    reason: NativeAttentionSuppressionReason::WindowFocused,
+                },
+            },
+        };
+
+        let debug = format!("{command:?}");
+
+        assert!(debug.contains("UpdateNativeAttentionState"), "{debug}");
+        assert!(debug.contains("unread_count"), "{debug}");
+        assert!(debug.contains("suppressed"), "{debug}");
+        assert!(!debug.contains("Private Room Name"), "{debug}");
     }
 
     #[test]

@@ -2550,7 +2550,7 @@ pub fn room_attention_summary_from_counts(
 ) -> Option<RoomAttentionSummary> {
     let unread_count =
         room_attention_unread_count(notification_count, unread_messages, is_marked_unread);
-    let room_display_name = room_display_name?;
+    let room_display_name = room_display_name.unwrap_or_else(|| "Room".to_owned());
 
     room_attention_summary(
         room_display_name,

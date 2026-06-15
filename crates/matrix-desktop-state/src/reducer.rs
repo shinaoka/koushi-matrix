@@ -1550,12 +1550,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.local_encryption = LocalEncryptionState::ResetRequired;
             vec![AppEffect::EmitUiEvent(UiEvent::LocalEncryptionChanged)]
         }
-        AppAction::NativeAttentionUpdated { summary } => {
-            if state.native_attention.summary == summary {
+        AppAction::NativeAttentionUpdated { attention } => {
+            if state.native_attention == attention {
                 return Vec::new();
             }
 
-            state.native_attention.summary = summary;
+            state.native_attention = attention;
             vec![AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged)]
         }
         AppAction::JapaneseCatalogProfileChanged { profile } => {

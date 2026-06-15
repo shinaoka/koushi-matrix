@@ -1,5 +1,42 @@
-use matrix_desktop_state::{RoomAttentionKind, room_attention_summary};
+use matrix_desktop_state::{
+    AppAction, AppState, NativeAttentionCandidate, NativeAttentionCapabilities,
+    NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionObservationKind,
+    NativeAttentionProjectionInput, NativeAttentionSuppressionReason, RoomAttentionKind,
+    RoomSummary, RoomTagInfo, RoomTags, native_attention_state_from_rooms, reduce,
+    room_attention_summary,
+};
 use serde_json::json;
+
+fn room(
+    room_id: &str,
+    display_name: &str,
+    is_dm: bool,
+    unread_count: u64,
+    notification_count: u64,
+    highlight_count: u64,
+) -> RoomSummary {
+    RoomSummary {
+        room_id: room_id.to_owned(),
+        display_name: display_name.to_owned(),
+        avatar: None,
+        is_dm,
+        tags: RoomTags::default(),
+        unread_count,
+        notification_count,
+        highlight_count,
+        parent_space_ids: Vec::new(),
+    }
+}
+
+fn available_capabilities() -> NativeAttentionCapabilities {
+    NativeAttentionCapabilities {
+        notifications: NativeAttentionCapability::Available,
+        badge: NativeAttentionCapability::Available,
+        sound: NativeAttentionCapability::Available,
+        tray: NativeAttentionCapability::Available,
+        activation: NativeAttentionCapability::Available,
+    }
+}
 
 #[test]
 fn room_attention_summary_serializes_only_allowed_fields() {
@@ -39,4 +76,194 @@ fn room_attention_kind_prefers_mentions_over_dm_and_message() {
         matrix_desktop_state::room_attention_kind(false, 4, 0, 4),
         Some(RoomAttentionKind::Message)
     );
+}
+
+#[test]
+fn native_attention_candidate_prioritizes_mentions_dm_then_messages_and_badges() {
+    let rooms = vec![
+        room("!message:example.invalid", "Room", false, 8, 8, 0),
+        room("!dm:example.invalid", "Direct", true, 3, 3, 0),
+        room("!mention:example.invalid", "Mention", false, 1, 1, 1),
+    ];
+
+    let state = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &rooms,
+        active_room_id: None,
+        muted_room_ids: &[],
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities: available_capabilities(),
+    });
+
+    assert_eq!(state.summary.unread_count, 12);
+    assert_eq!(state.summary.highlight_count, 1);
+    assert_eq!(state.summary.badge_count, 12);
+    assert_eq!(
+        state.summary.candidate,
+        Some(NativeAttentionCandidate {
+            room_display_name: "Mention".to_owned(),
+            kind: RoomAttentionKind::Mention,
+            unread_count: 1,
+            highlight_count: 1,
+        })
+    );
+    assert_eq!(state.dispatch, NativeAttentionDispatchState::Idle);
+}
+
+#[test]
+fn native_attention_suppresses_initial_backfill_self_and_focused_room() {
+    let rooms = vec![room("!room:example.invalid", "Room", false, 2, 2, 0)];
+
+    for (observation, reason) in [
+        (
+            NativeAttentionObservationKind::InitialSync,
+            NativeAttentionSuppressionReason::InitialSync,
+        ),
+        (
+            NativeAttentionObservationKind::Backfill,
+            NativeAttentionSuppressionReason::Backfill,
+        ),
+        (
+            NativeAttentionObservationKind::SelfEvent,
+            NativeAttentionSuppressionReason::SelfMessage,
+        ),
+    ] {
+        let state = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+            rooms: &rooms,
+            active_room_id: None,
+            muted_room_ids: &[],
+            window_focused: false,
+            observation,
+            previous_candidate: None,
+            capabilities: available_capabilities(),
+        });
+
+        assert_eq!(
+            state.dispatch,
+            NativeAttentionDispatchState::Suppressed { reason }
+        );
+        assert_eq!(state.summary.candidate, None);
+    }
+
+    let focused = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &rooms,
+        active_room_id: Some("!room:example.invalid"),
+        muted_room_ids: &[],
+        window_focused: true,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities: available_capabilities(),
+    });
+
+    assert_eq!(
+        focused.dispatch,
+        NativeAttentionDispatchState::Suppressed {
+            reason: NativeAttentionSuppressionReason::WindowFocused
+        }
+    );
+    assert_eq!(focused.summary.candidate, None);
+}
+
+#[test]
+fn native_attention_excludes_low_priority_and_muted_rooms_and_clears_badge_at_zero() {
+    let mut low_priority = room("!low:example.invalid", "Low", false, 5, 5, 1);
+    low_priority.tags.low_priority = Some(RoomTagInfo {
+        order: Some("0.9".to_owned()),
+    });
+    let muted = room("!muted:example.invalid", "Muted", false, 4, 4, 0);
+
+    let state = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &[low_priority, muted],
+        active_room_id: None,
+        muted_room_ids: &["!muted:example.invalid".to_owned()],
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities: available_capabilities(),
+    });
+
+    assert_eq!(state.summary.unread_count, 0);
+    assert_eq!(state.summary.highlight_count, 0);
+    assert_eq!(state.summary.badge_count, 0);
+    assert_eq!(state.summary.candidate, None);
+    assert_eq!(state.dispatch, NativeAttentionDispatchState::Idle);
+}
+
+#[test]
+fn native_attention_capability_unavailable_and_duplicate_candidates_are_suppressed() {
+    let rooms = vec![room("!room:example.invalid", "Room", false, 2, 2, 0)];
+    let unavailable = NativeAttentionCapabilities {
+        notifications: NativeAttentionCapability::Unavailable,
+        ..available_capabilities()
+    };
+
+    let state = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &rooms,
+        active_room_id: None,
+        muted_room_ids: &[],
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities: unavailable,
+    });
+
+    assert_eq!(state.summary.badge_count, 2);
+    assert_eq!(state.summary.candidate, None);
+    assert_eq!(
+        state.dispatch,
+        NativeAttentionDispatchState::Suppressed {
+            reason: NativeAttentionSuppressionReason::CapabilityUnavailable
+        }
+    );
+
+    let previous = NativeAttentionCandidate {
+        room_display_name: "Room".to_owned(),
+        kind: RoomAttentionKind::Message,
+        unread_count: 2,
+        highlight_count: 0,
+    };
+    let duplicate = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &rooms,
+        active_room_id: None,
+        muted_room_ids: &[],
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: Some(&previous),
+        capabilities: available_capabilities(),
+    });
+
+    assert_eq!(duplicate.summary.candidate, None);
+    assert_eq!(
+        duplicate.dispatch,
+        NativeAttentionDispatchState::Suppressed {
+            reason: NativeAttentionSuppressionReason::Duplicate
+        }
+    );
+}
+
+#[test]
+fn native_attention_reducer_preserves_dispatch_state_not_only_summary() {
+    let rooms = vec![room("!room:example.invalid", "Room", false, 2, 2, 0)];
+    let attention = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &rooms,
+        active_room_id: Some("!room:example.invalid"),
+        muted_room_ids: &[],
+        window_focused: true,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities: available_capabilities(),
+    });
+
+    let mut app_state = AppState::default();
+    let effects = reduce(
+        &mut app_state,
+        AppAction::NativeAttentionUpdated {
+            attention: attention.clone(),
+        },
+    );
+
+    assert_eq!(app_state.native_attention, attention);
+    assert_eq!(app_state.native_attention.kind(), "suppressed");
+    assert_eq!(effects.len(), 1);
 }

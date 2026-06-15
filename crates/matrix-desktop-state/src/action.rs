@@ -4,7 +4,7 @@ use crate::state::{
     ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab, BasicOperationRequest,
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState,
     IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate,
-    LocalEncryptionHealth, LoginFlow, NativeAttentionSummary, OperationFailureKind, OwnProfile,
+    LocalEncryptionHealth, LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile,
     PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomModerationAction,
     RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
     SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
@@ -347,7 +347,7 @@ pub enum AppAction {
         request_id: u64,
     },
     NativeAttentionUpdated {
-        summary: NativeAttentionSummary,
+        attention: NativeAttentionState,
     },
     JapaneseCatalogProfileChanged {
         profile: JapaneseCatalogProfile,

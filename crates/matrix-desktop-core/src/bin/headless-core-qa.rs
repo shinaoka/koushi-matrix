@@ -60,11 +60,13 @@ use matrix_desktop_state::{
     ComposerSendShortcut, ComposerSurface, CrossSigningStatus, DirectoryQuery,
     DirectoryRoomSummary, IdentityResetAuthRequest, IdentityResetAuthType, IdentityResetState,
     KeyBackupStatus, LocalEncryptionHealth, LocalEncryptionState, MentionIntent, MentionTarget,
-    OperationFailureKind, PresenceKind, RecoveryRequest, ReplyQuoteState,
-    RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
-    RoomSettingChange, RoomSettingsSnapshot, SasEmoji, SessionInfo, SessionState,
-    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
-    resolve_composer_key_action,
+    NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionDispatchState,
+    NativeAttentionObservationKind, NativeAttentionProjectionInput, NativeAttentionState,
+    NativeAttentionSuppressionReason, OperationFailureKind, PresenceKind, RecoveryRequest,
+    ReplyQuoteState, RoomAttentionKind, RoomManagementOperationKind, RoomManagementOperationState,
+    RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
+    SessionInfo, SessionState, TrustOperationFailureKind, VerificationFlowState,
+    VerificationTarget, native_attention_state_from_rooms, resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -99,6 +101,7 @@ enum QaScenario {
     Safety,
     LoginSync,
     CredentialHealth,
+    NativeAttention,
     E2eeTrust,
     InvitesDm,
     RoomSpace,
@@ -121,6 +124,7 @@ enum QaStage {
     Safety,
     LoginSync,
     CredentialHealth,
+    NativeAttention,
     E2eeTrust,
     InvitesDm,
     RoomSpace,
@@ -215,6 +219,7 @@ impl QaScenario {
             "safety" => Ok(Self::Safety),
             "login_sync" => Ok(Self::LoginSync),
             "credential_health" => Ok(Self::CredentialHealth),
+            "native_attention" => Ok(Self::NativeAttention),
             "e2ee_trust" => Ok(Self::E2eeTrust),
             "invites_dm" => Ok(Self::InvitesDm),
             "room_space" => Ok(Self::RoomSpace),
@@ -231,7 +236,7 @@ impl QaScenario {
             "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
             )),
         }
     }
@@ -244,6 +249,10 @@ impl QaScenario {
             Self::CredentialHealth => matches!(
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::CredentialHealth
+            ),
+            Self::NativeAttention => matches!(
+                stage,
+                QaStage::Safety | QaStage::LoginSync | QaStage::NativeAttention
             ),
             Self::E2eeTrust => {
                 matches!(
@@ -357,6 +366,7 @@ impl QaScenario {
                 | Self::RoomManagement
                 | Self::Activity
                 | Self::CredentialHealth
+                | Self::NativeAttention
         )
     }
 }
@@ -371,6 +381,12 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::Safety => &["safety=ok"],
         QaStage::LoginSync => &["login_sync=ok"],
         QaStage::CredentialHealth => &["credential_health=ok", "fail_closed=ok"],
+        QaStage::NativeAttention => &[
+            "notification_candidate=ok",
+            "badge_state=ok",
+            "suppress_focus=ok",
+            "clear_badge=ok",
+        ],
         QaStage::E2eeTrust => &["e2ee_trust=ok"],
         QaStage::InvitesDm => &[
             "invite_recv=ok",
@@ -432,6 +448,10 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "login_sync=ok",
         "credential_health=ok",
         "fail_closed=ok",
+        "notification_candidate=ok",
+        "badge_state=ok",
+        "suppress_focus=ok",
+        "clear_badge=ok",
         "invite_recv=ok",
         "invite_accept=ok",
         "invite_decline=ok",
@@ -485,6 +505,11 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Safety,
             QaStage::LoginSync,
             QaStage::CredentialHealth,
+        ],
+        QaScenario::NativeAttention => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::NativeAttention,
         ],
         QaScenario::E2eeTrust => {
             vec![QaStage::Safety, QaStage::LoginSync, QaStage::E2eeTrust]
@@ -576,6 +601,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Safety,
             QaStage::LoginSync,
             QaStage::CredentialHealth,
+            QaStage::NativeAttention,
             QaStage::InvitesDm,
             QaStage::RoomSpace,
             QaStage::Directory,
@@ -611,6 +637,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::Directory
         | QaScenario::RoomManagement
         | QaScenario::CredentialHealth
+        | QaScenario::NativeAttention
         | QaScenario::E2eeTrust
         | QaScenario::InvitesDm
         | QaScenario::Timeline
@@ -1571,6 +1598,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     if scenario.should_run_stage(QaStage::CredentialHealth) {
         run_credential_health_stage(&mut conn_a).await?;
+    }
+
+    if scenario.should_run_stage(QaStage::NativeAttention) {
+        run_native_attention_stage(&mut conn_a).await?;
     }
 
     if scenario == QaScenario::E2eeTrust {
@@ -3928,6 +3959,42 @@ async fn wait_for_local_encryption_health(
     }
 }
 
+async fn wait_for_native_attention_state(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    expected: &NativeAttentionState,
+    label: &str,
+) -> Result<(), String> {
+    if conn.snapshot().native_attention == *expected {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for native attention summary"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) if snapshot.native_attention == *expected => {
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!(
+                    "{label}: native attention update failed: {failure:?}"
+                ));
+            }
+            _ if conn.snapshot().native_attention == *expected => {
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Wait for `AccountEvent::LoggedIn` with the given request_id.
 async fn wait_for_logged_in(
     conn: &mut CoreConnection,
@@ -4209,6 +4276,120 @@ async fn run_credential_health_stage(conn: &mut CoreConnection) -> Result<(), St
         "credential health restore",
     )
     .await
+}
+
+async fn run_native_attention_stage(conn: &mut CoreConnection) -> Result<(), String> {
+    let rooms = vec![
+        native_attention_room("!message:example.invalid", "Room", false, 8, 8, 0),
+        native_attention_room("!dm:example.invalid", "Direct", true, 3, 3, 0),
+        native_attention_room("!mention:example.invalid", "Mention", false, 1, 1, 1),
+    ];
+    let capabilities = native_attention_available_capabilities();
+    let attention = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &rooms,
+        active_room_id: None,
+        muted_room_ids: &[],
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities,
+    });
+
+    let candidate = attention
+        .summary
+        .candidate
+        .as_ref()
+        .ok_or_else(|| "native attention candidate was not projected".to_owned())?;
+    if candidate.kind != RoomAttentionKind::Mention || attention.summary.badge_count != 12 {
+        return Err("native attention candidate priority or badge count was wrong".to_owned());
+    }
+
+    let candidate_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::UpdateNativeAttentionState {
+        request_id: candidate_id,
+        attention: attention.clone(),
+    }))
+    .await
+    .map_err(|e| format!("native attention: submit candidate update failed: {e}"))?;
+    wait_for_native_attention_state(conn, candidate_id, &attention, "native attention candidate")
+        .await?;
+    println!("notification_candidate=ok");
+    println!("badge_state=ok");
+
+    let focused = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &rooms,
+        active_room_id: Some("!mention:example.invalid"),
+        muted_room_ids: &[],
+        window_focused: true,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities,
+    });
+    if focused.summary.candidate.is_some()
+        || focused.dispatch
+            != (NativeAttentionDispatchState::Suppressed {
+                reason: NativeAttentionSuppressionReason::WindowFocused,
+            })
+    {
+        return Err("native attention focused room suppression was not projected".to_owned());
+    }
+    println!("suppress_focus=ok");
+
+    let clear = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &[],
+        active_room_id: None,
+        muted_room_ids: &[],
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: attention.summary.candidate.as_ref(),
+        capabilities,
+    });
+    if clear.summary.badge_count != 0 || clear.summary.candidate.is_some() {
+        return Err("native attention clear state retained badge or candidate".to_owned());
+    }
+
+    let clear_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::UpdateNativeAttentionState {
+        request_id: clear_id,
+        attention: clear.clone(),
+    }))
+    .await
+    .map_err(|e| format!("native attention: submit clear update failed: {e}"))?;
+    wait_for_native_attention_state(conn, clear_id, &clear, "native attention clear").await?;
+    println!("clear_badge=ok");
+
+    Ok(())
+}
+
+fn native_attention_available_capabilities() -> NativeAttentionCapabilities {
+    NativeAttentionCapabilities {
+        notifications: NativeAttentionCapability::Available,
+        badge: NativeAttentionCapability::Available,
+        sound: NativeAttentionCapability::Available,
+        tray: NativeAttentionCapability::Available,
+        activation: NativeAttentionCapability::Available,
+    }
+}
+
+fn native_attention_room(
+    room_id: &str,
+    display_name: &str,
+    is_dm: bool,
+    unread_count: u64,
+    notification_count: u64,
+    highlight_count: u64,
+) -> RoomSummary {
+    RoomSummary {
+        room_id: room_id.to_owned(),
+        display_name: display_name.to_owned(),
+        avatar: None,
+        is_dm,
+        tags: RoomTags::default(),
+        unread_count,
+        notification_count,
+        highlight_count,
+        parent_space_ids: Vec::new(),
+    }
 }
 
 async fn run_activity_stage(
@@ -7458,6 +7639,10 @@ mod tests {
             QaScenario::CredentialHealth
         );
         assert_eq!(
+            QaScenario::from_env_value("native_attention").unwrap(),
+            QaScenario::NativeAttention
+        );
+        assert_eq!(
             QaScenario::from_env_value("reply").unwrap(),
             QaScenario::Reply
         );
@@ -7509,6 +7694,7 @@ mod tests {
             QaScenario::Safety,
             QaScenario::LoginSync,
             QaScenario::CredentialHealth,
+            QaScenario::NativeAttention,
             QaScenario::RoomSpace,
             QaScenario::Directory,
             QaScenario::RoomManagement,
@@ -7538,6 +7724,7 @@ mod tests {
         assert!(QaScenario::LiveSignals.suppress_matrix_identifiers());
         assert!(QaScenario::SendQueue.suppress_matrix_identifiers());
         assert!(QaScenario::CredentialHealth.suppress_matrix_identifiers());
+        assert!(QaScenario::NativeAttention.suppress_matrix_identifiers());
         assert!(!QaScenario::Timeline.suppress_matrix_identifiers());
         assert!(!QaScenario::All.suppress_matrix_identifiers());
     }
@@ -8042,6 +8229,12 @@ mod tests {
         assert!(!QaScenario::CredentialHealth.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::CredentialHealth.suppress_matrix_identifiers());
 
+        assert!(QaScenario::NativeAttention.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::NativeAttention.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::NativeAttention.should_run_stage(QaStage::NativeAttention));
+        assert!(!QaScenario::NativeAttention.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::NativeAttention.suppress_matrix_identifiers());
+
         assert!(QaScenario::Reply.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::Reply.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::Reply.should_run_stage(QaStage::Timeline));
@@ -8193,6 +8386,10 @@ mod tests {
                 "login_sync=ok",
                 "credential_health=ok",
                 "fail_closed=ok",
+                "notification_candidate=ok",
+                "badge_state=ok",
+                "suppress_focus=ok",
+                "clear_badge=ok",
                 "invite_recv=ok",
                 "invite_accept=ok",
                 "invite_decline=ok",
@@ -8315,6 +8512,18 @@ mod tests {
             ]
         );
         assert_eq!(
+            final_tokens_for_scenario(QaScenario::NativeAttention),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "notification_candidate=ok",
+                "badge_state=ok",
+                "suppress_focus=ok",
+                "clear_badge=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
             final_tokens_for_scenario(QaScenario::Directory),
             [
                 "safety=ok",
@@ -8424,6 +8633,10 @@ mod tests {
                 "login_sync=ok",
                 "credential_health=ok",
                 "fail_closed=ok",
+                "notification_candidate=ok",
+                "badge_state=ok",
+                "suppress_focus=ok",
+                "clear_badge=ok",
                 "invite_recv=ok",
                 "invite_accept=ok",
                 "invite_decline=ok",

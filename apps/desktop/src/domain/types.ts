@@ -680,6 +680,9 @@ export type NativeAttentionDispatchState =
   | { kind: "failed"; request_id: number; failureKind: OperationFailureKind };
 
 export type NativeAttentionSuppressionReason =
+  | "initialSync"
+  | "backfill"
+  | "selfMessage"
   | "windowFocused"
   | "roomMuted"
   | "lowPriority"

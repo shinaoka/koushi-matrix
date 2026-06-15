@@ -58,3 +58,18 @@ fn room_attention_summary_from_counts_prefers_dm_and_mentions() {
     .unwrap();
     assert_eq!(mention_summary.kind, RoomAttentionKind::Mention);
 }
+
+#[test]
+fn room_attention_summary_from_counts_uses_private_safe_blank_room_label() {
+    let summary = matrix_desktop_sdk::room_attention_summary_from_counts(
+        Some("   ".to_owned()),
+        false,
+        2,
+        0,
+        2,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(summary.room_display_name, "Room");
+}

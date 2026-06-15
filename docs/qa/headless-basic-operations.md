@@ -47,6 +47,12 @@ Required success tokens:
 ```text
 safety=ok
 login_sync=ok
+credential_health=ok
+fail_closed=ok
+notification_candidate=ok
+badge_state=ok
+suppress_focus=ok
+clear_badge=ok
 invite_recv=ok
 invite_accept=ok
 invite_decline=ok
@@ -209,6 +215,7 @@ npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=l
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=activity --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=native_attention --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=send_queue --core --core-backend=both --timeout-ms=240000
 ```
 

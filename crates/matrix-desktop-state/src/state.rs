@@ -689,12 +689,20 @@ pub fn room_attention_summary(
     let kind = room_attention_kind(is_dm, notification_count, highlight_count, unread_count)?;
 
     Some(RoomAttentionSummary {
-        room_display_name,
+        room_display_name: private_safe_room_display_name(room_display_name),
         kind,
         notification_count,
         highlight_count,
         unread_count,
     })
+}
+
+fn private_safe_room_display_name(room_display_name: String) -> String {
+    if room_display_name.trim().is_empty() {
+        "Room".to_owned()
+    } else {
+        room_display_name
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1406,7 +1414,160 @@ pub struct NativeAttentionCandidate {
     pub highlight_count: u64,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeAttentionObservationKind {
+    Live,
+    InitialSync,
+    Backfill,
+    SelfEvent,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NativeAttentionProjectionInput<'a> {
+    pub rooms: &'a [RoomSummary],
+    pub active_room_id: Option<&'a str>,
+    pub muted_room_ids: &'a [String],
+    pub window_focused: bool,
+    pub observation: NativeAttentionObservationKind,
+    pub previous_candidate: Option<&'a NativeAttentionCandidate>,
+    pub capabilities: NativeAttentionCapabilities,
+}
+
+struct NativeAttentionCandidateEntry<'a> {
+    room_id: &'a str,
+    candidate: NativeAttentionCandidate,
+}
+
+pub fn native_attention_state_from_rooms(
+    input: NativeAttentionProjectionInput<'_>,
+) -> NativeAttentionState {
+    let mut unread_count = 0;
+    let mut highlight_count = 0;
+    let mut candidates = Vec::new();
+
+    for room in input.rooms {
+        if room.tags.low_priority.is_some()
+            || input
+                .muted_room_ids
+                .iter()
+                .any(|room_id| room_id == &room.room_id)
+        {
+            continue;
+        }
+
+        unread_count += room.unread_count;
+        highlight_count += room.highlight_count;
+
+        if let Some(summary) = room_attention_summary(
+            room.display_name.clone(),
+            room.is_dm,
+            room.notification_count,
+            room.highlight_count,
+            room.unread_count,
+        ) {
+            candidates.push(NativeAttentionCandidateEntry {
+                room_id: &room.room_id,
+                candidate: NativeAttentionCandidate {
+                    room_display_name: summary.room_display_name,
+                    kind: summary.kind,
+                    unread_count: summary.unread_count,
+                    highlight_count: summary.highlight_count,
+                },
+            });
+        }
+    }
+
+    candidates.sort_by(|left, right| {
+        attention_kind_priority(right.candidate.kind)
+            .cmp(&attention_kind_priority(left.candidate.kind))
+            .then_with(|| {
+                right
+                    .candidate
+                    .highlight_count
+                    .cmp(&left.candidate.highlight_count)
+            })
+            .then_with(|| {
+                right
+                    .candidate
+                    .unread_count
+                    .cmp(&left.candidate.unread_count)
+            })
+            .then_with(|| {
+                left.candidate
+                    .room_display_name
+                    .cmp(&right.candidate.room_display_name)
+            })
+    });
+
+    let candidate_entry = candidates.first();
+    let mut candidate = candidate_entry.map(|entry| entry.candidate.clone());
+    let mut dispatch = NativeAttentionDispatchState::Idle;
+
+    if let Some(entry) = candidate_entry {
+        if let Some(reason) = native_attention_suppression_reason(input, entry) {
+            candidate = None;
+            dispatch = NativeAttentionDispatchState::Suppressed { reason };
+        }
+    }
+
+    let badge_count = match input.capabilities.badge {
+        NativeAttentionCapability::Unavailable => 0,
+        NativeAttentionCapability::Available | NativeAttentionCapability::Unknown => unread_count,
+    };
+
+    NativeAttentionState {
+        summary: NativeAttentionSummary {
+            unread_count,
+            highlight_count,
+            badge_count,
+            candidate,
+            capabilities: input.capabilities,
+        },
+        dispatch,
+    }
+}
+
+fn attention_kind_priority(kind: RoomAttentionKind) -> u8 {
+    match kind {
+        RoomAttentionKind::Mention => 3,
+        RoomAttentionKind::Dm => 2,
+        RoomAttentionKind::Message => 1,
+    }
+}
+
+fn native_attention_suppression_reason(
+    input: NativeAttentionProjectionInput<'_>,
+    entry: &NativeAttentionCandidateEntry<'_>,
+) -> Option<NativeAttentionSuppressionReason> {
+    match input.observation {
+        NativeAttentionObservationKind::InitialSync => {
+            return Some(NativeAttentionSuppressionReason::InitialSync);
+        }
+        NativeAttentionObservationKind::Backfill => {
+            return Some(NativeAttentionSuppressionReason::Backfill);
+        }
+        NativeAttentionObservationKind::SelfEvent => {
+            return Some(NativeAttentionSuppressionReason::SelfMessage);
+        }
+        NativeAttentionObservationKind::Live => {}
+    }
+
+    if input.window_focused && input.active_room_id == Some(entry.room_id) {
+        return Some(NativeAttentionSuppressionReason::WindowFocused);
+    }
+
+    if input.capabilities.notifications == NativeAttentionCapability::Unavailable {
+        return Some(NativeAttentionSuppressionReason::CapabilityUnavailable);
+    }
+
+    if input.previous_candidate == Some(&entry.candidate) {
+        return Some(NativeAttentionSuppressionReason::Duplicate);
+    }
+
+    None
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NativeAttentionCapabilities {
     pub notifications: NativeAttentionCapability,
     pub badge: NativeAttentionCapability,
@@ -1460,6 +1621,9 @@ impl NativeAttentionDispatchState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NativeAttentionSuppressionReason {
+    InitialSync,
+    Backfill,
+    SelfMessage,
     WindowFocused,
     RoomMuted,
     LowPriority,

@@ -109,6 +109,25 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Run it only on a real macOS session/CI runner. Consent dialogs, Touch ID,
   locked login-keychain UX, and signed-build ACL behavior remain attended-only.
 
+## Native Attention QA
+
+- Notification, badge, sound, tray, and activation decisions are Rust-owned
+  `AppState.native_attention` projections. GUI/native adapter code must render
+  or dispatch from the snapshot/capability DTOs; it must not invent notification
+  candidates, badge counts, dedupe, or suppression semantics.
+- Candidate projection uses private-data-minimized room labels and counts only.
+  It must not expose message bodies, sender IDs, room IDs, event IDs,
+  transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,
+  QA artifacts, or issue evidence.
+- Fast checks are:
+  `cargo test -p matrix-desktop-state --test attention_surface`,
+  `cargo test -p matrix-desktop-sdk --test attention_surface`, and
+  `cargo test -p matrix-desktop-core --features qa-bin --bin headless-core-qa`.
+- The local headless proof is
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=native_attention --core --core-backend=both --timeout-ms=240000`.
+  It prints only `notification_candidate=ok`, `badge_state=ok`,
+  `suppress_focus=ok`, and `clear_badge=ok`.
+
 ## Public Directory Phase A Notes
 
 - Public directory semantics are Rust-owned. `AppState.directory.query` and
