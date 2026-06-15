@@ -102,15 +102,20 @@ describe("desktop release scripts", () => {
     expect(output).toContain("package.scripts.qa:mac-gui");
   });
 
-  test("macOS Keychain Tier 2 workflow exposes the env-gated temporary-keychain lane", () => {
+  test("macOS Keychain Tier 2 workflow stays disabled while retaining the temporary-keychain recipe", () => {
     const workflowUrl = new URL(
       "../../../../.github/workflows/macos-keychain-tier2.yml",
       import.meta.url
     );
+    const disabledWorkflowUrl = new URL(
+      "../../../../.github/workflows.disabled/macos-keychain-tier2.yml",
+      import.meta.url
+    );
 
-    expect(existsSync(workflowUrl)).toBe(true);
+    expect(existsSync(workflowUrl)).toBe(false);
+    expect(existsSync(disabledWorkflowUrl)).toBe(true);
 
-    const workflow = readFileSync(workflowUrl, "utf8");
+    const workflow = readFileSync(disabledWorkflowUrl, "utf8");
 
     for (const token of [
       "workflow_dispatch:",
