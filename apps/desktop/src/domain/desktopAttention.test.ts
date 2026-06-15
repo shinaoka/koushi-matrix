@@ -246,6 +246,36 @@ describe("desktop notification candidate", () => {
     expect(windowMock.requestUserAttention).toHaveBeenCalledWith(2);
   });
 
+  test("swallows transient sound and activation failures", async () => {
+    const windowMock = {
+      playAttentionSound: vi.fn().mockRejectedValue(new Error("sound failed")),
+      requestUserAttention: vi.fn().mockRejectedValue(new Error("activation failed"))
+    };
+
+    await expect(
+      dispatchDesktopAttentionTransientEffects(
+        windowMock,
+        {
+          roomDisplayName: "Announcements",
+          kind: "mention",
+          unreadCount: 2,
+          highlightCount: 1
+        },
+        {
+          notifications: "available",
+          badge: "available",
+          overlay_icon: "unavailable",
+          sound: "available",
+          tray: "available",
+          activation: "available"
+        }
+      )
+    ).resolves.toBeUndefined();
+
+    expect(windowMock.playAttentionSound).toHaveBeenCalledOnce();
+    expect(windowMock.requestUserAttention).toHaveBeenCalledWith(2);
+  });
+
   test("does not route tray sound or activation when capabilities are unavailable", async () => {
     const windowMock = {
       setTitle: vi.fn().mockResolvedValue(undefined),
@@ -267,6 +297,26 @@ describe("desktop notification candidate", () => {
     expect(windowMock.playAttentionSound).not.toHaveBeenCalled();
     expect(windowMock.setTrayBadgeCount).not.toHaveBeenCalled();
     expect(windowMock.requestUserAttention).not.toHaveBeenCalled();
+  });
+
+  test("clears tray badge state through the native attention capability DTO", async () => {
+    const windowMock = {
+      setTitle: vi.fn().mockResolvedValue(undefined),
+      setBadgeCount: vi.fn().mockResolvedValue(undefined),
+      setTrayBadgeCount: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop", 0, {
+      notifications: "available",
+      badge: "available",
+      overlay_icon: "unavailable",
+      sound: "available",
+      tray: "available",
+      activation: "available"
+    });
+
+    expect(windowMock.setBadgeCount).toHaveBeenCalledWith(undefined);
+    expect(windowMock.setTrayBadgeCount).toHaveBeenCalledWith(undefined);
   });
 
   test("clears Windows overlay icon through the native attention capability DTO", async () => {

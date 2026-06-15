@@ -1,8 +1,10 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AuthDiscoveryState, AuthSecret, E2eeRecoveryState, LoginFlow,
-    LoginFlowKind, LoginRequest, NavigationState, RecoveryMethod, RecoveryRequest, RoomSummary,
-    RoomTags, SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState,
-    ThreadPaneState, TimelinePaneState, UiEvent, reduce,
+    LoginFlowKind, LoginRequest, NativeAttentionCandidate, NativeAttentionCapabilities,
+    NativeAttentionCapability, NativeAttentionState, NativeAttentionSummary, NavigationState,
+    RecoveryMethod, RecoveryRequest, RoomAttentionKind, RoomSummary, RoomTags, SearchScope,
+    SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadPaneState,
+    TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -628,6 +630,51 @@ fn logout_clears_session_views_and_notifies_ui() {
             }),
             AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
+        ]
+    );
+}
+
+#[test]
+fn logout_clears_native_attention_state_and_notifies_ui() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        sync: SyncState::Running,
+        native_attention: NativeAttentionState {
+            summary: NativeAttentionSummary {
+                unread_count: 4,
+                highlight_count: 1,
+                badge_count: 4,
+                candidate: Some(NativeAttentionCandidate {
+                    room_display_name: "Announcements".to_owned(),
+                    kind: RoomAttentionKind::Mention,
+                    unread_count: 4,
+                    highlight_count: 1,
+                }),
+                capabilities: NativeAttentionCapabilities {
+                    notifications: NativeAttentionCapability::Available,
+                    badge: NativeAttentionCapability::Available,
+                    overlay_icon: NativeAttentionCapability::Available,
+                    sound: NativeAttentionCapability::Available,
+                    tray: NativeAttentionCapability::Available,
+                    activation: NativeAttentionCapability::Available,
+                },
+            },
+            dispatch: Default::default(),
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(&mut state, AppAction::LogoutRequested);
+
+    assert_eq!(state.native_attention, NativeAttentionState::default());
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::StopSync,
+            AppEffect::ClearSession,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged),
         ]
     );
 }

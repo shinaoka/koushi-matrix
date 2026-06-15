@@ -186,6 +186,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   attention state drops the badge count to zero (including logout/account clear),
   React may call the native transport clear hook, but it must not mutate Matrix
   state or synthesize read/focus semantics locally.
+- Focused acceptance checks for adapter failure/clear behavior are
+  `npm --prefix apps/desktop run test -- src/domain/desktopAttention.test.ts`
+  and
+  `cargo test -p matrix-desktop-state --test session_state logout_clears_native_attention_state_and_notifies_ui`.
 - Native attention platform capability profiles are Rust-owned and resolved from
   the shared `DisplayPlatform` model before reaching React. Add macOS/Linux/Win
   capability differences there; do not scatter platform branches through React
