@@ -115,6 +115,7 @@ describe("desktop release scripts", () => {
     for (const token of [
       "workflow_dispatch:",
       "runs-on: macos-latest",
+      "uses: actions/checkout@v6",
       "Prepare standalone key crate",
       'cp -R crates/matrix-desktop-key/. "$RUNNER_TEMP/matrix-desktop-key/"',
       'MATRIX_DESKTOP_MACOS_KEYCHAIN_QA: "1"',
