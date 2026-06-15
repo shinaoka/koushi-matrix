@@ -192,8 +192,8 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
         .load(&key_id())
         .map_err(|_| "temporary keychain load failed".to_owned())?;
     assert_eq!(
-        secret.derive_search_index_key().as_bytes(),
-        loaded.derive_search_index_key().as_bytes()
+        secret.derive_search_index_key().as_str(),
+        loaded.derive_search_index_key().as_str()
     );
 
     run_security(&["lock-keychain".to_owned(), path.clone()])?;
