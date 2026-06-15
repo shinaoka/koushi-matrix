@@ -118,7 +118,9 @@ recovery secrets, or raw SDK errors for this stage. It is a separate Rust-owned
 trust proof and runs after the ordinary room/timeline/search operations in the
 aggregate local lane. The local runner registers separate synthetic users for
 each core backend leg so the trust proof is not affected by devices created by
-the SDK smoke lane.
+the SDK smoke lane. Until a broader SDK/public API path exists, "successful
+restore" means recovery secret import plus currently joined-room key hydration;
+the token must not be described as exhaustive backup-wide restore.
 
 For room/space checks, the core lane performs bounded `SyncOnce` refreshes
 before asserting `rooms` vs `spaces`. Local homeservers can briefly report a
@@ -134,6 +136,34 @@ npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=m
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=live_signals --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=send_queue --core --core-backend=both --timeout-ms=240000
 ```
+
+Core Batch A adds focused Phase A token contracts before the aggregate lane is
+expanded. These tokens are private-data-free and become required only in the
+slice that implements the corresponding state machine:
+
+```text
+credential_health=ok
+fail_closed=ok
+notification_candidate=ok
+badge_state=ok
+suppress_focus=ok
+clear_badge=ok
+ja_catalog=ok
+cjk_normalize=ok
+cjk_collation=ok
+ime_guard=ok
+joined_room_restore=ok
+```
+
+`credential_health=ok` / `fail_closed=ok` prove Rust-owned
+`LocalEncryptionState` transitions and kind-only OS credential failures.
+`notification_candidate=ok`, `badge_state=ok`, `suppress_focus=ok`, and
+`clear_badge=ok` prove Rust-owned native attention candidates and platform
+capability mapping without message bodies or identifiers. `ja_catalog=ok`,
+`cjk_normalize=ok`, `cjk_collation=ok`, and `ime_guard=ok` prove Japanese/CJK
+catalog, normalization, ordering, and IME send-vs-commit contracts.
+`joined_room_restore=ok` proves the explicit #30 MVP restore scope and must
+report joined-room hydration counts only.
 
 ## Headless browser IPC-contract lane
 

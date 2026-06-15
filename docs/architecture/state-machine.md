@@ -812,6 +812,183 @@ stateDiagram-v2
   `AccountActor` SDK implementation lands. It must not silently discard those
   effects.
 
+## Local Encryption Health
+
+Local encryption and credential-store health are Rust-owned state in
+`AppState.local_encryption`. React may render status and dispatch typed reset or
+retry commands, but it must not inspect OS/keyring errors, decide fail-open
+fallbacks, or recreate local keys.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+    Unknown --> Probing: LocalEncryptionProbeRequested
+    Probing --> Healthy: LocalEncryptionHealthChanged(healthy) [matching request_id]
+    Probing --> Unavailable: LocalEncryptionHealthChanged(unavailable) [matching request_id]
+    Probing --> LockedOrInaccessible: LocalEncryptionHealthChanged(locked_or_inaccessible) [matching request_id]
+    Probing --> MissingCredential: LocalEncryptionHealthChanged(missing_credential) [matching request_id]
+    Probing --> ResetRequired: LocalEncryptionHealthChanged(reset_required) [matching request_id]
+    Unavailable --> Probing: LocalEncryptionProbeRequested
+    LockedOrInaccessible --> Probing: LocalEncryptionProbeRequested
+    MissingCredential --> Probing: LocalEncryptionProbeRequested
+    ResetRequired --> Resetting: ResetLocalDataRequested
+    MissingCredential --> Resetting: ResetLocalDataRequested
+    Resetting --> Unknown: ResetLocalDataCompleted [matching request_id]
+    Resetting --> ResetRequired: ResetLocalDataFailed [matching request_id]
+    Healthy --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Unavailable --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    LockedOrInaccessible --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    MissingCredential --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    ResetRequired --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Probing --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Resetting --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+- The coarse health states are exactly `unknown`, `healthy`, `unavailable`,
+  `locked_or_inaccessible`, `missing_credential`, and `reset_required`.
+- Probes are accepted during startup, login, restore, and explicit retry.
+  Commands that require encrypted SDK/search storage are rejected unless the
+  state is `Healthy` for the active account/device.
+- Health and reset completions carry a request id and account/device identity
+  owned by Rust. Stale completions, duplicate completions, and completions for a
+  previous account are ignored.
+- Failure behavior is fail-closed. Public state stores only kind-only failure
+  data; raw OS/keyring errors, local paths, keys, and recovery material never
+  enter `AppState`, `CoreEvent`, `Debug`, or QA tokens.
+- Logout, lock, account switch, and local-data removal clear account-scoped
+  health to `Unknown` and cancel pending probe/reset correlation. Platform
+  capability facts may be recomputed after the next startup/login probe.
+
+## Native Attention
+
+Native notifications, badges, title hints, sounds, tray state, and activation
+requests are Rust-owned attention decisions in `AppState.native_attention`.
+React may render settings and visible affordances, but it must not decide
+whether a Matrix event should notify, badge, suppress, dedupe, or clear.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Candidate: AttentionCandidateRaised
+    Candidate --> Candidate: AttentionCandidateUpdated
+    Candidate --> Suppressed: AttentionSuppressed
+    Candidate --> Dispatching: NativeAttentionDispatchRequested
+    Dispatching --> Delivered: NativeAttentionDelivered [matching request_id]
+    Dispatching --> Failed: NativeAttentionFailed [matching request_id]
+    Delivered --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+    Suppressed --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+    Failed --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+    Candidate --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+    Dispatching --> Idle: AttentionCleared/RoomMarkedRead/WindowFocused
+```
+
+- Accepted inputs are Rust-owned room/timeline activity observations,
+  notification settings changes, room muted/low-priority state changes, window
+  focus changes, mark-read/read-receipt actions, platform capability updates,
+  and dispatch completion/failure events from the Tauri adapter.
+- Candidates carry only private-data-minimized fields allowed by the security
+  rules: safe room display label, attention kind (`mention`, `dm`, `message`),
+  aggregate unread/highlight counts, and coarse capability tokens. They must not
+  carry message bodies, sender identifiers, room IDs, event IDs, transaction IDs,
+  raw SDK errors, or secrets.
+- Candidate generation, dedupe, suppression while focused, badge count, sound
+  eligibility, tray visibility, and activation behavior are reducer/core
+  semantics. Platform adapters only map candidates to macOS, Windows, Linux, or
+  no-op capabilities.
+- Dispatch completions are request-correlated. Stale dispatch results are
+  ignored, and adapter failures settle as private-data-free `Failed(kind)`
+  states that can be cleared by read/focus transitions.
+- Logout, lock, account switch, and session clearing remove all account-derived
+  summaries, candidates, and badge counts. Non-secret platform capability data
+  may survive as a process-level profile, but it cannot carry account activity.
+
+## Japanese/CJK Display And Search
+
+Japanese catalog completeness, CJK normalization, CJK collation, search/display
+matching, and IME send-vs-commit behavior are Rust-owned contracts. GUI code
+may render the resolved locale/search policy and pass typed key facts, but it
+must not choose catalog fallback, sort keys, normalization, highlight offsets, or
+whether an IME composition keypress sends a message.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unresolved
+    Unresolved --> Resolved: LocaleProfileResolved/CjkPolicyResolved
+    Resolved --> Resolved: SettingsLoaded/SettingsUpdateRequested/CjkPolicyResolved
+    Resolved --> Failed: CjkPolicyFailed
+    Failed --> Resolved: LocaleProfileResolved/CjkPolicyResolved
+    Resolved --> Unresolved: SessionCleared
+    Failed --> Unresolved: SessionCleared
+```
+
+- `ja-*` resolves to a Japanese catalog selector in Rust. A Japanese catalog may
+  intentionally fall back to English only when the catalog registry records the
+  missing IDs; silent component-local English strings are defects.
+- Accepted inputs are settings/profile updates, catalog coverage results,
+  CJK policy resolution results, search submissions/results, and typed composer
+  key facts from any composer surface. Search queries and message bodies stay
+  outside diagnostics even when they trigger policy failures.
+- CJK normalization, collation keys for room/person ordering, and search
+  comparison policy are produced by Rust-owned profile data. React receives sort
+  order, display strings, snippets, and verified highlight spans; it does not
+  tokenize Japanese text, generate search candidates, or compute collation.
+- Composer key evaluation accepts typed key facts, including `is_composing`.
+  When `is_composing` is true, Enter-like keys are treated as IME commit input
+  and must not send, insert a product newline, accept autocomplete, or close a
+  composer. React must not fall back to local send behavior if the Rust resolver
+  fails.
+- CJK policy updates carry a generation or request id. Stale profile/search
+  results for an older locale/settings generation are ignored.
+- Failure behavior falls back to safe default display/search policy with a
+  private-data-free error kind. Raw locale input, search query text, message
+  bodies, snippets from real accounts, and raw normalization errors must not be
+  logged or emitted as diagnostics.
+- Logout and account switch clear account-scoped search and composer context.
+  Device-local locale settings and non-secret resolved profile data may remain,
+  but any pending search result, autocomplete, or composer resolution tied to the
+  previous account is ignored.
+
+## Backup Restore Scope
+
+Key-backup restore progress is Rust-owned and request-correlated. The current
+MVP scope is recovery secret import plus currently joined-room key hydration.
+The app must not claim exhaustive backup-wide restore until the SDK exposes a
+public API for that broader scope or a reviewed vendored patch lands.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> ImportingRecoverySecret: RestoreKeyBackupRequested
+    ImportingRecoverySecret --> HydratingJoinedRooms: RecoverySecretImported [matching request_id]
+    HydratingJoinedRooms --> HydratingJoinedRooms: JoinedRoomHydrationProgress [matching request_id]
+    HydratingJoinedRooms --> CompletedJoinedRooms: JoinedRoomHydrationCompleted [matching request_id]
+    ImportingRecoverySecret --> Failed: KeyBackupRestoreFailed [matching request_id]
+    HydratingJoinedRooms --> Failed: KeyBackupRestoreFailed [matching request_id]
+    CompletedJoinedRooms --> ImportingRecoverySecret: RestoreKeyBackupRequested
+    Failed --> ImportingRecoverySecret: RestoreKeyBackupRequested
+    ImportingRecoverySecret --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    HydratingJoinedRooms --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    CompletedJoinedRooms --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Failed --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+- `RestoreKeyBackupRequested` is accepted for a Ready, `NeedsRecovery`, or
+  `Recovering` authenticated session with an encrypted store-backed SDK client.
+  The recovery secret stays inside `CoreCommand::Account` / `AccountActor` and
+  never enters reducer state or snapshots.
+- Progress counters describe the joined-room hydration set only:
+  `restored_rooms` / `total_rooms` are not backup-wide counts. Product copy,
+  issue evidence, and QA tokens must use "joined-room restore" language unless
+  a later implementation proves broader semantics.
+- Restore events are request-correlated. Stale progress, duplicate completions,
+  and completions from an account that is no longer active are ignored.
+- Failure behavior emits only `TrustOperationFailureKind` or a restore-specific
+  kind-only failure. Raw backup versions, room keys, recovery secrets, room IDs,
+  event IDs, and SDK errors remain private.
+- Logout, lock, account switch, and account shutdown cancel in-flight restore
+  handles, clear progress to `Idle`, and drop secret material inside the actor.
+  React cannot repair or complete restore state after those transitions.
+
 ## Search
 
 ```mermaid

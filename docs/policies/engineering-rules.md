@@ -57,7 +57,10 @@ Rules:
    room display label, notification kind (`mention`, `dm`, `message`), and
    aggregate unread/highlight counts. They must not include message bodies,
    sender identifiers, room IDs, event IDs, transaction IDs, raw SDK errors,
-   or secrets.
+   or secrets. Native attention candidates and platform capability profiles are
+   Rust-owned DTOs; React and platform adapters must not add account/content
+   fields while mapping them to macOS, Windows, Linux, tray, sound, badge, or
+   no-op behavior.
 10. Device-local settings are non-secret product state, but they are still a
    privacy boundary. Settings files may contain only typed preferences such as
    locale, theme, font/emoji choice, keyboard behavior, and notification
@@ -75,8 +78,16 @@ Rules:
    the UI, but normal `Debug`, QA logs, and window-title tokens must redact
    account keys, verification target user/device IDs, backup versions, raw SDK
    errors, identity-reset auth details beyond UIAA/OAuth/unknown, and all key
-   material.
-12. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
+   material. Key-backup restore progress/copy must say joined-room hydration
+   when that is the implemented scope; it must not imply exhaustive backup-wide
+   restore.
+12. Credential-store health diagnostics are kind-only. Public state may report
+   only `unknown`, `healthy`, `unavailable`, `locked_or_inaccessible`,
+   `missing_credential`, or `reset_required`, with optional private-data-free
+   remediation hints. Raw OS/keyring errors, local paths, account identifiers,
+   key labels, local unlock secrets, SDK/search keys, and recovery material must
+   stay inside `StoreActor`/adapter diagnostics gated for debug/test.
+13. Media/file diagnostics are metadata-minimized. `CoreCommand` may carry
    filename, caption, mimetype, dimensions, and bytes when sending media, and
    `TimelineItem.media` may expose safe render metadata. Normal `Debug`, QA
    logs, errors, window-title tokens, and docs examples must not expose
@@ -84,7 +95,7 @@ Rules:
    keys/hashes, room IDs, event IDs, or raw SDK errors. Download effects emit
    byte counts or app-owned handles only; downloaded bytes stay in Rust-owned
    effects or platform ports.
-13. Profile/avatar diagnostics are metadata-minimized. Display names and avatar
+14. Profile/avatar diagnostics are metadata-minimized. Display names and avatar
    bytes may cross only the typed command or snapshot boundaries needed for the
    UI; normal `Debug`, QA logs, errors, window-title tokens, and issue evidence
    must not expose real display names, avatar MXC URIs, avatar bytes, local

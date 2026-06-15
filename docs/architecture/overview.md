@@ -67,11 +67,22 @@ Crate responsibilities:
   synchronously, prevents default only for resolver-owned keys, and applies
   newline/send/cancel only from the returned action. Resolver failures are
   no-ops; React must not fall back to local send semantics.
+  Core Batch A0 ownership also lives in this crate: local encryption /
+  credential-store health, native attention candidates and capabilities,
+  Japanese/CJK display/search policy, and backup restore scope are
+  serializable Rust state or DTO contracts. React renders those contracts and
+  dispatches typed commands; it does not decide credential health, notification
+  eligibility, CJK collation/normalization, IME send-vs-commit behavior, or
+  whether key-backup restore is complete.
 - `matrix-desktop-sdk` — low-level SDK adapter (login, restore, recovery,
   sync, room, timeline, search primitives). No app state, no QA orchestration.
   E2EE key-backup restore wrappers consume recovery secrets internally and
   return private-data-free restore summaries; they do not expose SDK backup
   keys, room keys, or raw backup versions across the command/event boundary.
+  The MVP restore scope is recovery secret import plus currently joined-room
+  key hydration through public SDK APIs. Product state, QA evidence, and UI
+  copy must not claim exhaustive backup-wide restore until a public SDK API or
+  reviewed vendored patch proves that broader scope.
 - `matrix-desktop-core` — actor lifecycle, command routing, event emission,
   SDK session handles, background tasks, AppState projection, headless QA
   binaries. Production Matrix behavior lives here and nowhere else.
@@ -457,6 +468,13 @@ default, and any future preview option requires an explicit settings design and
 new tests. Private-data-free QA title tokens may expose only aggregate values
 such as `unread=N`, `badge=N`, and `notify=<kind|none>`.
 
+Native attention is Rust-owned candidate data plus a platform capability
+profile. The core decides whether a room, thread, mention, focus change, or
+read-marker transition creates, suppresses, updates, or clears an attention
+candidate. The adapter may only map that private-data-minimized candidate to
+macOS, Windows, Linux, or no-op capabilities; React must not branch on platform
+notification semantics or synthesize badge/window-title state locally.
+
 Initial channel capacities are named constants, not scattered literals:
 
 - command inbox per runtime: 256
@@ -532,7 +550,11 @@ architectural invariants:
   encryption, or search index encryption cannot be initialized, the core refuses
   login/restore/startup for that account and emits a redacted
   `LocalEncryptionUnavailable` failure. There is no production fallback to
-  plaintext stores or plaintext search indexes.
+  plaintext stores or plaintext search indexes. Credential-store health is
+  reported as one of the Rust-owned coarse states `unknown`, `healthy`,
+  `unavailable`, `locked_or_inaccessible`, `missing_credential`, or
+  `reset_required`; raw OS/keyring errors never cross into snapshots, logs, or
+  UI decisions.
 - **Webview threat model.** The React webview is the least-trusted layer.
   Secrets entered there (password, recovery key) flow one way: webview →
   Tauri IPC → core. The core never returns secret material to the webview.
