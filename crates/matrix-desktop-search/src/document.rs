@@ -1,9 +1,23 @@
 use std::collections::BTreeMap;
 
-use matrix_desktop_state::SearchResult;
+use matrix_desktop_state::{SearchResult, normalize_cjk_search_text};
 use serde::{Deserialize, Serialize};
 
 use crate::SensitiveString;
+
+pub fn cjk_search_query_variants(query: &str) -> Vec<String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let mut variants = vec![query.to_owned()];
+    let normalized = normalize_cjk_search_text(query);
+    if !normalized.is_empty() && !variants.iter().any(|variant| variant == &normalized) {
+        variants.push(normalized);
+    }
+    variants
+}
 
 #[derive(Default)]
 pub struct SearchDocumentStore {

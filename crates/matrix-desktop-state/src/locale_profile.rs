@@ -1,4 +1,7 @@
+use std::fmt::Write as _;
+
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::state::{LocaleSettings, TextDirectionPreference};
 
@@ -90,6 +93,49 @@ pub fn resolve_locale_display_profile(
             primary: platform.primary_modifier_label().to_owned(),
         },
     }
+}
+
+pub fn normalize_cjk_search_text(value: &str) -> String {
+    value.nfkc().flat_map(char::to_lowercase).collect()
+}
+
+pub fn cjk_display_sort_key(value: &str) -> String {
+    let normalized = normalize_cjk_search_text(value);
+    let mut sort_key = String::with_capacity(normalized.len());
+    let mut chars = normalized.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_digit() {
+            let mut digits = String::from(ch);
+            while let Some(next) = chars.peek().copied() {
+                if !next.is_ascii_digit() {
+                    break;
+                }
+                digits.push(next);
+                chars.next();
+            }
+            append_numeric_sort_segment(&mut sort_key, &digits);
+        } else {
+            sort_key.push(ch);
+        }
+    }
+
+    sort_key
+}
+
+fn append_numeric_sort_segment(sort_key: &mut String, digits: &str) {
+    let significant = digits.trim_start_matches('0');
+    let significant = if significant.is_empty() {
+        "0"
+    } else {
+        significant
+    };
+    let _ = write!(
+        sort_key,
+        "\u{1}{:08}:{}\u{1}",
+        significant.len(),
+        significant
+    );
 }
 
 fn catalog_locale(parsed: Option<ParsedLanguage>) -> CatalogLocale {

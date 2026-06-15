@@ -1,6 +1,6 @@
 use matrix_desktop_search::{
     SearchCandidate, SearchDocumentStore, SearchEdit, SearchMaintenanceQueue, SearchableEvent,
-    SensitiveString,
+    SensitiveString, cjk_search_query_variants,
 };
 use matrix_desktop_state::{SearchMatchField, SearchMatchKind, TextRange};
 
@@ -62,6 +62,124 @@ fn exact_message_body_match_returns_utf16_highlight() {
             start_utf16: 1,
             end_utf16: 6,
         }]
+    );
+}
+
+#[test]
+fn full_width_query_matches_half_width_indexed_message_body() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(SearchableEvent {
+        room_id: "!room-a:example.invalid".into(),
+        event_id: "$event".into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: Some(SensitiveString::new("会議資料 ABC123 ready")),
+        attachment_filename: None,
+    });
+
+    let result = store
+        .verify_candidate(
+            SearchCandidate {
+                room_id: "!room-a:example.invalid".into(),
+                event_id: "$event".into(),
+                score_millis: 900,
+            },
+            "ＡＢＣ１２３",
+        )
+        .expect("width-folded query should verify against canonical body text");
+
+    assert_eq!(result.snippet, "会議資料 ABC123 ready");
+    assert_eq!(result.match_field, SearchMatchField::MessageBody);
+    assert_eq!(
+        result.highlights,
+        vec![TextRange {
+            start_utf16: 5,
+            end_utf16: 11,
+        }]
+    );
+}
+
+#[test]
+fn half_width_query_matches_full_width_indexed_message_body() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(SearchableEvent {
+        room_id: "!room-a:example.invalid".into(),
+        event_id: "$event".into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: Some(SensitiveString::new("会議資料 ＡＢＣ１２３ ready")),
+        attachment_filename: None,
+    });
+
+    let result = store
+        .verify_candidate(
+            SearchCandidate {
+                room_id: "!room-a:example.invalid".into(),
+                event_id: "$event".into(),
+                score_millis: 900,
+            },
+            "ABC123",
+        )
+        .expect("canonical query should verify against width-folded body text");
+
+    assert_eq!(result.snippet, "会議資料 ＡＢＣ１２３ ready");
+    assert_eq!(result.match_field, SearchMatchField::MessageBody);
+    assert_eq!(
+        result.highlights,
+        vec![TextRange {
+            start_utf16: 5,
+            end_utf16: 11,
+        }]
+    );
+}
+
+#[test]
+fn voiced_half_width_kana_query_matches_canonical_kana_and_highlights_source_cluster() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(SearchableEvent {
+        room_id: "!room-a:example.invalid".into(),
+        event_id: "$event".into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: Some(SensitiveString::new("会議資料 ﾊﾞﾅﾅ ready")),
+        attachment_filename: None,
+    });
+
+    let result = store
+        .verify_candidate(
+            SearchCandidate {
+                room_id: "!room-a:example.invalid".into(),
+                event_id: "$event".into(),
+                score_millis: 900,
+            },
+            "バナナ",
+        )
+        .expect("voiced half-width kana should verify against canonical query text");
+
+    assert_eq!(result.snippet, "会議資料 ﾊﾞﾅﾅ ready");
+    assert_eq!(result.match_field, SearchMatchField::MessageBody);
+    assert_eq!(
+        result.highlights,
+        vec![TextRange {
+            start_utf16: 5,
+            end_utf16: 9,
+        }]
+    );
+}
+
+#[test]
+fn cjk_search_query_variants_include_raw_and_nfkc_width_folded_terms() {
+    assert_eq!(
+        cjk_search_query_variants(" ＡＢＣ１２３ "),
+        vec!["ＡＢＣ１２３".to_owned(), "abc123".to_owned()]
+    );
+    assert_eq!(
+        cjk_search_query_variants("ABC123"),
+        vec!["ABC123".to_owned(), "abc123".to_owned()]
+    );
+    assert_eq!(
+        cjk_search_query_variants("ﾊﾞﾅﾅ"),
+        vec!["ﾊﾞﾅﾅ".to_owned(), "バナナ".to_owned()]
     );
 }
 

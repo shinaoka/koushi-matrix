@@ -1,5 +1,8 @@
-use matrix_desktop_state::{SearchMatchField, SearchMatchKind, SearchResult, TextRange};
+use matrix_desktop_state::{
+    SearchMatchField, SearchMatchKind, SearchResult, TextRange, normalize_cjk_search_text,
+};
 use thiserror::Error;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{SearchCandidate, SearchableEvent};
 
@@ -66,6 +69,10 @@ fn result(
 }
 
 fn exact_range(haystack: &str, needle: &str) -> Option<TextRange> {
+    direct_exact_range(haystack, needle).or_else(|| normalized_exact_range(haystack, needle))
+}
+
+fn direct_exact_range(haystack: &str, needle: &str) -> Option<TextRange> {
     let start_byte = haystack.find(needle)?;
     let end_byte = start_byte + needle.len();
 
@@ -73,6 +80,56 @@ fn exact_range(haystack: &str, needle: &str) -> Option<TextRange> {
         start_utf16: utf16_len(&haystack[..start_byte]),
         end_utf16: utf16_len(&haystack[..end_byte]),
     })
+}
+
+fn normalized_exact_range(haystack: &str, needle: &str) -> Option<TextRange> {
+    let normalized_needle = normalize_cjk_search_text(needle);
+    if normalized_needle.is_empty() {
+        return None;
+    }
+
+    let normalized_haystack = NormalizedHaystack::from_original(haystack);
+    let start_byte = normalized_haystack.text.find(&normalized_needle)?;
+    let end_byte = start_byte + normalized_needle.len();
+    let start_char = normalized_haystack.text[..start_byte].chars().count();
+    let end_char = normalized_haystack.text[..end_byte].chars().count();
+    if start_char >= end_char || end_char > normalized_haystack.source_ranges.len() {
+        return None;
+    }
+
+    let source_start_byte = normalized_haystack.source_ranges[start_char].0;
+    let source_end_byte = normalized_haystack.source_ranges[end_char - 1].1;
+
+    Some(TextRange {
+        start_utf16: utf16_len(&haystack[..source_start_byte]),
+        end_utf16: utf16_len(&haystack[..source_end_byte]),
+    })
+}
+
+struct NormalizedHaystack {
+    text: String,
+    source_ranges: Vec<(usize, usize)>,
+}
+
+impl NormalizedHaystack {
+    fn from_original(value: &str) -> Self {
+        let mut text = String::new();
+        let mut source_ranges = Vec::new();
+
+        for (start, grapheme) in value.grapheme_indices(true) {
+            let end = start + grapheme.len();
+            let normalized = normalize_cjk_search_text(grapheme);
+            for normalized_ch in normalized.chars() {
+                text.push(normalized_ch);
+                source_ranges.push((start, end));
+            }
+        }
+
+        Self {
+            text,
+            source_ranges,
+        }
+    }
 }
 
 fn utf16_len(value: &str) -> u32 {

@@ -2134,6 +2134,7 @@ dependencies = [
  "matrix-desktop-state",
  "serde",
  "thiserror 2.0.18",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -2142,6 +2143,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "unicode-normalization",
  "zeroize",
 ]
 

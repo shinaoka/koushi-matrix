@@ -8,3 +8,4 @@ license = "MIT"
 matrix-desktop-state = { path = "../matrix-desktop-state" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+unicode-segmentation = "1"

@@ -241,6 +241,13 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    `matrix-desktop-state` and `matrix-desktop-search` must compile for
    `wasm32-unknown-unknown`. See Platform Portability in
    `docs/architecture/overview.md`.
+7. Japanese/CJK product semantics remain Rust-owned and platform-portable.
+   Catalog completeness is tested in `apps/desktop/src/i18n`, but CJK
+   normalization, display sort keys, search query variants, and highlight
+   offsets live in `matrix-desktop-state`, `matrix-desktop-search`, and
+   `matrix-desktop-core`. React may render the resolved catalog and Rust-owned
+   ordering only; it must not compute local CJK normalization, collation, or
+   highlight repair.
 
 ## Documentation
 

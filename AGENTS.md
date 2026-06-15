@@ -91,6 +91,26 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact`,
   and `npm --prefix apps/desktop run typecheck`.
 
+## Japanese / CJK Phase A Notes
+
+- Japanese/CJK product semantics stay Rust-owned. React may render the
+  `ja` catalog and Rust-owned ordering/highlight data, but it must not compute
+  CJK normalization, collation, query folding, or highlight repair locally.
+- Search/review paths for this area are:
+  `apps/desktop/src/i18n/messages.ts`,
+  `apps/desktop/src/i18n/messages.test.ts`,
+  `crates/matrix-desktop-state/src/locale_profile.rs`,
+  `crates/matrix-desktop-state/tests/locale_display_profile.rs`,
+  `crates/matrix-desktop-search/src/document.rs`,
+  `crates/matrix-desktop-search/src/verify.rs`,
+  `crates/matrix-desktop-search/tests/search_adapter.rs`, and
+  `crates/matrix-desktop-core/src/search.rs`.
+- Fast focused checks are:
+  `npm --prefix apps/desktop run test -- --run src/i18n/messages.test.ts`,
+  `cargo test -p matrix-desktop-search --test search_adapter`,
+  `cargo test -p matrix-desktop-state --test locale_display_profile`, and
+  `npm --prefix apps/desktop run typecheck`.
+
 ## Credential Health QA
 
 - Local-encryption / credential-store health is Rust-owned

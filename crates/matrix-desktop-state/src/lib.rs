@@ -18,7 +18,8 @@ pub use composer_shortcuts::{
 pub use effect::{AppEffect, UiEvent};
 pub use locale_profile::{
     CatalogLocale, DisplayPlatform, LocaleDirection, LocaleDisplayProfile, ModifierLabelProfile,
-    PseudoLocaleMode, resolve_locale_display_profile,
+    PseudoLocaleMode, cjk_display_sort_key, normalize_cjk_search_text,
+    resolve_locale_display_profile,
 };
 pub use reducer::reduce;
 pub use sidebar::{AccountHomeItem, RoomListItem, SidebarModel, SpaceRailItem, compose_sidebar};
