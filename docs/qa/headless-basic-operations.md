@@ -363,6 +363,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-invites-dm --serv
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --artifact-dir=artifacts/linux-gui-local-media --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --artifact-dir=artifacts/linux-gui-local-room-tags --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --artifact-dir=artifacts/linux-gui-local-explore --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --artifact-dir=artifacts/linux-gui-local-message-actions --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
@@ -400,6 +401,16 @@ then clicks `Remove from Favourites` and waits for the row to return to Rooms.
 The lane prints only `gui_local_room_tag_set=ok` and
 `gui_local_room_tag_removed=ok`; it must not monkeypatch Tauri IPC, synthesize
 React-local room-list membership, or print Matrix room IDs / raw SDK errors.
+
+`local-explore` registers a synthetic helper account on the same disposable
+homeserver, has that helper create one public room with a synthetic alias, then
+drives the real Explore pane through WebDriver. It searches public rooms, waits
+for Rust-owned directory results to render, clicks Join, and waits for the
+joined room to appear in the Rust-owned room list. The lane prints only
+`gui_local_explore_query=ok` and `gui_local_explore_join=ok`; it must not
+monkeypatch Tauri IPC, synthesize directory results or joined rooms in React, or
+print Matrix aliases, room IDs, server names, pagination tokens, or raw SDK
+errors.
 
 `local-message-actions` sends one synthetic message, opens the real hover-gated
 message action menu in the Linux Tauri WebView, clicks View source, waits for

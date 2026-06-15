@@ -5,6 +5,7 @@ import {
   Check,
   Clock3,
   Code2,
+  Compass,
   Edit3,
   Hash,
   HelpCircle,
@@ -116,9 +117,11 @@ import {
 import type {
   ComposerMode,
   DesktopSnapshot,
+  DirectoryRoomSummary,
   LocaleDisplayProfile,
   MentionIntent,
   MentionTarget,
+  OperationFailureKind,
   ResolveComposerKeyAction,
   RoomListItem,
   RoomTags,
@@ -254,7 +257,7 @@ type ActiveContextMenu = {
   target: ContextMenuTarget;
   items: ContextMenuItem[];
 };
-type PrimaryView = "timeline" | "invites";
+type PrimaryView = "timeline" | "invites" | "explore";
 type InviteUserDialogState = {
   roomId: string;
   title: string;
@@ -314,6 +317,7 @@ export function App() {
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
+  const [directorySearchDraft, setDirectorySearchDraft] = useState("");
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
   const [newDmDraftUserId, setNewDmDraftUserId] = useState("");
   const [inviteUserDialog, setInviteUserDialog] = useState<InviteUserDialogState>(null);
@@ -842,6 +846,34 @@ export function App() {
     setPrimaryView("invites");
   }
 
+  async function openExploreView() {
+    setSnapshot(await api.getSnapshot());
+    setPrimaryView("explore");
+  }
+
+  async function queryDirectory() {
+    if (isBusy) {
+      return;
+    }
+    const term = directorySearchDraft.trim();
+    setSnapshot(
+      await api.queryDirectory({
+        term: term || null,
+        server_name: null,
+        limit: 20,
+        since: null
+      })
+    );
+  }
+
+  async function joinDirectoryRoom(room: DirectoryRoomSummary) {
+    const alias = room.canonical_alias?.trim();
+    if (!alias || isBusy || snapshot?.state.directory.join.kind === "joining") {
+      return;
+    }
+    setSnapshot(await api.joinDirectoryRoom(alias, serverNameFromAlias(alias)));
+  }
+
   function openCreateDialog(kind: "room" | "space") {
     setCreateDraftName("");
     setCreateDialog(kind);
@@ -1287,6 +1319,9 @@ export function App() {
           onCreateRoom={() => openCreateDialog("room")}
           onNewDm={openNewDmDialog}
           onOpenContextMenu={openContextMenu}
+          onOpenExplore={() => {
+            void openExploreView();
+          }}
           onOpenInvites={() => {
             void openInvitesView();
           }}
@@ -1295,7 +1330,20 @@ export function App() {
           }}
           onSelectRoom={selectRoom}
         />
-        {primaryView === "invites" ? (
+        {primaryView === "explore" ? (
+          <ExplorePane
+            isBusy={isBusy}
+            queryDraft={directorySearchDraft}
+            snapshot={snapshot}
+            onJoinRoom={(room) => {
+              void joinDirectoryRoom(room);
+            }}
+            onQueryChange={setDirectorySearchDraft}
+            onSearch={() => {
+              void queryDirectory();
+            }}
+          />
+        ) : primaryView === "invites" ? (
           <InvitesPane
             isBusy={isBusy}
             snapshot={snapshot}
@@ -2120,6 +2168,7 @@ function Sidebar({
   onCreateRoom,
   onNewDm,
   onOpenContextMenu,
+  onOpenExplore,
   onOpenInvites,
   onOpenSpaceInfo,
   onSelectRoom
@@ -2130,6 +2179,7 @@ function Sidebar({
   onCreateRoom: () => void;
   onNewDm: () => void;
   onOpenContextMenu: OpenContextMenu;
+  onOpenExplore: () => void;
   onOpenInvites: () => void;
   onOpenSpaceInfo: () => void;
   onSelectRoom: (roomId: string) => void;
@@ -2169,11 +2219,17 @@ function Sidebar({
       </div>
       <div className="sidebar-scroll">
         <NavButton
-          active={snapshot.sidebar.account_home.is_active}
+          active={activeView === "timeline" && snapshot.sidebar.account_home.is_active}
           icon={<Home size={18} />}
           label={t("workspace.home")}
         />
         <NavButton icon={<MessageCircle size={18} />} label={t("workspace.threads")} />
+        <NavButton
+          active={activeView === "explore"}
+          icon={<Compass size={18} />}
+          label={t("workspace.explore")}
+          onClick={onOpenExplore}
+        />
         <NavButton
           active={activeView === "invites"}
           count={snapshot.state.invites.length}
@@ -2361,6 +2417,133 @@ function EntityAvatar({
     <span className={className} aria-hidden="true">
       {sourceUrl ? <img src={sourceUrl} /> : <span dir="auto">{fallback}</span>}
     </span>
+  );
+}
+
+function ExplorePane({
+  isBusy,
+  queryDraft,
+  snapshot,
+  onJoinRoom,
+  onQueryChange,
+  onSearch
+}: {
+  isBusy: boolean;
+  queryDraft: string;
+  snapshot: DesktopSnapshot;
+  onJoinRoom: (room: DirectoryRoomSummary) => void;
+  onQueryChange: (value: string) => void;
+  onSearch: () => void;
+}) {
+  const queryState = snapshot.state.directory.query;
+  const joinState = snapshot.state.directory.join;
+  const rooms = queryState.kind === "results" ? queryState.rooms : [];
+  const searchDisabled = isBusy || queryState.kind === "querying";
+
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    onSearch();
+  }
+
+  return (
+    <main className="main-pane explore-pane" aria-labelledby="explore-title">
+      <header className="channel-header">
+        <div className="channel-title">
+          <Compass size={22} />
+          <h1 id="explore-title">{t("workspace.explore")}</h1>
+        </div>
+      </header>
+      <form className="directory-search" onSubmit={submitSearch}>
+        <label className="directory-search-field">
+          <span>{t("directory.searchPublicRooms")}</span>
+          <input
+            type="search"
+            value={queryDraft}
+            aria-label={t("directory.searchPublicRooms")}
+            placeholder={t("directory.searchPlaceholder")}
+            onChange={(event) => onQueryChange(event.currentTarget.value)}
+          />
+        </label>
+        <button
+          className="dialog-button is-primary"
+          type="submit"
+          aria-label={t("directory.searchPublicRooms")}
+          disabled={searchDisabled}
+        >
+          <Search size={16} />
+          <span>
+            {queryState.kind === "querying"
+              ? t("directory.searching")
+              : t("directory.search")}
+          </span>
+        </button>
+      </form>
+      {queryState.kind === "failed" ? (
+        <div className="directory-status" role="status">
+          {t("directory.searchFailed", {
+            reason: operationFailureLabel(queryState.failureKind)
+          })}
+        </div>
+      ) : null}
+      <section className="directory-results" aria-label={t("directory.results")}>
+        {queryState.kind === "querying" ? (
+          <div className="empty-results" role="status">
+            {t("directory.searching")}
+          </div>
+        ) : rooms.length ? (
+          rooms.map((room) => {
+            const alias = room.canonical_alias?.trim() || null;
+            const joiningThisRoom =
+              joinState.kind === "joining" && joinState.alias === alias;
+            const joinFailed =
+              joinState.kind === "failed" && joinState.alias === alias ? joinState : null;
+            const canJoin = Boolean(alias) && !joiningThisRoom && !isBusy;
+            return (
+              <article className="directory-result" key={room.room_id}>
+                <div className="directory-result-avatar" aria-hidden="true">
+                  <span dir="auto">{initials(room.name)}</span>
+                </div>
+                <div className="directory-result-main">
+                  <h2 dir="auto">{room.name}</h2>
+                  <p dir="auto">
+                    {room.topic?.trim() || alias || t("directory.noAlias")}
+                  </p>
+                  <div className="directory-result-meta">
+                    <span>
+                      {t("directory.memberCount", {
+                        count: new Intl.NumberFormat().format(room.joined_members)
+                      })}
+                    </span>
+                    {room.world_readable ? <span>{t("directory.worldReadable")}</span> : null}
+                    {room.guest_can_join ? <span>{t("directory.guestCanJoin")}</span> : null}
+                  </div>
+                  {joinFailed ? (
+                    <div className="directory-status" role="status">
+                      {t("directory.joinFailed", {
+                        reason: operationFailureLabel(joinFailed.failureKind)
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+                <button
+                  className="dialog-button is-primary directory-join-button"
+                  type="button"
+                  aria-label={t("directory.joinRoom", { name: room.name })}
+                  disabled={!canJoin}
+                  onClick={() => onJoinRoom(room)}
+                >
+                  {joiningThisRoom ? t("directory.joining") : t("directory.join")}
+                </button>
+              </article>
+            );
+          })
+        ) : (
+          <div className="empty-results" role="status">
+            {t("directory.noResults")}
+          </div>
+        )}
+      </section>
+    </main>
   );
 }
 
@@ -3787,6 +3970,31 @@ function matchFieldLabel(field: SearchResult["match_field"]): string {
       return t("search.matchMessage");
     case "attachmentFileName":
       return t("search.matchAttachmentFileName");
+  }
+}
+
+function serverNameFromAlias(alias: string): string | null {
+  const separatorIndex = alias.indexOf(":");
+  if (separatorIndex < 0 || separatorIndex + 1 >= alias.length) {
+    return null;
+  }
+  return alias.slice(separatorIndex + 1).trim() || null;
+}
+
+function operationFailureLabel(kind: OperationFailureKind): string {
+  switch (kind) {
+    case "forbidden":
+      return t("directory.failureForbidden");
+    case "notFound":
+      return t("directory.failureNotFound");
+    case "network":
+      return t("directory.failureNetwork");
+    case "timeout":
+      return t("directory.failureTimeout");
+    case "invalid":
+      return t("directory.failureInvalid");
+    case "sdk":
+      return t("directory.failureSdk");
   }
 }
 

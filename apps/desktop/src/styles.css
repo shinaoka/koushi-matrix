@@ -1011,6 +1011,123 @@ button {
   color: var(--text-muted);
 }
 
+.directory-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.directory-search-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.directory-search-field input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  outline: none;
+}
+
+.directory-search-field input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px rgb(45 111 239 / 18%);
+}
+
+.directory-search .dialog-button,
+.directory-join-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.directory-results {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 20px 20px;
+}
+
+.directory-result {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.directory-result-avatar {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  border-radius: 50%;
+  color: var(--brand-contrast);
+  background: var(--brand);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.directory-result-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.directory-result-main h2 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-result-main p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.directory-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.directory-result-meta span {
+  min-height: 20px;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-hover);
+}
+
+.directory-status {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .invites-layout {
   display: grid;
   grid-template-columns: minmax(220px, 34%) minmax(0, 1fr);
@@ -3134,6 +3251,34 @@ kbd {
   .search-results,
   .composer {
     margin-inline: 12px;
+  }
+
+  .directory-search {
+    grid-template-columns: minmax(0, 1fr);
+    padding-inline: 12px;
+  }
+
+  .directory-search .dialog-button {
+    width: 100%;
+  }
+
+  .directory-results {
+    padding-inline: 12px;
+  }
+
+  .directory-result {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .directory-result-avatar {
+    width: 36px;
+    height: 36px;
+    font-size: 12px;
+  }
+
+  .directory-join-button {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .settings-panel {

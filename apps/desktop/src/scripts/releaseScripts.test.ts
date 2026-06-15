@@ -303,6 +303,7 @@ describe("desktop release scripts", () => {
       "scenario local-reply",
       "scenario local-media",
       "scenario local-room-tags",
+      "scenario local-explore",
       "scenario local-message-actions",
       "scenario local-composer",
       "scenario local-settings",
@@ -423,6 +424,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("--scenario=local-reply");
     expect(docs).toContain("--scenario=local-media");
     expect(docs).toContain("--scenario=local-room-tags");
+    expect(docs).toContain("--scenario=local-explore");
     expect(docs).toContain("--scenario=local-message-actions");
     expect(docs).toContain("--scenario=local-composer");
     expect(docs).toContain("--scenario=local-settings");
@@ -469,6 +471,8 @@ describe("desktop release scripts", () => {
 
     expect(source).toContain("gui_local_login=ok");
     expect(source).toContain("gui_local_send=ok");
+    expect(source).toContain("gui_local_explore_query=ok");
+    expect(source).toContain("gui_local_explore_join=ok");
   });
 
   test("linux GUI local scenarios also emit DBus and window-state evidence", () => {

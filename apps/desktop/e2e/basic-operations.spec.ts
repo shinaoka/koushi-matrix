@@ -28,6 +28,8 @@
  *      commands without React repairing send-queue state.
  *  11. Drive message action menus from Rust-owned `TimelineItem.actions`, copy
  *      DTO values only, and dispatch source/forward typed commands.
+ *  12. Drive Explore public-directory search/join commands and wait for
+ *      Rust-shaped snapshots before rendering results or joined rooms.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -394,6 +396,140 @@ test("timeline reply action invokes set_composer_reply_target", async ({ page })
   // The reply-mode snapshot returned by set_composer_reply_target surfaces the
   // composer reply banner (Cancel reply control), confirming reply mode.
   await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+});
+
+test("Explore searches public rooms and joins only after Rust snapshot updates", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("query_directory", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.setCommandResponse("join_directory_room", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "Explore" }).click();
+  await expect(page.getByRole("main", { name: "Explore" })).toBeVisible();
+
+  const searchInput = page.getByRole("searchbox", { name: "Search public rooms" });
+  await searchInput.fill("public");
+  await page.getByRole("button", { name: "Search public rooms" }).click();
+
+  await expect.poll(() => invocationCount(page, "query_directory")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("query_directory")[0]?.args))
+    .toEqual({
+      term: "public",
+      serverName: null,
+      limit: 20,
+      since: null
+    });
+  await expect(page.getByRole("heading", { name: "Public Search Result" })).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const query = {
+      term: "public",
+      server_name: null,
+      limit: 20,
+      since: null
+    };
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        directory: {
+          ...snapshot.state.directory,
+          query: {
+            kind: "results",
+            request_id: 44,
+            query,
+            rooms: [
+              {
+                room_id: "!public-result:example.invalid",
+                canonical_alias: "#public-result:example.invalid",
+                name: "Public Search Result",
+                topic: "Rust-owned public directory result",
+                avatar_url: null,
+                joined_members: 12,
+                world_readable: true,
+                guest_can_join: false
+              }
+            ],
+            next_batch: null
+          },
+          join: { kind: "idle" }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(page.getByRole("heading", { name: "Public Search Result" })).toBeVisible();
+  await page.getByRole("button", { name: "Join Public Search Result" }).click();
+
+  await expect.poll(() => invocationCount(page, "join_directory_room")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("join_directory_room")[0]?.args)
+    )
+    .toEqual({
+      alias: "#public-result:example.invalid",
+      viaServer: "example.invalid"
+    });
+
+  const roomsSection = page.locator('[data-room-section="rooms"]');
+  await expect(
+    roomsSection.getByRole("button", { name: "Public Search Result" })
+  ).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const joinedRoom = {
+      room_id: "!joined-public-result:example.invalid",
+      display_name: "Public Search Result",
+      avatar: null,
+      is_dm: false,
+      tags: { favourite: null, low_priority: null },
+      unread_count: 0,
+      notification_count: 0,
+      highlight_count: 0,
+      parent_space_ids: []
+    };
+    const roomListItem = {
+      room_id: joinedRoom.room_id,
+      display_name: joinedRoom.display_name,
+      avatar: joinedRoom.avatar,
+      tags: joinedRoom.tags,
+      unread_count: joinedRoom.unread_count,
+      notification_count: joinedRoom.notification_count,
+      highlight_count: joinedRoom.highlight_count
+    };
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        rooms: [...snapshot.state.rooms, joinedRoom],
+        directory: {
+          ...snapshot.state.directory,
+          join: { kind: "idle" }
+        }
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        space_rooms: [...snapshot.sidebar.space_rooms, roomListItem]
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(
+    roomsSection.getByRole("button", { name: "Public Search Result" })
+  ).toBeVisible();
 });
 
 test("room tag context menu dispatches typed commands and waits for Rust section state", async ({

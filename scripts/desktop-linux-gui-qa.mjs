@@ -36,6 +36,7 @@ const checks = [
   "scenario local-reply",
   "scenario local-media",
   "scenario local-room-tags",
+  "scenario local-explore",
   "scenario local-message-actions",
   "scenario local-composer",
   "scenario local-settings",
@@ -203,6 +204,10 @@ async function run() {
   }
   if (guiScenario === "local-room-tags") {
     await runLocalRoomTagsScenario();
+    return;
+  }
+  if (guiScenario === "local-explore") {
+    await runLocalExploreScenario();
     return;
   }
   if (guiScenario === "local-message-actions") {
@@ -643,6 +648,59 @@ async function runLocalRoomTagsScenario() {
     );
     await recordLocalGuiEvidence(session);
     console.log("gui_local_room_tag_removed=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalExploreScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const baselineRooms = parseQaTitle(await session.browser.execute(() => document.title)).rooms;
+    const exploreButton = await session.browser.$('button[aria-label="Explore"]');
+    await exploreButton.waitForDisplayed({ timeout: timeoutMs });
+    await exploreButton.click();
+
+    const searchInput = await session.browser.$('input[aria-label="Search public rooms"]');
+    await searchInput.waitForDisplayed({ timeout: timeoutMs });
+    await searchInput.setValue(session.directoryRoomName);
+    const searchButton = await session.browser.$('button[aria-label="Search public rooms"]');
+    await searchButton.click();
+
+    await waitForDocumentText(
+      session.browser,
+      [session.directoryRoomName],
+      timeoutMs,
+      "local GUI public directory query"
+    );
+    console.log("gui_local_explore_query=ok");
+
+    const joinButton = await session.browser.$(
+      `button[aria-label=${JSON.stringify(`Join ${session.directoryRoomName}`)}]`
+    );
+    await joinButton.waitForDisplayed({ timeout: timeoutMs });
+    await joinButton.click();
+
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.rooms > baselineRooms,
+      timeoutMs,
+      "local GUI public directory join"
+    );
+    await waitForRoomInSection(
+      session.browser,
+      "rooms",
+      session.directoryRoomName,
+      true,
+      timeoutMs,
+      "local GUI public directory joined room"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_explore_join=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -1386,6 +1444,7 @@ async function startLocalGuiScenario() {
     dmTargetUserId: null,
     helperAccessToken: null,
     composerMentionDisplayName: null,
+    directoryRoomName: null,
     primaryUserId: null,
     seedRoomId: null,
     seedInviteRoomName: null
@@ -1467,6 +1526,27 @@ async function startLocalGuiScenario() {
       session.seedInviteRoomName = "QA Invite Room";
       session.dmTargetUserId = helperUserId;
       session.helperAccessToken = helperAccessToken;
+    }
+
+    if (guiScenario === "local-explore") {
+      const helperUsername = `qa_directory_${userSuffix}`;
+      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
+      const helperAccessToken = helperRegistration.access_token;
+      if (!helperAccessToken) {
+        throw new Error("local GUI explore setup did not return helper credentials");
+      }
+      session.directoryRoomName = "QA Public Room";
+      const publicRoom = await createRoom(homeserver, helperAccessToken, {
+        visibility: "public",
+        preset: "public_chat",
+        room_alias_name: `qa-public-${userSuffix}`,
+        name: session.directoryRoomName,
+        topic: "QA public directory room"
+      });
+      if (!publicRoom.room_id) {
+        throw new Error("local GUI explore setup did not return a public room id");
+      }
     }
 
     session.qaLoginPipePath = join(appDataDir, "qa-login.pipe");

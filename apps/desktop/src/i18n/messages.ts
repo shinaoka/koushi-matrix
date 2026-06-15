@@ -75,6 +75,27 @@ export type MessageId =
   | "dialog.startDm"
   | "dialog.submitCreateRoom"
   | "dialog.submitCreateSpace"
+  | "directory.failureForbidden"
+  | "directory.failureInvalid"
+  | "directory.failureNetwork"
+  | "directory.failureNotFound"
+  | "directory.failureSdk"
+  | "directory.failureTimeout"
+  | "directory.guestCanJoin"
+  | "directory.join"
+  | "directory.joinFailed"
+  | "directory.joining"
+  | "directory.joinRoom"
+  | "directory.memberCount"
+  | "directory.noAlias"
+  | "directory.noResults"
+  | "directory.results"
+  | "directory.search"
+  | "directory.searchFailed"
+  | "directory.searching"
+  | "directory.searchPlaceholder"
+  | "directory.searchPublicRooms"
+  | "directory.worldReadable"
   | "invite.accept"
   | "invite.decline"
   | "invite.fromInviter"
@@ -365,6 +386,7 @@ export type MessageId =
   | "timeline.openThreadSummary"
   | "timeline.viewReplies"
   | "workspace.createSpace"
+  | "workspace.explore"
   | "workspace.home"
   | "workspace.invites"
   | "workspace.favourites"
@@ -546,6 +568,27 @@ const en: Catalog = {
   "dialog.startDm": "Start DM",
   "dialog.submitCreateRoom": "Submit create room",
   "dialog.submitCreateSpace": "Submit create space",
+  "directory.failureForbidden": "Forbidden",
+  "directory.failureInvalid": "Invalid",
+  "directory.failureNetwork": "Network",
+  "directory.failureNotFound": "Not found",
+  "directory.failureSdk": "SDK",
+  "directory.failureTimeout": "Timeout",
+  "directory.guestCanJoin": "Guest access",
+  "directory.join": "Join",
+  "directory.joinFailed": "Join failed: {reason}",
+  "directory.joining": "Joining",
+  "directory.joinRoom": "Join {name}",
+  "directory.memberCount": "{count} members",
+  "directory.noAlias": "No canonical alias",
+  "directory.noResults": "No public rooms found",
+  "directory.results": "Public room results",
+  "directory.search": "Search",
+  "directory.searchFailed": "Search failed: {reason}",
+  "directory.searching": "Searching",
+  "directory.searchPlaceholder": "Room name or topic",
+  "directory.searchPublicRooms": "Search public rooms",
+  "directory.worldReadable": "World readable",
   "invite.accept": "Accept invite",
   "invite.decline": "Decline invite",
   "invite.fromInviter": "From {inviter}",
@@ -836,6 +879,7 @@ const en: Catalog = {
   "timeline.openThreadSummary": "Open thread, {summary}",
   "timeline.viewReplies": "View new replies · {count}",
   "workspace.createSpace": "Create space",
+  "workspace.explore": "Explore",
   "workspace.home": "Home",
   "workspace.invites": "Invites",
   "workspace.favourites": "Favourites",
@@ -927,6 +971,27 @@ const ja: Catalog = {
   "dialog.startDm": "DMを開始",
   "dialog.submitCreateRoom": "ルーム作成を実行",
   "dialog.submitCreateSpace": "スペース作成を実行",
+  "directory.failureForbidden": "禁止",
+  "directory.failureInvalid": "不正",
+  "directory.failureNetwork": "ネットワーク",
+  "directory.failureNotFound": "見つかりません",
+  "directory.failureSdk": "SDKエラー",
+  "directory.failureTimeout": "タイムアウト",
+  "directory.guestCanJoin": "ゲスト参加可",
+  "directory.join": "参加",
+  "directory.joinFailed": "参加に失敗: {reason}",
+  "directory.joining": "参加中",
+  "directory.joinRoom": "{name}に参加",
+  "directory.memberCount": "メンバー {count} 人",
+  "directory.noAlias": "正規エイリアスなし",
+  "directory.noResults": "公開ルームが見つかりません",
+  "directory.results": "公開ルームの結果",
+  "directory.search": "検索",
+  "directory.searchFailed": "検索に失敗: {reason}",
+  "directory.searching": "検索中",
+  "directory.searchPlaceholder": "ルーム名またはトピック",
+  "directory.searchPublicRooms": "公開ルームを検索",
+  "directory.worldReadable": "誰でも閲覧可",
   "invite.accept": "招待を承認",
   "invite.decline": "招待を辞退",
   "invite.fromInviter": "{inviter}から",
@@ -1214,6 +1279,7 @@ const ja: Catalog = {
   "timeline.openThreadSummary": "スレッドを開く、{summary}",
   "timeline.viewReplies": "新しい返信を見る · {count}",
   "workspace.createSpace": "スペースを作成",
+  "workspace.explore": "探索",
   "workspace.home": "ホーム",
   "workspace.invites": "招待",
   "workspace.favourites": "お気に入り",

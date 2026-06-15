@@ -727,6 +727,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   move between Rooms and Favourites from Rust-owned `RoomSummary.tags`; it
   prints `gui_local_room_tag_set=ok` and `gui_local_room_tag_removed=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-tags-fast --timeout-ms=180000`
+- Explore GUI iteration has a focused virtual-display lane:
+  `--scenario=local-explore`. It creates a synthetic public-room fixture with a
+  helper account, drives the real Explore search and Join controls, waits for
+  Rust-owned directory results and joined room-list state, and prints only
+  `gui_local_explore_query=ok` / `gui_local_explore_join=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-explore-fast --timeout-ms=180000`
 - Composer GUI iteration has a focused virtual-display lane:
   `--scenario=local-composer`. It seeds a synthetic helper member, waits for
   Rust-owned `ProfileState.users` to feed the mention autocomplete, drives the
@@ -901,6 +907,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   movement from Rust-owned `RoomSummary.tags`. Do not mutate React state,
   monkeypatch Tauri IPC, or treat menu click completion as evidence until the
   row is observed in the expected section.
+- `local-explore` must drive the real Explore pane and wait for
+  `AppState.directory.query` results plus the joined room-list snapshot. React
+  may keep only the search input draft; it must not synthesize directory
+  results, join success, or room-list membership. The Linux lane stdout must
+  stay to private-data-free tokens and must not print Matrix aliases, room IDs,
+  server names, pagination tokens, or raw SDK errors.
 - `local-composer` mention candidates must come from Rust-owned
   `ProfileState.users`, which is projected from SDK room member profiles during
   room-list observation. React may track selected draft mention pills and pass a
