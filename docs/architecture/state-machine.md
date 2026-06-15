@@ -1188,6 +1188,9 @@ stateDiagram-v2
   `MentionIntent`; it must not synthesize Matrix mention content, infer members
   from rendered timeline text, or repair send behavior if the Rust resolver
   returns `noop`/failure.
+- Timeline mention pills are presentation over Rust-owned timeline body text
+  and Rust-owned `ProfileState.users`. They do not create, modify, or infer
+  Matrix `m.mentions`; send semantics remain in the Rust composer path.
 - CJK policy updates carry a generation or request id. Stale profile/search
   results for an older locale/settings generation are ignored.
 - Failure behavior falls back to safe default display/search policy with a

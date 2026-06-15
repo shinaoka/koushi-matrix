@@ -36,8 +36,10 @@ import {
   XCircle
 } from "lucide-react";
 import {
+  Fragment,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -196,6 +198,133 @@ const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 const ignoreSendQueueAction = () => undefined;
+
+type TimelineMentionToken = {
+  token: string;
+  userId: string;
+};
+
+export function renderTimelineMessageText(
+  text: string,
+  query = "",
+  profileUsers: Record<string, UserProfile> = {}
+) {
+  const mentionTokens = timelineMentionTokens(profileUsers);
+  return text.split("\n").map((line, index) => (
+    <span key={`${line}:${index}`}>
+      {index > 0 ? <br /> : null}
+      {renderTimelineMessageLine(line, query, mentionTokens)}
+    </span>
+  ));
+}
+
+function renderTimelineMessageLine(
+  line: string,
+  query: string,
+  mentionTokens: TimelineMentionToken[]
+): ReactNode {
+  if (mentionTokens.length === 0) {
+    return renderQueryHighlight(line, query);
+  }
+
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  while (cursor < line.length) {
+    const next = findNextMentionToken(line, cursor, mentionTokens);
+    if (!next) {
+      nodes.push(
+        <Fragment key={`text:${cursor}`}>{renderQueryHighlight(line.slice(cursor), query)}</Fragment>
+      );
+      break;
+    }
+    if (next.start > cursor) {
+      nodes.push(
+        <Fragment key={`text:${cursor}`}>
+          {renderQueryHighlight(line.slice(cursor, next.start), query)}
+        </Fragment>
+      );
+    }
+    const token = line.slice(next.start, next.end);
+    nodes.push(
+      <span
+        className="message-mention-pill"
+        data-mention-user-id={next.userId}
+        dir="auto"
+        key={`${next.userId}:${next.start}`}
+      >
+        {renderQueryHighlight(token, query)}
+      </span>
+    );
+    cursor = next.end;
+  }
+
+  return nodes.length > 0 ? nodes : renderQueryHighlight(line, query);
+}
+
+function renderQueryHighlight(text: string, query: string): ReactNode {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return text;
+  }
+  const index = text.indexOf(trimmed);
+  if (index < 0) {
+    return text;
+  }
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark>{text.slice(index, index + trimmed.length)}</mark>
+      {text.slice(index + trimmed.length)}
+    </>
+  );
+}
+
+function findNextMentionToken(
+  line: string,
+  start: number,
+  mentionTokens: TimelineMentionToken[]
+): { start: number; end: number; userId: string } | null {
+  for (let index = start; index < line.length; index += 1) {
+    for (const mention of mentionTokens) {
+      const end = index + mention.token.length;
+      if (
+        line.startsWith(mention.token, index) &&
+        hasMentionTokenBoundary(line, index, end)
+      ) {
+        return { start: index, end, userId: mention.userId };
+      }
+    }
+  }
+  return null;
+}
+
+function timelineMentionTokens(
+  profileUsers: Record<string, UserProfile>
+): TimelineMentionToken[] {
+  const tokens = new Map<string, string>();
+  for (const profile of Object.values(profileUsers)) {
+    const displayName = profile.display_name?.trim();
+    if (displayName) {
+      tokens.set(displayName.startsWith("@") ? displayName : `@${displayName}`, profile.user_id);
+    }
+    tokens.set(profile.user_id, profile.user_id);
+  }
+  return Array.from(tokens, ([token, userId]) => ({ token, userId }))
+    .filter((mention) => mention.token.length > 1)
+    .sort((a, b) => b.token.length - a.token.length || a.token.localeCompare(b.token));
+}
+
+function hasMentionTokenBoundary(line: string, start: number, end: number): boolean {
+  return isMentionStartBoundary(line[start - 1]) && isMentionEndBoundary(line[end]);
+}
+
+function isMentionStartBoundary(value: string | undefined): boolean {
+  return value === undefined || /\s|[([{<]/u.test(value);
+}
+
+function isMentionEndBoundary(value: string | undefined): boolean {
+  return value === undefined || /\s|[.,!?;:)\]}>]/u.test(value);
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -508,6 +637,7 @@ export function TimelineView({
               onCancelSend={onCancelSend}
               presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
               profile={item.sender ? profileUsers[item.sender] : undefined}
+              mentionProfileUsers={profileUsers}
               receipts={eventId ? roomSignals?.receipts_by_event[eventId] ?? [] : []}
             />
           </div>
@@ -541,6 +671,7 @@ export function TimelineItemRow({
   onCancelSend = ignoreSendQueueAction,
   presence,
   profile,
+  mentionProfileUsers = {},
   receipts = []
 }: {
   item: TimelineItem;
@@ -561,6 +692,7 @@ export function TimelineItemRow({
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
   presence?: PresenceKind;
   profile?: UserProfile;
+  mentionProfileUsers?: Record<string, UserProfile>;
   receipts?: LiveReadReceipt[];
 }) {
   const domId = timelineItemDomId(item.id);
@@ -831,7 +963,7 @@ export function TimelineItemRow({
     </form>
   ) : (
     <div className="message-body" dir="auto">
-      {item.body ?? ""}
+      {renderTimelineMessageText(item.body ?? "", "", mentionProfileUsers)}
     </div>
   );
   const mediaContent =

@@ -867,6 +867,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   room-list observation. React may track selected draft mention pills and pass a
   typed `MentionIntent`, but it must not synthesize Matrix `m.mentions`,
   formatted HTML, slash command semantics, or fallback send behavior.
+  Timeline mention pills are display-only rendering over Rust-owned timeline
+  body text plus `ProfileState.users`; they must not become a React-owned
+  source of mention semantics.
 
 ## macOS GUI Smoke Failures
 

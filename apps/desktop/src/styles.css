@@ -1403,6 +1403,23 @@ button {
   line-height: 1.48;
 }
 
+.message-mention-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(240px, 100%);
+  min-height: 20px;
+  padding: 0 6px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--brand);
+  background: var(--surface-hover);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
 .reply-quote {
   display: grid;
   gap: 2px;

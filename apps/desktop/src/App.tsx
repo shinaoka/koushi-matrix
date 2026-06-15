@@ -51,6 +51,7 @@ import { setActiveLocaleProfile, t } from "./i18n/messages";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   TimelineView,
+  renderTimelineMessageText,
   type TimelineRowActionHandlers,
   type TimelineTransport
 } from "./components/TimelineView";
@@ -2643,6 +2644,7 @@ function TimelinePane({
                 onEditMessage={onEditMessage}
                 onOpenThread={onOpenThread}
                 onRedactMessage={onRedactMessage}
+                profileUsers={snapshot.state.profile.users}
               />
             ))
           )}
@@ -2849,7 +2851,8 @@ function MessageArticle({
   onOpenContextMenu,
   onEditMessage,
   onOpenThread,
-  onRedactMessage
+  onRedactMessage,
+  profileUsers
 }: {
   currentUserId: string | null;
   message: TimelineMessage;
@@ -2858,6 +2861,7 @@ function MessageArticle({
   onEditMessage: (message: TimelineMessage) => void;
   onOpenThread: (roomId: string, rootEventId: string) => void;
   onRedactMessage: (roomId: string, eventId: string) => void;
+  profileUsers: Record<string, UserProfile>;
 }) {
   const canManage = currentUserId === message.sender;
 
@@ -2908,7 +2912,9 @@ function MessageArticle({
             </span>
           ) : null}
         </div>
-        <div className="message-body" dir="auto">{highlightQueryLines(message.body, query)}</div>
+        <div className="message-body" dir="auto">
+          {renderTimelineMessageText(message.body, query, profileUsers)}
+        </div>
         {message.attachment_filename ? (
           <div className="attachment">
             <Paperclip size={16} />

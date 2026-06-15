@@ -512,6 +512,40 @@ test("mention autocomplete inserts a pill and sends typed mention intent", async
     window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   });
+  await pushTimelineDiffs(
+    page,
+    [
+      {
+        Set: {
+          index: 0,
+          item: {
+            id: { Event: { event_id: "$seed-event:example.invalid" } },
+            sender: "@harness-user:example.invalid",
+            body: "Timeline mentions @Alice from Rust profile data",
+            timestamp_ms: 1_800_000_000_000,
+            in_reply_to_event_id: null,
+            thread_root: null,
+            thread_summary: null,
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: false,
+            can_edit: true,
+            reactions: []
+          }
+        }
+      }
+    ],
+    1
+  );
+  const timelineMention = page.locator(".message-body .message-mention-pill", {
+    hasText: "@Alice"
+  });
+  await expect(timelineMention).toBeVisible();
+  await expect(timelineMention).toHaveAttribute(
+    "data-mention-user-id",
+    "@alice:example.invalid"
+  );
 
   const composer = page.getByRole("textbox", { name: "Message composer" });
   await composer.fill("@a");

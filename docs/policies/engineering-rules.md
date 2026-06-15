@@ -191,6 +191,9 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    profiles for autocomplete candidates. React may render the popover/pills and
    pass a typed `MentionIntent`, but it must not synthesize Matrix
    `m.mentions`, formatted HTML, slash semantics, or fallback send behavior.
+   Timeline mention pills are display-only decoration over Rust-owned
+   timeline body/profile snapshots; React must not infer mention semantics from
+   rendered text.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

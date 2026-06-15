@@ -145,6 +145,45 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain('dir="auto"');
   });
 
+  test("TimelineItemRow renders mention pills from Rust-owned profile data", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={{
+          id: { Event: { event_id: "$event:example.invalid" } },
+          sender: "@alice:example.invalid",
+          body: "Hello @Alice and @alice:example.invalid",
+          timestamp_ms: 1_800_000_000_000,
+          in_reply_to_event_id: null,
+          thread_root: null,
+          thread_summary: null,
+          can_react: true,
+          is_redacted: false,
+          can_redact: false,
+          is_edited: false,
+          can_edit: true,
+          reactions: []
+        }}
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+        mentionProfileUsers={{
+          "@alice:example.invalid": {
+            user_id: "@alice:example.invalid",
+            display_name: "Alice",
+            avatar: null
+          }
+        }}
+      />
+    );
+
+    expect(markup).toContain('class="message-mention-pill"');
+    expect(markup).toContain('data-mention-user-id="@alice:example.invalid"');
+    expect(markup).toContain("@Alice");
+  });
+
   test("TimelineItemRow renders add reaction affordance only for reactable events", () => {
     const reactableMarkup = renderToStaticMarkup(
       <TimelineItemRow
