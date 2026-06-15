@@ -34,11 +34,13 @@ Credential-store verification is split by tier:
   `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`. On hosted runners,
   `security set-key-partition-list` is best-effort because generic-password-only
   temporary keychains can reject that code-signing ACL operation; the Tier 2
-  pass/fail proof remains the real backend set/get/delete plus locked-keychain
-  fail-closed assertion. The test temporarily sets the throwaway keychain as
-  the user default keychain and restores the previous default in a cleanup guard,
+  pass/fail proof is the real backend set/get/delete plus missing-credential
+  mapping after delete. The test temporarily sets the throwaway keychain as the
+  user default keychain and restores the previous default in a cleanup guard,
   because the macOS `keyring` backend writes generic passwords through the
-  default keychain.
+  default keychain. Locked-keychain reads on hosted runners can block on native
+  authentication UI, so locked login-keychain prompt behavior remains Tier 3
+  attended evidence.
 - Tier 3 remains attended-only: native consent dialogs, Touch ID, locked
   login-keychain UX, and signed-build ACL behavior. `tauri-driver` does not
   support native macOS GUI automation, so do not claim automated coverage for

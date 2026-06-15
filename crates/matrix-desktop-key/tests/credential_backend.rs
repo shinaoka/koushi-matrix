@@ -228,23 +228,15 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
         loaded.derive_search_index_key().as_str()
     );
 
-    run_security(&["lock-keychain".to_owned(), path.clone()])?;
-    let error = store
-        .load(&key_id())
-        .expect_err("locked temporary keychain must fail closed");
-    assert!(
-        is_locked_or_inaccessible_error(&error),
-        "locked temporary keychain must map to a coarse locked/inaccessible error"
-    );
-
-    run_security(&[
-        "unlock-keychain".to_owned(),
-        "-p".to_owned(),
-        PASSWORD.to_owned(),
-        path,
-    ])?;
     store
         .delete(&key_id())
         .map_err(|_| "temporary keychain delete failed".to_owned())?;
+    let error = store
+        .load(&key_id())
+        .expect_err("deleted temporary keychain credential must be missing");
+    assert!(
+        is_missing_credential_error(&error),
+        "deleted temporary keychain credential must map to a coarse missing-credential error"
+    );
     Ok(())
 }
