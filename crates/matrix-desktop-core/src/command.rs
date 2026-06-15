@@ -64,6 +64,7 @@ impl CoreCommand {
                 | AccountCommand::SubmitIdentityResetAuth { request_id, .. }
                 | AccountCommand::SetPresence { request_id, .. }
                 | AccountCommand::SetDisplayName { request_id, .. }
+                | AccountCommand::SetLocalUserAlias { request_id, .. }
                 | AccountCommand::SetAvatar { request_id, .. }
                 | AccountCommand::Logout { request_id }
                 | AccountCommand::SwitchAccount { request_id, .. } => *request_id,
@@ -443,6 +444,11 @@ pub enum AccountCommand {
         request_id: RequestId,
         display_name: Option<String>,
     },
+    SetLocalUserAlias {
+        request_id: RequestId,
+        user_id: String,
+        alias: Option<String>,
+    },
     SetAvatar {
         request_id: RequestId,
         request: SetAvatarRequest,
@@ -470,6 +476,7 @@ impl AccountCommand {
                 | Self::SubmitIdentityResetAuth { .. }
                 | Self::SetPresence { .. }
                 | Self::SetDisplayName { .. }
+                | Self::SetLocalUserAlias { .. }
                 | Self::SetAvatar { .. }
                 | Self::ProbeLocalEncryptionHealth { .. }
                 | Self::ResetLocalData { .. }
@@ -617,6 +624,12 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("SetDisplayName")
                 .field("request_id", request_id)
                 .field("display_name", &"ProfileDisplayName(..)")
+                .finish(),
+            Self::SetLocalUserAlias { request_id, .. } => formatter
+                .debug_struct("SetLocalUserAlias")
+                .field("request_id", request_id)
+                .field("user_id", &"UserId(..)")
+                .field("alias", &"LocalUserAlias(..)")
                 .finish(),
             Self::SetAvatar {
                 request_id,
@@ -1723,6 +1736,11 @@ mod tests {
             request_id: fake_rid(9),
             display_name: Some("Private Display".to_owned()),
         };
+        let alias = AccountCommand::SetLocalUserAlias {
+            request_id: fake_rid(11),
+            user_id: "@private:example.invalid".to_owned(),
+            alias: Some("Private Alias".to_owned()),
+        };
         let avatar = AccountCommand::SetAvatar {
             request_id: fake_rid(10),
             request: SetAvatarRequest {
@@ -1737,6 +1755,14 @@ mod tests {
             !display_debug.contains("Private Display"),
             "{display_debug}"
         );
+
+        let alias_debug = format!("{alias:?}");
+        assert!(alias_debug.contains("SetLocalUserAlias"), "{alias_debug}");
+        assert!(
+            !alias_debug.contains("@private:example.invalid"),
+            "{alias_debug}"
+        );
+        assert!(!alias_debug.contains("Private Alias"), "{alias_debug}");
 
         let avatar_debug = format!("{avatar:?}");
         assert!(avatar_debug.contains("SetAvatar"), "{avatar_debug}");

@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-06-15.
+Last amended: 2026-06-16.
 
 ## Product Scope
 
@@ -46,7 +46,13 @@ Crate responsibilities:
   serializable snapshot DTOs. No SDK handles, no Tauri, no async.
   E2EE trust, verification, cross-signing, key-backup, and identity-reset UI
   state is modeled here as guarded, request-correlated state. GUI code renders
-  that state; it does not own trust decisions.
+  that state; it does not own trust decisions. Personal local user aliases are
+  also Rust-owned profile state: `ProfileState.local_aliases` stores the
+  account-data-backed map, reducer actions own set/clear/list lifecycle, and
+  display-name resolution follows `alias ?? upstream display name ?? MXID`
+  before React sees labels. React may render the DTO and dispatch typed alias
+  commands only; it must not maintain a separate alias cache or write aliases to
+  Matrix profile/events.
 - `SettingsState` is serializable Rust product state owned by
   `matrix-desktop-state` and persisted by `matrix-desktop-core` through a
   non-secret settings store. React may apply settings to presentation, but it

@@ -86,6 +86,16 @@ Phase B GUI/browser-headless work for the same issue follows
 - Set a realistic review budget. `$0.50` handled a small #65 diff review after
   waiting, but `$2+` is a better default for full diff reviews. Keep prompts
   scoped and private-data-free.
+- DeepSeek V4 Pro should not be treated as a trusted implementation owner for
+  privacy-sensitive, cross-boundary changes without main-agent integration
+  review. In the #68/#63 trials it was useful for scoped audit/review prompts,
+  while direct implementation either produced no useful edit or timed out.
+  Prefer read-only analysis or final diff review unless the task is small and
+  mechanically specified.
+- In the #63 local-alias Phase A trial, a full uncommitted diff review through
+  DeepSeek V4 Pro produced no output after several minutes and was terminated by
+  its process group. For broad privacy/cross-boundary reviews, either shrink the
+  prompt to one subsystem or use the main agent's review as authoritative.
 - When reviewing uncommitted work, include untracked new files explicitly.
   `git diff -- path/to/new-file` is empty for untracked files, and the
   reviewer may correctly report that the core file is missing from the review.
@@ -349,6 +359,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Own-profile state, per-user profile cache, room avatars, and space avatars
   are Rust-owned DTOs. React renders them and dispatches `set_display_name` /
   `set_avatar`; do not add React-local profile success/failure semantics.
+- Personal local user aliases are also Rust-owned profile state. Keep alias
+  set/clear/list, persistence to `app.ruri.local_aliases`, display-name
+  resolution, and pending/failure state in Rust; React may render the returned
+  labels and dispatch typed commands only.
+- Local aliases are private "only I see this" data. Do not print alias user ids
+  or alias text in normal Debug, QA titles/logs, screenshots, issue comments, or
+  docs examples. `ProfileState` Debug should expose only profile/avatar presence
+  and counts; SDK alias DTO Debug should expose counts only.
 - `SetAvatar` may carry image bytes only through the typed command boundary.
   Debug output, QA logs, screenshots, issue comments, and docs examples must not
   contain real avatar bytes, real avatar MXC URIs, local thumbnail paths, or raw

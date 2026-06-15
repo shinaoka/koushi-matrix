@@ -7,6 +7,10 @@ use matrix_desktop_state::{
 };
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::room::ParentSpace;
+use matrix_sdk::ruma::{
+    events::{AnyGlobalAccountDataEventContent, GlobalAccountDataEventType},
+    serde::Raw,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -25,6 +29,7 @@ use zeroize::Zeroizing;
 const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MATRIX_ROOM_LIST_SNAPSHOT_LIMIT: usize = 4096;
+pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.ruri.local_aliases";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoginDiscovery {
@@ -1518,6 +1523,21 @@ pub struct MatrixOwnProfile {
     pub avatar_mxc_uri: Option<String>,
 }
 
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MatrixLocalUserAliases {
+    #[serde(default)]
+    pub aliases: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for MatrixLocalUserAliases {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixLocalUserAliases")
+            .field("alias_count", &self.aliases.len())
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatrixUserProfile {
     pub user_id: String,
@@ -2036,6 +2056,61 @@ pub async fn set_avatar(
         .await
         .map_err(MatrixProfileError::from_sdk_error)?;
     matrix_own_profile_from_session(session).await
+}
+
+pub async fn get_local_user_aliases(
+    session: &MatrixClientSession,
+) -> Result<MatrixLocalUserAliases, MatrixProfileError> {
+    let raw = session
+        .client()
+        .account()
+        .fetch_account_data(local_user_aliases_event_type())
+        .await
+        .map_err(MatrixProfileError::from_sdk_error)?;
+    let Some(raw) = raw else {
+        return Ok(MatrixLocalUserAliases::default());
+    };
+    let content = raw
+        .deserialize_as_unchecked::<MatrixLocalUserAliases>()
+        .map_err(|_| matrix_profile_serialization_error())?;
+
+    Ok(MatrixLocalUserAliases {
+        aliases: normalized_local_user_aliases(content.aliases),
+    })
+}
+
+pub async fn set_local_user_aliases(
+    session: &MatrixClientSession,
+    aliases: BTreeMap<String, String>,
+) -> Result<MatrixLocalUserAliases, MatrixProfileError> {
+    let content = MatrixLocalUserAliases {
+        aliases: normalized_local_user_aliases(aliases),
+    };
+    let raw: Raw<AnyGlobalAccountDataEventContent> = Raw::new(&content)
+        .map_err(|_| matrix_profile_serialization_error())?
+        .cast_unchecked();
+    session
+        .client()
+        .account()
+        .set_account_data_raw(local_user_aliases_event_type(), raw)
+        .await
+        .map_err(MatrixProfileError::from_sdk_error)?;
+
+    Ok(content)
+}
+
+pub async fn update_local_user_alias(
+    session: &MatrixClientSession,
+    user_id: &str,
+    alias: Option<&str>,
+) -> Result<MatrixLocalUserAliases, MatrixProfileError> {
+    let mut aliases = get_local_user_aliases(session).await?.aliases;
+    if let Some(alias) = normalize_local_user_alias(alias) {
+        aliases.insert(user_id.to_owned(), alias);
+    } else {
+        aliases.remove(user_id);
+    }
+    set_local_user_aliases(session, aliases).await
 }
 
 pub async fn send_text_message(
@@ -3391,6 +3466,33 @@ async fn matrix_own_profile_from_session(
     })
 }
 
+fn local_user_aliases_event_type() -> GlobalAccountDataEventType {
+    GlobalAccountDataEventType::from(LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE.to_owned())
+}
+
+fn normalized_local_user_aliases(aliases: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    aliases
+        .into_iter()
+        .filter_map(|(user_id, alias)| {
+            if user_id.trim().is_empty() {
+                return None;
+            }
+            normalize_local_user_alias(Some(&alias)).map(|alias| (user_id, alias))
+        })
+        .collect()
+}
+
+fn normalize_local_user_alias(alias: Option<&str>) -> Option<String> {
+    alias
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn matrix_profile_serialization_error() -> MatrixProfileError {
+    MatrixProfileError::Sdk(MatrixProfileFailureKind::Sdk)
+}
+
 fn matrix_profile_failure_kind(error: &matrix_sdk::Error) -> MatrixProfileFailureKind {
     match error {
         matrix_sdk::Error::Http(error) => {
@@ -3519,18 +3621,19 @@ fn matrix_error_message(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{collections::BTreeMap, path::PathBuf};
 
     use super::{
+        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixLocalUserAliases,
         MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
         MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
         MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
         MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
         create_public_directory_room, get_room_settings_snapshot, join_room_by_alias,
         matrix_room_list_room_from_counts, matrix_room_member_role, moderate_room_member,
-        query_public_room_directory, room_settings_snapshot_with_change,
-        room_settings_snapshot_with_member_power_level, update_room_member_power_level,
-        update_room_setting,
+        normalized_local_user_aliases, query_public_room_directory,
+        room_settings_snapshot_with_change, room_settings_snapshot_with_member_power_level,
+        update_room_member_power_level, update_room_setting,
     };
 
     #[test]
@@ -3562,6 +3665,70 @@ mod tests {
             kind,
             matrix_sdk::search_index::SearchIndexStoreKind::EncryptedDirectoryWithConfig(_, _, _)
         ));
+    }
+
+    #[test]
+    fn local_user_aliases_account_data_serde_uses_private_flat_map() {
+        let mut aliases = BTreeMap::new();
+        aliases.insert(
+            "@alice:example.invalid".to_owned(),
+            "Local Alice".to_owned(),
+        );
+        let content = MatrixLocalUserAliases {
+            aliases: aliases.clone(),
+        };
+
+        let value = serde_json::to_value(&content).expect("serialize local aliases");
+        assert_eq!(
+            LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE,
+            "app.ruri.local_aliases"
+        );
+        assert_eq!(
+            value["aliases"]["@alice:example.invalid"],
+            serde_json::json!("Local Alice")
+        );
+
+        let parsed: MatrixLocalUserAliases =
+            serde_json::from_value(value).expect("deserialize local aliases");
+        assert_eq!(parsed.aliases, aliases);
+    }
+
+    #[test]
+    fn local_user_aliases_debug_redacts_user_ids_and_aliases() {
+        let content = MatrixLocalUserAliases {
+            aliases: BTreeMap::from([(
+                "@alice:example.invalid".to_owned(),
+                "Local Alice".to_owned(),
+            )]),
+        };
+
+        let debug = format!("{content:?}");
+
+        assert!(debug.contains("MatrixLocalUserAliases"));
+        assert!(debug.contains("alias_count"));
+        assert!(!debug.contains("@alice:example.invalid"));
+        assert!(!debug.contains("Local Alice"));
+    }
+
+    #[test]
+    fn normalized_local_user_aliases_trims_and_drops_empty_entries() {
+        let aliases = BTreeMap::from([
+            (
+                "@alice:example.invalid".to_owned(),
+                "  Local Alice  ".to_owned(),
+            ),
+            ("@bob:example.invalid".to_owned(), "   ".to_owned()),
+        ]);
+
+        let normalized = normalized_local_user_aliases(aliases);
+
+        assert_eq!(
+            normalized,
+            BTreeMap::from([(
+                "@alice:example.invalid".to_owned(),
+                "Local Alice".to_owned()
+            )])
+        );
     }
 
     #[test]

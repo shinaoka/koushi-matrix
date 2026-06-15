@@ -20,6 +20,7 @@ use std::collections::BTreeSet;
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
 const SETTINGS_LOAD_FAILED_MESSAGE: &str = "Settings could not be loaded";
 const SETTINGS_PERSIST_FAILED_MESSAGE: &str = "Settings could not be saved";
+const LOCAL_USER_ALIAS_UPDATE_FAILED_MESSAGE: &str = "Local user alias could not be saved";
 const PIN_EVENT_FAILED_MESSAGE: &str = "Pinning the event failed";
 const UNPIN_EVENT_FAILED_MESSAGE: &str = "Unpinning the event failed";
 
@@ -589,6 +590,66 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 .map(|profile| (profile.user_id.clone(), profile))
                 .collect();
             vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+        }
+        AppAction::LocalUserAliasesLoaded { aliases } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.profile.local_aliases = aliases
+                .into_iter()
+                .filter_map(|(user_id, alias)| {
+                    crate::state::normalize_local_user_alias(Some(alias))
+                        .map(|normalized| (user_id, normalized))
+                })
+                .collect();
+            state.profile.local_alias_update = crate::state::LocalUserAliasUpdateState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+        }
+        AppAction::LocalUserAliasUpdateRequested {
+            request_id,
+            user_id,
+            alias,
+        } => {
+            if !is_session_ready(state) || !state.profile.local_alias_update.is_idle() {
+                return Vec::new();
+            }
+
+            if let Some(alias) = crate::state::normalize_local_user_alias(alias) {
+                state.profile.local_aliases.insert(user_id, alias);
+            } else {
+                state.profile.local_aliases.remove(&user_id);
+            }
+            state.profile.local_alias_update =
+                crate::state::LocalUserAliasUpdateState::Saving { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+        }
+        AppAction::LocalUserAliasUpdateSucceeded { request_id } => {
+            if state.profile.local_alias_update.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+
+            state.profile.local_alias_update = crate::state::LocalUserAliasUpdateState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+        }
+        AppAction::LocalUserAliasUpdateFailed {
+            request_id,
+            message: _,
+        } => {
+            if state.profile.local_alias_update.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+
+            state.profile.local_alias_update = crate::state::LocalUserAliasUpdateState::Idle;
+            state.errors.push(AppError {
+                code: "local_user_alias_update_failed".to_owned(),
+                message: LOCAL_USER_ALIAS_UPDATE_FAILED_MESSAGE.to_owned(),
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
         }
         AppAction::ProfileUpdateRequested {
             request_id,
@@ -2786,7 +2847,7 @@ mod tests {
                     LiveEventReceiptSummary {
                         readers: vec![LiveReadReceipt {
                             user_id: "@bob:example.invalid".to_owned(),
-                            display_name: None,
+                            display_name: Some("@bob:example.invalid".to_owned()),
                             avatar: None,
                             timestamp_ms: Some(1_234),
                         }],

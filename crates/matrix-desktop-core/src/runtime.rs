@@ -1107,6 +1107,15 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 display_name: display_name.clone(),
             },
         }),
+        AccountCommand::SetLocalUserAlias {
+            request_id,
+            user_id,
+            alias,
+        } => Some(AppAction::LocalUserAliasUpdateRequested {
+            request_id: request_id.sequence,
+            user_id: user_id.clone(),
+            alias: alias.clone(),
+        }),
         AccountCommand::SetAvatar {
             request_id,
             request,
@@ -1408,6 +1417,27 @@ mod tests {
                     mime_type: "image/png".to_owned(),
                     byte_count: 4,
                 },
+            })
+        );
+    }
+
+    #[test]
+    fn local_user_alias_command_projects_pending_state_without_leaking_alias() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 15,
+        };
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::SetLocalUserAlias {
+                request_id,
+                user_id: "@private:example.invalid".to_owned(),
+                alias: Some("Private Alias".to_owned()),
+            }),
+            Some(AppAction::LocalUserAliasUpdateRequested {
+                request_id: 15,
+                user_id: "@private:example.invalid".to_owned(),
+                alias: Some("Private Alias".to_owned()),
             })
         );
     }

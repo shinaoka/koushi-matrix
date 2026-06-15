@@ -486,11 +486,29 @@ pub struct SessionInfo {
     pub device_id: String,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProfileState {
     pub own: OwnProfile,
     pub users: BTreeMap<String, UserProfile>,
+    #[serde(default)]
+    pub local_aliases: BTreeMap<String, String>,
+    #[serde(default)]
+    pub local_alias_update: LocalUserAliasUpdateState,
     pub update: ProfileUpdateState,
+}
+
+impl fmt::Debug for ProfileState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProfileState")
+            .field("has_own_display_name", &self.own.display_name.is_some())
+            .field("has_own_avatar", &self.own.avatar.is_some())
+            .field("user_count", &self.users.len())
+            .field("local_alias_count", &self.local_aliases.len())
+            .field("local_alias_update", &self.local_alias_update)
+            .field("update", &self.update)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -504,6 +522,77 @@ pub struct UserProfile {
     pub user_id: String,
     pub display_name: Option<String>,
     pub avatar: Option<AvatarImage>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LocalUserAliasUpdateState {
+    #[default]
+    Idle,
+    Saving {
+        request_id: u64,
+    },
+}
+
+impl LocalUserAliasUpdateState {
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
+    pub fn request_id(&self) -> Option<u64> {
+        match self {
+            Self::Idle => None,
+            Self::Saving { request_id } => Some(*request_id),
+        }
+    }
+}
+
+pub fn normalize_local_user_alias(alias: Option<String>) -> Option<String> {
+    alias.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
+}
+
+pub fn resolve_user_display_name(
+    profiles: &ProfileState,
+    user_id: &str,
+    upstream_display_name: Option<&str>,
+    own_user_id: Option<&str>,
+) -> String {
+    profiles
+        .local_aliases
+        .get(user_id)
+        .filter(|alias| !alias.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            upstream_display_name
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            own_user_id
+                .filter(|own| *own == user_id)
+                .and_then(|_| profiles.own.display_name.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            profiles
+                .users
+                .get(user_id)
+                .and_then(|profile| profile.display_name.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| user_id.to_owned())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2123,11 +2212,12 @@ fn enrich_receipt(
         .map(|_| &profiles.own);
     let user_profile = profiles.users.get(&receipt.user_id);
 
-    if receipt.display_name.is_none() {
-        receipt.display_name = own_profile
-            .and_then(|profile| profile.display_name.clone())
-            .or_else(|| user_profile.and_then(|profile| profile.display_name.clone()));
-    }
+    receipt.display_name = Some(resolve_user_display_name(
+        profiles,
+        &receipt.user_id,
+        receipt.display_name.as_deref(),
+        own_user_id,
+    ));
     if receipt.avatar.is_none() {
         receipt.avatar = own_profile
             .and_then(|profile| profile.avatar.clone())

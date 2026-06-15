@@ -1960,6 +1960,8 @@ function defaultProfileState(userId: string | null | undefined): DesktopSnapshot
       avatar: null
     },
     users: {},
+    local_aliases: {},
+    local_alias_update: { kind: "idle" },
     update: { kind: "idle" }
   };
 }

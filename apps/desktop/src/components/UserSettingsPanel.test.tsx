@@ -66,6 +66,8 @@ describe("UserSettingsPanel", () => {
       }
     },
     users: {},
+    local_aliases: {},
+    local_alias_update: { kind: "idle" },
     update: { kind: "idle" }
   };
   const handlers = {
@@ -171,7 +173,13 @@ describe("UserSettingsPanel", () => {
             device_id: "SECONDDEVICE"
           }
         ]}
-        profile={{ own: { display_name: null, avatar: null }, users: {}, update: { kind: "idle" } }}
+        profile={{
+          own: { display_name: null, avatar: null },
+          users: {},
+          local_aliases: {},
+          local_alias_update: { kind: "idle" },
+          update: { kind: "idle" }
+        }}
         settings={settings}
         {...handlers}
       />

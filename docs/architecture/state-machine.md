@@ -417,10 +417,13 @@ stateDiagram-v2
 Profiles and avatars are Rust-owned account and room projections.
 `AppState.profile.own` holds the current account display name and avatar,
 `AppState.profile.users` holds the per-user profile cache used by timeline and
-member surfaces, and room/space/invite summaries carry their own avatar DTOs.
+member surfaces, `AppState.profile.local_aliases` holds personal local display
+aliases keyed by Matrix user id, and room/space/invite summaries carry their
+own avatar DTOs.
 React renders these DTOs and dispatches typed profile commands only; it must not
 query Matrix profiles, parse MXC URIs, upload avatar bytes outside the command
-boundary, or infer profile operation success from component state.
+boundary, resolve personal aliases locally, or infer profile operation success
+from component state.
 
 ```mermaid
 stateDiagram-v2
@@ -436,6 +439,16 @@ stateDiagram-v2
     Updating --> Empty: LogoutRequested/LogoutFinished/SessionCleared
 ```
 
+```mermaid
+stateDiagram-v2
+    [*] --> AliasIdle
+    AliasIdle --> AliasIdle: LocalUserAliasesLoaded
+    AliasIdle --> AliasSaving: LocalUserAliasUpdateRequested
+    AliasSaving --> AliasIdle: LocalUserAliasUpdateSucceeded [matching request_id]
+    AliasSaving --> AliasIdle: LocalUserAliasUpdateFailed [matching request_id]
+    AliasSaving --> AliasSaving: stale success/failure ignored
+```
+
 - Profile actions are accepted only for a Ready session. Late profile snapshots
   after logout, lock, or account switch are ignored.
 - Joined-room member profiles enter `AppState.profile.users` through the
@@ -449,6 +462,26 @@ stateDiagram-v2
 - `ProfileUpdateSucceeded` and `ProfileUpdateFailed` settle only the matching
   in-flight request id. Stale or duplicate completions are ignored. Failures
   also emit `ErrorChanged`.
+- Local user aliases are personal "only I see this name" data persisted as
+  private global account data under `app.ruri.local_aliases`. `AccountActor`
+  hydrates them after login/restore, and `SetLocalUserAlias` writes them through
+  the SDK account-data boundary. They never become Matrix profile updates,
+  room events, outgoing message content, notification text, or QA tokens.
+- Alias display resolution is Rust-owned:
+  `alias ?? upstream display name ?? profile cache/own profile ?? MXID`.
+  Timeline/read-receipt/member/person surfaces must consume the Rust-resolved
+  DTO labels; React must not join user ids to `local_aliases` or invent a
+  separate alias cache.
+- `LocalUserAliasUpdateRequested` is accepted only for a Ready session and only
+  while `local_alias_update` is idle. It trims non-empty aliases, treats empty
+  aliases as clear, records `Saving { request_id }`, and emits
+  `ProfileChanged`. Matching success returns to `Idle`; matching failure returns
+  to `Idle`, records a private-data-free `local_user_alias_update_failed`
+  `AppError`, and emits `ProfileChanged` plus `ErrorChanged`.
+- Debug and QA output must redact local alias user ids and alias text.
+  `ProfileState` debug reports only profile/avatar presence and counts,
+  including `local_alias_count`; the SDK account data DTO debug reports only
+  `alias_count`.
 - `SetDisplayName` carries the submitted display name only across the typed
   command and reducer pending-state boundary. Normal logs, Debug output, QA
   tokens, and issue evidence must not expose real account display names.

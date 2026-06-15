@@ -225,6 +225,8 @@ export interface NavigationState {
 export interface ProfileState {
   own: OwnProfile;
   users: Record<string, UserProfile>;
+  local_aliases: Record<string, string>;
+  local_alias_update: LocalUserAliasUpdateState;
   update: ProfileUpdateState;
 }
 
@@ -262,6 +264,10 @@ export type ProfileUpdateState =
   | { kind: "idle" }
   | { kind: "settingDisplayName"; request_id: number; display_name: string | null }
   | { kind: "settingAvatar"; request_id: number; mime_type: string; byte_count: number };
+
+export type LocalUserAliasUpdateState =
+  | { kind: "idle" }
+  | { kind: "saving"; request_id: number };
 
 export interface SpaceSummary {
   space_id: string;

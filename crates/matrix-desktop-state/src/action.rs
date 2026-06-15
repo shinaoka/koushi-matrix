@@ -56,6 +56,21 @@ pub enum AppAction {
     UserProfilesUpdated {
         profiles: Vec<UserProfile>,
     },
+    LocalUserAliasesLoaded {
+        aliases: std::collections::BTreeMap<String, String>,
+    },
+    LocalUserAliasUpdateRequested {
+        request_id: u64,
+        user_id: String,
+        alias: Option<String>,
+    },
+    LocalUserAliasUpdateSucceeded {
+        request_id: u64,
+    },
+    LocalUserAliasUpdateFailed {
+        request_id: u64,
+        message: String,
+    },
     ProfileUpdateRequested {
         request_id: u64,
         request: ProfileUpdateRequest,

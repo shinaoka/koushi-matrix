@@ -161,6 +161,11 @@ Rules:
    thumbnail paths, encrypted media keys/hashes, or raw SDK errors. React must
    render avatar images only from Rust/platform-owned ready source URLs and must
    fall back to generated initials for MXC, loading, or failed thumbnail states.
+   Personal local user aliases are private account-data-backed profile state:
+   they must not be sent as Matrix profile updates, room events, message content,
+   notification text, QA tokens, logs, issue evidence, or normal `Debug` output.
+   Rust reducers own alias set/clear/list and display-name resolution; React
+   must not maintain an alias cache separate from `AppState.profile`.
    Read-receipt reader avatars use the same boundary: `AppState.live_signals`
    carries Rust-resolved reader labels, avatar DTOs, read timestamps, capped
    reader ordering, and overflow counts; React must not resolve reader profiles

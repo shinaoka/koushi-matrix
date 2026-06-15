@@ -610,6 +610,14 @@ impl AccountActor {
             } => {
                 self.handle_set_display_name(request_id, display_name).await;
             }
+            AccountCommand::SetLocalUserAlias {
+                request_id,
+                user_id,
+                alias,
+            } => {
+                self.handle_set_local_user_alias(request_id, user_id, alias)
+                    .await;
+            }
             AccountCommand::SetAvatar {
                 request_id,
                 request,
@@ -780,6 +788,51 @@ impl AccountActor {
                 self.send_actions(vec![AppAction::ProfileUpdateFailed {
                     request_id: request_id.sequence,
                     message: "profile update failed".to_owned(),
+                }])
+                .await;
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::ProfileOperationFailed {
+                        kind: classify_profile_error(&error),
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_set_local_user_alias(
+        &self,
+        request_id: RequestId,
+        user_id: String,
+        alias: Option<String>,
+    ) {
+        let Some(session) = &self.session else {
+            self.send_actions(vec![AppAction::LocalUserAliasUpdateFailed {
+                request_id: request_id.sequence,
+                message: "local alias update failed".to_owned(),
+            }])
+            .await;
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match matrix_desktop_sdk::update_local_user_alias(session, &user_id, alias.as_deref()).await
+        {
+            Ok(aliases) => {
+                self.send_actions(vec![
+                    AppAction::LocalUserAliasUpdateSucceeded {
+                        request_id: request_id.sequence,
+                    },
+                    AppAction::LocalUserAliasesLoaded {
+                        aliases: aliases.aliases,
+                    },
+                ])
+                .await;
+            }
+            Err(error) => {
+                self.send_actions(vec![AppAction::LocalUserAliasUpdateFailed {
+                    request_id: request_id.sequence,
+                    message: "local alias update failed".to_owned(),
                 }])
                 .await;
                 self.emit_failure(
@@ -1605,11 +1658,14 @@ impl AccountActor {
         self.spawn_sync_actor(session_arc.clone());
 
         // Project login success through the reducer (session → Ready), then
-        // populate the Rust-owned own-profile state if the homeserver returns
-        // it. Profile fetch failure is non-fatal to login.
+        // hydrate Rust-owned profile/account-data projections. Fetch failure is
+        // non-fatal to login.
         let mut actions = vec![AppAction::LoginSucceeded(info)];
         if let Some(profile_action) = own_profile_action_from_session(&session_arc).await {
             actions.push(profile_action);
+        }
+        if let Some(alias_action) = local_user_aliases_action_from_session(&session_arc).await {
+            actions.push(alias_action);
         }
         self.reduce(actions);
 
@@ -1796,6 +1852,11 @@ impl AccountActor {
                 let mut actions = vec![AppAction::RestoreSessionSucceeded(info)];
                 if let Some(profile_action) = own_profile_action_from_session(&session_arc).await {
                     actions.push(profile_action);
+                }
+                if let Some(alias_action) =
+                    local_user_aliases_action_from_session(&session_arc).await
+                {
+                    actions.push(alias_action);
                 }
                 self.reduce(actions);
 
@@ -2149,6 +2210,17 @@ async fn own_profile_action_from_session(session: &MatrixClientSession) -> Optio
         .ok()
         .map(map_matrix_own_profile)
         .map(|profile| AppAction::OwnProfileUpdated { profile })
+}
+
+async fn local_user_aliases_action_from_session(
+    session: &MatrixClientSession,
+) -> Option<AppAction> {
+    matrix_desktop_sdk::get_local_user_aliases(session)
+        .await
+        .ok()
+        .map(|aliases| AppAction::LocalUserAliasesLoaded {
+            aliases: aliases.aliases,
+        })
 }
 
 fn map_matrix_own_profile(profile: matrix_desktop_sdk::MatrixOwnProfile) -> OwnProfile {

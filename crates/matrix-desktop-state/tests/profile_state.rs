@@ -1,8 +1,10 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, InvitePreview, OwnProfile,
+    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, InvitePreview,
+    LiveEventReceipts, LiveReadReceipt, LocalUserAliasUpdateState, OwnProfile,
     ProfileUpdateRequest, ProfileUpdateState, RoomSummary, RoomTags, SessionInfo, SessionState,
-    SpaceSummary, UiEvent, UserProfile, reduce,
+    SpaceSummary, UiEvent, UserProfile, reduce, resolve_user_display_name,
 };
+use std::collections::BTreeMap;
 
 fn ready_state() -> AppState {
     AppState {
@@ -213,6 +215,224 @@ fn profile_update_failure_requires_matching_in_flight_request() {
     assert_eq!(state.profile.update, ProfileUpdateState::Idle);
     assert_eq!(state.errors.len(), 1);
     assert_eq!(state.errors[0].code, "profile_update_failed");
+}
+
+#[test]
+fn local_user_aliases_load_set_clear_and_settle_with_request_correlation() {
+    let mut signed_out = AppState::default();
+    reduce(
+        &mut signed_out,
+        AppAction::LocalUserAliasesLoaded {
+            aliases: BTreeMap::from([("@bob:localhost".to_owned(), "Bobby".to_owned())]),
+        },
+    );
+    assert!(signed_out.profile.local_aliases.is_empty());
+
+    let mut state = ready_state();
+    let effects = reduce(
+        &mut state,
+        AppAction::LocalUserAliasesLoaded {
+            aliases: BTreeMap::from([("@bob:localhost".to_owned(), "Bobby".to_owned())]),
+        },
+    );
+    assert_eq!(
+        state
+            .profile
+            .local_aliases
+            .get("@bob:localhost")
+            .map(String::as_str),
+        Some("Bobby")
+    );
+    assert_eq!(effects, profile_changed());
+
+    let effects = reduce(
+        &mut state,
+        AppAction::LocalUserAliasUpdateRequested {
+            request_id: 7,
+            user_id: "@bob:localhost".to_owned(),
+            alias: Some("  Robert  ".to_owned()),
+        },
+    );
+    assert_eq!(
+        state
+            .profile
+            .local_aliases
+            .get("@bob:localhost")
+            .map(String::as_str),
+        Some("Robert")
+    );
+    assert_eq!(
+        state.profile.local_alias_update,
+        LocalUserAliasUpdateState::Saving { request_id: 7 }
+    );
+    assert_eq!(effects, profile_changed());
+
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasUpdateRequested {
+            request_id: 8,
+            user_id: "@alice:localhost".to_owned(),
+            alias: Some("Alice Alias".to_owned()),
+        },
+    );
+    assert!(!state.profile.local_aliases.contains_key("@alice:localhost"));
+
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasUpdateFailed {
+            request_id: 99,
+            message: "network".to_owned(),
+        },
+    );
+    assert_eq!(
+        state.profile.local_alias_update,
+        LocalUserAliasUpdateState::Saving { request_id: 7 }
+    );
+
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasUpdateSucceeded { request_id: 7 },
+    );
+    assert_eq!(
+        state.profile.local_alias_update,
+        LocalUserAliasUpdateState::Idle
+    );
+
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasUpdateRequested {
+            request_id: 9,
+            user_id: "@bob:localhost".to_owned(),
+            alias: Some(" ".to_owned()),
+        },
+    );
+    assert!(!state.profile.local_aliases.contains_key("@bob:localhost"));
+}
+
+#[test]
+fn local_user_aliases_take_precedence_in_display_name_resolution() {
+    let mut state = ready_state();
+    state.profile.users.insert(
+        "@bob:localhost".to_owned(),
+        UserProfile {
+            user_id: "@bob:localhost".to_owned(),
+            display_name: Some("Bob".to_owned()),
+            avatar: None,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasesLoaded {
+            aliases: BTreeMap::from([("@bob:localhost".to_owned(), "Bobby".to_owned())]),
+        },
+    );
+
+    assert_eq!(
+        resolve_user_display_name(
+            &state.profile,
+            "@bob:localhost",
+            Some("Robert"),
+            Some("@qa:localhost")
+        ),
+        "Bobby"
+    );
+    assert_eq!(
+        resolve_user_display_name(
+            &state.profile,
+            "@alice:localhost",
+            Some("Alice"),
+            Some("@qa:localhost")
+        ),
+        "Alice"
+    );
+    assert_eq!(
+        resolve_user_display_name(
+            &state.profile,
+            "@carol:localhost",
+            None,
+            Some("@qa:localhost")
+        ),
+        "@carol:localhost"
+    );
+}
+
+#[test]
+fn local_user_aliases_debug_redacts_user_ids_and_aliases() {
+    let mut profile = matrix_desktop_state::ProfileState::default();
+    profile.own = OwnProfile {
+        display_name: Some("Visible Own Name".to_owned()),
+        avatar: Some(AvatarImage {
+            mxc_uri: "mxc://example.invalid/own-avatar".to_owned(),
+            thumbnail: AvatarThumbnailState::NotRequested,
+        }),
+    };
+    profile.users.insert(
+        "@carol:localhost".to_owned(),
+        UserProfile {
+            user_id: "@carol:localhost".to_owned(),
+            display_name: Some("Visible Carol".to_owned()),
+            avatar: Some(AvatarImage {
+                mxc_uri: "mxc://example.invalid/carol-avatar".to_owned(),
+                thumbnail: AvatarThumbnailState::NotRequested,
+            }),
+        },
+    );
+    profile
+        .local_aliases
+        .insert("@bob:localhost".to_owned(), "Bobby Private".to_owned());
+
+    let debug = format!("{profile:?}");
+
+    assert!(debug.contains("ProfileState"));
+    assert!(debug.contains("user_count"));
+    assert!(debug.contains("local_alias_count"));
+    assert!(!debug.contains("Visible Own Name"));
+    assert!(!debug.contains("Visible Carol"));
+    assert!(!debug.contains("mxc://example.invalid"));
+    assert!(!debug.contains("@carol:localhost"));
+    assert!(!debug.contains("@bob:localhost"));
+    assert!(!debug.contains("Bobby Private"));
+}
+
+#[test]
+fn local_user_aliases_override_read_receipt_reader_labels() {
+    let mut state = ready_state();
+    state.profile.users.insert(
+        "@bob:localhost".to_owned(),
+        UserProfile {
+            user_id: "@bob:localhost".to_owned(),
+            display_name: Some("Bob".to_owned()),
+            avatar: None,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasesLoaded {
+            aliases: BTreeMap::from([("@bob:localhost".to_owned(), "Bobby".to_owned())]),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::LiveRoomReceiptsUpdated {
+            room_id: "!room:localhost".to_owned(),
+            receipts_by_event: vec![LiveEventReceipts {
+                event_id: "$event:localhost".to_owned(),
+                receipts: vec![LiveReadReceipt {
+                    user_id: "@bob:localhost".to_owned(),
+                    display_name: Some("Robert".to_owned()),
+                    avatar: None,
+                    timestamp_ms: Some(1),
+                }],
+            }],
+        },
+    );
+
+    let summary = state.live_signals.rooms["!room:localhost"]
+        .receipts_by_event
+        .get("$event:localhost")
+        .expect("receipt summary");
+    assert_eq!(summary.readers[0].display_name.as_deref(), Some("Bobby"));
 }
 
 #[test]

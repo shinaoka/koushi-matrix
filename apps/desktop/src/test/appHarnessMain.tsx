@@ -126,6 +126,8 @@ function readySnapshot(
       profile: {
         own: { display_name: "Harness User", avatar: null },
         users: {},
+        local_aliases: {},
+        local_alias_update: { kind: "idle" },
         update: { kind: "idle" }
       },
       sync: "running",

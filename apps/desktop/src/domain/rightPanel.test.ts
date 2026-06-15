@@ -126,6 +126,8 @@ function snapshotForPanelMode(
       profile: {
         own: { display_name: null, avatar: null },
         users: {},
+        local_aliases: {},
+        local_alias_update: { kind: "idle" },
         update: { kind: "idle" }
       },
       sync: "stopped",
