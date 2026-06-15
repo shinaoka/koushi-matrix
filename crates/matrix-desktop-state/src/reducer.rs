@@ -3,12 +3,12 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         ActivityState, ActivityTab, AppError, AppState, BasicOperationRequest, BasicOperationState,
-        ComposerMode, CrossSigningStatus, DirectoryState, E2eeRecoveryState, E2eeTrustState,
-        FocusedContextState, IdentityResetState, KeyBackupStatus, LocalEncryptionState,
-        NavigationState, PendingComposerSendKind, PinOp, PinOperationState, SasEmoji, SearchState,
-        SessionState, SettingsPersistenceState, SyncState, ThreadPaneState, TimelinePaneState,
-        TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
-        VerificationTarget,
+        ComposerMode, CrossSigningStatus, DirectoryJoinState, DirectoryQueryState, DirectoryState,
+        E2eeRecoveryState, E2eeTrustState, FocusedContextState, IdentityResetState,
+        KeyBackupStatus, LocalEncryptionState, NavigationState, PendingComposerSendKind, PinOp,
+        PinOperationState, SasEmoji, SearchState, SessionState, SettingsPersistenceState,
+        SyncState, ThreadPaneState, TimelinePaneState, TrustOperationFailureKind,
+        VerificationCancelReason, VerificationFlowState, VerificationTarget,
     },
 };
 
@@ -1083,7 +1083,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
-            state.directory = DirectoryState::Querying { request_id, query };
+            state.directory.query = DirectoryQueryState::Querying { request_id, query };
             vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
         }
         AppAction::DirectoryQuerySucceeded {
@@ -1093,8 +1093,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             next_batch,
         } => {
             if !matches!(
-                &state.directory,
-                DirectoryState::Querying {
+                &state.directory.query,
+                DirectoryQueryState::Querying {
                     request_id: current_request_id,
                     query: current_query,
                 } if *current_request_id == request_id && *current_query == query
@@ -1102,7 +1102,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
-            state.directory = DirectoryState::Results {
+            state.directory.query = DirectoryQueryState::Results {
                 request_id,
                 query,
                 rooms,
@@ -1116,8 +1116,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             kind,
         } => {
             if !matches!(
-                &state.directory,
-                DirectoryState::Querying {
+                &state.directory.query,
+                DirectoryQueryState::Querying {
                     request_id: current_request_id,
                     query: current_query,
                 } if *current_request_id == request_id && *current_query == query
@@ -1125,9 +1125,69 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
-            state.directory = DirectoryState::Failed {
+            state.directory.query = DirectoryQueryState::Failed {
                 request_id,
                 query,
+                kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
+        }
+        AppAction::DirectoryJoinRequested {
+            request_id,
+            alias,
+            via_server,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.directory.join = DirectoryJoinState::Joining {
+                request_id,
+                alias,
+                via_server,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
+        }
+        AppAction::DirectoryJoinSucceeded {
+            request_id,
+            room_id: _,
+        } => {
+            if !matches!(
+                &state.directory.join,
+                DirectoryJoinState::Joining {
+                    request_id: current_request_id,
+                    ..
+                } if *current_request_id == request_id
+            ) {
+                return Vec::new();
+            }
+
+            state.directory.join = DirectoryJoinState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
+        }
+        AppAction::DirectoryJoinFailed {
+            request_id,
+            alias,
+            via_server,
+            kind,
+        } => {
+            if !matches!(
+                &state.directory.join,
+                DirectoryJoinState::Joining {
+                    request_id: current_request_id,
+                    alias: current_alias,
+                    via_server: current_via_server,
+                } if *current_request_id == request_id
+                    && *current_alias == alias
+                    && *current_via_server == via_server
+            ) {
+                return Vec::new();
+            }
+
+            state.directory.join = DirectoryJoinState::Failed {
+                request_id,
+                alias,
+                via_server,
                 kind,
             };
             vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
@@ -2046,7 +2106,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_live_signals = state.live_signals != Default::default();
     let had_profile = state.profile != Default::default();
     let had_room_interactions = !state.room_interactions.is_empty();
-    let had_directory = state.directory != DirectoryState::Closed;
+    let had_directory = state.directory != DirectoryState::default();
     let had_activity = state.activity != ActivityState::Closed;
     let had_room_management = state.room_management != Default::default();
     let had_local_encryption = state.local_encryption != LocalEncryptionState::Unknown;
@@ -2057,7 +2117,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.rooms.clear();
     state.invites.clear();
     state.room_interactions.clear();
-    state.directory = DirectoryState::Closed;
+    state.directory = DirectoryState::default();
     state.activity = ActivityState::Closed;
     state.room_management = Default::default();
     state.profile = Default::default();

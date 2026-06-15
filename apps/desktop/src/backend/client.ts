@@ -7,6 +7,7 @@ import type {
   ComposerResolvedAction,
   ComposerResolverOptions,
   ComposerSurface,
+  DirectoryQuery,
   PresenceKind,
   RoomTagKind,
   SavedSessionInfo,
@@ -257,6 +258,22 @@ class TauriDesktopApi implements DesktopApi {
 
   async submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("submit_search", { query, scope });
+  }
+
+  async queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("query_directory", {
+      term: query.term,
+      serverName: query.server_name,
+      limit: query.limit,
+      since: query.since
+    });
+  }
+
+  async joinDirectoryRoom(
+    alias: string,
+    viaServer: string | null = null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("join_directory_room", { alias, viaServer });
   }
 
   async createRoom(name: string): Promise<DesktopSnapshot> {

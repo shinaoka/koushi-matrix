@@ -781,8 +781,10 @@ pub fn run() {
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
+            commands::query_directory,
             commands::create_room,
             commands::create_space,
+            commands::join_directory_room,
             commands::set_space_child,
             commands::accept_invite,
             commands::decline_invite,
@@ -1172,22 +1174,22 @@ mod tests {
         use matrix_desktop_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
-                AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent,
-                LiveSignalsEvent, LocalEncryptionEvent, MediaTransferProgress,
-                NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup,
-                RoomEvent, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
-                TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
-                TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
+                AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LiveSignalsEvent,
+                LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent,
+                PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineEvent,
+                TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
+                TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
+                TimelineSendFailureReason, TimelineSendState,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
-            IdentityResetAuthType, IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts,
-            LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
-            NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
-            PresenceKind, ReplyQuote, ReplyQuoteState, RoomTagKind, SasEmoji,
-            VerificationFlowState, VerificationTarget,
+            DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType, IdentityResetState,
+            JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
+            LocalEncryptionHealth, NativeAttentionCapabilities, NativeAttentionCapability,
+            NativeAttentionSummary, PresenceKind, ReplyQuote, ReplyQuoteState, RoomTagKind,
+            SasEmoji, VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -1577,6 +1579,28 @@ mod tests {
             tag: RoomTagKind::LowPriority,
         }))
         .expect("serialize room tag removed");
+        let directory_query_completed =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::DirectoryQueryCompleted {
+                request_id,
+                query: DirectoryQuery {
+                    term: Some("public".to_owned()),
+                    server_name: Some("example.test".to_owned()),
+                    limit: Some(20),
+                    since: Some("page-2".to_owned()),
+                },
+                rooms: vec![DirectoryRoomSummary {
+                    room_id: "!public:example.test".to_owned(),
+                    canonical_alias: Some("#public:example.test".to_owned()),
+                    name: "Public Room".to_owned(),
+                    topic: Some("Directory sample".to_owned()),
+                    avatar_url: None,
+                    joined_members: 5,
+                    world_readable: true,
+                    guest_can_join: false,
+                }],
+                next_batch: Some("page-3".to_owned()),
+            }))
+            .expect("serialize directory query completion");
 
         let e2ee_trust = serialize_core_event(&CoreEvent::E2eeTrust(
             E2eeTrustEvent::VerificationProgress {
@@ -1683,7 +1707,10 @@ mod tests {
         ))
         .expect("serialize native attention event");
         assert_eq!(native_attention["event"]["kind"], json!("summaryUpdated"));
-        assert_eq!(native_attention["event"]["summary"]["badge_count"], json!(3));
+        assert_eq!(
+            native_attention["event"]["summary"]["badge_count"],
+            json!(3)
+        );
 
         let cjk_text_policy = serialize_core_event(&CoreEvent::CjkTextPolicy(
             CjkTextPolicyEvent::JapaneseCatalogProfileChanged {
@@ -1712,6 +1739,7 @@ mod tests {
             "liveSignalsRoomSignalsUpdated": live_signals,
             "nativeAttentionSummaryUpdated": native_attention,
             "operationFailedSessionNotFound": failed,
+            "roomDirectoryQueryCompleted": directory_query_completed,
             "roomDirectMessageStarted": room_direct_message_started,
             "roomInviteAccepted": room_invite_accepted,
             "roomInviteDeclined": room_invite_declined,

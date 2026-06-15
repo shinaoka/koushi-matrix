@@ -57,11 +57,11 @@ use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{
     AppState, AuthSecret, ComposerKey, ComposerKeyEvent, ComposerKeyModifiers,
     ComposerResolvedAction, ComposerResolverContext, ComposerSelection, ComposerSendShortcut,
-    ComposerSurface, CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType,
-    IdentityResetState, KeyBackupStatus, MentionIntent, MentionTarget, PresenceKind,
-    RecoveryRequest, ReplyQuoteState, SasEmoji, SessionInfo, SessionState,
-    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
-    resolve_composer_key_action,
+    ComposerSurface, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
+    IdentityResetAuthRequest, IdentityResetAuthType, IdentityResetState, KeyBackupStatus,
+    MentionIntent, MentionTarget, PresenceKind, RecoveryRequest, ReplyQuoteState, SasEmoji,
+    SessionInfo, SessionState, TrustOperationFailureKind, VerificationFlowState,
+    VerificationTarget, resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -98,6 +98,7 @@ enum QaScenario {
     E2eeTrust,
     InvitesDm,
     RoomSpace,
+    Directory,
     Timeline,
     Composer,
     Reply,
@@ -116,6 +117,7 @@ enum QaStage {
     E2eeTrust,
     InvitesDm,
     RoomSpace,
+    Directory,
     Timeline,
     Composer,
     Reply,
@@ -206,6 +208,7 @@ impl QaScenario {
             "e2ee_trust" => Ok(Self::E2eeTrust),
             "invites_dm" => Ok(Self::InvitesDm),
             "room_space" => Ok(Self::RoomSpace),
+            "directory" => Ok(Self::Directory),
             "timeline" => Ok(Self::Timeline),
             "composer" => Ok(Self::Composer),
             "reply" => Ok(Self::Reply),
@@ -216,7 +219,7 @@ impl QaScenario {
             "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, timeline, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, directory, timeline, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
             )),
         }
     }
@@ -239,6 +242,10 @@ impl QaScenario {
             Self::RoomSpace => matches!(
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace
+            ),
+            Self::Directory => matches!(
+                stage,
+                QaStage::Safety | QaStage::LoginSync | QaStage::Directory
             ),
             Self::Timeline => matches!(
                 stage,
@@ -336,6 +343,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "dm_start=ok",
         ],
         QaStage::RoomSpace => &["room_space=ok"],
+        QaStage::Directory => &["directory_query=ok", "directory_join=ok"],
         QaStage::Timeline => &["timeline=ok"],
         QaStage::Composer => &[
             "mention_send=ok",
@@ -385,6 +393,8 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "invite_decline=ok",
         "dm_start=ok",
         "room_space=ok",
+        "directory_query=ok",
+        "directory_join=ok",
         "timeline=ok",
         "mention_send=ok",
         "markdown_send=ok",
@@ -428,6 +438,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             vec![QaStage::Safety, QaStage::LoginSync, QaStage::InvitesDm]
         }
         QaScenario::RoomSpace => vec![QaStage::Safety, QaStage::LoginSync, QaStage::RoomSpace],
+        QaScenario::Directory => vec![QaStage::Safety, QaStage::LoginSync, QaStage::Directory],
         QaScenario::Timeline => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -498,6 +509,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::LoginSync,
             QaStage::InvitesDm,
             QaStage::RoomSpace,
+            QaStage::Directory,
             QaStage::Timeline,
             QaStage::Composer,
             QaStage::Reply,
@@ -525,6 +537,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
             tokens
         }
         QaScenario::RoomSpace
+        | QaScenario::Directory
         | QaScenario::E2eeTrust
         | QaScenario::InvitesDm
         | QaScenario::Timeline
@@ -788,6 +801,79 @@ async fn run_invites_dm_stage(
     println!("dm_start=ok");
 
     cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "invites_dm cleanup B").await?;
+    Ok(())
+}
+
+async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> Result<(), String> {
+    let directory_room_name = "Matrix Desktop Directory QA";
+    let alias_localpart = format!("matrix-desktop-directory-qa-{}", std::process::id());
+    let expected_alias = format!("#{alias_localpart}:{}", config.server_name);
+    let public_room_id = create_public_directory_room_for_qa(
+        conn_a,
+        directory_room_name,
+        &alias_localpart,
+        "directory create public room",
+    )
+    .await?;
+
+    let query = DirectoryQuery {
+        term: Some(directory_room_name.to_owned()),
+        server_name: Some(config.server_name.clone()),
+        limit: Some(10),
+        since: None,
+    };
+    let rooms = query_directory_until_room_visible(
+        conn_a,
+        query,
+        &public_room_id,
+        &expected_alias,
+        "directory query public room",
+    )
+    .await?;
+    if rooms.is_empty() {
+        return Err("directory query unexpectedly returned no rooms".to_owned());
+    }
+    println!("directory_query=ok");
+
+    let runtime_b = CoreRuntime::start_with_data_dir(qa_data_dir("directory_b"));
+    let mut conn_b = runtime_b.attach();
+
+    let login_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id: login_b_id,
+            request: matrix_desktop_state::LoginRequest {
+                homeserver: config.homeserver.clone(),
+                username: config.user_b.clone(),
+                password: AuthSecret::new(config.password_b.clone()),
+                device_display_name: Some("Matrix Desktop Core QA Directory B".to_owned()),
+            },
+        }))
+        .await
+        .map_err(|e| format!("directory: submit login B failed: {e}"))?;
+
+    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "directory login B").await?;
+    wait_for_ready_snapshot(&mut conn_b, "directory session B Ready").await?;
+
+    let join_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
+            request_id: join_id,
+            alias: expected_alias,
+            via_server: Some(config.server_name.clone()),
+        }))
+        .await
+        .map_err(|e| format!("directory: submit join by alias failed: {e}"))?;
+    wait_for_room_joined(
+        &mut conn_b,
+        join_id,
+        &public_room_id,
+        "directory B joins public room",
+    )
+    .await?;
+    println!("directory_join=ok");
+
+    cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "directory cleanup B").await?;
     Ok(())
 }
 
@@ -1317,6 +1403,9 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     }
 
     if !scenario.should_run_stage(QaStage::RoomSpace) {
+        if scenario.should_run_stage(QaStage::Directory) {
+            run_directory_stage(&config, &mut conn_a).await?;
+        }
         cleanup_after_login_sync(conn_a, runtime_a, data_dir_a, account_key_a).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
@@ -1526,6 +1615,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     let room_list_b = room_list_summary(&snapshot_b);
     println!("room_list_b={room_list_b}");
     println!("room_space=ok");
+
+    if scenario.should_run_stage(QaStage::Directory) {
+        run_directory_stage(&config, &mut conn_a).await?;
+    }
 
     if !scenario.should_run_stage(QaStage::Timeline) {
         cleanup_after_full_flow(
@@ -2327,6 +2420,23 @@ async fn create_room_for_qa(
     wait_for_room_created(conn, request_id, label).await
 }
 
+async fn create_public_directory_room_for_qa(
+    conn: &mut CoreConnection,
+    name: &str,
+    alias_localpart: &str,
+    label: &str,
+) -> Result<String, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::CreatePublicDirectoryRoom {
+        request_id,
+        name: name.to_owned(),
+        alias_localpart: alias_localpart.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit public directory room create failed: {e}"))?;
+    wait_for_room_created(conn, request_id, label).await
+}
+
 async fn create_space_for_qa(
     conn: &mut CoreConnection,
     name: &str,
@@ -2426,6 +2536,68 @@ async fn wait_for_room_created(
                 room_id,
             }) if ev_id == request_id => {
                 return Ok(room_id);
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn query_directory_until_room_visible(
+    conn: &mut CoreConnection,
+    query: DirectoryQuery,
+    room_id: &str,
+    alias: &str,
+    label: &str,
+) -> Result<Vec<DirectoryRoomSummary>, String> {
+    for attempt in 1..=6 {
+        let request_id = conn.next_request_id();
+        conn.command(CoreCommand::Room(RoomCommand::QueryDirectory {
+            request_id,
+            query: query.clone(),
+        }))
+        .await
+        .map_err(|e| format!("{label}: submit directory query failed: {e}"))?;
+        let rooms = wait_for_directory_query_completed(conn, request_id, label).await?;
+        if rooms
+            .iter()
+            .any(|room| room.room_id == room_id || room.canonical_alias.as_deref() == Some(alias))
+        {
+            return Ok(rooms);
+        }
+        if attempt < 6 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    Err(format!(
+        "{label}: public directory did not return the created room after bounded retries"
+    ))
+}
+
+async fn wait_for_directory_query_completed(
+    conn: &mut CoreConnection,
+    request_id: matrix_desktop_core::ids::RequestId,
+    label: &str,
+) -> Result<Vec<DirectoryRoomSummary>, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for DirectoryQueryCompleted"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::DirectoryQueryCompleted {
+                request_id: ev_id,
+                rooms,
+                ..
+            }) if ev_id == request_id => {
+                return Ok(rooms);
             }
             CoreEvent::OperationFailed {
                 request_id: ev_id,
@@ -6616,7 +6788,7 @@ mod tests {
     use matrix_desktop_core::event::ThreadSummaryDto;
 
     #[test]
-    fn parses_all_scenarios_from_env_value_including_composer() {
+    fn parses_all_scenarios_from_env_value_including_directory() {
         assert_eq!(QaScenario::from_env_value("all").unwrap(), QaScenario::All);
         assert_eq!(
             QaScenario::from_env_value("safety").unwrap(),
@@ -6629,6 +6801,10 @@ mod tests {
         assert_eq!(
             QaScenario::from_env_value("room_space").unwrap(),
             QaScenario::RoomSpace
+        );
+        assert_eq!(
+            QaScenario::from_env_value("directory").unwrap(),
+            QaScenario::Directory
         );
         assert_eq!(
             QaScenario::from_env_value("invites_dm").unwrap(),
@@ -6690,6 +6866,7 @@ mod tests {
             QaScenario::Safety,
             QaScenario::LoginSync,
             QaScenario::RoomSpace,
+            QaScenario::Directory,
             QaScenario::InvitesDm,
             QaScenario::Timeline,
             QaScenario::Reply,
@@ -7237,11 +7414,18 @@ mod tests {
         assert!(!QaScenario::Thread.should_run_stage(QaStage::Media));
         assert!(!QaScenario::Thread.should_run_stage(QaStage::EditRedactSearch));
 
+        assert!(QaScenario::Directory.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::Directory.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::Directory.should_run_stage(QaStage::Directory));
+        assert!(!QaScenario::Directory.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::Directory.should_run_stage(QaStage::Reply));
+
         assert!(QaScenario::All.should_run_stage(QaStage::Safety));
         assert!(QaScenario::All.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::All.should_run_stage(QaStage::E2eeTrust));
         assert!(QaScenario::All.should_run_stage(QaStage::InvitesDm));
         assert!(QaScenario::All.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::All.should_run_stage(QaStage::Directory));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
         assert!(QaScenario::All.should_run_stage(QaStage::Media));
@@ -7291,6 +7475,8 @@ mod tests {
                 "invite_decline=ok",
                 "dm_start=ok",
                 "room_space=ok",
+                "directory_query=ok",
+                "directory_join=ok",
                 "timeline=ok",
                 "mention_send=ok",
                 "markdown_send=ok",
@@ -7373,6 +7559,16 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::Directory),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "directory_query=ok",
+                "directory_join=ok",
                 "restore_cleanup=ok",
             ]
         );
@@ -7479,6 +7675,8 @@ mod tests {
                 "invite_decline=ok",
                 "dm_start=ok",
                 "room_space=ok",
+                "directory_query=ok",
+                "directory_join=ok",
                 "timeline=ok",
                 "mention_send=ok",
                 "markdown_send=ok",

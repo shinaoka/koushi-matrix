@@ -21,8 +21,8 @@ use matrix_desktop_core::{
 };
 use matrix_desktop_state::{
     AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
-    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, RoomTagKind,
-    SessionInfo, SettingsPatch, VerificationCancelReason,
+    DirectoryQuery, IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest,
+    RoomTagKind, SessionInfo, SettingsPatch, VerificationCancelReason,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -1237,6 +1237,45 @@ pub async fn submit_search(
     current_snapshot(state.inner()).await
 }
 
+#[tauri::command]
+pub async fn query_directory(
+    term: Option<String>,
+    server_name: Option<String>,
+    limit: Option<u32>,
+    since: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_query_directory_command(
+            request_id,
+            term,
+            server_name,
+            limit,
+            since,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::DirectoryQueryCompleted { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "directory query did not complete",
+        "directory query failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
 const CREATE_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 async fn wait_for_room_created(
@@ -1354,6 +1393,42 @@ pub async fn create_space(
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
     wait_for_space_created(&mut event_conn, request_id, CREATE_EVENT_TIMEOUT).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn join_directory_room(
+    alias: String,
+    via_server: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    let Some(command) = build_join_directory_room_command(request_id, alias, via_server) else {
+        update_qa_window_title_from_state(&app, state.inner()).await;
+        return current_snapshot(state.inner()).await;
+    };
+
+    event_conn
+        .command(command)
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomJoined { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "directory room join did not complete",
+        "directory room join failed",
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -2209,6 +2284,47 @@ pub(crate) fn build_create_space_command(
     CoreCommand::Room(RoomCommand::CreateSpace { request_id, name })
 }
 
+pub(crate) fn build_query_directory_command(
+    request_id: matrix_desktop_core::RequestId,
+    term: Option<String>,
+    server_name: Option<String>,
+    limit: Option<u32>,
+    since: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::QueryDirectory {
+        request_id,
+        query: DirectoryQuery {
+            term: optional_non_blank(term),
+            server_name: optional_non_blank(server_name),
+            limit,
+            since: optional_non_blank(since),
+        },
+    })
+}
+
+pub(crate) fn build_join_directory_room_command(
+    request_id: matrix_desktop_core::RequestId,
+    alias: String,
+    via_server: Option<String>,
+) -> Option<CoreCommand> {
+    let alias = alias.trim().to_owned();
+    if alias.is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
+        request_id,
+        alias,
+        via_server: optional_non_blank(via_server),
+    }))
+}
+
+fn optional_non_blank(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    })
+}
+
 pub(crate) fn build_set_space_child_command(
     request_id: matrix_desktop_core::RequestId,
     space_id: String,
@@ -2608,23 +2724,25 @@ mod tests {
         build_cancel_verification_command, build_confirm_sas_verification_command,
         build_create_room_command, build_create_space_command, build_decline_invite_command,
         build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
-        build_forget_room_command, build_invite_user_command, build_leave_room_command,
-        build_logout_command, build_paginate_thread_timeline_backwards_command,
-        build_paginate_timeline_backwards_command, build_redact_message_command,
-        build_redact_reaction_command, build_remove_room_tag_command, build_reset_identity_command,
-        build_restart_sync_command, build_retry_send_command, build_select_room_command,
-        build_select_space_command, build_send_reaction_command, build_send_read_receipt_command,
-        build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
-        build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
-        build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
-        build_set_thread_composer_draft_command, build_set_typing_command, build_pin_event_command,
+        build_forget_room_command, build_invite_user_command, build_join_directory_room_command,
+        build_leave_room_command, build_logout_command,
+        build_paginate_thread_timeline_backwards_command,
+        build_paginate_timeline_backwards_command, build_pin_event_command,
+        build_query_directory_command, build_redact_message_command, build_redact_reaction_command,
+        build_remove_room_tag_command, build_reset_identity_command, build_restart_sync_command,
+        build_retry_send_command, build_select_room_command, build_select_space_command,
+        build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
+        build_send_text_command, build_send_thread_reply_command, build_set_avatar_command,
+        build_set_display_name_command, build_set_fully_read_command, build_set_presence_command,
+        build_set_room_tag_command, build_set_space_child_command,
+        build_set_thread_composer_draft_command, build_set_typing_command,
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
         build_submit_identity_reset_password_command, build_submit_login_command,
-        build_submit_recovery_command, build_submit_search_command, build_unpin_event_command,
+        build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
-        build_switch_account_command, build_toggle_reaction_command, build_update_settings_command,
-        build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
-        qa_recovery_prompt_is_available, qa_window_title_string,
+        build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
+        build_update_settings_command, build_upload_media_command, parse_qa_control_pipe_line,
+        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
     use matrix_desktop_state::{PresenceKind, RoomSummary, RoomTagKind, RoomTags};
@@ -3565,6 +3683,47 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+
+        match build_query_directory_command(
+            fake_request_id(27),
+            Some("public rooms".to_owned()),
+            Some("example.org".to_owned()),
+            Some(20),
+            Some("page-2".to_owned()),
+        ) {
+            CoreCommand::Room(RoomCommand::QueryDirectory { request_id, query }) => {
+                assert_eq!(request_id, fake_request_id(27));
+                assert_eq!(query.term.as_deref(), Some("public rooms"));
+                assert_eq!(query.server_name.as_deref(), Some("example.org"));
+                assert_eq!(query.limit, Some(20));
+                assert_eq!(query.since.as_deref(), Some("page-2"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_join_directory_room_command(
+            fake_request_id(28),
+            "#public:example.org".to_owned(),
+            Some("example.org".to_owned()),
+        )
+        .expect("directory join should build a command")
+        {
+            CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
+                request_id,
+                alias,
+                via_server,
+            }) => {
+                assert_eq!(request_id, fake_request_id(28));
+                assert_eq!(alias, "#public:example.org");
+                assert_eq!(via_server.as_deref(), Some("example.org"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert!(
+            build_join_directory_room_command(fake_request_id(29), "   ".to_owned(), None,)
+                .is_none()
+        );
 
         match build_send_reply_command(
             fake_request_id(23),

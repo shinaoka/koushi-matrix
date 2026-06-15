@@ -5,6 +5,7 @@ import type {
   ComposerResolvedAction,
   ComposerResolverOptions,
   ComposerSurface,
+  DirectoryQuery,
   RoomSummary,
   RoomTagKind,
   RoomTags,
@@ -80,6 +81,8 @@ export interface DesktopApi {
   setThreadComposerDraft(roomId: string, rootEventId: string, draft: string): Promise<DesktopSnapshot>;
   sendThreadReply(roomId: string, rootEventId: string, body: string): Promise<DesktopSnapshot>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
+  queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot>;
+  joinDirectoryRoom(alias: string, viaServer?: string | null): Promise<DesktopSnapshot>;
   createRoom(name: string): Promise<DesktopSnapshot>;
   createSpace(name: string): Promise<DesktopSnapshot>;
   setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<DesktopSnapshot>;
@@ -695,6 +698,88 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    const requestId = this.nextRequestId();
+    const normalizedQuery: DirectoryQuery = {
+      term: query.term?.trim() ? query.term.trim() : null,
+      server_name: query.server_name?.trim() ? query.server_name.trim() : null,
+      limit: query.limit,
+      since: query.since?.trim() ? query.since.trim() : null
+    };
+    this.snapshot.state.directory.query = {
+      kind: "querying",
+      request_id: requestId,
+      query: normalizedQuery
+    };
+
+    await Promise.resolve();
+
+    const alias = "#public-demo:fake.local";
+    this.snapshot.state.directory.query = {
+      kind: "results",
+      request_id: requestId,
+      query: normalizedQuery,
+      rooms: [
+        {
+          room_id: "!public-demo:fake.local",
+          canonical_alias: alias,
+          name: "Public Demo Room",
+          topic: "Synthetic browser directory result",
+          avatar_url: null,
+          joined_members: 3,
+          world_readable: true,
+          guest_can_join: false
+        }
+      ],
+      next_batch: null
+    };
+    return this.getSnapshot();
+  }
+
+  async joinDirectoryRoom(alias: string, viaServer: string | null = null): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || alias.trim().length === 0) {
+      return this.getSnapshot();
+    }
+
+    const requestId = this.nextRequestId();
+    const normalizedAlias = alias.trim();
+    const normalizedViaServer = viaServer?.trim() ? viaServer.trim() : null;
+    this.snapshot.state.directory.join = {
+      kind: "joining",
+      request_id: requestId,
+      alias: normalizedAlias,
+      via_server: normalizedViaServer
+    };
+
+    await Promise.resolve();
+
+    const roomId = `!joined-${this.snapshot.state.rooms.length + 1}:fake.local`;
+    const displayName = normalizedAlias.replace(/^#/, "").split(":")[0] || "Public Room";
+    const joinedRoom: RoomSummary = {
+      room_id: roomId,
+      display_name: displayName,
+      avatar: null,
+      is_dm: false,
+      tags: emptyRoomTags(),
+      unread_count: 0,
+      parent_space_ids: []
+    };
+
+    this.snapshot.state.rooms = [...this.snapshot.state.rooms, joinedRoom];
+    this.snapshot.state.directory.join = { kind: "idle" };
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
+    await this.selectRoom(roomId);
+    return this.getSnapshot();
+  }
+
   async createRoom(name: string): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
@@ -1078,6 +1163,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.state.focused_context = { kind: "closed" };
     this.snapshot.state.search = { kind: "closed" };
+    this.snapshot.state.directory = defaultDirectoryState();
     this.snapshot.state.basic_operation = { kind: "idle" };
     this.snapshot.state.profile = defaultProfileState(null);
     this.snapshot.state.e2ee_trust = defaultE2eeTrustState();
@@ -1149,7 +1235,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       rooms,
       invites: [],
       room_interactions: {},
-      directory: { kind: "closed" },
+      directory: defaultDirectoryState(),
       room_management: { selected_room_id: null, operation: { kind: "idle" } },
       activity: { kind: "closed" },
       timeline: {
@@ -1238,7 +1324,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       rooms: [],
       invites: [],
       room_interactions: {},
-      directory: { kind: "closed" },
+      directory: defaultDirectoryState(),
       room_management: { selected_room_id: null, operation: { kind: "idle" } },
       activity: { kind: "closed" },
       timeline: {
@@ -1277,6 +1363,13 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       keyboard: { composer_send_shortcut: "enter" }
     },
     persistence: { kind: "idle" }
+  };
+}
+
+function defaultDirectoryState(): DesktopSnapshot["state"]["directory"] {
+  return {
+    query: { kind: "closed" },
+    join: { kind: "idle" }
   };
 }
 

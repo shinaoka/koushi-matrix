@@ -12,14 +12,14 @@
 use std::collections::BTreeMap;
 
 use matrix_desktop_state::{
-    ActivityState, AppError, AppState, AuthDiscoveryState, BasicOperationState,
-    CjkTextPolicyState, ComposerState, DirectoryState, DisplayPlatform, E2eeTrustState,
-    FocusedContextState, InvitePreview, LiveSignalsState, LocalEncryptionState,
-    LocaleDisplayProfile, NativeAttentionState, NavigationState, ProfileState, RecoveryMethod,
-    RoomInteractionState, RoomManagementState, RoomSummary, SearchMatchField, SearchMatchKind,
-    SearchResult, SearchScope, SearchState, SessionState, SettingsState, SidebarModel,
-    SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState, TypographyDisplayProfile,
-    resolve_locale_display_profile, resolve_typography_display_profile,
+    ActivityState, AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
+    ComposerState, DirectoryState, DisplayPlatform, E2eeTrustState, FocusedContextState,
+    InvitePreview, LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile,
+    NativeAttentionState, NavigationState, ProfileState, RecoveryMethod, RoomInteractionState,
+    RoomManagementState, RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope,
+    SearchState, SessionState, SettingsState, SidebarModel, SpaceSummary, SyncState,
+    ThreadPaneState, TimelinePaneState, TypographyDisplayProfile, resolve_locale_display_profile,
+    resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -493,7 +493,11 @@ mod tests {
         // Core Batch A skeletons must be present in the real Tauri DTO, not
         // only in browser fakes.
         assert_eq!(value["state"]["room_interactions"], json!({}));
-        assert_eq!(value["state"]["directory"]["kind"], json!("closed"));
+        assert_eq!(
+            value["state"]["directory"]["query"]["kind"],
+            json!("closed")
+        );
+        assert_eq!(value["state"]["directory"]["join"]["kind"], json!("idle"));
         assert_eq!(
             value["state"]["room_management"]["selected_room_id"],
             json!(null)
@@ -538,10 +542,7 @@ mod tests {
             value["state"]["e2ee_trust"]["identity_reset"]["kind"],
             json!("idle")
         );
-        assert_eq!(
-            value["state"]["local_encryption"]["kind"],
-            json!("unknown")
-        );
+        assert_eq!(value["state"]["local_encryption"]["kind"], json!("unknown"));
         assert_eq!(
             value["state"]["native_attention"]["dispatch"]["kind"],
             json!("idle")

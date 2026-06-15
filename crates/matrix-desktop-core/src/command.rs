@@ -70,6 +70,7 @@ impl CoreCommand {
             },
             Self::Room(command) => match command {
                 RoomCommand::CreateRoom { request_id, .. }
+                | RoomCommand::CreatePublicDirectoryRoom { request_id, .. }
                 | RoomCommand::CreateSpace { request_id, .. }
                 | RoomCommand::SetSpaceChild { request_id, .. }
                 | RoomCommand::InviteUser { request_id, .. }
@@ -84,6 +85,7 @@ impl CoreCommand {
                 | RoomCommand::PinEvent { request_id, .. }
                 | RoomCommand::UnpinEvent { request_id, .. }
                 | RoomCommand::QueryDirectory { request_id, .. }
+                | RoomCommand::JoinDirectoryRoom { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
                 | RoomCommand::SelectRoom { request_id, .. } => *request_id,
             },
@@ -584,6 +586,11 @@ pub enum RoomCommand {
         name: String,
         encrypted: bool,
     },
+    CreatePublicDirectoryRoom {
+        request_id: RequestId,
+        name: String,
+        alias_localpart: String,
+    },
     CreateSpace {
         request_id: RequestId,
         name: String,
@@ -648,6 +655,11 @@ pub enum RoomCommand {
         request_id: RequestId,
         query: DirectoryQuery,
     },
+    JoinDirectoryRoom {
+        request_id: RequestId,
+        alias: String,
+        via_server: Option<String>,
+    },
     SelectSpace {
         request_id: RequestId,
         space_id: Option<String>,
@@ -670,6 +682,12 @@ impl fmt::Debug for RoomCommand {
                 .field("request_id", request_id)
                 .field("name", &"RoomName(..)")
                 .field("encrypted", encrypted)
+                .finish(),
+            Self::CreatePublicDirectoryRoom { request_id, .. } => formatter
+                .debug_struct("CreatePublicDirectoryRoom")
+                .field("request_id", request_id)
+                .field("name", &"RoomName(..)")
+                .field("alias_localpart", &"RoomAliasLocalpart(..)")
                 .finish(),
             Self::CreateSpace { request_id, .. } => formatter
                 .debug_struct("CreateSpace")
@@ -760,6 +778,13 @@ impl fmt::Debug for RoomCommand {
                     &query.server_name.as_ref().map(|_| "ServerName(..)"),
                 )
                 .field("limit", &query.limit)
+                .field("since", &query.since.as_ref().map(|_| "PageToken(..)"))
+                .finish(),
+            Self::JoinDirectoryRoom { request_id, .. } => formatter
+                .debug_struct("JoinDirectoryRoom")
+                .field("request_id", request_id)
+                .field("alias", &"RoomAlias(..)")
+                .field("via_server", &"ServerName(..)")
                 .finish(),
             Self::SelectSpace {
                 request_id,
@@ -1241,6 +1266,62 @@ mod tests {
             assert!(debug.contains("EventId(..)"), "{debug}");
             assert!(!debug.contains("!room:example.invalid"), "{debug}");
             assert!(!debug.contains("$event:example.invalid"), "{debug}");
+        }
+    }
+
+    #[test]
+    fn directory_commands_debug_redacts_query_alias_and_server() {
+        let query = RoomCommand::QueryDirectory {
+            request_id: fake_rid(13),
+            query: DirectoryQuery {
+                term: Some("private search".to_owned()),
+                server_name: Some("example.invalid".to_owned()),
+                limit: Some(10),
+                since: Some("opaque-page-token".to_owned()),
+            },
+        };
+        let join_request_id = fake_rid(14);
+        let join = RoomCommand::JoinDirectoryRoom {
+            request_id: join_request_id,
+            alias: "#private-room:example.invalid".to_owned(),
+            via_server: Some("example.invalid".to_owned()),
+        };
+        let create_request_id = fake_rid(15);
+        let create_public = RoomCommand::CreatePublicDirectoryRoom {
+            request_id: create_request_id,
+            name: "Private Public Room Name".to_owned(),
+            alias_localpart: "private-public-alias".to_owned(),
+        };
+
+        assert_eq!(
+            CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
+                request_id: join_request_id,
+                alias: "#private-room:example.invalid".to_owned(),
+                via_server: Some("example.invalid".to_owned()),
+            })
+            .request_id(),
+            join_request_id
+        );
+        assert_eq!(
+            CoreCommand::Room(RoomCommand::CreatePublicDirectoryRoom {
+                request_id: create_request_id,
+                name: "Private Public Room Name".to_owned(),
+                alias_localpart: "private-public-alias".to_owned(),
+            })
+            .request_id(),
+            create_request_id
+        );
+        for debug in [
+            format!("{query:?}"),
+            format!("{join:?}"),
+            format!("{create_public:?}"),
+        ] {
+            assert!(!debug.contains("private search"), "{debug}");
+            assert!(!debug.contains("#private-room:example.invalid"), "{debug}");
+            assert!(!debug.contains("Private Public Room Name"), "{debug}");
+            assert!(!debug.contains("private-public-alias"), "{debug}");
+            assert!(!debug.contains("example.invalid"), "{debug}");
+            assert!(!debug.contains("opaque-page-token"), "{debug}");
         }
     }
 

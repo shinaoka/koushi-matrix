@@ -333,7 +333,12 @@ export type ActivityState =
 
 export type ActivityTab = "recent" | "unread";
 
-export type DirectoryState =
+export interface DirectoryState {
+  query: DirectoryQueryState;
+  join: DirectoryJoinState;
+}
+
+export type DirectoryQueryState =
   | { kind: "closed" }
   | { kind: "querying"; request_id: number; query: DirectoryQuery }
   | {
@@ -343,7 +348,6 @@ export type DirectoryState =
       rooms: DirectoryRoomSummary[];
       next_batch: string | null;
     }
-  | { kind: "joining"; request_id: number; room_id: string }
   | {
       kind: "failed";
       request_id: number;
@@ -351,14 +355,32 @@ export type DirectoryState =
       failureKind: OperationFailureKind;
     };
 
+export type DirectoryJoinState =
+  | { kind: "idle" }
+  | {
+      kind: "joining";
+      request_id: number;
+      alias: string;
+      via_server: string | null;
+    }
+  | {
+      kind: "failed";
+      request_id: number;
+      alias: string;
+      via_server: string | null;
+      failureKind: OperationFailureKind;
+    };
+
 export interface DirectoryQuery {
   term: string | null;
   server_name: string | null;
   limit: number | null;
+  since: string | null;
 }
 
 export interface DirectoryRoomSummary {
   room_id: string;
+  canonical_alias: string | null;
   name: string;
   topic: string | null;
   avatar_url: string | null;

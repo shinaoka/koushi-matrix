@@ -52,6 +52,8 @@ invite_accept=ok
 invite_decline=ok
 dm_start=ok
 room_space=ok
+directory_query=ok
+directory_join=ok
 timeline=ok
 reply=ok
 reply_quote=ok
@@ -91,6 +93,13 @@ reply.
 the Phase A message-interaction proof. The core lane projects reply quote DTOs
 and routes pin/unpin through Rust-owned room state before any GUI affordance is
 considered.
+
+`directory_query=ok` and `directory_join=ok` are the Phase A public-directory
+proof. The core lane creates a disposable public alias room through a Rust core
+command, queries the homeserver public directory through `RoomCommand`, and
+joins by alias/server through Rust-owned directory state. The lane must not
+print room IDs, aliases, server names, query text, pagination tokens, or raw SDK
+errors as success output.
 
 `mention_send=ok`, `markdown_send=ok`, `slash_command=ok`, and `ime_guard=ok`
 are the Phase A composer-semantics proof. The core lane sends typed
@@ -172,6 +181,7 @@ Focused local proof:
 ```bash
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=invites_dm --core --core-backend=probed --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=directory --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=media --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=live_signals --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000

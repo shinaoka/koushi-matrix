@@ -10,7 +10,7 @@ use crate::state::{
     TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum AppAction {
     AppStarted,
     RestoreSessionSucceeded(SessionInfo),
@@ -240,6 +240,21 @@ pub enum AppAction {
         query: DirectoryQuery,
         kind: OperationFailureKind,
     },
+    DirectoryJoinRequested {
+        request_id: u64,
+        alias: String,
+        via_server: Option<String>,
+    },
+    DirectoryJoinSucceeded {
+        request_id: u64,
+        room_id: String,
+    },
+    DirectoryJoinFailed {
+        request_id: u64,
+        alias: String,
+        via_server: Option<String>,
+        kind: OperationFailureKind,
+    },
     ActivityOpened {
         request_id: u64,
     },
@@ -389,6 +404,72 @@ pub enum AppAction {
         event_id: String,
     },
     ComposerReplyCancelled,
+}
+
+impl fmt::Debug for AppAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LoginSubmitted(request) => formatter
+                .debug_tuple("LoginSubmitted")
+                .field(request)
+                .finish(),
+            Self::DirectoryQueryRequested { request_id, query } => formatter
+                .debug_struct("DirectoryQueryRequested")
+                .field("request_id", request_id)
+                .field("query", query)
+                .finish(),
+            Self::DirectoryQuerySucceeded {
+                request_id,
+                query,
+                rooms,
+                next_batch,
+            } => formatter
+                .debug_struct("DirectoryQuerySucceeded")
+                .field("request_id", request_id)
+                .field("query", query)
+                .field("rooms", rooms)
+                .field("next_batch", &next_batch.as_ref().map(|_| "PageToken(..)"))
+                .finish(),
+            Self::DirectoryQueryFailed {
+                request_id,
+                query,
+                kind,
+            } => formatter
+                .debug_struct("DirectoryQueryFailed")
+                .field("request_id", request_id)
+                .field("query", query)
+                .field("kind", kind)
+                .finish(),
+            Self::DirectoryJoinRequested {
+                request_id,
+                via_server,
+                ..
+            } => formatter
+                .debug_struct("DirectoryJoinRequested")
+                .field("request_id", request_id)
+                .field("alias", &"RoomAlias(..)")
+                .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
+                .finish(),
+            Self::DirectoryJoinSucceeded { request_id, .. } => formatter
+                .debug_struct("DirectoryJoinSucceeded")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::DirectoryJoinFailed {
+                request_id,
+                via_server,
+                kind,
+                ..
+            } => formatter
+                .debug_struct("DirectoryJoinFailed")
+                .field("request_id", request_id)
+                .field("alias", &"RoomAlias(..)")
+                .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
+                .field("kind", kind)
+                .finish(),
+            _ => formatter.write_str("AppAction(..)"),
+        }
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]

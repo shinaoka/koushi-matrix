@@ -58,12 +58,13 @@ use std::{
 };
 
 use matrix_desktop_sdk::{
-    MatrixClientSession, MatrixRoomOperationError, MatrixRoomTagKind, MatrixRoomTags,
+    MatrixClientSession, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
+    MatrixRoomOperationError, MatrixRoomTagKind, MatrixRoomTags,
 };
 use matrix_desktop_state::{
-    AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, InvitePreview,
-    OperationFailureKind, PinnedEvent, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SpaceSummary,
+    AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, DirectoryQuery,
+    DirectoryRoomSummary, InvitePreview, OperationFailureKind, PinnedEvent, RoomSummary,
+    RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -282,6 +283,14 @@ impl RoomActor {
             } => {
                 self.handle_create_room(request_id, name, encrypted).await;
             }
+            RoomCommand::CreatePublicDirectoryRoom {
+                request_id,
+                name,
+                alias_localpart,
+            } => {
+                self.handle_create_public_directory_room(request_id, name, alias_localpart)
+                    .await;
+            }
             RoomCommand::CreateSpace { request_id, name } => {
                 self.handle_create_space(request_id, name).await;
             }
@@ -367,23 +376,15 @@ impl RoomActor {
                 self.handle_unpin_event(request_id, room_id, event_id).await;
             }
             RoomCommand::QueryDirectory { request_id, query } => {
-                self.reduce(vec![
-                    AppAction::DirectoryQueryRequested {
-                        request_id: request_id.sequence,
-                        query: query.clone(),
-                    },
-                    AppAction::DirectoryQueryFailed {
-                        request_id: request_id.sequence,
-                        query,
-                        kind: OperationFailureKind::Sdk,
-                    },
-                ]);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::RoomOperationFailed {
-                        kind: RoomFailureKind::Sdk,
-                    },
-                );
+                self.handle_query_directory(request_id, query).await;
+            }
+            RoomCommand::JoinDirectoryRoom {
+                request_id,
+                alias,
+                via_server,
+            } => {
+                self.handle_join_directory_room(request_id, alias, via_server)
+                    .await;
             }
             RoomCommand::SelectSpace {
                 request_id: _,
@@ -437,6 +438,34 @@ impl RoomActor {
                     request_id: request_id.sequence,
                     message: CREATE_ROOM_FAILED_MESSAGE.to_owned(),
                 }]);
+            }
+        }
+    }
+
+    async fn handle_create_public_directory_room(
+        &self,
+        request_id: RequestId,
+        name: String,
+        alias_localpart: String,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match matrix_desktop_sdk::create_public_directory_room(session, &name, &alias_localpart)
+            .await
+        {
+            Ok(room_id) => {
+                self.emit(CoreEvent::Room(RoomEvent::RoomCreated {
+                    request_id,
+                    room_id,
+                }));
+                self.refresh_room_list().await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
     }
@@ -616,6 +645,106 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_query_directory(&self, request_id: RequestId, query: DirectoryQuery) {
+        self.reduce(vec![AppAction::DirectoryQueryRequested {
+            request_id: request_id.sequence,
+            query: query.clone(),
+        }]);
+        let Some(session) = &self.session else {
+            self.reduce(vec![AppAction::DirectoryQueryFailed {
+                request_id: request_id.sequence,
+                query,
+                kind: OperationFailureKind::Sdk,
+            }]);
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        let sdk_query = MatrixPublicRoomDirectoryQuery {
+            term: query.term.clone(),
+            server_name: query.server_name.clone(),
+            limit: query.limit,
+            since: query.since.clone(),
+        };
+        match matrix_desktop_sdk::query_public_room_directory(session, sdk_query).await {
+            Ok(result) => {
+                let rooms: Vec<DirectoryRoomSummary> = result
+                    .rooms
+                    .into_iter()
+                    .map(directory_room_summary_from_sdk)
+                    .collect();
+                self.reduce(vec![AppAction::DirectoryQuerySucceeded {
+                    request_id: request_id.sequence,
+                    query: query.clone(),
+                    rooms: rooms.clone(),
+                    next_batch: result.next_batch.clone(),
+                }]);
+                self.emit(CoreEvent::Room(RoomEvent::DirectoryQueryCompleted {
+                    request_id,
+                    query,
+                    rooms,
+                    next_batch: result.next_batch,
+                }));
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.reduce(vec![AppAction::DirectoryQueryFailed {
+                    request_id: request_id.sequence,
+                    query,
+                    kind: operation_failure_kind(kind),
+                }]);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_join_directory_room(
+        &self,
+        request_id: RequestId,
+        alias: String,
+        via_server: Option<String>,
+    ) {
+        self.reduce(vec![AppAction::DirectoryJoinRequested {
+            request_id: request_id.sequence,
+            alias: alias.clone(),
+            via_server: via_server.clone(),
+        }]);
+        let Some(session) = &self.session else {
+            self.reduce(vec![AppAction::DirectoryJoinFailed {
+                request_id: request_id.sequence,
+                alias,
+                via_server,
+                kind: OperationFailureKind::Sdk,
+            }]);
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match matrix_desktop_sdk::join_room_by_alias(session, &alias, via_server.as_deref()).await {
+            Ok(room_id) => {
+                self.reduce(vec![AppAction::DirectoryJoinSucceeded {
+                    request_id: request_id.sequence,
+                    room_id: room_id.clone(),
+                }]);
+                self.emit(CoreEvent::Room(RoomEvent::RoomJoined {
+                    request_id,
+                    room_id,
+                }));
+                self.refresh_room_list().await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.reduce(vec![AppAction::DirectoryJoinFailed {
+                    request_id: request_id.sequence,
+                    alias,
+                    via_server,
+                    kind: operation_failure_kind(kind),
+                }]);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1193,6 +1322,19 @@ fn normalize_invites(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> V
         .collect()
 }
 
+fn directory_room_summary_from_sdk(room: MatrixPublicRoomDirectoryRoom) -> DirectoryRoomSummary {
+    DirectoryRoomSummary {
+        room_id: room.room_id,
+        canonical_alias: room.canonical_alias,
+        name: room.name,
+        topic: room.topic,
+        avatar_url: room.avatar_url,
+        joined_members: room.joined_members,
+        world_readable: room.world_readable,
+        guest_can_join: room.guest_can_join,
+    }
+}
+
 fn avatar_from_mxc_uri(mxc_uri: Option<&str>) -> Option<AvatarImage> {
     mxc_uri.map(|mxc_uri| AvatarImage {
         mxc_uri: mxc_uri.to_owned(),
@@ -1233,6 +1375,7 @@ pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailu
     use matrix_desktop_sdk::MatrixRoomOperationFailureKind;
     match error {
         MatrixRoomOperationError::InvalidRoomId
+        | MatrixRoomOperationError::InvalidRoomAlias
         | MatrixRoomOperationError::InvalidEventId
         | MatrixRoomOperationError::InvalidUserId
         | MatrixRoomOperationError::InvalidServerName

@@ -133,7 +133,7 @@ function snapshotForPanelMode(
       rooms: [],
       invites: [],
       room_interactions: {},
-      directory: { kind: "closed" },
+      directory: { query: { kind: "closed" }, join: { kind: "idle" } },
       room_management: { selected_room_id: null, operation: { kind: "idle" } },
       activity: { kind: "closed" },
       timeline: {

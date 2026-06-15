@@ -170,8 +170,9 @@ An in-process actor system in `matrix-desktop-core`:
   (starting/running/reconnecting/failed/stopped).
 - `RoomActor` — room list normalization
   (`SpaceSummary`/`RoomSummary`/`InvitePreview`), create/invite/join/space
-  operations, invite accept/decline, DM start, unread counts, DM
-  classification, and Matrix room tags (`m.tag` favourite / low priority).
+  operations, invite accept/decline, DM start, public directory query and
+  join-by-alias, unread counts, DM classification, and Matrix room tags
+  (`m.tag` favourite / low priority).
   On the sliding-sync backend it consumes the one `RoomListService` owned by
   the running `SyncService`; constructing additional ad-hoc
   `RoomListService` instances is prohibited — they are not driven by the

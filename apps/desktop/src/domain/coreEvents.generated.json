@@ -155,6 +155,36 @@
       "sequence": 7
     }
   },
+  "roomDirectoryQueryCompleted": {
+    "event": {
+      "DirectoryQueryCompleted": {
+        "next_batch": "page-3",
+        "query": {
+          "limit": 20,
+          "server_name": "example.test",
+          "since": "page-2",
+          "term": "public"
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "rooms": [
+          {
+            "avatar_url": null,
+            "canonical_alias": "#public:example.test",
+            "guest_can_join": false,
+            "joined_members": 5,
+            "name": "Public Room",
+            "room_id": "!public:example.test",
+            "topic": "Directory sample",
+            "world_readable": true
+          }
+        ]
+      }
+    },
+    "kind": "Room"
+  },
   "roomDirectMessageStarted": {
     "event": {
       "DirectMessageStarted": {

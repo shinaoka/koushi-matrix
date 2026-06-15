@@ -326,10 +326,12 @@ export interface DirectoryQuery {
   term: string | null;
   server_name: string | null;
   limit: number | null;
+  since: string | null;
 }
 
 export interface DirectoryRoomSummary {
   room_id: string;
+  canonical_alias: string | null;
   name: string;
   topic: string | null;
   avatar_url: string | null;

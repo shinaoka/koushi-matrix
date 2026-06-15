@@ -647,6 +647,61 @@ stateDiagram-v2
   events around the `CreateRoom` / `CreateSpace` / `SetSpaceChild` SDK calls,
   using the command's `request_id` (its `sequence`) as the correlation id.
 
+## Public Directory
+
+Public room directory state is Rust-owned and split into two independent
+submachines so a query result can stay visible while a join is pending or
+failed:
+
+```mermaid
+stateDiagram-v2
+    [*] --> QueryClosed
+    QueryClosed --> Querying: DirectoryQueryRequested
+    Querying --> Results: DirectoryQuerySucceeded [matching request_id]
+    Querying --> Failed: DirectoryQueryFailed [matching request_id]
+    Results --> Querying: DirectoryQueryRequested
+    Failed --> Querying: DirectoryQueryRequested
+    Querying --> QueryClosed: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Results --> QueryClosed: LogoutRequested/SwitchAccountRequested/SessionCleared
+    Failed --> QueryClosed: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> JoinIdle
+    JoinIdle --> Joining: DirectoryJoinRequested
+    Joining --> JoinIdle: DirectoryJoinSucceeded [matching request_id]
+    Joining --> JoinFailed: DirectoryJoinFailed [matching request_id, alias, via_server]
+    JoinFailed --> Joining: DirectoryJoinRequested
+    Joining --> JoinIdle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    JoinFailed --> JoinIdle: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+- `AppState.directory.query` carries `Closed`, `Querying`, `Results`, or
+  `Failed`. Results include `DirectoryRoomSummary` rows, canonical alias when
+  supplied by the homeserver, and an optional pagination token. React must not
+  synthesize query completion, pagination, or failure state.
+- `AppState.directory.join` carries `Idle`, `Joining`, or `Failed`. Join is
+  alias-based; the SDK wrapper rejects bare room IDs for this directory flow.
+  GUI code passes the canonical alias and optional server hint from the Rust
+  directory result.
+- Query and join actions are accepted only with a `Ready` session. Stale query
+  completions are ignored unless their `request_id` matches the current
+  `Querying` state. Join success is accepted only when its `request_id`
+  matches the current `Joining` state; join failure is accepted only when its
+  `request_id`, alias, and server hint match the current `Joining` state.
+- `RoomActor` routes `RoomCommand::QueryDirectory` through the SDK public-room
+  directory API and emits `RoomEvent::DirectoryQueryCompleted` on success.
+  `RoomCommand::JoinDirectoryRoom` routes through SDK join-by-alias/server
+  APIs and emits `RoomEvent::RoomJoined` on success. Failures are coarse
+  `RoomFailureKind` / `OperationFailureKind` values only; raw SDK errors,
+  aliases, server names, query text, and page tokens must not appear in Debug
+  output or QA stdout.
+- Logout, account switch, or session clear resets both submachines to
+  `query=Closed` and `join=Idle`.
+- Headless core QA covers this with the `directory` scenario and private-data-
+  free tokens `directory_query=ok` and `directory_join=ok`.
+
 ## E2EE Trust, Verification, And Key Backup
 
 Account-level E2EE trust UX is Rust-owned state in `AppState.e2ee_trust`.

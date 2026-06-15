@@ -168,4 +168,37 @@ describe("BrowserFakeApi settings preview", () => {
 
     expect(snapshot.state.room_interactions["!missing:browser.fake"]).toBeUndefined();
   });
+
+  test("models public directory query and join pending substates", async () => {
+    const api = createBrowserFakeApi();
+
+    const queryPromise = api.queryDirectory({
+      term: "public rooms",
+      server_name: "fake.local",
+      limit: 20,
+      since: null
+    });
+    expect((await api.getSnapshot()).state.directory.query).toMatchObject({
+      kind: "querying",
+      query: {
+        term: "public rooms",
+        server_name: "fake.local",
+        limit: 20,
+        since: null
+      }
+    });
+
+    const queried = await queryPromise;
+    expect(queried.state.directory.query.kind).toBe("results");
+
+    const joinPromise = api.joinDirectoryRoom("#public-demo:fake.local", "fake.local");
+    expect((await api.getSnapshot()).state.directory.join).toMatchObject({
+      kind: "joining",
+      alias: "#public-demo:fake.local",
+      via_server: "fake.local"
+    });
+
+    const joined = await joinPromise;
+    expect(joined.state.directory.join).toEqual({ kind: "idle" });
+  });
 });

@@ -157,4 +157,28 @@ describe("TauriDesktopApi", () => {
       userId: "@target:example.invalid"
     });
   });
+
+  test("passes public directory actions to Rust-owned room commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.queryDirectory({
+      term: "public rooms",
+      server_name: "example.invalid",
+      limit: 20,
+      since: "page-2"
+    });
+    await api.joinDirectoryRoom("#public:example.invalid", "example.invalid");
+
+    expect(invoke).toHaveBeenCalledWith("query_directory", {
+      term: "public rooms",
+      serverName: "example.invalid",
+      limit: 20,
+      since: "page-2"
+    });
+    expect(invoke).toHaveBeenCalledWith("join_directory_room", {
+      alias: "#public:example.invalid",
+      viaServer: "example.invalid"
+    });
+  });
 });
