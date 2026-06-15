@@ -1220,7 +1220,9 @@ stateDiagram-v2
 - Progress counters describe the joined-room hydration set only:
   `restored_rooms` / `total_rooms` are not backup-wide counts. Product copy,
   issue evidence, and QA tokens must use "joined-room restore" language unless
-  a later implementation proves broader semantics.
+  a later implementation proves broader semantics. The SDK adapter summary
+  exposes this as `KeyBackupRestoreSummary.scope = JoinedRooms`; any broader
+  scope needs a new explicit enum value plus upstream/API rationale.
 - Restore events are request-correlated. Stale progress, duplicate completions,
   and completions from an account that is no longer active are ignored.
 - Failure behavior emits only `TrustOperationFailureKind` or a restore-specific

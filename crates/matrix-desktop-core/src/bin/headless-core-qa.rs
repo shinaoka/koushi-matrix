@@ -387,7 +387,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "suppress_focus=ok",
             "clear_badge=ok",
         ],
-        QaStage::E2eeTrust => &["e2ee_trust=ok"],
+        QaStage::E2eeTrust => &["joined_room_restore=ok", "e2ee_trust=ok"],
         QaStage::InvitesDm => &[
             "invite_recv=ok",
             "invite_accept=ok",
@@ -492,6 +492,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "cancel_send=ok",
         "fifo=ok",
         "unsent_restart=ok",
+        "joined_room_restore=ok",
         "e2ee_trust=ok",
         "restore_cleanup=ok",
     ]
@@ -1089,7 +1090,7 @@ async fn run_e2ee_trust_stage(
     conn_a: &mut CoreConnection,
     account_key_a: &AccountKey,
 ) -> Result<(), String> {
-    let session_a = ready_session_info(conn_a, "session A info for E2EE trust")?;
+    let session_a = authenticated_session_info(conn_a, "session A info for E2EE trust")?;
 
     bootstrap_cross_signing_for_qa(
         conn_a,
@@ -1132,7 +1133,7 @@ async fn run_e2ee_trust_stage(
 
     let account_key_a2 = wait_for_logged_in(&mut conn_a2, login_a2_id, "login A2").await?;
     wait_for_ready_snapshot(&mut conn_a2, "session A2 Ready").await?;
-    let session_a2 = ready_session_info(&mut conn_a2, "session A2 info for E2EE trust")?;
+    let session_a2 = authenticated_session_info(&mut conn_a2, "session A2 info for E2EE trust")?;
 
     let sync_start_a2_id = conn_a2.next_request_id();
     conn_a2
@@ -1174,7 +1175,7 @@ async fn run_e2ee_trust_stage(
         "restore key backup success A2",
     )
     .await?;
-    println!("e2ee_key_backup_restore_success=ok");
+    println!("joined_room_restore=ok");
 
     verify_second_device_for_qa(conn_a, &mut conn_a2, &session_a, &session_a2).await?;
     println!("e2ee_verification=ok");
@@ -4144,10 +4145,26 @@ async fn wait_for_operation_failed(
 // Phase A E2EE trust helpers
 // ---------------------------------------------------------------------------
 
-fn ready_session_info(conn: &mut CoreConnection, label: &str) -> Result<SessionInfo, String> {
-    match &conn.snapshot().session {
-        SessionState::Ready(info) => Ok(info.clone()),
-        _ => Err(format!("{label}: session is not Ready")),
+fn authenticated_session_info(
+    conn: &mut CoreConnection,
+    label: &str,
+) -> Result<SessionInfo, String> {
+    authenticated_session_info_from_state(&conn.snapshot().session)
+        .cloned()
+        .ok_or_else(|| format!("{label}: session is not authenticated"))
+}
+
+fn authenticated_session_info_from_state(session: &SessionState) -> Option<&SessionInfo> {
+    match session {
+        SessionState::NeedsRecovery { info, .. }
+        | SessionState::Recovering { info, .. }
+        | SessionState::Ready(info) => Some(info),
+        SessionState::SignedOut
+        | SessionState::Restoring
+        | SessionState::SwitchingAccount { .. }
+        | SessionState::Authenticating { .. }
+        | SessionState::Locked(_)
+        | SessionState::LoggingOut => None,
     }
 }
 
@@ -8430,9 +8447,51 @@ mod tests {
                 "cancel_send=ok",
                 "fifo=ok",
                 "unsent_restart=ok",
+                "joined_room_restore=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
             ][..]
+        );
+    }
+
+    #[test]
+    fn e2ee_trust_stage_prints_joined_room_restore_scope_token() {
+        let source = include_str!("headless-core-qa.rs");
+        let legacy_token = concat!("e2ee_key_backup_restore_", "success=ok");
+
+        assert!(source.contains("println!(\"joined_room_restore=ok\")"));
+        assert!(!source.contains(legacy_token));
+    }
+
+    #[test]
+    fn e2ee_trust_qa_uses_authenticated_session_info_during_recovery() {
+        let info = SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@alice:example.invalid".to_owned(),
+            device_id: "ALICEDEVICE".to_owned(),
+        };
+
+        assert_eq!(
+            authenticated_session_info_from_state(&SessionState::NeedsRecovery {
+                info: info.clone(),
+                methods: vec![],
+            }),
+            Some(&info)
+        );
+        assert_eq!(
+            authenticated_session_info_from_state(&SessionState::Recovering {
+                info: info.clone(),
+                methods: vec![],
+            }),
+            Some(&info)
+        );
+        assert_eq!(
+            authenticated_session_info_from_state(&SessionState::Ready(info.clone())),
+            Some(&info)
+        );
+        assert_eq!(
+            authenticated_session_info_from_state(&SessionState::SignedOut),
+            None
         );
     }
 
@@ -8618,6 +8677,7 @@ mod tests {
             [
                 "safety=ok",
                 "login_sync=ok",
+                "joined_room_restore=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
             ]
@@ -8677,6 +8737,7 @@ mod tests {
                 "cancel_send=ok",
                 "fifo=ok",
                 "unsent_restart=ok",
+                "joined_room_restore=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
             ][..]

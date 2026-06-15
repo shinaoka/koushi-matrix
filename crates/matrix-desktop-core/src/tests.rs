@@ -13,7 +13,8 @@ use matrix_desktop_state::{
 };
 
 use crate::command::{
-    AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, TimelineCommand,
+    AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, SyncCommand,
+    TimelineCommand,
 };
 use crate::event::{CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection};
 use crate::executor;
@@ -306,6 +307,25 @@ fn room_tag_commands_are_correlated_ready_gated_and_redact_room_ids() {
         let debug = format!("{command:?}");
         assert!(!debug.contains(&room_id));
         assert!(debug.contains("RoomId(..)"));
+    }
+}
+
+#[test]
+fn sync_commands_are_correlated_but_not_ready_gated() {
+    let request_id = fake_request_id();
+    let commands = vec![
+        CoreCommand::Sync(SyncCommand::Start { request_id }),
+        CoreCommand::Sync(SyncCommand::Stop { request_id }),
+        CoreCommand::Sync(SyncCommand::Restart { request_id }),
+        CoreCommand::Sync(SyncCommand::SyncOnce { request_id }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(
+            !command.requires_ready_session(),
+            "sync commands are allowed while E2EE recovery is pending; AccountActor still requires a store-backed session"
+        );
     }
 }
 

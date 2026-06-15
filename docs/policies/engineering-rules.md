@@ -80,7 +80,8 @@ Rules:
    errors, identity-reset auth details beyond UIAA/OAuth/unknown, and all key
    material. Key-backup restore progress/copy must say joined-room hydration
    when that is the implemented scope; it must not imply exhaustive backup-wide
-   restore.
+   restore. `KeyBackupRestoreSummary.scope` stays `JoinedRooms` for the MVP
+   path unless a later upstream/public API decision explicitly broadens it.
 12. Credential-store health diagnostics are kind-only. Public state may report
    only `unknown`, `healthy`, `unavailable`, `locked_or_inaccessible`,
    `missing_credential`, or `reset_required`, with optional private-data-free

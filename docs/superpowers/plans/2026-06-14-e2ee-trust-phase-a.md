@@ -66,8 +66,8 @@ The local proof slice adds the core QA `e2ee_trust` scenario. It runs through
 `CoreCommand`/`CoreEvent` only, logs the same synthetic user into a second local
 data directory/device, and proves cross-signing bootstrap, encrypted seed-room
 backup upload, passphrase-backed key-backup enable, wrong-secret restore
-failure, successful restore on the second device, same-user SAS device
-verification, and identity reset before any GUI wiring. The slice also
+failure, successful joined-room restore on the second device, same-user SAS
+device verification, and identity reset before any GUI wiring. The slice also
 separates identity-reset auth continuation command `request_id` from the
 Rust-owned identity-reset `flow_id`,
 matching the verification follow-up model so React never owns pending trust

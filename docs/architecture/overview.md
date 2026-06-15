@@ -90,12 +90,13 @@ Crate responsibilities:
 - `matrix-desktop-sdk` — low-level SDK adapter (login, restore, recovery,
   sync, room, timeline, search primitives). No app state, no QA orchestration.
   E2EE key-backup restore wrappers consume recovery secrets internally and
-  return private-data-free restore summaries; they do not expose SDK backup
-  keys, room keys, or raw backup versions across the command/event boundary.
-  The MVP restore scope is recovery secret import plus currently joined-room
-  key hydration through public SDK APIs. Product state, QA evidence, and UI
-  copy must not claim exhaustive backup-wide restore until a public SDK API or
-  reviewed vendored patch proves that broader scope.
+  return private-data-free restore summaries whose scope is explicitly
+  `JoinedRooms`; they do not expose SDK backup keys, room keys, or raw backup
+  versions across the command/event boundary. The MVP restore scope is
+  recovery secret import plus currently joined-room key hydration through
+  public SDK APIs. Product state, QA evidence, and UI copy must not claim
+  exhaustive backup-wide restore until a public SDK API or reviewed vendored
+  patch proves that broader scope.
 - `matrix-desktop-core` — actor lifecycle, command routing, event emission,
   SDK session handles, background tasks, AppState projection, headless QA
   binaries. Production Matrix behavior lives here and nowhere else.
@@ -621,10 +622,11 @@ architectural invariants:
   `AccountActor`. The local core `e2ee_trust` proof exercises same-user
   two-device SAS verification, cross-signing bootstrap, passphrase-backed
   key-backup enable, encrypted seed-room backup upload, wrong-secret restore
-  failure, successful restore on the second device, and identity reset on
-  disposable local homeservers through the probed SyncService core leg before
-  GUI wiring. No design doc may claim exhaustive backup-wide restore until the
-  exact supported restore scope is proven or split into an explicit follow-up.
+  failure, successful joined-room restore on the second device, and identity
+  reset on disposable local homeservers through the probed SyncService core leg
+  before GUI wiring. No design doc may claim exhaustive backup-wide restore
+  until the exact supported restore scope is proven or split into an explicit
+  follow-up.
 
 ## QA Model
 

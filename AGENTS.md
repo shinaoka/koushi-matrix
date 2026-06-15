@@ -550,6 +550,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - There is no hosted CI in this repo yet; these gates run locally and in
   `release:preflight`. Wire them into CI when CI infrastructure appears.
 
+## Key Backup Restore Scope QA
+
+- `joined_room_restore=ok` is the #30 MVP proof token for recovery secret
+  import plus currently joined-room key hydration. It is not proof of
+  exhaustive backup-wide restore. `KeyBackupRestoreSummary.scope` must remain
+  `JoinedRooms` unless docs/policies and upstream SDK feedback record a broader
+  public API or reviewed vendored patch decision.
+
 ## Headless UI (Playwright) Flakes
 
 - `e2e/basic-operations.spec.ts:81` ("submitting the composer in reply mode

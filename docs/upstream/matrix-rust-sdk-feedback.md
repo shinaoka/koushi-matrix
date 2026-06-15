@@ -58,8 +58,8 @@ Current SDK-only patch area:
 - MVP key-backup restore in matrix-desktop uses public SDK APIs only: import the
   recovery secret, then hydrate currently joined rooms. The desktop app will not
   add a vendored SDK accessor for private backup-wide internals merely for
-  convenience; broader restore requires a public SDK API or a separately
-  reviewed minimal upstreamable patch.
+  convenience; its restore summary scope is `JoinedRooms`. Broader restore
+  requires a public SDK API or a separately reviewed minimal upstreamable patch.
 
 ## Verified SDK Checks
 

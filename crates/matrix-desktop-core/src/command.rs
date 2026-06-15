@@ -123,14 +123,17 @@ impl CoreCommand {
     }
 
     /// Commands that require a `Ready` session before they are routed.
+    ///
+    /// `SyncCommand` is intentionally not included here: the reducer's
+    /// authenticated-session contract allows sync while E2EE recovery is
+    /// pending, and `AccountActor` / `SyncActor` still enforce that a
+    /// store-backed Matrix session exists.
     pub fn requires_ready_session(&self) -> bool {
-        matches!(
-            self,
-            Self::Sync(_) | Self::Room(_) | Self::Timeline(_) | Self::Search(_)
-        ) || matches!(
-            self,
-            Self::Account(command) if command.requires_ready_session()
-        )
+        matches!(self, Self::Room(_) | Self::Timeline(_) | Self::Search(_))
+            || matches!(
+                self,
+                Self::Account(command) if command.requires_ready_session()
+            )
     }
 }
 

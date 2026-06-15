@@ -269,8 +269,14 @@ pub enum MatrixSasState {
     UnsupportedShortAuth,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyBackupRestoreScope {
+    JoinedRooms,
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct KeyBackupRestoreSummary {
+    pub scope: KeyBackupRestoreScope,
     pub version: Option<String>,
     pub restored_rooms: u64,
     pub total_rooms: Option<u64>,
@@ -280,6 +286,7 @@ impl fmt::Debug for KeyBackupRestoreSummary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("KeyBackupRestoreSummary")
+            .field("scope", &self.scope)
             .field(
                 "version",
                 &self.version.as_ref().map(|_| "BackupVersion(..)"),
@@ -523,6 +530,7 @@ pub async fn restore_key_backup(
     });
 
     Ok(KeyBackupRestoreSummary {
+        scope: KeyBackupRestoreScope::JoinedRooms,
         version: backup_version,
         restored_rooms,
         total_rooms: Some(total_rooms),
@@ -751,15 +759,16 @@ mod e2ee_trust_tests {
     use matrix_sdk::encryption::backups::BackupState;
 
     use super::{
-        E2eeTrustError, MatrixCrossSigningStatus, MatrixIdentityResetAuthType,
-        MatrixIncomingVerificationRequest, MatrixIncomingVerificationRequestObserver,
-        accept_sas_verification, accept_verification_request, bootstrap_cross_signing,
-        cancel_sas_verification, cancel_verification_request, complete_identity_reset,
-        confirm_sas_verification, cross_signing_status, enable_key_backup,
-        map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
-        map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
-        mismatch_sas_verification, observe_incoming_verification_requests,
-        request_device_verification, reset_identity, restore_key_backup, start_sas_verification,
+        E2eeTrustError, KeyBackupRestoreScope, KeyBackupRestoreSummary, MatrixCrossSigningStatus,
+        MatrixIdentityResetAuthType, MatrixIncomingVerificationRequest,
+        MatrixIncomingVerificationRequestObserver, accept_sas_verification,
+        accept_verification_request, bootstrap_cross_signing, cancel_sas_verification,
+        cancel_verification_request, complete_identity_reset, confirm_sas_verification,
+        cross_signing_status, enable_key_backup, map_backup_state_to_desktop,
+        map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
+        map_sdk_sas_emojis_to_desktop, mismatch_sas_verification,
+        observe_incoming_verification_requests, request_device_verification, reset_identity,
+        restore_key_backup, start_sas_verification,
     };
 
     #[test]
@@ -817,6 +826,21 @@ mod e2ee_trust_tests {
         assert!(!debug.contains("@alice:example.test"));
         assert!(!debug.contains("raw matrix sdk error"));
         assert!(debug.contains("Sdk"));
+    }
+
+    #[test]
+    fn key_backup_restore_summary_declares_joined_room_scope() {
+        let summary = KeyBackupRestoreSummary {
+            scope: KeyBackupRestoreScope::JoinedRooms,
+            version: Some("available".to_owned()),
+            restored_rooms: 2,
+            total_rooms: Some(3),
+        };
+
+        let debug = format!("{summary:?}");
+        assert!(debug.contains("JoinedRooms"));
+        assert!(!debug.contains("BackupWide"));
+        assert!(!debug.contains("AllRooms"));
     }
 
     #[test]

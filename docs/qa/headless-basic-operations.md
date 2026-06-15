@@ -186,8 +186,8 @@ loop; joined-only observation can leave the invite snapshot stale.
 
 `e2ee_trust=ok` is the Phase A E2EE trust signal. The core lane proves
 cross-signing bootstrap, encrypted seed-room backup upload, passphrase-backed
-key-backup enable, wrong-secret restore failure, successful restore on a second
-same-user device, SAS verification, and identity reset through
+key-backup enable, wrong-secret restore failure, successful joined-room restore
+on a second same-user device, SAS verification, and identity reset through
 `CoreCommand`/`CoreEvent` only. The runner must not print account keys,
 verification target user/device ids, backup versions, room ids, event ids,
 recovery secrets, or raw SDK errors for this stage. It is a separate Rust-owned
@@ -251,8 +251,9 @@ Rust-owned Activity projection and mark-read substate without leaking event
 identity or previews. `ja_catalog=ok`, `cjk_normalize=ok`, `cjk_collation=ok`,
 and `ime_guard=ok` prove Japanese/CJK catalog, normalization, ordering, and IME
 send-vs-commit contracts.
-`joined_room_restore=ok` proves the explicit #30 MVP restore scope and must
-report joined-room hydration counts only.
+`joined_room_restore=ok` proves the explicit #30 MVP restore scope from
+Rust-observed joined-room hydration progress. It must not be described as a
+backup-wide restore token.
 
 ## Headless browser IPC-contract lane
 
