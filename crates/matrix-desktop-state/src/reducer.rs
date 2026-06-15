@@ -2,12 +2,13 @@ use crate::{
     action::AppAction,
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
-        CrossSigningStatus, E2eeRecoveryState, E2eeTrustState, FocusedContextState,
-        IdentityResetState, KeyBackupStatus, NavigationState, PendingComposerSendKind, SasEmoji,
-        SearchState, SessionState, SettingsPersistenceState, SyncState, ThreadPaneState,
-        TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
-        VerificationFlowState, VerificationTarget,
+        ActivityState, ActivityTab, AppError, AppState, BasicOperationRequest, BasicOperationState,
+        ComposerMode, CrossSigningStatus, DirectoryState, E2eeRecoveryState, E2eeTrustState,
+        FocusedContextState, IdentityResetState, KeyBackupStatus, LocalEncryptionState,
+        NavigationState, PendingComposerSendKind, PinOperationState, SasEmoji, SearchState,
+        SessionState, SettingsPersistenceState, SyncState, ThreadPaneState, TimelinePaneState,
+        TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
+        VerificationTarget,
     },
 };
 
@@ -884,6 +885,251 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room.tags = tags;
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
+        AppAction::RoomPinnedEventsUpdated { room_id, pinned } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let entry = state.room_interactions.entry(room_id).or_default();
+            if entry.pinned_events == pinned {
+                return Vec::new();
+            }
+
+            entry.pinned_events = pinned;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+        }
+        AppAction::PinEventRequested {
+            request_id,
+            room_id,
+            event_id,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let entry = state.room_interactions.entry(room_id).or_default();
+            if !entry.pin_operation.is_idle() {
+                return Vec::new();
+            }
+
+            entry.pin_operation = PinOperationState::Pinning {
+                request_id,
+                event_id,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+        }
+        AppAction::PinEventCompleted {
+            request_id,
+            room_id,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(entry) = state.room_interactions.get_mut(&room_id) else {
+                return Vec::new();
+            };
+            if entry.pin_operation.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+
+            entry.pin_operation = PinOperationState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+        }
+        AppAction::PinEventFailed {
+            request_id,
+            room_id,
+            kind,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(entry) = state.room_interactions.get_mut(&room_id) else {
+                return Vec::new();
+            };
+            if entry.pin_operation.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+            let event_id = match &entry.pin_operation {
+                PinOperationState::Pinning { event_id, .. }
+                | PinOperationState::Unpinning { event_id, .. }
+                | PinOperationState::Failed { event_id, .. } => event_id.clone(),
+                PinOperationState::Idle => return Vec::new(),
+            };
+
+            entry.pin_operation = PinOperationState::Failed {
+                request_id,
+                event_id,
+                kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+        }
+        AppAction::UnpinEventRequested {
+            request_id,
+            room_id,
+            event_id,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let entry = state.room_interactions.entry(room_id).or_default();
+            if !entry.pin_operation.is_idle() {
+                return Vec::new();
+            }
+
+            entry.pin_operation = PinOperationState::Unpinning {
+                request_id,
+                event_id,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+        }
+        AppAction::UnpinEventCompleted {
+            request_id,
+            room_id,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(entry) = state.room_interactions.get_mut(&room_id) else {
+                return Vec::new();
+            };
+            if entry.pin_operation.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+
+            entry.pin_operation = PinOperationState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+        }
+        AppAction::UnpinEventFailed {
+            request_id,
+            room_id,
+            kind,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(entry) = state.room_interactions.get_mut(&room_id) else {
+                return Vec::new();
+            };
+            if entry.pin_operation.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+            let event_id = match &entry.pin_operation {
+                PinOperationState::Pinning { event_id, .. }
+                | PinOperationState::Unpinning { event_id, .. }
+                | PinOperationState::Failed { event_id, .. } => event_id.clone(),
+                PinOperationState::Idle => return Vec::new(),
+            };
+
+            entry.pin_operation = PinOperationState::Failed {
+                request_id,
+                event_id,
+                kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+        }
+        AppAction::DirectoryQueryRequested { request_id, query } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.directory = DirectoryState::Querying { request_id, query };
+            vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
+        }
+        AppAction::DirectoryQuerySucceeded {
+            request_id,
+            query,
+            rooms,
+            next_batch,
+        } => {
+            if !matches!(
+                &state.directory,
+                DirectoryState::Querying {
+                    request_id: current_request_id,
+                    query: current_query,
+                } if *current_request_id == request_id && *current_query == query
+            ) {
+                return Vec::new();
+            }
+
+            state.directory = DirectoryState::Results {
+                request_id,
+                query,
+                rooms,
+                next_batch,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
+        }
+        AppAction::DirectoryQueryFailed {
+            request_id,
+            query,
+            kind,
+        } => {
+            if !matches!(
+                &state.directory,
+                DirectoryState::Querying {
+                    request_id: current_request_id,
+                    query: current_query,
+                } if *current_request_id == request_id && *current_query == query
+            ) {
+                return Vec::new();
+            }
+
+            state.directory = DirectoryState::Failed {
+                request_id,
+                query,
+                kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
+        }
+        AppAction::ActivityOpened { request_id } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.activity = ActivityState::Opening {
+                request_id,
+                tab: ActivityTab::Recent,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+        }
+        AppAction::ActivityClosed => {
+            if state.activity == ActivityState::Closed {
+                return Vec::new();
+            }
+
+            state.activity = ActivityState::Closed;
+            vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+        }
+        AppAction::LocalEncryptionHealthChanged { health } => {
+            let next = LocalEncryptionState::from(health);
+            if state.local_encryption == next {
+                return Vec::new();
+            }
+
+            state.local_encryption = next;
+            vec![AppEffect::EmitUiEvent(UiEvent::LocalEncryptionChanged)]
+        }
+        AppAction::NativeAttentionUpdated { summary } => {
+            if state.native_attention.summary == summary {
+                return Vec::new();
+            }
+
+            state.native_attention.summary = summary;
+            vec![AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged)]
+        }
+        AppAction::JapaneseCatalogProfileChanged { profile } => {
+            if state.cjk_text_policy.japanese_catalog == profile {
+                return Vec::new();
+            }
+
+            state.cjk_text_policy.japanese_catalog = profile;
+            vec![AppEffect::EmitUiEvent(UiEvent::CjkTextPolicyChanged)]
+        }
         AppAction::InviteListUpdated { invites } => {
             if !is_session_ready(state) {
                 return Vec::new();
@@ -1749,11 +1995,21 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_e2ee_trust = state.e2ee_trust != E2eeTrustState::default();
     let had_live_signals = state.live_signals != Default::default();
     let had_profile = state.profile != Default::default();
+    let had_room_interactions = !state.room_interactions.is_empty();
+    let had_directory = state.directory != DirectoryState::Closed;
+    let had_activity = state.activity != ActivityState::Closed;
+    let had_room_management = state.room_management != Default::default();
+    let had_local_encryption = state.local_encryption != LocalEncryptionState::Unknown;
+    let had_native_attention = state.native_attention != Default::default();
 
     state.navigation = NavigationState::default();
     state.spaces.clear();
     state.rooms.clear();
     state.invites.clear();
+    state.room_interactions.clear();
+    state.directory = DirectoryState::Closed;
+    state.activity = ActivityState::Closed;
+    state.room_management = Default::default();
     state.profile = Default::default();
     state.timeline = Default::default();
     state.thread = ThreadPaneState::Closed;
@@ -1761,6 +2017,8 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.search = SearchState::Closed;
     state.e2ee_trust = E2eeTrustState::default();
     state.live_signals = Default::default();
+    state.local_encryption = LocalEncryptionState::Unknown;
+    state.native_attention = Default::default();
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
     if let Some(room_id) = previous_room_id {
@@ -1780,6 +2038,24 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_profile {
         effects.push(AppEffect::EmitUiEvent(UiEvent::ProfileChanged));
+    }
+    if had_room_interactions {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged));
+    }
+    if had_directory {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::DirectoryChanged));
+    }
+    if had_activity {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ActivityChanged));
+    }
+    if had_room_management {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged));
+    }
+    if had_local_encryption {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::LocalEncryptionChanged));
+    }
+    if had_native_attention {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
     }
     effects
 }

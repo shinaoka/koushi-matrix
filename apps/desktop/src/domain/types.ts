@@ -25,6 +25,10 @@ export interface AppState {
   spaces: SpaceSummary[];
   rooms: RoomSummary[];
   invites: InvitePreview[];
+  room_interactions: Record<string, RoomInteractionState>;
+  directory: DirectoryState;
+  room_management: RoomManagementState;
+  activity: ActivityState;
   timeline: TimelinePaneState;
   thread: ThreadPaneState;
   focused_context: FocusedContextState;
@@ -33,6 +37,9 @@ export interface AppState {
   basic_operation: BasicOperationState;
   live_signals: LiveSignalsState;
   e2ee_trust: E2eeTrustState;
+  local_encryption: LocalEncryptionState;
+  native_attention: NativeAttentionState;
+  cjk_text_policy: CjkTextPolicyState;
 }
 
 export interface SettingsState {
@@ -270,6 +277,101 @@ export interface InvitePreview {
   is_dm: boolean;
 }
 
+export interface RoomInteractionState {
+  pinned_events: PinnedEvent[];
+  pin_operation: PinOperationState;
+}
+
+export interface PinnedEvent {
+  event_id: string;
+  sender_display_name: string | null;
+  body_preview: string | null;
+  timestamp_ms: number | null;
+}
+
+export type PinOperationState =
+  | { kind: "idle" }
+  | { kind: "pinning"; request_id: number; event_id: string }
+  | { kind: "unpinning"; request_id: number; event_id: string }
+  | {
+      kind: "failed";
+      request_id: number;
+      event_id: string;
+      failureKind: OperationFailureKind;
+    };
+
+export type OperationFailureKind =
+  | "forbidden"
+  | "notFound"
+  | "network"
+  | "timeout"
+  | "invalid"
+  | "sdk";
+
+export type ActivityState =
+  | { kind: "closed" }
+  | { kind: "opening"; request_id: number; tab: ActivityTab }
+  | { kind: "open"; active_tab: ActivityTab };
+
+export type ActivityTab = "recent" | "unread";
+
+export type DirectoryState =
+  | { kind: "closed" }
+  | { kind: "querying"; request_id: number; query: DirectoryQuery }
+  | {
+      kind: "results";
+      request_id: number;
+      query: DirectoryQuery;
+      rooms: DirectoryRoomSummary[];
+      next_batch: string | null;
+    }
+  | { kind: "joining"; request_id: number; room_id: string }
+  | {
+      kind: "failed";
+      request_id: number;
+      query: DirectoryQuery;
+      failureKind: OperationFailureKind;
+    };
+
+export interface DirectoryQuery {
+  term: string | null;
+  server_name: string | null;
+  limit: number | null;
+}
+
+export interface DirectoryRoomSummary {
+  room_id: string;
+  name: string;
+  topic: string | null;
+  avatar_url: string | null;
+  joined_members: number;
+  world_readable: boolean;
+  guest_can_join: boolean;
+}
+
+export interface RoomManagementState {
+  selected_room_id: string | null;
+  operation: RoomManagementOperationState;
+}
+
+export type RoomManagementOperationState =
+  | { kind: "idle" }
+  | { kind: "loading"; request_id: number; room_id: string }
+  | {
+      kind: "mutating";
+      request_id: number;
+      room_id: string;
+      operation: RoomManagementOperationKind;
+    }
+  | {
+      kind: "failed";
+      request_id: number;
+      room_id: string;
+      failureKind: OperationFailureKind;
+    };
+
+export type RoomManagementOperationKind = "settings" | "moderation" | "permissions";
+
 export interface TimelinePaneState {
   room_id: string | null;
   is_subscribed: boolean;
@@ -413,6 +515,94 @@ export type TrustOperationFailureKind =
   | "forbidden"
   | "timeout"
   | "sdk";
+
+export type LocalEncryptionState =
+  | { kind: "unknown" }
+  | { kind: "probing"; request_id: number }
+  | { kind: "healthy" }
+  | { kind: "unavailable" }
+  | { kind: "lockedOrInaccessible" }
+  | { kind: "missingCredential" }
+  | { kind: "resetRequired" }
+  | { kind: "resetting"; request_id: number };
+
+export type LocalEncryptionHealth =
+  | "unknown"
+  | "healthy"
+  | "unavailable"
+  | "lockedOrInaccessible"
+  | "missingCredential"
+  | "resetRequired";
+
+export interface NativeAttentionState {
+  summary: NativeAttentionSummary;
+  dispatch: NativeAttentionDispatchState;
+}
+
+export interface NativeAttentionSummary {
+  unread_count: number;
+  highlight_count: number;
+  badge_count: number;
+  candidate: NativeAttentionCandidate | null;
+  capabilities: NativeAttentionCapabilities;
+}
+
+export interface NativeAttentionCandidate {
+  room_display_name: string;
+  kind: RoomAttentionKind;
+  unread_count: number;
+  highlight_count: number;
+}
+
+export type RoomAttentionKind = "mention" | "dm" | "message";
+
+export interface NativeAttentionCapabilities {
+  notifications: NativeAttentionCapability;
+  badge: NativeAttentionCapability;
+  sound: NativeAttentionCapability;
+  tray: NativeAttentionCapability;
+  activation: NativeAttentionCapability;
+}
+
+export type NativeAttentionCapability = "available" | "unavailable" | "unknown";
+
+export type NativeAttentionDispatchState =
+  | { kind: "idle" }
+  | { kind: "dispatching"; request_id: number }
+  | { kind: "delivered"; request_id: number }
+  | { kind: "suppressed"; reason: NativeAttentionSuppressionReason }
+  | { kind: "failed"; request_id: number; failureKind: OperationFailureKind };
+
+export type NativeAttentionSuppressionReason =
+  | "windowFocused"
+  | "roomMuted"
+  | "lowPriority"
+  | "duplicate"
+  | "capabilityUnavailable";
+
+export interface CjkTextPolicyState {
+  japanese_catalog: JapaneseCatalogProfile;
+  normalization: CjkNormalizationProfile;
+  collation: CjkCollationProfile;
+}
+
+export interface JapaneseCatalogProfile {
+  catalog_locale: string;
+  complete: boolean;
+  missing_message_ids: string[];
+}
+
+export interface CjkNormalizationProfile {
+  form: string;
+  width_fold: boolean;
+  kana_fold: boolean;
+}
+
+export interface CjkCollationProfile {
+  locale: string;
+  numeric: boolean;
+  case_first: string | null;
+}
 
 export interface ThreadPaneState {
   kind: "closed" | "opening" | "open";

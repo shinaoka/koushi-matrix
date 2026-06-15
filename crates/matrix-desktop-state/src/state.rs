@@ -13,6 +13,10 @@ pub struct AppState {
     pub spaces: Vec<SpaceSummary>,
     pub rooms: Vec<RoomSummary>,
     pub invites: Vec<InvitePreview>,
+    pub room_interactions: BTreeMap<String, RoomInteractionState>,
+    pub directory: DirectoryState,
+    pub room_management: RoomManagementState,
+    pub activity: ActivityState,
     pub timeline: TimelinePaneState,
     pub thread: ThreadPaneState,
     pub focused_context: FocusedContextState,
@@ -20,6 +24,9 @@ pub struct AppState {
     pub basic_operation: BasicOperationState,
     pub live_signals: LiveSignalsState,
     pub e2ee_trust: E2eeTrustState,
+    pub local_encryption: LocalEncryptionState,
+    pub native_attention: NativeAttentionState,
+    pub cjk_text_policy: CjkTextPolicyState,
     pub errors: Vec<AppError>,
 }
 
@@ -35,6 +42,10 @@ impl Default for AppState {
             spaces: Vec::new(),
             rooms: Vec::new(),
             invites: Vec::new(),
+            room_interactions: BTreeMap::new(),
+            directory: DirectoryState::Closed,
+            room_management: RoomManagementState::default(),
+            activity: ActivityState::Closed,
             timeline: TimelinePaneState::default(),
             thread: ThreadPaneState::Closed,
             focused_context: FocusedContextState::Closed,
@@ -42,6 +53,9 @@ impl Default for AppState {
             basic_operation: BasicOperationState::Idle,
             live_signals: LiveSignalsState::default(),
             e2ee_trust: E2eeTrustState::default(),
+            local_encryption: LocalEncryptionState::Unknown,
+            native_attention: NativeAttentionState::default(),
+            cjk_text_policy: CjkTextPolicyState::default(),
             errors: Vec::new(),
         }
     }
@@ -681,6 +695,385 @@ pub fn room_attention_summary(
         highlight_count,
         unread_count,
     })
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomInteractionState {
+    pub pinned_events: Vec<PinnedEvent>,
+    pub pin_operation: PinOperationState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PinnedEvent {
+    pub event_id: String,
+    pub sender_display_name: Option<String>,
+    pub body_preview: Option<String>,
+    pub timestamp_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PinOperationState {
+    #[default]
+    Idle,
+    Pinning {
+        request_id: u64,
+        event_id: String,
+    },
+    Unpinning {
+        request_id: u64,
+        event_id: String,
+    },
+    Failed {
+        request_id: u64,
+        event_id: String,
+        #[serde(rename = "failureKind")]
+        kind: OperationFailureKind,
+    },
+}
+
+impl PinOperationState {
+    pub fn request_id(&self) -> Option<u64> {
+        match self {
+            Self::Idle => None,
+            Self::Pinning { request_id, .. }
+            | Self::Unpinning { request_id, .. }
+            | Self::Failed { request_id, .. } => Some(*request_id),
+        }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationFailureKind {
+    Forbidden,
+    NotFound,
+    Network,
+    Timeout,
+    Invalid,
+    Sdk,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ActivityState {
+    #[default]
+    Closed,
+    Opening {
+        request_id: u64,
+        tab: ActivityTab,
+    },
+    Open {
+        active_tab: ActivityTab,
+    },
+}
+
+impl ActivityState {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Opening { .. } => "opening",
+            Self::Open { .. } => "open",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityTab {
+    #[default]
+    Recent,
+    Unread,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DirectoryState {
+    #[default]
+    Closed,
+    Querying {
+        request_id: u64,
+        query: DirectoryQuery,
+    },
+    Results {
+        request_id: u64,
+        query: DirectoryQuery,
+        rooms: Vec<DirectoryRoomSummary>,
+        next_batch: Option<String>,
+    },
+    Joining {
+        request_id: u64,
+        room_id: String,
+    },
+    Failed {
+        request_id: u64,
+        query: DirectoryQuery,
+        #[serde(rename = "failureKind")]
+        kind: OperationFailureKind,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DirectoryQuery {
+    pub term: Option<String>,
+    pub server_name: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DirectoryRoomSummary {
+    pub room_id: String,
+    pub name: String,
+    pub topic: Option<String>,
+    pub avatar_url: Option<String>,
+    pub joined_members: u64,
+    pub world_readable: bool,
+    pub guest_can_join: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomManagementState {
+    pub selected_room_id: Option<String>,
+    pub operation: RoomManagementOperationState,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoomManagementOperationState {
+    #[default]
+    Idle,
+    Loading {
+        request_id: u64,
+        room_id: String,
+    },
+    Mutating {
+        request_id: u64,
+        room_id: String,
+        operation: RoomManagementOperationKind,
+    },
+    Failed {
+        request_id: u64,
+        room_id: String,
+        #[serde(rename = "failureKind")]
+        kind: OperationFailureKind,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomManagementOperationKind {
+    Settings,
+    Moderation,
+    Permissions,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LocalEncryptionState {
+    #[default]
+    Unknown,
+    Probing {
+        request_id: u64,
+    },
+    Healthy,
+    Unavailable,
+    LockedOrInaccessible,
+    MissingCredential,
+    ResetRequired,
+    Resetting {
+        request_id: u64,
+    },
+}
+
+impl LocalEncryptionState {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Probing { .. } => "probing",
+            Self::Healthy => "healthy",
+            Self::Unavailable => "unavailable",
+            Self::LockedOrInaccessible => "locked_or_inaccessible",
+            Self::MissingCredential => "missing_credential",
+            Self::ResetRequired => "reset_required",
+            Self::Resetting { .. } => "resetting",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalEncryptionHealth {
+    Unknown,
+    Healthy,
+    Unavailable,
+    LockedOrInaccessible,
+    MissingCredential,
+    ResetRequired,
+}
+
+impl From<LocalEncryptionHealth> for LocalEncryptionState {
+    fn from(health: LocalEncryptionHealth) -> Self {
+        match health {
+            LocalEncryptionHealth::Unknown => Self::Unknown,
+            LocalEncryptionHealth::Healthy => Self::Healthy,
+            LocalEncryptionHealth::Unavailable => Self::Unavailable,
+            LocalEncryptionHealth::LockedOrInaccessible => Self::LockedOrInaccessible,
+            LocalEncryptionHealth::MissingCredential => Self::MissingCredential,
+            LocalEncryptionHealth::ResetRequired => Self::ResetRequired,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionState {
+    pub summary: NativeAttentionSummary,
+    pub dispatch: NativeAttentionDispatchState,
+}
+
+impl NativeAttentionState {
+    pub fn kind(&self) -> &'static str {
+        self.dispatch.kind()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionSummary {
+    pub unread_count: u64,
+    pub highlight_count: u64,
+    pub badge_count: u64,
+    pub candidate: Option<NativeAttentionCandidate>,
+    pub capabilities: NativeAttentionCapabilities,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionCandidate {
+    pub room_display_name: String,
+    pub kind: RoomAttentionKind,
+    pub unread_count: u64,
+    pub highlight_count: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionCapabilities {
+    pub notifications: NativeAttentionCapability,
+    pub badge: NativeAttentionCapability,
+    pub sound: NativeAttentionCapability,
+    pub tray: NativeAttentionCapability,
+    pub activation: NativeAttentionCapability,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAttentionCapability {
+    Available,
+    Unavailable,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum NativeAttentionDispatchState {
+    #[default]
+    Idle,
+    Dispatching {
+        request_id: u64,
+    },
+    Delivered {
+        request_id: u64,
+    },
+    Suppressed {
+        reason: NativeAttentionSuppressionReason,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: OperationFailureKind,
+    },
+}
+
+impl NativeAttentionDispatchState {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Dispatching { .. } => "dispatching",
+            Self::Delivered { .. } => "delivered",
+            Self::Suppressed { .. } => "suppressed",
+            Self::Failed { .. } => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAttentionSuppressionReason {
+    WindowFocused,
+    RoomMuted,
+    LowPriority,
+    Duplicate,
+    CapabilityUnavailable,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CjkTextPolicyState {
+    pub japanese_catalog: JapaneseCatalogProfile,
+    pub normalization: CjkNormalizationProfile,
+    pub collation: CjkCollationProfile,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JapaneseCatalogProfile {
+    pub catalog_locale: String,
+    pub complete: bool,
+    pub missing_message_ids: Vec<String>,
+}
+
+impl Default for JapaneseCatalogProfile {
+    fn default() -> Self {
+        Self {
+            catalog_locale: "en".to_owned(),
+            complete: true,
+            missing_message_ids: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CjkNormalizationProfile {
+    pub form: String,
+    pub width_fold: bool,
+    pub kana_fold: bool,
+}
+
+impl Default for CjkNormalizationProfile {
+    fn default() -> Self {
+        Self {
+            form: "nfkc".to_owned(),
+            width_fold: true,
+            kana_fold: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CjkCollationProfile {
+    pub locale: String,
+    pub numeric: bool,
+    pub case_first: Option<String>,
+}
+
+impl Default for CjkCollationProfile {
+    fn default() -> Self {
+        Self {
+            locale: "ja".to_owned(),
+            numeric: true,
+            case_first: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

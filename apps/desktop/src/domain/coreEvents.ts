@@ -289,9 +289,43 @@ export type RoomEvent =
   | { RoomForgotten: { request_id: RequestId; room_id: string } }
   | { RoomTagSet: { request_id: RequestId; room_id: string; tag: RoomTagKind } }
   | { RoomTagRemoved: { request_id: RequestId; room_id: string; tag: RoomTagKind } }
+  | { PinnedEventsUpdated: { room_id: string; pinned: PinnedEvent[] } }
+  | { PinEventCompleted: { request_id: RequestId; room_id: string } }
+  | { UnpinEventCompleted: { request_id: RequestId; room_id: string } }
+  | {
+      DirectoryQueryCompleted: {
+        request_id: RequestId;
+        query: DirectoryQuery;
+        rooms: DirectoryRoomSummary[];
+        next_batch: string | null;
+      };
+    }
   | "RoomListUpdated";
 
 export type RoomTagKind = "favourite" | "lowPriority";
+
+export interface PinnedEvent {
+  event_id: string;
+  sender_display_name: string | null;
+  body_preview: string | null;
+  timestamp_ms: number | null;
+}
+
+export interface DirectoryQuery {
+  term: string | null;
+  server_name: string | null;
+  limit: number | null;
+}
+
+export interface DirectoryRoomSummary {
+  room_id: string;
+  name: string;
+  topic: string | null;
+  avatar_url: string | null;
+  joined_members: number;
+  world_readable: boolean;
+  guest_can_join: boolean;
+}
 
 export type PresenceKind = "online" | "away" | "offline";
 
@@ -454,6 +488,74 @@ export type E2eeTrustEvent =
       state: IdentityResetState;
     };
 
+export type ActivityEvent =
+  | { Opened: { request_id: RequestId } }
+  | { Closed: { request_id: RequestId } };
+
+export type LocalEncryptionHealth =
+  | "unknown"
+  | "healthy"
+  | "unavailable"
+  | "lockedOrInaccessible"
+  | "missingCredential"
+  | "resetRequired";
+
+export type LocalEncryptionEvent = {
+  kind: "healthChanged";
+  health: LocalEncryptionHealth;
+};
+
+export type OperationFailureKind =
+  | "forbidden"
+  | "notFound"
+  | "network"
+  | "timeout"
+  | "invalid"
+  | "sdk";
+
+export interface NativeAttentionSummary {
+  unread_count: number;
+  highlight_count: number;
+  badge_count: number;
+  candidate: NativeAttentionCandidate | null;
+  capabilities: NativeAttentionCapabilities;
+}
+
+export interface NativeAttentionCandidate {
+  room_display_name: string;
+  kind: RoomAttentionKind;
+  unread_count: number;
+  highlight_count: number;
+}
+
+export type RoomAttentionKind = "mention" | "dm" | "message";
+
+export interface NativeAttentionCapabilities {
+  notifications: NativeAttentionCapability;
+  badge: NativeAttentionCapability;
+  sound: NativeAttentionCapability;
+  tray: NativeAttentionCapability;
+  activation: NativeAttentionCapability;
+}
+
+export type NativeAttentionCapability = "available" | "unavailable" | "unknown";
+
+export type NativeAttentionEvent = {
+  kind: "summaryUpdated";
+  summary: NativeAttentionSummary;
+};
+
+export interface JapaneseCatalogProfile {
+  catalog_locale: string;
+  complete: boolean;
+  missing_message_ids: string[];
+}
+
+export type CjkTextPolicyEvent = {
+  kind: "japaneseCatalogProfileChanged";
+  profile: JapaneseCatalogProfile;
+};
+
 // ---------------------------------------------------------------------------
 // Failures (externally tagged; unit variants are bare strings)
 // ---------------------------------------------------------------------------
@@ -484,6 +586,10 @@ export type CoreEventPayload =
   | { kind: "LiveSignals"; event: LiveSignalsEvent }
   | { kind: "Search"; event: SearchEvent }
   | { kind: "E2eeTrust"; event: E2eeTrustEvent }
+  | { kind: "Activity"; event: ActivityEvent }
+  | { kind: "LocalEncryption"; event: LocalEncryptionEvent }
+  | { kind: "NativeAttention"; event: NativeAttentionEvent }
+  | { kind: "CjkTextPolicy"; event: CjkTextPolicyEvent }
   | {
       kind: "OperationFailed";
       request_id: RequestId | null;

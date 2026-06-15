@@ -142,6 +142,10 @@ function readySnapshot(
         }
       ],
       invites: [],
+      room_interactions: {},
+      directory: { kind: "closed" },
+      room_management: { selected_room_id: null, operation: { kind: "idle" } },
+      activity: { kind: "closed" },
       timeline: {
         room_id: ROOM_ID,
         is_subscribed: true,
@@ -158,7 +162,10 @@ function readySnapshot(
       errors: [],
       basic_operation: basicOperation,
       live_signals: defaultLiveSignalsState(),
-      e2ee_trust: overrides.e2eeTrust ?? defaultE2eeTrustState()
+      e2ee_trust: overrides.e2eeTrust ?? defaultE2eeTrustState(),
+      local_encryption: { kind: "unknown" },
+      native_attention: defaultNativeAttentionState(),
+      cjk_text_policy: defaultCjkTextPolicyState()
     },
     sidebar: {
       active_space_id: null,
@@ -208,6 +215,45 @@ function defaultLiveSignalsState(): DesktopSnapshot["state"]["live_signals"] {
   return {
     rooms: {},
     presence: {}
+  };
+}
+
+function defaultNativeAttentionState(): DesktopSnapshot["state"]["native_attention"] {
+  return {
+    summary: {
+      unread_count: 0,
+      highlight_count: 0,
+      badge_count: 0,
+      candidate: null,
+      capabilities: {
+        notifications: "unknown",
+        badge: "unknown",
+        sound: "unknown",
+        tray: "unknown",
+        activation: "unknown"
+      }
+    },
+    dispatch: { kind: "idle" }
+  };
+}
+
+function defaultCjkTextPolicyState(): DesktopSnapshot["state"]["cjk_text_policy"] {
+  return {
+    japanese_catalog: {
+      catalog_locale: "en",
+      complete: true,
+      missing_message_ids: []
+    },
+    normalization: {
+      form: "nfkc",
+      width_fold: true,
+      kana_fold: true
+    },
+    collation: {
+      locale: "ja",
+      numeric: true,
+      case_first: null
+    }
   };
 }
 

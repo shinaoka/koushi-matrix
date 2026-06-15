@@ -1,10 +1,12 @@
 use std::fmt;
 
 use crate::state::{
-    BasicOperationRequest, CrossSigningStatus, E2eeRecoveryState, IdentityResetAuthType,
-    LiveEventReceipts, LiveRoomSignalUpdate, LoginFlow, OwnProfile, PresenceKind,
-    ProfileUpdateRequest, RecoveryMethod, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
+    BasicOperationRequest, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
+    E2eeRecoveryState, IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts,
+    LiveRoomSignalUpdate, LocalEncryptionHealth, LoginFlow, NativeAttentionSummary,
+    OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest,
+    RecoveryMethod, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, SearchResult,
+    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
     TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
@@ -190,6 +192,66 @@ pub enum AppAction {
     RoomTagRemoved {
         room_id: String,
         tag: RoomTagKind,
+    },
+    RoomPinnedEventsUpdated {
+        room_id: String,
+        pinned: Vec<PinnedEvent>,
+    },
+    PinEventRequested {
+        request_id: u64,
+        room_id: String,
+        event_id: String,
+    },
+    PinEventCompleted {
+        request_id: u64,
+        room_id: String,
+    },
+    PinEventFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
+    },
+    UnpinEventRequested {
+        request_id: u64,
+        room_id: String,
+        event_id: String,
+    },
+    UnpinEventCompleted {
+        request_id: u64,
+        room_id: String,
+    },
+    UnpinEventFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
+    },
+    DirectoryQueryRequested {
+        request_id: u64,
+        query: DirectoryQuery,
+    },
+    DirectoryQuerySucceeded {
+        request_id: u64,
+        query: DirectoryQuery,
+        rooms: Vec<DirectoryRoomSummary>,
+        next_batch: Option<String>,
+    },
+    DirectoryQueryFailed {
+        request_id: u64,
+        query: DirectoryQuery,
+        kind: OperationFailureKind,
+    },
+    ActivityOpened {
+        request_id: u64,
+    },
+    ActivityClosed,
+    LocalEncryptionHealthChanged {
+        health: LocalEncryptionHealth,
+    },
+    NativeAttentionUpdated {
+        summary: NativeAttentionSummary,
+    },
+    JapaneseCatalogProfileChanged {
+        profile: JapaneseCatalogProfile,
     },
     InviteListUpdated {
         invites: Vec<crate::state::InvitePreview>,

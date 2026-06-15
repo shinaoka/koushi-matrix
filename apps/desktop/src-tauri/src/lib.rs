@@ -616,6 +616,14 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
         CoreEvent::LiveSignals(e) => serde_json::json!({ "kind": "LiveSignals", "event": e }),
         CoreEvent::Search(e) => serde_json::json!({ "kind": "Search", "event": e }),
         CoreEvent::E2eeTrust(e) => serde_json::json!({ "kind": "E2eeTrust", "event": e }),
+        CoreEvent::Activity(e) => serde_json::json!({ "kind": "Activity", "event": e }),
+        CoreEvent::LocalEncryption(e) => {
+            serde_json::json!({ "kind": "LocalEncryption", "event": e })
+        }
+        CoreEvent::NativeAttention(e) => {
+            serde_json::json!({ "kind": "NativeAttention", "event": e })
+        }
+        CoreEvent::CjkTextPolicy(e) => serde_json::json!({ "kind": "CjkTextPolicy", "event": e }),
         CoreEvent::OperationFailed {
             request_id,
             failure,
@@ -1162,19 +1170,21 @@ mod tests {
         use matrix_desktop_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
-                AccountEvent, E2eeTrustEvent, LiveSignalsEvent, MediaTransferProgress,
-                PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineEvent,
-                TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
-                TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
-                TimelineSendFailureReason, TimelineSendState,
+                AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent,
+                LiveSignalsEvent, LocalEncryptionEvent, MediaTransferProgress,
+                NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup,
+                RoomEvent, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
+                TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+                TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
-            IdentityResetAuthType, IdentityResetState, LiveEventReceipts, LiveReadReceipt,
-            LiveRoomSignalUpdate, PresenceKind, RoomTagKind, SasEmoji, VerificationFlowState,
-            VerificationTarget,
+            IdentityResetAuthType, IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts,
+            LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
+            NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
+            PresenceKind, RoomTagKind, SasEmoji, VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -1587,13 +1597,71 @@ mod tests {
             .expect("serialize live presence event");
         assert_eq!(live_presence["event"]["kind"], json!("presenceSet"));
 
+        let activity_opened =
+            serialize_core_event(&CoreEvent::Activity(ActivityEvent::Opened { request_id }))
+                .expect("serialize activity event");
+        assert_eq!(activity_opened["kind"], json!("Activity"));
+        assert_eq!(
+            activity_opened["event"]["Opened"]["request_id"],
+            json!({ "connection_id": 3, "sequence": 7 })
+        );
+
+        let local_encryption = serialize_core_event(&CoreEvent::LocalEncryption(
+            LocalEncryptionEvent::HealthChanged {
+                health: LocalEncryptionHealth::Healthy,
+            },
+        ))
+        .expect("serialize local encryption event");
+        assert_eq!(local_encryption["event"]["kind"], json!("healthChanged"));
+        assert_eq!(local_encryption["event"]["health"], json!("healthy"));
+
+        let native_attention = serialize_core_event(&CoreEvent::NativeAttention(
+            NativeAttentionEvent::SummaryUpdated {
+                summary: NativeAttentionSummary {
+                    unread_count: 3,
+                    highlight_count: 1,
+                    badge_count: 3,
+                    candidate: None,
+                    capabilities: NativeAttentionCapabilities {
+                        notifications: NativeAttentionCapability::Available,
+                        badge: NativeAttentionCapability::Available,
+                        sound: NativeAttentionCapability::Unavailable,
+                        tray: NativeAttentionCapability::Unknown,
+                        activation: NativeAttentionCapability::Available,
+                    },
+                },
+            },
+        ))
+        .expect("serialize native attention event");
+        assert_eq!(native_attention["event"]["kind"], json!("summaryUpdated"));
+        assert_eq!(native_attention["event"]["summary"]["badge_count"], json!(3));
+
+        let cjk_text_policy = serialize_core_event(&CoreEvent::CjkTextPolicy(
+            CjkTextPolicyEvent::JapaneseCatalogProfileChanged {
+                profile: JapaneseCatalogProfile {
+                    catalog_locale: "ja".to_owned(),
+                    complete: false,
+                    missing_message_ids: vec!["settings.title".to_owned()],
+                },
+            },
+        ))
+        .expect("serialize cjk text policy event");
+        assert_eq!(
+            cjk_text_policy["event"]["kind"],
+            json!("japaneseCatalogProfileChanged")
+        );
+
         let actual_contract = json!({
+            "activityOpened": activity_opened,
+            "cjkTextPolicyJapaneseCatalogProfileChanged": cjk_text_policy,
             "e2eeTrustIdentityResetChanged": e2ee_identity_reset,
             "accountProfileUpdated": profile_updated,
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
+            "localEncryptionHealthChanged": local_encryption,
             "liveSignalsPresenceSet": live_presence,
             "liveSignalsRoomSignalsUpdated": live_signals,
+            "nativeAttentionSummaryUpdated": native_attention,
             "operationFailedSessionNotFound": failed,
             "roomDirectMessageStarted": room_direct_message_started,
             "roomInviteAccepted": room_invite_accepted,

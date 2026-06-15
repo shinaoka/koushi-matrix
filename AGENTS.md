@@ -62,6 +62,19 @@ before any Phase B font asset or CSS wiring.
 Phase B GUI/browser-headless work for the same issue follows
 [docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md](docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md).
 
+## Core Batch A DTO Mirrors
+
+- When `AppState` gains a Core Batch A field, update the hand-maintained Tauri
+  `FrontendAppState` DTO, TypeScript `AppState`, browser fake snapshots, app
+  harness snapshots, and Tauri IPC mock snapshots in the same change. The real
+  WebView consumes the Tauri DTO, while headless tests often consume the
+  TypeScript fakes; updating only one side can leave a green browser tier and a
+  crashing Tauri lane.
+- Focused checks for the shared skeleton are
+  `cargo test -p matrix-desktop-state --test core_batch_a_state`,
+  `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact`,
+  and `npm --prefix apps/desktop run typecheck`.
+
 ## User Profiles Phase Notes
 
 - Own-profile state, per-user profile cache, room avatars, and space avatars

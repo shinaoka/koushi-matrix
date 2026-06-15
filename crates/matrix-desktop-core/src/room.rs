@@ -59,7 +59,7 @@ use matrix_desktop_sdk::{
 };
 use matrix_desktop_state::{
     AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, InvitePreview,
-    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
+    OperationFailureKind, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -340,6 +340,73 @@ impl RoomActor {
                 tag,
             } => {
                 self.handle_remove_tag(request_id, room_id, tag).await;
+            }
+            RoomCommand::PinEvent {
+                request_id,
+                room_id,
+                event_id,
+            } => {
+                self.reduce(vec![
+                    AppAction::PinEventRequested {
+                        request_id: request_id.sequence,
+                        room_id: room_id.clone(),
+                        event_id,
+                    },
+                    AppAction::PinEventFailed {
+                        request_id: request_id.sequence,
+                        room_id,
+                        kind: OperationFailureKind::Sdk,
+                    },
+                ]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::RoomOperationFailed {
+                        kind: RoomFailureKind::Sdk,
+                    },
+                );
+            }
+            RoomCommand::UnpinEvent {
+                request_id,
+                room_id,
+                event_id,
+            } => {
+                self.reduce(vec![
+                    AppAction::UnpinEventRequested {
+                        request_id: request_id.sequence,
+                        room_id: room_id.clone(),
+                        event_id,
+                    },
+                    AppAction::UnpinEventFailed {
+                        request_id: request_id.sequence,
+                        room_id,
+                        kind: OperationFailureKind::Sdk,
+                    },
+                ]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::RoomOperationFailed {
+                        kind: RoomFailureKind::Sdk,
+                    },
+                );
+            }
+            RoomCommand::QueryDirectory { request_id, query } => {
+                self.reduce(vec![
+                    AppAction::DirectoryQueryRequested {
+                        request_id: request_id.sequence,
+                        query: query.clone(),
+                    },
+                    AppAction::DirectoryQueryFailed {
+                        request_id: request_id.sequence,
+                        query,
+                        kind: OperationFailureKind::Sdk,
+                    },
+                ]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::RoomOperationFailed {
+                        kind: RoomFailureKind::Sdk,
+                    },
+                );
             }
             RoomCommand::SelectSpace {
                 request_id: _,

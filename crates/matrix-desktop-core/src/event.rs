@@ -4,8 +4,9 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    CrossSigningStatus, IdentityResetState, KeyBackupStatus, LiveRoomSignalUpdate, PresenceKind,
-    RoomTagKind, VerificationFlowState,
+    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
+    JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
+    NativeAttentionSummary, PinnedEvent, PresenceKind, RoomTagKind, VerificationFlowState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,10 +27,55 @@ pub enum CoreEvent {
     LiveSignals(LiveSignalsEvent),
     Search(SearchEvent),
     E2eeTrust(E2eeTrustEvent),
+    Activity(ActivityEvent),
+    LocalEncryption(LocalEncryptionEvent),
+    NativeAttention(NativeAttentionEvent),
+    CjkTextPolicy(CjkTextPolicyEvent),
     OperationFailed {
         request_id: RequestId,
         failure: CoreFailure,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ActivityEvent {
+    Opened { request_id: RequestId },
+    Closed { request_id: RequestId },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LocalEncryptionEvent {
+    HealthChanged { health: LocalEncryptionHealth },
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum NativeAttentionEvent {
+    SummaryUpdated { summary: NativeAttentionSummary },
+}
+
+impl fmt::Debug for NativeAttentionEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SummaryUpdated { summary } => formatter
+                .debug_struct("SummaryUpdated")
+                .field("unread_count", &summary.unread_count)
+                .field("highlight_count", &summary.highlight_count)
+                .field("badge_count", &summary.badge_count)
+                .field(
+                    "candidate",
+                    &summary.candidate.as_ref().map(|_| "AttentionCandidate(..)"),
+                )
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CjkTextPolicyEvent {
+    JapaneseCatalogProfileChanged { profile: JapaneseCatalogProfile },
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -320,6 +366,24 @@ pub enum RoomEvent {
         room_id: String,
         tag: RoomTagKind,
     },
+    PinnedEventsUpdated {
+        room_id: String,
+        pinned: Vec<PinnedEvent>,
+    },
+    PinEventCompleted {
+        request_id: RequestId,
+        room_id: String,
+    },
+    UnpinEventCompleted {
+        request_id: RequestId,
+        room_id: String,
+    },
+    DirectoryQueryCompleted {
+        request_id: RequestId,
+        query: DirectoryQuery,
+        rooms: Vec<DirectoryRoomSummary>,
+        next_batch: Option<String>,
+    },
     RoomListUpdated,
 }
 
@@ -393,6 +457,29 @@ impl fmt::Debug for RoomEvent {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("tag", tag)
+                .finish(),
+            Self::PinnedEventsUpdated { pinned, .. } => formatter
+                .debug_struct("PinnedEventsUpdated")
+                .field("room_id", &"RoomId(..)")
+                .field("pinned_count", &pinned.len())
+                .finish(),
+            Self::PinEventCompleted { request_id, .. } => formatter
+                .debug_struct("PinEventCompleted")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::UnpinEventCompleted { request_id, .. } => formatter
+                .debug_struct("UnpinEventCompleted")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::DirectoryQueryCompleted {
+                request_id, rooms, ..
+            } => formatter
+                .debug_struct("DirectoryQueryCompleted")
+                .field("request_id", request_id)
+                .field("query", &"DirectoryQuery(..)")
+                .field("rooms_count", &rooms.len())
                 .finish(),
             Self::RoomListUpdated => formatter.write_str("RoomListUpdated"),
         }

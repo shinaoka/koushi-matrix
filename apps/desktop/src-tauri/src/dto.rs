@@ -9,10 +9,14 @@
 //!
 //! References: overview.md "Async rule 4" — timeline items never in AppState.
 
+use std::collections::BTreeMap;
+
 use matrix_desktop_state::{
-    AppError, AppState, AuthDiscoveryState, BasicOperationState, ComposerState, DisplayPlatform,
-    E2eeTrustState, FocusedContextState, InvitePreview, LiveSignalsState, LocaleDisplayProfile,
-    NavigationState, ProfileState, RecoveryMethod, RoomSummary, SearchMatchField, SearchMatchKind,
+    ActivityState, AppError, AppState, AuthDiscoveryState, BasicOperationState,
+    CjkTextPolicyState, ComposerState, DirectoryState, DisplayPlatform, E2eeTrustState,
+    FocusedContextState, InvitePreview, LiveSignalsState, LocalEncryptionState,
+    LocaleDisplayProfile, NativeAttentionState, NavigationState, ProfileState, RecoveryMethod,
+    RoomInteractionState, RoomManagementState, RoomSummary, SearchMatchField, SearchMatchKind,
     SearchResult, SearchScope, SearchState, SessionState, SettingsState, SidebarModel,
     SpaceSummary, SyncState, ThreadPaneState, TimelinePaneState, TypographyDisplayProfile,
     resolve_locale_display_profile, resolve_typography_display_profile,
@@ -62,6 +66,10 @@ pub struct FrontendAppState {
     pub spaces: Vec<SpaceSummary>,
     pub rooms: Vec<RoomSummary>,
     pub invites: Vec<InvitePreview>,
+    pub room_interactions: BTreeMap<String, RoomInteractionState>,
+    pub directory: DirectoryState,
+    pub room_management: RoomManagementState,
+    pub activity: ActivityState,
     pub timeline: TimelinePaneState,
     pub thread: FrontendThreadPaneState,
     pub focused_context: FocusedContextState,
@@ -69,6 +77,9 @@ pub struct FrontendAppState {
     pub basic_operation: BasicOperationState,
     pub live_signals: LiveSignalsState,
     pub e2ee_trust: E2eeTrustState,
+    pub local_encryption: LocalEncryptionState,
+    pub native_attention: NativeAttentionState,
+    pub cjk_text_policy: CjkTextPolicyState,
     pub errors: Vec<AppError>,
 }
 
@@ -91,6 +102,10 @@ impl From<AppState> for FrontendAppState {
             spaces: state.spaces,
             rooms: state.rooms,
             invites: state.invites,
+            room_interactions: state.room_interactions,
+            directory: state.directory,
+            room_management: state.room_management,
+            activity: state.activity,
             timeline: state.timeline,
             thread: state.thread.into(),
             focused_context: state.focused_context,
@@ -98,6 +113,9 @@ impl From<AppState> for FrontendAppState {
             basic_operation: state.basic_operation,
             live_signals: state.live_signals,
             e2ee_trust: state.e2ee_trust,
+            local_encryption: state.local_encryption,
+            native_attention: state.native_attention,
+            cjk_text_policy: state.cjk_text_policy,
             errors: state.errors,
         }
     }
@@ -472,6 +490,19 @@ mod tests {
         // invites must be present even when empty; React must not synthesize
         // invite state outside the Rust-owned state machine.
         assert_eq!(value["state"]["invites"], json!([]));
+        // Core Batch A skeletons must be present in the real Tauri DTO, not
+        // only in browser fakes.
+        assert_eq!(value["state"]["room_interactions"], json!({}));
+        assert_eq!(value["state"]["directory"]["kind"], json!("closed"));
+        assert_eq!(
+            value["state"]["room_management"]["selected_room_id"],
+            json!(null)
+        );
+        assert_eq!(
+            value["state"]["room_management"]["operation"]["kind"],
+            json!("idle")
+        );
+        assert_eq!(value["state"]["activity"]["kind"], json!("closed"));
         // Phase 7: timeline is always [] (items flow as diffs)
         assert_eq!(value["timeline"], json!([]));
         // Phase 7: the legacy top-level thread is always null...
@@ -506,6 +537,26 @@ mod tests {
         assert_eq!(
             value["state"]["e2ee_trust"]["identity_reset"]["kind"],
             json!("idle")
+        );
+        assert_eq!(
+            value["state"]["local_encryption"]["kind"],
+            json!("unknown")
+        );
+        assert_eq!(
+            value["state"]["native_attention"]["dispatch"]["kind"],
+            json!("idle")
+        );
+        assert_eq!(
+            value["state"]["cjk_text_policy"]["japanese_catalog"]["catalog_locale"],
+            json!("en")
+        );
+        assert_eq!(
+            value["state"]["cjk_text_policy"]["normalization"]["form"],
+            json!("nfkc")
+        );
+        assert_eq!(
+            value["state"]["cjk_text_policy"]["collation"]["locale"],
+            json!("ja")
         );
         // settings must be present so React can consume Rust-owned product
         // preferences instead of owning theme/locale/shortcut state.

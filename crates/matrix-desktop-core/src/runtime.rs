@@ -408,6 +408,51 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::OpenActivity { request_id } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::ActivityOpened {
+                            request_id: request_id.sequence,
+                        },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::CloseActivity { request_id } => {
+                    let effects = reduce(&mut self.state, AppAction::ActivityClosed);
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::RecordLocalEncryptionHealth { request_id, health } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::LocalEncryptionHealthChanged { health },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::UpdateNativeAttentionSummary {
+                    request_id,
+                    summary,
+                } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::NativeAttentionUpdated { summary },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::UpdateJapaneseCatalogProfile {
+                    request_id,
+                    profile,
+                } => {
+                    let effects = reduce(
+                        &mut self.state,
+                        AppAction::JapaneseCatalogProfileChanged { profile },
+                    );
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
             },
             CoreCommand::Sync(sync_command) => {
                 // Route to AccountActor (which forwards to SyncActor).

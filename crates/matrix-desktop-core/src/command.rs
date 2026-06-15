@@ -4,7 +4,8 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest, RoomTagKind,
+    DirectoryQuery, IdentityResetAuthRequest, JapaneseCatalogProfile, LocalEncryptionHealth,
+    LoginRequest, NativeAttentionSummary, PresenceKind, RecoveryRequest, RoomTagKind,
     SettingsPatch, VerificationCancelReason, VerificationTarget,
 };
 
@@ -33,7 +34,12 @@ impl CoreCommand {
                 | AppCommand::CloseThread { request_id }
                 | AppCommand::OpenFocusedContext { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
-                | AppCommand::UpdateSettings { request_id, .. },
+                | AppCommand::UpdateSettings { request_id, .. }
+                | AppCommand::OpenActivity { request_id }
+                | AppCommand::CloseActivity { request_id }
+                | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
+                | AppCommand::UpdateNativeAttentionSummary { request_id, .. }
+                | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. },
             ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
@@ -75,6 +81,9 @@ impl CoreCommand {
                 | RoomCommand::ForgetRoom { request_id, .. }
                 | RoomCommand::SetTag { request_id, .. }
                 | RoomCommand::RemoveTag { request_id, .. }
+                | RoomCommand::PinEvent { request_id, .. }
+                | RoomCommand::UnpinEvent { request_id, .. }
+                | RoomCommand::QueryDirectory { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
                 | RoomCommand::SelectRoom { request_id, .. } => *request_id,
             },
@@ -153,6 +162,24 @@ pub enum AppCommand {
         request_id: RequestId,
         patch: SettingsPatch,
     },
+    OpenActivity {
+        request_id: RequestId,
+    },
+    CloseActivity {
+        request_id: RequestId,
+    },
+    RecordLocalEncryptionHealth {
+        request_id: RequestId,
+        health: LocalEncryptionHealth,
+    },
+    UpdateNativeAttentionSummary {
+        request_id: RequestId,
+        summary: NativeAttentionSummary,
+    },
+    UpdateJapaneseCatalogProfile {
+        request_id: RequestId,
+        profile: JapaneseCatalogProfile,
+    },
 }
 
 impl fmt::Debug for AppCommand {
@@ -219,6 +246,43 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("UpdateSettings")
                 .field("request_id", request_id)
                 .field("patch_fields", &settings_patch_field_names(patch))
+                .finish(),
+            Self::OpenActivity { request_id } => formatter
+                .debug_struct("OpenActivity")
+                .field("request_id", request_id)
+                .finish(),
+            Self::CloseActivity { request_id } => formatter
+                .debug_struct("CloseActivity")
+                .field("request_id", request_id)
+                .finish(),
+            Self::RecordLocalEncryptionHealth { request_id, health } => formatter
+                .debug_struct("RecordLocalEncryptionHealth")
+                .field("request_id", request_id)
+                .field("health", health)
+                .finish(),
+            Self::UpdateNativeAttentionSummary {
+                request_id,
+                summary,
+            } => formatter
+                .debug_struct("UpdateNativeAttentionSummary")
+                .field("request_id", request_id)
+                .field("unread_count", &summary.unread_count)
+                .field("highlight_count", &summary.highlight_count)
+                .field("badge_count", &summary.badge_count)
+                .field(
+                    "candidate",
+                    &summary.candidate.as_ref().map(|_| "AttentionCandidate(..)"),
+                )
+                .finish(),
+            Self::UpdateJapaneseCatalogProfile {
+                request_id,
+                profile,
+            } => formatter
+                .debug_struct("UpdateJapaneseCatalogProfile")
+                .field("request_id", request_id)
+                .field("catalog_locale", &profile.catalog_locale)
+                .field("complete", &profile.complete)
+                .field("missing_count", &profile.missing_message_ids.len())
                 .finish(),
         }
     }
@@ -570,6 +634,20 @@ pub enum RoomCommand {
         room_id: String,
         tag: RoomTagKind,
     },
+    PinEvent {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    },
+    UnpinEvent {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    },
+    QueryDirectory {
+        request_id: RequestId,
+        query: DirectoryQuery,
+    },
     SelectSpace {
         request_id: RequestId,
         space_id: Option<String>,
@@ -660,6 +738,28 @@ impl fmt::Debug for RoomCommand {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("tag", tag)
+                .finish(),
+            Self::PinEvent { request_id, .. } => formatter
+                .debug_struct("PinEvent")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::UnpinEvent { request_id, .. } => formatter
+                .debug_struct("UnpinEvent")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::QueryDirectory { request_id, query } => formatter
+                .debug_struct("QueryDirectory")
+                .field("request_id", request_id)
+                .field("term", &query.term.as_ref().map(|_| "DirectoryQuery(..)"))
+                .field(
+                    "server_name",
+                    &query.server_name.as_ref().map(|_| "ServerName(..)"),
+                )
+                .field("limit", &query.limit)
                 .finish(),
             Self::SelectSpace {
                 request_id,

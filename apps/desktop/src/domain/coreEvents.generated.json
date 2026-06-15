@@ -1,4 +1,15 @@
 {
+  "activityOpened": {
+    "event": {
+      "Opened": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Activity"
+  },
   "accountProfileUpdated": {
     "event": {
       "ProfileUpdated": {
@@ -28,6 +39,19 @@
       }
     },
     "kind": "Account"
+  },
+  "cjkTextPolicyJapaneseCatalogProfileChanged": {
+    "event": {
+      "kind": "japaneseCatalogProfileChanged",
+      "profile": {
+        "catalog_locale": "ja",
+        "complete": false,
+        "missing_message_ids": [
+          "settings.title"
+        ]
+      }
+    },
+    "kind": "CjkTextPolicy"
   },
   "e2eeTrustIdentityResetChanged": {
     "event": {
@@ -61,6 +85,13 @@
       }
     },
     "kind": "E2eeTrust"
+  },
+  "localEncryptionHealthChanged": {
+    "event": {
+      "health": "healthy",
+      "kind": "healthChanged"
+    },
+    "kind": "LocalEncryption"
   },
   "liveSignalsPresenceSet": {
     "event": {
@@ -96,6 +127,25 @@
       }
     },
     "kind": "LiveSignals"
+  },
+  "nativeAttentionSummaryUpdated": {
+    "event": {
+      "kind": "summaryUpdated",
+      "summary": {
+        "badge_count": 3,
+        "candidate": null,
+        "capabilities": {
+          "activation": "available",
+          "badge": "available",
+          "notifications": "available",
+          "sound": "unavailable",
+          "tray": "unknown"
+        },
+        "highlight_count": 1,
+        "unread_count": 3
+      }
+    },
+    "kind": "NativeAttention"
   },
   "operationFailedSessionNotFound": {
     "failure": "SessionNotFound",

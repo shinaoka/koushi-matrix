@@ -27,11 +27,12 @@ pub use command::{
     UploadMediaRequest,
 };
 pub use event::{
-    AccountEvent, AppStateSnapshot, CoreEvent, E2eeTrustEvent, MediaTransferProgress,
-    PaginationDirection, PaginationState, ReactionGroup, RoomEvent, SearchEvent, SearchResultItem,
-    SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
-    TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
-    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
+    AccountEvent, ActivityEvent, AppStateSnapshot, CjkTextPolicyEvent, CoreEvent, E2eeTrustEvent,
+    LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent, PaginationDirection,
+    PaginationState, ReactionGroup, RoomEvent, SearchEvent, SearchResultItem, SyncBackendKind,
+    SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
+    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
+    TimelineSendFailureReason, TimelineSendState,
 };
 pub use failure::{
     CoreFailure, LoginFailureKind, ProfileFailureKind, RecoveryFailureKind, RoomFailureKind,
