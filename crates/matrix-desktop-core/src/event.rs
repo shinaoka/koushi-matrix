@@ -607,6 +607,18 @@ pub enum TimelineEvent {
         transaction_id: String,
         event_id: String,
     },
+    MessageForwarded {
+        request_id: RequestId,
+        key: TimelineKey,
+        destination_room_id: String,
+        transaction_id: String,
+        event_id: String,
+    },
+    MessageSourceLoaded {
+        request_id: RequestId,
+        key: TimelineKey,
+        source: TimelineMessageSource,
+    },
     MediaUploadProgress {
         request_id: Option<RequestId>,
         key: TimelineKey,
@@ -677,6 +689,20 @@ impl fmt::Debug for TimelineEvent {
                 .field("key", &"TimelineKey(..)")
                 .field("transaction_id", transaction_id)
                 .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::MessageForwarded { request_id, .. } => formatter
+                .debug_struct("MessageForwarded")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("destination_room_id", &"RoomId(..)")
+                .field("transaction_id", &"TransactionId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::MessageSourceLoaded { request_id, .. } => formatter
+                .debug_struct("MessageSourceLoaded")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("source", &"TimelineMessageSource(..)")
                 .finish(),
             Self::MediaUploadProgress {
                 request_id,
@@ -785,6 +811,143 @@ pub enum TimelineSendFailureReason {
     Unrecoverable,
 }
 
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineMessageActions {
+    pub can_copy: bool,
+    pub can_forward: bool,
+    pub can_permalink: bool,
+    pub can_view_source: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permalink: Option<String>,
+}
+
+impl fmt::Debug for TimelineMessageActions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineMessageActions")
+            .field("can_copy", &self.can_copy)
+            .field("can_forward", &self.can_forward)
+            .field("can_permalink", &self.can_permalink)
+            .field("can_view_source", &self.can_view_source)
+            .field(
+                "permalink",
+                &self.permalink.as_ref().map(|_| "Permalink(..)"),
+            )
+            .finish()
+    }
+}
+
+pub fn message_actions_for_timeline_item(
+    room_id: &str,
+    item_id: &TimelineItemId,
+    body: Option<&str>,
+    _has_media: bool,
+    is_redacted: bool,
+) -> TimelineMessageActions {
+    let TimelineItemId::Event { event_id } = item_id else {
+        return TimelineMessageActions::default();
+    };
+
+    let has_body = body.map(|body| !body.is_empty()).unwrap_or(false);
+    let permalink = matrix_to_event_permalink(room_id, event_id);
+
+    TimelineMessageActions {
+        can_copy: has_body && !is_redacted,
+        can_forward: has_body && !is_redacted,
+        can_permalink: permalink.is_some(),
+        can_view_source: !event_id.trim().is_empty(),
+        permalink,
+    }
+}
+
+pub fn matrix_to_event_permalink(room_id: &str, event_id: &str) -> Option<String> {
+    if room_id.trim().is_empty() || event_id.trim().is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "https://matrix.to/#/{}/{}",
+        percent_encode_matrix_to_component(room_id),
+        percent_encode_matrix_to_component(event_id)
+    ))
+}
+
+fn percent_encode_matrix_to_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'!') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(hex_digit(byte >> 4));
+            encoded.push(hex_digit(byte & 0x0f));
+        }
+    }
+    encoded
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'A' + (value - 10)) as char,
+        _ => unreachable!("hex digit nibble"),
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineMessageSource {
+    pub event_id: String,
+    pub sender: Option<String>,
+    pub timestamp_ms: Option<u64>,
+    pub body: Option<String>,
+    pub in_reply_to_event_id: Option<String>,
+    pub thread_root: Option<String>,
+    pub is_redacted: bool,
+    pub is_edited: bool,
+    pub has_media: bool,
+}
+
+impl fmt::Debug for TimelineMessageSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineMessageSource")
+            .field("event_id", &"EventId(..)")
+            .field("sender", &self.sender.as_ref().map(|_| "UserId(..)"))
+            .field("timestamp_ms", &self.timestamp_ms)
+            .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
+            .field(
+                "in_reply_to_event_id",
+                &self.in_reply_to_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "thread_root",
+                &self.thread_root.as_ref().map(|_| "EventId(..)"),
+            )
+            .field("is_redacted", &self.is_redacted)
+            .field("is_edited", &self.is_edited)
+            .field("has_media", &self.has_media)
+            .finish()
+    }
+}
+
+pub fn message_source_for_timeline_item(item: &TimelineItem) -> Option<TimelineMessageSource> {
+    let TimelineItemId::Event { event_id } = &item.id else {
+        return None;
+    };
+
+    Some(TimelineMessageSource {
+        event_id: event_id.clone(),
+        sender: item.sender.clone(),
+        timestamp_ms: item.timestamp_ms,
+        body: item.body.clone(),
+        in_reply_to_event_id: item.in_reply_to_event_id.clone(),
+        thread_root: item.thread_root.clone(),
+        is_redacted: item.is_redacted,
+        is_edited: item.is_edited,
+        has_media: item.media.is_some(),
+    })
+}
+
 /// Timeline item DTO. Phase 5 concretizes content kinds from the SDK
 /// projection; the identity contract is stable from Phase 1.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -814,6 +977,8 @@ pub struct TimelineItem {
     pub is_edited: bool,
     #[serde(default)]
     pub can_edit: bool,
+    #[serde(default)]
+    pub actions: TimelineMessageActions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_state: Option<TimelineSendState>,
 }
@@ -846,6 +1011,7 @@ impl fmt::Debug for TimelineItem {
             .field("can_redact", &self.can_redact)
             .field("is_edited", &self.is_edited)
             .field("can_edit", &self.can_edit)
+            .field("actions", &self.actions)
             .field("send_state", &self.send_state)
             .finish()
     }
@@ -1075,6 +1241,7 @@ mod tests {
             can_redact: true,
             is_edited: true,
             can_edit: true,
+            actions: TimelineMessageActions::default(),
             send_state: None,
         };
 
@@ -1134,6 +1301,7 @@ mod tests {
             can_redact: true,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: None,
         };
 
@@ -1152,6 +1320,163 @@ mod tests {
         assert!(debug.contains("reply_quote"));
         assert!(!debug.contains("quoted body"), "{debug}");
         assert!(!debug.contains("$root:test"), "{debug}");
+    }
+
+    #[test]
+    fn timeline_item_serializes_rust_owned_message_actions() {
+        let item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: "$event:test".to_owned(),
+            },
+            sender: Some("@alice:example.invalid".to_owned()),
+            body: Some("copyable body".to_owned()),
+            timestamp_ms: Some(1_234),
+            in_reply_to_event_id: None,
+            reply_quote: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: false,
+            can_edit: true,
+            actions: message_actions_for_timeline_item(
+                "!room:test",
+                &TimelineItemId::Event {
+                    event_id: "$event:test".to_owned(),
+                },
+                Some("copyable body"),
+                false,
+                false,
+            ),
+            send_state: None,
+        };
+
+        let value = serde_json::to_value(&item).expect("timeline item serializes");
+
+        assert_eq!(
+            value["actions"],
+            json!({
+                "can_copy": true,
+                "can_forward": true,
+                "can_permalink": true,
+                "can_view_source": true,
+                "permalink": "https://matrix.to/#/!room%3Atest/%24event%3Atest"
+            })
+        );
+        let debug = format!("{item:?}");
+        assert!(debug.contains("actions"), "{debug}");
+        assert!(!debug.contains("https://matrix.to"), "{debug}");
+        assert!(!debug.contains("$event:test"), "{debug}");
+        assert!(!debug.contains("!room:test"), "{debug}");
+
+        let redacted = message_actions_for_timeline_item(
+            "!room:test",
+            &TimelineItemId::Event {
+                event_id: "$redacted:test".to_owned(),
+            },
+            Some("redacted body"),
+            true,
+            true,
+        );
+        assert!(!redacted.can_copy);
+        assert!(!redacted.can_forward);
+        assert!(redacted.can_permalink);
+        assert!(redacted.can_view_source);
+
+        let media_without_body = message_actions_for_timeline_item(
+            "!room:test",
+            &TimelineItemId::Event {
+                event_id: "$media:test".to_owned(),
+            },
+            None,
+            true,
+            false,
+        );
+        assert!(!media_without_body.can_copy);
+        assert!(!media_without_body.can_forward);
+        assert!(media_without_body.can_permalink);
+        assert!(media_without_body.can_view_source);
+
+        let local_echo = message_actions_for_timeline_item(
+            "!room:test",
+            &TimelineItemId::Transaction {
+                transaction_id: "txn:test".to_owned(),
+            },
+            Some("local echo"),
+            false,
+            false,
+        );
+        assert_eq!(local_echo, TimelineMessageActions::default());
+    }
+
+    #[test]
+    fn message_source_and_forward_events_are_typed_and_redacted_in_debug() {
+        let key = TimelineKey::room(AccountKey("@alice:test".to_owned()), "!room:test");
+        let source = TimelineMessageSource {
+            event_id: "$event:test".to_owned(),
+            sender: Some("@alice:test".to_owned()),
+            timestamp_ms: Some(1234),
+            body: Some("private source body".to_owned()),
+            in_reply_to_event_id: Some("$root:test".to_owned()),
+            thread_root: Some("$thread:test".to_owned()),
+            is_redacted: false,
+            is_edited: true,
+            has_media: false,
+        };
+        let loaded = TimelineEvent::MessageSourceLoaded {
+            request_id: fake_rid(30),
+            key: key.clone(),
+            source: source.clone(),
+        };
+        let forwarded = TimelineEvent::MessageForwarded {
+            request_id: fake_rid(31),
+            key,
+            destination_room_id: "!destination:test".to_owned(),
+            transaction_id: "txn-forward-private".to_owned(),
+            event_id: "$forwarded:test".to_owned(),
+        };
+
+        let value = serde_json::to_value(&loaded).expect("source event serializes");
+        assert_eq!(
+            value,
+            json!({
+                "MessageSourceLoaded": {
+                    "request_id": { "connection_id": 7, "sequence": 30 },
+                    "key": {
+                        "account_key": "@alice:test",
+                        "kind": { "Room": { "room_id": "!room:test" } }
+                    },
+                    "source": {
+                        "event_id": "$event:test",
+                        "sender": "@alice:test",
+                        "timestamp_ms": 1234,
+                        "body": "private source body",
+                        "in_reply_to_event_id": "$root:test",
+                        "thread_root": "$thread:test",
+                        "is_redacted": false,
+                        "is_edited": true,
+                        "has_media": false
+                    }
+                }
+            })
+        );
+
+        for debug in [
+            format!("{source:?}"),
+            format!("{loaded:?}"),
+            format!("{forwarded:?}"),
+        ] {
+            assert!(!debug.contains("private source body"), "{debug}");
+            assert!(!debug.contains("$event:test"), "{debug}");
+            assert!(!debug.contains("$root:test"), "{debug}");
+            assert!(!debug.contains("$thread:test"), "{debug}");
+            assert!(!debug.contains("$forwarded:test"), "{debug}");
+            assert!(!debug.contains("!destination:test"), "{debug}");
+            assert!(!debug.contains("txn-forward-private"), "{debug}");
+        }
     }
 
     #[test]
@@ -1174,6 +1499,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
             }),
@@ -1236,6 +1562,7 @@ mod tests {
             can_redact: true,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: None,
         };
 

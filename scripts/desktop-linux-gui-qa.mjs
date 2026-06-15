@@ -36,6 +36,7 @@ const checks = [
   "scenario local-reply",
   "scenario local-media",
   "scenario local-room-tags",
+  "scenario local-message-actions",
   "scenario local-composer",
   "scenario local-settings",
   "verify local-settings trust section",
@@ -202,6 +203,10 @@ async function run() {
   }
   if (guiScenario === "local-room-tags") {
     await runLocalRoomTagsScenario();
+    return;
+  }
+  if (guiScenario === "local-message-actions") {
+    await runLocalMessageActionsScenario();
     return;
   }
   if (guiScenario === "local-composer") {
@@ -643,6 +648,73 @@ async function runLocalRoomTagsScenario() {
   }
 }
 
+async function runLocalMessageActionsScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await selectRoomByName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForActiveRoomName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForQaTitle(
+      session.browser,
+      (status) =>
+        status.timeline_room === true &&
+        status.timeline_subscribed === true,
+      timeoutMs,
+      "local GUI message actions timeline room"
+    );
+    await waitForTimelineViewMounted(session.browser, timeoutMs);
+    await sleep(1000);
+    const seedBaselineMessages = await elementCount(session.browser, ".message");
+    const composer = await session.browser.$('textarea[aria-label="Message composer"]');
+    await composer.waitForDisplayed({ timeout: timeoutMs });
+    await composer.click();
+    await composer.setValue("QA message action seed");
+    await session.browser.keys("Enter");
+    await waitForComposerSendSettled(session.browser, timeoutMs, "local GUI message actions seed");
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".message",
+      seedBaselineMessages,
+      timeoutMs,
+      "local GUI message actions seed message render"
+    );
+
+    const actionButton = await waitForLatestMessageActionButton(session.browser, timeoutMs);
+    await actionButton.moveTo();
+    await actionButton.waitForDisplayed({ timeout: timeoutMs });
+    await actionButton.click();
+    await clickVisibleMenuItemByText(session.browser, "View source", timeoutMs);
+    await waitForMessageSourceDialog(session.browser, timeoutMs);
+    console.log("gui_local_message_source=ok");
+
+    const closeSource = await session.browser.$('button[aria-label="Close message source"]');
+    await closeSource.waitForDisplayed({ timeout: timeoutMs });
+    await closeSource.click();
+
+    const baselineMessages = await elementCount(session.browser, ".message");
+    const forwardActionButton = await waitForLatestMessageActionButton(session.browser, timeoutMs);
+    await forwardActionButton.moveTo();
+    await forwardActionButton.waitForDisplayed({ timeout: timeoutMs });
+    await forwardActionButton.click();
+    await clickVisibleMenuItemByText(session.browser, "Forward", timeoutMs);
+    await clickVisibleMenuItemByText(session.browser, "QA Seed Room", timeoutMs);
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".message",
+      baselineMessages,
+      timeoutMs,
+      "local GUI message forward"
+    );
+
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_message_forward=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalComposerScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -865,6 +937,71 @@ async function openRoomContextMenu(browser, sectionId, roomName) {
   await roomButton.click({ button: "right" });
 }
 
+async function selectRoomByName(browser, roomName, timeout) {
+  const roomButton = await browser.$(
+    `//button[@data-testid="room-item"][.//span[normalize-space()=${xpathLiteral(roomName)}]]`
+  );
+  await roomButton.waitForDisplayed({ timeout });
+  await roomButton.click();
+}
+
+async function waitForActiveRoomName(browser, roomName, timeout) {
+  const startedAt = Date.now();
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    lastDiagnostics = await activeRoomDiagnostics(browser);
+    if (
+      lastDiagnostics.activeHeader === roomName ||
+      lastDiagnostics.activeRows.includes(roomName)
+    ) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `active room did not become ${roomName}. Last diagnostics: ${JSON.stringify(
+      lastDiagnostics
+    )}`
+  );
+}
+
+async function waitForTimelineViewMounted(browser, timeout) {
+  const startedAt = Date.now();
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    lastDiagnostics = await messageActionDiagnostics(browser);
+    if (lastDiagnostics.timelineViews > 0) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `timeline view was not mounted. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
+  );
+}
+
+async function activeRoomDiagnostics(browser) {
+  return browser.execute(() => {
+    const textFor = (element) =>
+      (element.textContent ?? "").replace(/\s+/g, " ").trim();
+    const roomRows = Array.from(document.querySelectorAll('button[data-testid="room-item"]'));
+    return {
+      title: document.title,
+      activeHeader: textFor(document.querySelector(".channel-title > span")),
+      activeRows: roomRows
+        .filter((row) => row.classList.contains("is-active"))
+        .map((row) => textFor(row.querySelector(".room-name")))
+        .filter(Boolean),
+      roomRows: roomRows
+        .map((row) => ({
+          name: textFor(row.querySelector(".room-name")),
+          active: row.classList.contains("is-active")
+        }))
+        .slice(0, 8)
+    };
+  });
+}
+
 async function clickMenuItemByText(browser, label, timeout) {
   const menuItemSelector = 'button[role="menuitem"]';
   const startedAt = Date.now();
@@ -884,6 +1021,113 @@ async function clickMenuItemByText(browser, label, timeout) {
     await sleep(250);
   }
   throw new Error(`menu item ${label} was not found. Observed: ${observed.join(", ")}`);
+}
+
+async function clickVisibleMenuItemByText(browser, label, timeout) {
+  const startedAt = Date.now();
+  let observed = [];
+  while (Date.now() - startedAt < timeout) {
+    const result = await browser.execute((targetLabel) => {
+      const textFor = (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
+      const isVisible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity) !== 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const items = Array.from(document.querySelectorAll('button[role="menuitem"]'));
+      const labels = items.map(textFor).filter(Boolean);
+      const target = items.find(
+        (item) => textFor(item) === targetLabel && isVisible(item)
+      );
+      if (!target) {
+        return { clicked: false, labels };
+      }
+      target.click();
+      return { clicked: true, labels };
+    }, label);
+    observed = result?.labels ?? [];
+    if (result?.clicked) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`visible menu item ${label} was not found. Observed: ${observed.join(", ")}`);
+}
+
+async function waitForMessageSourceDialog(browser, timeout) {
+  const selector = '[role="dialog"][aria-label="Message source"]';
+  const startedAt = Date.now();
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    const present = await browser.execute(
+      (cssSelector) => document.querySelector(cssSelector) !== null,
+      selector
+    );
+    if (present) {
+      return;
+    }
+    lastDiagnostics = await messageActionDiagnostics(browser);
+    await sleep(250);
+  }
+  throw new Error(
+    `local GUI message source dialog was not found. Last diagnostics: ${JSON.stringify(
+      lastDiagnostics
+    )}`
+  );
+}
+
+async function messageActionDiagnostics(browser) {
+  return browser.execute(() => {
+    const textFor = (element) =>
+      (element.textContent ?? "").replace(/\s+/g, " ").trim();
+    const labelsFor = (selector) =>
+      Array.from(document.querySelectorAll(selector))
+        .map((element) => element.getAttribute("aria-label") ?? textFor(element))
+        .filter(Boolean)
+        .slice(0, 8);
+    const active = document.activeElement;
+    return {
+      title: document.title,
+      activeHeader: textFor(document.querySelector(".channel-title > span")),
+      timelineViews: document.querySelectorAll('[data-testid="timeline-view"]').length,
+      messageLists: document.querySelectorAll(".message-list").length,
+      messages: document.querySelectorAll(".message").length,
+      eventRows: document.querySelectorAll(".message[data-event-id]").length,
+      transactionRows: Array.from(document.querySelectorAll(".message")).filter(
+        (row) => !row.hasAttribute("data-event-id")
+      ).length,
+      actionButtons: document.querySelectorAll('button[aria-label="Message actions"]').length,
+      actionMenus: document.querySelectorAll(".message-action-menu").length,
+      menuLabels: labelsFor('button[role="menuitem"]'),
+      dialogs: document.querySelectorAll('[role="dialog"]').length,
+      dialogLabels: labelsFor('[role="dialog"]'),
+      activeTag: active?.tagName ?? null,
+      activeLabel: active?.getAttribute("aria-label") ?? null
+    };
+  });
+}
+
+async function waitForLatestMessageActionButton(browser, timeout) {
+  const selector = 'button[aria-label="Message actions"]';
+  const startedAt = Date.now();
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    const buttons = await browser.$$(selector);
+    if (buttons.length) {
+      return buttons[buttons.length - 1];
+    }
+    lastDiagnostics = await messageActionDiagnostics(browser);
+    await sleep(250);
+  }
+  throw new Error(
+    `message action button was not found. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
+  );
 }
 
 async function waitForRoomInSection(browser, sectionId, roomName, expected, timeout, description) {
@@ -1072,15 +1316,22 @@ async function dispatchFileInputChange(browser, selector) {
 async function waitForElementCountGreaterThan(browser, selector, baseline, timeout, description) {
   const startedAt = Date.now();
   let lastCount = baseline;
+  let lastDiagnostics = null;
   while (Date.now() - startedAt < timeout) {
     lastCount = await elementCount(browser, selector);
     if (lastCount > baseline) {
       return;
     }
+    if (selector.includes(".message")) {
+      lastDiagnostics = await messageActionDiagnostics(browser);
+    }
     await sleep(250);
   }
+  const diagnosticSuffix = lastDiagnostics
+    ? `. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
+    : "";
   throw new Error(
-    `${description} did not increase ${selector}. Baseline: ${baseline}; last count: ${lastCount}`
+    `${description} did not increase ${selector}. Baseline: ${baseline}; last count: ${lastCount}${diagnosticSuffix}`
   );
 }
 

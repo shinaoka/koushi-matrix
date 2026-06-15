@@ -327,6 +327,18 @@ export type MessageId =
   | "timeline.replyQuoteUnknownSender"
   | "timeline.replyQuoteUnsupported"
   | "timeline.replyToMessage"
+  | "timeline.messageActions"
+  | "timeline.copyMessage"
+  | "timeline.copyPermalink"
+  | "timeline.viewSource"
+  | "timeline.forwardMessage"
+  | "timeline.messageSource"
+  | "timeline.closeMessageSource"
+  | "timeline.sourceSender"
+  | "timeline.sourceBody"
+  | "timeline.sourceMetadata"
+  | "timeline.sourceNoBody"
+  | "timeline.sourceHasMedia"
   | "timeline.threadComposer"
   | "timeline.threadPlaceholder"
   | "timeline.unsent"
@@ -786,6 +798,18 @@ const en: Catalog = {
   "timeline.replyQuoteUnknownSender": "Unknown sender",
   "timeline.replyQuoteUnsupported": "Unsupported message",
   "timeline.replyToMessage": "Reply to message",
+  "timeline.messageActions": "Message actions",
+  "timeline.copyMessage": "Copy message",
+  "timeline.copyPermalink": "Copy permalink",
+  "timeline.viewSource": "View source",
+  "timeline.forwardMessage": "Forward",
+  "timeline.messageSource": "Message source",
+  "timeline.closeMessageSource": "Close message source",
+  "timeline.sourceSender": "Sender",
+  "timeline.sourceBody": "Body",
+  "timeline.sourceMetadata": "State",
+  "timeline.sourceNoBody": "No body",
+  "timeline.sourceHasMedia": "Media",
   "timeline.threadComposer": "Thread composer",
   "timeline.threadPlaceholder": "Reply",
   "timeline.unsent": "Unsent",
@@ -1153,6 +1177,18 @@ const ja: Catalog = {
   "timeline.replyQuoteUnknownSender": "不明な送信者",
   "timeline.replyQuoteUnsupported": "未対応のメッセージ",
   "timeline.replyToMessage": "メッセージに返信",
+  "timeline.messageActions": "メッセージ操作",
+  "timeline.copyMessage": "メッセージをコピー",
+  "timeline.copyPermalink": "パーマリンクをコピー",
+  "timeline.viewSource": "ソースを表示",
+  "timeline.forwardMessage": "転送",
+  "timeline.messageSource": "メッセージソース",
+  "timeline.closeMessageSource": "メッセージソースを閉じる",
+  "timeline.sourceSender": "送信者",
+  "timeline.sourceBody": "本文",
+  "timeline.sourceMetadata": "状態",
+  "timeline.sourceNoBody": "本文なし",
+  "timeline.sourceHasMedia": "メディア",
   "timeline.threadComposer": "スレッド入力欄",
   "timeline.threadPlaceholder": "返信",
   "timeline.unsent": "未送信",

@@ -108,6 +108,19 @@ Rules:
    thumbnail paths, encrypted media keys/hashes, or raw SDK errors. React must
    render avatar images only from Rust/platform-owned ready source URLs and must
    fall back to generated initials for MXC, loading, or failed thumbnail states.
+15. Message-action diagnostics are metadata-minimized. `TimelineItem.actions`
+   may expose coarse affordance booleans and synthetic/test permalinks through
+   the typed timeline DTO, but normal `Debug`, QA logs, errors, window-title
+   tokens, and issue evidence must not expose real Matrix room IDs, event IDs,
+   generated permalinks, message bodies, sender IDs, transaction IDs, or raw SDK
+   errors. React must not generate Matrix permalinks or decide action
+   eligibility locally; it may render/copy only the Rust-owned DTO values.
+   `TimelineMessageSource` is a safe UI projection, not a raw event dump, and
+   forward commands must send Rust-projected content rather than React-copied
+   message bodies. GUI message-action menus may own only presentation state
+   such as popover visibility. They must wait for `MessageSourceLoaded` before
+   displaying source details and must not synthesize source/forward/copy
+   content from raw event data.
 
 ## Logging and Diagnostics
 
@@ -139,20 +152,25 @@ Rules:
    state; React owns DOM anchoring. Product code must not issue automatic
    pagination loops before the previous diff has rendered and anchor
    restoration has completed.
-5. QA runners must clean up their full process group on failure or
+5. In Tauri production, the QA title `timeline_items` token is the legacy
+   `AppState.timeline` snapshot length, not the event-driven `TimelineView`
+   DOM row count. Local GUI lanes that exercise timeline row controls must wait
+   for CoreEvent-rendered DOM state such as `.message`, `data-event-id`, or the
+   typed action control they intend to click.
+6. QA runners must clean up their full process group on failure or
    interruption. Verify `lsof -nP -iTCP:5173 -sTCP:LISTEN` is empty before
    retrying a GUI run; a stale Vite/`tauri dev` process breaks the next run.
-6. QA binaries must attempt logout cleanup after any post-login failure
+7. QA binaries must attempt logout cleanup after any post-login failure
    unless `--keep-session` was explicitly requested; otherwise failed runs
    leave live devices on the homeserver.
-7. Avoid repeated destructive real-account login cycles while debugging
+8. Avoid repeated destructive real-account login cycles while debugging
    automation; reuse the running session and restart only when the script
    or Tauri capability changes require it.
-8. State-critical actor actions are reliable messages, not lossy hints. Do not
+9. State-critical actor actions are reliable messages, not lossy hints. Do not
    ignore failed reducer-action sends for transitions that set or clear pending
    user-visible state. Await the send, retry through the owner, or emit a
    correlated operation failure that leaves no stuck pending state.
-9. If a reducer returns an `AppEffect` that matters in production, the
+10. If a reducer returns an `AppEffect` that matters in production, the
    production runtime executes it or the behavior is redesigned as an explicit
    `CoreCommand`/actor command. Discarding such effects is allowed only for
    fixture/demo effects that are documented as non-production.

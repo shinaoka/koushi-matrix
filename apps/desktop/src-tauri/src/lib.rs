@@ -765,6 +765,8 @@ pub fn run() {
             commands::cancel_send,
             commands::upload_media,
             commands::download_media,
+            commands::load_message_source,
+            commands::forward_message,
             commands::edit_message,
             commands::redact_message,
             commands::send_read_receipt,
@@ -1188,7 +1190,8 @@ mod tests {
                 PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineEvent,
                 TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
                 TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
-                TimelineSendFailureReason, TimelineSendState,
+                TimelineMessageActions, TimelineMessageSource, TimelineSendFailureReason,
+                TimelineSendState,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1233,6 +1236,13 @@ mod tests {
             can_redact: true,
             is_edited: true,
             can_edit: true,
+            actions: TimelineMessageActions {
+                can_copy: true,
+                can_forward: true,
+                can_permalink: true,
+                can_view_source: true,
+                permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24e1".to_owned()),
+            },
             send_state: None,
         };
         let media_item = TimelineItem {
@@ -1276,6 +1286,13 @@ mod tests {
             can_redact: true,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions {
+                can_copy: true,
+                can_forward: true,
+                can_permalink: true,
+                can_view_source: true,
+                permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24media1".to_owned()),
+            },
             send_state: None,
         };
         let send_state_item = TimelineItem {
@@ -1296,6 +1313,7 @@ mod tests {
             can_redact: false,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions::default(),
             send_state: Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
             }),
@@ -1323,6 +1341,13 @@ mod tests {
             can_redact: true,
             is_edited: false,
             can_edit: false,
+            actions: TimelineMessageActions {
+                can_copy: true,
+                can_forward: true,
+                can_permalink: true,
+                can_view_source: true,
+                permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24reply1".to_owned()),
+            },
             send_state: None,
         };
 
@@ -1363,6 +1388,13 @@ mod tests {
                 "can_redact": true,
                 "is_edited": true,
                 "can_edit": true,
+                "actions": {
+                    "can_copy": true,
+                    "can_forward": true,
+                    "can_permalink": true,
+                    "can_view_source": true,
+                    "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
+                },
                 "reactions": [
                     {
                         "key": "👍",
@@ -1491,6 +1523,34 @@ mod tests {
             },
         ))
         .expect("serialize media download completion");
+
+        let message_source_loaded = serialize_core_event(&CoreEvent::Timeline(
+            TimelineEvent::MessageSourceLoaded {
+                request_id,
+                key: key.clone(),
+                source: TimelineMessageSource {
+                    event_id: "$e1".to_owned(),
+                    sender: Some("@u:example.test".to_owned()),
+                    timestamp_ms: Some(123),
+                    body: Some("hello".to_owned()),
+                    in_reply_to_event_id: None,
+                    thread_root: None,
+                    is_redacted: false,
+                    is_edited: true,
+                    has_media: false,
+                },
+            },
+        ))
+        .expect("serialize message source loaded");
+        let message_forwarded =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MessageForwarded {
+                request_id,
+                key: key.clone(),
+                destination_room_id: "!destination:example.test".to_owned(),
+                transaction_id: "txn-forward".to_owned(),
+                event_id: "$forwarded1".to_owned(),
+            }))
+            .expect("serialize message forwarded");
 
         // PaginationStateChanged: unit states are strings, Failed is tagged
         let pagination = serialize_core_event(&CoreEvent::Timeline(
@@ -1860,6 +1920,8 @@ mod tests {
             "timelineMediaDownloadCompleted": media_download_completed,
             "timelineMediaInitialItems": media_initial,
             "timelineMediaUploadProgress": media_upload_progress,
+            "timelineMessageForwarded": message_forwarded,
+            "timelineMessageSourceLoaded": message_source_loaded,
             "timelinePaginationEndReached": serialize_core_event(&CoreEvent::Timeline(
                 TimelineEvent::PaginationStateChanged {
                     request_id: None,

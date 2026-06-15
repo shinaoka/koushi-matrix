@@ -206,9 +206,9 @@ An in-process actor system in `matrix-desktop-core`:
   the all-rooms list alone only guarantees the initial window on some
   servers. Thread backward pagination uses the same `TimelineKind::Thread {
   room_id, root_event_id }` key as the thread subscription. Edits and
-  redactions go through the SDK `Timeline` handle (not
-  direct room sends) so their diffs are produced as local echoes instead of
-  depending on the server echoing them back; for own sent events whose
+  plain sends, edits, and redactions go through the SDK `Timeline` handle (not
+  direct room/send-queue calls) so their diffs are produced as local echoes
+  instead of depending on the server echoing them back; for own sent events whose
   remote echo has not arrived, the actor resolves the event id back to the
   local-echo transaction identity. Media messages are projected into
   `TimelineItem.media` from SDK message content. React renders that DTO only:
@@ -424,9 +424,11 @@ stream), and the runtime must relay that model, not fight it.
    timeline handle, which cancels its background tasks. Room switching policy
    (drop immediately vs. keep-warm) is decided by the UI through these
    commands; the runtime never leaks timeline state in an unbounded map.
-8. **Sends go through the SDK send queue.** Local echo, offline persistence,
-   strict FIFO retry, retry-after-reconnect, and remote-echo matching come from
-   the SDK send queue. The Rust runtime owns the product state projection:
+8. **Sends go through the SDK timeline/send queue path.** Local echo, offline
+   persistence, strict FIFO retry, retry-after-reconnect, and remote-echo
+   matching come from the SDK send queue, reached through the SDK UI timeline
+   handle for visible timeline sends. The Rust runtime owns the product state
+   projection:
    `TimelineItem.send_state`, transaction-id keyed retry/cancel guards, and
    `RetrySend` / `CancelSend` command routing through SDK `SendHandle`s. After
    recoverable send errors, retry/cancel also re-enable the SDK room queue so
@@ -543,6 +545,11 @@ UI responsibilities:
 
 - Maintain the render list and viewport model per `TimelineKey`; full timeline
   lists are not copied into `AppState`.
+- A Tauri `InitialItems` event can be emitted before React remounts the
+  corresponding `TimelineView`. If the first observed event for a key is a live
+  `ItemsUpdated` batch and no resync is pending, initialize that key from an
+  empty render list and apply the diff. After `ResyncRequired` or
+  `ResyncMarker`, continue to require a fresh `InitialItems`.
 - Before a backward pagination request can affect the viewport, capture an
   anchor item (first visible stable item ID plus pixel offset, or an equivalent
   bottom-aligned strategy). After applying the diff and after React commits the

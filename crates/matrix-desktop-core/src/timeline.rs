@@ -82,8 +82,9 @@ use crate::command::{
 use crate::event::{
     CoreEvent, LiveSignalsEvent, MediaTransferProgress, PaginationDirection, PaginationState,
     ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
-    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
-    TimelineSendFailureReason, TimelineSendState,
+    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
+    TimelineMessageSource, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
+    message_actions_for_timeline_item, message_source_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -277,6 +278,40 @@ impl TimelineManagerActor {
                         in_reply_to_event_id,
                         body,
                         mentions,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::ForwardMessage {
+                request_id,
+                key,
+                source_event_id,
+                destination_room_id,
+                transaction_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::ForwardMessage {
+                        request_id,
+                        source_event_id,
+                        destination_room_id,
+                        transaction_id,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::LoadMessageSource {
+                request_id,
+                key,
+                event_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::LoadMessageSource {
+                        request_id,
+                        event_id,
                     },
                 )
                 .await;
@@ -927,6 +962,16 @@ enum TimelineActorMessage {
         body: String,
         mentions: MentionIntent,
     },
+    ForwardMessage {
+        request_id: RequestId,
+        source_event_id: String,
+        destination_room_id: String,
+        transaction_id: String,
+    },
+    LoadMessageSource {
+        request_id: RequestId,
+        event_id: String,
+    },
     RetrySend {
         request_id: RequestId,
         transaction_id: String,
@@ -1067,7 +1112,7 @@ impl TimelineActor {
 
         let initial_items: Vec<TimelineItem> = initial_sdk_items
             .iter()
-            .map(|item| sdk_item_to_timeline_item(item, own_user_id.as_deref()))
+            .map(|item| sdk_item_to_timeline_item(&key, item, own_user_id.as_deref()))
             .collect();
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
@@ -1196,6 +1241,26 @@ impl TimelineActor {
                     mentions,
                 )
                 .await;
+            }
+            TimelineActorMessage::ForwardMessage {
+                request_id,
+                source_event_id,
+                destination_room_id,
+                transaction_id,
+            } => {
+                self.handle_forward_message(
+                    request_id,
+                    source_event_id,
+                    destination_room_id,
+                    transaction_id,
+                )
+                .await;
+            }
+            TimelineActorMessage::LoadMessageSource {
+                request_id,
+                event_id,
+            } => {
+                self.handle_load_message_source(request_id, event_id).await;
             }
             TimelineActorMessage::RetrySend {
                 request_id,
@@ -1372,7 +1437,7 @@ impl TimelineActor {
             }
         };
         let client = self.session.client();
-        let Some(room) = client.get_room(&room_id) else {
+        if client.get_room(&room_id).is_none() {
             self.emit_send_failed_action(&client_txn_id);
             self.emit_failure(
                 request_id,
@@ -1383,12 +1448,12 @@ impl TimelineActor {
             return;
         };
 
-        // Use the send queue so the SDK emits a local-echo diff in the timeline
-        // stream (via RoomSendQueueUpdate::NewLocalEvent) and later fires
-        // SentEvent. Canon decision D: the client-supplied txn_id maps to the
-        // SDK-generated txn_id returned by send_queue().send(). The SendHandle
-        // gives us the SDK txn_id; we store client_txn_id → sdk_txn_id here so
-        // the SentEvent handler can emit SendCompleted with the client's txn_id.
+        // Send through the SDK UI timeline so local echo is owned by the
+        // timeline controller and still backed by the send queue. Canon
+        // decision D: the client-supplied txn_id maps to the SDK-generated
+        // txn_id returned by Timeline::send. The SendHandle gives us the SDK
+        // txn_id; we store client_txn_id -> sdk_txn_id here so the SentEvent
+        // handler can emit SendCompleted with the client's txn_id.
         let content = match build_room_message_content_from_composer_body(&body, mentions) {
             Ok(content) => content,
             Err(kind) => {
@@ -1399,7 +1464,7 @@ impl TimelineActor {
         };
         let content = matrix_sdk::ruma::events::AnyMessageLikeEventContent::RoomMessage(content);
 
-        match room.send_queue().send(content).await {
+        match self.timeline.send(content).await {
             Ok(handle) => {
                 let sdk_txn_id = handle.transaction_id().to_string();
                 remember_send_handle(
@@ -1421,12 +1486,12 @@ impl TimelineActor {
                     }));
                 }
             }
-            Err(err) => {
+            Err(_) => {
                 self.emit_send_failed_action(&client_txn_id);
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
-                        kind: classify_send_queue_error(&err),
+                        kind: TimelineFailureKind::Sdk,
                     },
                 );
             }
@@ -1551,6 +1616,82 @@ impl TimelineActor {
                         kind: TimelineFailureKind::Sdk,
                     },
                 );
+            }
+        }
+    }
+
+    async fn handle_load_message_source(&mut self, request_id: RequestId, event_id: String) {
+        let Some(source) = self.project_message_source_for_event(&event_id).await else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+
+        self.emit(CoreEvent::Timeline(TimelineEvent::MessageSourceLoaded {
+            request_id,
+            key: self.key.clone(),
+            source,
+        }));
+    }
+
+    async fn handle_forward_message(
+        &mut self,
+        request_id: RequestId,
+        source_event_id: String,
+        destination_room_id: String,
+        transaction_id: String,
+    ) {
+        let Some(source) = self
+            .project_message_source_for_event(&source_event_id)
+            .await
+        else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+        let Some(body) = source
+            .body
+            .as_deref()
+            .filter(|body| !body.trim().is_empty())
+        else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
+            return;
+        };
+        if source.is_redacted {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
+            return;
+        }
+
+        let destination_room_id_parsed = match matrix_sdk::ruma::RoomId::parse(&destination_room_id)
+        {
+            Ok(room_id) => room_id,
+            Err(_) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+                return;
+            }
+        };
+        let Some(destination_room) = self.session.client().get_room(&destination_room_id_parsed)
+        else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+
+        let txn_id = matrix_sdk::ruma::OwnedTransactionId::from(transaction_id.clone());
+        let content = RoomMessageEventContent::text_plain(body);
+        match destination_room
+            .send(content)
+            .with_transaction_id(txn_id)
+            .await
+        {
+            Ok(result) => {
+                self.emit(CoreEvent::Timeline(TimelineEvent::MessageForwarded {
+                    request_id,
+                    key: self.key.clone(),
+                    destination_room_id,
+                    transaction_id,
+                    event_id: result.response.event_id.to_string(),
+                }));
+            }
+            Err(_) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::Sdk);
             }
         }
     }
@@ -2098,6 +2239,7 @@ impl TimelineActor {
             .map(|diff| {
                 sdk_vector_diff_to_timeline_diff(
                     diff,
+                    &self.key,
                     self.own_user_id.as_deref(),
                     &self.send_statuses,
                 )
@@ -2310,6 +2452,30 @@ impl TimelineActor {
         ids
     }
 
+    async fn project_message_source_for_event(
+        &self,
+        event_id: &str,
+    ) -> Option<TimelineMessageSource> {
+        let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+        let items = self.timeline.items().await;
+        for item in items.iter().rev() {
+            let TimelineItemKind::Event(event_item) = item.kind() else {
+                continue;
+            };
+            if !event_item
+                .event_id()
+                .map(|candidate| candidate.as_str() == parsed_event_id.as_str())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let projected = sdk_item_to_timeline_item(&self.key, item, self.own_user_id.as_deref());
+            return message_source_for_timeline_item(&projected);
+        }
+        None
+    }
+
     async fn reaction_target_state(
         &self,
         event_id: &str,
@@ -2329,7 +2495,7 @@ impl TimelineActor {
                 continue;
             }
 
-            let projected = sdk_item_to_timeline_item(item, self.own_user_id.as_deref());
+            let projected = sdk_item_to_timeline_item(&self.key, item, self.own_user_id.as_deref());
             let my_reaction_event_id = projected
                 .reactions
                 .iter()
@@ -2465,6 +2631,7 @@ impl TimelineActor {
             .iter()
             .map(|item| {
                 sdk_item_to_timeline_item_with_send_states(
+                    &self.key,
                     item,
                     self.own_user_id.as_deref(),
                     &self.send_statuses,
@@ -2812,13 +2979,15 @@ fn live_event_receipts_from_sdk_item(
 
 /// Convert a single SDK `TimelineItem` to our `TimelineItem` DTO.
 pub fn sdk_item_to_timeline_item(
+    key: &TimelineKey,
     item: &Arc<SdkTimelineItem>,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
 ) -> TimelineItem {
-    sdk_item_to_timeline_item_with_send_states(item, own_user_id, &HashMap::new())
+    sdk_item_to_timeline_item_with_send_states(key, item, own_user_id, &HashMap::new())
 }
 
 fn sdk_item_to_timeline_item_with_send_states(
+    key: &TimelineKey,
     item: &Arc<SdkTimelineItem>,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
     send_statuses: &HashMap<String, TimelineSendState>,
@@ -2906,6 +3075,13 @@ fn sdk_item_to_timeline_item_with_send_states(
                 .as_deref()
                 .and_then(|txn_id| send_statuses.get(txn_id).cloned())
                 .or_else(|| timeline_send_state_from_sdk(event_item.send_state()));
+            let actions = message_actions_for_timeline_item(
+                key.room_id(),
+                &id,
+                body.as_deref(),
+                media.is_some(),
+                event_item.content().is_redacted(),
+            );
 
             TimelineItem {
                 id,
@@ -2923,6 +3099,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 can_redact,
                 is_edited,
                 can_edit,
+                actions,
                 send_state,
             }
         }
@@ -2948,6 +3125,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
+                actions: TimelineMessageActions::default(),
                 send_state: None,
             }
         }
@@ -3404,23 +3582,44 @@ pub(crate) fn reaction_groups_from_sdk(
 /// Convert an SDK `VectorDiff` to our `TimelineDiff`.
 fn sdk_vector_diff_to_timeline_diff(
     diff: eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+    key: &TimelineKey,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
     send_statuses: &HashMap<String, TimelineSendState>,
 ) -> TimelineDiff {
     match diff {
         eyeball_im::VectorDiff::PushFront { value } => TimelineDiff::PushFront {
-            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
+            item: sdk_item_to_timeline_item_with_send_states(
+                key,
+                &value,
+                own_user_id,
+                send_statuses,
+            ),
         },
         eyeball_im::VectorDiff::PushBack { value } => TimelineDiff::PushBack {
-            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
+            item: sdk_item_to_timeline_item_with_send_states(
+                key,
+                &value,
+                own_user_id,
+                send_statuses,
+            ),
         },
         eyeball_im::VectorDiff::Insert { index, value } => TimelineDiff::Insert {
             index,
-            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
+            item: sdk_item_to_timeline_item_with_send_states(
+                key,
+                &value,
+                own_user_id,
+                send_statuses,
+            ),
         },
         eyeball_im::VectorDiff::Set { index, value } => TimelineDiff::Set {
             index,
-            item: sdk_item_to_timeline_item_with_send_states(&value, own_user_id, send_statuses),
+            item: sdk_item_to_timeline_item_with_send_states(
+                key,
+                &value,
+                own_user_id,
+                send_statuses,
+            ),
         },
         eyeball_im::VectorDiff::Remove { index } => TimelineDiff::Remove { index },
         eyeball_im::VectorDiff::Truncate { length } => TimelineDiff::Truncate { length },
@@ -3429,7 +3628,12 @@ fn sdk_vector_diff_to_timeline_diff(
             items: values
                 .iter()
                 .map(|value| {
-                    sdk_item_to_timeline_item_with_send_states(value, own_user_id, send_statuses)
+                    sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    )
                 })
                 .collect(),
         },
@@ -3462,6 +3666,7 @@ fn sdk_vector_diff_to_timeline_diff(
                     .iter()
                     .map(|value| {
                         sdk_item_to_timeline_item_with_send_states(
+                            key,
                             value,
                             own_user_id,
                             send_statuses,

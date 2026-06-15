@@ -233,12 +233,32 @@ reaction counts, ownership, target eligibility, or toggle semantics.
   present. If the projection does not support the requested transition, settle
   it as an invalid reaction failure instead of guessing from React state.
 
-## Timeline Reply Quotes And Pins
+## Timeline Reply Quotes, Pins, And Actions
 
 Reply quote previews and pinned-event state are Rust-owned message-interaction
 projections. `TimelineItem.reply_quote` is projected in
 `matrix-desktop-core` from SDK reply details; React renders that DTO and must
 not resolve reply bodies, classify redactions, or repair missing quote state.
+
+Message action affordances are also Rust-owned timeline projections.
+`TimelineItem.actions` carries `can_copy`, `can_forward`, `can_permalink`,
+`can_view_source`, and an optional `permalink`. The permalink is generated in
+Rust from the owning `TimelineKey` room id plus the event id as a
+`https://matrix.to/#/<room>/<event>` URL. React may render or copy this value
+only when the DTO says it is available; it must not build Matrix permalinks,
+infer action eligibility from `TimelineItemId`, body/media fields, or redaction
+flags, or invent forward/source behavior.
+
+`TimelineCommand::LoadMessageSource` loads a Rust-owned
+`TimelineMessageSource` safe DTO for a subscribed event. It contains the
+projected event id, sender, timestamp, visible body, reply/thread relation
+ids, redaction/edit flags, and a media-presence flag; it is not a raw Matrix
+event JSON dump. `TimelineCommand::ForwardMessage` resolves the source item in
+Rust, sends only the projected visible body to the destination room, and emits
+`MessageForwarded` when the destination send completes. React supplies source
+and destination identifiers only; it must not copy the body, inspect raw event
+JSON, or synthesize forward content. Media-only forwarding remains disabled
+until a separate Rust-owned media-forward contract exists.
 
 `AppState.room_interactions[room_id]` carries the room's pinned-event
 projection plus the current pin/unpin operation state:
@@ -267,6 +287,20 @@ stateDiagram-v2
   `Unsupported`. `Ready` may include a sender and body preview; redacted,
   missing, and unsupported quotes never require React to inspect Matrix event
   content.
+- `TimelineItem.actions` is populated only for event-backed timeline items.
+  Synthetic and transaction-backed items receive all-false affordances. Redacted
+  event items keep event-scoped affordances such as permalink/source visibility
+  but lose copy/forward affordances unless Rust explicitly restores them.
+- Copy is allowed only when Rust projected a visible body and the item is not
+  redacted. Forward is allowed only when Rust projected a visible body and the
+  item is not redacted; media-only items stay non-forwardable until media
+  forwarding has its own Rust-owned contract. Future source extensions must
+  consume typed Rust-owned DTOs rather than raw React-side event inspection.
+- Phase B message-action menus are presentation state only. Menu visibility,
+  submenu focus, and clipboard invocation may live in React, but menu entries
+  are gated by `TimelineItem.actions`; source details render only after
+  `MessageSourceLoaded`; forward commands use Rust-snapshot destination room
+  ids and do not copy message bodies through React.
 - `RoomPinnedEventsUpdated { room_id, pinned }` replaces only that room's
   pinned-event list and emits `RoomInteractionsChanged` when the list changes.
   It may arrive from sync or as the post-command refresh after successful
@@ -291,7 +325,8 @@ stateDiagram-v2
   and renders the next Rust snapshot/event only.
 - The local core `reply` QA scenario proves this Phase A slice with
   `reply_quote=ok pin_event=ok pinned_state=ok unpin_event=ok`. Its stdout must
-  remain private-data-free.
+  remain private-data-free. Message-action QA evidence must likewise use coarse
+  tokens only; do not print Matrix IDs, message bodies, or generated permalinks.
 
 ## Timeline Media
 
@@ -585,6 +620,9 @@ Outbound timeline send state is owned by the Rust `TimelineActor`, keyed by the
 SDK send-queue transaction id exposed on local-echo timeline items. React may
 render `TimelineItem.send_state` and dispatch typed commands, but it must not
 derive retry/cancel legality from local component state.
+Visible timeline sends go through the SDK UI `Timeline::send` path so local
+echo diffs reach the subscribed timeline store; retry/cancel still operate on
+the underlying SDK send queue handles.
 
 ```mermaid
 stateDiagram-v2

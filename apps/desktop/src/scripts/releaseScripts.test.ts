@@ -303,6 +303,7 @@ describe("desktop release scripts", () => {
       "scenario local-reply",
       "scenario local-media",
       "scenario local-room-tags",
+      "scenario local-message-actions",
       "scenario local-composer",
       "scenario local-settings",
       "verify local-settings trust section"
@@ -336,6 +337,8 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_media=ok");
     expect(source).toContain("gui_local_room_tag_set=ok");
     expect(source).toContain("gui_local_room_tag_removed=ok");
+    expect(source).toContain("gui_local_message_source=ok");
+    expect(source).toContain("gui_local_message_forward=ok");
     expect(source).toContain("gui_local_mention=ok");
     expect(source).toContain("gui_local_markdown=ok");
     expect(source).toContain("gui_local_slash=ok");
@@ -375,6 +378,23 @@ describe("desktop release scripts", () => {
     expect(source).not.toContain("installTauriInvokeRecorder(");
   });
 
+  test("linux GUI message-action smoke drives real action menu controls", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("async function runLocalMessageActionsScenario()");
+    expect(source).toContain("waitForLatestMessageActionButton(");
+    expect(source).toContain('button[aria-label="Message actions"]');
+    expect(source).toContain("View source");
+    expect(source).toContain("Message source");
+    expect(source).toContain("Forward");
+    expect(source).toContain("QA Seed Room");
+    expect(source).toContain("QA message action seed");
+    expect(source).not.toContain("installTauriInvokeRecorder(");
+  });
+
   test("linux GUI media smoke drives the hidden file input without a native dialog", () => {
     const source = readFileSync(
       new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
@@ -403,6 +423,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("--scenario=local-reply");
     expect(docs).toContain("--scenario=local-media");
     expect(docs).toContain("--scenario=local-room-tags");
+    expect(docs).toContain("--scenario=local-message-actions");
     expect(docs).toContain("--scenario=local-composer");
     expect(docs).toContain("--scenario=local-settings");
     expect(docs).toContain("gui_local_create_room=ok");
@@ -412,6 +433,8 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("gui_local_media=ok");
     expect(docs).toContain("gui_local_room_tag_set=ok");
     expect(docs).toContain("gui_local_room_tag_removed=ok");
+    expect(docs).toContain("gui_local_message_source=ok");
+    expect(docs).toContain("gui_local_message_forward=ok");
     expect(docs).toContain("gui_local_mention=ok");
     expect(docs).toContain("gui_local_markdown=ok");
     expect(docs).toContain("gui_local_slash=ok");
