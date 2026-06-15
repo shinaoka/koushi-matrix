@@ -52,6 +52,7 @@ import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   TimelineView,
   renderTimelineMessageText,
+  type TimelineForwardDestination,
   type TimelineRowActionHandlers,
   type TimelineTransport
 } from "./components/TimelineView";
@@ -2641,6 +2642,7 @@ function TimelinePane({
               liveSignals={snapshot.state.live_signals}
               profileUsers={snapshot.state.profile.users}
               pinnedEventIds={pinnedEventIds}
+              forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -2728,6 +2730,13 @@ function pinnedEventsForRoom(
   roomId: string | null | undefined
 ): DesktopSnapshot["state"]["room_interactions"][string]["pinned_events"] {
   return roomId ? snapshot.state.room_interactions[roomId]?.pinned_events ?? [] : [];
+}
+
+function forwardDestinationsFromSnapshot(snapshot: DesktopSnapshot): TimelineForwardDestination[] {
+  return snapshot.state.rooms.map((room) => ({
+    room_id: room.room_id,
+    display_name: room.display_name
+  }));
 }
 
 function mentionCandidatesFromSnapshot(snapshot: DesktopSnapshot): MentionCandidate[] {
@@ -3497,6 +3506,7 @@ export function ContextualRightPanel({
               liveSignals={snapshot.state.live_signals}
               profileUsers={snapshot.state.profile.users}
               pinnedEventIds={focusedPinnedEventIds}
+              forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
             />
           </section>
         ) : null}
@@ -3547,6 +3557,7 @@ export function ContextualRightPanel({
             liveSignals={snapshot.state.live_signals}
             profileUsers={snapshot.state.profile.users}
             pinnedEventIds={threadPinnedEventIds}
+            forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
           />
         ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>

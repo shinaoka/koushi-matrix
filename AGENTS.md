@@ -184,6 +184,17 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   a safe Rust projection, not raw Matrix JSON. Forwarding sends the Rust-
   projected visible body only; media-only rows must remain non-forwardable until
   a dedicated media-forward contract exists.
+- Phase B message-action menus render only `TimelineItem.actions` affordances.
+  Copy uses the Rust-projected row body or Rust-built permalink only; view
+  source dispatches `load_message_source` and waits for
+  `MessageSourceLoaded` before showing the source dialog; forward dispatches
+  `forward_message` with Rust-snapshot room destinations and never copies the
+  message body in React.
+- Tauri production timelines render from the CoreEvent-backed `TimelineView`
+  store, not `AppState.timeline`. A local GUI lane that needs a real row/action
+  must wait for DOM state such as `.message`, `data-event-id`, or
+  `button[aria-label="Message actions"]`; `timeline_items=0` in the QA title
+  can be normal because that token comes from the snapshot DTO.
 - `AppState.room_interactions` is the Rust-owned source of truth for
   `pinned_events` and `pin_operation`. GUI code dispatches typed `pin_event` /
   `unpin_event` commands and waits for Rust-shaped snapshots/events instead of
@@ -846,6 +857,16 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   though the headless Playwright tier passes (its click implicitly hovers).
   Move the pointer first: `await el.waitForExist(); await el.moveTo(); await
   el.waitForDisplayed(); await el.click();`.
+- WebDriver native clicks can still be flaky on nested absolute menu items
+  inside hover-gated timeline actions. If the menu is visible and exact labels
+  are present but native click reports `element not interactable`, use a
+  scenario-local helper that finds the visible `button[role="menuitem"]` by
+  exact text and dispatches a DOM click. Keep this fallback limited to GUI QA
+  plumbing; product code must still use typed Rust commands.
+- `send_text` must route through the SDK UI `Timeline::send` path, not a direct
+  `room.send_queue().send` call. The latter can settle `SendCompleted` while
+  starving the event-driven `TimelineView` of local-echo diffs in the Linux
+  WebView lane.
 - A reply must target a MESSAGE event, not a state event. The timeline includes
   state events (room create, membership) that carry no body; the SDK's
   `make_reply_event` rejects them (app stderr `make_reply_event failed:

@@ -23,11 +23,16 @@
  */
 
 import {
+  Copy,
   Download,
   Edit3,
+  FileCode2,
   FileText,
+  Forward,
   ImageIcon,
+  Link2,
   MessageCircle,
+  MoreHorizontal,
   Pin,
   PinOff,
   RefreshCw,
@@ -53,7 +58,8 @@ import type {
   CoreEventPayload,
   MediaTransferProgress,
   TimelineItem,
-  TimelineKey
+  TimelineKey,
+  TimelineMessageSource
 } from "../domain/coreEvents";
 import { timelineItemDomId, timelineKeyEquals } from "../domain/coreEvents";
 import {
@@ -151,8 +157,16 @@ export interface TimelineRowActionHandlers {
   onPin: (roomId: string, eventId: string) => void;
   onUnpin: (roomId: string, eventId: string) => void;
   onDownloadMedia: (roomId: string, eventId: string) => void;
+  onLoadMessageSource: (roomId: string, eventId: string) => void;
+  onForwardMessage: (roomId: string, sourceEventId: string, destinationRoomId: string) => void;
+  onCopyText: (value: string) => void;
   onRetrySend: (roomId: string, transactionId: string) => void;
   onCancelSend: (roomId: string, transactionId: string) => void;
+}
+
+export interface TimelineForwardDestination {
+  room_id: string;
+  display_name: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +348,25 @@ function isMentionEndBoundary(value: string | undefined): boolean {
   return value === undefined || /\s|[.,!?;:)\]}>]/u.test(value);
 }
 
+async function writeClipboardText(value: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  if (typeof document === "undefined") {
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.insetInlineStart = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -348,6 +381,7 @@ export function TimelineView({
   liveSignals,
   profileUsers = {},
   pinnedEventIds = [],
+  forwardDestinations = [],
   suppressPaginationUi = false
 }: {
   timelineKey: TimelineKey;
@@ -359,9 +393,11 @@ export function TimelineView({
   liveSignals?: LiveSignalsState;
   profileUsers?: Record<string, UserProfile>;
   pinnedEventIds?: readonly string[];
+  forwardDestinations?: readonly TimelineForwardDestination[];
   suppressPaginationUi?: boolean;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
+  const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   /** Anchor captured before the latest prepend batch was applied. */
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null);
@@ -426,7 +462,12 @@ export function TimelineView({
         anchorRestorePendingRef.current = false;
       }
 
-      if ("MessageForwarded" in event || "MessageSourceLoaded" in event) {
+      if ("MessageSourceLoaded" in event) {
+        setMessageSource(event.MessageSourceLoaded.source);
+        return;
+      }
+
+      if ("MessageForwarded" in event) {
         return;
       }
 
@@ -519,6 +560,27 @@ export function TimelineView({
     },
     [transport]
   );
+  const onLoadMessageSource = useCallback(
+    (targetRoomId: string, eventId: string) => {
+      void transport.loadMessageSource(targetRoomId, eventId).catch(() => undefined);
+    },
+    [transport]
+  );
+  const onForwardMessage = useCallback(
+    (targetRoomId: string, sourceEventId: string, destinationRoomId: string) => {
+      void transport
+        .forwardMessage(targetRoomId, sourceEventId, destinationRoomId)
+        .catch(() => undefined);
+    },
+    [transport]
+  );
+  const onCopyText = useCallback((value: string) => {
+    void writeClipboardText(value).catch(() => undefined);
+  }, []);
+  const effectiveForwardDestinations =
+    forwardDestinations.length > 0
+      ? forwardDestinations
+      : [{ room_id: roomId, display_name: roomId }];
 
   useEffect(() => {
     if (!latestReadableEventId || roomTimelineRoomId !== roomId) {
@@ -649,6 +711,10 @@ export function TimelineView({
               onPin={onPin}
               onUnpin={onUnpin}
               onDownloadMedia={onDownloadMedia}
+              onLoadMessageSource={onLoadMessageSource}
+              onForwardMessage={onForwardMessage}
+              onCopyText={onCopyText}
+              forwardDestinations={effectiveForwardDestinations}
               onRetrySend={onRetrySend}
               onCancelSend={onCancelSend}
               presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
@@ -663,6 +729,12 @@ export function TimelineView({
         <div className="typing-indicator" dir="auto">
           {formatTypingUsers(roomSignals.typing_user_ids)}
         </div>
+      ) : null}
+      {messageSource ? (
+        <MessageSourceDialog
+          source={messageSource}
+          onClose={() => setMessageSource(null)}
+        />
       ) : null}
     </div>
   );
@@ -683,6 +755,10 @@ export function TimelineItemRow({
   onPin = () => undefined,
   onUnpin = () => undefined,
   onDownloadMedia = () => undefined,
+  onLoadMessageSource = () => undefined,
+  onForwardMessage = () => undefined,
+  onCopyText = () => undefined,
+  forwardDestinations = [],
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
   presence,
@@ -704,6 +780,10 @@ export function TimelineItemRow({
   onPin?: TimelineRowActionHandlers["onPin"];
   onUnpin?: TimelineRowActionHandlers["onUnpin"];
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
+  onLoadMessageSource?: TimelineRowActionHandlers["onLoadMessageSource"];
+  onForwardMessage?: TimelineRowActionHandlers["onForwardMessage"];
+  onCopyText?: TimelineRowActionHandlers["onCopyText"];
+  forwardDestinations?: readonly TimelineForwardDestination[];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
   presence?: PresenceKind;
@@ -720,9 +800,14 @@ export function TimelineItemRow({
   const [isEditing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(item.body ?? "");
   const [isReactionPickerOpen, setReactionPickerOpen] = useState(false);
+  const [isActionMenuOpen, setActionMenuOpen] = useState(false);
+  const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
   const reactionControlRef = useRef<HTMLDivElement>(null);
   const reactionTriggerRef = useRef<HTMLButtonElement>(null);
   const firstReactionRef = useRef<HTMLButtonElement>(null);
+  const actionMenuControlRef = useRef<HTMLDivElement>(null);
+  const actionMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -738,6 +823,13 @@ export function TimelineItemRow({
     }
     editTextareaRef.current?.focus();
   }, [isEditing]);
+
+  useEffect(() => {
+    if (!isActionMenuOpen) {
+      return;
+    }
+    firstActionMenuItemRef.current?.focus();
+  }, [isActionMenuOpen]);
 
   useEffect(() => {
     if (!isReactionPickerOpen) {
@@ -757,9 +849,34 @@ export function TimelineItemRow({
     };
   }, [isReactionPickerOpen]);
 
+  useEffect(() => {
+    if (!isActionMenuOpen) {
+      return;
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      const control = actionMenuControlRef.current;
+      if (!control || control.contains(event.target as Node)) {
+        return;
+      }
+      setActionMenuOpen(false);
+      setForwardMenuOpen(false);
+      actionMenuTriggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [isActionMenuOpen]);
+
   const closeReactionPicker = useCallback(() => {
     setReactionPickerOpen(false);
     reactionTriggerRef.current?.focus();
+  }, []);
+
+  const closeActionMenu = useCallback(() => {
+    setActionMenuOpen(false);
+    setForwardMenuOpen(false);
+    actionMenuTriggerRef.current?.focus();
   }, []);
 
   const openEditForm = useCallback(() => {
@@ -767,6 +884,8 @@ export function TimelineItemRow({
       return;
     }
     setReactionPickerOpen(false);
+    setActionMenuOpen(false);
+    setForwardMenuOpen(false);
     setEditDraft(item.body ?? "");
     setEditing(true);
   }, [eventId, isRedacted, item.body]);
@@ -906,6 +1025,43 @@ export function TimelineItemRow({
     }
     onDownloadMedia(roomId, eventId);
   }, [eventId, onDownloadMedia, roomId]);
+  const openActionMenu = useCallback(() => {
+    setReactionPickerOpen(false);
+    setForwardMenuOpen(false);
+    setActionMenuOpen((current) => !current);
+  }, []);
+  const copyMessageBody = useCallback(() => {
+    if (!item.actions?.can_copy || item.body === null) {
+      return;
+    }
+    onCopyText(item.body);
+    closeActionMenu();
+  }, [closeActionMenu, item.actions?.can_copy, item.body, onCopyText]);
+  const copyPermalink = useCallback(() => {
+    const permalink = item.actions?.permalink;
+    if (!item.actions?.can_permalink || !permalink) {
+      return;
+    }
+    onCopyText(permalink);
+    closeActionMenu();
+  }, [closeActionMenu, item.actions?.can_permalink, item.actions?.permalink, onCopyText]);
+  const loadMessageSource = useCallback(() => {
+    if (!eventId || !item.actions?.can_view_source) {
+      return;
+    }
+    onLoadMessageSource(roomId, eventId);
+    closeActionMenu();
+  }, [closeActionMenu, eventId, item.actions?.can_view_source, onLoadMessageSource, roomId]);
+  const submitForward = useCallback(
+    (destinationRoomId: string) => {
+      if (!eventId || !item.actions?.can_forward) {
+        return;
+      }
+      onForwardMessage(roomId, eventId, destinationRoomId);
+      closeActionMenu();
+    },
+    [closeActionMenu, eventId, item.actions?.can_forward, onForwardMessage, roomId]
+  );
   const submitRetrySend = useCallback(() => {
     if (!transactionId) {
       return;
@@ -920,6 +1076,14 @@ export function TimelineItemRow({
   }, [onCancelSend, roomId, transactionId]);
   const canShowActionButtons = Boolean(eventId) && !isRedacted;
   const canShowReply = canShowActionButtons && item.body !== null;
+  const canCopyMessage = Boolean(eventId && item.actions?.can_copy && item.body !== null);
+  const canCopyPermalink = Boolean(
+    eventId && item.actions?.can_permalink && item.actions.permalink
+  );
+  const canViewSource = Boolean(eventId && item.actions?.can_view_source);
+  const canForward = Boolean(eventId && item.actions?.can_forward);
+  const canShowMessageActionMenu =
+    canCopyMessage || canCopyPermalink || canViewSource || canForward;
   const canShowThreadSummary = Boolean(eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
   const sendStateLabel =
@@ -1202,6 +1366,107 @@ export function TimelineItemRow({
             {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
           </button>
         ) : null}
+        {!isEditing && canShowMessageActionMenu ? (
+          <div className="message-action-menu-control" ref={actionMenuControlRef}>
+            <button
+              ref={actionMenuTriggerRef}
+              className="message-action"
+              type="button"
+              aria-label={t("timeline.messageActions")}
+              aria-expanded={isActionMenuOpen}
+              aria-haspopup="menu"
+              onClick={openActionMenu}
+            >
+              <MoreHorizontal size={14} />
+            </button>
+            {isActionMenuOpen ? (
+              <div
+                className="message-action-menu"
+                role="menu"
+                aria-label={t("timeline.messageActions")}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeActionMenu();
+                  }
+                }}
+              >
+                {canCopyMessage ? (
+                  <button
+                    ref={firstActionMenuItemRef}
+                    className="message-action-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={copyMessageBody}
+                  >
+                    <Copy size={14} aria-hidden="true" />
+                    <span>{t("timeline.copyMessage")}</span>
+                  </button>
+                ) : null}
+                {canCopyPermalink ? (
+                  <button
+                    ref={!canCopyMessage ? firstActionMenuItemRef : undefined}
+                    className="message-action-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={copyPermalink}
+                  >
+                    <Link2 size={14} aria-hidden="true" />
+                    <span>{t("timeline.copyPermalink")}</span>
+                  </button>
+                ) : null}
+                {canViewSource ? (
+                  <button
+                    ref={!canCopyMessage && !canCopyPermalink ? firstActionMenuItemRef : undefined}
+                    className="message-action-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={loadMessageSource}
+                  >
+                    <FileCode2 size={14} aria-hidden="true" />
+                    <span>{t("timeline.viewSource")}</span>
+                  </button>
+                ) : null}
+                {canForward ? (
+                  <div className="message-forward-menu-control">
+                    <button
+                      ref={
+                        !canCopyMessage && !canCopyPermalink && !canViewSource
+                          ? firstActionMenuItemRef
+                          : undefined
+                      }
+                      className="message-action-menu-item"
+                      type="button"
+                      role="menuitem"
+                      aria-haspopup="menu"
+                      aria-expanded={isForwardMenuOpen}
+                      onClick={() => setForwardMenuOpen((current) => !current)}
+                    >
+                      <Forward size={14} aria-hidden="true" />
+                      <span>{t("timeline.forwardMessage")}</span>
+                    </button>
+                    {isForwardMenuOpen ? (
+                      <div className="message-forward-menu" role="menu">
+                        {forwardDestinations.map((destination) => (
+                          <button
+                            className="message-action-menu-item"
+                            type="button"
+                            role="menuitem"
+                            key={destination.room_id}
+                            onClick={() => submitForward(destination.room_id)}
+                          >
+                            <MessageCircle size={14} aria-hidden="true" />
+                            <span dir="auto">{destination.display_name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {!isEditing && canShowActionButtons && item.can_redact ? (
           <button
             className="message-action"
@@ -1225,6 +1490,61 @@ function latestEventBackedItemId(items: TimelineItem[]): string | null {
     }
   }
   return null;
+}
+
+function MessageSourceDialog({
+  source,
+  onClose
+}: {
+  source: TimelineMessageSource;
+  onClose: () => void;
+}) {
+  const metadata: string[] = [];
+  if (source.is_edited) {
+    metadata.push(t("timeline.editedMessage"));
+  }
+  if (source.is_redacted) {
+    metadata.push(t("timeline.redactedMessage"));
+  }
+  if (source.has_media) {
+    metadata.push(t("timeline.sourceHasMedia"));
+  }
+
+  return (
+    <div
+      className="message-source-dialog"
+      role="dialog"
+      aria-label={t("timeline.messageSource")}
+    >
+      <div className="message-source-dialog-header">
+        <span>{t("timeline.messageSource")}</span>
+        <button
+          className="message-source-close"
+          type="button"
+          aria-label={t("timeline.closeMessageSource")}
+          onClick={onClose}
+        >
+          <XCircle size={15} aria-hidden="true" />
+        </button>
+      </div>
+      <dl className="message-source-fields">
+        <div>
+          <dt>{t("timeline.sourceSender")}</dt>
+          <dd dir="auto">{source.sender ?? t("timeline.replyQuoteUnknownSender")}</dd>
+        </div>
+        <div>
+          <dt>{t("timeline.sourceBody")}</dt>
+          <dd dir="auto">{source.body ?? t("timeline.sourceNoBody")}</dd>
+        </div>
+        {metadata.length > 0 ? (
+          <div>
+            <dt>{t("timeline.sourceMetadata")}</dt>
+            <dd>{metadata.join(" · ")}</dd>
+          </div>
+        ) : null}
+      </dl>
+    </div>
+  );
 }
 
 function formatTypingUsers(userIds: string[]): string {

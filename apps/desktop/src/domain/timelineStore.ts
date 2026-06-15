@@ -6,9 +6,11 @@
  * Contract (docs/architecture/overview.md — "Timeline Viewport And Scrollback"):
  *
  * - InitialItems: replaces the current list for the given (key, generation).
- * - ItemsUpdated: applies diffs if generation matches; silently drops if
- *   generation is stale (Async rule 4: after reset/resync the UI discards
- *   diffs from older generations).
+ * - ItemsUpdated: applies diffs if generation matches; if the view mounted
+ *   after InitialItems was emitted, a missing key is initialized from an empty
+ *   list for the live diff. Stale generations are still dropped silently
+ *   (Async rule 4: after reset/resync the UI discards diffs from older
+ *   generations).
  * - ResyncRequired: clears the list and marks the store as awaiting the next
  *   InitialItems for that key.
  * - ResyncMarker (from EventStreamLag): same as ResyncRequired but global —
@@ -184,9 +186,20 @@ function applyItemsUpdated(
 ): TimelineStoreState {
   const k = keyStr(payload.key);
   const existing = store.keys.get(k);
+  if (!existing) {
+    const initialized = {
+      ...emptyKeyState(),
+      generation: payload.generation,
+      awaitingResync: false
+    };
+    const updatedItems = applyDiffs(initialized.items, payload.diffs);
+    const next = new Map(store.keys);
+    next.set(k, { ...initialized, items: updatedItems });
+    return { keys: next };
+  }
 
   // Stale generation: discard silently.
-  if (!existing || existing.generation !== payload.generation) {
+  if (existing.generation !== payload.generation) {
     return store;
   }
 

@@ -1437,7 +1437,7 @@ impl TimelineActor {
             }
         };
         let client = self.session.client();
-        let Some(room) = client.get_room(&room_id) else {
+        if client.get_room(&room_id).is_none() {
             self.emit_send_failed_action(&client_txn_id);
             self.emit_failure(
                 request_id,
@@ -1448,12 +1448,12 @@ impl TimelineActor {
             return;
         };
 
-        // Use the send queue so the SDK emits a local-echo diff in the timeline
-        // stream (via RoomSendQueueUpdate::NewLocalEvent) and later fires
-        // SentEvent. Canon decision D: the client-supplied txn_id maps to the
-        // SDK-generated txn_id returned by send_queue().send(). The SendHandle
-        // gives us the SDK txn_id; we store client_txn_id → sdk_txn_id here so
-        // the SentEvent handler can emit SendCompleted with the client's txn_id.
+        // Send through the SDK UI timeline so local echo is owned by the
+        // timeline controller and still backed by the send queue. Canon
+        // decision D: the client-supplied txn_id maps to the SDK-generated
+        // txn_id returned by Timeline::send. The SendHandle gives us the SDK
+        // txn_id; we store client_txn_id -> sdk_txn_id here so the SentEvent
+        // handler can emit SendCompleted with the client's txn_id.
         let content = match build_room_message_content_from_composer_body(&body, mentions) {
             Ok(content) => content,
             Err(kind) => {
@@ -1464,7 +1464,7 @@ impl TimelineActor {
         };
         let content = matrix_sdk::ruma::events::AnyMessageLikeEventContent::RoomMessage(content);
 
-        match room.send_queue().send(content).await {
+        match self.timeline.send(content).await {
             Ok(handle) => {
                 let sdk_txn_id = handle.transaction_id().to_string();
                 remember_send_handle(
@@ -1486,12 +1486,12 @@ impl TimelineActor {
                     }));
                 }
             }
-            Err(err) => {
+            Err(_) => {
                 self.emit_send_failed_action(&client_txn_id);
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
-                        kind: classify_send_queue_error(&err),
+                        kind: TimelineFailureKind::Sdk,
                     },
                 );
             }

@@ -1214,6 +1214,115 @@ button {
   background: var(--brand);
 }
 
+.message-action-menu-control,
+.message-forward-menu-control {
+  position: relative;
+  display: inline-grid;
+}
+
+.message-action-menu,
+.message-forward-menu {
+  position: absolute;
+  z-index: 40;
+  display: grid;
+  min-width: 156px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(15 23 42 / 16%);
+}
+
+.message-action-menu {
+  inset-block-start: 28px;
+  inset-inline-end: 0;
+}
+
+.message-forward-menu {
+  inset-block-start: 0;
+  inset-inline-end: calc(100% + 6px);
+}
+
+.message-action-menu-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: var(--text);
+  text-align: start;
+  white-space: nowrap;
+}
+
+.message-action-menu-item:hover,
+.message-action-menu-item:focus-visible {
+  color: var(--brand-contrast);
+  background: var(--brand);
+  outline: none;
+}
+
+.message-source-dialog {
+  position: sticky;
+  inset-block-end: 12px;
+  z-index: 35;
+  display: grid;
+  gap: 8px;
+  width: min(420px, calc(100% - 32px));
+  margin: 12px 16px 0 auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(15 23 42 / 16%);
+}
+
+.message-source-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 800;
+}
+
+.message-source-close {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--text-muted);
+}
+
+.message-source-close:hover {
+  color: var(--brand-contrast);
+  background: var(--brand);
+}
+
+.message-source-fields {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.message-source-fields div {
+  display: grid;
+  gap: 2px;
+}
+
+.message-source-fields dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.message-source-fields dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 .timeline-send-bar {
   display: flex;
   flex-wrap: wrap;

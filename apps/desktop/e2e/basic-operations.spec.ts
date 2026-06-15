@@ -26,6 +26,8 @@
  *      room commands and renders joined/DM rooms from the returned snapshot.
  *  10. Render Rust-owned outbound send states and dispatch retry/cancel send
  *      commands without React repairing send-queue state.
+ *  11. Drive message action menus from Rust-owned `TimelineItem.actions`, copy
+ *      DTO values only, and dispatch source/forward typed commands.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -998,6 +1000,157 @@ test("pin and unpin actions dispatch typed commands and pinned banner waits for 
   }, HARNESS_ROOM_ID);
 
   await expect(pinnedRegion).toHaveCount(0);
+});
+
+test("message action menu copies Rust-owned body and permalink values", async ({ page }) => {
+  await page.addInitScript(() => {
+    let clipboardText = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          clipboardText = value;
+        },
+        readText: async () => clipboardText
+      }
+    });
+  });
+  await gotoReadyShell(page);
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: "$actions-copy:example.invalid" } },
+      sender: "@harness-user:example.invalid",
+      body: "Copy body from Rust timeline item",
+      timestamp_ms: 1_800_000_000_300,
+      in_reply_to_event_id: null,
+      reply_quote: null,
+      thread_root: null,
+      thread_summary: null,
+      reactions: [],
+      can_react: false,
+      is_redacted: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      actions: {
+        can_copy: true,
+        can_forward: true,
+        can_permalink: true,
+        can_view_source: true,
+        permalink: "https://matrix.to/#/!harness-room%3Aexample.invalid/%24actions-copy%3Aexample.invalid"
+      }
+    }
+  ]);
+
+  const row = page.locator('[data-event-id="$actions-copy:example.invalid"]');
+  await row.hover();
+  await row.getByRole("button", { name: "Message actions" }).click();
+  await row.getByRole("menuitem", { name: "Copy message" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "Copy body from Rust timeline item"
+  );
+
+  await row.hover();
+  await row.getByRole("button", { name: "Message actions" }).click();
+  await row.getByRole("menuitem", { name: "Copy permalink" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "https://matrix.to/#/!harness-room%3Aexample.invalid/%24actions-copy%3Aexample.invalid"
+  );
+});
+
+test("message action menu dispatches source and forward through typed Rust contracts", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: "$actions-source:example.invalid" } },
+      sender: "@harness-user:example.invalid",
+      body: "Forward body stays in Rust",
+      timestamp_ms: 1_800_000_000_400,
+      in_reply_to_event_id: null,
+      reply_quote: null,
+      thread_root: null,
+      thread_summary: null,
+      reactions: [],
+      can_react: false,
+      is_redacted: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      actions: {
+        can_copy: true,
+        can_forward: true,
+        can_permalink: true,
+        can_view_source: true,
+        permalink: "https://matrix.to/#/!harness-room%3Aexample.invalid/%24actions-source%3Aexample.invalid"
+      }
+    }
+  ]);
+
+  const row = page.locator('[data-event-id="$actions-source:example.invalid"]');
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await row.hover();
+  await row.getByRole("button", { name: "Message actions" }).click();
+  await row.getByRole("menuitem", { name: "View source" }).click();
+
+  await expect.poll(() => invocationCount(page, "load_message_source")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("load_message_source")[0]?.args)
+    )
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      eventId: "$actions-source:example.invalid"
+    });
+  await expect(page.getByRole("dialog", { name: "Message source" })).toHaveCount(0);
+
+  await page.evaluate((key) => {
+    void window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        MessageSourceLoaded: {
+          request_id: { connection_id: 1, sequence: 41 },
+          key,
+          source: {
+            event_id: "$actions-source:example.invalid",
+            sender: "@harness-user:example.invalid",
+            timestamp_ms: 1_800_000_000_400,
+            body: "Source body projected by Rust",
+            in_reply_to_event_id: null,
+            thread_root: null,
+            is_redacted: false,
+            is_edited: true,
+            has_media: false
+          }
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  }, HARNESS_ROOM_KEY);
+
+  const sourceDialog = page.getByRole("dialog", { name: "Message source" });
+  await expect(sourceDialog).toBeVisible();
+  await expect(sourceDialog.getByText("Source body projected by Rust", { exact: true })).toBeVisible();
+  await expect(sourceDialog).toContainText("Edited");
+  await sourceDialog.getByRole("button", { name: "Close message source" }).click();
+  await expect(sourceDialog).toHaveCount(0);
+
+  await row.hover();
+  await row.getByRole("button", { name: "Message actions" }).click();
+  await row.getByRole("menuitem", { name: "Forward" }).click();
+  await row.getByRole("menuitem", { name: "Harness Room" }).click();
+
+  await expect.poll(() => invocationCount(page, "forward_message")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("forward_message")[0]?.args)
+    )
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      sourceEventId: "$actions-source:example.invalid",
+      destinationRoomId: HARNESS_ROOM_ID
+    });
 });
 
 test("attach control invokes upload_media and renders Rust-owned media progress", async ({

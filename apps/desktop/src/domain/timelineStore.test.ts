@@ -671,6 +671,24 @@ describe("send path — command shape and local echo from diff", () => {
     expect("Transaction" in items[1].id).toBe(true);
   });
 
+  test("late-mounted store applies live PushBack diff when InitialItems was missed", () => {
+    let store = createTimelineStore();
+
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 0,
+        batch_id: 20,
+        diffs: [{ PushBack: { item: makeLocalEcho("desktop-1", "hello world") } }]
+      }
+    });
+
+    const items = getItems(store, KEY);
+    expect(items).toHaveLength(1);
+    expect(items[0].body).toBe("hello world");
+    expect(itemId(items[0])).toBe("txn:desktop-1");
+  });
+
   test("remote echo replaces local echo via Set diff (identity transition)", () => {
     let store = createTimelineStore();
     store = applyTimelineEvent(store, {

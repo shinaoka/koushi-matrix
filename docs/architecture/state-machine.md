@@ -296,6 +296,11 @@ stateDiagram-v2
   item is not redacted; media-only items stay non-forwardable until media
   forwarding has its own Rust-owned contract. Future source extensions must
   consume typed Rust-owned DTOs rather than raw React-side event inspection.
+- Phase B message-action menus are presentation state only. Menu visibility,
+  submenu focus, and clipboard invocation may live in React, but menu entries
+  are gated by `TimelineItem.actions`; source details render only after
+  `MessageSourceLoaded`; forward commands use Rust-snapshot destination room
+  ids and do not copy message bodies through React.
 - `RoomPinnedEventsUpdated { room_id, pinned }` replaces only that room's
   pinned-event list and emits `RoomInteractionsChanged` when the list changes.
   It may arrive from sync or as the post-command refresh after successful
@@ -615,6 +620,9 @@ Outbound timeline send state is owned by the Rust `TimelineActor`, keyed by the
 SDK send-queue transaction id exposed on local-echo timeline items. React may
 render `TimelineItem.send_state` and dispatch typed commands, but it must not
 derive retry/cancel legality from local component state.
+Visible timeline sends go through the SDK UI `Timeline::send` path so local
+echo diffs reach the subscribed timeline store; retry/cancel still operate on
+the underlying SDK send queue handles.
 
 ```mermaid
 stateDiagram-v2
