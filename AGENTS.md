@@ -136,16 +136,17 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000`.
   It runs under the debug/test file credential-store guard and must refuse to
   touch the OS keychain.
-- macOS Tier 2 real-Keychain proof is opt-in:
-  `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1 cargo test --manifest-path crates/matrix-desktop-key/Cargo.toml credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture`.
-  Run it only on a real macOS session/CI runner. The committed manual GitHub
-  Actions lane is
+- macOS Tier 2 real-Keychain proof is opt-in. Prefer the committed manual
+  GitHub Actions lane:
   `gh workflow run macos-keychain-tier2.yml --ref main`; inspect it with
   `gh run list --workflow macos-keychain-tier2.yml --limit 1` and
   `gh run watch <run-id> --exit-status`. Consent dialogs, Touch ID, locked
   login-keychain UX, and signed-build ACL behavior remain attended-only. Keep
-  this workflow key-crate-only with `--manifest-path`; it must not require the
-  private vendored Matrix SDK submodule.
+  this workflow key-crate-only: it copies `crates/matrix-desktop-key` to
+  `$RUNNER_TEMP` and runs `cargo test --manifest-path` there, so it must not
+  require the private vendored Matrix SDK submodule. For a manual macOS session
+  without an initialized vendor submodule, use the same temp-copy pattern before
+  setting `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`.
 
 ## Native Attention QA
 

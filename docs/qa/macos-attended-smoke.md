@@ -18,18 +18,20 @@ Credential-store verification is split by tier:
   `cargo test -p matrix-desktop-state --test local_encryption_state`, and the
   core StoreActor health tests. This tier uses the in-memory/fake credential
   backend and does not touch the OS keychain.
-- Tier 2 is macOS-only, unattended on a real macOS CI/session, and opt-in:
-  `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1 cargo test --manifest-path crates/matrix-desktop-key/Cargo.toml credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture`.
-  The test creates a temporary keychain with `security create-keychain`,
-  performs one synthetic set/get/delete through the normal `keyring` backend,
-  and verifies locked-keychain failure maps to a coarse fail-closed state. It is
-  not an Xvfb-style headless lane; macOS has no equivalent. The committed
-  manual GitHub Actions entry point is
+- Tier 2 is macOS-only, unattended on a real macOS CI/session, and opt-in.
+  Prefer the committed manual GitHub Actions entry point:
   `gh workflow run macos-keychain-tier2.yml --ref main`; after dispatch, use
   `gh run list --workflow macos-keychain-tier2.yml --limit 1` and
   `gh run watch <run-id> --exit-status` to collect private-data-free evidence.
-  The workflow runs `matrix-desktop-key` through `--manifest-path` and must not
-  require the private vendored Matrix SDK submodule.
+  The test creates a temporary keychain with `security create-keychain`,
+  performs one synthetic set/get/delete through the normal `keyring` backend,
+  and verifies locked-keychain failure maps to a coarse fail-closed state. It is
+  not an Xvfb-style headless lane; macOS has no equivalent. The workflow copies
+  `crates/matrix-desktop-key` to `$RUNNER_TEMP` and runs
+  `cargo test --manifest-path` there, so it must not require the private
+  vendored Matrix SDK submodule. Manual local runs without an initialized
+  vendor submodule should use the same temp-copy pattern before setting
+  `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`.
 - Tier 3 remains attended-only: native consent dialogs, Touch ID, locked
   login-keychain UX, and signed-build ACL behavior. `tauri-driver` does not
   support native macOS GUI automation, so do not claim automated coverage for

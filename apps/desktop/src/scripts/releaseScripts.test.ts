@@ -115,9 +115,11 @@ describe("desktop release scripts", () => {
     for (const token of [
       "workflow_dispatch:",
       "runs-on: macos-latest",
+      "Prepare standalone key crate",
+      'cp -R crates/matrix-desktop-key/. "$RUNNER_TEMP/matrix-desktop-key/"',
       'MATRIX_DESKTOP_MACOS_KEYCHAIN_QA: "1"',
-      "cargo test --manifest-path crates/matrix-desktop-key/Cargo.toml credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture",
-      "cargo test --manifest-path crates/matrix-desktop-key/Cargo.toml credential_backend"
+      'cargo test --manifest-path "$RUNNER_TEMP/matrix-desktop-key/Cargo.toml" credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture',
+      'cargo test --manifest-path "$RUNNER_TEMP/matrix-desktop-key/Cargo.toml" credential_backend'
     ]) {
       expect(workflow).toContain(token);
     }
