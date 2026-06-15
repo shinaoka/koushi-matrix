@@ -1,5 +1,6 @@
 import type {
   DesktopSnapshot,
+  RoomListSections,
   RoomListItem,
   RoomSummary,
   SearchScopeKind,
@@ -11,6 +12,17 @@ export function visibleRooms(snapshot: DesktopSnapshot): VisibleRooms {
   return {
     spaceRooms: snapshot.sidebar.space_rooms,
     globalDms: snapshot.sidebar.global_dms
+  };
+}
+
+export function roomListSections(sidebar: DesktopSnapshot["sidebar"]): RoomListSections {
+  return {
+    favourites: sidebar.space_rooms.filter((room) => room.tags.favourite !== null),
+    rooms: sidebar.space_rooms.filter(
+      (room) => room.tags.favourite === null && room.tags.low_priority === null
+    ),
+    people: sidebar.global_dms,
+    lowPriority: sidebar.space_rooms.filter((room) => room.tags.low_priority !== null)
   };
 }
 

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
-import { composeSidebar, visibleRooms } from "./desktopModel";
-import type { RoomSummary, SpaceSummary } from "./types";
+import { composeSidebar, roomListSections, visibleRooms } from "./desktopModel";
+import type { RoomSummary, RoomTags, SpaceSummary } from "./types";
 
 describe("desktop model", () => {
   test("space rooms exclude DMs while DMs stay global", async () => {
@@ -75,6 +75,40 @@ describe("desktop model", () => {
     expect(sidebar.space_rooms[0]?.tags.favourite?.order).toBe("0.25");
     expect(sidebar.global_dms.map((room) => room.room_id)).toEqual([
       "!dm-a:example.invalid"
+    ]);
+  });
+
+  test("room list sections are derived from Rust-owned tags and DM classification", () => {
+    const rooms: RoomSummary[] = [
+      roomSummary("!fav:example.invalid", "Favourite", false, {
+        favourite: { order: "0.10" },
+        low_priority: null
+      }),
+      roomSummary("!plain:example.invalid", "Plain", false),
+      roomSummary("!low:example.invalid", "Low", false, {
+        favourite: null,
+        low_priority: { order: "0.90" }
+      }),
+      roomSummary("!dm-fav:example.invalid", "Favourite DM", true, {
+        favourite: { order: "0.05" },
+        low_priority: null
+      })
+    ];
+    const sidebar = composeSidebar(null, [], rooms);
+
+    const sections = roomListSections(sidebar);
+
+    expect(sections.favourites.map((room) => room.room_id)).toEqual([
+      "!fav:example.invalid"
+    ]);
+    expect(sections.rooms.map((room) => room.room_id)).toEqual([
+      "!plain:example.invalid"
+    ]);
+    expect(sections.lowPriority.map((room) => room.room_id)).toEqual([
+      "!low:example.invalid"
+    ]);
+    expect(sections.people.map((room) => room.room_id)).toEqual([
+      "!dm-fav:example.invalid"
     ]);
   });
 
@@ -344,3 +378,20 @@ describe("desktop model", () => {
     expect(updatedRoot?.reply_count).toBe(rootReplyCountBefore + 1);
   });
 });
+
+function roomSummary(
+  roomId: string,
+  displayName: string,
+  isDm: boolean,
+  tags: RoomTags = { favourite: null, low_priority: null }
+): RoomSummary {
+  return {
+    room_id: roomId,
+    display_name: displayName,
+    avatar: null,
+    is_dm: isDm,
+    tags,
+    parent_space_ids: [],
+    unread_count: 0
+  };
+}

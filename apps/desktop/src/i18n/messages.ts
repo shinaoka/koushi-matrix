@@ -47,12 +47,16 @@ export type MessageId =
   | "composer.replying"
   | "composer.cancelReply"
   | "context.editMessage"
+  | "context.addToFavourites"
+  | "context.addToLowPriority"
   | "context.openKeyboardSettings"
   | "context.openRoomInfo"
   | "context.openSpaceInfo"
   | "context.openThread"
   | "context.openUserSettings"
   | "context.redactMessage"
+  | "context.removeFromFavourites"
+  | "context.removeFromLowPriority"
   | "context.searchInRoom"
   | "context.selectRoom"
   | "context.selectSpace"
@@ -349,6 +353,8 @@ export type MessageId =
   | "workspace.createSpace"
   | "workspace.home"
   | "workspace.invites"
+  | "workspace.favourites"
+  | "workspace.lowPriority"
   | "workspace.newDm"
   | "workspace.people"
   | "workspace.rooms"
@@ -498,12 +504,16 @@ const en: Catalog = {
   "composer.replying": "Replying",
   "composer.cancelReply": "Cancel reply",
   "context.editMessage": "Edit",
+  "context.addToFavourites": "Add to Favourites",
+  "context.addToLowPriority": "Move to Low priority",
   "context.openKeyboardSettings": "Keyboard shortcuts",
   "context.openRoomInfo": "Room info",
   "context.openSpaceInfo": "Space info",
   "context.openThread": "Reply in thread",
   "context.openUserSettings": "User settings",
   "context.redactMessage": "Redact",
+  "context.removeFromFavourites": "Remove from Favourites",
+  "context.removeFromLowPriority": "Remove from Low priority",
   "context.searchInRoom": "Search in room",
   "context.selectRoom": "Open",
   "context.selectSpace": "Open Space",
@@ -800,6 +810,8 @@ const en: Catalog = {
   "workspace.createSpace": "Create space",
   "workspace.home": "Home",
   "workspace.invites": "Invites",
+  "workspace.favourites": "Favourites",
+  "workspace.lowPriority": "Low priority",
   "workspace.newDm": "New DM",
   "workspace.people": "People",
   "workspace.rooms": "Rooms",
@@ -859,12 +871,16 @@ const ja: Catalog = {
   "composer.replying": "返信中",
   "composer.cancelReply": "返信をキャンセル",
   "context.editMessage": "編集",
+  "context.addToFavourites": "お気に入りに追加",
+  "context.addToLowPriority": "低優先度に移動",
   "context.openKeyboardSettings": "キーボードショートカット",
   "context.openRoomInfo": "ルーム情報",
   "context.openSpaceInfo": "スペース情報",
   "context.openThread": "スレッドで返信",
   "context.openUserSettings": "ユーザー設定",
   "context.redactMessage": "削除",
+  "context.removeFromFavourites": "お気に入りから削除",
+  "context.removeFromLowPriority": "低優先度から削除",
   "context.searchInRoom": "ルーム内を検索",
   "context.selectRoom": "開く",
   "context.selectSpace": "スペースを開く",
@@ -1158,6 +1174,8 @@ const ja: Catalog = {
   "workspace.createSpace": "スペースを作成",
   "workspace.home": "ホーム",
   "workspace.invites": "招待",
+  "workspace.favourites": "お気に入り",
+  "workspace.lowPriority": "低優先度",
   "workspace.newDm": "新しいDM",
   "workspace.people": "ユーザー",
   "workspace.rooms": "ルーム",

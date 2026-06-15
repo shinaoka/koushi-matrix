@@ -249,6 +249,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   derive from Rust snapshots (`RoomSummary.tags` + `is_dm`). Do not introduce
   React-only section membership while wiring context menus or browser-headless
   tests.
+- Phase B room-tag GUI tests should stub `set_room_tag` / `remove_room_tag`
+  to return the current snapshot first, assert the row does not move
+  immediately, then push a Rust-shaped snapshot with updated `RoomSummary.tags`
+  / sidebar room tags and assert the section movement. This catches accidental
+  React-local room-list repair.
 
 ## Outbound Send Queue Notes
 

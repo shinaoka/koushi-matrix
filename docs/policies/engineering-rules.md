@@ -184,6 +184,9 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    Headless helpers that seed fake event-driven timeline rows must wait for the
    resulting DOM identity (`data-item-id`) and fail if the CoreEvent was not
    applied; fixed-count fire-and-forget event emission is not valid evidence.
+   Room-list section tests must prove tag-driven movement from Rust-shaped
+   `RoomSummary.tags` snapshots, not from React-local menu state after
+   `set_room_tag` or `remove_room_tag` is clicked.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

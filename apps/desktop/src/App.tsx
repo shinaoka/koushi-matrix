@@ -81,6 +81,7 @@ import {
   shouldLetNativeImeHandleComposerKeyEvent,
   shouldResolveComposerKeyEvent
 } from "./domain/composerKeyEvents";
+import { roomListSections } from "./domain/desktopModel";
 import {
   restoreTimelineAnchor,
   timelinePaginationAnchorEventId
@@ -116,6 +117,7 @@ import type {
   LocaleDisplayProfile,
   ResolveComposerKeyAction,
   RoomListItem,
+  RoomTags,
   SavedSessionInfo,
   SearchResult,
   SearchScopeKind,
@@ -128,6 +130,7 @@ const DEFAULT_HOMESERVER = "https://matrix.org";
 const MENU_EVENT_NAME = "matrix-desktop://menu";
 const STATE_EVENT_NAME = "matrix-desktop://state";
 const CORE_EVENT_NAME = "matrix-desktop://event";
+const EMPTY_ROOM_TAGS: RoomTags = { favourite: null, low_priority: null };
 
 /**
  * Tauri transport for the event-driven timeline (Async rule 4: timeline data
@@ -1095,6 +1098,25 @@ export function App() {
           return;
         default:
           return;
+      }
+    }
+
+    if (target.kind === "room") {
+      switch (actionId) {
+        case "setRoomFavourite":
+          void api.setRoomTag(target.roomId, "favourite").then(setSnapshot);
+          return;
+        case "removeRoomFavourite":
+          void api.removeRoomTag(target.roomId, "favourite").then(setSnapshot);
+          return;
+        case "setRoomLowPriority":
+          void api.setRoomTag(target.roomId, "lowPriority").then(setSnapshot);
+          return;
+        case "removeRoomLowPriority":
+          void api.removeRoomTag(target.roomId, "lowPriority").then(setSnapshot);
+          return;
+        default:
+          break;
       }
     }
 
@@ -2073,6 +2095,7 @@ function Sidebar({
   onOpenSpaceInfo: () => void;
   onSelectRoom: (roomId: string) => void;
 }) {
+  const sections = roomListSections(snapshot.sidebar);
   return (
     <aside className="sidebar" aria-label={t("workspace.rooms")}>
       <div className="workspace-header">
@@ -2119,30 +2142,86 @@ function Sidebar({
           label={t("workspace.invites")}
           onClick={onOpenInvites}
         />
-        <SectionTitle label={t("workspace.rooms")} />
-        {snapshot.sidebar.space_rooms.map((room) => (
-          <RoomButton
-            activeRoomId={activeRoomId}
-            kind="room"
-            key={room.room_id}
-            room={room}
-            onOpenContextMenu={onOpenContextMenu}
-            onSelectRoom={onSelectRoom}
-          />
-        ))}
-        <SectionTitle label={t("workspace.people")} />
-        {snapshot.sidebar.global_dms.map((room) => (
-          <RoomButton
-            activeRoomId={activeRoomId}
-            kind="dm"
-            key={room.room_id}
-            room={room}
-            onOpenContextMenu={onOpenContextMenu}
-            onSelectRoom={onSelectRoom}
-          />
-        ))}
+        <RoomSection
+          activeRoomId={activeRoomId}
+          id="favourites"
+          kind="room"
+          label={t("workspace.favourites")}
+          rooms={sections.favourites}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
+        <RoomSection
+          activeRoomId={activeRoomId}
+          id="rooms"
+          kind="room"
+          label={t("workspace.rooms")}
+          rooms={sections.rooms}
+          showWhenEmpty={true}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
+        <RoomSection
+          activeRoomId={activeRoomId}
+          id="people"
+          kind="dm"
+          label={t("workspace.people")}
+          rooms={sections.people}
+          showWhenEmpty={true}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
+        <RoomSection
+          activeRoomId={activeRoomId}
+          id="low-priority"
+          kind="room"
+          label={t("workspace.lowPriority")}
+          rooms={sections.lowPriority}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
       </div>
     </aside>
+  );
+}
+
+function RoomSection({
+  activeRoomId,
+  id,
+  kind,
+  label,
+  rooms,
+  showWhenEmpty = false,
+  onOpenContextMenu,
+  onSelectRoom
+}: {
+  activeRoomId: string | null;
+  id: string;
+  kind: "room" | "dm";
+  label: string;
+  rooms: RoomListItem[];
+  showWhenEmpty?: boolean;
+  onOpenContextMenu: OpenContextMenu;
+  onSelectRoom: (roomId: string) => void;
+}) {
+  if (!showWhenEmpty && rooms.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="room-section" data-room-section={id} aria-label={label}>
+      <SectionTitle label={label} />
+      {rooms.map((room) => (
+        <RoomButton
+          activeRoomId={activeRoomId}
+          kind={kind}
+          key={room.room_id}
+          room={room}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
+      ))}
+    </section>
   );
 }
 
@@ -2206,7 +2285,7 @@ function RoomButton({
         onOpenContextMenu(
           event,
           { kind: "room", roomId: room.room_id },
-          contextMenuItems({ kind: "room" })
+          contextMenuItems({ kind: "room", tags: room.tags ?? EMPTY_ROOM_TAGS })
         )
       }
     >

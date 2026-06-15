@@ -216,6 +216,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
         display_name: "Seeded Invite",
         avatar: null,
         is_dm: false,
+        tags: { favourite: null, low_priority: null },
         unread_count: 0,
         parent_space_ids: []
       };
@@ -243,6 +244,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
               room_id: joinedRoom.room_id,
               display_name: joinedRoom.display_name,
               avatar: null,
+              tags: { favourite: null, low_priority: null },
               unread_count: 0
             }
           ]
@@ -258,6 +260,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
         display_name: String(userId),
         avatar: null,
         is_dm: true,
+        tags: { favourite: null, low_priority: null },
         unread_count: 0,
         parent_space_ids: []
       };
@@ -284,6 +287,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
               room_id: dmRoom.room_id,
               display_name: dmRoom.display_name,
               avatar: null,
+              tags: { favourite: null, low_priority: null },
               unread_count: 0
             }
           ]
@@ -382,6 +386,104 @@ test("timeline reply action invokes set_composer_reply_target", async ({ page })
   // The reply-mode snapshot returned by set_composer_reply_target surfaces the
   // composer reply banner (Cancel reply control), confirming reply mode.
   await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+});
+
+test("room tag context menu dispatches typed commands and waits for Rust section state", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const roomsSection = page.locator('[data-room-section="rooms"]');
+  const favouritesSection = page.locator('[data-room-section="favourites"]');
+
+  await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
+  await expect(favouritesSection).toHaveCount(0);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("set_room_tag", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.setCommandResponse("remove_room_tag", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "Harness Room" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Add to Favourites" }).click();
+
+  await expect.poll(() => invocationCount(page, "set_room_tag")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("set_room_tag")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      tag: "favourite",
+      order: null
+    });
+  await expect(favouritesSection).toHaveCount(0);
+  await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
+
+  await page.evaluate((roomId) => {
+    const snapshot = window.__harness.currentSnapshot();
+    const tags = { favourite: { order: null }, low_priority: null };
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        rooms: snapshot.state.rooms.map((room) =>
+          room.room_id === roomId ? { ...room, tags } : room
+        )
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        space_rooms: snapshot.sidebar.space_rooms.map((room) =>
+          room.room_id === roomId ? { ...room, tags } : room
+        )
+      }
+    });
+    window.__harness.pushStateChanged();
+  }, HARNESS_ROOM_ID);
+
+  await expect(favouritesSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
+  await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toHaveCount(0);
+
+  await favouritesSection.getByRole("button", { name: "Harness Room" }).click({
+    button: "right"
+  });
+  await page.getByRole("menuitem", { name: "Remove from Favourites" }).click();
+
+  await expect.poll(() => invocationCount(page, "remove_room_tag")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("remove_room_tag")[0]?.args)
+    )
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      tag: "favourite"
+    });
+  await expect(favouritesSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
+
+  await page.evaluate((roomId) => {
+    const snapshot = window.__harness.currentSnapshot();
+    const tags = { favourite: null, low_priority: null };
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        rooms: snapshot.state.rooms.map((room) =>
+          room.room_id === roomId ? { ...room, tags } : room
+        )
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        space_rooms: snapshot.sidebar.space_rooms.map((room) =>
+          room.room_id === roomId ? { ...room, tags } : room
+        )
+      }
+    });
+    window.__harness.pushStateChanged();
+  }, HARNESS_ROOM_ID);
+
+  await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
+  await expect(favouritesSection).toHaveCount(0);
 });
 
 test("send queue rows dispatch retry and cancel commands from Rust-owned send state", async ({

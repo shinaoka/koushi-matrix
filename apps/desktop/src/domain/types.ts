@@ -834,3 +834,10 @@ export interface VisibleRooms {
   spaceRooms: RoomListItem[];
   globalDms: RoomListItem[];
 }
+
+export interface RoomListSections {
+  favourites: RoomListItem[];
+  rooms: RoomListItem[];
+  people: RoomListItem[];
+  lowPriority: RoomListItem[];
+}
