@@ -703,7 +703,7 @@ export function TimelineItemRow({
               aria-label={presenceLabel(presence)}
             />
           ) : null}
-          <span className="sender">{item.sender ?? ""}</span>
+          <span className="sender" dir="auto">{item.sender ?? ""}</span>
           {item.is_edited && !isRedacted ? (
             <span className="message-edited">{t("timeline.editedMessage")}</span>
           ) : null}

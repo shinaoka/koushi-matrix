@@ -11,7 +11,8 @@
  *   1. Open create-room dialog → submit → invokes `create_room`; dialog closes.
  *   2. Open create-space dialog → submit → invokes `create_space`; dialog closes.
  *   3. Click a timeline row's reply action → invokes `set_composer_reply_target`.
- *   4. Click reaction affordances → invokes `toggle_reaction`.
+ *   4. Click reaction affordances → invokes typed `send_reaction` /
+ *      `redact_reaction`.
  *   5. Redact a message → invokes `redact_message` and renders the tombstone.
  *   6. Edit a message → invokes `edit_message`, rejects whitespace-only saves,
  *      and renders the edited marker from the updated timeline row.
@@ -28,7 +29,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { focusedTimelineKey, roomTimelineKey, threadTimelineKey } from "../src/domain/coreEvents";
-import { t } from "../src/i18n/messages";
+import { pseudoLocalize, t } from "../src/i18n/messages";
 
 function makeThreadItem(index: number, rootEventId = "$seed-event:example.invalid") {
   return {
@@ -290,26 +291,98 @@ test("timeline reply action invokes set_composer_reply_target", async ({ page })
   await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
 });
 
-test("clicking a reaction pill invokes toggle_reaction", async ({ page }) => {
+test("clicking an unselected reaction pill invokes send_reaction", async ({ page }) => {
   await gotoReadyShell(page);
   await expect(page.getByRole("button", { name: "Reaction 👍, count 1" }).first()).toBeVisible();
   await page.evaluate(() => window.__harness.clearInvocations());
 
   await page.getByRole("button", { name: "Reaction 👍, count 1" }).first().click();
 
-  await expect.poll(() => invocationCount(page, "toggle_reaction")).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => invocationCount(page, "send_reaction")).toBeGreaterThanOrEqual(1);
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("toggle_reaction")[0]?.args)
+      page.evaluate(() => window.__harness.invocationsOf("send_reaction")[0]?.args)
     )
     .toEqual({
       roomId: "!harness-room:example.invalid",
       eventId: "$seed-event:example.invalid",
       reactionKey: "👍"
     });
+  expect(await invocationCount(page, "redact_reaction")).toBe(0);
 });
 
-test("add reaction picker invokes toggle_reaction with the selected emoji", async ({ page }) => {
+test("clicking an own reaction pill invokes redact_reaction", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        ItemsUpdated: {
+          key: {
+            account_key: "@harness-user:example.invalid",
+            kind: { Room: { room_id: "!harness-room:example.invalid" } }
+          },
+          generation: 1,
+          batch_id: 2,
+          diffs: [
+            {
+              Set: {
+                index: 0,
+                item: {
+                  id: { Event: { event_id: "$seed-event:example.invalid" } },
+                  sender: "@harness-user:example.invalid",
+                  body: "Seed message for reply target",
+                  timestamp_ms: 1_800_000_000_000,
+                  in_reply_to_event_id: null,
+                  thread_root: null,
+                  thread_summary: null,
+                  can_react: true,
+                  is_redacted: false,
+                  can_redact: true,
+                  is_edited: false,
+                  can_edit: true,
+                  reactions: [
+                    {
+                      key: "👍",
+                      count: 2,
+                      reacted_by_me: true,
+                      my_reaction_event_id: "$reaction-own:example.invalid",
+                      sender_preview: [
+                        "@harness-user:example.invalid",
+                        "@other-user:example.invalid"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    });
+  });
+  const pill = page.getByRole("button", { name: "Reaction 👍, count 2" }).first();
+  await expect(pill).toBeVisible();
+  await expect(pill).toHaveAttribute("aria-pressed", "true");
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await pill.click();
+
+  await expect.poll(() => invocationCount(page, "redact_reaction")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("redact_reaction")[0]?.args)
+    )
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      eventId: "$seed-event:example.invalid",
+      reactionKey: "👍",
+      reactionEventId: "$reaction-own:example.invalid"
+    });
+  expect(await invocationCount(page, "send_reaction")).toBe(0);
+});
+
+test("add reaction picker invokes send_reaction with the selected emoji", async ({ page }) => {
   await gotoReadyShell(page);
   await page.locator('[data-event-id="$seed-event:example.invalid"]').hover();
   await expect(page.getByRole("button", { name: "Add reaction" }).first()).toBeVisible();
@@ -319,16 +392,17 @@ test("add reaction picker invokes toggle_reaction with the selected emoji", asyn
   await expect(page.getByRole("button", { name: "React with 👀" })).toBeVisible();
   await page.getByRole("button", { name: "React with 👀" }).click();
 
-  await expect.poll(() => invocationCount(page, "toggle_reaction")).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => invocationCount(page, "send_reaction")).toBeGreaterThanOrEqual(1);
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("toggle_reaction")[0]?.args)
+      page.evaluate(() => window.__harness.invocationsOf("send_reaction")[0]?.args)
     )
     .toEqual({
       roomId: "!harness-room:example.invalid",
       eventId: "$seed-event:example.invalid",
       reactionKey: "👀"
     });
+  expect(await invocationCount(page, "redact_reaction")).toBe(0);
 });
 
 test("attach control invokes upload_media and renders Rust-owned media progress", async ({
@@ -1061,6 +1135,9 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
 
   const longRoomName = "Cafe\u0301 日本語 العربية Very Long Synthetic Room Label For Pseudo Locale";
   const sampleBody = "Cafe\u0301 日本語 العربية long pseudo locale sample";
+  const longReactionKey =
+    "very-long-reaction-key-without-breaks-arabic-العربية-0123456789";
+  const expectedAddReactionLabel = pseudoLocalize("Add reaction", "bidi");
   const roomKey = roomTimelineKey(
     "@harness-user:example.invalid",
     "!harness-room:example.invalid"
@@ -1086,7 +1163,7 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
   await expect(page.locator("main.main-pane").getByText(longRoomName)).toBeVisible();
   await expect(page.getByText("Seed message for reply target")).toBeVisible();
 
-  await page.evaluate(async ({ key, body }) => {
+  await page.evaluate(async ({ key, body, reactionKey }) => {
     const item = {
       id: { Event: { event_id: "$seed-event:example.invalid" } },
       sender: "@rtl-user:example.invalid",
@@ -1107,6 +1184,13 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
           reacted_by_me: false,
           my_reaction_event_id: null,
           sender_preview: ["@rtl-user:example.invalid"]
+        },
+        {
+          key: reactionKey,
+          count: 12,
+          reacted_by_me: false,
+          my_reaction_event_id: null,
+          sender_preview: ["@rtl-user:example.invalid", "@second-user:example.invalid"]
         }
       ]
     };
@@ -1130,13 +1214,28 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
         break;
       }
     }
-  }, { key: roomKey, body: sampleBody });
+  }, { key: roomKey, body: sampleBody, reactionKey: longReactionKey });
 
   await expect.poll(() => page.evaluate(() => document.documentElement.dir)).toBe("rtl");
   await expect(page.locator(".room-name").first()).toHaveAttribute("dir", "auto");
+  await expect(page.locator(".sender").first()).toHaveAttribute("dir", "auto");
   await expect(page.locator(".message-body").first()).toHaveAttribute("dir", "auto");
   await expect(page.getByText(sampleBody)).toBeVisible();
   await expect(page.locator(".reaction-pill-key", { hasText: "日本語" })).toBeVisible();
+  await expect(page.locator(".reaction-pill-key", { hasText: "日本語" })).toHaveAttribute(
+    "dir",
+    "auto"
+  );
+  const longReaction = page.locator(".reaction-pill-key", { hasText: longReactionKey });
+  await expect(longReaction).toBeVisible();
+  await expect(longReaction).toHaveAttribute("dir", "auto");
+  await expect
+    .poll(() =>
+      longReaction.evaluate((element) => element.scrollWidth > element.clientWidth)
+    )
+    .toBe(true);
+  await page.locator('[data-event-id="$seed-event:example.invalid"]').hover();
+  await expect(page.getByRole("button", { name: expectedAddReactionLabel }).first()).toBeVisible();
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2))
     .toBe(true);
