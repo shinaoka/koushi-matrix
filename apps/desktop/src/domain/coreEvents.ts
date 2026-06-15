@@ -302,6 +302,16 @@ export type RoomEvent =
         next_batch: string | null;
       };
     }
+  | { RoomSettingsLoaded: { request_id: RequestId; settings: RoomSettingsSnapshot } }
+  | { RoomSettingUpdated: { request_id: RequestId; settings: RoomSettingsSnapshot } }
+  | {
+      RoomMemberModerated: {
+        request_id: RequestId;
+        room_id: string;
+        target_user_id: string;
+        action: RoomModerationAction;
+      };
+    }
   | "RoomListUpdated";
 
 export type RoomTagKind = "favourite" | "lowPriority";
@@ -339,6 +349,29 @@ export interface DirectoryRoomSummary {
   world_readable: boolean;
   guest_can_join: boolean;
 }
+
+export interface RoomSettingsSnapshot {
+  room_id: string;
+  name: string | null;
+  topic: string | null;
+  avatar_url: string | null;
+  join_rule: RoomJoinRule;
+  history_visibility: RoomHistoryVisibility;
+  permissions: RoomPermissionFacts;
+}
+
+export type RoomJoinRule = "public" | "invite" | "knock" | "restricted" | "private";
+
+export type RoomHistoryVisibility = "worldReadable" | "shared" | "invited" | "joined";
+
+export interface RoomPermissionFacts {
+  can_edit_settings: boolean;
+  can_kick: boolean;
+  can_ban: boolean;
+  can_unban: boolean;
+}
+
+export type RoomModerationAction = "kick" | "ban" | "unban";
 
 export type PresenceKind = "online" | "away" | "offline";
 

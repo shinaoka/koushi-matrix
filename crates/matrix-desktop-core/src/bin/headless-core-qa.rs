@@ -51,7 +51,7 @@ use matrix_desktop_core::event::{
     PaginationState, RoomEvent, SearchEvent, SyncBackendKind, SyncEvent, TimelineDiff,
     TimelineEvent, TimelineItem, TimelineItemId, TimelineSendState,
 };
-use matrix_desktop_core::failure::CoreFailure;
+use matrix_desktop_core::failure::{CoreFailure, RoomFailureKind};
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{
@@ -59,9 +59,11 @@ use matrix_desktop_state::{
     ComposerResolvedAction, ComposerResolverContext, ComposerSelection, ComposerSendShortcut,
     ComposerSurface, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
     IdentityResetAuthRequest, IdentityResetAuthType, IdentityResetState, KeyBackupStatus,
-    MentionIntent, MentionTarget, PresenceKind, RecoveryRequest, ReplyQuoteState, SasEmoji,
-    SessionInfo, SessionState, TrustOperationFailureKind, VerificationFlowState,
-    VerificationTarget, resolve_composer_key_action,
+    MentionIntent, MentionTarget, OperationFailureKind, PresenceKind, RecoveryRequest,
+    ReplyQuoteState, RoomManagementOperationKind, RoomManagementOperationState,
+    RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, SasEmoji, SessionInfo,
+    SessionState, TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
+    resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -99,6 +101,7 @@ enum QaScenario {
     InvitesDm,
     RoomSpace,
     Directory,
+    RoomManagement,
     Timeline,
     Composer,
     Reply,
@@ -118,6 +121,7 @@ enum QaStage {
     InvitesDm,
     RoomSpace,
     Directory,
+    RoomManagement,
     Timeline,
     Composer,
     Reply,
@@ -209,6 +213,7 @@ impl QaScenario {
             "invites_dm" => Ok(Self::InvitesDm),
             "room_space" => Ok(Self::RoomSpace),
             "directory" => Ok(Self::Directory),
+            "room_management" => Ok(Self::RoomManagement),
             "timeline" => Ok(Self::Timeline),
             "composer" => Ok(Self::Composer),
             "reply" => Ok(Self::Reply),
@@ -219,7 +224,7 @@ impl QaScenario {
             "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, directory, timeline, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
             )),
         }
     }
@@ -246,6 +251,10 @@ impl QaScenario {
             Self::Directory => matches!(
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::Directory
+            ),
+            Self::RoomManagement => matches!(
+                stage,
+                QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace | QaStage::RoomManagement
             ),
             Self::Timeline => matches!(
                 stage,
@@ -322,7 +331,10 @@ impl QaScenario {
     }
 
     fn suppress_matrix_identifiers(self) -> bool {
-        matches!(self, Self::LiveSignals | Self::SendQueue)
+        matches!(
+            self,
+            Self::LiveSignals | Self::SendQueue | Self::RoomManagement
+        )
     }
 }
 
@@ -344,6 +356,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         ],
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Directory => &["directory_query=ok", "directory_join=ok"],
+        QaStage::RoomManagement => &["room_settings=ok", "moderation=ok", "permission_guard=ok"],
         QaStage::Timeline => &["timeline=ok"],
         QaStage::Composer => &[
             "mention_send=ok",
@@ -395,6 +408,9 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "room_space=ok",
         "directory_query=ok",
         "directory_join=ok",
+        "room_settings=ok",
+        "moderation=ok",
+        "permission_guard=ok",
         "timeline=ok",
         "mention_send=ok",
         "markdown_send=ok",
@@ -439,6 +455,12 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         }
         QaScenario::RoomSpace => vec![QaStage::Safety, QaStage::LoginSync, QaStage::RoomSpace],
         QaScenario::Directory => vec![QaStage::Safety, QaStage::LoginSync, QaStage::Directory],
+        QaScenario::RoomManagement => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::RoomManagement,
+        ],
         QaScenario::Timeline => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -510,6 +532,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::InvitesDm,
             QaStage::RoomSpace,
             QaStage::Directory,
+            QaStage::RoomManagement,
             QaStage::Timeline,
             QaStage::Composer,
             QaStage::Reply,
@@ -538,6 +561,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         }
         QaScenario::RoomSpace
         | QaScenario::Directory
+        | QaScenario::RoomManagement
         | QaScenario::E2eeTrust
         | QaScenario::InvitesDm
         | QaScenario::Timeline
@@ -874,6 +898,112 @@ async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> 
     println!("directory_join=ok");
 
     cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "directory cleanup B").await?;
+    Ok(())
+}
+
+async fn run_room_management_stage(
+    config: &QaConfig,
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+    account_key_a: &AccountKey,
+    account_key_b: &AccountKey,
+) -> Result<(), String> {
+    let room_id = create_room_for_qa(
+        conn_a,
+        "QA Room Management",
+        false,
+        "room_management create room",
+    )
+    .await?;
+    sync_once_for_qa(conn_a, "room_management sync A after create").await?;
+    wait_for_room_in_room_list(conn_a, &room_id, "room_management A room list").await?;
+
+    let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
+    invite_user_for_qa(
+        conn_a,
+        &room_id,
+        &user_b_full_id,
+        "room_management invite B",
+    )
+    .await?;
+    sync_once_for_qa(conn_b, "room_management sync B for invite").await?;
+    wait_for_invite_in_snapshot(
+        conn_b,
+        &room_id,
+        Some(false),
+        "room_management wait for B invite",
+    )
+    .await?;
+
+    let join_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Room(RoomCommand::JoinRoom {
+            request_id: join_b_id,
+            room_id: room_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("room_management: submit B join failed: {e}"))?;
+    wait_for_room_joined(conn_b, join_b_id, &room_id, "room_management B joins").await?;
+    sync_once_for_qa(conn_a, "room_management sync A after B join").await?;
+    sync_once_for_qa(conn_b, "room_management sync B after join").await?;
+
+    let settings_a =
+        load_room_settings_for_qa(conn_a, &room_id, "room_management load settings A").await?;
+    if !settings_a.permissions.can_edit_settings || !settings_a.permissions.can_kick {
+        return Err("room_management: creator permissions were not projected".to_owned());
+    }
+
+    let update_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+            request_id: update_id,
+            room_id: room_id.clone(),
+            change: RoomSettingChange::Topic(Some("QA room management topic".to_owned())),
+        }))
+        .await
+        .map_err(|e| format!("room_management: submit topic update failed: {e}"))?;
+    let updated =
+        wait_for_room_setting_updated(conn_a, update_id, "room_management topic update").await?;
+    if updated.topic.as_deref() != Some("QA room management topic") {
+        return Err("room_management: updated settings snapshot did not carry topic".to_owned());
+    }
+    println!("room_settings=ok");
+
+    let settings_b =
+        load_room_settings_for_qa(conn_b, &room_id, "room_management load settings B").await?;
+    if settings_b.permissions.can_kick {
+        return Err("room_management: normal member unexpectedly has kick permission".to_owned());
+    }
+
+    let guard_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Room(RoomCommand::ModerateRoomMember {
+            request_id: guard_id,
+            room_id: room_id.clone(),
+            target_user_id: account_key_a.0.clone(),
+            action: RoomModerationAction::Kick,
+            reason: None,
+        }))
+        .await
+        .map_err(|e| format!("room_management: submit forbidden moderation failed: {e}"))?;
+    wait_for_room_management_forbidden(conn_b, guard_id, "room_management permission guard")
+        .await?;
+    println!("permission_guard=ok");
+
+    let kick_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Room(RoomCommand::ModerateRoomMember {
+            request_id: kick_id,
+            room_id,
+            target_user_id: account_key_b.0.clone(),
+            action: RoomModerationAction::Kick,
+            reason: Some("QA moderation".to_owned()),
+        }))
+        .await
+        .map_err(|e| format!("room_management: submit kick failed: {e}"))?;
+    wait_for_room_member_moderated(conn_a, kick_id, "room_management member kick").await?;
+    println!("moderation=ok");
+
     Ok(())
 }
 
@@ -1618,6 +1748,17 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     if scenario.should_run_stage(QaStage::Directory) {
         run_directory_stage(&config, &mut conn_a).await?;
+    }
+
+    if scenario.should_run_stage(QaStage::RoomManagement) {
+        run_room_management_stage(
+            &config,
+            &mut conn_a,
+            &mut conn_b,
+            &account_key_a,
+            &account_key_b,
+        )
+        .await?;
     }
 
     if !scenario.should_run_stage(QaStage::Timeline) {
@@ -2469,6 +2610,21 @@ async fn invite_user_for_qa(
     wait_for_user_invited_ack(conn, request_id, label).await
 }
 
+async fn load_room_settings_for_qa(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    label: &str,
+) -> Result<RoomSettingsSnapshot, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::LoadRoomSettings {
+        request_id,
+        room_id: room_id.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit load settings failed: {e}"))?;
+    wait_for_room_settings_loaded(conn, request_id, label).await
+}
+
 async fn accept_invite_for_qa(
     conn: &mut CoreConnection,
     room_id: &str,
@@ -2608,6 +2764,143 @@ async fn wait_for_directory_query_completed(
             _ => continue,
         }
     }
+}
+
+async fn wait_for_room_settings_loaded(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+) -> Result<RoomSettingsSnapshot, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomSettingsLoaded"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomSettingsLoaded {
+                request_id: ev_id,
+                settings,
+            }) if ev_id == request_id => return Ok(settings),
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => return Err(format!("{label} failed: {failure:?}")),
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_room_setting_updated(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+) -> Result<RoomSettingsSnapshot, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomSettingUpdated"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomSettingUpdated {
+                request_id: ev_id,
+                settings,
+            }) if ev_id == request_id => return Ok(settings),
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => return Err(format!("{label} failed: {failure:?}")),
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_room_member_moderated(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for RoomMemberModerated"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomMemberModerated {
+                request_id: ev_id, ..
+            }) if ev_id == request_id => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => return Err(format!("{label} failed: {failure:?}")),
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_room_management_forbidden(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    let mut saw_forbidden_failure = false;
+
+    loop {
+        if saw_forbidden_failure && room_management_forbidden_recorded(&conn.snapshot(), request_id)
+        {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for forbidden room-management state"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure:
+                    CoreFailure::RoomOperationFailed {
+                        kind: RoomFailureKind::Forbidden,
+                    },
+            } if ev_id == request_id => {
+                saw_forbidden_failure = true;
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!(
+                    "{label}: expected forbidden room-management failure, got {failure:?}"
+                ));
+            }
+            CoreEvent::StateChanged(snapshot)
+                if room_management_forbidden_recorded(&snapshot, request_id) =>
+            {
+                if saw_forbidden_failure {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn room_management_forbidden_recorded(snapshot: &AppState, request_id: RequestId) -> bool {
+    matches!(
+        &snapshot.room_management.operation,
+        RoomManagementOperationState::Failed {
+            request_id: state_request_id,
+            operation,
+            kind,
+            ..
+        } if *state_request_id == request_id.sequence
+            && *operation == RoomManagementOperationKind::Moderation
+            && *kind == OperationFailureKind::Forbidden
+    )
 }
 
 /// Wait for `RoomEvent::SpaceCreated` with the given request_id. Returns space_id.
@@ -6807,6 +7100,10 @@ mod tests {
             QaScenario::Directory
         );
         assert_eq!(
+            QaScenario::from_env_value("room_management").unwrap(),
+            QaScenario::RoomManagement
+        );
+        assert_eq!(
             QaScenario::from_env_value("invites_dm").unwrap(),
             QaScenario::InvitesDm
         );
@@ -6867,6 +7164,7 @@ mod tests {
             QaScenario::LoginSync,
             QaScenario::RoomSpace,
             QaScenario::Directory,
+            QaScenario::RoomManagement,
             QaScenario::InvitesDm,
             QaScenario::Timeline,
             QaScenario::Reply,
@@ -7420,12 +7718,20 @@ mod tests {
         assert!(!QaScenario::Directory.should_run_stage(QaStage::Timeline));
         assert!(!QaScenario::Directory.should_run_stage(QaStage::Reply));
 
+        assert!(QaScenario::RoomManagement.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::RoomManagement.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::RoomManagement.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::RoomManagement.should_run_stage(QaStage::RoomManagement));
+        assert!(!QaScenario::RoomManagement.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::RoomManagement.should_run_stage(QaStage::Reply));
+
         assert!(QaScenario::All.should_run_stage(QaStage::Safety));
         assert!(QaScenario::All.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::All.should_run_stage(QaStage::E2eeTrust));
         assert!(QaScenario::All.should_run_stage(QaStage::InvitesDm));
         assert!(QaScenario::All.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::All.should_run_stage(QaStage::Directory));
+        assert!(QaScenario::All.should_run_stage(QaStage::RoomManagement));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
         assert!(QaScenario::All.should_run_stage(QaStage::Media));
@@ -7464,6 +7770,56 @@ mod tests {
     }
 
     #[test]
+    fn room_management_scenario_runs_after_room_space_and_reports_private_tokens() {
+        assert!(QaScenario::RoomManagement.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::RoomManagement.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::RoomManagement.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::RoomManagement.should_run_stage(QaStage::RoomManagement));
+        assert!(!QaScenario::RoomManagement.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::RoomManagement.suppress_matrix_identifiers());
+
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::RoomManagement),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "room_settings=ok",
+                "moderation=ok",
+                "permission_guard=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+    }
+
+    #[test]
+    fn room_management_forbidden_predicate_requires_matching_failed_moderation_state() {
+        let request_id = RequestId {
+            connection_id: matrix_desktop_core::ids::RuntimeConnectionId(1),
+            sequence: 42,
+        };
+        let mut state = AppState::default();
+
+        assert!(!room_management_forbidden_recorded(&state, request_id));
+
+        state.room_management.operation = RoomManagementOperationState::Failed {
+            request_id: 41,
+            room_id: "!redacted:example.invalid".to_owned(),
+            operation: RoomManagementOperationKind::Moderation,
+            kind: OperationFailureKind::Forbidden,
+        };
+        assert!(!room_management_forbidden_recorded(&state, request_id));
+
+        state.room_management.operation = RoomManagementOperationState::Failed {
+            request_id: 42,
+            room_id: "!redacted:example.invalid".to_owned(),
+            operation: RoomManagementOperationKind::Moderation,
+            kind: OperationFailureKind::Forbidden,
+        };
+        assert!(room_management_forbidden_recorded(&state, request_id));
+    }
+
+    #[test]
     fn implemented_final_tokens_include_thread() {
         assert_eq!(
             &implemented_final_tokens()[..],
@@ -7477,6 +7833,9 @@ mod tests {
                 "room_space=ok",
                 "directory_query=ok",
                 "directory_join=ok",
+                "room_settings=ok",
+                "moderation=ok",
+                "permission_guard=ok",
                 "timeline=ok",
                 "mention_send=ok",
                 "markdown_send=ok",
@@ -7677,6 +8036,9 @@ mod tests {
                 "room_space=ok",
                 "directory_query=ok",
                 "directory_join=ok",
+                "room_settings=ok",
+                "moderation=ok",
+                "permission_guard=ok",
                 "timeline=ok",
                 "mention_send=ok",
                 "markdown_send=ok",

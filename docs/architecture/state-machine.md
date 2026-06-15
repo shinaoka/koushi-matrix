@@ -647,6 +647,70 @@ stateDiagram-v2
   events around the `CreateRoom` / `CreateSpace` / `SetSpaceChild` SDK calls,
   using the command's `request_id` (its `sequence`) as the correlation id.
 
+## Room Management
+
+Room settings and moderation are Rust-owned state in
+`AppState.room_management`. React may render the loaded settings snapshot and
+permission facts, but it must not decide whether a setting change or moderation
+action is allowed. GUI code dispatches typed room-management commands and waits
+for Rust-owned state/events to settle.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Idle: RoomSettingsSnapshotLoaded
+    Idle --> PendingSettings: RoomSettingUpdateRequested [Ready + can_edit_settings]
+    Idle --> PendingModeration: RoomModerationRequested [Ready + matching permission fact]
+    Idle --> FailedPermissions: RoomSettingUpdateRequested [permission denied]
+    Idle --> FailedPermissions: RoomModerationRequested [permission denied]
+    PendingSettings --> Idle: RoomSettingUpdateSucceeded [matching request_id]
+    PendingSettings --> FailedSettings: RoomSettingUpdateFailed [matching request_id]
+    PendingModeration --> Idle: RoomModerationSucceeded [matching request_id]
+    PendingModeration --> FailedModeration: RoomModerationFailed [matching request_id]
+    FailedSettings --> PendingSettings: RoomSettingUpdateRequested
+    FailedModeration --> PendingModeration: RoomModerationRequested
+    FailedPermissions --> PendingSettings: RoomSettingUpdateRequested [permission now allowed]
+    FailedPermissions --> PendingModeration: RoomModerationRequested [permission now allowed]
+    PendingSettings --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    PendingModeration --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    FailedSettings --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    FailedModeration --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    FailedPermissions --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+```
+
+- `RoomSettingsSnapshot` carries the selected room id, name, topic, avatar URL,
+  join rule, history visibility, and `RoomPermissionFacts`. It is app-owned DTO
+  data mapped from the SDK before crossing the command/event boundary.
+- The command surface is `RoomCommand::LoadRoomSettings`,
+  `RoomCommand::UpdateRoomSetting`, and `RoomCommand::ModerateRoomMember`.
+  Tauri handlers are transport adapters: they allocate a request id, submit the
+  typed command, wait for the correlated `RoomEvent`, and do not call SDK
+  wrappers directly.
+- Setting updates are accepted only with a `Ready` session and
+  `can_edit_settings=true` in the current snapshot. Moderation is accepted only
+  when the matching permission fact allows the action:
+  `can_kick`, `can_ban`, or `can_unban`.
+- Permission-denied requests settle as a failed `permissions` operation before
+  SDK mutation. A GUI control may be disabled from the snapshot, but Rust still
+  enforces the guard for direct commands and tests.
+- Settings and moderation completions are request-correlated. Stale successes,
+  stale failures, duplicate completions, and completions for a room that is no
+  longer selected are ignored.
+- SDK state-event mutation calls can return before the SDK room cache reflects
+  the sent state event. The SDK adapter must project the submitted setting
+  change into the success snapshot or otherwise wait for a refreshed cache
+  before emitting `RoomSettingUpdated`; React must not patch the visible
+  settings state locally.
+- Failure state stores only coarse `RoomFailureKind` values. Room IDs, user IDs,
+  room names/topics, avatar URLs, moderation reasons, raw SDK errors, and event
+  identifiers must not appear in `Debug` output or QA stdout.
+- Logout, account switch, and session clearing reset `room_management` to its
+  default idle state and drop selected-room settings.
+- Headless core QA covers this with the `room_management` scenario and
+  private-data-free tokens `room_settings=ok`, `permission_guard=ok`, and
+  `moderation=ok`. The lane uses a disposable management room so timeline and
+  room/space stages are not disrupted.
+
 ## Public Directory
 
 Public room directory state is Rust-owned and split into two independent

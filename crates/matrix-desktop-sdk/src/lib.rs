@@ -1283,6 +1283,8 @@ pub enum MatrixRoomOperationError {
     InvalidRoomId,
     #[error("Matrix room alias is invalid")]
     InvalidRoomAlias,
+    #[error("Matrix room setting is invalid")]
+    InvalidRoomSetting,
     #[error("Matrix event id is invalid")]
     InvalidEventId,
     #[error("Matrix user id is invalid")]
@@ -1301,6 +1303,7 @@ impl MatrixRoomOperationError {
             Self::Sdk(kind) => Some(*kind),
             Self::InvalidRoomId
             | Self::InvalidRoomAlias
+            | Self::InvalidRoomSetting
             | Self::InvalidEventId
             | Self::InvalidUserId
             | Self::InvalidServerName
@@ -1513,6 +1516,58 @@ pub struct MatrixPublicRoomDirectoryRoom {
     pub joined_members: u64,
     pub world_readable: bool,
     pub guest_can_join: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixRoomSettingsSnapshot {
+    pub room_id: String,
+    pub name: Option<String>,
+    pub topic: Option<String>,
+    pub avatar_url: Option<String>,
+    pub join_rule: MatrixRoomJoinRule,
+    pub history_visibility: MatrixRoomHistoryVisibility,
+    pub permissions: MatrixRoomPermissionFacts,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRoomJoinRule {
+    Public,
+    Invite,
+    Knock,
+    Restricted,
+    Private,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRoomHistoryVisibility {
+    WorldReadable,
+    Shared,
+    Invited,
+    Joined,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MatrixRoomPermissionFacts {
+    pub can_edit_settings: bool,
+    pub can_kick: bool,
+    pub can_ban: bool,
+    pub can_unban: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MatrixRoomSettingChange {
+    Name(Option<String>),
+    Topic(Option<String>),
+    AvatarUrl(Option<String>),
+    JoinRule(MatrixRoomJoinRule),
+    HistoryVisibility(MatrixRoomHistoryVisibility),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRoomModerationAction {
+    Kick,
+    Ban,
+    Unban,
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -1963,6 +2018,80 @@ pub async fn room_can_send_text_message(
         room.own_user_id(),
         matrix_sdk::ruma::events::MessageLikeEventType::RoomMessage,
     ))
+}
+
+pub async fn get_room_settings_snapshot(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<MatrixRoomSettingsSnapshot, MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    Ok(matrix_room_settings_snapshot(&room).await)
+}
+
+pub async fn update_room_setting(
+    session: &MatrixClientSession,
+    room_id: &str,
+    change: MatrixRoomSettingChange,
+) -> Result<MatrixRoomSettingsSnapshot, MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let snapshot = matrix_room_settings_snapshot(&room).await;
+    match &change {
+        MatrixRoomSettingChange::Name(name) => {
+            room.set_name(name.clone().unwrap_or_default())
+                .await
+                .map_err(MatrixRoomOperationError::from_sdk_error)?;
+        }
+        MatrixRoomSettingChange::Topic(topic) => {
+            room.set_room_topic(topic.as_deref().unwrap_or_default())
+                .await
+                .map_err(MatrixRoomOperationError::from_sdk_error)?;
+        }
+        MatrixRoomSettingChange::AvatarUrl(Some(avatar_url)) => {
+            let avatar_url = matrix_sdk::ruma::OwnedMxcUri::from(avatar_url.clone());
+            room.set_avatar_url(avatar_url.as_ref(), None)
+                .await
+                .map_err(MatrixRoomOperationError::from_sdk_error)?;
+        }
+        MatrixRoomSettingChange::AvatarUrl(None) => {
+            room.remove_avatar()
+                .await
+                .map_err(MatrixRoomOperationError::from_sdk_error)?;
+        }
+        MatrixRoomSettingChange::JoinRule(join_rule) => {
+            let join_rule = sdk_join_rule_for_update(*join_rule)?;
+            room.privacy_settings()
+                .update_join_rule(join_rule)
+                .await
+                .map_err(MatrixRoomOperationError::from_sdk_error)?;
+        }
+        MatrixRoomSettingChange::HistoryVisibility(history_visibility) => {
+            room.privacy_settings()
+                .update_room_history_visibility(sdk_history_visibility(*history_visibility))
+                .await
+                .map_err(MatrixRoomOperationError::from_sdk_error)?;
+        }
+    }
+
+    Ok(room_settings_snapshot_with_change(snapshot, &change))
+}
+
+pub async fn moderate_room_member(
+    session: &MatrixClientSession,
+    room_id: &str,
+    target_user_id: &str,
+    action: MatrixRoomModerationAction,
+    reason: Option<&str>,
+) -> Result<(), MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let target_user_id = matrix_sdk::ruma::UserId::parse(target_user_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidUserId)?;
+
+    match action {
+        MatrixRoomModerationAction::Kick => room.kick_user(&target_user_id, reason).await,
+        MatrixRoomModerationAction::Ban => room.ban_user(&target_user_id, reason).await,
+        MatrixRoomModerationAction::Unban => room.unban_user(&target_user_id, reason).await,
+    }
+    .map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
 pub async fn create_room(
@@ -2633,6 +2762,122 @@ fn matrix_public_room_from_chunk(
     }
 }
 
+async fn matrix_room_settings_snapshot(room: &matrix_sdk::Room) -> MatrixRoomSettingsSnapshot {
+    let power_levels = room.power_levels_or_default().await;
+    let own_user_id = room.own_user_id();
+    let can_edit_settings = power_levels.user_can_send_state(
+        own_user_id,
+        matrix_sdk::ruma::events::StateEventType::RoomName,
+    ) && power_levels.user_can_send_state(
+        own_user_id,
+        matrix_sdk::ruma::events::StateEventType::RoomTopic,
+    ) && power_levels.user_can_send_state(
+        own_user_id,
+        matrix_sdk::ruma::events::StateEventType::RoomAvatar,
+    ) && power_levels.user_can_send_state(
+        own_user_id,
+        matrix_sdk::ruma::events::StateEventType::RoomJoinRules,
+    ) && power_levels.user_can_send_state(
+        own_user_id,
+        matrix_sdk::ruma::events::StateEventType::RoomHistoryVisibility,
+    );
+
+    MatrixRoomSettingsSnapshot {
+        room_id: room.room_id().to_string(),
+        name: room.name(),
+        topic: room.topic(),
+        avatar_url: room.avatar_url().map(|url| url.to_string()),
+        join_rule: room
+            .join_rule()
+            .as_ref()
+            .map(matrix_room_join_rule)
+            .unwrap_or(MatrixRoomJoinRule::Invite),
+        history_visibility: matrix_room_history_visibility(&room.history_visibility_or_default()),
+        permissions: MatrixRoomPermissionFacts {
+            can_edit_settings,
+            can_kick: power_levels.user_can_kick(own_user_id),
+            can_ban: power_levels.user_can_ban(own_user_id),
+            can_unban: power_levels.user_can_ban(own_user_id),
+        },
+    }
+}
+
+fn room_settings_snapshot_with_change(
+    mut snapshot: MatrixRoomSettingsSnapshot,
+    change: &MatrixRoomSettingChange,
+) -> MatrixRoomSettingsSnapshot {
+    match change {
+        MatrixRoomSettingChange::Name(name) => {
+            snapshot.name = name.clone();
+        }
+        MatrixRoomSettingChange::Topic(topic) => {
+            snapshot.topic = topic.clone();
+        }
+        MatrixRoomSettingChange::AvatarUrl(avatar_url) => {
+            snapshot.avatar_url = avatar_url.clone();
+        }
+        MatrixRoomSettingChange::JoinRule(join_rule) => {
+            snapshot.join_rule = *join_rule;
+        }
+        MatrixRoomSettingChange::HistoryVisibility(history_visibility) => {
+            snapshot.history_visibility = *history_visibility;
+        }
+    }
+    snapshot
+}
+
+fn matrix_room_join_rule(
+    join_rule: &matrix_sdk::ruma::events::room::join_rules::JoinRule,
+) -> MatrixRoomJoinRule {
+    use matrix_sdk::ruma::events::room::join_rules::JoinRule;
+    match join_rule {
+        JoinRule::Public => MatrixRoomJoinRule::Public,
+        JoinRule::Invite => MatrixRoomJoinRule::Invite,
+        JoinRule::Knock => MatrixRoomJoinRule::Knock,
+        JoinRule::Restricted(_) | JoinRule::KnockRestricted(_) => MatrixRoomJoinRule::Restricted,
+        JoinRule::Private => MatrixRoomJoinRule::Private,
+        _ => MatrixRoomJoinRule::Invite,
+    }
+}
+
+fn sdk_join_rule_for_update(
+    join_rule: MatrixRoomJoinRule,
+) -> Result<matrix_sdk::ruma::events::room::join_rules::JoinRule, MatrixRoomOperationError> {
+    use matrix_sdk::ruma::events::room::join_rules::JoinRule;
+    match join_rule {
+        MatrixRoomJoinRule::Public => Ok(JoinRule::Public),
+        MatrixRoomJoinRule::Invite => Ok(JoinRule::Invite),
+        MatrixRoomJoinRule::Knock => Ok(JoinRule::Knock),
+        MatrixRoomJoinRule::Private => Ok(JoinRule::Private),
+        MatrixRoomJoinRule::Restricted => Err(MatrixRoomOperationError::InvalidRoomSetting),
+    }
+}
+
+fn matrix_room_history_visibility(
+    history_visibility: &matrix_sdk::ruma::events::room::history_visibility::HistoryVisibility,
+) -> MatrixRoomHistoryVisibility {
+    use matrix_sdk::ruma::events::room::history_visibility::HistoryVisibility;
+    match history_visibility {
+        HistoryVisibility::WorldReadable => MatrixRoomHistoryVisibility::WorldReadable,
+        HistoryVisibility::Shared => MatrixRoomHistoryVisibility::Shared,
+        HistoryVisibility::Invited => MatrixRoomHistoryVisibility::Invited,
+        HistoryVisibility::Joined => MatrixRoomHistoryVisibility::Joined,
+        _ => MatrixRoomHistoryVisibility::Shared,
+    }
+}
+
+fn sdk_history_visibility(
+    history_visibility: MatrixRoomHistoryVisibility,
+) -> matrix_sdk::ruma::events::room::history_visibility::HistoryVisibility {
+    use matrix_sdk::ruma::events::room::history_visibility::HistoryVisibility;
+    match history_visibility {
+        MatrixRoomHistoryVisibility::WorldReadable => HistoryVisibility::WorldReadable,
+        MatrixRoomHistoryVisibility::Shared => HistoryVisibility::Shared,
+        MatrixRoomHistoryVisibility::Invited => HistoryVisibility::Invited,
+        MatrixRoomHistoryVisibility::Joined => HistoryVisibility::Joined,
+    }
+}
+
 fn non_empty_name(name: &str) -> Option<String> {
     let name = name.trim();
     if name.is_empty() {
@@ -3114,10 +3359,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomTagInfo,
-        MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
-        create_public_directory_room, join_room_by_alias, matrix_room_list_room_from_counts,
-        query_public_room_directory,
+        MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
+        MatrixRoomJoinRule, MatrixRoomModerationAction, MatrixRoomPermissionFacts,
+        MatrixRoomSettingChange, MatrixRoomSettingsSnapshot, MatrixRoomTagInfo, MatrixRoomTags,
+        MatrixSearchIndexKey, MatrixSearchIndexStoreConfig, create_public_directory_room,
+        get_room_settings_snapshot, join_room_by_alias, matrix_room_list_room_from_counts,
+        moderate_room_member, query_public_room_directory, room_settings_snapshot_with_change,
+        update_room_setting,
     };
 
     #[test]
@@ -3248,5 +3496,100 @@ mod tests {
         let _query_fn = query_public_room_directory;
         let _join_fn = join_room_by_alias;
         let _create_public_fn = create_public_directory_room;
+    }
+
+    #[test]
+    fn room_management_wrappers_use_settings_privacy_and_moderation_apis() {
+        let _snapshot = MatrixRoomSettingsSnapshot {
+            room_id: "!room:example.invalid".to_owned(),
+            name: Some("Synthetic Room".to_owned()),
+            topic: Some("Synthetic topic".to_owned()),
+            avatar_url: None,
+            join_rule: MatrixRoomJoinRule::Invite,
+            history_visibility: MatrixRoomHistoryVisibility::Shared,
+            permissions: MatrixRoomPermissionFacts {
+                can_edit_settings: true,
+                can_kick: true,
+                can_ban: true,
+                can_unban: false,
+            },
+        };
+        let _change = MatrixRoomSettingChange::JoinRule(MatrixRoomJoinRule::Public);
+        let _moderation = MatrixRoomModerationAction::Kick;
+        let _snapshot_fn = get_room_settings_snapshot;
+        let _update_fn = update_room_setting;
+        let _moderate_fn = moderate_room_member;
+
+        let source = include_str!("lib.rs");
+        assert!(source.contains(".set_name("));
+        assert!(source.contains(".set_room_topic("));
+        assert!(source.contains(".set_avatar_url("));
+        assert!(source.contains(".remove_avatar("));
+        assert!(source.contains(".privacy_settings()"));
+        assert!(source.contains(".update_join_rule("));
+        assert!(source.contains(".update_room_history_visibility("));
+        assert!(source.contains(".kick_user("));
+        assert!(source.contains(".ban_user("));
+        assert!(source.contains(".unban_user("));
+    }
+
+    #[test]
+    fn room_setting_update_projects_the_sent_change_into_the_success_snapshot() {
+        let original = MatrixRoomSettingsSnapshot {
+            room_id: "!room:example.invalid".to_owned(),
+            name: Some("Original Room".to_owned()),
+            topic: Some("Original topic".to_owned()),
+            avatar_url: Some("mxc://example.invalid/original".to_owned()),
+            join_rule: MatrixRoomJoinRule::Invite,
+            history_visibility: MatrixRoomHistoryVisibility::Shared,
+            permissions: MatrixRoomPermissionFacts {
+                can_edit_settings: true,
+                can_kick: true,
+                can_ban: true,
+                can_unban: true,
+            },
+        };
+
+        assert_eq!(
+            room_settings_snapshot_with_change(
+                original.clone(),
+                &MatrixRoomSettingChange::Topic(Some("Updated topic".to_owned())),
+            )
+            .topic
+            .as_deref(),
+            Some("Updated topic")
+        );
+        assert_eq!(
+            room_settings_snapshot_with_change(
+                original.clone(),
+                &MatrixRoomSettingChange::Name(None),
+            )
+            .name,
+            None
+        );
+        assert_eq!(
+            room_settings_snapshot_with_change(
+                original.clone(),
+                &MatrixRoomSettingChange::AvatarUrl(None),
+            )
+            .avatar_url,
+            None
+        );
+        assert_eq!(
+            room_settings_snapshot_with_change(
+                original.clone(),
+                &MatrixRoomSettingChange::JoinRule(MatrixRoomJoinRule::Public),
+            )
+            .join_rule,
+            MatrixRoomJoinRule::Public
+        );
+        assert_eq!(
+            room_settings_snapshot_with_change(
+                original,
+                &MatrixRoomSettingChange::HistoryVisibility(MatrixRoomHistoryVisibility::Joined,),
+            )
+            .history_visibility,
+            MatrixRoomHistoryVisibility::Joined
+        );
     }
 }

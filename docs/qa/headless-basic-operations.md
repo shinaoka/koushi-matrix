@@ -54,6 +54,9 @@ dm_start=ok
 room_space=ok
 directory_query=ok
 directory_join=ok
+room_settings=ok
+moderation=ok
+permission_guard=ok
 timeline=ok
 reply=ok
 reply_quote=ok
@@ -100,6 +103,14 @@ command, queries the homeserver public directory through `RoomCommand`, and
 joins by alias/server through Rust-owned directory state. The lane must not
 print room IDs, aliases, server names, query text, pagination tokens, or raw SDK
 errors as success output.
+
+`room_settings=ok`, `moderation=ok`, and `permission_guard=ok` are the Phase A
+room-management proof. The core lane creates a disposable management room,
+loads Rust-owned settings/permission facts, updates a setting through
+`RoomCommand`, rejects an unauthorized moderation command before SDK mutation,
+and performs an authorized moderation action. The lane must not print room IDs,
+user IDs, room names/topics, reasons, avatar URLs, or raw SDK errors as success
+output.
 
 `mention_send=ok`, `markdown_send=ok`, `slash_command=ok`, and `ime_guard=ok`
 are the Phase A composer-semantics proof. The core lane sends typed
@@ -182,6 +193,7 @@ Focused local proof:
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=invites_dm --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=directory --core --core-backend=both --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=room_management --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=media --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=live_signals --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000

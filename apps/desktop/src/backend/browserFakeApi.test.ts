@@ -201,4 +201,55 @@ describe("BrowserFakeApi settings preview", () => {
     const joined = await joinPromise;
     expect(joined.state.directory.join).toEqual({ kind: "idle" });
   });
+
+  test("models room management settings, moderation, and permission guard substates", async () => {
+    const api = createBrowserFakeApi();
+
+    const loaded = await api.loadRoomSettings("!browser-room:browser.fake");
+    expect(loaded.state.room_management).toMatchObject({
+      selected_room_id: "!browser-room:browser.fake",
+      settings: {
+        room_id: "!browser-room:browser.fake",
+        permissions: {
+          can_edit_settings: true,
+          can_kick: true,
+          can_ban: true,
+          can_unban: true
+        }
+      },
+      operation: { kind: "idle" }
+    });
+
+    const updatePromise = api.updateRoomSetting("!browser-room:browser.fake", {
+      topic: "Updated topic"
+    });
+    expect((await api.getSnapshot()).state.room_management.operation).toMatchObject({
+      kind: "pending",
+      operation: "settings"
+    });
+    const updated = await updatePromise;
+    expect(updated.state.room_management.settings?.topic).toBe("Updated topic");
+    expect(updated.state.room_management.operation).toEqual({ kind: "idle" });
+
+    const moderated = await api.moderateRoomMember(
+      "!browser-room:browser.fake",
+      "@target:browser.fake",
+      "kick",
+      "Private reason"
+    );
+    expect(moderated.state.room_management.operation).toEqual({ kind: "idle" });
+
+    await api.loadRoomSettings("!readonly-room:browser.fake");
+    const guarded = await api.moderateRoomMember(
+      "!readonly-room:browser.fake",
+      "@target:browser.fake",
+      "kick",
+      null
+    );
+    expect(guarded.state.room_management.operation).toMatchObject({
+      kind: "failed",
+      operation: "moderation",
+      failureKind: "forbidden"
+    });
+  });
 });

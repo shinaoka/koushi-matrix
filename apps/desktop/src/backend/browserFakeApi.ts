@@ -6,7 +6,11 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   DirectoryQuery,
+  RoomModerationAction,
+  RoomPermissionFacts,
   RoomSummary,
+  RoomSettingChange,
+  RoomSettingsSnapshot,
   RoomTagKind,
   RoomTags,
   SavedSessionInfo,
@@ -83,6 +87,14 @@ export interface DesktopApi {
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
   queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot>;
   joinDirectoryRoom(alias: string, viaServer?: string | null): Promise<DesktopSnapshot>;
+  loadRoomSettings(roomId: string): Promise<DesktopSnapshot>;
+  updateRoomSetting(roomId: string, change: RoomSettingChange): Promise<DesktopSnapshot>;
+  moderateRoomMember(
+    roomId: string,
+    targetUserId: string,
+    action: RoomModerationAction,
+    reason?: string | null
+  ): Promise<DesktopSnapshot>;
   createRoom(name: string): Promise<DesktopSnapshot>;
   createSpace(name: string): Promise<DesktopSnapshot>;
   setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<DesktopSnapshot>;
@@ -780,6 +792,136 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async loadRoomSettings(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim()) {
+      return this.getSnapshot();
+    }
+
+    const normalizedRoomId = roomId.trim();
+    this.snapshot.state.room_management = {
+      selected_room_id: normalizedRoomId,
+      settings: this.roomSettingsSnapshot(normalizedRoomId),
+      operation: { kind: "idle" }
+    };
+    return this.getSnapshot();
+  }
+
+  async updateRoomSetting(
+    roomId: string,
+    change: RoomSettingChange
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim()) {
+      return this.getSnapshot();
+    }
+
+    const normalizedRoomId = roomId.trim();
+    const settings =
+      this.snapshot.state.room_management.settings?.room_id === normalizedRoomId
+        ? this.snapshot.state.room_management.settings
+        : this.roomSettingsSnapshot(normalizedRoomId);
+    const requestId = this.nextRequestId();
+
+    if (!settings.permissions.can_edit_settings) {
+      this.snapshot.state.room_management = {
+        selected_room_id: normalizedRoomId,
+        settings,
+        operation: {
+          kind: "failed",
+          request_id: requestId,
+          room_id: normalizedRoomId,
+          operation: "settings",
+          failureKind: "forbidden"
+        }
+      };
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.room_management = {
+      selected_room_id: normalizedRoomId,
+      settings,
+      operation: {
+        kind: "pending",
+        request_id: requestId,
+        room_id: normalizedRoomId,
+        operation: "settings"
+      }
+    };
+
+    await Promise.resolve();
+
+    const updated = applyRoomSettingChange(settings, change);
+    this.snapshot.state.room_management = {
+      selected_room_id: normalizedRoomId,
+      settings: updated,
+      operation: { kind: "idle" }
+    };
+    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+      room.room_id === normalizedRoomId && "name" in change
+        ? { ...room, display_name: change.name ?? room.display_name }
+        : room
+    );
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
+    return this.getSnapshot();
+  }
+
+  async moderateRoomMember(
+    roomId: string,
+    targetUserId: string,
+    action: RoomModerationAction,
+    reason: string | null = null
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim() || !targetUserId.trim()) {
+      return this.getSnapshot();
+    }
+    void reason;
+
+    const normalizedRoomId = roomId.trim();
+    const settings =
+      this.snapshot.state.room_management.settings?.room_id === normalizedRoomId
+        ? this.snapshot.state.room_management.settings
+        : this.roomSettingsSnapshot(normalizedRoomId);
+    const requestId = this.nextRequestId();
+
+    if (!roomModerationAllowed(settings.permissions, action)) {
+      this.snapshot.state.room_management = {
+        selected_room_id: normalizedRoomId,
+        settings,
+        operation: {
+          kind: "failed",
+          request_id: requestId,
+          room_id: normalizedRoomId,
+          operation: "moderation",
+          failureKind: "forbidden"
+        }
+      };
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.room_management = {
+      selected_room_id: normalizedRoomId,
+      settings,
+      operation: {
+        kind: "pending",
+        request_id: requestId,
+        room_id: normalizedRoomId,
+        operation: "moderation"
+      }
+    };
+
+    await Promise.resolve();
+
+    this.snapshot.state.room_management = {
+      selected_room_id: normalizedRoomId,
+      settings,
+      operation: { kind: "idle" }
+    };
+    return this.getSnapshot();
+  }
+
   async createRoom(name: string): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
@@ -1114,6 +1256,22 @@ class BrowserFakeApi implements DesktopApi {
     return this.snapshot.state.rooms.some((room) => room.room_id === roomId);
   }
 
+  private roomSettingsSnapshot(roomId: string): RoomSettingsSnapshot {
+    const room = this.snapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+    const permissions = roomId.includes("readonly")
+      ? readonlyRoomPermissionFacts()
+      : editableRoomPermissionFacts();
+    return {
+      room_id: roomId,
+      name: room?.display_name ?? null,
+      topic: null,
+      avatar_url: null,
+      join_rule: "invite",
+      history_visibility: "shared",
+      permissions
+    };
+  }
+
   private canRestartSync() {
     const sync = this.snapshot.state.sync;
     return (
@@ -1164,6 +1322,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.focused_context = { kind: "closed" };
     this.snapshot.state.search = { kind: "closed" };
     this.snapshot.state.directory = defaultDirectoryState();
+    this.snapshot.state.room_management = defaultRoomManagementState();
     this.snapshot.state.basic_operation = { kind: "idle" };
     this.snapshot.state.profile = defaultProfileState(null);
     this.snapshot.state.e2ee_trust = defaultE2eeTrustState();
@@ -1236,7 +1395,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       invites: [],
       room_interactions: {},
       directory: defaultDirectoryState(),
-      room_management: { selected_room_id: null, operation: { kind: "idle" } },
+      room_management: defaultRoomManagementState(),
       activity: { kind: "closed" },
       timeline: {
         room_id: active_room_id,
@@ -1325,7 +1484,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       invites: [],
       room_interactions: {},
       directory: defaultDirectoryState(),
-      room_management: { selected_room_id: null, operation: { kind: "idle" } },
+      room_management: defaultRoomManagementState(),
       activity: { kind: "closed" },
       timeline: {
         room_id: null,
@@ -1371,6 +1530,65 @@ function defaultDirectoryState(): DesktopSnapshot["state"]["directory"] {
     query: { kind: "closed" },
     join: { kind: "idle" }
   };
+}
+
+function defaultRoomManagementState(): DesktopSnapshot["state"]["room_management"] {
+  return {
+    selected_room_id: null,
+    settings: null,
+    operation: { kind: "idle" }
+  };
+}
+
+function editableRoomPermissionFacts(): RoomPermissionFacts {
+  return {
+    can_edit_settings: true,
+    can_kick: true,
+    can_ban: true,
+    can_unban: true
+  };
+}
+
+function readonlyRoomPermissionFacts(): RoomPermissionFacts {
+  return {
+    can_edit_settings: false,
+    can_kick: false,
+    can_ban: false,
+    can_unban: false
+  };
+}
+
+function applyRoomSettingChange(
+  settings: RoomSettingsSnapshot,
+  change: RoomSettingChange
+): RoomSettingsSnapshot {
+  if ("name" in change) {
+    return { ...settings, name: change.name };
+  }
+  if ("topic" in change) {
+    return { ...settings, topic: change.topic };
+  }
+  if ("avatarUrl" in change) {
+    return { ...settings, avatar_url: change.avatarUrl };
+  }
+  if ("joinRule" in change) {
+    return { ...settings, join_rule: change.joinRule };
+  }
+  return { ...settings, history_visibility: change.historyVisibility };
+}
+
+function roomModerationAllowed(
+  permissions: RoomPermissionFacts,
+  action: RoomModerationAction
+): boolean {
+  switch (action) {
+    case "kick":
+      return permissions.can_kick;
+    case "ban":
+      return permissions.can_ban;
+    case "unban":
+      return permissions.can_unban;
+  }
 }
 
 function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {

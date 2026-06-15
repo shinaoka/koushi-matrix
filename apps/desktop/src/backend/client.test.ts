@@ -181,4 +181,34 @@ describe("TauriDesktopApi", () => {
       viaServer: "example.invalid"
     });
   });
+
+  test("passes room management actions to Rust-owned room commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.loadRoomSettings("!room:example.invalid");
+    await api.updateRoomSetting("!room:example.invalid", {
+      topic: "Private topic"
+    });
+    await api.moderateRoomMember(
+      "!room:example.invalid",
+      "@target:example.invalid",
+      "kick",
+      "Private reason"
+    );
+
+    expect(invoke).toHaveBeenCalledWith("load_room_settings", {
+      roomId: "!room:example.invalid"
+    });
+    expect(invoke).toHaveBeenCalledWith("update_room_setting", {
+      roomId: "!room:example.invalid",
+      change: { topic: "Private topic" }
+    });
+    expect(invoke).toHaveBeenCalledWith("moderate_room_member", {
+      roomId: "!room:example.invalid",
+      targetUserId: "@target:example.invalid",
+      action: "kick",
+      reason: "Private reason"
+    });
+  });
 });

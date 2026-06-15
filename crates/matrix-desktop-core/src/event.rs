@@ -6,8 +6,8 @@ use std::fmt;
 use matrix_desktop_state::{
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
     JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
-    NativeAttentionSummary, PinnedEvent, PresenceKind, ReplyQuote, RoomTagKind,
-    VerificationFlowState,
+    NativeAttentionSummary, PinnedEvent, PresenceKind, ReplyQuote, RoomModerationAction,
+    RoomSettingsSnapshot, RoomTagKind, VerificationFlowState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -385,6 +385,20 @@ pub enum RoomEvent {
         rooms: Vec<DirectoryRoomSummary>,
         next_batch: Option<String>,
     },
+    RoomSettingsLoaded {
+        request_id: RequestId,
+        settings: RoomSettingsSnapshot,
+    },
+    RoomSettingUpdated {
+        request_id: RequestId,
+        settings: RoomSettingsSnapshot,
+    },
+    RoomMemberModerated {
+        request_id: RequestId,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+    },
     RoomListUpdated,
 }
 
@@ -481,6 +495,25 @@ impl fmt::Debug for RoomEvent {
                 .field("request_id", request_id)
                 .field("query", &"DirectoryQuery(..)")
                 .field("rooms_count", &rooms.len())
+                .finish(),
+            Self::RoomSettingsLoaded { request_id, .. } => formatter
+                .debug_struct("RoomSettingsLoaded")
+                .field("request_id", request_id)
+                .field("settings", &"RoomSettingsSnapshot(..)")
+                .finish(),
+            Self::RoomSettingUpdated { request_id, .. } => formatter
+                .debug_struct("RoomSettingUpdated")
+                .field("request_id", request_id)
+                .field("settings", &"RoomSettingsSnapshot(..)")
+                .finish(),
+            Self::RoomMemberModerated {
+                request_id, action, ..
+            } => formatter
+                .debug_struct("RoomMemberModerated")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
                 .finish(),
             Self::RoomListUpdated => formatter.write_str("RoomListUpdated"),
         }

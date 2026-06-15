@@ -778,6 +778,9 @@ pub fn run() {
             commands::remove_room_tag,
             commands::pin_event,
             commands::unpin_event,
+            commands::load_room_settings,
+            commands::update_room_setting,
+            commands::moderate_room_member,
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
@@ -1188,8 +1191,9 @@ mod tests {
             DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType, IdentityResetState,
             JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
             LocalEncryptionHealth, NativeAttentionCapabilities, NativeAttentionCapability,
-            NativeAttentionSummary, PresenceKind, ReplyQuote, ReplyQuoteState, RoomTagKind,
-            SasEmoji, VerificationFlowState, VerificationTarget,
+            NativeAttentionSummary, PresenceKind, ReplyQuote, ReplyQuoteState,
+            RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomPermissionFacts,
+            RoomSettingsSnapshot, RoomTagKind, SasEmoji, VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -1601,6 +1605,48 @@ mod tests {
                 next_batch: Some("page-3".to_owned()),
             }))
             .expect("serialize directory query completion");
+        let room_settings_snapshot = RoomSettingsSnapshot {
+            room_id: "!r:example.test".to_owned(),
+            name: Some("Room Settings Sample".to_owned()),
+            topic: Some("Private topic sample".to_owned()),
+            avatar_url: Some("mxc://example.test/avatar".to_owned()),
+            join_rule: RoomJoinRule::Invite,
+            history_visibility: RoomHistoryVisibility::Shared,
+            permissions: RoomPermissionFacts {
+                can_edit_settings: true,
+                can_kick: true,
+                can_ban: true,
+                can_unban: true,
+            },
+        };
+        let room_settings_loaded =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::RoomSettingsLoaded {
+                request_id,
+                settings: room_settings_snapshot.clone(),
+            }))
+            .expect("serialize room settings loaded");
+        let room_setting_updated =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::RoomSettingUpdated {
+                request_id,
+                settings: room_settings_snapshot,
+            }))
+            .expect("serialize room setting updated");
+        let room_member_moderated =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::RoomMemberModerated {
+                request_id,
+                room_id: "!r:example.test".to_owned(),
+                target_user_id: "@target:example.test".to_owned(),
+                action: RoomModerationAction::Kick,
+            }))
+            .expect("serialize room member moderated");
+        assert_eq!(
+            room_settings_loaded["event"]["RoomSettingsLoaded"]["settings"]["permissions"]["can_edit_settings"],
+            json!(true)
+        );
+        assert_eq!(
+            room_member_moderated["event"]["RoomMemberModerated"]["action"],
+            json!("kick")
+        );
 
         let e2ee_trust = serialize_core_event(&CoreEvent::E2eeTrust(
             E2eeTrustEvent::VerificationProgress {
@@ -1744,6 +1790,9 @@ mod tests {
             "roomInviteAccepted": room_invite_accepted,
             "roomInviteDeclined": room_invite_declined,
             "roomLeft": room_left,
+            "roomMemberModerated": room_member_moderated,
+            "roomSettingUpdated": room_setting_updated,
+            "roomSettingsLoaded": room_settings_loaded,
             "roomTagRemoved": room_tag_removed,
             "roomTagSet": room_tag_set,
             "timelineInitialItems": initial,

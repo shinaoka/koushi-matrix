@@ -661,6 +661,26 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `coreEvents.generated.json` contract artifact. The src-tauri
   `core_event_wire_format_matches_checked_in_contract_artifact` test catches
   drift.
+- Room-management GUI work must render only `AppState.room_management`.
+  Settings snapshots and permission facts are Rust-owned; React should disable
+  controls from `settings.permissions` and dispatch typed commands, but it must
+  not decide or repair permission, setting, or kick/ban/unban state locally.
+  Tauri room-management commands wait for correlated `RoomEvent`s and must not
+  call SDK wrappers directly.
+- SDK room-setting state events can return before the SDK room cache reflects
+  the just-sent state event. The success snapshot must project the submitted
+  setting change or wait for a refreshed cache; do not make React patch the
+  visible room-management state after a command returns.
+- The headless `room_management` scenario uses a disposable management room so
+  topic edits and moderation membership changes do not disturb timeline,
+  room/space, or reply stages. Permission-guard QA must observe both the
+  `OperationFailed(Forbidden)` event and the failed `room_management`
+  snapshot; event delivery can lead the connection snapshot by one
+  `StateChanged` event.
+- Room-management QA output must stay private-data-free: no room IDs, user IDs,
+  room names/topics, avatar URLs, moderation reasons, event IDs, or raw SDK
+  errors. Success output is limited to `room_settings=ok`,
+  `permission_guard=ok`, `moderation=ok`, and cleanup tokens.
 - E2EE trust Phase A commands/events are Rust-owned contracts only until the
   AccountActor SDK implementation lands. The fixture/demo backend should return
   typed unavailable/failure actions for trust effects and must not silently

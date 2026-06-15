@@ -5,9 +5,10 @@ use crate::state::{
     E2eeRecoveryState, IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts,
     LiveRoomSignalUpdate, LocalEncryptionHealth, LoginFlow, NativeAttentionSummary,
     OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest,
-    RecoveryMethod, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, SearchResult,
-    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
-    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
+    RecoveryMethod, RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, RoomSummary,
+    RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, SearchResult, SearchScope, SessionInfo,
+    SettingsPatch, SettingsValues, SpaceSummary, TrustOperationFailureKind, UserProfile,
+    VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -255,6 +256,45 @@ pub enum AppAction {
         via_server: Option<String>,
         kind: OperationFailureKind,
     },
+    RoomSettingsSnapshotLoaded {
+        room_id: String,
+        settings: RoomSettingsSnapshot,
+    },
+    RoomSettingUpdateRequested {
+        request_id: u64,
+        room_id: String,
+        change: RoomSettingChange,
+    },
+    RoomSettingUpdateSucceeded {
+        request_id: u64,
+        room_id: String,
+        settings: RoomSettingsSnapshot,
+    },
+    RoomSettingUpdateFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
+    },
+    RoomModerationRequested {
+        request_id: u64,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+        reason: Option<String>,
+    },
+    RoomModerationSucceeded {
+        request_id: u64,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+    },
+    RoomModerationFailed {
+        request_id: u64,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+        kind: OperationFailureKind,
+    },
     ActivityOpened {
         request_id: u64,
     },
@@ -465,6 +505,65 @@ impl fmt::Debug for AppAction {
                 .field("request_id", request_id)
                 .field("alias", &"RoomAlias(..)")
                 .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
+                .field("kind", kind)
+                .finish(),
+            Self::RoomSettingsSnapshotLoaded { .. } => formatter
+                .debug_struct("RoomSettingsSnapshotLoaded")
+                .field("room_id", &"RoomId(..)")
+                .field("settings", &"RoomSettingsSnapshot(..)")
+                .finish(),
+            Self::RoomSettingUpdateRequested {
+                request_id, change, ..
+            } => formatter
+                .debug_struct("RoomSettingUpdateRequested")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("change", change)
+                .finish(),
+            Self::RoomSettingUpdateSucceeded { request_id, .. } => formatter
+                .debug_struct("RoomSettingUpdateSucceeded")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("settings", &"RoomSettingsSnapshot(..)")
+                .finish(),
+            Self::RoomSettingUpdateFailed {
+                request_id, kind, ..
+            } => formatter
+                .debug_struct("RoomSettingUpdateFailed")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("kind", kind)
+                .finish(),
+            Self::RoomModerationRequested {
+                request_id, action, ..
+            } => formatter
+                .debug_struct("RoomModerationRequested")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
+                .field("reason", &"ModerationReason(..)")
+                .finish(),
+            Self::RoomModerationSucceeded {
+                request_id, action, ..
+            } => formatter
+                .debug_struct("RoomModerationSucceeded")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
+                .finish(),
+            Self::RoomModerationFailed {
+                request_id,
+                action,
+                kind,
+                ..
+            } => formatter
+                .debug_struct("RoomModerationFailed")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
                 .field("kind", kind)
                 .finish(),
             _ => formatter.write_str("AppAction(..)"),

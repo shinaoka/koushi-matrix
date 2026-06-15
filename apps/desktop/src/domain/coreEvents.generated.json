@@ -233,6 +233,70 @@
     },
     "kind": "Room"
   },
+  "roomMemberModerated": {
+    "event": {
+      "RoomMemberModerated": {
+        "action": "kick",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "room_id": "!r:example.test",
+        "target_user_id": "@target:example.test"
+      }
+    },
+    "kind": "Room"
+  },
+  "roomSettingUpdated": {
+    "event": {
+      "RoomSettingUpdated": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "settings": {
+          "avatar_url": "mxc://example.test/avatar",
+          "history_visibility": "shared",
+          "join_rule": "invite",
+          "name": "Room Settings Sample",
+          "permissions": {
+            "can_ban": true,
+            "can_edit_settings": true,
+            "can_kick": true,
+            "can_unban": true
+          },
+          "room_id": "!r:example.test",
+          "topic": "Private topic sample"
+        }
+      }
+    },
+    "kind": "Room"
+  },
+  "roomSettingsLoaded": {
+    "event": {
+      "RoomSettingsLoaded": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "settings": {
+          "avatar_url": "mxc://example.test/avatar",
+          "history_visibility": "shared",
+          "join_rule": "invite",
+          "name": "Room Settings Sample",
+          "permissions": {
+            "can_ban": true,
+            "can_edit_settings": true,
+            "can_kick": true,
+            "can_unban": true
+          },
+          "room_id": "!r:example.test",
+          "topic": "Private topic sample"
+        }
+      }
+    },
+    "kind": "Room"
+  },
   "roomTagRemoved": {
     "event": {
       "RoomTagRemoved": {

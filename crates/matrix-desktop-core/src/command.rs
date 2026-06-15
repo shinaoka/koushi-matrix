@@ -6,7 +6,8 @@ use std::fmt;
 use matrix_desktop_state::{
     DirectoryQuery, IdentityResetAuthRequest, JapaneseCatalogProfile, LocalEncryptionHealth,
     LoginRequest, MentionIntent, NativeAttentionSummary, PresenceKind, RecoveryRequest,
-    RoomTagKind, SettingsPatch, VerificationCancelReason, VerificationTarget,
+    RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch, VerificationCancelReason,
+    VerificationTarget,
 };
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
@@ -86,6 +87,9 @@ impl CoreCommand {
                 | RoomCommand::UnpinEvent { request_id, .. }
                 | RoomCommand::QueryDirectory { request_id, .. }
                 | RoomCommand::JoinDirectoryRoom { request_id, .. }
+                | RoomCommand::LoadRoomSettings { request_id, .. }
+                | RoomCommand::UpdateRoomSetting { request_id, .. }
+                | RoomCommand::ModerateRoomMember { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
                 | RoomCommand::SelectRoom { request_id, .. } => *request_id,
             },
@@ -660,6 +664,22 @@ pub enum RoomCommand {
         alias: String,
         via_server: Option<String>,
     },
+    LoadRoomSettings {
+        request_id: RequestId,
+        room_id: String,
+    },
+    UpdateRoomSetting {
+        request_id: RequestId,
+        room_id: String,
+        change: RoomSettingChange,
+    },
+    ModerateRoomMember {
+        request_id: RequestId,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+        reason: Option<String>,
+    },
     SelectSpace {
         request_id: RequestId,
         space_id: Option<String>,
@@ -785,6 +805,29 @@ impl fmt::Debug for RoomCommand {
                 .field("request_id", request_id)
                 .field("alias", &"RoomAlias(..)")
                 .field("via_server", &"ServerName(..)")
+                .finish(),
+            Self::LoadRoomSettings { request_id, .. } => formatter
+                .debug_struct("LoadRoomSettings")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::UpdateRoomSetting {
+                request_id, change, ..
+            } => formatter
+                .debug_struct("UpdateRoomSetting")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("change", change)
+                .finish(),
+            Self::ModerateRoomMember {
+                request_id, action, ..
+            } => formatter
+                .debug_struct("ModerateRoomMember")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("action", action)
+                .field("reason", &"ModerationReason(..)")
                 .finish(),
             Self::SelectSpace {
                 request_id,
@@ -1322,6 +1365,74 @@ mod tests {
             assert!(!debug.contains("private-public-alias"), "{debug}");
             assert!(!debug.contains("example.invalid"), "{debug}");
             assert!(!debug.contains("opaque-page-token"), "{debug}");
+        }
+    }
+
+    #[test]
+    fn room_management_commands_debug_redacts_room_user_and_settings_values() {
+        use matrix_desktop_state::{RoomJoinRule, RoomModerationAction, RoomSettingChange};
+
+        let load_request_id = fake_rid(16);
+        let load = RoomCommand::LoadRoomSettings {
+            request_id: load_request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+        };
+        let update_request_id = fake_rid(17);
+        let update = RoomCommand::UpdateRoomSetting {
+            request_id: update_request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+            change: RoomSettingChange::Name(Some("Private Room Name".to_owned())),
+        };
+        let moderation_request_id = fake_rid(18);
+        let moderation = RoomCommand::ModerateRoomMember {
+            request_id: moderation_request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+            target_user_id: "@private-target:example.invalid".to_owned(),
+            action: RoomModerationAction::Ban,
+            reason: Some("Private moderation reason".to_owned()),
+        };
+
+        assert_eq!(CoreCommand::Room(load).request_id(), load_request_id);
+        assert_eq!(
+            CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+                request_id: update_request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                change: RoomSettingChange::JoinRule(RoomJoinRule::Public),
+            })
+            .request_id(),
+            update_request_id
+        );
+        assert_eq!(
+            CoreCommand::Room(RoomCommand::ModerateRoomMember {
+                request_id: moderation_request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                target_user_id: "@private-target:example.invalid".to_owned(),
+                action: RoomModerationAction::Kick,
+                reason: None,
+            })
+            .request_id(),
+            moderation_request_id
+        );
+
+        for debug in [
+            format!(
+                "{:?}",
+                RoomCommand::LoadRoomSettings {
+                    request_id: fake_rid(19),
+                    room_id: "!private-room:example.invalid".to_owned(),
+                }
+            ),
+            format!("{update:?}"),
+            format!("{moderation:?}"),
+        ] {
+            assert!(debug.contains("RoomId(..)"), "{debug}");
+            assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+            assert!(
+                !debug.contains("@private-target:example.invalid"),
+                "{debug}"
+            );
+            assert!(!debug.contains("Private Room Name"), "{debug}");
+            assert!(!debug.contains("Private moderation reason"), "{debug}");
         }
     }
 

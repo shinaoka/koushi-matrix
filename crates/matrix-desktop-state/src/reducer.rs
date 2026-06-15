@@ -5,10 +5,12 @@ use crate::{
         ActivityState, ActivityTab, AppError, AppState, BasicOperationRequest, BasicOperationState,
         ComposerMode, CrossSigningStatus, DirectoryJoinState, DirectoryQueryState, DirectoryState,
         E2eeRecoveryState, E2eeTrustState, FocusedContextState, IdentityResetState,
-        KeyBackupStatus, LocalEncryptionState, NavigationState, PendingComposerSendKind, PinOp,
-        PinOperationState, SasEmoji, SearchState, SessionState, SettingsPersistenceState,
-        SyncState, ThreadPaneState, TimelinePaneState, TrustOperationFailureKind,
-        VerificationCancelReason, VerificationFlowState, VerificationTarget,
+        KeyBackupStatus, LocalEncryptionState, NavigationState, OperationFailureKind,
+        PendingComposerSendKind, PinOp, PinOperationState, RoomManagementOperationKind,
+        RoomManagementOperationState, RoomModerationAction, SasEmoji, SearchState, SessionState,
+        SettingsPersistenceState, SyncState, ThreadPaneState, TimelinePaneState,
+        TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
+        VerificationTarget,
     },
 };
 
@@ -1192,6 +1194,153 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             };
             vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
         }
+        AppAction::RoomSettingsSnapshotLoaded { room_id, settings } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.room_management.selected_room_id = Some(room_id);
+            state.room_management.settings = Some(settings);
+            state.room_management.operation = RoomManagementOperationState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
+        AppAction::RoomSettingUpdateRequested {
+            request_id,
+            room_id,
+            change: _,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            if !room_settings_permission_allows(state, &room_id) {
+                state.room_management.operation = RoomManagementOperationState::Failed {
+                    request_id,
+                    room_id,
+                    operation: RoomManagementOperationKind::Settings,
+                    kind: OperationFailureKind::Forbidden,
+                };
+                return vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)];
+            }
+
+            state.room_management.operation = RoomManagementOperationState::Pending {
+                request_id,
+                room_id,
+                operation: RoomManagementOperationKind::Settings,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
+        AppAction::RoomSettingUpdateSucceeded {
+            request_id,
+            room_id,
+            settings,
+        } => {
+            if !room_management_operation_matches(
+                state,
+                request_id,
+                &room_id,
+                RoomManagementOperationKind::Settings,
+            ) {
+                return Vec::new();
+            }
+
+            state.room_management.selected_room_id = Some(room_id);
+            state.room_management.settings = Some(settings);
+            state.room_management.operation = RoomManagementOperationState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
+        AppAction::RoomSettingUpdateFailed {
+            request_id,
+            room_id,
+            kind,
+        } => {
+            if !room_management_operation_matches(
+                state,
+                request_id,
+                &room_id,
+                RoomManagementOperationKind::Settings,
+            ) {
+                return Vec::new();
+            }
+
+            state.room_management.operation = RoomManagementOperationState::Failed {
+                request_id,
+                room_id,
+                operation: RoomManagementOperationKind::Settings,
+                kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
+        AppAction::RoomModerationRequested {
+            request_id,
+            room_id,
+            target_user_id: _,
+            action,
+            reason: _,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            if !room_moderation_permission_allows(state, &room_id, action) {
+                state.room_management.operation = RoomManagementOperationState::Failed {
+                    request_id,
+                    room_id,
+                    operation: RoomManagementOperationKind::Moderation,
+                    kind: OperationFailureKind::Forbidden,
+                };
+                return vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)];
+            }
+
+            state.room_management.operation = RoomManagementOperationState::Pending {
+                request_id,
+                room_id,
+                operation: RoomManagementOperationKind::Moderation,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
+        AppAction::RoomModerationSucceeded {
+            request_id,
+            room_id,
+            target_user_id: _,
+            action: _,
+        } => {
+            if !room_management_operation_matches(
+                state,
+                request_id,
+                &room_id,
+                RoomManagementOperationKind::Moderation,
+            ) {
+                return Vec::new();
+            }
+
+            state.room_management.operation = RoomManagementOperationState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
+        AppAction::RoomModerationFailed {
+            request_id,
+            room_id,
+            target_user_id: _,
+            action: _,
+            kind,
+        } => {
+            if !room_management_operation_matches(
+                state,
+                request_id,
+                &room_id,
+                RoomManagementOperationKind::Moderation,
+            ) {
+                return Vec::new();
+            }
+
+            state.room_management.operation = RoomManagementOperationState::Failed {
+                request_id,
+                room_id,
+                operation: RoomManagementOperationKind::Moderation,
+                kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
         AppAction::ActivityOpened { request_id } => {
             if !is_session_ready(state) {
                 return Vec::new();
@@ -1895,6 +2044,55 @@ fn is_session_ready(state: &AppState) -> bool {
 
 fn room_exists(state: &AppState, room_id: &str) -> bool {
     state.rooms.iter().any(|room| room.room_id == room_id)
+}
+
+fn room_settings_permission_allows(state: &AppState, room_id: &str) -> bool {
+    state
+        .room_management
+        .settings
+        .as_ref()
+        .filter(|settings| settings.room_id == room_id)
+        .is_some_and(|settings| settings.permissions.can_edit_settings)
+}
+
+fn room_moderation_permission_allows(
+    state: &AppState,
+    room_id: &str,
+    action: RoomModerationAction,
+) -> bool {
+    let Some(permissions) = state
+        .room_management
+        .settings
+        .as_ref()
+        .filter(|settings| settings.room_id == room_id)
+        .map(|settings| settings.permissions)
+    else {
+        return false;
+    };
+
+    match action {
+        RoomModerationAction::Kick => permissions.can_kick,
+        RoomModerationAction::Ban => permissions.can_ban,
+        RoomModerationAction::Unban => permissions.can_unban,
+    }
+}
+
+fn room_management_operation_matches(
+    state: &AppState,
+    request_id: u64,
+    room_id: &str,
+    operation: RoomManagementOperationKind,
+) -> bool {
+    matches!(
+        &state.room_management.operation,
+        RoomManagementOperationState::Pending {
+            request_id: current_request_id,
+            room_id: current_room_id,
+            operation: current_operation,
+        } if *current_request_id == request_id
+            && current_room_id == room_id
+            && *current_operation == operation
+    )
 }
 
 fn verification_request_id(verification: &VerificationFlowState) -> Option<u64> {

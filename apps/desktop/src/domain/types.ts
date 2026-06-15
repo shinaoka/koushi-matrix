@@ -391,14 +391,14 @@ export interface DirectoryRoomSummary {
 
 export interface RoomManagementState {
   selected_room_id: string | null;
+  settings: RoomSettingsSnapshot | null;
   operation: RoomManagementOperationState;
 }
 
 export type RoomManagementOperationState =
   | { kind: "idle" }
-  | { kind: "loading"; request_id: number; room_id: string }
   | {
-      kind: "mutating";
+      kind: "pending";
       request_id: number;
       room_id: string;
       operation: RoomManagementOperationKind;
@@ -407,10 +407,41 @@ export type RoomManagementOperationState =
       kind: "failed";
       request_id: number;
       room_id: string;
+      operation: RoomManagementOperationKind;
       failureKind: OperationFailureKind;
     };
 
 export type RoomManagementOperationKind = "settings" | "moderation" | "permissions";
+
+export interface RoomSettingsSnapshot {
+  room_id: string;
+  name: string | null;
+  topic: string | null;
+  avatar_url: string | null;
+  join_rule: RoomJoinRule;
+  history_visibility: RoomHistoryVisibility;
+  permissions: RoomPermissionFacts;
+}
+
+export type RoomJoinRule = "public" | "invite" | "knock" | "restricted" | "private";
+
+export type RoomHistoryVisibility = "worldReadable" | "shared" | "invited" | "joined";
+
+export interface RoomPermissionFacts {
+  can_edit_settings: boolean;
+  can_kick: boolean;
+  can_ban: boolean;
+  can_unban: boolean;
+}
+
+export type RoomSettingChange =
+  | { name: string | null }
+  | { topic: string | null }
+  | { avatarUrl: string | null }
+  | { joinRule: RoomJoinRule }
+  | { historyVisibility: RoomHistoryVisibility };
+
+export type RoomModerationAction = "kick" | "ban" | "unban";
 
 export interface TimelinePaneState {
   room_id: string | null;

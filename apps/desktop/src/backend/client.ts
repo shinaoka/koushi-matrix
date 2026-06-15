@@ -9,6 +9,8 @@ import type {
   ComposerSurface,
   DirectoryQuery,
   PresenceKind,
+  RoomModerationAction,
+  RoomSettingChange,
   RoomTagKind,
   SavedSessionInfo,
   SearchScopeKind,
@@ -222,6 +224,31 @@ class TauriDesktopApi implements DesktopApi {
 
   async unpinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("unpin_event", { roomId, eventId });
+  }
+
+  async loadRoomSettings(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("load_room_settings", { roomId });
+  }
+
+  async updateRoomSetting(
+    roomId: string,
+    change: RoomSettingChange
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("update_room_setting", { roomId, change });
+  }
+
+  async moderateRoomMember(
+    roomId: string,
+    targetUserId: string,
+    action: RoomModerationAction,
+    reason: string | null = null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("moderate_room_member", {
+      roomId,
+      targetUserId,
+      action,
+      reason
+    });
   }
 
   async openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot> {

@@ -22,7 +22,8 @@ use matrix_desktop_core::{
 use matrix_desktop_state::{
     AuthSecret, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
     DirectoryQuery, IdentityResetAuthRequest, LoginRequest, PresenceKind, RecoveryRequest,
-    RoomTagKind, SessionInfo, SettingsPatch, VerificationCancelReason,
+    RoomModerationAction, RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch,
+    VerificationCancelReason,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -1181,6 +1182,108 @@ pub async fn unpin_event(
 }
 
 #[tauri::command]
+pub async fn load_room_settings(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_load_room_settings_command(request_id, room_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomSettingsLoaded { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room settings load did not complete",
+        "room settings load failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn update_room_setting(
+    room_id: String,
+    change: RoomSettingChange,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_update_room_setting_command(
+            request_id, room_id, change,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomSettingUpdated { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room setting update did not complete",
+        "room setting update failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn moderate_room_member(
+    room_id: String,
+    target_user_id: String,
+    action: RoomModerationAction,
+    reason: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_moderate_room_member_command(
+            request_id,
+            room_id,
+            target_user_id,
+            action,
+            optional_non_blank(reason),
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomMemberModerated { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room member moderation did not complete",
+        "room member moderation failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn open_thread(
     room_id: String,
     root_event_id: String,
@@ -2254,6 +2357,44 @@ pub(crate) fn build_unpin_event_command(
     })
 }
 
+pub(crate) fn build_load_room_settings_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::LoadRoomSettings {
+        request_id,
+        room_id,
+    })
+}
+
+pub(crate) fn build_update_room_setting_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    change: RoomSettingChange,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+        request_id,
+        room_id,
+        change,
+    })
+}
+
+pub(crate) fn build_moderate_room_member_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    target_user_id: String,
+    action: RoomModerationAction,
+    reason: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::ModerateRoomMember {
+        request_id,
+        room_id,
+        target_user_id,
+        action,
+        reason,
+    })
+}
+
 pub(crate) fn build_submit_search_command(
     request_id: matrix_desktop_core::RequestId,
     query: String,
@@ -2725,8 +2866,8 @@ mod tests {
         build_create_room_command, build_create_space_command, build_decline_invite_command,
         build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
         build_forget_room_command, build_invite_user_command, build_join_directory_room_command,
-        build_leave_room_command, build_logout_command,
-        build_paginate_thread_timeline_backwards_command,
+        build_leave_room_command, build_load_room_settings_command, build_logout_command,
+        build_moderate_room_member_command, build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_query_directory_command, build_redact_message_command, build_redact_reaction_command,
         build_remove_room_tag_command, build_reset_identity_command, build_restart_sync_command,
@@ -2741,11 +2882,15 @@ mod tests {
         build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
-        build_update_settings_command, build_upload_media_command, parse_qa_control_pipe_line,
-        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
+        build_update_room_setting_command, build_update_settings_command,
+        build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
+        qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
-    use matrix_desktop_state::{PresenceKind, RoomSummary, RoomTagKind, RoomTags};
+    use matrix_desktop_state::{
+        PresenceKind, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
+        RoomSummary, RoomTagKind, RoomTags,
+    };
 
     #[test]
     fn qa_login_pipe_payload_maps_to_login_request_without_debugging_secret() {
@@ -3725,6 +3870,78 @@ mod tests {
                 .is_none()
         );
 
+        match build_load_room_settings_command(fake_request_id(30), "!room:example.org".to_owned())
+        {
+            CoreCommand::Room(RoomCommand::LoadRoomSettings {
+                request_id,
+                room_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(30));
+                assert_eq!(room_id, "!room:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        for (offset, change) in [
+            (
+                31,
+                RoomSettingChange::Name(Some("Private room name".to_owned())),
+            ),
+            (
+                32,
+                RoomSettingChange::Topic(Some("Private room topic".to_owned())),
+            ),
+            (
+                33,
+                RoomSettingChange::AvatarUrl(Some("mxc://example.org/private".to_owned())),
+            ),
+            (34, RoomSettingChange::JoinRule(RoomJoinRule::Invite)),
+            (
+                35,
+                RoomSettingChange::HistoryVisibility(RoomHistoryVisibility::Shared),
+            ),
+        ] {
+            match build_update_room_setting_command(
+                fake_request_id(offset),
+                "!room:example.org".to_owned(),
+                change.clone(),
+            ) {
+                CoreCommand::Room(RoomCommand::UpdateRoomSetting {
+                    request_id,
+                    room_id,
+                    change: routed_change,
+                }) => {
+                    assert_eq!(request_id, fake_request_id(offset));
+                    assert_eq!(room_id, "!room:example.org");
+                    assert_eq!(routed_change, change);
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+
+        match build_moderate_room_member_command(
+            fake_request_id(36),
+            "!room:example.org".to_owned(),
+            "@target:example.org".to_owned(),
+            RoomModerationAction::Kick,
+            Some("private reason".to_owned()),
+        ) {
+            CoreCommand::Room(RoomCommand::ModerateRoomMember {
+                request_id,
+                room_id,
+                target_user_id,
+                action,
+                reason,
+            }) => {
+                assert_eq!(request_id, fake_request_id(36));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(target_user_id, "@target:example.org");
+                assert_eq!(action, RoomModerationAction::Kick);
+                assert_eq!(reason.as_deref(), Some("private reason"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_send_reply_command(
             fake_request_id(23),
             active_account_key.clone(),
@@ -4444,6 +4661,41 @@ mod tests {
             close_source.contains(snapshot_token),
             "close_focused_context should return the current snapshot"
         );
+    }
+
+    #[test]
+    fn room_management_tauri_commands_wait_for_correlated_core_events() {
+        let source = include_str!("commands.rs");
+
+        for (fn_name, event_token) in [
+            ("pub async fn load_room_settings", "RoomSettingsLoaded"),
+            ("pub async fn update_room_setting", "RoomSettingUpdated"),
+            ("pub async fn moderate_room_member", "RoomMemberModerated"),
+        ] {
+            let fn_offset = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} command should exist"));
+            let rest = &source[fn_offset..];
+            let end = rest.find("\n#[tauri::command]").unwrap_or(rest.len());
+            let command_source = &rest[..end];
+
+            assert!(
+                command_source.contains("wait_for_room_operation"),
+                "{fn_name} should wait for the correlated RoomEvent before returning a snapshot"
+            );
+            assert!(
+                command_source.contains(event_token),
+                "{fn_name} should wait for {event_token}"
+            );
+            assert!(
+                command_source.contains("update_qa_window_title_from_state"),
+                "{fn_name} should refresh the QA title after state changes"
+            );
+            assert!(
+                command_source.contains("current_snapshot"),
+                "{fn_name} should return the current snapshot"
+            );
+        }
     }
 
     #[test]

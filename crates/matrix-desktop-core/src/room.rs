@@ -59,12 +59,15 @@ use std::{
 
 use matrix_desktop_sdk::{
     MatrixClientSession, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
-    MatrixRoomOperationError, MatrixRoomTagKind, MatrixRoomTags,
+    MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomModerationAction,
+    MatrixRoomOperationError, MatrixRoomPermissionFacts, MatrixRoomSettingChange,
+    MatrixRoomSettingsSnapshot, MatrixRoomTagKind, MatrixRoomTags,
 };
 use matrix_desktop_state::{
     AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, DirectoryQuery,
-    DirectoryRoomSummary, InvitePreview, OperationFailureKind, PinnedEvent, RoomSummary,
-    RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
+    DirectoryRoomSummary, InvitePreview, OperationFailureKind, PinnedEvent, RoomHistoryVisibility,
+    RoomJoinRule, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
+    RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -385,6 +388,36 @@ impl RoomActor {
             } => {
                 self.handle_join_directory_room(request_id, alias, via_server)
                     .await;
+            }
+            RoomCommand::LoadRoomSettings {
+                request_id,
+                room_id,
+            } => {
+                self.handle_load_room_settings(request_id, room_id).await;
+            }
+            RoomCommand::UpdateRoomSetting {
+                request_id,
+                room_id,
+                change,
+            } => {
+                self.handle_update_room_setting(request_id, room_id, change)
+                    .await;
+            }
+            RoomCommand::ModerateRoomMember {
+                request_id,
+                room_id,
+                target_user_id,
+                action,
+                reason,
+            } => {
+                self.handle_moderate_room_member(
+                    request_id,
+                    room_id,
+                    target_user_id,
+                    action,
+                    reason,
+                )
+                .await;
             }
             RoomCommand::SelectSpace {
                 request_id: _,
@@ -743,6 +776,195 @@ impl RoomActor {
                     request_id: request_id.sequence,
                     alias,
                     via_server,
+                    kind: operation_failure_kind(kind),
+                }]);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_load_room_settings(&self, request_id: RequestId, room_id: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match matrix_desktop_sdk::get_room_settings_snapshot(session, &room_id).await {
+            Ok(settings) => {
+                let settings = room_settings_snapshot_from_sdk(settings);
+                self.reduce(vec![AppAction::RoomSettingsSnapshotLoaded {
+                    room_id,
+                    settings: settings.clone(),
+                }]);
+                self.emit(CoreEvent::Room(RoomEvent::RoomSettingsLoaded {
+                    request_id,
+                    settings,
+                }));
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_update_room_setting(
+        &self,
+        request_id: RequestId,
+        room_id: String,
+        change: RoomSettingChange,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        let settings = match matrix_desktop_sdk::get_room_settings_snapshot(session, &room_id).await
+        {
+            Ok(settings) => room_settings_snapshot_from_sdk(settings),
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+                return;
+            }
+        };
+        self.reduce(vec![AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.clone(),
+            settings: settings.clone(),
+        }]);
+        if !settings.permissions.can_edit_settings {
+            self.reduce(vec![AppAction::RoomSettingUpdateRequested {
+                request_id: request_id.sequence,
+                room_id,
+                change,
+            }]);
+            self.emit_failure(
+                request_id,
+                CoreFailure::RoomOperationFailed {
+                    kind: RoomFailureKind::Forbidden,
+                },
+            );
+            return;
+        }
+
+        self.reduce(vec![AppAction::RoomSettingUpdateRequested {
+            request_id: request_id.sequence,
+            room_id: room_id.clone(),
+            change: change.clone(),
+        }]);
+
+        match matrix_desktop_sdk::update_room_setting(
+            session,
+            &room_id,
+            room_setting_change_to_sdk(change),
+        )
+        .await
+        {
+            Ok(settings) => {
+                let settings = room_settings_snapshot_from_sdk(settings);
+                self.reduce(vec![AppAction::RoomSettingUpdateSucceeded {
+                    request_id: request_id.sequence,
+                    room_id,
+                    settings: settings.clone(),
+                }]);
+                self.emit(CoreEvent::Room(RoomEvent::RoomSettingUpdated {
+                    request_id,
+                    settings,
+                }));
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.reduce(vec![AppAction::RoomSettingUpdateFailed {
+                    request_id: request_id.sequence,
+                    room_id,
+                    kind: operation_failure_kind(kind),
+                }]);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_moderate_room_member(
+        &self,
+        request_id: RequestId,
+        room_id: String,
+        target_user_id: String,
+        action: RoomModerationAction,
+        reason: Option<String>,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        let settings = match matrix_desktop_sdk::get_room_settings_snapshot(session, &room_id).await
+        {
+            Ok(settings) => room_settings_snapshot_from_sdk(settings),
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+                return;
+            }
+        };
+        self.reduce(vec![AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.clone(),
+            settings: settings.clone(),
+        }]);
+        if !room_moderation_allowed(&settings.permissions, action) {
+            self.reduce(vec![AppAction::RoomModerationRequested {
+                request_id: request_id.sequence,
+                room_id,
+                target_user_id,
+                action,
+                reason,
+            }]);
+            self.emit_failure(
+                request_id,
+                CoreFailure::RoomOperationFailed {
+                    kind: RoomFailureKind::Forbidden,
+                },
+            );
+            return;
+        }
+
+        self.reduce(vec![AppAction::RoomModerationRequested {
+            request_id: request_id.sequence,
+            room_id: room_id.clone(),
+            target_user_id: target_user_id.clone(),
+            action,
+            reason: reason.clone(),
+        }]);
+
+        match matrix_desktop_sdk::moderate_room_member(
+            session,
+            &room_id,
+            &target_user_id,
+            room_moderation_action_to_sdk(action),
+            reason.as_deref(),
+        )
+        .await
+        {
+            Ok(()) => {
+                self.reduce(vec![AppAction::RoomModerationSucceeded {
+                    request_id: request_id.sequence,
+                    room_id: room_id.clone(),
+                    target_user_id: target_user_id.clone(),
+                    action,
+                }]);
+                self.emit(CoreEvent::Room(RoomEvent::RoomMemberModerated {
+                    request_id,
+                    room_id,
+                    target_user_id,
+                    action,
+                }));
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.reduce(vec![AppAction::RoomModerationFailed {
+                    request_id: request_id.sequence,
+                    room_id,
+                    target_user_id,
+                    action,
                     kind: operation_failure_kind(kind),
                 }]);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
@@ -1335,6 +1557,104 @@ fn directory_room_summary_from_sdk(room: MatrixPublicRoomDirectoryRoom) -> Direc
     }
 }
 
+fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> RoomSettingsSnapshot {
+    RoomSettingsSnapshot {
+        room_id: settings.room_id,
+        name: settings.name,
+        topic: settings.topic,
+        avatar_url: settings.avatar_url,
+        join_rule: room_join_rule_from_sdk(settings.join_rule),
+        history_visibility: room_history_visibility_from_sdk(settings.history_visibility),
+        permissions: room_permission_facts_from_sdk(settings.permissions),
+    }
+}
+
+fn room_join_rule_from_sdk(join_rule: MatrixRoomJoinRule) -> RoomJoinRule {
+    match join_rule {
+        MatrixRoomJoinRule::Public => RoomJoinRule::Public,
+        MatrixRoomJoinRule::Invite => RoomJoinRule::Invite,
+        MatrixRoomJoinRule::Knock => RoomJoinRule::Knock,
+        MatrixRoomJoinRule::Restricted => RoomJoinRule::Restricted,
+        MatrixRoomJoinRule::Private => RoomJoinRule::Private,
+    }
+}
+
+fn room_join_rule_to_sdk(join_rule: RoomJoinRule) -> MatrixRoomJoinRule {
+    match join_rule {
+        RoomJoinRule::Public => MatrixRoomJoinRule::Public,
+        RoomJoinRule::Invite => MatrixRoomJoinRule::Invite,
+        RoomJoinRule::Knock => MatrixRoomJoinRule::Knock,
+        RoomJoinRule::Restricted => MatrixRoomJoinRule::Restricted,
+        RoomJoinRule::Private => MatrixRoomJoinRule::Private,
+    }
+}
+
+fn room_history_visibility_from_sdk(
+    history_visibility: MatrixRoomHistoryVisibility,
+) -> RoomHistoryVisibility {
+    match history_visibility {
+        MatrixRoomHistoryVisibility::WorldReadable => RoomHistoryVisibility::WorldReadable,
+        MatrixRoomHistoryVisibility::Shared => RoomHistoryVisibility::Shared,
+        MatrixRoomHistoryVisibility::Invited => RoomHistoryVisibility::Invited,
+        MatrixRoomHistoryVisibility::Joined => RoomHistoryVisibility::Joined,
+    }
+}
+
+fn room_history_visibility_to_sdk(
+    history_visibility: RoomHistoryVisibility,
+) -> MatrixRoomHistoryVisibility {
+    match history_visibility {
+        RoomHistoryVisibility::WorldReadable => MatrixRoomHistoryVisibility::WorldReadable,
+        RoomHistoryVisibility::Shared => MatrixRoomHistoryVisibility::Shared,
+        RoomHistoryVisibility::Invited => MatrixRoomHistoryVisibility::Invited,
+        RoomHistoryVisibility::Joined => MatrixRoomHistoryVisibility::Joined,
+    }
+}
+
+fn room_permission_facts_from_sdk(permissions: MatrixRoomPermissionFacts) -> RoomPermissionFacts {
+    RoomPermissionFacts {
+        can_edit_settings: permissions.can_edit_settings,
+        can_kick: permissions.can_kick,
+        can_ban: permissions.can_ban,
+        can_unban: permissions.can_unban,
+    }
+}
+
+fn room_setting_change_to_sdk(change: RoomSettingChange) -> MatrixRoomSettingChange {
+    match change {
+        RoomSettingChange::Name(name) => MatrixRoomSettingChange::Name(name),
+        RoomSettingChange::Topic(topic) => MatrixRoomSettingChange::Topic(topic),
+        RoomSettingChange::AvatarUrl(avatar_url) => MatrixRoomSettingChange::AvatarUrl(avatar_url),
+        RoomSettingChange::JoinRule(join_rule) => {
+            MatrixRoomSettingChange::JoinRule(room_join_rule_to_sdk(join_rule))
+        }
+        RoomSettingChange::HistoryVisibility(history_visibility) => {
+            MatrixRoomSettingChange::HistoryVisibility(room_history_visibility_to_sdk(
+                history_visibility,
+            ))
+        }
+    }
+}
+
+fn room_moderation_action_to_sdk(action: RoomModerationAction) -> MatrixRoomModerationAction {
+    match action {
+        RoomModerationAction::Kick => MatrixRoomModerationAction::Kick,
+        RoomModerationAction::Ban => MatrixRoomModerationAction::Ban,
+        RoomModerationAction::Unban => MatrixRoomModerationAction::Unban,
+    }
+}
+
+fn room_moderation_allowed(
+    permissions: &RoomPermissionFacts,
+    action: RoomModerationAction,
+) -> bool {
+    match action {
+        RoomModerationAction::Kick => permissions.can_kick,
+        RoomModerationAction::Ban => permissions.can_ban,
+        RoomModerationAction::Unban => permissions.can_unban,
+    }
+}
+
 fn avatar_from_mxc_uri(mxc_uri: Option<&str>) -> Option<AvatarImage> {
     mxc_uri.map(|mxc_uri| AvatarImage {
         mxc_uri: mxc_uri.to_owned(),
@@ -1374,6 +1694,7 @@ fn operation_failure_kind(kind: RoomFailureKind) -> OperationFailureKind {
 pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailureKind {
     use matrix_desktop_sdk::MatrixRoomOperationFailureKind;
     match error {
+        MatrixRoomOperationError::InvalidRoomSetting => RoomFailureKind::Sdk,
         MatrixRoomOperationError::InvalidRoomId
         | MatrixRoomOperationError::InvalidRoomAlias
         | MatrixRoomOperationError::InvalidEventId
