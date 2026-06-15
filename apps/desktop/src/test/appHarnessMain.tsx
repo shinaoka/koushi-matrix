@@ -201,7 +201,8 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       locale: { language_tag: null, text_direction: "auto" },
       appearance: { theme: "system" },
       typography: { font: "system", emoji: "system" },
-      keyboard: { composer_send_shortcut: "enter" }
+      keyboard: { composer_send_shortcut: "enter" },
+      notifications: { desktop_notifications: true, sound: true, badges: true }
     },
     persistence: { kind: "idle" }
   };
@@ -272,7 +273,8 @@ function applySettingsPatch(
     locale: patch.locale ?? values.locale,
     appearance: patch.appearance ?? values.appearance,
     typography: patch.typography ?? values.typography,
-    keyboard: patch.keyboard ?? values.keyboard
+    keyboard: patch.keyboard ?? values.keyboard,
+    notifications: patch.notifications ?? values.notifications
   };
 }
 

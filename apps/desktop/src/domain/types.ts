@@ -52,6 +52,7 @@ export interface SettingsValues {
   appearance: AppearanceSettings;
   typography: TypographySettings;
   keyboard: KeyboardSettings;
+  notifications: NotificationSettings;
 }
 
 export interface SettingsPatch {
@@ -59,6 +60,7 @@ export interface SettingsPatch {
   appearance?: AppearanceSettings;
   typography?: TypographySettings;
   keyboard?: KeyboardSettings;
+  notifications?: NotificationSettings;
 }
 
 export interface LocaleSettings {
@@ -116,6 +118,12 @@ export interface KeyboardSettings {
 }
 
 export type ComposerSendShortcut = "enter" | "modEnter";
+
+export interface NotificationSettings {
+  desktop_notifications: boolean;
+  sound: boolean;
+  badges: boolean;
+}
 
 export type SettingsPersistenceState =
   | { kind: "idle" }

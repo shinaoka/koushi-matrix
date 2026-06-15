@@ -583,6 +583,14 @@ mod tests {
             json!("enter")
         );
         assert_eq!(
+            value["state"]["settings"]["values"]["notifications"],
+            json!({
+                "desktop_notifications": true,
+                "sound": true,
+                "badges": true
+            })
+        );
+        assert_eq!(
             value["state"]["settings"]["persistence"]["kind"],
             json!("idle")
         );

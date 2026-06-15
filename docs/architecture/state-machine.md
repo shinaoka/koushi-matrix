@@ -1186,6 +1186,11 @@ stateDiagram-v2
   notification settings changes, room muted/low-priority state changes, window
   focus changes, mark-read/read-receipt actions, platform capability updates,
   and dispatch completion/failure events from the Tauri adapter.
+- Notification policy enters this machine through Rust-owned
+  `SettingsValues.notifications`, persisted by the settings store with legacy
+  JSON backfill to the default policy. React settings panels may dispatch typed
+  `SettingsPatch.notifications` updates, but they must not keep separate
+  notification policy state.
 - Platform capability updates use the shared Rust `DisplayPlatform` model.
   React receives the resulting `NativeAttentionCapabilities` DTO and must not
   branch on macOS/Linux/Windows notification semantics locally.

@@ -151,7 +151,8 @@ function defaultSnapshotResponse() {
           locale: { language_tag: null, text_direction: "auto" },
           appearance: { theme: "system" },
           typography: { font: "system", emoji: "system" },
-          keyboard: { composer_send_shortcut: "enter" }
+          keyboard: { composer_send_shortcut: "enter" },
+          notifications: { desktop_notifications: true, sound: true, badges: true }
         },
         persistence: { kind: "idle" }
       },

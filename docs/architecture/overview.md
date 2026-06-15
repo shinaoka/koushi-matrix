@@ -508,6 +508,9 @@ read-marker transition creates, suppresses, updates, or clears an attention
 candidate. The adapter may only map that private-data-minimized candidate to
 macOS, Windows, Linux, or no-op capabilities; React must not branch on platform
 notification semantics or synthesize badge/window-title state locally.
+User notification preferences are the same boundary: `SettingsValues.notifications`
+is the Rust-owned persisted source of truth, and legacy settings files backfill
+the default policy before any GUI reads the snapshot.
 
 Initial channel capacities are named constants, not scattered literals:
 

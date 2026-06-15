@@ -1,7 +1,8 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AppearanceSettings, ComposerSendShortcut, EmojiPreference,
-    FontPreference, KeyboardSettings, LocaleSettings, SettingsPatch, SettingsPersistenceState,
-    SettingsValues, TextDirectionPreference, ThemePreference, UiEvent, reduce,
+    FontPreference, KeyboardSettings, LocaleSettings, NotificationSettings, SettingsPatch,
+    SettingsPersistenceState, SettingsValues, TextDirectionPreference, ThemePreference, UiEvent,
+    reduce,
 };
 
 fn dark_theme_patch() -> SettingsPatch {
@@ -38,6 +39,10 @@ fn app_state_carries_default_non_secret_settings() {
         state.settings.values.typography.emoji,
         EmojiPreference::System
     );
+    assert_eq!(
+        state.settings.values.notifications,
+        NotificationSettings::default()
+    );
     assert_eq!(state.settings.persistence, SettingsPersistenceState::Idle);
 }
 
@@ -59,6 +64,11 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         keyboard: KeyboardSettings {
             composer_send_shortcut: ComposerSendShortcut::ModEnter,
         },
+        notifications: NotificationSettings {
+            desktop_notifications: false,
+            sound: false,
+            badges: true,
+        },
     };
 
     let effects = reduce(
@@ -72,6 +82,43 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
     assert_eq!(
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::SettingsChanged)]
+    );
+}
+
+#[test]
+fn notification_settings_patch_is_rust_owned_and_persisted() {
+    let mut state = AppState::default();
+    let notification_settings = NotificationSettings {
+        desktop_notifications: false,
+        sound: false,
+        badges: false,
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 77,
+            patch: SettingsPatch {
+                notifications: Some(notification_settings.clone()),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert_eq!(state.settings.values.notifications, notification_settings);
+    assert_eq!(
+        state.settings.persistence,
+        SettingsPersistenceState::Saving { request_id: 77 }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSettings {
+                request_id: 77,
+                values: state.settings.values.clone(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+        ]
     );
 }
 

@@ -10,7 +10,8 @@ describe("UserSettingsPanel", () => {
       locale: { language_tag: null, text_direction: "auto" },
       appearance: { theme: "dark" },
       typography: { font: "system", emoji: "system" },
-      keyboard: { composer_send_shortcut: "enter" }
+      keyboard: { composer_send_shortcut: "enter" },
+      notifications: { desktop_notifications: true, sound: true, badges: true }
     },
     persistence: { kind: "idle" }
   } as const;

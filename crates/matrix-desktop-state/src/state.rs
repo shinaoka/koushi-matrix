@@ -84,6 +84,8 @@ pub struct SettingsValues {
     pub appearance: AppearanceSettings,
     pub typography: TypographySettings,
     pub keyboard: KeyboardSettings,
+    #[serde(default)]
+    pub notifications: NotificationSettings,
 }
 
 impl SettingsValues {
@@ -100,6 +102,9 @@ impl SettingsValues {
         if let Some(keyboard) = patch.keyboard {
             self.keyboard = keyboard;
         }
+        if let Some(notifications) = patch.notifications {
+            self.notifications = notifications;
+        }
     }
 }
 
@@ -110,6 +115,7 @@ impl Default for SettingsValues {
             appearance: AppearanceSettings::default(),
             typography: TypographySettings::default(),
             keyboard: KeyboardSettings::default(),
+            notifications: NotificationSettings::default(),
         }
     }
 }
@@ -208,6 +214,23 @@ pub enum ComposerSendShortcut {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NotificationSettings {
+    pub desktop_notifications: bool,
+    pub sound: bool,
+    pub badges: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            desktop_notifications: true,
+            sound: true,
+            badges: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SettingsPersistenceState {
     Idle,
@@ -220,6 +243,7 @@ pub struct SettingsPatch {
     pub appearance: Option<AppearanceSettings>,
     pub typography: Option<TypographySettings>,
     pub keyboard: Option<KeyboardSettings>,
+    pub notifications: Option<NotificationSettings>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

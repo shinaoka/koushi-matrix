@@ -85,6 +85,10 @@ Rules:
    non-secret profile data only. They may carry platform/capability and
    asset-status tokens, but not account identifiers, content, local paths, raw
    errors, or credentials.
+   Notification preferences live in Rust-owned `SettingsValues.notifications`
+   and are persisted through the settings store. Older settings JSON files that
+   predate notification preferences must deserialize with safe defaults instead
+   of forcing React to invent a local notification policy.
 11. E2EE trust diagnostics are kind-only. Verification, cross-signing,
    key-backup, and identity-reset commands/events may expose structured state to
    the UI, but normal `Debug`, QA logs, and window-title tokens must redact

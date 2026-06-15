@@ -162,6 +162,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `AppState.native_attention` projections. GUI/native adapter code must render
   or dispatch from the snapshot/capability DTOs; it must not invent notification
   candidates, badge counts, dedupe, or suppression semantics.
+- Notification preferences are Rust-owned `SettingsValues.notifications`
+  product state and must persist through the settings store with legacy JSON
+  backfill. React settings UI may dispatch typed `SettingsPatch.notifications`
+  updates, but it must not keep independent local notification policy state.
 - React attention helpers may only map `snapshot.state.native_attention` to
   window title, badge, and native adapter payloads. They must not aggregate
   `rooms`, diff previous room snapshots, or infer focused-room/muted/duplicate
