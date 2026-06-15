@@ -212,6 +212,7 @@ describe("BrowserFakeApi settings preview", () => {
         room_id: "!browser-room:browser.fake",
         permissions: {
           can_edit_settings: true,
+          can_edit_roles: true,
           can_kick: true,
           can_ban: true,
           can_unban: true
@@ -249,6 +250,48 @@ describe("BrowserFakeApi settings preview", () => {
     expect(guarded.state.room_management.operation).toMatchObject({
       kind: "failed",
       operation: "moderation",
+      failureKind: "forbidden"
+    });
+  });
+
+  test("models room member role updates from Rust-owned power-level facts", async () => {
+    const api = createBrowserFakeApi();
+
+    const loaded = await api.loadRoomSettings("!browser-room:browser.fake");
+    const targetUserId = loaded.state.room_management.settings?.members[0]?.user_id ?? "";
+    expect(targetUserId).toBeTruthy();
+    expect(loaded.state.room_management.settings?.members[0]).toMatchObject({
+      power_level: 0,
+      role: "user"
+    });
+
+    const updatePromise = api.updateRoomMemberRole(
+      "!browser-room:browser.fake",
+      targetUserId,
+      50
+    );
+    expect((await api.getSnapshot()).state.room_management.operation).toMatchObject({
+      kind: "pending",
+      operation: "roles"
+    });
+
+    const updated = await updatePromise;
+    expect(updated.state.room_management.operation).toEqual({ kind: "idle" });
+    expect(updated.state.room_management.settings?.members[0]).toMatchObject({
+      user_id: targetUserId,
+      power_level: 50,
+      role: "moderator"
+    });
+
+    await api.loadRoomSettings("!readonly-room:browser.fake");
+    const guarded = await api.updateRoomMemberRole(
+      "!readonly-room:browser.fake",
+      targetUserId,
+      100
+    );
+    expect(guarded.state.room_management.operation).toMatchObject({
+      kind: "failed",
+      operation: "roles",
       failureKind: "forbidden"
     });
   });

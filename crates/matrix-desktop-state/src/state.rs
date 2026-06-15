@@ -1227,6 +1227,7 @@ impl fmt::Debug for RoomManagementOperationState {
 pub enum RoomManagementOperationKind {
     Settings,
     Moderation,
+    Roles,
     Permissions,
 }
 
@@ -1266,6 +1267,8 @@ pub struct RoomMemberSummary {
     pub user_id: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    pub power_level: Option<i64>,
+    pub role: RoomMemberRole,
 }
 
 impl fmt::Debug for RoomMemberSummary {
@@ -1281,7 +1284,29 @@ impl fmt::Debug for RoomMemberSummary {
                 "avatar_url",
                 &self.avatar_url.as_ref().map(|_| "MxcUri(..)"),
             )
+            .field("power_level", &self.power_level)
+            .field("role", &self.role)
             .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomMemberRole {
+    Creator,
+    Administrator,
+    Moderator,
+    User,
+}
+
+impl RoomMemberRole {
+    pub fn from_power_level(power_level: Option<i64>) -> Self {
+        match power_level {
+            None => Self::Creator,
+            Some(level) if level >= 100 => Self::Administrator,
+            Some(level) if level >= 50 => Self::Moderator,
+            Some(_) => Self::User,
+        }
     }
 }
 
@@ -1307,6 +1332,7 @@ pub enum RoomHistoryVisibility {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomPermissionFacts {
     pub can_edit_settings: bool,
+    pub can_edit_roles: bool,
     pub can_kick: bool,
     pub can_ban: bool,
     pub can_unban: bool,

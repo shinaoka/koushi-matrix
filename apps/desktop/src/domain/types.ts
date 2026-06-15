@@ -455,7 +455,7 @@ export type RoomManagementOperationState =
       failureKind: OperationFailureKind;
     };
 
-export type RoomManagementOperationKind = "settings" | "moderation" | "permissions";
+export type RoomManagementOperationKind = "settings" | "moderation" | "permissions" | "roles";
 
 export interface RoomSettingsSnapshot {
   room_id: string;
@@ -472,7 +472,11 @@ export interface RoomMemberSummary {
   user_id: string;
   display_name: string | null;
   avatar_url: string | null;
+  power_level: number | null;
+  role: RoomMemberRole;
 }
+
+export type RoomMemberRole = "creator" | "administrator" | "moderator" | "user";
 
 export type RoomJoinRule = "public" | "invite" | "knock" | "restricted" | "private";
 
@@ -480,6 +484,7 @@ export type RoomHistoryVisibility = "worldReadable" | "shared" | "invited" | "jo
 
 export interface RoomPermissionFacts {
   can_edit_settings: boolean;
+  can_edit_roles: boolean;
   can_kick: boolean;
   can_ban: boolean;
   can_unban: boolean;

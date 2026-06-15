@@ -704,37 +704,51 @@ stateDiagram-v2
     Idle --> Idle: RoomSettingsSnapshotLoaded
     Idle --> PendingSettings: RoomSettingUpdateRequested [Ready + can_edit_settings]
     Idle --> PendingModeration: RoomModerationRequested [Ready + matching permission fact]
+    Idle --> PendingRoles: RoomMemberRoleUpdateRequested [Ready + can_edit_roles]
     Idle --> FailedPermissions: RoomSettingUpdateRequested [permission denied]
     Idle --> FailedPermissions: RoomModerationRequested [permission denied]
+    Idle --> FailedPermissions: RoomMemberRoleUpdateRequested [permission denied]
     PendingSettings --> Idle: RoomSettingUpdateSucceeded [matching request_id]
     PendingSettings --> FailedSettings: RoomSettingUpdateFailed [matching request_id]
     PendingModeration --> Idle: RoomModerationSucceeded [matching request_id]
     PendingModeration --> FailedModeration: RoomModerationFailed [matching request_id]
+    PendingRoles --> Idle: RoomMemberRoleUpdateSucceeded [matching request_id]
+    PendingRoles --> FailedRoles: RoomMemberRoleUpdateFailed [matching request_id]
     FailedSettings --> PendingSettings: RoomSettingUpdateRequested
     FailedModeration --> PendingModeration: RoomModerationRequested
+    FailedRoles --> PendingRoles: RoomMemberRoleUpdateRequested
     FailedPermissions --> PendingSettings: RoomSettingUpdateRequested [permission now allowed]
     FailedPermissions --> PendingModeration: RoomModerationRequested [permission now allowed]
+    FailedPermissions --> PendingRoles: RoomMemberRoleUpdateRequested [permission now allowed]
     PendingSettings --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
     PendingModeration --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    PendingRoles --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
     FailedSettings --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
     FailedModeration --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
+    FailedRoles --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
     FailedPermissions --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
 ```
 
 - `RoomSettingsSnapshot` carries the selected room id, name, topic, avatar URL,
   join rule, history visibility, `RoomPermissionFacts`, and the room-scoped
-  `members` projection. It is app-owned DTO data mapped from the SDK before
-  crossing the command/event boundary. GUI member actions must render this
-  room-scoped member snapshot, not the global profile cache.
+  `members` projection. Each member summary includes the Rust-projected
+  power level and role label (`creator`, `administrator`, `moderator`,
+  `user`). It is app-owned DTO data mapped from the SDK before crossing the
+  command/event boundary. GUI member actions must render this room-scoped
+  member snapshot, not the global profile cache, and must not derive role
+  semantics in React.
 - The command surface is `RoomCommand::LoadRoomSettings`,
-  `RoomCommand::UpdateRoomSetting`, and `RoomCommand::ModerateRoomMember`.
+  `RoomCommand::UpdateRoomSetting`, `RoomCommand::ModerateRoomMember`, and
+  `RoomCommand::UpdateRoomMemberRole`.
   Tauri handlers are transport adapters: they allocate a request id, submit the
   typed command, wait for the correlated `RoomEvent`, and do not call SDK
   wrappers directly.
 - Setting updates are accepted only with a `Ready` session and
   `can_edit_settings=true` in the current snapshot. Moderation is accepted only
   when the matching permission fact allows the action:
-  `can_kick`, `can_ban`, or `can_unban`.
+  `can_kick`, `can_ban`, or `can_unban`. Role edits are accepted only when
+  `can_edit_roles=true`; success updates the target member's `power_level` and
+  `role` in the Rust snapshot.
 - Permission-denied requests settle as a failed `permissions` operation before
   SDK mutation. A GUI control may be disabled from the snapshot, but Rust still
   enforces the guard for direct commands and tests.
@@ -749,9 +763,10 @@ stateDiagram-v2
   active membership.
 - SDK state-event mutation calls can return before the SDK room cache reflects
   the sent state event. The SDK adapter must project the submitted setting
-  change into the success snapshot or otherwise wait for a refreshed cache
-  before emitting `RoomSettingUpdated`; React must not patch the visible
-  settings state locally.
+  change or member power-level change into the success snapshot or otherwise
+  wait for a refreshed cache before emitting `RoomSettingUpdated` /
+  `RoomMemberRoleUpdated`; React must not patch the visible settings or role
+  state locally.
 - Failure state stores only coarse `RoomFailureKind` values. Room IDs, user IDs,
   room names/topics, avatar URLs, moderation reasons, raw SDK errors, and event
   identifiers must not appear in `Debug` output or QA stdout.

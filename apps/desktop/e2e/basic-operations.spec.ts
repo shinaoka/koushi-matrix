@@ -30,7 +30,7 @@
  *      DTO values only, and dispatch source/forward typed commands.
  *  12. Drive Explore public-directory search/join commands and wait for
  *      Rust-shaped snapshots before rendering results or joined rooms.
- *  13. Drive room-management topic/moderation commands and wait for
+ *  13. Drive room-management topic/avatar/moderation/role commands and wait for
  *      Rust-shaped snapshots before rendering settings or membership changes.
  */
 
@@ -534,7 +534,7 @@ test("Explore searches public rooms and joins only after Rust snapshot updates",
   ).toBeVisible();
 });
 
-test("room management panel updates topic and kicks members from Rust state", async ({
+test("room management panel updates settings, roles, and members from Rust state", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -555,6 +555,7 @@ test("room management panel updates topic and kicks members from Rust state", as
             history_visibility: "shared",
             permissions: {
               can_edit_settings: true,
+              can_edit_roles: true,
               can_kick: true,
               can_ban: false,
               can_unban: false
@@ -563,7 +564,9 @@ test("room management panel updates topic and kicks members from Rust state", as
               {
                 user_id: "@target-member:example.invalid",
                 display_name: "Target Member",
-                avatar_url: null
+                avatar_url: null,
+                power_level: 0,
+                role: "user"
               }
             ]
           },
@@ -575,6 +578,9 @@ test("room management panel updates topic and kicks members from Rust state", as
       window.__harness.currentSnapshot()
     );
     window.__harness.setCommandResponse("moderate_room_member", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.setCommandResponse("update_room_member_role", () =>
       window.__harness.currentSnapshot()
     );
     window.__harness.pushStateChanged();
@@ -625,9 +631,97 @@ test("room management panel updates topic and kicks members from Rust state", as
   await expect(currentTopicRow.getByText("Updated managed topic")).toBeVisible();
   await expect(currentTopicRow.getByText("Original managed topic")).toHaveCount(0);
 
+  const currentAvatarRow = page.locator(".settings-detail-row").filter({
+    hasText: "Current avatar"
+  });
+  await expect(currentAvatarRow.getByText("No avatar")).toBeVisible();
+  const avatarInput = page.getByRole("textbox", { name: "Room avatar URL" });
+  await avatarInput.fill("mxc://example.invalid/managed-avatar");
+  await page.getByRole("button", { name: "Save avatar" }).click();
+
+  await expect.poll(() => invocationCount(page, "update_room_setting")).toBeGreaterThanOrEqual(2);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_room_setting")[1]?.args)
+    )
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      change: { avatarUrl: "mxc://example.invalid/managed-avatar" }
+    });
+  await expect(currentAvatarRow.getByText("No avatar")).toBeVisible();
+
+  await page.evaluate((roomId) => {
+    const snapshot = window.__harness.currentSnapshot();
+    const settings = snapshot.state.room_management.settings;
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        room_management: {
+          selected_room_id: roomId,
+          settings: settings
+            ? { ...settings, avatar_url: "mxc://example.invalid/managed-avatar" }
+            : settings,
+          operation: { kind: "idle" }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  }, HARNESS_ROOM_ID);
+
+  await expect(currentAvatarRow.getByText("mxc://example.invalid/managed-avatar")).toBeVisible();
+  await expect(currentAvatarRow.getByText("No avatar")).toHaveCount(0);
+
   const targetMemberRow = page.locator(".room-member-row").filter({
     hasText: "Target Member"
   });
+  const targetMemberRoleLabel = targetMemberRow.locator(".room-member-main small").filter({
+    hasText: /^(User|Moderator)$/
+  });
+  await expect(targetMemberRoleLabel).toHaveText("User");
+  await targetMemberRow
+    .getByRole("combobox", { name: "Member role for Target Member" })
+    .selectOption("50");
+
+  await expect.poll(() => invocationCount(page, "update_room_member_role")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_room_member_role")[0]?.args)
+    )
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      targetUserId: "@target-member:example.invalid",
+      powerLevel: 50
+    });
+  await expect(targetMemberRoleLabel).toHaveText("User");
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        room_management: {
+          selected_room_id: snapshot.state.room_management.selected_room_id,
+          settings: snapshot.state.room_management.settings
+            ? {
+                ...snapshot.state.room_management.settings,
+                members: snapshot.state.room_management.settings.members.map((member) =>
+                  member.user_id === "@target-member:example.invalid"
+                    ? { ...member, power_level: 50, role: "moderator" }
+                    : member
+                )
+              }
+            : null,
+          operation: { kind: "idle" }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(targetMemberRoleLabel).toHaveText("Moderator");
+
   await targetMemberRow.getByRole("button", { name: "Kick Target Member" }).click();
 
   await expect.poll(() => invocationCount(page, "moderate_room_member")).toBeGreaterThanOrEqual(1);

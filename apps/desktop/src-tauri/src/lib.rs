@@ -784,6 +784,7 @@ pub fn run() {
             commands::load_room_settings,
             commands::update_room_setting,
             commands::moderate_room_member,
+            commands::update_room_member_role,
             commands::open_activity,
             commands::close_activity,
             commands::set_activity_tab,
@@ -1202,8 +1203,9 @@ mod tests {
             LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
             NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
             PresenceKind, ReplyQuote, ReplyQuoteState,
-            RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomPermissionFacts,
-            RoomSettingsSnapshot, RoomTagKind, SasEmoji, VerificationFlowState, VerificationTarget,
+            RoomHistoryVisibility, RoomJoinRule, RoomMemberRole, RoomModerationAction,
+            RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji,
+            VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -1681,6 +1683,7 @@ mod tests {
             history_visibility: RoomHistoryVisibility::Shared,
             permissions: RoomPermissionFacts {
                 can_edit_settings: true,
+                can_edit_roles: true,
                 can_kick: true,
                 can_ban: true,
                 can_unban: true,
@@ -1689,6 +1692,8 @@ mod tests {
                 user_id: "@member:example.test".to_owned(),
                 display_name: Some("Member".to_owned()),
                 avatar_url: Some("mxc://example.test/member-avatar".to_owned()),
+                power_level: Some(50),
+                role: RoomMemberRole::Moderator,
             }],
         };
         let room_settings_loaded =
@@ -1711,13 +1716,33 @@ mod tests {
                 action: RoomModerationAction::Kick,
             }))
             .expect("serialize room member moderated");
+        let room_member_role_updated =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::RoomMemberRoleUpdated {
+                request_id,
+                room_id: "!r:example.test".to_owned(),
+                target_user_id: "@target:example.test".to_owned(),
+                power_level: 50,
+            }))
+            .expect("serialize room member role updated");
         assert_eq!(
             room_settings_loaded["event"]["RoomSettingsLoaded"]["settings"]["permissions"]["can_edit_settings"],
             json!(true)
         );
         assert_eq!(
+            room_settings_loaded["event"]["RoomSettingsLoaded"]["settings"]["permissions"]["can_edit_roles"],
+            json!(true)
+        );
+        assert_eq!(
+            room_settings_loaded["event"]["RoomSettingsLoaded"]["settings"]["members"][0]["role"],
+            json!("moderator")
+        );
+        assert_eq!(
             room_member_moderated["event"]["RoomMemberModerated"]["action"],
             json!("kick")
+        );
+        assert_eq!(
+            room_member_role_updated["event"]["RoomMemberRoleUpdated"]["power_level"],
+            json!(50)
         );
 
         let e2ee_trust = serialize_core_event(&CoreEvent::E2eeTrust(
@@ -1916,6 +1941,7 @@ mod tests {
             "roomInviteDeclined": room_invite_declined,
             "roomLeft": room_left,
             "roomMemberModerated": room_member_moderated,
+            "roomMemberRoleUpdated": room_member_role_updated,
             "roomSettingUpdated": room_setting_updated,
             "roomSettingsLoaded": room_settings_loaded,
             "roomTagRemoved": room_tag_removed,

@@ -112,6 +112,11 @@ export interface DesktopApi {
     action: RoomModerationAction,
     reason?: string | null
   ): Promise<DesktopSnapshot>;
+  updateRoomMemberRole(
+    roomId: string,
+    targetUserId: string,
+    powerLevel: number
+  ): Promise<DesktopSnapshot>;
   createRoom(name: string): Promise<DesktopSnapshot>;
   createSpace(name: string): Promise<DesktopSnapshot>;
   setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<DesktopSnapshot>;
@@ -976,6 +981,71 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async updateRoomMemberRole(
+    roomId: string,
+    targetUserId: string,
+    powerLevel: number
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim() || !targetUserId.trim()) {
+      return this.getSnapshot();
+    }
+
+    const normalizedRoomId = roomId.trim();
+    const normalizedTargetUserId = targetUserId.trim();
+    const settings =
+      this.snapshot.state.room_management.settings?.room_id === normalizedRoomId
+        ? this.snapshot.state.room_management.settings
+        : this.roomSettingsSnapshot(normalizedRoomId);
+    const requestId = this.nextRequestId();
+
+    if (!settings.permissions.can_edit_roles) {
+      this.snapshot.state.room_management = {
+        selected_room_id: normalizedRoomId,
+        settings,
+        operation: {
+          kind: "failed",
+          request_id: requestId,
+          room_id: normalizedRoomId,
+          operation: "roles",
+          failureKind: "forbidden"
+        }
+      };
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.room_management = {
+      selected_room_id: normalizedRoomId,
+      settings,
+      operation: {
+        kind: "pending",
+        request_id: requestId,
+        room_id: normalizedRoomId,
+        operation: "roles"
+      }
+    };
+
+    await Promise.resolve();
+
+    const updatedSettings = {
+      ...settings,
+      members: settings.members.map((member) =>
+        member.user_id === normalizedTargetUserId
+          ? {
+              ...member,
+              power_level: powerLevel,
+              role: roomMemberRoleFromPowerLevel(powerLevel)
+            }
+          : member
+      )
+    };
+    this.snapshot.state.room_management = {
+      selected_room_id: normalizedRoomId,
+      settings: updatedSettings,
+      operation: { kind: "idle" }
+    };
+    return this.getSnapshot();
+  }
+
   async createRoom(name: string): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
@@ -1438,11 +1508,23 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private roomMemberSnapshot(): RoomSettingsSnapshot["members"] {
-    return Object.values(this.snapshot.state.profile.users)
+    const profiles = Object.values(this.snapshot.state.profile.users);
+    const members = profiles.length
+      ? profiles
+      : [
+          {
+            user_id: "@browser-member:browser.fake",
+            display_name: "Browser Member",
+            avatar: null
+          }
+        ];
+    return members
       .map((profile) => ({
         user_id: profile.user_id,
         display_name: profile.display_name,
-        avatar_url: profile.avatar?.mxc_uri ?? null
+        avatar_url: profile.avatar?.mxc_uri ?? null,
+        power_level: 0,
+        role: "user" as const
       }))
       .sort((left, right) => left.user_id.localeCompare(right.user_id));
   }
@@ -1719,6 +1801,7 @@ function defaultRoomManagementState(): DesktopSnapshot["state"]["room_management
 function editableRoomPermissionFacts(): RoomPermissionFacts {
   return {
     can_edit_settings: true,
+    can_edit_roles: true,
     can_kick: true,
     can_ban: true,
     can_unban: true
@@ -1728,10 +1811,21 @@ function editableRoomPermissionFacts(): RoomPermissionFacts {
 function readonlyRoomPermissionFacts(): RoomPermissionFacts {
   return {
     can_edit_settings: false,
+    can_edit_roles: false,
     can_kick: false,
     can_ban: false,
     can_unban: false
   };
+}
+
+function roomMemberRoleFromPowerLevel(powerLevel: number): RoomSettingsSnapshot["members"][number]["role"] {
+  if (powerLevel >= 100) {
+    return "administrator";
+  }
+  if (powerLevel >= 50) {
+    return "moderator";
+  }
+  return "user";
 }
 
 function applyRoomSettingChange(

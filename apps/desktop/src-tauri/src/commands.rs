@@ -1351,6 +1351,43 @@ pub async fn moderate_room_member(
 }
 
 #[tauri::command]
+pub async fn update_room_member_role(
+    room_id: String,
+    target_user_id: String,
+    power_level: i64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_update_room_member_role_command(
+            request_id,
+            room_id,
+            target_user_id,
+            power_level,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomMemberRoleUpdated { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room member role update did not complete",
+        "room member role update failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn open_activity(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
@@ -2619,6 +2656,20 @@ pub(crate) fn build_moderate_room_member_command(
     })
 }
 
+pub(crate) fn build_update_room_member_role_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    target_user_id: String,
+    power_level: i64,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::UpdateRoomMemberRole {
+        request_id,
+        room_id,
+        target_user_id,
+        power_level,
+    })
+}
+
 pub(crate) fn build_submit_search_command(
     request_id: matrix_desktop_core::RequestId,
     query: String,
@@ -3110,7 +3161,8 @@ mod tests {
         build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
-        build_update_room_setting_command, build_update_settings_command,
+        build_update_room_member_role_command, build_update_room_setting_command,
+        build_update_settings_command,
         build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
         qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room, build_open_activity_command,
@@ -4397,6 +4449,26 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+
+        match build_update_room_member_role_command(
+            fake_request_id(37),
+            "!room:example.org".to_owned(),
+            "@target:example.org".to_owned(),
+            50,
+        ) {
+            CoreCommand::Room(RoomCommand::UpdateRoomMemberRole {
+                request_id,
+                room_id,
+                target_user_id,
+                power_level,
+            }) => {
+                assert_eq!(request_id, fake_request_id(37));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(target_user_id, "@target:example.org");
+                assert_eq!(power_level, 50);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]
@@ -5122,6 +5194,10 @@ mod tests {
             ("pub async fn load_room_settings", "RoomSettingsLoaded"),
             ("pub async fn update_room_setting", "RoomSettingUpdated"),
             ("pub async fn moderate_room_member", "RoomMemberModerated"),
+            (
+                "pub async fn update_room_member_role",
+                "RoomMemberRoleUpdated",
+            ),
         ] {
             let fn_offset = source
                 .find(fn_name)

@@ -119,9 +119,12 @@ export type MessageId =
   | "room.members"
   | "room.ban"
   | "room.banMember"
+  | "room.avatarUrl"
+  | "room.currentAvatar"
   | "room.currentTopic"
   | "room.directMessage"
   | "room.dmList"
+  | "room.editRoles"
   | "room.editSettings"
   | "room.exactVerifiedResults"
   | "room.files"
@@ -149,10 +152,18 @@ export type MessageId =
   | "room.operationFailed"
   | "room.people"
   | "room.rolePermissions"
+  | "room.memberRole"
+  | "room.memberRoleFor"
+  | "room.noAvatar"
+  | "room.roleAdministrator"
+  | "room.roleCreator"
+  | "room.roleModerator"
+  | "room.roleUser"
   | "room.roomInfo"
   | "room.roomScoped"
   | "room.roomSettings"
   | "room.saveAccess"
+  | "room.saveAvatar"
   | "room.saveName"
   | "room.saveTopic"
   | "room.searchIndex"
@@ -638,12 +649,15 @@ const en: Catalog = {
   "panel.spaceInfo": "Space info",
   "panel.thread": "Thread",
   "panel.userSettings": "User settings",
+  "room.avatarUrl": "Room avatar URL",
   "room.ban": "Ban",
   "room.banMember": "Ban {name}",
+  "room.currentAvatar": "Current avatar",
   "room.currentTopic": "Current topic",
   "room.members": "Members",
   "room.directMessage": "Direct message",
   "room.dmList": "DM list",
+  "room.editRoles": "Edit roles",
   "room.editSettings": "Edit settings",
   "room.exactVerifiedResults": "Exact verified results",
   "room.files": "Files",
@@ -663,6 +677,9 @@ const en: Catalog = {
   "room.kick": "Kick",
   "room.kickMember": "Kick {name}",
   "room.management": "Room management",
+  "room.memberRole": "Member role",
+  "room.memberRoleFor": "Member role for {name}",
+  "room.noAvatar": "No avatar",
   "room.noMembers": "No members loaded",
   "room.noTopic": "No topic",
   "room.noRoomSelected": "No room selected",
@@ -670,11 +687,16 @@ const en: Catalog = {
   "room.notifications": "Notifications",
   "room.operationFailed": "Operation failed",
   "room.people": "People",
+  "room.roleAdministrator": "Administrator",
+  "room.roleCreator": "Creator",
+  "room.roleModerator": "Moderator",
   "room.rolePermissions": "Role permissions",
+  "room.roleUser": "User",
   "room.roomInfo": "Room info",
   "room.roomScoped": "Room scoped",
   "room.roomSettings": "Room settings",
   "room.saveAccess": "Save access",
+  "room.saveAvatar": "Save avatar",
   "room.saveName": "Save room name",
   "room.saveTopic": "Save topic",
   "room.searchIndex": "Search index",
@@ -1070,12 +1092,15 @@ const ja: Catalog = {
   "panel.spaceInfo": "スペース情報",
   "panel.thread": "スレッド",
   "panel.userSettings": "ユーザー設定",
+  "room.avatarUrl": "ルームアバターURL",
   "room.ban": "BAN",
   "room.banMember": "{name}をBAN",
+  "room.currentAvatar": "現在のアバター",
   "room.currentTopic": "現在のトピック",
   "room.members": "メンバー",
   "room.directMessage": "ダイレクトメッセージ",
   "room.dmList": "DM一覧",
+  "room.editRoles": "ロールを編集",
   "room.editSettings": "設定を編集",
   "room.exactVerifiedResults": "検証済み完全一致結果",
   "room.files": "ファイル",
@@ -1095,6 +1120,9 @@ const ja: Catalog = {
   "room.kick": "キック",
   "room.kickMember": "{name}をキック",
   "room.management": "ルーム管理",
+  "room.memberRole": "メンバーロール",
+  "room.memberRoleFor": "{name}のメンバーロール",
+  "room.noAvatar": "アバターなし",
   "room.noMembers": "読み込まれたメンバーはありません",
   "room.noTopic": "トピックなし",
   "room.noRoomSelected": "ルームが選択されていません",
@@ -1102,11 +1130,16 @@ const ja: Catalog = {
   "room.notifications": "通知",
   "room.operationFailed": "操作に失敗しました",
   "room.people": "ユーザー",
+  "room.roleAdministrator": "管理者",
+  "room.roleCreator": "作成者",
+  "room.roleModerator": "モデレーター",
   "room.rolePermissions": "ロール権限",
+  "room.roleUser": "ユーザー",
   "room.roomInfo": "ルーム情報",
   "room.roomScoped": "ルーム内",
   "room.roomSettings": "ルーム設定",
   "room.saveAccess": "アクセス設定を保存",
+  "room.saveAvatar": "アバターを保存",
   "room.saveName": "ルーム名を保存",
   "room.saveTopic": "トピックを保存",
   "room.searchIndex": "検索インデックス",

@@ -196,6 +196,7 @@ describe("TauriDesktopApi", () => {
       "kick",
       "Private reason"
     );
+    await api.updateRoomMemberRole("!room:example.invalid", "@target:example.invalid", 50);
 
     expect(invoke).toHaveBeenCalledWith("load_room_settings", {
       roomId: "!room:example.invalid"
@@ -209,6 +210,11 @@ describe("TauriDesktopApi", () => {
       targetUserId: "@target:example.invalid",
       action: "kick",
       reason: "Private reason"
+    });
+    expect(invoke).toHaveBeenCalledWith("update_room_member_role", {
+      roomId: "!room:example.invalid",
+      targetUserId: "@target:example.invalid",
+      powerLevel: 50
     });
   });
 

@@ -1,6 +1,6 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, OperationFailureKind, RoomHistoryVisibility, RoomJoinRule,
-    RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState,
+    RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState, RoomMemberRole,
     RoomMemberSummary, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
     RoomSettingsSnapshot, SessionInfo, SessionState, UiEvent, reduce,
 };
@@ -30,6 +30,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
         history_visibility: RoomHistoryVisibility::Shared,
         permissions: RoomPermissionFacts {
             can_edit_settings: true,
+            can_edit_roles: true,
             can_kick: true,
             can_ban: true,
             can_unban: false,
@@ -39,11 +40,15 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
                 user_id: "@user-a:example.invalid".to_owned(),
                 display_name: Some("User A".to_owned()),
                 avatar_url: None,
+                power_level: Some(100),
+                role: RoomMemberRole::Administrator,
             },
             RoomMemberSummary {
                 user_id: "@target:example.invalid".to_owned(),
                 display_name: Some("Target".to_owned()),
                 avatar_url: Some("mxc://example.invalid/target-avatar".to_owned()),
+                power_level: Some(0),
+                role: RoomMemberRole::User,
             },
         ],
     }
@@ -109,6 +114,15 @@ fn room_management_debug_output_redacts_private_values() {
                 reason: Some("Private moderation reason".to_owned()),
             }
         ),
+        format!(
+            "{:?}",
+            AppAction::RoomMemberRoleUpdateRequested {
+                request_id: 33,
+                room_id: "!private-room:example.invalid".to_owned(),
+                target_user_id: "@private-target:example.invalid".to_owned(),
+                power_level: 50,
+            }
+        ),
     ];
 
     for debug in debug_values {
@@ -130,6 +144,101 @@ fn room_management_debug_output_redacts_private_values() {
             );
         }
     }
+}
+
+#[test]
+fn room_member_role_update_records_pending_and_matching_completion_updates_member_snapshot() {
+    let mut state = ready_state();
+    let room_id = "!room:example.invalid";
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings: editable_settings(room_id),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomMemberRoleUpdateRequested {
+            request_id: 41,
+            room_id: room_id.to_owned(),
+            target_user_id: "@target:example.invalid".to_owned(),
+            power_level: 50,
+        },
+    );
+
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Pending {
+            request_id: 41,
+            room_id: room_id.to_owned(),
+            operation: RoomManagementOperationKind::Roles,
+        }
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomMemberRoleUpdateSucceeded {
+            request_id: 41,
+            room_id: room_id.to_owned(),
+            target_user_id: "@target:example.invalid".to_owned(),
+            power_level: 50,
+        },
+    );
+
+    let settings = state
+        .room_management
+        .settings
+        .expect("room management settings");
+    let target = settings
+        .members
+        .iter()
+        .find(|member| member.user_id == "@target:example.invalid")
+        .expect("target member");
+    assert_eq!(target.power_level, Some(50));
+    assert_eq!(target.role, RoomMemberRole::Moderator);
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Idle
+    );
+}
+
+#[test]
+fn room_member_role_update_without_permission_is_rejected_in_rust_state() {
+    let mut state = ready_state();
+    let room_id = "!room:example.invalid";
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings: locked_settings(room_id),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMemberRoleUpdateRequested {
+            request_id: 42,
+            room_id: room_id.to_owned(),
+            target_user_id: "@target:example.invalid".to_owned(),
+            power_level: 50,
+        },
+    );
+
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Failed {
+            request_id: 42,
+            room_id: room_id.to_owned(),
+            operation: RoomManagementOperationKind::Roles,
+            kind: OperationFailureKind::Forbidden,
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+    );
 }
 
 #[test]

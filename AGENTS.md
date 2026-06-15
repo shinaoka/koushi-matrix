@@ -730,9 +730,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Room-management GUI iteration has a focused virtual-display lane:
   `--scenario=local-room-management`. It seeds a helper member, opens the real
   Room info panel, edits the topic, waits for
-  `AppState.room_management.settings.topic`, kicks the helper, and waits for
-  the room-scoped `settings.members` snapshot to remove the row. It prints
-  only `gui_local_room_topic=ok` and `gui_local_room_kick=ok`:
+  `AppState.room_management.settings.topic`, changes the helper role through
+  the Rust-owned power-level command, kicks the helper, and waits for the
+  room-scoped `settings.members` snapshot to remove the row. It prints only
+  `gui_local_room_topic=ok`, `gui_local_room_role=ok`, and
+  `gui_local_room_kick=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-management --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-management-fast --timeout-ms=180000`
 - Explore GUI iteration has a focused virtual-display lane:
   `--scenario=local-explore`. It creates a synthetic public-room fixture with a
@@ -916,11 +918,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   row is observed in the expected section.
 - `local-room-management` must render member actions from the room-scoped
   `AppState.room_management.settings.members` snapshot, not the global
-  profile cache. Kick/ban success removes the target in the Rust reducer; React
-  must not locally filter the member row after command completion. The Linux
-  lane stdout must stay private-data-free and must not print Matrix room IDs,
-  user IDs, room names/topics, avatar URLs, moderation reasons, or raw SDK
-  errors.
+  profile cache. Member roles and power levels are Rust-projected facts; React
+  may render a select and dispatch `update_room_member_role`, but it must wait
+  for the returned snapshot before the visible role changes. Kick/ban success
+  removes the target in the Rust reducer; React must not locally filter the
+  member row after command completion. The Linux lane stdout must stay
+  private-data-free and must not print Matrix room IDs, user IDs, room
+  names/topics, avatar URLs, moderation reasons, or raw SDK errors.
 - `local-explore` must drive the real Explore pane and wait for
   `AppState.directory.query` results plus the joined room-list snapshot. React
   may keep only the search input draft; it must not synthesize directory

@@ -295,6 +295,24 @@ pub enum AppAction {
         action: RoomModerationAction,
         kind: OperationFailureKind,
     },
+    RoomMemberRoleUpdateRequested {
+        request_id: u64,
+        room_id: String,
+        target_user_id: String,
+        power_level: i64,
+    },
+    RoomMemberRoleUpdateSucceeded {
+        request_id: u64,
+        room_id: String,
+        target_user_id: String,
+        power_level: i64,
+    },
+    RoomMemberRoleUpdateFailed {
+        request_id: u64,
+        room_id: String,
+        target_user_id: String,
+        kind: OperationFailureKind,
+    },
     ActivityOpened {
         request_id: u64,
     },
@@ -608,6 +626,37 @@ impl fmt::Debug for AppAction {
                 .field("room_id", &"RoomId(..)")
                 .field("target_user_id", &"UserId(..)")
                 .field("action", action)
+                .field("kind", kind)
+                .finish(),
+            Self::RoomMemberRoleUpdateRequested {
+                request_id,
+                power_level,
+                ..
+            } => formatter
+                .debug_struct("RoomMemberRoleUpdateRequested")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("power_level", power_level)
+                .finish(),
+            Self::RoomMemberRoleUpdateSucceeded {
+                request_id,
+                power_level,
+                ..
+            } => formatter
+                .debug_struct("RoomMemberRoleUpdateSucceeded")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("power_level", power_level)
+                .finish(),
+            Self::RoomMemberRoleUpdateFailed {
+                request_id, kind, ..
+            } => formatter
+                .debug_struct("RoomMemberRoleUpdateFailed")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
                 .field("kind", kind)
                 .finish(),
             Self::ActivityOpened { request_id } => formatter

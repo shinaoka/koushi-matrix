@@ -303,6 +303,20 @@
     },
     "kind": "Room"
   },
+  "roomMemberRoleUpdated": {
+    "event": {
+      "RoomMemberRoleUpdated": {
+        "power_level": 50,
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "room_id": "!r:example.test",
+        "target_user_id": "@target:example.test"
+      }
+    },
+    "kind": "Room"
+  },
   "roomSettingUpdated": {
     "event": {
       "RoomSettingUpdated": {
@@ -318,12 +332,15 @@
             {
               "avatar_url": "mxc://example.test/member-avatar",
               "display_name": "Member",
+              "power_level": 50,
+              "role": "moderator",
               "user_id": "@member:example.test"
             }
           ],
           "name": "Room Settings Sample",
           "permissions": {
             "can_ban": true,
+            "can_edit_roles": true,
             "can_edit_settings": true,
             "can_kick": true,
             "can_unban": true
@@ -350,12 +367,15 @@
             {
               "avatar_url": "mxc://example.test/member-avatar",
               "display_name": "Member",
+              "power_level": 50,
+              "role": "moderator",
               "user_id": "@member:example.test"
             }
           ],
           "name": "Room Settings Sample",
           "permissions": {
             "can_ban": true,
+            "can_edit_roles": true,
             "can_edit_settings": true,
             "can_kick": true,
             "can_unban": true

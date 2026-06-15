@@ -94,6 +94,7 @@ impl CoreCommand {
                 | RoomCommand::LoadRoomSettings { request_id, .. }
                 | RoomCommand::UpdateRoomSetting { request_id, .. }
                 | RoomCommand::ModerateRoomMember { request_id, .. }
+                | RoomCommand::UpdateRoomMemberRole { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
                 | RoomCommand::SelectRoom { request_id, .. } => *request_id,
             },
@@ -735,6 +736,12 @@ pub enum RoomCommand {
         action: RoomModerationAction,
         reason: Option<String>,
     },
+    UpdateRoomMemberRole {
+        request_id: RequestId,
+        room_id: String,
+        target_user_id: String,
+        power_level: i64,
+    },
     SelectSpace {
         request_id: RequestId,
         space_id: Option<String>,
@@ -883,6 +890,17 @@ impl fmt::Debug for RoomCommand {
                 .field("target_user_id", &"UserId(..)")
                 .field("action", action)
                 .field("reason", &"ModerationReason(..)")
+                .finish(),
+            Self::UpdateRoomMemberRole {
+                request_id,
+                power_level,
+                ..
+            } => formatter
+                .debug_struct("UpdateRoomMemberRole")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("power_level", power_level)
                 .finish(),
             Self::SelectSpace {
                 request_id,
@@ -1534,6 +1552,13 @@ mod tests {
             action: RoomModerationAction::Ban,
             reason: Some("Private moderation reason".to_owned()),
         };
+        let role_request_id = fake_rid(19);
+        let role = RoomCommand::UpdateRoomMemberRole {
+            request_id: role_request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+            target_user_id: "@private-target:example.invalid".to_owned(),
+            power_level: 50,
+        };
 
         assert_eq!(CoreCommand::Room(load).request_id(), load_request_id);
         assert_eq!(
@@ -1556,17 +1581,28 @@ mod tests {
             .request_id(),
             moderation_request_id
         );
+        assert_eq!(
+            CoreCommand::Room(RoomCommand::UpdateRoomMemberRole {
+                request_id: role_request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                target_user_id: "@private-target:example.invalid".to_owned(),
+                power_level: 50,
+            })
+            .request_id(),
+            role_request_id
+        );
 
         for debug in [
             format!(
                 "{:?}",
                 RoomCommand::LoadRoomSettings {
-                    request_id: fake_rid(19),
+                    request_id: fake_rid(20),
                     room_id: "!private-room:example.invalid".to_owned(),
                 }
             ),
             format!("{update:?}"),
             format!("{moderation:?}"),
+            format!("{role:?}"),
         ] {
             assert!(debug.contains("RoomId(..)"), "{debug}");
             assert!(!debug.contains("!private-room:example.invalid"), "{debug}");

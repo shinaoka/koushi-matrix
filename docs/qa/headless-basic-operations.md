@@ -406,12 +406,16 @@ React-local room-list membership, or print Matrix room IDs / raw SDK errors.
 `local-room-management` seeds a helper member in the disposable local room,
 opens the real Room info panel, edits the room topic through the right-panel
 form, waits for the Rust-owned `AppState.room_management.settings.topic`
-snapshot row to update, then clicks the Kick control and waits for the
-room-scoped `settings.members` snapshot to remove the member row. The lane
-prints only `gui_local_room_topic=ok` and `gui_local_room_kick=ok`; it must not
-monkeypatch Tauri IPC, synthesize React-local settings/member state, or print
-Matrix room IDs, user IDs, room names/topics, avatar URLs, moderation reasons,
-or raw SDK errors.
+snapshot row to update, changes the helper's role through the real role
+select and waits for the Rust-owned `settings.members[*].role` /
+`power_level` snapshot to update, then clicks the Kick control and waits for
+the room-scoped `settings.members` snapshot to remove the member row. The lane
+prints only `gui_local_room_topic=ok`, `gui_local_room_role=ok`, and
+`gui_local_room_kick=ok`; it must not monkeypatch Tauri IPC, synthesize
+React-local settings/member state, or print Matrix room IDs, user IDs, room
+names/topics, avatar URLs, moderation reasons, or raw SDK errors. Room avatar
+URL editing is covered by the browser-headless command/snapshot test because
+the local homeserver lane should not depend on reusable synthetic MXC media.
 
 `local-explore` registers a synthetic helper account on the same disposable
 homeserver, has that helper create one public room with a synthetic alias, then
@@ -488,6 +492,7 @@ gui_local_media=ok
 gui_local_room_tag_set=ok
 gui_local_room_tag_removed=ok
 gui_local_room_topic=ok
+gui_local_room_role=ok
 gui_local_room_kick=ok
 gui_local_message_source=ok
 gui_local_message_forward=ok

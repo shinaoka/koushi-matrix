@@ -886,11 +886,20 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
           history_visibility: "shared",
           permissions: {
             can_edit_settings: true,
+            can_edit_roles: true,
             can_kick: true,
             can_ban: true,
             can_unban: true
           },
-          members: []
+          members: [
+            {
+              user_id: "@harness-member:example.invalid",
+              display_name: "Harness Member",
+              avatar_url: null,
+              power_level: 0,
+              role: "user"
+            }
+          ]
         },
         operation: { kind: "idle" }
       }
@@ -900,6 +909,7 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
 });
 mock.setCommandResponse("update_room_setting", () => currentSnapshot);
 mock.setCommandResponse("moderate_room_member", () => currentSnapshot);
+mock.setCommandResponse("update_room_member_role", () => currentSnapshot);
 mock.setCommandResponse("pin_event", () => currentSnapshot);
 mock.setCommandResponse("unpin_event", () => currentSnapshot);
 mock.setCommandResponse("upload_media", () => currentSnapshot);

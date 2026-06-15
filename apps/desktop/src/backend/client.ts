@@ -278,6 +278,18 @@ class TauriDesktopApi implements DesktopApi {
     });
   }
 
+  async updateRoomMemberRole(
+    roomId: string,
+    targetUserId: string,
+    powerLevel: number
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("update_room_member_role", {
+      roomId,
+      targetUserId,
+      powerLevel
+    });
+  }
+
   async openActivity(): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("open_activity");
   }

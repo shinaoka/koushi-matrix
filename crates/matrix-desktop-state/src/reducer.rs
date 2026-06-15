@@ -7,10 +7,10 @@ use crate::{
         DirectoryJoinState, DirectoryQueryState, DirectoryState, E2eeRecoveryState, E2eeTrustState,
         FocusedContextState, IdentityResetState, KeyBackupStatus, LocalEncryptionState,
         NavigationState, OperationFailureKind, PendingComposerSendKind, PinOp, PinOperationState,
-        RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction, SasEmoji,
-        SearchState, SessionState, SettingsPersistenceState, SyncState, ThreadPaneState,
-        TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
-        VerificationFlowState, VerificationTarget,
+        RoomManagementOperationKind, RoomManagementOperationState, RoomMemberRole,
+        RoomModerationAction, SasEmoji, SearchState, SessionState, SettingsPersistenceState,
+        SyncState, ThreadPaneState, TimelinePaneState, TrustOperationFailureKind,
+        VerificationCancelReason, VerificationFlowState, VerificationTarget,
     },
 };
 
@@ -1353,6 +1353,84 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             };
             vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
         }
+        AppAction::RoomMemberRoleUpdateRequested {
+            request_id,
+            room_id,
+            target_user_id: _,
+            power_level: _,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            if !room_role_permission_allows(state, &room_id) {
+                state.room_management.operation = RoomManagementOperationState::Failed {
+                    request_id,
+                    room_id,
+                    operation: RoomManagementOperationKind::Roles,
+                    kind: OperationFailureKind::Forbidden,
+                };
+                return vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)];
+            }
+
+            state.room_management.operation = RoomManagementOperationState::Pending {
+                request_id,
+                room_id,
+                operation: RoomManagementOperationKind::Roles,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
+        AppAction::RoomMemberRoleUpdateSucceeded {
+            request_id,
+            room_id,
+            target_user_id,
+            power_level,
+        } => {
+            if !room_management_operation_matches(
+                state,
+                request_id,
+                &room_id,
+                RoomManagementOperationKind::Roles,
+            ) {
+                return Vec::new();
+            }
+
+            if let Some(settings) = state.room_management.settings.as_mut()
+                && settings.room_id == room_id
+                && let Some(member) = settings
+                    .members
+                    .iter_mut()
+                    .find(|member| member.user_id == target_user_id)
+            {
+                member.power_level = Some(power_level);
+                member.role = RoomMemberRole::from_power_level(Some(power_level));
+            }
+            state.room_management.operation = RoomManagementOperationState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
+        AppAction::RoomMemberRoleUpdateFailed {
+            request_id,
+            room_id,
+            target_user_id: _,
+            kind,
+        } => {
+            if !room_management_operation_matches(
+                state,
+                request_id,
+                &room_id,
+                RoomManagementOperationKind::Roles,
+            ) {
+                return Vec::new();
+            }
+
+            state.room_management.operation = RoomManagementOperationState::Failed {
+                request_id,
+                room_id,
+                operation: RoomManagementOperationKind::Roles,
+                kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+        }
         AppAction::ActivityOpened { request_id } => {
             if !is_session_ready(state) {
                 return Vec::new();
@@ -2244,6 +2322,15 @@ fn room_settings_permission_allows(state: &AppState, room_id: &str) -> bool {
         .as_ref()
         .filter(|settings| settings.room_id == room_id)
         .is_some_and(|settings| settings.permissions.can_edit_settings)
+}
+
+fn room_role_permission_allows(state: &AppState, room_id: &str) -> bool {
+    state
+        .room_management
+        .settings
+        .as_ref()
+        .filter(|settings| settings.room_id == room_id)
+        .is_some_and(|settings| settings.permissions.can_edit_roles)
 }
 
 fn room_moderation_permission_allows(

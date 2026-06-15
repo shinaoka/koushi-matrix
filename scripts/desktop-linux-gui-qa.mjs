@@ -690,6 +690,18 @@ async function runLocalRoomManagementScenario() {
       timeoutMs,
       "local GUI room management member baseline"
     );
+    const roleSelect = await session.browser.$('select[aria-label^="Member role for"]');
+    await roleSelect.waitForDisplayed({ timeout: timeoutMs });
+    await roleSelect.selectByAttribute("value", "50");
+    await waitForRoomMemberRole(
+      session.browser,
+      "Moderator",
+      "50",
+      timeoutMs,
+      "local GUI room management role"
+    );
+    console.log("gui_local_room_role=ok");
+
     const kickButton = await session.browser.$('.room-member-row button[data-action="kick"]');
     await kickButton.waitForDisplayed({ timeout: timeoutMs });
     await kickButton.click();
@@ -1063,6 +1075,31 @@ async function waitForRoomManagementTopic(browser, expectedTopic, timeout, descr
     await sleep(250);
   }
   throw new Error(`${description} did not observe the Rust-owned topic snapshot`);
+}
+
+async function waitForRoomMemberRole(browser, expectedLabel, expectedValue, timeout, description) {
+  const startedAt = Date.now();
+  let observed = { label: "", value: "" };
+  while (Date.now() - startedAt < timeout) {
+    observed = await browser.execute(() => {
+      const row = document.querySelector(".room-member-row");
+      const select = row?.querySelector('select[aria-label^="Member role for"]');
+      const label = Array.from(row?.querySelectorAll(".room-member-main small") ?? [])
+        .map((element) => (element.textContent ?? "").trim())
+        .find((text) => ["Creator", "Administrator", "Moderator", "User"].includes(text));
+      return {
+        label: label ?? "",
+        value: select instanceof HTMLSelectElement ? select.value : ""
+      };
+    });
+    if (observed.label === expectedLabel && observed.value === expectedValue) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not observe the Rust-owned role snapshot. Last label=${observed.label} value=${observed.value}`
+  );
 }
 
 async function selectComposerText(browser) {

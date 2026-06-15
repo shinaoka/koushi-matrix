@@ -460,6 +460,12 @@ pub enum RoomEvent {
         target_user_id: String,
         action: RoomModerationAction,
     },
+    RoomMemberRoleUpdated {
+        request_id: RequestId,
+        room_id: String,
+        target_user_id: String,
+        power_level: i64,
+    },
     RoomListUpdated,
 }
 
@@ -575,6 +581,17 @@ impl fmt::Debug for RoomEvent {
                 .field("room_id", &"RoomId(..)")
                 .field("target_user_id", &"UserId(..)")
                 .field("action", action)
+                .finish(),
+            Self::RoomMemberRoleUpdated {
+                request_id,
+                power_level,
+                ..
+            } => formatter
+                .debug_struct("RoomMemberRoleUpdated")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("target_user_id", &"UserId(..)")
+                .field("power_level", power_level)
                 .finish(),
             Self::RoomListUpdated => formatter.write_str("RoomListUpdated"),
         }
@@ -1637,5 +1654,24 @@ mod tests {
         assert!(!debug.contains("!room:example.invalid"), "{debug}");
         assert!(!debug.contains("@alice:example.invalid"), "{debug}");
         assert!(!debug.contains("mxc://example.invalid"), "{debug}");
+    }
+
+    #[test]
+    fn room_member_role_event_debug_redacts_room_and_user_ids() {
+        let event = RoomEvent::RoomMemberRoleUpdated {
+            request_id: fake_rid(44),
+            room_id: "!private-room:example.invalid".to_owned(),
+            target_user_id: "@private-target:example.invalid".to_owned(),
+            power_level: 50,
+        };
+
+        let debug = format!("{event:?}");
+        assert!(debug.contains("RoomMemberRoleUpdated"), "{debug}");
+        assert!(debug.contains("power_level"), "{debug}");
+        assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+        assert!(
+            !debug.contains("@private-target:example.invalid"),
+            "{debug}"
+        );
     }
 }

@@ -6,6 +6,7 @@ import type {
   RoomHistoryVisibility,
   RoomJoinRule,
   RoomManagementState,
+  RoomMemberRole,
   RoomMemberSummary,
   RoomModerationAction,
   RoomSettingChange,
@@ -20,6 +21,7 @@ export function RoomInfoPanel({
   spaces,
   onInvitePeople,
   onModerateMember,
+  onUpdateMemberRole,
   onUpdateRoomSetting
 }: {
   currentUserId?: string | null;
@@ -34,6 +36,7 @@ export function RoomInfoPanel({
     reason: string | null
   ) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
+  onUpdateMemberRole?: (roomId: string, targetUserId: string, powerLevel: number) => void;
 }) {
   const roomId = room?.room_id ?? "";
   const roomName = room?.display_name ?? "";
@@ -47,12 +50,14 @@ export function RoomInfoPanel({
   const settingsPending = operation.kind === "pending" && operation.operation === "settings";
   const moderationPending =
     operation.kind === "pending" && operation.operation === "moderation";
+  const rolePending = operation.kind === "pending" && operation.operation === "roles";
   const permissions = settings?.permissions ?? null;
   const memberProfiles = (settings?.members ?? [])
     .filter((profile) => profile.user_id !== currentUserId)
     .sort((left, right) => memberLabel(left).localeCompare(memberLabel(right)));
   const [nameDraft, setNameDraft] = useState(settings?.name ?? roomName);
   const [topicDraft, setTopicDraft] = useState(settings?.topic ?? "");
+  const [avatarDraft, setAvatarDraft] = useState(settings?.avatar_url ?? "");
   const [joinRuleDraft, setJoinRuleDraft] = useState<RoomJoinRule>(
     settings?.join_rule ?? "invite"
   );
@@ -62,6 +67,7 @@ export function RoomInfoPanel({
   useEffect(() => {
     setNameDraft(settings?.name ?? roomName);
     setTopicDraft(settings?.topic ?? "");
+    setAvatarDraft(settings?.avatar_url ?? "");
     setJoinRuleDraft(settings?.join_rule ?? "invite");
     setHistoryVisibilityDraft(settings?.history_visibility ?? "shared");
   }, [roomName, settings]);
@@ -135,6 +141,10 @@ export function RoomInfoPanel({
                 label={t("room.currentTopic")}
                 value={settings.topic?.trim() || t("room.noTopic")}
               />
+              <DetailRow
+                label={t("room.currentAvatar")}
+                value={settings.avatar_url?.trim() || t("room.noAvatar")}
+              />
               <DetailRow label={t("room.joinRule")} value={roomJoinRuleLabel(settings.join_rule)} />
               <DetailRow
                 label={t("room.historyVisibility")}
@@ -167,6 +177,34 @@ export function RoomInfoPanel({
                 disabled={!canEditSettings || nameDraft.trim() === (settings.name ?? "")}
               >
                 {t("room.saveName")}
+              </button>
+            </form>
+            <form
+              className="room-management-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (canEditSettings) {
+                  onUpdateRoomSetting?.(room.room_id, {
+                    avatarUrl: avatarDraft.trim() || null
+                  });
+                }
+              }}
+            >
+              <label className="profile-settings-field">
+                <span>{t("room.avatarUrl")}</span>
+                <input
+                  value={avatarDraft}
+                  aria-label={t("room.avatarUrl")}
+                  disabled={!canEditSettings}
+                  onChange={(event) => setAvatarDraft(event.currentTarget.value)}
+                />
+              </label>
+              <button
+                className="profile-settings-action"
+                type="submit"
+                disabled={!canEditSettings || avatarDraft.trim() === (settings.avatar_url ?? "")}
+              >
+                {t("room.saveAvatar")}
               </button>
             </form>
             <form
@@ -283,8 +321,38 @@ export function RoomInfoPanel({
                 <span className="room-member-main">
                   <span dir="auto">{memberLabel(profile)}</span>
                   <small dir="auto">{profile.user_id}</small>
+                  <small>{roomMemberRoleLabel(profile.role)}</small>
                 </span>
                 <span className="room-member-actions">
+                  <label className="room-member-role-field">
+                    <span>{t("room.memberRole")}</span>
+                    <select
+                      aria-label={t("room.memberRoleFor", { name: memberLabel(profile) })}
+                      value={profile.power_level === null ? "creator" : String(profile.power_level)}
+                      disabled={!permissions?.can_edit_roles || rolePending || !onUpdateMemberRole}
+                      onChange={(event) => {
+                        if (event.currentTarget.value === "creator") {
+                          return;
+                        }
+                        onUpdateMemberRole?.(
+                          room.room_id,
+                          profile.user_id,
+                          Number(event.currentTarget.value)
+                        );
+                      }}
+                    >
+                      {profile.power_level === null ? (
+                        <option value="creator" disabled>
+                          {roomMemberRoleLabel("creator")}
+                        </option>
+                      ) : null}
+                      {roomMemberRoleOptions.map((option) => (
+                        <option key={option.powerLevel} value={String(option.powerLevel)}>
+                          {roomMemberRoleLabel(option.role)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <ModerationButton
                     action="kick"
                     disabled={
@@ -332,6 +400,10 @@ export function RoomInfoPanel({
           <DetailRow
             label={t("room.editSettings")}
             value={permissions?.can_edit_settings ? t("settings.current") : t("auth.notChecked")}
+          />
+          <DetailRow
+            label={t("room.editRoles")}
+            value={permissions?.can_edit_roles ? t("settings.current") : t("auth.notChecked")}
           />
           <DetailRow
             label={t("room.kick")}
@@ -388,6 +460,25 @@ function ModerationButton({
 
 function memberLabel(profile: RoomMemberSummary): string {
   return profile.display_name?.trim() || profile.user_id;
+}
+
+const roomMemberRoleOptions: Array<{ role: RoomMemberRole; powerLevel: number }> = [
+  { role: "administrator", powerLevel: 100 },
+  { role: "moderator", powerLevel: 50 },
+  { role: "user", powerLevel: 0 }
+];
+
+function roomMemberRoleLabel(role: RoomMemberRole): string {
+  switch (role) {
+    case "creator":
+      return t("room.roleCreator");
+    case "administrator":
+      return t("room.roleAdministrator");
+    case "moderator":
+      return t("room.roleModerator");
+    case "user":
+      return t("room.roleUser");
+  }
 }
 
 function roomJoinRuleLabel(rule: RoomJoinRule): string {

@@ -349,6 +349,14 @@ export type RoomEvent =
         action: RoomModerationAction;
       };
     }
+  | {
+      RoomMemberRoleUpdated: {
+        request_id: RequestId;
+        room_id: string;
+        target_user_id: string;
+        power_level: number;
+      };
+    }
   | "RoomListUpdated";
 
 export type RoomTagKind = "favourite" | "lowPriority";
@@ -402,7 +410,11 @@ export interface RoomMemberSummary {
   user_id: string;
   display_name: string | null;
   avatar_url: string | null;
+  power_level: number | null;
+  role: RoomMemberRole;
 }
+
+export type RoomMemberRole = "creator" | "administrator" | "moderator" | "user";
 
 export type RoomJoinRule = "public" | "invite" | "knock" | "restricted" | "private";
 
@@ -410,6 +422,7 @@ export type RoomHistoryVisibility = "worldReadable" | "shared" | "invited" | "jo
 
 export interface RoomPermissionFacts {
   can_edit_settings: boolean;
+  can_edit_roles: boolean;
   can_kick: boolean;
   can_ban: boolean;
   can_unban: boolean;

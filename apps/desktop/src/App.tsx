@@ -1133,6 +1133,14 @@ export function App() {
     setSnapshot(await api.moderateRoomMember(roomId, targetUserId, action, reason));
   }
 
+  async function updateRoomMemberRole(
+    roomId: string,
+    targetUserId: string,
+    powerLevel: number
+  ) {
+    setSnapshot(await api.updateRoomMemberRole(roomId, targetUserId, powerLevel));
+  }
+
   async function openThread(roomId: string, rootEventId: string) {
     await closeFocusedContextIfHiddenBy("thread");
     setSnapshot(await api.openThread(roomId, rootEventId));
@@ -1481,6 +1489,9 @@ export function App() {
           onInviteUser={openInviteUserDialog}
           onModerateMember={(roomId, targetUserId, action, reason) => {
             void moderateRoomMember(roomId, targetUserId, action, reason);
+          }}
+          onUpdateMemberRole={(roomId, targetUserId, powerLevel) => {
+            void updateRoomMemberRole(roomId, targetUserId, powerLevel);
           }}
           onRecoverySecretPresenceChange={setRecoverySecretFilled}
           onReply={(roomId, eventId) => {
@@ -3556,6 +3567,7 @@ export function ContextualRightPanel({
   onOpenKeyboardSettings,
   onInviteUser = () => undefined,
   onModerateMember = () => undefined,
+  onUpdateMemberRole = () => undefined,
   onRecoverySecretPresenceChange,
   onReply,
   onResultSelect,
@@ -3598,6 +3610,11 @@ export function ContextualRightPanel({
     targetUserId: string,
     action: RoomModerationAction,
     reason: string | null
+  ) => void;
+  onUpdateMemberRole?: (
+    roomId: string,
+    targetUserId: string,
+    powerLevel: number
   ) => void;
   onRecoverySecretPresenceChange: (value: boolean) => void;
   onReply: TimelineRowActionHandlers["onReply"];
@@ -3700,6 +3717,7 @@ export function ContextualRightPanel({
               : undefined
           }
           onModerateMember={onModerateMember}
+          onUpdateMemberRole={onUpdateMemberRole}
           onUpdateRoomSetting={onUpdateRoomSetting}
         />
       </aside>

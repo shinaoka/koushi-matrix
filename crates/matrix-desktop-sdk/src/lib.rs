@@ -1568,6 +1568,16 @@ pub struct MatrixRoomMemberSummary {
     pub user_id: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    pub power_level: Option<i64>,
+    pub role: MatrixRoomMemberRole,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixRoomMemberRole {
+    Creator,
+    Administrator,
+    Moderator,
+    User,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1590,6 +1600,7 @@ pub enum MatrixRoomHistoryVisibility {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MatrixRoomPermissionFacts {
     pub can_edit_settings: bool,
+    pub can_edit_roles: bool,
     pub can_kick: bool,
     pub can_ban: bool,
     pub can_unban: bool,
@@ -2133,6 +2144,30 @@ pub async fn moderate_room_member(
         MatrixRoomModerationAction::Unban => room.unban_user(&target_user_id, reason).await,
     }
     .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+pub async fn update_room_member_power_level(
+    session: &MatrixClientSession,
+    room_id: &str,
+    target_user_id: &str,
+    power_level: i64,
+) -> Result<MatrixRoomSettingsSnapshot, MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let target_user_id = matrix_sdk::ruma::UserId::parse(target_user_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidUserId)?;
+    let power_level = matrix_sdk::ruma::Int::try_from(power_level)
+        .map_err(|_| MatrixRoomOperationError::InvalidRoomSetting)?;
+
+    room.update_power_levels(vec![(target_user_id.as_ref(), power_level)])
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?;
+
+    let target_user_id_ref: &matrix_sdk::ruma::UserId = target_user_id.as_ref();
+    Ok(room_settings_snapshot_with_member_power_level(
+        matrix_room_settings_snapshot(&room).await,
+        target_user_id_ref.as_str(),
+        power_level.into(),
+    ))
 }
 
 pub async fn create_room(
@@ -2837,6 +2872,10 @@ async fn matrix_room_settings_snapshot(room: &matrix_sdk::Room) -> MatrixRoomSet
         history_visibility: matrix_room_history_visibility(&room.history_visibility_or_default()),
         permissions: MatrixRoomPermissionFacts {
             can_edit_settings,
+            can_edit_roles: power_levels.user_can_send_state(
+                own_user_id,
+                matrix_sdk::ruma::events::StateEventType::RoomPowerLevels,
+            ),
             can_kick: power_levels.user_can_kick(own_user_id),
             can_ban: power_levels.user_can_ban(own_user_id),
             can_unban: power_levels.user_can_ban(own_user_id),
@@ -2851,14 +2890,56 @@ async fn matrix_room_member_summaries(room: &matrix_sdk::Room) -> Vec<MatrixRoom
     };
     let mut summaries: Vec<MatrixRoomMemberSummary> = members
         .into_iter()
-        .map(|member| MatrixRoomMemberSummary {
-            user_id: member.user_id().to_string(),
-            display_name: member.display_name().map(ToOwned::to_owned),
-            avatar_url: member.avatar_url().map(ToString::to_string),
+        .map(|member| {
+            let power_level = matrix_room_member_power_level(member.power_level());
+            MatrixRoomMemberSummary {
+                user_id: member.user_id().to_string(),
+                display_name: member.display_name().map(ToOwned::to_owned),
+                avatar_url: member.avatar_url().map(ToString::to_string),
+                power_level,
+                role: matrix_room_member_role(power_level),
+            }
         })
         .collect();
     summaries.sort_by(|left, right| left.user_id.cmp(&right.user_id));
     summaries
+}
+
+fn room_settings_snapshot_with_member_power_level(
+    mut snapshot: MatrixRoomSettingsSnapshot,
+    target_user_id: &str,
+    power_level: i64,
+) -> MatrixRoomSettingsSnapshot {
+    if let Some(member) = snapshot
+        .members
+        .iter_mut()
+        .find(|member| member.user_id == target_user_id)
+    {
+        member.power_level = Some(power_level);
+        member.role = matrix_room_member_role(Some(power_level));
+    }
+    snapshot
+}
+
+fn matrix_room_member_power_level(
+    power_level: matrix_sdk::ruma::events::room::power_levels::UserPowerLevel,
+) -> Option<i64> {
+    match power_level {
+        matrix_sdk::ruma::events::room::power_levels::UserPowerLevel::Infinite => None,
+        matrix_sdk::ruma::events::room::power_levels::UserPowerLevel::Int(value) => {
+            Some(value.into())
+        }
+        _ => None,
+    }
+}
+
+fn matrix_room_member_role(power_level: Option<i64>) -> MatrixRoomMemberRole {
+    match power_level {
+        None => MatrixRoomMemberRole::Creator,
+        Some(level) if level >= 100 => MatrixRoomMemberRole::Administrator,
+        Some(level) if level >= 50 => MatrixRoomMemberRole::Moderator,
+        Some(_) => MatrixRoomMemberRole::User,
+    }
 }
 
 fn room_settings_snapshot_with_change(
@@ -3442,11 +3523,13 @@ mod tests {
 
     use super::{
         MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
-        MatrixRoomJoinRule, MatrixRoomModerationAction, MatrixRoomPermissionFacts,
-        MatrixRoomSettingChange, MatrixRoomSettingsSnapshot, MatrixRoomTagInfo, MatrixRoomTags,
-        MatrixSearchIndexKey, MatrixSearchIndexStoreConfig, create_public_directory_room,
-        get_room_settings_snapshot, join_room_by_alias, matrix_room_list_room_from_counts,
-        moderate_room_member, query_public_room_directory, room_settings_snapshot_with_change,
+        MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
+        MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
+        MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
+        create_public_directory_room, get_room_settings_snapshot, join_room_by_alias,
+        matrix_room_list_room_from_counts, matrix_room_member_role, moderate_room_member,
+        query_public_room_directory, room_settings_snapshot_with_change,
+        room_settings_snapshot_with_member_power_level, update_room_member_power_level,
         update_room_setting,
     };
 
@@ -3591,6 +3674,7 @@ mod tests {
             history_visibility: MatrixRoomHistoryVisibility::Shared,
             permissions: MatrixRoomPermissionFacts {
                 can_edit_settings: true,
+                can_edit_roles: true,
                 can_kick: true,
                 can_ban: true,
                 can_unban: false,
@@ -3599,6 +3683,8 @@ mod tests {
                 user_id: "@member:example.invalid".to_owned(),
                 display_name: Some("Synthetic Member".to_owned()),
                 avatar_url: None,
+                power_level: Some(50),
+                role: MatrixRoomMemberRole::Moderator,
             }],
         };
         let _change = MatrixRoomSettingChange::JoinRule(MatrixRoomJoinRule::Public);
@@ -3606,6 +3692,7 @@ mod tests {
         let _snapshot_fn = get_room_settings_snapshot;
         let _update_fn = update_room_setting;
         let _moderate_fn = moderate_room_member;
+        let _role_fn = update_room_member_power_level;
 
         let source = include_str!("lib.rs");
         assert!(source.contains(".set_name("));
@@ -3618,6 +3705,7 @@ mod tests {
         assert!(source.contains(".kick_user("));
         assert!(source.contains(".ban_user("));
         assert!(source.contains(".unban_user("));
+        assert!(source.contains(".update_power_levels("));
     }
 
     #[test]
@@ -3631,6 +3719,7 @@ mod tests {
             history_visibility: MatrixRoomHistoryVisibility::Shared,
             permissions: MatrixRoomPermissionFacts {
                 can_edit_settings: true,
+                can_edit_roles: true,
                 can_kick: true,
                 can_ban: true,
                 can_unban: true,
@@ -3679,5 +3768,42 @@ mod tests {
             .history_visibility,
             MatrixRoomHistoryVisibility::Joined
         );
+    }
+
+    #[test]
+    fn room_member_power_level_projection_updates_role_in_success_snapshot() {
+        let original = MatrixRoomSettingsSnapshot {
+            room_id: "!room:example.invalid".to_owned(),
+            name: Some("Original Room".to_owned()),
+            topic: Some("Original topic".to_owned()),
+            avatar_url: None,
+            join_rule: MatrixRoomJoinRule::Invite,
+            history_visibility: MatrixRoomHistoryVisibility::Shared,
+            permissions: MatrixRoomPermissionFacts {
+                can_edit_settings: true,
+                can_edit_roles: true,
+                can_kick: true,
+                can_ban: true,
+                can_unban: true,
+            },
+            members: vec![super::MatrixRoomMemberSummary {
+                user_id: "@member:example.invalid".to_owned(),
+                display_name: Some("Synthetic Member".to_owned()),
+                avatar_url: None,
+                power_level: Some(0),
+                role: MatrixRoomMemberRole::User,
+            }],
+        };
+
+        let updated =
+            room_settings_snapshot_with_member_power_level(original, "@member:example.invalid", 50);
+        let member = updated.members.first().expect("member summary");
+        assert_eq!(member.power_level, Some(50));
+        assert_eq!(member.role, MatrixRoomMemberRole::Moderator);
+        assert_eq!(
+            matrix_room_member_role(Some(100)),
+            MatrixRoomMemberRole::Administrator
+        );
+        assert_eq!(matrix_room_member_role(None), MatrixRoomMemberRole::Creator);
     }
 }
