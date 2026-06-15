@@ -62,6 +62,12 @@ const transport: TimelineTransport = {
   sendReaction(roomId, eventId, reactionKey) {
     return ipc.invoke("send_reaction", { roomId, eventId, reactionKey });
   },
+  retrySend(roomId, transactionId) {
+    return ipc.invoke("retry_send", { roomId, transactionId });
+  },
+  cancelSend(roomId, transactionId) {
+    return ipc.invoke("cancel_send", { roomId, transactionId });
+  },
   redactReaction(roomId, eventId, reactionKey, reactionEventId) {
     return ipc.invoke("redact_reaction", {
       roomId,

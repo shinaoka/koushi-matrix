@@ -24,12 +24,18 @@
  *      commands and renders the returned `e2ee_trust` snapshot.
  *   9. Drive invite acceptance and New DM from Rust-owned snapshots → invokes
  *      room commands and renders joined/DM rooms from the returned snapshot.
+ *  10. Render Rust-owned outbound send states and dispatch retry/cancel send
+ *      commands without React repairing send-queue state.
  */
 
 import { expect, test, type Page } from "@playwright/test";
 
 import { focusedTimelineKey, roomTimelineKey, threadTimelineKey } from "../src/domain/coreEvents";
 import { pseudoLocalize, t } from "../src/i18n/messages";
+
+const HARNESS_ACCOUNT_KEY = "@harness-user:example.invalid";
+const HARNESS_ROOM_ID = "!harness-room:example.invalid";
+const HARNESS_ROOM_KEY = roomTimelineKey(HARNESS_ACCOUNT_KEY, HARNESS_ROOM_ID);
 
 function makeThreadItem(index: number, rootEventId = "$seed-event:example.invalid") {
   return {
@@ -49,6 +55,29 @@ function makeThreadItem(index: number, rootEventId = "$seed-event:example.invali
   };
 }
 
+function makeSendQueueItem(
+  transactionId: string,
+  body: string,
+  sendState: { kind: "sending" } | { kind: "notSent"; reason: "recoverable" | "unrecoverable" }
+) {
+  return {
+    id: { Transaction: { transaction_id: transactionId } },
+    sender: "Harness Sender",
+    body,
+    timestamp_ms: 1_800_000_002_000,
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    reactions: [],
+    can_react: false,
+    is_redacted: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false,
+    send_state: sendState
+  };
+}
+
 async function gotoReadyShell(page: Page): Promise<void> {
   await page.goto("/appHarness.html");
   // The signed-in shell renders the three panes (not the AuthScreen).
@@ -60,6 +89,70 @@ async function gotoReadyShell(page: Page): Promise<void> {
 
 async function invocationCount(page: Page, command: string): Promise<number> {
   return page.evaluate((cmd) => window.__harness.invocationsOf(cmd).length, command);
+}
+
+async function seedTimelineItems(page: Page, items: unknown[], generation = 2): Promise<void> {
+  await page.evaluate(
+    async ({ key, nextItems, nextGeneration }) => {
+      const itemDomIds = nextItems.map((item) => {
+        if ("Transaction" in item.id) {
+          return `txn:${item.id.Transaction.transaction_id}`;
+        }
+        if ("Event" in item.id) {
+          return item.id.Event.event_id;
+        }
+        return `syn:${item.id.Synthetic.synthetic_id}`;
+      });
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await window.__harness.pushCoreEvent({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key,
+              generation: nextGeneration,
+              items: nextItems
+            }
+          }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        if (
+          itemDomIds.every((id) =>
+            document.querySelector(`[data-item-id="${CSS.escape(id)}"]`)
+          )
+        ) {
+          break;
+        }
+      }
+    },
+    { key: HARNESS_ROOM_KEY, nextItems: items, nextGeneration: generation }
+  );
+}
+
+async function pushTimelineDiffs(
+  page: Page,
+  diffs: unknown[],
+  generation = 2,
+  batchId = 2
+): Promise<void> {
+  await page.evaluate(
+    async ({ key, nextDiffs, nextGeneration, nextBatchId }) => {
+      await window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: nextGeneration,
+            batch_id: nextBatchId,
+            diffs: nextDiffs
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    { key: HARNESS_ROOM_KEY, nextDiffs: diffs, nextGeneration: generation, nextBatchId: batchId }
+  );
 }
 
 test("create-room dialog submits create_room and closes on success", async ({ page }) => {
@@ -289,6 +382,112 @@ test("timeline reply action invokes set_composer_reply_target", async ({ page })
   // The reply-mode snapshot returned by set_composer_reply_target surfaces the
   // composer reply banner (Cancel reply control), confirming reply mode.
   await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+});
+
+test("send queue rows dispatch retry and cancel commands from Rust-owned send state", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const firstFailed = makeSendQueueItem(
+    "txn-failed-first",
+    "Synthetic failed send one",
+    { kind: "notSent", reason: "recoverable" }
+  );
+  const secondFailed = makeSendQueueItem(
+    "txn-failed-second",
+    "Synthetic failed send two",
+    { kind: "notSent", reason: "recoverable" }
+  );
+  const sending = makeSendQueueItem("txn-sending", "Synthetic pending send", {
+    kind: "sending"
+  });
+  await seedTimelineItems(page, [firstFailed, secondFailed, sending]);
+
+  const firstRow = page.locator('[data-item-id="txn:txn-failed-first"]');
+  const secondRow = page.locator('[data-item-id="txn:txn-failed-second"]');
+  const sendingRow = page.locator('[data-item-id="txn:txn-sending"]');
+  await expect(firstRow).toHaveAttribute("data-send-state", "notSent");
+  await expect(firstRow.getByText("Not sent")).toBeVisible();
+  await expect(firstRow.getByRole("button", { name: "Resend" })).toBeVisible();
+  await expect(firstRow.getByRole("button", { name: "Delete" })).toBeVisible();
+  await expect(page.getByText("Some messages haven't been sent")).toBeVisible();
+  await expect(sendingRow).toHaveAttribute("data-send-state", "sending");
+  await expect(sendingRow.getByText("Sending")).toBeVisible();
+  await expect(sendingRow.getByRole("button", { name: "Cancel send" })).toBeVisible();
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await firstRow.getByRole("button", { name: "Resend" }).click();
+  await expect.poll(() => invocationCount(page, "retry_send")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("retry_send")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      transactionId: "txn-failed-first"
+    });
+
+  await pushTimelineDiffs(page, [
+    {
+      Set: {
+        index: 0,
+        item: makeSendQueueItem("txn-failed-first", "Synthetic failed send one", {
+          kind: "sending"
+        })
+      }
+    }
+  ], 2, 3);
+  await expect(firstRow).toHaveAttribute("data-send-state", "sending");
+  await expect(firstRow.getByText("Sending")).toBeVisible();
+  await expect(firstRow.getByRole("button", { name: "Resend" })).toHaveCount(0);
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await secondRow.getByRole("button", { name: "Delete" }).click();
+  await expect.poll(() => invocationCount(page, "cancel_send")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("cancel_send")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      transactionId: "txn-failed-second"
+    });
+  await pushTimelineDiffs(page, [{ Remove: { index: 1 } }], 2, 4);
+  await expect(secondRow).toHaveCount(0);
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await sendingRow.getByRole("button", { name: "Cancel send" }).click();
+  await expect.poll(() => invocationCount(page, "cancel_send")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("cancel_send")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      transactionId: "txn-sending"
+    });
+});
+
+test("send queue room bar resends failed transactions in timeline order", async ({ page }) => {
+  await gotoReadyShell(page);
+  await seedTimelineItems(page, [
+    makeSendQueueItem("txn-fifo-first", "Synthetic FIFO send one", {
+      kind: "notSent",
+      reason: "recoverable"
+    }),
+    makeSendQueueItem("txn-fifo-second", "Synthetic FIFO send two", {
+      kind: "notSent",
+      reason: "recoverable"
+    })
+  ]);
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.getByRole("button", { name: "Resend all" }).click();
+
+  await expect.poll(() => invocationCount(page, "retry_send")).toBe(2);
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        window.__harness
+          .invocationsOf("retry_send")
+          .map((invocation) => invocation.args.transactionId)
+      )
+    )
+    .toEqual(["txn-fifo-first", "txn-fifo-second"]);
 });
 
 test("clicking an unselected reaction pill invokes send_reaction", async ({ page }) => {

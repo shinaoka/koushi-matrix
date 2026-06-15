@@ -316,6 +316,15 @@ export type MessageId =
   | "timeline.threadComposer"
   | "timeline.threadPlaceholder"
   | "timeline.unsent"
+  | "timeline.sending"
+  | "timeline.notSent"
+  | "timeline.cancelledSend"
+  | "timeline.resendSend"
+  | "timeline.deleteSend"
+  | "timeline.cancelSend"
+  | "timeline.unsentBar"
+  | "timeline.resendAll"
+  | "timeline.cancelAll"
   | "timeline.downloadMedia"
   | "timeline.encryptedMedia"
   | "timeline.mediaUploadProgress"
@@ -750,6 +759,15 @@ const en: Catalog = {
   "timeline.threadComposer": "Thread composer",
   "timeline.threadPlaceholder": "Reply",
   "timeline.unsent": "Unsent",
+  "timeline.sending": "Sending",
+  "timeline.notSent": "Not sent",
+  "timeline.cancelledSend": "Cancelled",
+  "timeline.resendSend": "Resend",
+  "timeline.deleteSend": "Delete",
+  "timeline.cancelSend": "Cancel send",
+  "timeline.unsentBar": "Some messages haven't been sent",
+  "timeline.resendAll": "Resend all",
+  "timeline.cancelAll": "Cancel all",
   "timeline.downloadMedia": "Download {filename}",
   "timeline.encryptedMedia": "Encrypted",
   "timeline.mediaUploadProgress": "{percent}%",

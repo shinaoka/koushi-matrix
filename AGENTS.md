@@ -107,7 +107,7 @@ Phase B GUI/browser-headless work for the same issue follows
   React-only section membership while wiring context menus or browser-headless
   tests.
 
-## Outbound Send Queue Phase A Notes
+## Outbound Send Queue Notes
 
 - Retry/cancel is driven by SDK `SendHandle`, not by a direct
   `RoomSendQueue::retry(transaction_id)` API. `TimelineActor` must keep a
@@ -122,6 +122,14 @@ Phase B GUI/browser-headless work for the same issue follows
 - `TimelineItem.send_state` is a Rust-owned DTO projection. React may render it
   and dispatch `retry_send` / `cancel_send`, but must not infer send legality
   from `TimelineItemId::Transaction` or repair queue state locally.
+- `TimelineItemId::Transaction` is a stable identity for local echoes, not a
+  UI state. A transaction row without `send_state` must not be labeled unsent;
+  failed/sending/cancelled affordances come only from `send_state`.
+- Phase B send-queue GUI tests should seed Rust-shaped CoreEvent timeline items
+  in `appHarnessMain.tsx` / `basic-operations.spec.ts`, click the visible
+  controls, and then push a CoreEvent diff to prove the UI reflects Rust-owned
+  state changes. Do not update React state directly after `retry_send` or
+  `cancel_send`.
 - `RoomSendQueueUpdate::SendError` carries raw SDK errors. Project only coarse
   recoverable/unrecoverable status into DTOs and QA tokens; do not print raw SDK
   errors, transaction ids, Matrix ids, or message bodies in QA output.

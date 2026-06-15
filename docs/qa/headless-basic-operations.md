@@ -91,6 +91,14 @@ FIFO completion, and unsent local-echo survival across runtime restart. This
 stage must not print Matrix room IDs, event IDs, SDK transaction IDs, message
 bodies, raw SDK errors, or proxy connection details.
 
+The Phase B browser-headless proof lives in
+`apps/desktop/e2e/basic-operations.spec.ts`. It seeds Rust-shaped
+`TimelineItem.send_state` values through the app harness CoreEvent stream,
+clicks the inline resend/delete/cancel controls and room-level resend bar, and
+asserts only typed IPC dispatch plus later CoreEvent-driven DOM changes. React
+must not relabel a `TimelineItemId::Transaction` row as failed/sending without
+`send_state`, nor repair the row after a command response.
+
 `invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, and `dm_start=ok`
 are the Phase A invite/DM state-machine proof. The core lane proves incoming
 room/space invite projection into Rust-owned `AppState.invites`, accept/decline

@@ -473,6 +473,8 @@ describe("ContextualRightPanel", () => {
               void timelineKey;
             },
             sendReaction: async () => undefined,
+            retrySend: async () => undefined,
+            cancelSend: async () => undefined,
             redactReaction: async () => undefined,
             sendReadReceipt: async () => undefined,
             setFullyRead: async () => undefined,
@@ -534,6 +536,8 @@ describe("ContextualRightPanel", () => {
             listenCoreEvents: () => () => undefined,
             paginateBackwards: async () => undefined,
             sendReaction: async () => undefined,
+            retrySend: async () => undefined,
+            cancelSend: async () => undefined,
             redactReaction: async () => undefined,
             sendReadReceipt: async () => undefined,
             setFullyRead: async () => undefined,
@@ -609,6 +613,8 @@ describe("ContextualRightPanel", () => {
               void timelineKey;
             },
             sendReaction: async () => undefined,
+            retrySend: async () => undefined,
+            cancelSend: async () => undefined,
             redactReaction: async () => undefined,
             sendReadReceipt: async () => undefined,
             setFullyRead: async () => undefined,
@@ -922,8 +928,8 @@ describe("TopBar sync state rendering", () => {
 });
 
 describe("Timeline item row rendering", () => {
-  test("marks Transaction timeline items as unsent local echoes", () => {
-    const localEcho = renderToStaticMarkup(
+  test("renders send queue status from Rust-owned send_state only", () => {
+    const transactionWithoutState = renderToStaticMarkup(
       <TimelineItemRow
         item={
           {
@@ -932,8 +938,8 @@ describe("Timeline item row rendering", () => {
             body: "queued message",
             timestamp_ms: 1_820_000_000_000,
             in_reply_to_event_id: null,
-          thread_root: null,
-          thread_summary: null,
+            thread_root: null,
+            thread_summary: null,
             can_react: false,
             is_redacted: false,
             can_redact: false,
@@ -951,26 +957,28 @@ describe("Timeline item row rendering", () => {
       />
     );
 
-    expect(localEcho).toContain('data-send-state="unsent"');
-    expect(localEcho).toContain("Unsent");
+    expect(transactionWithoutState).not.toContain("data-send-state=");
+    expect(transactionWithoutState).not.toContain("Not sent");
+    expect(transactionWithoutState).not.toContain("Sending");
 
-    const remoteEvent = renderToStaticMarkup(
+    const notSent = renderToStaticMarkup(
       <TimelineItemRow
         item={
           {
-            id: { Event: { event_id: "$remote" } },
+            id: { Transaction: { transaction_id: "desktop-2" } },
             sender: "@me:example.invalid",
-            body: "sent message",
+            body: "failed message",
             timestamp_ms: 1_820_000_000_100,
             in_reply_to_event_id: null,
-          thread_root: null,
-          thread_summary: null,
-            can_react: true,
+            thread_root: null,
+            thread_summary: null,
+            can_react: false,
             is_redacted: false,
             can_redact: false,
             is_edited: false,
-            can_edit: true,
-            reactions: []
+            can_edit: false,
+            reactions: [],
+            send_state: { kind: "notSent", reason: "recoverable" }
           } as TimelineItem
         }
         roomId="!room:example.invalid"
@@ -982,7 +990,42 @@ describe("Timeline item row rendering", () => {
       />
     );
 
-    expect(remoteEvent).not.toContain('data-send-state="unsent"');
-    expect(remoteEvent).not.toContain("Unsent");
+    expect(notSent).toContain('data-send-state="notSent"');
+    expect(notSent).toContain("Not sent");
+    expect(notSent).toContain("Resend");
+    expect(notSent).toContain("Delete");
+
+    const sending = renderToStaticMarkup(
+      <TimelineItemRow
+        item={
+          {
+            id: { Transaction: { transaction_id: "desktop-3" } },
+            sender: "@me:example.invalid",
+            body: "sending message",
+            timestamp_ms: 1_820_000_000_200,
+            in_reply_to_event_id: null,
+            thread_root: null,
+            thread_summary: null,
+            can_react: false,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            reactions: [],
+            send_state: { kind: "sending" }
+          } as TimelineItem
+        }
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+      />
+    );
+
+    expect(sending).toContain('data-send-state="sending"');
+    expect(sending).toContain("Sending");
+    expect(sending).toContain("Cancel send");
   });
 });

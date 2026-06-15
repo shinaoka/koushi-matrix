@@ -392,8 +392,10 @@ stream), and the runtime must relay that model, not fight it.
    `RetrySend` / `CancelSend` command routing through SDK `SendHandle`s. After
    recoverable send errors, retry/cancel also re-enable the SDK room queue so
    FIFO successors are not stranded. React renders and dispatches only; it must
-   not infer send legality or repair queue state locally. The runtime does not
-   serialize sends behind a command loop.
+   not infer send legality or repair queue state locally. `Transaction`
+   timeline identities are stable local-echo keys only; visible failed/sending
+   state comes from `TimelineItem.send_state`. The runtime does not serialize
+   sends behind a command loop.
 9. **Sync uses capability-probed SDK services, not ad hoc polling.** Prefer
    `SyncService`/`RoomListService` when the homeserver supports MSC4186. If
    `SyncService` is unavailable for a target homeserver, the `SyncActor`

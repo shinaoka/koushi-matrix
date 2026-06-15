@@ -168,6 +168,12 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       async sendReaction(roomId: string, eventId: string, reactionKey: string) {
         await invoke("send_reaction", { roomId, eventId, reactionKey });
       },
+      async retrySend(roomId: string, transactionId: string) {
+        await invoke("retry_send", { roomId, transactionId });
+      },
+      async cancelSend(roomId: string, transactionId: string) {
+        await invoke("cancel_send", { roomId, transactionId });
+      },
       async redactReaction(
         roomId: string,
         eventId: string,

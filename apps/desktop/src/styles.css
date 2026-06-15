@@ -1141,6 +1141,73 @@ button {
   background: var(--brand);
 }
 
+.timeline-send-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  margin: 8px 16px;
+  padding: 7px 10px;
+  border-block: 1px solid var(--line);
+  color: var(--text);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.timeline-send-bar-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.timeline-send-bar-actions,
+.message-send-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.timeline-send-bar-action,
+.message-send-action {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-hover);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.timeline-send-bar-action:hover,
+.timeline-send-bar-action:focus-visible,
+.message-send-action:hover,
+.message-send-action:focus-visible {
+  color: var(--brand-contrast);
+  background: var(--brand);
+}
+
+.timeline-send-bar-action.danger,
+.message-send-action.danger {
+  color: var(--danger);
+}
+
+.timeline-send-bar-action.danger:hover,
+.timeline-send-bar-action.danger:focus-visible,
+.message-send-action.danger:hover,
+.message-send-action.danger:focus-visible {
+  color: var(--danger);
+  background: var(--surface-hover);
+}
+
 .reaction-control {
   position: relative;
   display: inline-flex;
@@ -1236,11 +1303,19 @@ button {
   min-height: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  color: var(--warning);
+  color: var(--text-muted);
   background: var(--surface-hover);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0;
+}
+
+.message-send-state[data-send-state="notSent"] {
+  color: var(--danger);
+}
+
+.message-send-actions {
+  margin-top: 6px;
 }
 
 .time {

@@ -22,7 +22,17 @@
  * the headless test harness (mock IPC).
  */
 
-import { Download, Edit3, FileText, ImageIcon, MessageCircle, SmilePlus, Trash2 } from "lucide-react";
+import {
+  Download,
+  Edit3,
+  FileText,
+  ImageIcon,
+  MessageCircle,
+  RefreshCw,
+  SmilePlus,
+  Trash2,
+  XCircle
+} from "lucide-react";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -78,6 +88,10 @@ export interface TimelineTransport {
   paginateBackwards(timelineKey: TimelineKey): Promise<void>;
   /** Send a reaction command for a timeline event. */
   sendReaction(roomId: string, eventId: string, reactionKey: string): Promise<void>;
+  /** Retry a failed outbound send queue item. */
+  retrySend(roomId: string, transactionId: string): Promise<void>;
+  /** Cancel/delete an outbound send queue item. */
+  cancelSend(roomId: string, transactionId: string): Promise<void>;
   /** Redact a reaction event. */
   redactReaction(
     roomId: string,
@@ -118,6 +132,8 @@ export interface TimelineRowActionHandlers {
   onEdit: (roomId: string, eventId: string, body: string) => void;
   onRedact: (roomId: string, eventId: string) => void;
   onDownloadMedia: (roomId: string, eventId: string) => void;
+  onRetrySend: (roomId: string, transactionId: string) => void;
+  onCancelSend: (roomId: string, transactionId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +186,7 @@ const AUTO_BACKFILL_THRESHOLD_PX = 80;
 const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "ignore";
+const ignoreSendQueueAction = () => undefined;
 
 // ---------------------------------------------------------------------------
 // Component
@@ -263,6 +280,12 @@ export function TimelineView({
   }, [transport]);
 
   const items = getItems(store, timelineKey);
+  const notSentTransactionIds = items.flatMap((item) => {
+    if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) {
+      return [];
+    }
+    return [item.id.Transaction.transaction_id];
+  });
   const backwardState = getPaginationState(store, timelineKey, "Backward");
   const isPaginating = backwardState === "Paginating";
   const endReached = backwardState === "EndReached";
@@ -280,6 +303,28 @@ export function TimelineView({
     },
     [transport]
   );
+  const onRetrySend = useCallback(
+    (targetRoomId: string, transactionId: string) => {
+      void transport.retrySend(targetRoomId, transactionId).catch(() => undefined);
+    },
+    [transport]
+  );
+  const onCancelSend = useCallback(
+    (targetRoomId: string, transactionId: string) => {
+      void transport.cancelSend(targetRoomId, transactionId).catch(() => undefined);
+    },
+    [transport]
+  );
+  const onRetryAllNotSent = useCallback(() => {
+    for (const transactionId of notSentTransactionIds) {
+      onRetrySend(roomId, transactionId);
+    }
+  }, [notSentTransactionIds, onRetrySend, roomId]);
+  const onCancelAllNotSent = useCallback(() => {
+    for (const transactionId of notSentTransactionIds) {
+      onCancelSend(roomId, transactionId);
+    }
+  }, [notSentTransactionIds, onCancelSend, roomId]);
   const onRedactReaction = useCallback(
     (targetRoomId: string, eventId: string, reactionKey: string, reactionEventId: string) => {
       void transport
@@ -384,6 +429,31 @@ export function TimelineView({
           {t("timeline.conversationStart")}
         </div>
       ) : null}
+      {notSentTransactionIds.length > 0 ? (
+        <div className="timeline-send-bar" data-testid="timeline-send-bar">
+          <span className="timeline-send-bar-label">
+            {t("timeline.unsentBar")}
+          </span>
+          <div className="timeline-send-bar-actions">
+            <button
+              className="timeline-send-bar-action"
+              type="button"
+              onClick={onRetryAllNotSent}
+            >
+              <RefreshCw size={13} aria-hidden="true" />
+              <span>{t("timeline.resendAll")}</span>
+            </button>
+            <button
+              className="timeline-send-bar-action danger"
+              type="button"
+              onClick={onCancelAllNotSent}
+            >
+              <Trash2 size={13} aria-hidden="true" />
+              <span>{t("timeline.cancelAll")}</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
       {items.map((item) => {
         const eventId = "Event" in item.id ? item.id.Event.event_id : null;
         const isFullyReadMarker = Boolean(
@@ -408,6 +478,8 @@ export function TimelineView({
               onEdit={onEdit}
               onRedact={onRedact}
               onDownloadMedia={onDownloadMedia}
+              onRetrySend={onRetrySend}
+              onCancelSend={onCancelSend}
               presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
               profile={item.sender ? profileUsers[item.sender] : undefined}
               receipts={eventId ? roomSignals?.receipts_by_event[eventId] ?? [] : []}
@@ -436,6 +508,8 @@ export function TimelineItemRow({
   onEdit,
   onRedact,
   onDownloadMedia = () => undefined,
+  onRetrySend = ignoreSendQueueAction,
+  onCancelSend = ignoreSendQueueAction,
   presence,
   profile,
   receipts = []
@@ -451,14 +525,18 @@ export function TimelineItemRow({
   onEdit: TimelineRowActionHandlers["onEdit"];
   onRedact: TimelineRowActionHandlers["onRedact"];
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
+  onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
+  onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
   presence?: PresenceKind;
   profile?: UserProfile;
   receipts?: LiveReadReceipt[];
 }) {
   const domId = timelineItemDomId(item.id);
-  const isLocalEcho = "Transaction" in item.id;
+  const transactionId = "Transaction" in item.id ? item.id.Transaction.transaction_id : null;
   const eventId = "Event" in item.id ? item.id.Event.event_id : null;
   const isRedacted = item.is_redacted;
+  const sendState = item.send_state ?? null;
+  const sendStateKind = sendState?.kind ?? null;
   const [isEditing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(item.body ?? "");
   const [isReactionPickerOpen, setReactionPickerOpen] = useState(false);
@@ -628,10 +706,30 @@ export function TimelineItemRow({
     }
     onDownloadMedia(roomId, eventId);
   }, [eventId, onDownloadMedia, roomId]);
+  const submitRetrySend = useCallback(() => {
+    if (!transactionId) {
+      return;
+    }
+    onRetrySend(roomId, transactionId);
+  }, [onRetrySend, roomId, transactionId]);
+  const submitCancelSend = useCallback(() => {
+    if (!transactionId) {
+      return;
+    }
+    onCancelSend(roomId, transactionId);
+  }, [onCancelSend, roomId, transactionId]);
   const canShowActionButtons = Boolean(eventId) && !isRedacted;
   const canShowReply = canShowActionButtons && item.body !== null;
   const canShowThreadSummary = Boolean(eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
+  const sendStateLabel =
+    sendStateKind === "sending"
+      ? t("timeline.sending")
+      : sendStateKind === "notSent"
+        ? t("timeline.notSent")
+        : sendStateKind === "cancelled"
+          ? t("timeline.cancelledSend")
+          : null;
   const avatarUrl =
     profile?.avatar?.thumbnail.kind === "ready" ? profile.avatar.thumbnail.source_url : null;
   const threadSummaryText = item.thread_summary
@@ -686,7 +784,7 @@ export function TimelineItemRow({
     <article
       className="message"
       data-item-id={domId}
-      data-send-state={isLocalEcho ? "unsent" : undefined}
+      data-send-state={sendStateKind && sendStateKind !== "sent" ? sendStateKind : undefined}
       data-event-id={eventId ?? undefined}
       data-redacted={isRedacted || undefined}
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
@@ -707,14 +805,41 @@ export function TimelineItemRow({
           {item.is_edited && !isRedacted ? (
             <span className="message-edited">{t("timeline.editedMessage")}</span>
           ) : null}
-          {isLocalEcho ? (
-            <span className="message-send-state" data-send-state="unsent">
-              {t("timeline.unsent")}
+          {sendStateLabel ? (
+            <span
+              className="message-send-state"
+              data-send-state={sendStateKind ?? undefined}
+            >
+              {sendStateLabel}
             </span>
           ) : null}
         </div>
         {bodyContent}
         {mediaContent}
+        {transactionId && sendStateKind === "notSent" ? (
+          <div className="message-send-actions">
+            <button className="message-send-action" type="button" onClick={submitRetrySend}>
+              <RefreshCw size={13} aria-hidden="true" />
+              <span>{t("timeline.resendSend")}</span>
+            </button>
+            <button
+              className="message-send-action danger"
+              type="button"
+              onClick={submitCancelSend}
+            >
+              <Trash2 size={13} aria-hidden="true" />
+              <span>{t("timeline.deleteSend")}</span>
+            </button>
+          </div>
+        ) : null}
+        {transactionId && sendStateKind === "sending" ? (
+          <div className="message-send-actions">
+            <button className="message-send-action" type="button" onClick={submitCancelSend}>
+              <XCircle size={13} aria-hidden="true" />
+              <span>{t("timeline.cancelSend")}</span>
+            </button>
+          </div>
+        ) : null}
         {canShowThreadSummary ? (
           <button
             className="thread-summary-chip"
