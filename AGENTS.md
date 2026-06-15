@@ -36,6 +36,9 @@ Core Batch A / GUI Batch B split in
 [docs/superpowers/specs/2026-06-15-remaining-core-phase-a-batch-design.md](docs/superpowers/specs/2026-06-15-remaining-core-phase-a-batch-design.md):
 batch Rust-owned Phase A contracts first, then serialize the shared GUI
 surface, then run the #9/#31 integration gate.
+The umbrella #12 implementation batch follows
+[docs/superpowers/plans/2026-06-15-remaining-core-phase-a-batch-implementation.md](docs/superpowers/plans/2026-06-15-remaining-core-phase-a-batch-implementation.md)
+after that plan is approved.
 All agents implementing media/file timeline support follow
 [docs/superpowers/plans/2026-06-15-media-phase-a.md](docs/superpowers/plans/2026-06-15-media-phase-a.md)
 for Phase A Rust/headless work before Phase B GUI wiring.
