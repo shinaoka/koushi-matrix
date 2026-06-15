@@ -312,6 +312,14 @@ export type MessageId =
   | "timeline.cancelEdit"
   | "timeline.redactMessage"
   | "timeline.redactedMessage"
+  | "timeline.pinMessage"
+  | "timeline.unpinMessage"
+  | "timeline.pinnedMessages"
+  | "timeline.pinnedMessage"
+  | "timeline.replyQuoteMissing"
+  | "timeline.replyQuoteUnavailable"
+  | "timeline.replyQuoteUnknownSender"
+  | "timeline.replyQuoteUnsupported"
   | "timeline.replyToMessage"
   | "timeline.threadComposer"
   | "timeline.threadPlaceholder"
@@ -755,6 +763,14 @@ const en: Catalog = {
   "timeline.cancelEdit": "Cancel edit",
   "timeline.redactMessage": "Redact message",
   "timeline.redactedMessage": "Message redacted",
+  "timeline.pinMessage": "Pin message",
+  "timeline.unpinMessage": "Unpin message",
+  "timeline.pinnedMessages": "Pinned messages",
+  "timeline.pinnedMessage": "Pinned message",
+  "timeline.replyQuoteMissing": "Original message unavailable",
+  "timeline.replyQuoteUnavailable": "Original message unavailable",
+  "timeline.replyQuoteUnknownSender": "Unknown sender",
+  "timeline.replyQuoteUnsupported": "Unsupported message",
   "timeline.replyToMessage": "Reply to message",
   "timeline.threadComposer": "Thread composer",
   "timeline.threadPlaceholder": "Reply",
@@ -1106,6 +1122,14 @@ const ja: Catalog = {
   "timeline.cancelEdit": "編集をキャンセル",
   "timeline.redactMessage": "メッセージを削除",
   "timeline.redactedMessage": "メッセージは削除されました",
+  "timeline.pinMessage": "メッセージをピン留め",
+  "timeline.unpinMessage": "メッセージのピン留めを解除",
+  "timeline.pinnedMessages": "ピン留めメッセージ",
+  "timeline.pinnedMessage": "ピン留めメッセージ",
+  "timeline.replyQuoteMissing": "元のメッセージを利用できません",
+  "timeline.replyQuoteUnavailable": "元のメッセージを利用できません",
+  "timeline.replyQuoteUnknownSender": "不明な送信者",
+  "timeline.replyQuoteUnsupported": "未対応のメッセージ",
   "timeline.replyToMessage": "メッセージに返信",
   "timeline.threadComposer": "スレッド入力欄",
   "timeline.threadPlaceholder": "返信",

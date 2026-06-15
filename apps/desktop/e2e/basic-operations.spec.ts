@@ -92,42 +92,42 @@ async function invocationCount(page: Page, command: string): Promise<number> {
 }
 
 async function seedTimelineItems(page: Page, items: unknown[], generation = 2): Promise<void> {
-  await page.evaluate(
-    async ({ key, nextItems, nextGeneration }) => {
-      const itemDomIds = nextItems.map((item) => {
-        if ("Transaction" in item.id) {
-          return `txn:${item.id.Transaction.transaction_id}`;
-        }
-        if ("Event" in item.id) {
-          return item.id.Event.event_id;
-        }
-        return `syn:${item.id.Synthetic.synthetic_id}`;
-      });
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        await window.__harness.pushCoreEvent({
-          kind: "Timeline",
-          event: {
-            InitialItems: {
-              request_id: null,
-              key,
-              generation: nextGeneration,
-              items: nextItems
-            }
-          }
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        if (
-          itemDomIds.every((id) =>
-            document.querySelector(`[data-item-id="${CSS.escape(id)}"]`)
-          )
-        ) {
-          break;
-        }
-      }
-    },
-    { key: HARNESS_ROOM_KEY, nextItems: items, nextGeneration: generation }
-  );
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          async ({ key, nextItems, nextGeneration }) => {
+            const itemDomIds = nextItems.map((item) => {
+              if ("Transaction" in item.id) {
+                return `txn:${item.id.Transaction.transaction_id}`;
+              }
+              if ("Event" in item.id) {
+                return item.id.Event.event_id;
+              }
+              return `syn:${item.id.Synthetic.synthetic_id}`;
+            });
+            await window.__harness.pushCoreEvent({
+              kind: "Timeline",
+              event: {
+                InitialItems: {
+                  request_id: null,
+                  key,
+                  generation: nextGeneration,
+                  items: nextItems
+                }
+              }
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any);
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            return itemDomIds.every((id) =>
+              document.querySelector(`[data-item-id="${CSS.escape(id)}"]`)
+            );
+          },
+          { key: HARNESS_ROOM_KEY, nextItems: items, nextGeneration: generation }
+        ),
+      { timeout: 10_000, intervals: [25, 50, 100, 250] }
+    )
+    .toBe(true);
 }
 
 async function pushTimelineDiffs(
@@ -602,6 +602,124 @@ test("add reaction picker invokes send_reaction with the selected emoji", async 
       reactionKey: "👀"
     });
   expect(await invocationCount(page, "redact_reaction")).toBe(0);
+});
+
+test("reply quote block renders from Rust-owned timeline item data", async ({ page }) => {
+  await gotoReadyShell(page);
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: "$reply:example.invalid" } },
+      sender: "@harness-user:example.invalid",
+      body: "Reply from harness",
+      timestamp_ms: 1_800_000_000_100,
+      in_reply_to_event_id: "$root:example.invalid",
+      reply_quote: {
+        event_id: "$root:example.invalid",
+        sender: "@quoted-user:example.invalid",
+        body_preview: "Quoted source from Rust state",
+        state: "ready"
+      },
+      thread_root: null,
+      thread_summary: null,
+      reactions: [],
+      can_react: true,
+      is_redacted: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false
+    }
+  ]);
+
+  const row = page.locator('[data-event-id="$reply:example.invalid"]');
+  await expect(row.locator(".reply-quote")).toBeVisible();
+  await expect(row.getByText("@quoted-user:example.invalid", { exact: true })).toBeVisible();
+  await expect(row.getByText("Quoted source from Rust state", { exact: true })).toBeVisible();
+  await expect(row).not.toContainText("$root:example.invalid");
+});
+
+test("pin and unpin actions dispatch typed commands and pinned banner waits for Rust state", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
+  const pinnedRegion = page.getByRole("region", { name: "Pinned messages" });
+
+  await row.hover();
+  await expect(row.getByRole("button", { name: "Pin message" })).toBeVisible();
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await row.getByRole("button", { name: "Pin message" }).click();
+
+  await expect.poll(() => invocationCount(page, "pin_event")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("pin_event")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      eventId: "$seed-event:example.invalid"
+    });
+  await expect(pinnedRegion).toHaveCount(0);
+
+  await page.evaluate((roomId) => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        room_interactions: {
+          ...snapshot.state.room_interactions,
+          [roomId]: {
+            pinned_events: [
+              {
+                event_id: "$seed-event:example.invalid",
+                sender: "@harness-user:example.invalid",
+                body_preview: "Pinned preview from Rust state",
+                redacted: false
+              }
+            ],
+            pin_operation: { kind: "idle" }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  }, HARNESS_ROOM_ID);
+
+  await expect(pinnedRegion).toBeVisible();
+  await expect(pinnedRegion.getByText("Pinned preview from Rust state", { exact: true })).toBeVisible();
+
+  await row.hover();
+  await expect(row.getByRole("button", { name: "Unpin message" })).toBeVisible();
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await row.getByRole("button", { name: "Unpin message" }).click();
+
+  await expect.poll(() => invocationCount(page, "unpin_event")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("unpin_event")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      eventId: "$seed-event:example.invalid"
+    });
+  await expect(pinnedRegion).toBeVisible();
+
+  await page.evaluate((roomId) => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        room_interactions: {
+          ...snapshot.state.room_interactions,
+          [roomId]: {
+            pinned_events: [],
+            pin_operation: { kind: "idle" }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  }, HARNESS_ROOM_ID);
+
+  await expect(pinnedRegion).toHaveCount(0);
 });
 
 test("attach control invokes upload_media and renders Rust-owned media progress", async ({
@@ -1239,7 +1357,8 @@ test("thread composer drafts and sends through thread reply commands only", asyn
 
   const threadComposer = page.getByRole("textbox", { name: t("timeline.threadComposer") });
   await expect(threadComposer).toBeVisible();
-  await threadComposer.fill("Thread composer reply body");
+  const threadReplyBody = "Thread composer reply body";
+  await threadComposer.fill(threadReplyBody);
 
   await expect
     .poll(async () =>
@@ -1248,7 +1367,7 @@ test("thread composer drafts and sends through thread reply commands only", asyn
     .toEqual({
       roomId: "!harness-room:example.invalid",
       rootEventId: "$seed-event:example.invalid",
-      draft: "Thread composer reply body"
+      draft: threadReplyBody
     });
 
   await threadComposer.press("Enter");
@@ -1262,7 +1381,8 @@ test("thread composer drafts and sends through thread reply commands only", asyn
       keyEvent: {
         key: "enter",
         modifiers: { ctrl: false, meta: false, shift: false, alt: false },
-        is_composing: false
+        is_composing: false,
+        selection: { start: threadReplyBody.length, end: threadReplyBody.length }
       },
       autocompleteOpen: false,
       sendEnabled: true
@@ -1274,7 +1394,7 @@ test("thread composer drafts and sends through thread reply commands only", asyn
     .toEqual({
       roomId: "!harness-room:example.invalid",
       rootEventId: "$seed-event:example.invalid",
-      body: "Thread composer reply body"
+      body: threadReplyBody
     });
   expect(await invocationCount(page, "send_text")).toBe(0);
   expect(await invocationCount(page, "send_reply")).toBe(0);
@@ -1818,7 +1938,8 @@ test("edit composer respects the Rust-owned composer shortcut resolver", async (
   await expect(editBody).toBeVisible();
 
   await page.evaluate(() => window.__harness.clearInvocations());
-  await editBody.fill("Resolver edited body");
+  const editedBody = "Resolver edited body";
+  await editBody.fill(editedBody);
   await editBody.press("Enter");
 
   await expect
@@ -1830,7 +1951,8 @@ test("edit composer respects the Rust-owned composer shortcut resolver", async (
       keyEvent: {
         key: "enter",
         modifiers: { ctrl: false, meta: false, shift: false, alt: false },
-        is_composing: false
+        is_composing: false,
+        selection: { start: editedBody.length, end: editedBody.length }
       },
       autocompleteOpen: false,
       sendEnabled: true
@@ -1847,6 +1969,6 @@ test("edit composer respects the Rust-owned composer shortcut resolver", async (
     .toEqual({
       roomId: "!harness-room:example.invalid",
       eventId: "$seed-event:example.invalid",
-      body: "Resolver edited body"
+      body: editedBody
     });
 });

@@ -600,6 +600,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   with `ItemsUpdated.Set` at generation `1`. A one-off `InitialItems` emitted
   around the same snapshot refresh can be swallowed by harness timing and leave
   the seed row visible, even though the root `lang`/`dir` update succeeded.
+- When a Playwright helper seeds event-driven timeline rows with fake
+  `CoreEvent::Timeline::InitialItems`, make the helper wait until every target
+  `data-item-id` is visible and fail on timeout. Do not fire a fixed number of
+  events and let the test continue: full-spec runs can otherwise hide a
+  dropped harness event until a later unrelated assertion times out.
 - File attachment GUI tests must not open a native file dialog. Use the
   Composer's hidden `input[type=file][aria-label="Attach file input"]` and
   Playwright `setInputFiles()` with synthetic bytes. The visible button should

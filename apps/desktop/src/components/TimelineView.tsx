@@ -28,6 +28,8 @@ import {
   FileText,
   ImageIcon,
   MessageCircle,
+  Pin,
+  PinOff,
   RefreshCw,
   SmilePlus,
   Trash2,
@@ -110,6 +112,10 @@ export interface TimelineTransport {
   editMessage(roomId: string, eventId: string, body: string): Promise<void>;
   /** Redact a timeline event. */
   redactMessage(roomId: string, eventId: string): Promise<void>;
+  /** Pin a timeline event in the room. */
+  pinEvent(roomId: string, eventId: string): Promise<void>;
+  /** Unpin a timeline event in the room. */
+  unpinEvent(roomId: string, eventId: string): Promise<void>;
   /** Download an event-backed media attachment. */
   downloadMedia(roomId: string, eventId: string): Promise<void>;
 }
@@ -132,6 +138,8 @@ export interface TimelineRowActionHandlers {
   ) => void;
   onEdit: (roomId: string, eventId: string, body: string) => void;
   onRedact: (roomId: string, eventId: string) => void;
+  onPin: (roomId: string, eventId: string) => void;
+  onUnpin: (roomId: string, eventId: string) => void;
   onDownloadMedia: (roomId: string, eventId: string) => void;
   onRetrySend: (roomId: string, transactionId: string) => void;
   onCancelSend: (roomId: string, transactionId: string) => void;
@@ -202,6 +210,7 @@ export function TimelineView({
   resolveComposerKeyAction = ignoreComposerKeyAction,
   liveSignals,
   profileUsers = {},
+  pinnedEventIds = [],
   suppressPaginationUi = false
 }: {
   timelineKey: TimelineKey;
@@ -212,6 +221,7 @@ export function TimelineView({
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   liveSignals?: LiveSignalsState;
   profileUsers?: Record<string, UserProfile>;
+  pinnedEventIds?: readonly string[];
   suppressPaginationUi?: boolean;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -343,6 +353,18 @@ export function TimelineView({
   const onRedact = useCallback(
     (targetRoomId: string, eventId: string) => {
       void transport.redactMessage(targetRoomId, eventId).catch(() => undefined);
+    },
+    [transport]
+  );
+  const onPin = useCallback(
+    (targetRoomId: string, eventId: string) => {
+      void transport.pinEvent(targetRoomId, eventId).catch(() => undefined);
+    },
+    [transport]
+  );
+  const onUnpin = useCallback(
+    (targetRoomId: string, eventId: string) => {
+      void transport.unpinEvent(targetRoomId, eventId).catch(() => undefined);
     },
     [transport]
   );
@@ -478,6 +500,9 @@ export function TimelineView({
               onRedactReaction={onRedactReaction}
               onEdit={onEdit}
               onRedact={onRedact}
+              isPinned={eventId ? pinnedEventIds.includes(eventId) : false}
+              onPin={onPin}
+              onUnpin={onUnpin}
               onDownloadMedia={onDownloadMedia}
               onRetrySend={onRetrySend}
               onCancelSend={onCancelSend}
@@ -508,6 +533,9 @@ export function TimelineItemRow({
   onRedactReaction,
   onEdit,
   onRedact,
+  isPinned = false,
+  onPin = () => undefined,
+  onUnpin = () => undefined,
   onDownloadMedia = () => undefined,
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
@@ -525,6 +553,9 @@ export function TimelineItemRow({
   onRedactReaction: TimelineRowActionHandlers["onRedactReaction"];
   onEdit: TimelineRowActionHandlers["onEdit"];
   onRedact: TimelineRowActionHandlers["onRedact"];
+  isPinned?: boolean;
+  onPin?: TimelineRowActionHandlers["onPin"];
+  onUnpin?: TimelineRowActionHandlers["onUnpin"];
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
@@ -709,6 +740,18 @@ export function TimelineItemRow({
     }
     onRedact(roomId, eventId);
   }, [eventId, onRedact, roomId]);
+  const submitPin = useCallback(() => {
+    if (!eventId) {
+      return;
+    }
+    onPin(roomId, eventId);
+  }, [eventId, onPin, roomId]);
+  const submitUnpin = useCallback(() => {
+    if (!eventId) {
+      return;
+    }
+    onUnpin(roomId, eventId);
+  }, [eventId, onUnpin, roomId]);
   const submitDownloadMedia = useCallback(() => {
     if (!eventId) {
       return;
@@ -748,6 +791,17 @@ export function TimelineItemRow({
         item.thread_summary.latest_body_preview
       )
     : "";
+  const replyQuoteContent =
+    !isRedacted && item.reply_quote ? (
+      <div className="reply-quote" data-reply-state={item.reply_quote.state}>
+        <div className="reply-quote-sender" dir="auto">
+          {item.reply_quote.sender ?? t("timeline.replyQuoteUnknownSender")}
+        </div>
+        <div className="reply-quote-body" dir="auto">
+          {replyQuoteBody(item.reply_quote)}
+        </div>
+      </div>
+    ) : null;
   const bodyContent = isRedacted ? (
     <div className="message-body message-redacted" dir="auto">
       {t("timeline.redactedMessage")}
@@ -823,6 +877,7 @@ export function TimelineItemRow({
             </span>
           ) : null}
         </div>
+        {replyQuoteContent}
         {bodyContent}
         {mediaContent}
         {transactionId && sendStateKind === "notSent" ? (
@@ -988,6 +1043,17 @@ export function TimelineItemRow({
             <MessageCircle size={14} />
           </button>
         ) : null}
+        {!isEditing && canShowActionButtons ? (
+          <button
+            className="message-action"
+            type="button"
+            aria-label={isPinned ? t("timeline.unpinMessage") : t("timeline.pinMessage")}
+            aria-pressed={isPinned}
+            onClick={isPinned ? submitUnpin : submitPin}
+          >
+            {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
+          </button>
+        ) : null}
         {!isEditing && canShowActionButtons && item.can_redact ? (
           <button
             className="message-action"
@@ -1029,6 +1095,22 @@ function presenceLabel(presence: PresenceKind): string {
     return t("timeline.presenceAway");
   }
   return t("timeline.presenceOffline");
+}
+
+function replyQuoteBody(quote: NonNullable<TimelineItem["reply_quote"]>): string {
+  if (quote.body_preview) {
+    return quote.body_preview;
+  }
+  if (quote.state === "redacted") {
+    return t("timeline.redactedMessage");
+  }
+  if (quote.state === "missing") {
+    return t("timeline.replyQuoteMissing");
+  }
+  if (quote.state === "unsupported") {
+    return t("timeline.replyQuoteUnsupported");
+  }
+  return t("timeline.replyQuoteUnavailable");
 }
 
 function senderInitials(sender: string | null): string {

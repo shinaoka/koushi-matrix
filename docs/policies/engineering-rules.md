@@ -181,6 +181,9 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    reaches the DOM root (`lang`, `dir`, catalog, pseudo mode), remote/user text
    keeps `dir="auto"`, pseudo/CJK/RTL samples do not overflow the shell, and
    raw user-facing strings/logical-CSS contracts are covered by headless tests.
+   Headless helpers that seed fake event-driven timeline rows must wait for the
+   resulting DOM identity (`data-item-id`) and fail if the CoreEvent was not
+   applied; fixed-count fire-and-forget event emission is not valid evidence.
 1. Never drive login or any credential entry by fixed window-relative
    coordinates (a 2026-06-12 run typed a password into the username field).
    Use the FIFO credential path.

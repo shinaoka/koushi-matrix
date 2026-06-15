@@ -19,6 +19,8 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
+  Pin,
+  PinOff,
   Plus,
   Search,
   RefreshCw,
@@ -202,6 +204,12 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       },
       async redactMessage(roomId: string, eventId: string) {
         await invoke("redact_message", { roomId, eventId });
+      },
+      async pinEvent(roomId: string, eventId: string) {
+        await invoke("pin_event", { roomId, eventId });
+      },
+      async unpinEvent(roomId: string, eventId: string) {
+        await invoke("unpin_event", { roomId, eventId });
       },
       async downloadMedia(roomId: string, eventId: string) {
         await invoke("download_media", { roomId, eventId });
@@ -1000,6 +1008,10 @@ export function App() {
     setSnapshot(await api.redactMessage(roomId, eventId));
   }
 
+  async function unpinPinnedEvent(roomId: string, eventId: string) {
+    setSnapshot(await api.unpinEvent(roomId, eventId));
+  }
+
   async function openThread(roomId: string, rootEventId: string) {
     await closeFocusedContextIfHiddenBy("thread");
     setSnapshot(await api.openThread(roomId, rootEventId));
@@ -1265,6 +1277,7 @@ export function App() {
             onOpenContextMenu={openContextMenu}
             onRedactMessage={redactMessage}
             onResultSelect={selectSearchResult}
+            onUnpinPinnedEvent={unpinPinnedEvent}
             onToggleThread={() => {
               if (rightPanelOpen) {
                 if (effectiveRightPanelMode === "thread") {
@@ -2395,6 +2408,7 @@ function TimelinePane({
   onReply,
   onResultSelect,
   onSendText,
+  onUnpinPinnedEvent,
   onToggleThread,
   onOpenRoomInfo
 }: {
@@ -2417,6 +2431,7 @@ function TimelinePane({
   onReply: TimelineRowActionHandlers["onReply"];
   onResultSelect: (roomId: string, eventId: string) => void;
   onSendText: () => void;
+  onUnpinPinnedEvent: (roomId: string, eventId: string) => void;
   onToggleThread: () => void;
   onOpenRoomInfo: () => void;
 }) {
@@ -2425,6 +2440,8 @@ function TimelinePane({
   const activeRoom = timelineRoomId
     ? snapshot.state.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
+  const pinnedEvents = pinnedEventsForRoom(snapshot, timelineRoomId);
+  const pinnedEventIds = pinnedEvents.map((event) => event.event_id);
 
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
@@ -2456,6 +2473,13 @@ function TimelinePane({
         </button>
       </nav>
       <section className="timeline-scroll">
+        {timelineRoomId && pinnedEvents.length > 0 ? (
+          <PinnedEventsList
+            roomId={timelineRoomId}
+            pinnedEvents={pinnedEvents}
+            onUnpin={onUnpinPinnedEvent}
+          />
+        ) : null}
         {showSearchResults ? (
           <SearchResults
             query={searchQuery}
@@ -2497,6 +2521,7 @@ function TimelinePane({
               resolveComposerKeyAction={resolveComposerKeyAction}
               liveSignals={snapshot.state.live_signals}
               profileUsers={snapshot.state.profile.users}
+              pinnedEventIds={pinnedEventIds}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -2528,6 +2553,58 @@ function TimelinePane({
       />
     </main>
   );
+}
+
+function PinnedEventsList({
+  roomId,
+  pinnedEvents,
+  onUnpin
+}: {
+  roomId: string;
+  pinnedEvents: DesktopSnapshot["state"]["room_interactions"][string]["pinned_events"];
+  onUnpin: (roomId: string, eventId: string) => void;
+}) {
+  return (
+    <section className="pinned-events" aria-label={t("timeline.pinnedMessages")}>
+      <div className="pinned-events-heading">
+        <Pin size={15} aria-hidden="true" />
+        <span>{t("timeline.pinnedMessages")}</span>
+      </div>
+      <div className="pinned-events-list">
+        {pinnedEvents.map((event) => (
+          <div className="pinned-event" key={event.event_id}>
+            <div className="pinned-event-main">
+              {event.sender ? (
+                <span className="pinned-event-sender" dir="auto">
+                  {event.sender}
+                </span>
+              ) : null}
+              <span className="pinned-event-body" dir="auto">
+                {event.redacted
+                  ? t("timeline.redactedMessage")
+                  : event.body_preview ?? t("timeline.pinnedMessage")}
+              </span>
+            </div>
+            <button
+              className="pinned-event-action"
+              type="button"
+              aria-label={t("timeline.unpinMessage")}
+              onClick={() => onUnpin(roomId, event.event_id)}
+            >
+              <PinOff size={14} aria-hidden="true" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function pinnedEventsForRoom(
+  snapshot: DesktopSnapshot,
+  roomId: string | null | undefined
+): DesktopSnapshot["state"]["room_interactions"][string]["pinned_events"] {
+  return roomId ? snapshot.state.room_interactions[roomId]?.pinned_events ?? [] : [];
 }
 
 function SearchResults({
@@ -3019,6 +3096,9 @@ export function ContextualRightPanel({
         ? focusedContext.room_id
         : null;
     const focusedTimelineTransport = timelineTransport;
+    const focusedPinnedEventIds = pinnedEventsForRoom(snapshot, focusedRoomId).map(
+      (event) => event.event_id
+    );
 
     return (
       <aside className="thread-pane" aria-label={t("panel.context")}>
@@ -3042,6 +3122,7 @@ export function ContextualRightPanel({
               resolveComposerKeyAction={onResolveComposerKeyAction}
               liveSignals={snapshot.state.live_signals}
               profileUsers={snapshot.state.profile.users}
+              pinnedEventIds={focusedPinnedEventIds}
             />
           </section>
         ) : null}
@@ -3072,6 +3153,9 @@ export function ContextualRightPanel({
     currentUserId && timelineTransport && threadRoomId && rootEventId
       ? threadTimelineKey(currentUserId, threadRoomId, rootEventId)
       : null;
+  const threadPinnedEventIds = pinnedEventsForRoom(snapshot, threadRoomId).map(
+    (event) => event.event_id
+  );
 
   return (
     <aside className="thread-pane" aria-label={t("panel.context")}>
@@ -3088,6 +3172,7 @@ export function ContextualRightPanel({
             resolveComposerKeyAction={onResolveComposerKeyAction}
             liveSignals={snapshot.state.live_signals}
             profileUsers={snapshot.state.profile.users}
+            pinnedEventIds={threadPinnedEventIds}
           />
         ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>
