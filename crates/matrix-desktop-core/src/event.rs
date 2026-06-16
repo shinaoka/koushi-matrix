@@ -1166,6 +1166,38 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
     }
 }
 
+pub fn project_room_event_display_labels(event: &mut RoomEvent, state: &AppState) {
+    match event {
+        RoomEvent::RoomSettingsLoaded { settings, .. }
+        | RoomEvent::RoomSettingUpdated { settings, .. } => {
+            matrix_desktop_state::refresh_room_settings_member_display_projection(
+                settings,
+                &state.profile,
+                timeline_projection_own_user_id(state),
+            );
+        }
+        RoomEvent::RoomListUpdated
+        | RoomEvent::RoomCreated { .. }
+        | RoomEvent::SpaceCreated { .. }
+        | RoomEvent::SpaceChildSet { .. }
+        | RoomEvent::RoomJoined { .. }
+        | RoomEvent::RoomLeft { .. }
+        | RoomEvent::RoomForgotten { .. }
+        | RoomEvent::UserInvited { .. }
+        | RoomEvent::InviteAccepted { .. }
+        | RoomEvent::InviteDeclined { .. }
+        | RoomEvent::DirectMessageStarted { .. }
+        | RoomEvent::RoomTagSet { .. }
+        | RoomEvent::RoomTagRemoved { .. }
+        | RoomEvent::PinnedEventsUpdated { .. }
+        | RoomEvent::PinEventCompleted { .. }
+        | RoomEvent::UnpinEventCompleted { .. }
+        | RoomEvent::DirectoryQueryCompleted { .. }
+        | RoomEvent::RoomMemberModerated { .. }
+        | RoomEvent::RoomMemberRoleUpdated { .. } => {}
+    }
+}
+
 pub fn project_timeline_item_display_labels(item: &mut TimelineItem, state: &AppState) {
     item.sender_label = timeline_sender_label(item.sender.as_deref(), state);
     if let Some(reply_quote) = item.reply_quote.as_mut() {
@@ -1864,6 +1896,52 @@ mod tests {
         assert!(!debug.contains("@bob:example.invalid"), "{debug}");
         assert!(!debug.contains("Alice Alias"), "{debug}");
         assert!(!debug.contains("Bobby"), "{debug}");
+    }
+
+    #[test]
+    fn room_settings_events_project_member_display_labels_from_profile_state() {
+        let mut state = AppState::default();
+        state.session = SessionState::Ready(matrix_desktop_state::SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@me:example.invalid".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        });
+        state.profile.local_aliases.insert(
+            "@member:example.invalid".to_owned(),
+            "Local Remark".to_owned(),
+        );
+
+        let mut event = RoomEvent::RoomSettingsLoaded {
+            request_id: fake_rid(70),
+            settings: RoomSettingsSnapshot {
+                room_id: "!room:example.invalid".to_owned(),
+                name: Some("Room".to_owned()),
+                topic: None,
+                avatar_url: None,
+                join_rule: matrix_desktop_state::RoomJoinRule::Invite,
+                history_visibility: matrix_desktop_state::RoomHistoryVisibility::Shared,
+                permissions: matrix_desktop_state::RoomPermissionFacts::default(),
+                members: vec![matrix_desktop_state::RoomMemberSummary {
+                    user_id: "@member:example.invalid".to_owned(),
+                    display_name: Some("Upstream Member".to_owned()),
+                    display_label: "Upstream Member".to_owned(),
+                    avatar_url: None,
+                    power_level: Some(0),
+                    role: matrix_desktop_state::RoomMemberRole::User,
+                }],
+            },
+        };
+
+        project_room_event_display_labels(&mut event, &state);
+
+        let RoomEvent::RoomSettingsLoaded { settings, .. } = event else {
+            panic!("expected room settings event");
+        };
+        assert_eq!(settings.members[0].display_label, "Local Remark");
+        assert_eq!(
+            settings.members[0].display_name.as_deref(),
+            Some("Upstream Member")
+        );
     }
 
     #[test]

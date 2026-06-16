@@ -823,11 +823,14 @@ stateDiagram-v2
 - `RoomSettingsSnapshot` carries the selected room id, name, topic, avatar URL,
   join rule, history visibility, `RoomPermissionFacts`, and the room-scoped
   `members` projection. Each member summary includes the Rust-projected
-  power level and role label (`creator`, `administrator`, `moderator`,
-  `user`). It is app-owned DTO data mapped from the SDK before crossing the
-  command/event boundary. GUI member actions must render this room-scoped
-  member snapshot, not the global profile cache, and must not derive role
-  semantics in React.
+  `display_label`
+  (`local alias ?? nonblank room-scoped display_name ?? profile cache/own profile ?? MXID`),
+  power level, and role label (`creator`, `administrator`, `moderator`,
+  `user`). `display_name` remains the upstream/original name for context. It is
+  app-owned DTO data mapped from the SDK before crossing the command/event
+  boundary, then refreshed from `AppState.profile` on profile/alias changes.
+  GUI member actions must render this room-scoped member snapshot, not the
+  global profile cache, and must not derive label or role semantics in React.
 - The command surface is `RoomCommand::LoadRoomSettings`,
   `RoomCommand::UpdateRoomSetting`, `RoomCommand::ModerateRoomMember`, and
   `RoomCommand::UpdateRoomMemberRole`.

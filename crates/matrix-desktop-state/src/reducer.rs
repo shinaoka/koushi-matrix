@@ -583,7 +583,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 &mut state.profile,
                 own_user_id.as_deref(),
             );
-            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+            let room_members_changed =
+                refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
+            profile_changed_effects(room_members_changed)
         }
         AppAction::UserProfilesUpdated { profiles } => {
             if !is_session_ready(state) {
@@ -599,7 +601,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 &mut state.profile,
                 own_user_id.as_deref(),
             );
-            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+            let room_members_changed =
+                refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
+            profile_changed_effects(room_members_changed)
         }
         AppAction::LocalUserAliasesLoaded { aliases } => {
             if !is_session_ready(state) {
@@ -619,7 +623,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 &mut state.profile,
                 own_user_id.as_deref(),
             );
-            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+            let room_members_changed =
+                refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
+            profile_changed_effects(room_members_changed)
         }
         AppAction::LocalUserAliasUpdateRequested {
             request_id,
@@ -642,7 +648,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 &mut state.profile,
                 own_user_id.as_deref(),
             );
-            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+            let room_members_changed =
+                refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
+            profile_changed_effects(room_members_changed)
         }
         AppAction::LocalUserAliasUpdateSucceeded { request_id } => {
             if state.profile.local_alias_update.request_id() != Some(request_id) {
@@ -705,9 +713,16 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let own_user_id = session_user_id(state).map(str::to_owned);
             state.profile.update = crate::state::ProfileUpdateState::Idle;
             state.profile.own = profile;
-            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+            crate::state::refresh_profile_user_display_projection(
+                &mut state.profile,
+                own_user_id.as_deref(),
+            );
+            let room_members_changed =
+                refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
+            profile_changed_effects(room_members_changed)
         }
         AppAction::ProfileUpdateFailed {
             request_id,
@@ -1285,6 +1300,13 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let own_user_id = session_user_id(state).map(str::to_owned);
+            let mut settings = settings;
+            crate::state::refresh_room_settings_member_display_projection(
+                &mut settings,
+                &state.profile,
+                own_user_id.as_deref(),
+            );
             state.room_management.selected_room_id = Some(room_id);
             state.room_management.settings = Some(settings);
             state.room_management.operation = RoomManagementOperationState::Idle;
@@ -1330,6 +1352,13 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let own_user_id = session_user_id(state).map(str::to_owned);
+            let mut settings = settings;
+            crate::state::refresh_room_settings_member_display_projection(
+                &mut settings,
+                &state.profile,
+                own_user_id.as_deref(),
+            );
             state.room_management.selected_room_id = Some(room_id);
             state.room_management.settings = Some(settings);
             state.room_management.operation = RoomManagementOperationState::Idle;
@@ -2449,6 +2478,28 @@ fn session_user_id(state: &AppState) -> Option<&str> {
         | SessionState::Recovering { info, .. } => Some(info.user_id.as_str()),
         _ => None,
     }
+}
+
+fn refresh_open_room_settings_member_display_projection(
+    state: &mut AppState,
+    own_user_id: Option<&str>,
+) -> bool {
+    let Some(settings) = state.room_management.settings.as_mut() else {
+        return false;
+    };
+    crate::state::refresh_room_settings_member_display_projection(
+        settings,
+        &state.profile,
+        own_user_id,
+    )
+}
+
+fn profile_changed_effects(room_management_changed: bool) -> Vec<AppEffect> {
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)];
+    if room_management_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged));
+    }
+    effects
 }
 
 fn room_exists(state: &AppState, room_id: &str) -> bool {

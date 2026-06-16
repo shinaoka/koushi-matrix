@@ -103,6 +103,11 @@ Phase B GUI/browser-headless work for the same issue follows
   verification. Treat this mode as useful for a rough first draft only; the main
   agent must review for missing cross-boundary surfaces and finish or replace
   the implementation.
+- In the #63 room-member display-label scoped diff review, DeepSeek V4 Pro again
+  produced no review output after more than six minutes and was terminated. Even
+  scoped cross-boundary reviews can be too slow in this setup; prefer much
+  smaller file-local prompts, or treat main-agent review and local gates as
+  authoritative when the DeepSeek review is silent.
 - When reviewing uncommitted work, include untracked new files explicitly.
   `git diff -- path/to/new-file` is empty for untracked files, and the
   reviewer may correctly report that the core file is missing from the review.
@@ -386,6 +391,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   labels across loaded timelines, but React must not resolve alias precedence or
   synthesize fallback labels. When clearing an alias, keep the target user id in
   the Rust emission even if the user is absent from `profile.users`.
+- Room-scoped member labels are Rust-projected too:
+  `RoomMemberSummary.display_label` is resolved from
+  `ProfileState.local_aliases`, nonblank room-scoped upstream `display_name`,
+  profile cache / own-profile fallback, and finally MXID when room settings load,
+  room settings update, or profile/alias state changes. `display_name` remains
+  the upstream/original context value. React member lists, sort order, and
+  action labels must consume `display_label` and must not join `settings.members`
+  with `local_aliases` or the global profile cache.
 - Local aliases are private "only I see this" data. Do not print alias user ids
   or alias text in normal Debug, QA titles/logs, screenshots, issue comments, or
   docs examples. `ProfileState` Debug should expose only profile/avatar presence
@@ -1126,11 +1139,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   row is observed in the expected section.
 - `local-room-management` must render member actions from the room-scoped
   `AppState.room_management.settings.members` snapshot, not the global
-  profile cache. Member roles and power levels are Rust-projected facts; React
-  may render a select and dispatch `update_room_member_role`, but it must wait
-  for the returned snapshot before the visible role changes. Kick/ban success
-  removes the target in the Rust reducer; React must not locally filter the
-  member row after command completion. The Linux lane stdout must stay
+  profile cache. Member display labels, roles, and power levels are
+  Rust-projected facts; React may render a select and dispatch
+  `update_room_member_role`, but it must wait for the returned snapshot before
+  the visible role changes. Kick/ban success removes the target in the Rust
+  reducer; React must not locally filter the member row after command
+  completion. The Linux lane stdout must stay
   private-data-free and must not print Matrix room IDs, user IDs, room
   names/topics, avatar URLs, moderation reasons, or raw SDK errors.
 - `local-explore` must drive the real Explore pane and wait for

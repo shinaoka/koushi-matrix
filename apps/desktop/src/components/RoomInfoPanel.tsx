@@ -459,7 +459,7 @@ function ModerationButton({
 }
 
 function memberLabel(profile: RoomMemberSummary): string {
-  return profile.display_name?.trim() || profile.user_id;
+  return profile.display_label;
 }
 
 const roomMemberRoleOptions: Array<{ role: RoomMemberRole; powerLevel: number }> = [

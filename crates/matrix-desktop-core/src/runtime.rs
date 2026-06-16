@@ -23,7 +23,7 @@ use crate::command::{
     AccountCommand, AppCommand, CoreCommand, SearchCommand, SearchScope, TimelineCommand,
 };
 use crate::event::{
-    ActivityEvent, AppStateSnapshot, CoreEvent, TimelineEvent,
+    ActivityEvent, AppStateSnapshot, CoreEvent, TimelineEvent, project_room_event_display_labels,
     project_timeline_event_display_labels,
 };
 use crate::executor;
@@ -208,9 +208,26 @@ impl CoreConnection {
     }
 
     fn project_event_for_consumer(&self, mut event: CoreEvent) -> CoreEvent {
-        if let CoreEvent::Timeline(timeline_event) = &mut event {
-            let snapshot = self.snapshot_rx.borrow().clone();
-            project_timeline_event_display_labels(timeline_event, &snapshot);
+        match &mut event {
+            CoreEvent::Timeline(timeline_event) => {
+                let snapshot = self.snapshot_rx.borrow().clone();
+                project_timeline_event_display_labels(timeline_event, &snapshot);
+            }
+            CoreEvent::Room(room_event) => {
+                let snapshot = self.snapshot_rx.borrow().clone();
+                project_room_event_display_labels(room_event, &snapshot);
+            }
+            CoreEvent::StateChanged(_)
+            | CoreEvent::Account(_)
+            | CoreEvent::Sync(_)
+            | CoreEvent::LiveSignals(_)
+            | CoreEvent::Search(_)
+            | CoreEvent::E2eeTrust(_)
+            | CoreEvent::Activity(_)
+            | CoreEvent::LocalEncryption(_)
+            | CoreEvent::NativeAttention(_)
+            | CoreEvent::CjkTextPolicy(_)
+            | CoreEvent::OperationFailed { .. } => {}
         }
         event
     }

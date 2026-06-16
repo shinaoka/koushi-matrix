@@ -1712,7 +1712,8 @@ mod tests {
             },
             members: vec![matrix_desktop_state::RoomMemberSummary {
                 user_id: "@member:example.test".to_owned(),
-                display_name: Some("Member".to_owned()),
+                display_name: Some("Synthetic Member".to_owned()),
+                display_label: "Synthetic Member".to_owned(),
                 avatar_url: Some("mxc://example.test/member-avatar".to_owned()),
                 power_level: Some(50),
                 role: RoomMemberRole::Moderator,

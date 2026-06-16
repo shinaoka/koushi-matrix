@@ -52,7 +52,8 @@ pub use state::{
     TypographySettings, UserProfile, VerificationCancelReason, VerificationFlowState,
     VerificationTarget, native_attention_capabilities_for_platform,
     native_attention_state_from_rooms, refresh_profile_user_display_projection,
-    resolve_user_display_name, room_attention_kind, room_attention_summary,
+    refresh_room_settings_member_display_projection, resolve_user_display_name,
+    room_attention_kind, room_attention_summary,
 };
 pub use typography_profile::{
     TypographyAssetStatus, TypographyDisplayProfile, resolve_typography_display_profile,

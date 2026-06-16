@@ -1535,22 +1535,27 @@ class BrowserFakeApi implements DesktopApi {
   private roomMemberSnapshot(): RoomSettingsSnapshot["members"] {
     const profiles = Object.values(this.snapshot.state.profile.users);
     const members = profiles.length
-      ? profiles
-      : [
-          {
-            user_id: "@browser-member:browser.fake",
-            display_name: "Browser Member",
-            avatar: null
-          }
-        ];
+        ? profiles
+        : [
+            {
+              user_id: "@browser-member:browser.fake",
+              display_name: "Browser Member",
+              display_label: "Browser Member",
+              avatar: null
+            }
+          ];
     return members
-      .map((profile) => ({
-        user_id: profile.user_id,
-        display_name: profile.display_name,
-        avatar_url: profile.avatar?.mxc_uri ?? null,
-        power_level: 0,
-        role: "user" as const
-      }))
+      .map((profile) => {
+        const displayLabel = profile.display_label.trim();
+        return {
+          user_id: profile.user_id,
+          display_name: profile.display_name,
+          display_label: displayLabel || profile.display_name?.trim() || profile.user_id,
+          avatar_url: profile.avatar?.mxc_uri ?? null,
+          power_level: 0,
+          role: "user" as const
+        };
+      })
       .sort((left, right) => left.user_id.localeCompare(right.user_id));
   }
 

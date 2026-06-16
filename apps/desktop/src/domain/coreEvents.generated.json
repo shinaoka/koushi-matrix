@@ -334,7 +334,8 @@
           "members": [
             {
               "avatar_url": "mxc://example.test/member-avatar",
-              "display_name": "Member",
+              "display_label": "Synthetic Member",
+              "display_name": "Synthetic Member",
               "power_level": 50,
               "role": "moderator",
               "user_id": "@member:example.test"
@@ -369,7 +370,8 @@
           "members": [
             {
               "avatar_url": "mxc://example.test/member-avatar",
-              "display_name": "Member",
+              "display_label": "Synthetic Member",
+              "display_name": "Synthetic Member",
               "power_level": 50,
               "role": "moderator",
               "user_id": "@member:example.test"

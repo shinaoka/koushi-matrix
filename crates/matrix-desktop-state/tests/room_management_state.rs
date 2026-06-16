@@ -1,9 +1,11 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, OperationFailureKind, RoomHistoryVisibility, RoomJoinRule,
-    RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState, RoomMemberRole,
-    RoomMemberSummary, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
-    RoomSettingsSnapshot, SessionInfo, SessionState, UiEvent, reduce,
+    AppAction, AppEffect, AppState, OperationFailureKind, OwnProfile, ProfileUpdateRequest,
+    RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind, RoomManagementOperationState,
+    RoomManagementState, RoomMemberRole, RoomMemberSummary, RoomModerationAction,
+    RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot, SessionInfo, SessionState,
+    UiEvent, UserProfile, reduce,
 };
+use std::collections::BTreeMap;
 
 fn session_info() -> SessionInfo {
     SessionInfo {
@@ -39,6 +41,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
             RoomMemberSummary {
                 user_id: "@user-a:example.invalid".to_owned(),
                 display_name: Some("User A".to_owned()),
+                display_label: "User A".to_owned(),
                 avatar_url: None,
                 power_level: Some(100),
                 role: RoomMemberRole::Administrator,
@@ -46,6 +49,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
             RoomMemberSummary {
                 user_id: "@target:example.invalid".to_owned(),
                 display_name: Some("Target".to_owned()),
+                display_label: "Target".to_owned(),
                 avatar_url: Some("mxc://example.invalid/target-avatar".to_owned()),
                 power_level: Some(0),
                 role: RoomMemberRole::User,
@@ -59,6 +63,196 @@ fn locked_settings(room_id: &str) -> RoomSettingsSnapshot {
         permissions: RoomPermissionFacts::default(),
         ..editable_settings(room_id)
     }
+}
+
+fn serialized_member_display_label(state: &AppState, user_id: &str) -> Option<String> {
+    let settings = state.room_management.settings.as_ref()?;
+    let value = serde_json::to_value(settings).expect("serialize room settings");
+    value["members"]
+        .as_array()
+        .expect("members array")
+        .iter()
+        .find(|member| member["user_id"] == user_id)
+        .and_then(|member| member["display_label"].as_str())
+        .map(str::to_owned)
+}
+
+#[test]
+fn room_settings_snapshot_load_projects_member_display_labels_from_aliases() {
+    let mut state = ready_state();
+    let room_id = "!room:example.invalid";
+
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasesLoaded {
+            aliases: BTreeMap::from([(
+                "@target:example.invalid".to_owned(),
+                "Target Local".to_owned(),
+            )]),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings: editable_settings(room_id),
+        },
+    );
+
+    assert_eq!(
+        serialized_member_display_label(&state, "@target:example.invalid"),
+        Some("Target Local".to_owned())
+    );
+    assert_eq!(
+        state
+            .room_management
+            .settings
+            .as_ref()
+            .and_then(|settings| settings
+                .members
+                .iter()
+                .find(|member| member.user_id == "@target:example.invalid"))
+            .and_then(|member| member.display_name.as_deref()),
+        Some("Target")
+    );
+}
+
+#[test]
+fn room_settings_member_display_label_uses_profile_cache_when_room_name_is_blank() {
+    let mut state = ready_state();
+    let room_id = "!room:example.invalid";
+    let mut settings = editable_settings(room_id);
+    let target = settings
+        .members
+        .iter_mut()
+        .find(|member| member.user_id == "@target:example.invalid")
+        .expect("target member");
+    target.display_name = Some("   ".to_owned());
+    target.display_label = "@target:example.invalid".to_owned();
+
+    reduce(
+        &mut state,
+        AppAction::UserProfilesUpdated {
+            profiles: vec![UserProfile {
+                user_id: "@target:example.invalid".to_owned(),
+                display_name: Some("Profile Cache Name".to_owned()),
+                display_label: String::new(),
+                mention_search_terms: Vec::new(),
+                avatar: None,
+            }],
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings,
+        },
+    );
+
+    assert_eq!(
+        serialized_member_display_label(&state, "@target:example.invalid"),
+        Some("Profile Cache Name".to_owned())
+    );
+    assert_eq!(
+        state
+            .room_management
+            .settings
+            .as_ref()
+            .and_then(|settings| settings
+                .members
+                .iter()
+                .find(|member| member.user_id == "@target:example.invalid"))
+            .and_then(|member| member.display_name.as_deref()),
+        Some("   ")
+    );
+}
+
+#[test]
+fn local_alias_update_refreshes_open_room_member_display_labels() {
+    let mut state = ready_state();
+    let room_id = "!room:example.invalid";
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings: editable_settings(room_id),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::LocalUserAliasUpdateRequested {
+            request_id: 52,
+            user_id: "@target:example.invalid".to_owned(),
+            alias: Some("Target Local".to_owned()),
+        },
+    );
+
+    assert_eq!(
+        serialized_member_display_label(&state, "@target:example.invalid"),
+        Some("Target Local".to_owned())
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+            AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged),
+        ]
+    );
+}
+
+#[test]
+fn own_profile_update_success_refreshes_open_room_member_display_labels() {
+    let mut state = ready_state();
+    let room_id = "!room:example.invalid";
+    let mut settings = editable_settings(room_id);
+    let own_member = settings
+        .members
+        .iter_mut()
+        .find(|member| member.user_id == "@user-a:example.invalid")
+        .expect("own member");
+    own_member.display_name = None;
+    own_member.display_label = "@user-a:example.invalid".to_owned();
+
+    reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ProfileUpdateRequested {
+            request_id: 53,
+            request: ProfileUpdateRequest::SetDisplayName {
+                display_name: Some("Own Local Name".to_owned()),
+            },
+        },
+    );
+    let effects = reduce(
+        &mut state,
+        AppAction::ProfileUpdateSucceeded {
+            request_id: 53,
+            profile: OwnProfile {
+                display_name: Some("Own Local Name".to_owned()),
+                avatar: None,
+            },
+        },
+    );
+
+    assert_eq!(
+        serialized_member_display_label(&state, "@user-a:example.invalid"),
+        Some("Own Local Name".to_owned())
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+            AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged),
+        ]
+    );
 }
 
 #[test]

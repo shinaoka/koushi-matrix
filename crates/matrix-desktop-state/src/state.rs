@@ -584,6 +584,9 @@ pub fn resolve_user_display_name(
     upstream_display_name: Option<&str>,
     own_user_id: Option<&str>,
 ) -> String {
+    let upstream_display_name = upstream_display_name
+        .map(str::trim)
+        .filter(|display_name| !display_name.is_empty());
     let display_name = upstream_display_name.or_else(|| {
         profiles
             .users
@@ -622,6 +625,27 @@ pub fn refresh_profile_user_display_projection(
         );
         profile.display_label = display_label;
     }
+}
+
+pub fn refresh_room_settings_member_display_projection(
+    settings: &mut RoomSettingsSnapshot,
+    profiles: &ProfileState,
+    own_user_id: Option<&str>,
+) -> bool {
+    let mut changed = false;
+    for member in &mut settings.members {
+        let display_label = resolve_user_display_name(
+            profiles,
+            &member.user_id,
+            member.display_name.as_deref(),
+            own_user_id,
+        );
+        if member.display_label != display_label {
+            member.display_label = display_label;
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn resolve_user_display_name_from_parts(
@@ -1494,6 +1518,7 @@ impl fmt::Debug for RoomSettingsSnapshot {
 pub struct RoomMemberSummary {
     pub user_id: String,
     pub display_name: Option<String>,
+    pub display_label: String,
     pub avatar_url: Option<String>,
     pub power_level: Option<i64>,
     pub role: RoomMemberRole,
@@ -1508,6 +1533,7 @@ impl fmt::Debug for RoomMemberSummary {
                 "display_name",
                 &self.display_name.as_ref().map(|_| "DisplayName(..)"),
             )
+            .field("display_label", &"DisplayLabel(..)")
             .field(
                 "avatar_url",
                 &self.avatar_url.as_ref().map(|_| "MxcUri(..)"),

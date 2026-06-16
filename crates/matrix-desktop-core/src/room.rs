@@ -1729,9 +1729,17 @@ fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> Room
 }
 
 fn room_member_summary_from_sdk(member: MatrixRoomMemberSummary) -> RoomMemberSummary {
+    let display_label = member
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|display_name| !display_name.is_empty())
+        .unwrap_or(member.user_id.as_str())
+        .to_owned();
     RoomMemberSummary {
         user_id: member.user_id,
         display_name: member.display_name,
+        display_label,
         avatar_url: member.avatar_url,
         power_level: member.power_level,
         role: room_member_role_from_sdk(member.role),

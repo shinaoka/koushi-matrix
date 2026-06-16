@@ -489,6 +489,7 @@ export interface RoomSettingsSnapshot {
 export interface RoomMemberSummary {
   user_id: string;
   display_name: string | null;
+  display_label: string;
   avatar_url: string | null;
   power_level: number | null;
   role: RoomMemberRole;

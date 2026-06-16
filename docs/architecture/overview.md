@@ -89,9 +89,9 @@ Crate responsibilities:
   and kick/ban/unban moderation operations live in
   `AppState.room_management` and `RoomCommand` / `RoomEvent`. React renders
   `settings.permissions`, `settings.avatar_url`, and `settings.members`
-  including Rust-projected role/power facts, and dispatches typed commands
-  only; it must not decide whether a user can edit settings, edit roles, or
-  moderate members locally.
+  including Rust-projected member display labels, role facts, and power facts,
+  and dispatches typed commands only; it must not decide whether a user can edit
+  settings, edit roles, or moderate members locally.
   Core Batch A0 ownership also lives in this crate: local encryption /
   credential-store health, native attention candidates and capabilities,
   Japanese/CJK display/search policy, and backup restore scope are

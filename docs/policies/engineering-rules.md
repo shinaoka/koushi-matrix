@@ -294,11 +294,12 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    rendered text.
    Room-management GUI tests must render room settings, avatar URL, member
    actions, and role editors from `AppState.room_management.settings`,
-   including the room-scoped `members` projection with Rust-projected power
-   levels and roles. React must not use the global profile cache as the room
-   member list, locally change role labels after a select change, or locally
-   remove a member row after kick/ban; the Rust reducer owns those snapshot
-   transitions. Linux room-management GUI QA output is limited to
+   including the room-scoped `members` projection with Rust-projected
+   `display_label`, power levels, and roles. React must not use the global
+   profile cache as the room member list, recompute alias precedence from
+   `local_aliases`, locally change role labels after a select change, or
+   locally remove a member row after kick/ban; the Rust reducer owns those
+   snapshot transitions. Linux room-management GUI QA output is limited to
    private-data-free tokens and must not print room/user IDs, room
    names/topics, avatar URLs, moderation reasons, or raw SDK errors.
    Activity GUI tests must render Rust-shaped `AppState.activity` Recent and

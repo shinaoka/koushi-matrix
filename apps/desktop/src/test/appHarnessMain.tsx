@@ -931,6 +931,7 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
             {
               user_id: "@harness-member:example.invalid",
               display_name: "Harness Member",
+              display_label: "Harness Member",
               avatar_url: null,
               power_level: 0,
               role: "user"
