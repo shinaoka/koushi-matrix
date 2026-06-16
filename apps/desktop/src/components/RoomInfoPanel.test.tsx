@@ -10,8 +10,10 @@ describe("RoomInfoPanel", () => {
         room={{
           room_id: "!room-alpha:example.invalid",
           display_name: "Alpha Room",
+          display_label: "Alpha Room",
           avatar: null,
           is_dm: false,
+          dm_user_ids: [],
           tags: { favourite: null, low_priority: null },
           parent_space_ids: ["!space-work:example.invalid"],
           unread_count: 8
@@ -51,8 +53,10 @@ describe("RoomInfoPanel", () => {
         room={{
           room_id: "!dm-alice:example.invalid",
           display_name: "Alice",
+          display_label: "Alice",
           avatar: null,
           is_dm: true,
+          dm_user_ids: ["@alice:example.invalid"],
           tags: { favourite: null, low_priority: null },
           parent_space_ids: [],
           unread_count: 0
@@ -65,14 +69,38 @@ describe("RoomInfoPanel", () => {
     expect(markup).toContain("No Spaces");
   });
 
+  test("renders room titles from the Rust-projected display label", () => {
+    const markup = renderToStaticMarkup(
+      <RoomInfoPanel
+        room={{
+          room_id: "!dm-alice:example.invalid",
+          display_name: "Alice Upstream",
+          display_label: "Alice Local",
+          avatar: null,
+          is_dm: true,
+          dm_user_ids: ["@alice:example.invalid"],
+          tags: { favourite: null, low_priority: null },
+          parent_space_ids: [],
+          unread_count: 0
+        }}
+        spaces={[]}
+      />
+    );
+
+    expect(markup).toContain("Alice Local");
+    expect(markup).not.toContain("Alice Upstream");
+  });
+
   test("renders room member labels from the Rust-projected display label", () => {
     const markup = renderToStaticMarkup(
       <RoomInfoPanel
         room={{
           room_id: "!room-alpha:example.invalid",
           display_name: "Alpha Room",
+          display_label: "Alpha Room",
           avatar: null,
           is_dm: false,
+          dm_user_ids: [],
           tags: { favourite: null, low_priority: null },
           parent_space_ids: [],
           unread_count: 0
@@ -120,8 +148,10 @@ describe("RoomInfoPanel", () => {
         room={{
           room_id: "!room-alpha:example.invalid",
           display_name: "Alpha Room",
+          display_label: "Alpha Room",
           avatar: null,
           is_dm: false,
+          dm_user_ids: [],
           tags: { favourite: null, low_priority: null },
           parent_space_ids: [],
           unread_count: 0

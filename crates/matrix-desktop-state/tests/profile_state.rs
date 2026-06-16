@@ -578,8 +578,10 @@ fn room_space_and_invite_summaries_surface_avatar_mxc() {
             rooms: vec![RoomSummary {
                 room_id: "!room:localhost".to_owned(),
                 display_name: "Room".to_owned(),
+                display_label: "Room".to_owned(),
                 avatar: Some(avatar("mxc://localhost/room-avatar")),
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: RoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,

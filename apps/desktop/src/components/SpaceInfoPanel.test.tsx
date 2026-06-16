@@ -11,9 +11,11 @@ describe("SpaceInfoPanel", () => {
         rooms={[
           {
             room_id: "!room-alpha:example.invalid",
-            display_name: "Alpha Room",
+            display_name: "Alpha Upstream",
+            display_label: "Alpha Local",
             avatar: null,
             is_dm: false,
+            dm_user_ids: [],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: ["!space-work:example.invalid"],
             unread_count: 8
@@ -21,8 +23,10 @@ describe("SpaceInfoPanel", () => {
           {
             room_id: "!room-beta:example.invalid",
             display_name: "Beta Room",
+            display_label: "Beta Room",
             avatar: null,
             is_dm: false,
+            dm_user_ids: [],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: ["!space-work:example.invalid"],
             unread_count: 2
@@ -30,8 +34,10 @@ describe("SpaceInfoPanel", () => {
           {
             room_id: "!dm-alice:example.invalid",
             display_name: "Alice",
+            display_label: "Alice",
             avatar: null,
             is_dm: true,
+            dm_user_ids: ["@alice:example.invalid"],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: ["!space-work:example.invalid"],
             unread_count: 4
@@ -52,7 +58,8 @@ describe("SpaceInfoPanel", () => {
     expect(markup).toContain("2");
     expect(markup).toContain("Unread");
     expect(markup).toContain("10");
-    expect(markup).toContain("Alpha Room");
+    expect(markup).toContain("Alpha Local");
+    expect(markup).not.toContain("Alpha Upstream");
     expect(markup).toContain("Beta Room");
     expect(markup).not.toContain("Alice");
     expect(markup).toContain("Home");
@@ -74,8 +81,10 @@ describe("SpaceInfoPanel", () => {
           {
             room_id: "!room-alpha:example.invalid",
             display_name: "Alpha Room",
+            display_label: "Alpha Room",
             avatar: null,
             is_dm: false,
+            dm_user_ids: [],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: [],
             unread_count: 8
@@ -83,8 +92,10 @@ describe("SpaceInfoPanel", () => {
           {
             room_id: "!dm-alice:example.invalid",
             display_name: "Alice",
+            display_label: "Alice",
             avatar: null,
             is_dm: true,
+            dm_user_ids: ["@alice:example.invalid"],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: [],
             unread_count: 4

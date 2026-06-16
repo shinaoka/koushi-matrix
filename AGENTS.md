@@ -399,6 +399,19 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   the upstream/original context value. React member lists, sort order, and
   action labels must consume `display_label` and must not join `settings.members`
   with `local_aliases` or the global profile cache.
+- Room summaries use the same Rust-owned display projection:
+  `RoomSummary.display_label` is the sidebar/header/search/forward/space-child
+  display value, while `display_name` remains the upstream/original room name.
+  For one-to-one DM rooms, `dm_user_ids` carries the target identity and labels
+  resolve through local alias, nonblank upstream room name, profile/own-profile,
+  then MXID. Non-DM rooms use trimmed upstream `display_name`, then `room_id`.
+  `display_label` is caller-owned room/user data, not i18n catalog prose; do
+  not invent generic English fallbacks such as `Member`, and do not infer the DM
+  target from a room title in React.
+- Native attention uses `RoomSummary.display_label` for its safe room label, but
+  serialized candidates still must not carry room IDs, sender IDs, event IDs, or
+  message bodies. Profile/alias relabeling of an existing candidate is a Rust
+  reducer projection over `state.rooms`, not a React notification-policy repair.
 - Local aliases are private "only I see this" data. Do not print alias user ids
   or alias text in normal Debug, QA titles/logs, screenshots, issue comments, or
   docs examples. `ProfileState` Debug should expose only profile/avatar presence

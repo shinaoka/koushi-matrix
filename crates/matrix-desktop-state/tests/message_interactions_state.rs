@@ -13,8 +13,10 @@ fn ready_state() -> AppState {
         rooms: vec![RoomSummary {
             room_id: "!room:example.invalid".to_owned(),
             display_name: "Room".to_owned(),
+            display_label: "Room".to_owned(),
             avatar: None,
             is_dm: false,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 0,
             notification_count: 0,

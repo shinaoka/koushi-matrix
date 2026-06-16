@@ -851,8 +851,10 @@ class BrowserFakeApi implements DesktopApi {
     const joinedRoom: RoomSummary = {
       room_id: roomId,
       display_name: displayName,
+      display_label: displayName,
       avatar: null,
       is_dm: false,
+      dm_user_ids: [],
       tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: []
@@ -934,7 +936,11 @@ class BrowserFakeApi implements DesktopApi {
     };
     this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
       room.room_id === normalizedRoomId && "name" in change
-        ? { ...room, display_name: change.name ?? room.display_name }
+        ? {
+            ...room,
+            display_name: change.name ?? room.display_name,
+            display_label: room.is_dm ? room.display_label : change.name ?? room.display_label
+          }
         : room
     );
     this.snapshot.sidebar = composeSidebar(
@@ -1081,8 +1087,10 @@ class BrowserFakeApi implements DesktopApi {
     const newRoom: RoomSummary = {
       room_id: newRoomId,
       display_name: name,
+      display_label: name,
       avatar: null,
       is_dm: false,
+      dm_user_ids: [],
       tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: []
@@ -1162,8 +1170,10 @@ class BrowserFakeApi implements DesktopApi {
     const joinedRoom: RoomSummary = {
       room_id: roomId,
       display_name: invite.display_name,
+      display_label: invite.display_name,
       avatar: invite.avatar,
       is_dm: invite.is_dm,
+      dm_user_ids: [],
       tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: []
@@ -1207,8 +1217,10 @@ class BrowserFakeApi implements DesktopApi {
     const newRoom: RoomSummary = {
       room_id: newRoomId,
       display_name: trimmedUserId,
+      display_label: trimmedUserId,
       avatar: null,
       is_dm: true,
+      dm_user_ids: [trimmedUserId],
       tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: []
@@ -2333,8 +2345,10 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!room-alpha:example.invalid",
     display_name: "synthetic-room",
+    display_label: "synthetic-room",
     avatar: null,
     is_dm: false,
+    dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 8,
     parent_space_ids: ["!space-alpha:example.invalid"]
@@ -2342,8 +2356,10 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!room-planning:example.invalid",
     display_name: "planning-room",
+    display_label: "planning-room",
     avatar: null,
     is_dm: false,
+    dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 2,
     parent_space_ids: ["!space-alpha:example.invalid"]
@@ -2351,8 +2367,10 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!room-search:example.invalid",
     display_name: "matrix-sdk-search",
+    display_label: "matrix-sdk-search",
     avatar: null,
     is_dm: false,
+    dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 1,
     parent_space_ids: ["!space-beta:example.invalid"]
@@ -2360,8 +2378,10 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!dm-member-1:example.invalid",
     display_name: "Member 1",
+    display_label: "Member 1",
     avatar: null,
     is_dm: true,
+    dm_user_ids: ["@member-1:example.invalid"],
     tags: emptyRoomTags(),
     unread_count: 1,
     parent_space_ids: []
@@ -2369,8 +2389,10 @@ const rooms: RoomSummary[] = [
   {
     room_id: "!dm-member-2:example.invalid",
     display_name: "Member 2",
+    display_label: "Member 2",
     avatar: null,
     is_dm: true,
+    dm_user_ids: ["@member-2:example.invalid"],
     tags: emptyRoomTags(),
     unread_count: 0,
     parent_space_ids: []

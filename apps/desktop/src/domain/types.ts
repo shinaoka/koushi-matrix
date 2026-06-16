@@ -292,8 +292,10 @@ export interface RoomTags {
 export interface RoomSummary {
   room_id: string;
   display_name: string;
+  display_label: string;
   avatar: AvatarImage | null;
   is_dm: boolean;
+  dm_user_ids: string[];
   tags: RoomTags;
   unread_count: number;
   notification_count?: number;

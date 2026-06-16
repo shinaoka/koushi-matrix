@@ -39,7 +39,7 @@ export function RoomInfoPanel({
   onUpdateMemberRole?: (roomId: string, targetUserId: string, powerLevel: number) => void;
 }) {
   const roomId = room?.room_id ?? "";
-  const roomName = room?.display_name ?? "";
+  const roomName = room?.display_label ?? "";
   const parentSpaces = room
     ? spaces.filter((space) => room.parent_space_ids.includes(space.space_id))
     : [];
@@ -94,7 +94,7 @@ export function RoomInfoPanel({
     <section className="settings-panel room-info-panel" aria-labelledby="room-info-title">
       <header className="settings-panel-header">
         <div>
-          <h2 id="room-info-title" dir="auto">{room.display_name}</h2>
+          <h2 id="room-info-title" dir="auto">{room.display_label}</h2>
           <p dir="auto">{room.room_id}</p>
         </div>
       </header>

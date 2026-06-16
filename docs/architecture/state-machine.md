@@ -477,6 +477,13 @@ stateDiagram-v2
   name for context; GUI mention autocomplete and mention highlighting consume
   the projected label/search terms and must not recompute alias precedence in
   React.
+- Room summaries carry `display_label` as the Rust-projected room list/header
+  label. For one-to-one DM rooms, `dm_user_ids` supplies the target identity and
+  the label resolves through the alias/profile precedence above; for non-DM
+  rooms it is trimmed upstream `display_name` with `room_id` as the final
+  fallback. `display_name` remains the upstream/original room name. React must
+  render `display_label` for normal room title surfaces and must not infer DM
+  identity from a display name or synthesize generic labels such as `Member`.
 - Timeline CoreEvents preserve raw sender MXIDs only as identity fields.
   `CoreConnection` projects `TimelineItem.sender_label`,
   `ReplyQuote.sender_label`, and `ThreadSummaryDto.latest_sender_label` from
@@ -1301,6 +1308,10 @@ stateDiagram-v2
   aggregate unread/highlight counts, and coarse capability tokens. They must not
   carry message bodies, sender identifiers, room IDs, event IDs, transaction IDs,
   raw SDK errors, or secrets.
+- The safe room display label comes from `RoomSummary.display_label`. When a
+  profile or local-alias change relabels a room, the Rust reducer refreshes the
+  current candidate label from `state.rooms`; React must not attach room IDs to
+  candidates or recompute notification policy to repair labels.
 - Candidate generation, dedupe, suppression while focused, badge count, sound
   eligibility, tray visibility, and activation behavior are reducer/core
   semantics. Platform adapters only map candidates to macOS, Windows, Linux, or

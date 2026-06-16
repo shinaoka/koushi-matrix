@@ -585,7 +585,15 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             );
             let room_members_changed =
                 refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
-            profile_changed_effects(room_members_changed)
+            let room_list_changed =
+                refresh_open_room_summary_display_projection(state, own_user_id.as_deref());
+            let native_attention_changed =
+                room_list_changed && refresh_native_attention_candidate_display_projection(state);
+            profile_changed_effects(
+                room_members_changed,
+                room_list_changed,
+                native_attention_changed,
+            )
         }
         AppAction::UserProfilesUpdated { profiles } => {
             if !is_session_ready(state) {
@@ -603,7 +611,15 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             );
             let room_members_changed =
                 refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
-            profile_changed_effects(room_members_changed)
+            let room_list_changed =
+                refresh_open_room_summary_display_projection(state, own_user_id.as_deref());
+            let native_attention_changed =
+                room_list_changed && refresh_native_attention_candidate_display_projection(state);
+            profile_changed_effects(
+                room_members_changed,
+                room_list_changed,
+                native_attention_changed,
+            )
         }
         AppAction::LocalUserAliasesLoaded { aliases } => {
             if !is_session_ready(state) {
@@ -625,7 +641,15 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             );
             let room_members_changed =
                 refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
-            profile_changed_effects(room_members_changed)
+            let room_list_changed =
+                refresh_open_room_summary_display_projection(state, own_user_id.as_deref());
+            let native_attention_changed =
+                room_list_changed && refresh_native_attention_candidate_display_projection(state);
+            profile_changed_effects(
+                room_members_changed,
+                room_list_changed,
+                native_attention_changed,
+            )
         }
         AppAction::LocalUserAliasUpdateRequested {
             request_id,
@@ -650,7 +674,15 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             );
             let room_members_changed =
                 refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
-            profile_changed_effects(room_members_changed)
+            let room_list_changed =
+                refresh_open_room_summary_display_projection(state, own_user_id.as_deref());
+            let native_attention_changed =
+                room_list_changed && refresh_native_attention_candidate_display_projection(state);
+            profile_changed_effects(
+                room_members_changed,
+                room_list_changed,
+                native_attention_changed,
+            )
         }
         AppAction::LocalUserAliasUpdateSucceeded { request_id } => {
             if state.profile.local_alias_update.request_id() != Some(request_id) {
@@ -722,7 +754,15 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             );
             let room_members_changed =
                 refresh_open_room_settings_member_display_projection(state, own_user_id.as_deref());
-            profile_changed_effects(room_members_changed)
+            let room_list_changed =
+                refresh_open_room_summary_display_projection(state, own_user_id.as_deref());
+            let native_attention_changed =
+                room_list_changed && refresh_native_attention_candidate_display_projection(state);
+            profile_changed_effects(
+                room_members_changed,
+                room_list_changed,
+                native_attention_changed,
+            )
         }
         AppAction::ProfileUpdateFailed {
             request_id,
@@ -860,6 +900,13 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let own_user_id = session_user_id(state).map(str::to_owned);
+            let mut rooms = rooms;
+            crate::state::refresh_room_summary_display_projection(
+                &mut rooms,
+                &state.profile,
+                own_user_id.as_deref(),
+            );
             let had_active_room_before_update = state.navigation.active_room_id.is_some();
             state.spaces = spaces;
             state.rooms = rooms;
@@ -2494,10 +2541,65 @@ fn refresh_open_room_settings_member_display_projection(
     )
 }
 
-fn profile_changed_effects(room_management_changed: bool) -> Vec<AppEffect> {
+fn refresh_open_room_summary_display_projection(
+    state: &mut AppState,
+    own_user_id: Option<&str>,
+) -> bool {
+    crate::state::refresh_room_summary_display_projection(
+        &mut state.rooms,
+        &state.profile,
+        own_user_id,
+    )
+}
+
+fn refresh_native_attention_candidate_display_projection(state: &mut AppState) -> bool {
+    let Some(candidate) = state.native_attention.summary.candidate.as_mut() else {
+        return false;
+    };
+    let Some(display_label) = state
+        .rooms
+        .iter()
+        .filter(|room| room.tags.low_priority.is_none())
+        .filter_map(|room| {
+            crate::state::room_attention_summary(
+                room.display_label.clone(),
+                room.is_dm,
+                room.notification_count,
+                room.highlight_count,
+                room.unread_count,
+            )
+        })
+        .filter(|summary| {
+            summary.kind == candidate.kind
+                && summary.unread_count == candidate.unread_count
+                && summary.highlight_count == candidate.highlight_count
+        })
+        .map(|summary| summary.room_display_name)
+        .min()
+    else {
+        return false;
+    };
+    if candidate.room_display_name == display_label {
+        return false;
+    }
+    candidate.room_display_name = display_label;
+    true
+}
+
+fn profile_changed_effects(
+    room_management_changed: bool,
+    room_list_changed: bool,
+    native_attention_changed: bool,
+) -> Vec<AppEffect> {
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)];
+    if room_list_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+    }
     if room_management_changed {
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged));
+    }
+    if native_attention_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
     }
     effects
 }

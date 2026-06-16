@@ -3264,8 +3264,10 @@ mod tests {
             RoomSummary {
                 room_id: "!room1:example.org".to_owned(),
                 display_name: "Room 1".to_owned(),
+                display_label: "Room 1".to_owned(),
                 avatar: None,
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: RoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
@@ -3275,8 +3277,10 @@ mod tests {
             RoomSummary {
                 room_id: "!room2:example.org".to_owned(),
                 display_name: "Room 2".to_owned(),
+                display_label: "Room 2".to_owned(),
                 avatar: None,
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: RoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,

@@ -23,8 +23,10 @@ fn room(room_id: &str, tags: RoomTags) -> RoomSummary {
     RoomSummary {
         room_id: room_id.to_owned(),
         display_name: "Room".to_owned(),
+        display_label: "Room".to_owned(),
         avatar: None,
         is_dm: false,
+        dm_user_ids: Vec::new(),
         tags,
         unread_count: 0,
         notification_count: 0,

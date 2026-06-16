@@ -1477,6 +1477,7 @@ pub struct MatrixRoomListRoom {
     pub display_name: String,
     pub avatar_mxc_uri: Option<String>,
     pub is_dm: bool,
+    pub dm_user_ids: Vec<String>,
     pub tags: MatrixRoomTags,
     pub unread_count: u64,
     pub notification_count: u64,
@@ -3263,7 +3264,7 @@ async fn matrix_room_list_snapshot_from_rooms(
             continue;
         }
 
-        collect_active_member_profiles(&room, &mut user_profiles).await;
+        let active_user_ids = collect_active_member_profiles(&room, &mut user_profiles).await;
 
         let room_id = room.room_id().to_string();
         let display_name = room
@@ -3292,11 +3293,23 @@ async fn matrix_room_list_snapshot_from_rooms(
         let parent_space_ids = matrix_parent_space_ids(&room).await;
         let tags = matrix_room_tags(&room).await;
 
+        let is_dm = room.is_dm();
+        let own_user_id = room.own_user_id().to_string();
+        let dm_user_ids = if is_dm {
+            active_user_ids
+                .into_iter()
+                .filter(|user_id| user_id != &own_user_id)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         snapshot.rooms.push(matrix_room_list_room_from_counts(
             room_id,
             display_name,
             room.avatar_url().map(|uri| uri.to_string()),
-            room.is_dm(),
+            is_dm,
+            dm_user_ids,
             tags,
             notification_count,
             highlight_count,
@@ -3311,12 +3324,14 @@ async fn matrix_room_list_snapshot_from_rooms(
 async fn collect_active_member_profiles(
     room: &matrix_sdk::Room,
     user_profiles: &mut BTreeMap<String, MatrixUserProfile>,
-) {
+) -> Vec<String> {
     let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else {
-        return;
+        return Vec::new();
     };
+    let mut user_ids = Vec::new();
     for member in members {
         let user_id = member.user_id().to_string();
+        user_ids.push(user_id.clone());
         user_profiles
             .entry(user_id.clone())
             .or_insert_with(|| MatrixUserProfile {
@@ -3325,6 +3340,9 @@ async fn collect_active_member_profiles(
                 avatar_mxc_uri: member.avatar_url().map(ToString::to_string),
             });
     }
+    user_ids.sort();
+    user_ids.dedup();
+    user_ids
 }
 
 async fn matrix_invite_previews_from_rooms(
@@ -3381,6 +3399,7 @@ fn matrix_room_list_room_from_counts(
     display_name: String,
     avatar_mxc_uri: Option<String>,
     is_dm: bool,
+    dm_user_ids: Vec<String>,
     tags: MatrixRoomTags,
     notification_count: u64,
     highlight_count: u64,
@@ -3392,6 +3411,7 @@ fn matrix_room_list_room_from_counts(
         display_name,
         avatar_mxc_uri,
         is_dm,
+        dm_user_ids,
         tags,
         unread_count,
         notification_count,
@@ -3738,6 +3758,7 @@ mod tests {
             "Room".to_owned(),
             None,
             true,
+            vec!["@alice:example.invalid".to_owned()],
             MatrixRoomTags::default(),
             4,
             2,
@@ -3765,6 +3786,7 @@ mod tests {
             "Room".to_owned(),
             None,
             false,
+            Vec::new(),
             tags.clone(),
             0,
             0,

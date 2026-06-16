@@ -35,8 +35,10 @@ describe("desktop model", () => {
       {
         room_id: "!room-a:example.invalid",
         display_name: "Alpha room",
+        display_label: "Alpha room",
         avatar: null,
         is_dm: false,
+        dm_user_ids: [],
         tags: { favourite: { order: "0.25" }, low_priority: null },
         parent_space_ids: ["!space-a:example.invalid"],
         unread_count: 5
@@ -44,17 +46,21 @@ describe("desktop model", () => {
       {
         room_id: "!global-room:example.invalid",
         display_name: "Global room",
+        display_label: "Global room",
         avatar: null,
         is_dm: false,
+        dm_user_ids: [],
         tags: { favourite: null, low_priority: null },
         parent_space_ids: [],
         unread_count: 2
       },
       {
         room_id: "!dm-a:example.invalid",
-        display_name: "Direct chat",
+        display_name: "Direct upstream",
+        display_label: "Direct local",
         avatar: null,
         is_dm: true,
+        dm_user_ids: ["@direct:example.invalid"],
         tags: { favourite: null, low_priority: null },
         parent_space_ids: ["!space-a:example.invalid"],
         unread_count: 3
@@ -76,6 +82,7 @@ describe("desktop model", () => {
     expect(sidebar.global_dms.map((room) => room.room_id)).toEqual([
       "!dm-a:example.invalid"
     ]);
+    expect(sidebar.global_dms[0]?.display_name).toBe("Direct local");
   });
 
   test("room list sections are derived from Rust-owned tags and DM classification", () => {
@@ -388,8 +395,10 @@ function roomSummary(
   return {
     room_id: roomId,
     display_name: displayName,
+    display_label: displayName,
     avatar: null,
     is_dm: isDm,
+    dm_user_ids: isDm ? [`@${roomId.replace(/^!/, "")}`] : [],
     tags,
     parent_space_ids: [],
     unread_count: 0

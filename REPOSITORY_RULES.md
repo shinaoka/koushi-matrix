@@ -261,6 +261,10 @@ conflict is being resolved.
 - Core and adapters return machine-readable kinds, codes, and structured
   non-secret data. They do not return English/Japanese prose for the UI to
   display, except for debug/test-only diagnostics.
+- Rust-projected identity fields such as `display_label` are dynamic room/user
+  data, not localized product prose. They must resolve from real alias,
+  upstream, profile, MXID, or room-id data rather than generic hardcoded labels
+  such as `Member`.
 - The UI boundary is responsible for resolving message IDs to localized text.
   Accessibility labels, button labels, menu labels, empty states, dialogs,
   toasts, and validation messages are user-facing text and use the same

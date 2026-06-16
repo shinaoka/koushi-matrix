@@ -92,6 +92,11 @@ Crate responsibilities:
   including Rust-projected member display labels, role facts, and power facts,
   and dispatches typed commands only; it must not decide whether a user can edit
   settings, edit roles, or moderate members locally.
+  Room list/title labels are also Rust projections: `RoomSummary.display_label`
+  is the normal display value for room headers, sidebar entries, forward/search
+  metadata, space child rows, and native attention labels. `display_name` stays
+  the upstream/original room name, and one-to-one DM identity is supplied by
+  `dm_user_ids` rather than inferred from text in React.
   Core Batch A0 ownership also lives in this crate: local encryption /
   credential-store health, native attention candidates and capabilities,
   Japanese/CJK display/search policy, and backup restore scope are
@@ -508,6 +513,9 @@ allowed UI metadata: a safe room display label, notification kind
 (`mention`, `dm`, or `message`), unread notification/highlight counts, and the
 coarse unread total. It must not contain message bodies, sender identifiers,
 room IDs, event IDs, transaction IDs, raw SDK errors, or secrets.
+The safe room label is the Rust-projected `RoomSummary.display_label`; alias or
+profile relabeling refreshes that candidate label inside the reducer without
+serializing room identity in the native attention candidate.
 
 The Tauri adapter maps that transport-neutral surface to platform capabilities
 such as OS notifications, badge counts, and window-title updates. The redacted

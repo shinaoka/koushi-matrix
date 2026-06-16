@@ -1496,7 +1496,7 @@ export function App() {
           />
         ) : (
           <TimelinePane
-            activeRoomName={activeRoom?.display_name ?? t("room.noRoomSelected")}
+            activeRoomName={activeRoom?.display_label ?? t("room.noRoomSelected")}
             composerDraft={composerDraft}
             composerMode={composerModeProp(snapshot.state.timeline.composer.mode)}
             mentionIntent={composerMentions}
@@ -3303,7 +3303,7 @@ function pinnedEventsForRoom(
 function forwardDestinationsFromSnapshot(snapshot: DesktopSnapshot): TimelineForwardDestination[] {
   return snapshot.state.rooms.map((room) => ({
     room_id: room.room_id,
-    display_name: room.display_name
+    display_name: room.display_label
   }));
 }
 
@@ -3421,7 +3421,7 @@ function SearchResults({
               >
                 <span dir="auto">{highlight(result.snippet, result.highlights)}</span>
                 <span className="result-meta">
-                  <span dir="auto">{room?.display_name ?? result.room_id}</span> ·{" "}
+                  <span dir="auto">{room?.display_label ?? result.room_id}</span> ·{" "}
                   {matchFieldLabel(result.match_field)}
                 </span>
               </button>
@@ -4034,7 +4034,7 @@ export function ContextualRightPanel({
               ? () =>
                   onInviteUser(
                     activeRoom.room_id,
-                    t("dialog.invitePeopleTitle", { name: activeRoom.display_name })
+                    t("dialog.invitePeopleTitle", { name: activeRoom.display_label })
                   )
               : undefined
           }

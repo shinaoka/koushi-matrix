@@ -179,6 +179,12 @@ Rules:
    `user_id -> display_label` values to already-loaded rows by matching raw
    identity fields, but it must not resolve aliases, inspect `local_aliases`,
    or invent fallback labels locally.
+   Room title surfaces use `RoomSummary.display_label`, not `display_name`.
+   DM room labels resolve in Rust from `dm_user_ids` through local alias,
+   upstream room name, profile/own-profile, then MXID; non-DM room labels use
+   trimmed upstream room name, then room id. `display_label` is room/user data
+   and is not a place for catalog prose or generic English fallbacks such as
+   `Member`. React must not infer DM targets from room titles.
    Read-receipt reader avatars use the same boundary: `AppState.live_signals`
    carries Rust-resolved reader labels, avatar DTOs, read timestamps, capped
    reader ordering, and overflow counts; React must not resolve reader profiles

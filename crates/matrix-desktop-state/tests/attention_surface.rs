@@ -18,8 +18,10 @@ fn room(
     RoomSummary {
         room_id: room_id.to_owned(),
         display_name: display_name.to_owned(),
+        display_label: display_name.to_owned(),
         avatar: None,
         is_dm,
+        dm_user_ids: Vec::new(),
         tags: RoomTags::default(),
         unread_count,
         notification_count,
@@ -136,6 +138,52 @@ fn native_attention_candidate_prioritizes_mentions_dm_then_messages_and_badges()
         })
     );
     assert_eq!(state.dispatch, NativeAttentionDispatchState::Idle);
+}
+
+#[test]
+fn native_attention_candidate_uses_projected_room_display_label() {
+    let mut dm = room("!dm:example.invalid", "Alice Upstream", true, 3, 3, 0);
+    dm.display_label = "Alice Local".to_owned();
+
+    let state = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &[dm],
+        active_room_id: None,
+        muted_room_ids: &[],
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities: available_capabilities(),
+    });
+
+    assert_eq!(
+        state.summary.candidate,
+        Some(NativeAttentionCandidate {
+            room_display_name: "Alice Local".to_owned(),
+            kind: RoomAttentionKind::Dm,
+            unread_count: 3,
+            highlight_count: 0,
+        })
+    );
+}
+
+#[test]
+fn native_attention_candidate_serialization_omits_room_identity() {
+    let state = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &[room("!dm:example.invalid", "Alice", true, 3, 3, 0)],
+        active_room_id: None,
+        muted_room_ids: &[],
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities: available_capabilities(),
+    });
+
+    let value = serde_json::to_value(state).expect("serialize native attention");
+    let candidate = value["summary"]["candidate"]
+        .as_object()
+        .expect("candidate object");
+
+    assert!(!candidate.contains_key("room_id"));
 }
 
 #[test]

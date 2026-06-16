@@ -712,8 +712,10 @@ mod tests {
         state.rooms.push(RoomSummary {
             room_id: "!room:matrix.org".to_owned(),
             display_name: "Room".to_owned(),
+            display_label: "Room".to_owned(),
             avatar: Some(room_avatar),
             is_dm: false,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 2,
             notification_count: 2,

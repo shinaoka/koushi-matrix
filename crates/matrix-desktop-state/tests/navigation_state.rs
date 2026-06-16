@@ -1,9 +1,11 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, RoomSummary, RoomTags,
+    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState,
+    NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomSummary, RoomTags,
     SessionInfo, SessionState, SpaceSummary, ThreadPaneState, TimelinePaneState, UiEvent,
-    compose_sidebar, reduce,
+    compose_sidebar, native_attention_state_from_rooms, reduce,
 };
 use serde_json::json;
+use std::collections::BTreeMap;
 
 fn session_info() -> SessionInfo {
     SessionInfo {
@@ -41,8 +43,10 @@ fn rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
+            display_label: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 5,
             notification_count: 5,
@@ -52,8 +56,10 @@ fn rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "dm-a".to_owned(),
             display_name: "Alice".to_owned(),
+            display_label: "Alice".to_owned(),
             avatar: None,
             is_dm: true,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 3,
             notification_count: 3,
@@ -63,8 +69,10 @@ fn rooms() -> Vec<RoomSummary> {
         RoomSummary {
             room_id: "global-room".to_owned(),
             display_name: "Global Room".to_owned(),
+            display_label: "Global Room".to_owned(),
             avatar: None,
             is_dm: false,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 2,
             notification_count: 2,
@@ -72,6 +80,121 @@ fn rooms() -> Vec<RoomSummary> {
             parent_space_ids: vec![],
         },
     ]
+}
+
+#[test]
+fn room_summary_serializes_projected_label_and_dm_identity_contract() {
+    let room = RoomSummary {
+        room_id: "dm-a".to_owned(),
+        display_name: "Alice Upstream".to_owned(),
+        display_label: "Alice Upstream".to_owned(),
+        avatar: None,
+        is_dm: true,
+        dm_user_ids: Vec::new(),
+        tags: RoomTags::default(),
+        unread_count: 3,
+        notification_count: 3,
+        highlight_count: 0,
+        parent_space_ids: Vec::new(),
+    };
+
+    let value = serde_json::to_value(&room).expect("serialize room summary");
+
+    assert_eq!(value["display_label"], json!("Alice Upstream"));
+    assert_eq!(value["dm_user_ids"], json!([]));
+}
+
+#[test]
+fn room_list_update_projects_dm_room_display_labels_from_aliases() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasesLoaded {
+            aliases: BTreeMap::from([(
+                "@alice:example.invalid".to_owned(),
+                "Alice Local".to_owned(),
+            )]),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![RoomSummary {
+                room_id: "dm-a".to_owned(),
+                display_name: "Alice Upstream".to_owned(),
+                display_label: "Alice Upstream".to_owned(),
+                avatar: None,
+                is_dm: true,
+                dm_user_ids: vec!["@alice:example.invalid".to_owned()],
+                tags: RoomTags::default(),
+                unread_count: 3,
+                notification_count: 3,
+                highlight_count: 0,
+                parent_space_ids: Vec::new(),
+            }],
+        },
+    );
+
+    let room = state.rooms.first().expect("projected room");
+    let value = serde_json::to_value(room).expect("serialize room summary");
+
+    assert_eq!(room.display_name, "Alice Upstream");
+    assert_eq!(room.display_label, "Alice Local");
+    assert_eq!(value["display_name"], json!("Alice Upstream"));
+    assert_eq!(value["display_label"], json!("Alice Local"));
+}
+
+#[test]
+fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate() {
+    let mut state = ready_state();
+    state.rooms = vec![RoomSummary {
+        room_id: "dm-a".to_owned(),
+        display_name: "Alice Upstream".to_owned(),
+        display_label: "Alice Upstream".to_owned(),
+        avatar: None,
+        is_dm: true,
+        dm_user_ids: vec!["@alice:example.invalid".to_owned()],
+        tags: RoomTags::default(),
+        unread_count: 3,
+        notification_count: 3,
+        highlight_count: 0,
+        parent_space_ids: Vec::new(),
+    }];
+    state.native_attention = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &state.rooms,
+        active_room_id: None,
+        muted_room_ids: &[],
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities: Default::default(),
+    });
+
+    let effects = reduce(
+        &mut state,
+        AppAction::LocalUserAliasUpdateRequested {
+            request_id: 64,
+            user_id: "@alice:example.invalid".to_owned(),
+            alias: Some("Alice Local".to_owned()),
+        },
+    );
+
+    assert_eq!(state.rooms[0].display_name, "Alice Upstream");
+    assert_eq!(state.rooms[0].display_label, "Alice Local");
+    assert_eq!(
+        state
+            .native_attention
+            .summary
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.room_display_name.as_str()),
+        Some("Alice Local")
+    );
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::ProfileChanged)));
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)));
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged)));
 }
 
 #[test]
@@ -165,8 +288,10 @@ fn room_list_update_clears_missing_active_space_and_room() {
             rooms: vec![RoomSummary {
                 room_id: "global-room".to_owned(),
                 display_name: "Global Room".to_owned(),
+                display_label: "Global Room".to_owned(),
                 avatar: None,
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: RoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
@@ -206,8 +331,10 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             RoomSummary {
                 room_id: "room-a".to_owned(),
                 display_name: "Room A".to_owned(),
+                display_label: "Room A".to_owned(),
                 avatar: None,
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: RoomTags::default(),
                 unread_count: 5,
                 notification_count: 5,
@@ -217,8 +344,10 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             RoomSummary {
                 room_id: "room-b".to_owned(),
                 display_name: "Room B".to_owned(),
+                display_label: "Room B".to_owned(),
                 avatar: None,
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: RoomTags::default(),
                 unread_count: 2,
                 notification_count: 2,
@@ -258,8 +387,10 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 RoomSummary {
                     room_id: "room-a".to_owned(),
                     display_name: "Room A".to_owned(),
+                    display_label: "Room A".to_owned(),
                     avatar: None,
                     is_dm: false,
+                    dm_user_ids: Vec::new(),
                     tags: RoomTags::default(),
                     unread_count: 5,
                     notification_count: 5,
@@ -269,8 +400,10 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 RoomSummary {
                     room_id: "room-b".to_owned(),
                     display_name: "Room B".to_owned(),
+                    display_label: "Room B".to_owned(),
                     avatar: None,
                     is_dm: false,
+                    dm_user_ids: Vec::new(),
                     tags: RoomTags::default(),
                     unread_count: 2,
                     notification_count: 2,
@@ -314,8 +447,10 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
         rooms: vec![RoomSummary {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
+            display_label: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 5,
             notification_count: 5,
@@ -347,8 +482,10 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             rooms: vec![RoomSummary {
                 room_id: "room-b".to_owned(),
                 display_name: "Room B".to_owned(),
+                display_label: "Room B".to_owned(),
                 avatar: None,
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: RoomTags::default(),
                 unread_count: 2,
                 notification_count: 2,
@@ -549,8 +686,10 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
         RoomSummary {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
+            display_label: "Room A".to_owned(),
             avatar: Some(avatar("mxc://example.invalid/room-a")),
             is_dm: false,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 5,
             notification_count: 5,
@@ -560,8 +699,10 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
         RoomSummary {
             room_id: "dm-a".to_owned(),
             display_name: "Alice".to_owned(),
+            display_label: "Alice".to_owned(),
             avatar: Some(avatar("mxc://example.invalid/dm-a")),
             is_dm: true,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 3,
             notification_count: 3,

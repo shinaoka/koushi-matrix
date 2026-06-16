@@ -137,8 +137,10 @@ function readySnapshot(
         {
           room_id: ROOM_ID,
           display_name: ROOM_NAME,
+          display_label: ROOM_NAME,
           avatar: null,
           is_dm: false,
+          dm_user_ids: [],
           tags: { favourite: null, low_priority: null },
           unread_count: 0,
           notification_count: 0,
@@ -456,8 +458,10 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
   snapshot.state.rooms.push({
     room_id: newRoomId,
     display_name: "Created Room",
+    display_label: "Created Room",
     avatar: null,
     is_dm: false,
+    dm_user_ids: [],
     tags: { favourite: null, low_priority: null },
     unread_count: 0,
     notification_count: 0,

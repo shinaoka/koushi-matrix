@@ -255,8 +255,10 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
         rooms: vec![RoomSummary {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
+            display_label: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 0,
             notification_count: 0,
@@ -468,8 +470,10 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
         rooms: vec![RoomSummary {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
+            display_label: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 3,
             notification_count: 3,
@@ -591,8 +595,10 @@ fn logout_clears_session_views_and_notifies_ui() {
         rooms: vec![RoomSummary {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
+            display_label: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
+            dm_user_ids: Vec::new(),
             tags: RoomTags::default(),
             unread_count: 3,
             notification_count: 3,

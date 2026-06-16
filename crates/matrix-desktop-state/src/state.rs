@@ -648,6 +648,41 @@ pub fn refresh_room_settings_member_display_projection(
     changed
 }
 
+pub fn refresh_room_summary_display_projection(
+    rooms: &mut [RoomSummary],
+    profiles: &ProfileState,
+    own_user_id: Option<&str>,
+) -> bool {
+    let mut changed = false;
+    for room in rooms {
+        let display_label = projected_room_summary_display_label(room, profiles, own_user_id);
+        if room.display_label != display_label {
+            room.display_label = display_label;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn projected_room_summary_display_label(
+    room: &RoomSummary,
+    profiles: &ProfileState,
+    own_user_id: Option<&str>,
+) -> String {
+    if room.is_dm
+        && room.dm_user_ids.len() == 1
+        && let Some(user_id) = room.dm_user_ids.first()
+    {
+        return resolve_user_display_name(profiles, user_id, Some(&room.display_name), own_user_id);
+    }
+
+    room.display_name
+        .trim()
+        .is_empty()
+        .then(|| room.room_id.clone())
+        .unwrap_or_else(|| room.display_name.trim().to_owned())
+}
+
 fn resolve_user_display_name_from_parts(
     local_aliases: &BTreeMap<String, String>,
     own_display_name: Option<&str>,
@@ -806,19 +841,41 @@ pub struct SpaceSummary {
     pub child_room_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomSummary {
     pub room_id: String,
     pub display_name: String,
+    pub display_label: String,
     #[serde(default)]
     pub avatar: Option<AvatarImage>,
     pub is_dm: bool,
+    #[serde(default)]
+    pub dm_user_ids: Vec<String>,
     #[serde(default)]
     pub tags: RoomTags,
     pub unread_count: u64,
     pub notification_count: u64,
     pub highlight_count: u64,
     pub parent_space_ids: Vec<String>,
+}
+
+impl fmt::Debug for RoomSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomSummary")
+            .field("room_id", &"RoomId(..)")
+            .field("display_name", &"RoomName(..)")
+            .field("display_label", &"DisplayLabel(..)")
+            .field("avatar", &self.avatar.as_ref().map(|_| "AvatarImage(..)"))
+            .field("is_dm", &self.is_dm)
+            .field("dm_user_ids", &self.dm_user_ids.len())
+            .field("tags", &self.tags)
+            .field("unread_count", &self.unread_count)
+            .field("notification_count", &self.notification_count)
+            .field("highlight_count", &self.highlight_count)
+            .field("parent_space_ids", &self.parent_space_ids.len())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1712,12 +1769,24 @@ pub struct NativeAttentionSummary {
     pub capabilities: NativeAttentionCapabilities,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NativeAttentionCandidate {
     pub room_display_name: String,
     pub kind: RoomAttentionKind,
     pub unread_count: u64,
     pub highlight_count: u64,
+}
+
+impl fmt::Debug for NativeAttentionCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeAttentionCandidate")
+            .field("room_display_name", &"RoomName(..)")
+            .field("kind", &self.kind)
+            .field("unread_count", &self.unread_count)
+            .field("highlight_count", &self.highlight_count)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1765,7 +1834,7 @@ pub fn native_attention_state_from_rooms(
         highlight_count += room.highlight_count;
 
         if let Some(summary) = room_attention_summary(
-            room.display_name.clone(),
+            room.display_label.clone(),
             room.is_dm,
             room.notification_count,
             room.highlight_count,

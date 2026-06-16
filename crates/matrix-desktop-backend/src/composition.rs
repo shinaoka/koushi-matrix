@@ -63,9 +63,11 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
 
             RoomSummary {
                 room_id: room.room_id,
+                display_label: room.display_name.clone(),
                 display_name: room.display_name,
                 avatar: None,
                 is_dm: room.is_dm,
+                dm_user_ids: Vec::new(),
                 tags: RoomTags::default(),
                 unread_count: room.unread_count,
                 notification_count: room.notification_count,

@@ -42,7 +42,7 @@ export function SpaceInfoPanel({
         <div className="settings-detail-list">
           {childRooms.map((room) => (
             <div className="settings-detail-row" key={room.room_id}>
-              <span dir="auto">{room.display_name}</span>
+              <span dir="auto">{room.display_label}</span>
               <small dir="auto">{room.unread_count ? t("room.unreadCount", { count: room.unread_count }) : room.room_id}</small>
             </div>
           ))}

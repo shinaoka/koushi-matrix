@@ -143,7 +143,7 @@ fn space_highlight_count(space: &SpaceSummary, rooms_by_id: &HashMap<&str, &Room
 fn room_list_item(room: &RoomSummary) -> RoomListItem {
     RoomListItem {
         room_id: room.room_id.clone(),
-        display_name: room.display_name.clone(),
+        display_name: room.display_label.clone(),
         avatar: room.avatar.clone(),
         tags: room.tags.clone(),
         unread_count: room.unread_count,

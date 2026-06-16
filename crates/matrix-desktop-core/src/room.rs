@@ -1600,16 +1600,26 @@ fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec
     snapshot
         .rooms
         .iter()
-        .map(|room| RoomSummary {
-            room_id: room.room_id.clone(),
-            display_name: room.display_name.clone(),
-            avatar: avatar_from_mxc_uri(room.avatar_mxc_uri.as_deref()),
-            is_dm: room.is_dm,
-            tags: normalize_room_tags(&room.tags),
-            unread_count: room.unread_count,
-            notification_count: room.notification_count,
-            highlight_count: room.highlight_count,
-            parent_space_ids: room.parent_space_ids.clone(),
+        .map(|room| {
+            let display_label = room
+                .display_name
+                .trim()
+                .is_empty()
+                .then(|| room.room_id.clone())
+                .unwrap_or_else(|| room.display_name.trim().to_owned());
+            RoomSummary {
+                room_id: room.room_id.clone(),
+                display_name: room.display_name.clone(),
+                display_label,
+                avatar: avatar_from_mxc_uri(room.avatar_mxc_uri.as_deref()),
+                is_dm: room.is_dm,
+                dm_user_ids: room.dm_user_ids.clone(),
+                tags: normalize_room_tags(&room.tags),
+                unread_count: room.unread_count,
+                notification_count: room.notification_count,
+                highlight_count: room.highlight_count,
+                parent_space_ids: room.parent_space_ids.clone(),
+            }
         })
         .collect()
 }
@@ -2025,6 +2035,7 @@ pub mod tests {
                     display_name: "Room 1".to_owned(),
                     avatar_mxc_uri: None,
                     is_dm: false,
+                    dm_user_ids: Vec::new(),
                     tags: MatrixRoomTags::default(),
                     unread_count: 0,
                     notification_count: 0,
@@ -2036,6 +2047,7 @@ pub mod tests {
                     display_name: "Room 2".to_owned(),
                     avatar_mxc_uri: None,
                     is_dm: false,
+                    dm_user_ids: Vec::new(),
                     tags: MatrixRoomTags::default(),
                     unread_count: 0,
                     notification_count: 0,
@@ -2095,6 +2107,7 @@ pub mod tests {
                 display_name: "Alice".to_owned(),
                 avatar_mxc_uri: None,
                 is_dm: true,
+                dm_user_ids: vec!["@alice:example.test".to_owned()],
                 tags: MatrixRoomTags::default(),
                 unread_count: 3,
                 notification_count: 3,
@@ -2121,6 +2134,7 @@ pub mod tests {
                 display_name: "General".to_owned(),
                 avatar_mxc_uri: None,
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: MatrixRoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
@@ -2145,6 +2159,7 @@ pub mod tests {
                 display_name: "General".to_owned(),
                 avatar_mxc_uri: Some("mxc://example.test/room-avatar".to_owned()),
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: MatrixRoomTags::default(),
                 unread_count: 0,
                 notification_count: 0,
@@ -2306,6 +2321,7 @@ pub mod tests {
                 display_name: "Room 1".to_owned(),
                 avatar_mxc_uri: None,
                 is_dm: false,
+                dm_user_ids: Vec::new(),
                 tags: MatrixRoomTags {
                     favourite: Some(MatrixRoomTagInfo {
                         order: Some("0.25".to_owned()),
