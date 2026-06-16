@@ -1,9 +1,9 @@
 # Media And Files Phase A/B Implementation Plan
 
 Date: 2026-06-15
-Status: Phase A Rust/headless and Phase B headless GUI wiring implemented;
-local homeserver media gate pending in this environment because Conduit is not
-installed.
+Status: Phase A Rust/headless and Phase B headless GUI wiring implemented.
+Caption follow-up for #34 is implemented with local core and Linux GUI gates
+passing on 2026-06-16.
 
 > **For agentic workers:** implement Phase A before any GUI work. Use mini
 > agents only for bounded investigation or isolated patches; the main agent
@@ -26,11 +26,15 @@ infer Matrix media semantics.
   - `TimelineItem.media` DTO and SDK projection.
   - `TimelineCommand::UploadAndSendMedia`.
   - upload progress and media download CoreEvents.
-  - private-data-free headless QA tokens: `send_media=ok` and `recv_media=ok`.
+  - media captions as optional `FormattedMessageDraft` on a single media event.
+  - private-data-free headless QA tokens: `send_media=ok`, `media_caption=ok`,
+    and `recv_media=ok`.
 - Phase B is GUI:
   - attach control, file picker, progress UI, image/file bubbles,
     click-to-open/download, and i18n copy.
-  - headless browser fixture proving the GUI invokes the Rust command.
+  - headless browser fixture proving the GUI stages one attachment, sends the
+    Composer draft as the media caption, and does not dispatch a separate
+    text-event fallback.
 
 ## Rules
 
@@ -43,6 +47,9 @@ infer Matrix media semantics.
 - CoreEvents never carry downloaded bytes. Download completion reports
   `byte_count` and correlation IDs only.
 - Local homeserver QA uses synthetic data and prints only success tokens.
+- Multi-attachment semantics are intentionally narrow until the upload UX
+  issue owns batching: one staged attachment per Send; selecting another file
+  replaces the staged attachment.
 
 ## Tasks
 
@@ -58,6 +65,8 @@ infer Matrix media semantics.
   emit byte-count-only completion events.
 - [x] Extend headless local QA with a `media` scenario and the documented
   private-data-free tokens.
+- [x] Carry optional media captions through the outbound media request and
+  assert the `media_caption=ok` local core token.
 - [x] Update TypeScript wire types and checked-in `coreEvents.generated.json`.
 - [x] Update architecture/QA docs and operational notes with lessons learned.
 
@@ -70,8 +79,12 @@ infer Matrix media semantics.
   adapter.
 - [x] Add a Composer file input usable by headless Playwright without opening a
   native file dialog.
+- [x] Stage one attachment in the Composer so text entered before Send becomes
+  the single media event caption instead of a separate `send_text`.
 - [x] Render `TimelineItem.media` in `TimelineView` from Rust-owned DTOs only,
   including upload progress keyed by the local transaction id.
+- [x] Render media captions from `TimelineItem.body` / `TimelineItem.formatted`
+  below the media metadata row.
 - [x] Keep media source details private to Rust/DTO contracts: the GUI does not
   render MXC URIs, encrypted media keys/hashes, or downloaded bytes.
 - [x] Update headless app harness responses for `upload_media` and
@@ -95,7 +108,16 @@ Behavioral gate when local homeserver binaries are available:
 npm --prefix apps/desktop run qa:headless-local -- --server=both --scenario=media
 ```
 
-2026-06-15 local verification note: `node scripts/desktop-headless-local-qa.mjs
---check-tools` fails in this environment with `conduit is not installed or not
-runnable with --version`, so the live local homeserver media scenario remains
-pending until the homeserver binaries are available.
+2026-06-16 local verification note: Conduit/Tuwunel tools are available in this
+environment. The focused caption follow-up passed with:
+
+```bash
+PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+  npm --prefix apps/desktop run qa:headless-local -- \
+  --server=conduit --scenario=media --core --core-backend=both --timeout-ms=240000
+
+PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+  npm --prefix apps/desktop run qa:linux-gui -- \
+  --scenario=local-media --server=conduit --skip-build \
+  --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000
+```

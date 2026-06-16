@@ -981,6 +981,15 @@ fn without_relation_content_from_formatted_draft(
     content
 }
 
+fn media_caption_content_from_draft(draft: &FormattedMessageDraft) -> TextMessageEventContent {
+    match &draft.formatted_body {
+        Some(formatted_body) => {
+            TextMessageEventContent::html(draft.plain_body.clone(), formatted_body.clone())
+        }
+        None => TextMessageEventContent::plain(draft.plain_body.clone()),
+    }
+}
+
 fn ruma_mentions_from_intent(intent: &MentionIntent) -> Option<Mentions> {
     let user_ids = intent
         .user_ids()
@@ -1893,17 +1902,17 @@ impl TimelineActor {
             }
         };
 
+        let caption_mentions = request
+            .caption
+            .as_ref()
+            .and_then(|caption| ruma_mentions_from_intent(&caption.mentions));
         let config = AttachmentConfig::new()
             .txn_id(matrix_sdk::ruma::OwnedTransactionId::from(
                 client_txn_id.clone(),
             ))
             .info(attachment_info_for_upload(&request))
-            .caption(
-                request
-                    .caption
-                    .as_deref()
-                    .map(TextMessageEventContent::plain),
-            );
+            .caption(request.caption.as_ref().map(media_caption_content_from_draft))
+            .mentions(caption_mentions);
 
         match room
             .send_queue()

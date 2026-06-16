@@ -2531,6 +2531,10 @@ button {
   background: var(--surface-hover);
 }
 
+.message-media + .message-body {
+  margin-top: 8px;
+}
+
 .message-media-icon {
   color: var(--brand);
 }
@@ -2630,6 +2634,37 @@ mark {
   gap: 6px;
   min-height: 32px;
   padding: 7px 10px 0;
+}
+
+.composer-attachment-preview {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 10px 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.composer-attachment-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.composer-attachment-label strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mention-pill {

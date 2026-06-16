@@ -66,7 +66,8 @@ use matrix_desktop_state::{
     ReplyQuoteState, RoomAttentionKind, RoomManagementOperationKind, RoomManagementOperationState,
     RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
     SessionInfo, SessionState, TrustOperationFailureKind, VerificationFlowState,
-    VerificationTarget, native_attention_state_from_rooms, resolve_composer_key_action,
+    VerificationTarget, build_formatted_message_draft, native_attention_state_from_rooms,
+    resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -416,7 +417,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "pinned_state=ok",
             "unpin_event=ok",
         ],
-        QaStage::Media => &["send_media=ok", "recv_media=ok"],
+        QaStage::Media => &["send_media=ok", "media_caption=ok", "recv_media=ok"],
         QaStage::LiveSignals => &[
             "read_receipt=ok",
             "fully_read=ok",
@@ -480,6 +481,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "thread_recv=ok",
         "thread_paginate=end_reached",
         "send_media=ok",
+        "media_caption=ok",
         "recv_media=ok",
         "read_receipt=ok",
         "fully_read=ok",
@@ -6813,6 +6815,7 @@ async fn run_media_stage(
     key_b: &TimelineKey,
 ) -> Result<(), String> {
     const MEDIA_BYTES: &[u8] = b"matrix-desktop synthetic media fixture";
+    const MEDIA_CAPTION: &str = "matrix desktop media caption";
 
     let media_txn = "qa-phase15-media-txn".to_owned();
     let send_media_id = conn_a.next_request_id();
@@ -6826,7 +6829,10 @@ async fn run_media_stage(
                 mime_type: "application/octet-stream".to_owned(),
                 bytes: MEDIA_BYTES.to_vec(),
                 kind: UploadMediaKind::File,
-                caption: None,
+                caption: Some(build_formatted_message_draft(
+                    MEDIA_CAPTION,
+                    MentionIntent::default(),
+                )),
             },
         }))
         .await
@@ -6850,6 +6856,10 @@ async fn run_media_stage(
     if media.kind != matrix_desktop_core::event::TimelineMediaKind::File {
         return Err("media item kind mismatch".to_owned());
     }
+    if media_item.body.as_deref() != Some(MEDIA_CAPTION) {
+        return Err("media caption did not project onto timeline item body".to_owned());
+    }
+    println!("media_caption=ok");
     let media_event_id = match &media_item.id {
         matrix_desktop_core::event::TimelineItemId::Event { event_id } => event_id.clone(),
         matrix_desktop_core::event::TimelineItemId::Transaction { .. }
@@ -7758,6 +7768,7 @@ mod tests {
                     synthetic_id: "skip".to_owned(),
                 },
                 sender: None,
+                sender_label: None,
                 body: Some("first item".to_owned()),
                 timestamp_ms: None,
                 in_reply_to_event_id: None,
@@ -7780,6 +7791,7 @@ mod tests {
                     event_id: "$thread:test".to_owned(),
                 },
                 sender: Some("@b:test".to_owned()),
+                sender_label: None,
                 body: Some("Phase 5 QA thread reply from B".to_owned()),
                 timestamp_ms: None,
                 in_reply_to_event_id: Some("$root:test".to_owned()),
@@ -7813,6 +7825,7 @@ mod tests {
                 synthetic_id: "placeholder".to_owned(),
             },
             sender: None,
+            sender_label: None,
             body: Some("Phase 5 QA message 1".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: None,
@@ -7844,6 +7857,7 @@ mod tests {
                 synthetic_id: "thread-reply".to_owned(),
             },
             sender: Some("@b:test".to_owned()),
+            sender_label: None,
             body: Some("Phase 5 QA thread reply from B".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: Some("$root:test".to_owned()),
@@ -7886,6 +7900,7 @@ mod tests {
                 event_id: event_id.to_owned(),
             },
             sender: Some("@member:test".to_owned()),
+            sender_label: None,
             body: body.map(str::to_owned),
             timestamp_ms: None,
             in_reply_to_event_id: in_reply_to_event_id.map(str::to_owned),
@@ -7910,6 +7925,7 @@ mod tests {
         let summary = ThreadSummaryDto {
             reply_count: 1,
             latest_sender: None,
+            latest_sender_label: None,
             latest_body_preview: None,
             latest_timestamp_ms: None,
         };
@@ -7948,6 +7964,7 @@ mod tests {
             Some(ThreadSummaryDto {
                 reply_count: 1,
                 latest_sender: None,
+                latest_sender_label: None,
                 latest_body_preview: None,
                 latest_timestamp_ms: None,
             }),
@@ -8012,6 +8029,7 @@ mod tests {
             Some(ThreadSummaryDto {
                 reply_count: 1,
                 latest_sender: None,
+                latest_sender_label: None,
                 latest_body_preview: None,
                 latest_timestamp_ms: None,
             }),
@@ -8104,6 +8122,7 @@ mod tests {
                 synthetic_id: "thread-reply".to_owned(),
             },
             sender: Some("@b:test".to_owned()),
+            sender_label: None,
             body: Some("Phase 5 QA thread reply from B".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: Some("$root:test".to_owned()),
@@ -8137,6 +8156,7 @@ mod tests {
                 synthetic_id: "placeholder".to_owned(),
             },
             sender: None,
+            sender_label: None,
             body: Some("Phase 5 QA message 1".to_owned()),
             timestamp_ms: None,
             in_reply_to_event_id: None,
@@ -8197,6 +8217,7 @@ mod tests {
                             transaction_id: "sdk-txn-1".to_owned(),
                         },
                         sender: Some("@alice:test".to_owned()),
+                        sender_label: None,
                         body: Some("Phase 5 QA message 1".to_owned()),
                         timestamp_ms: None,
                         in_reply_to_event_id: None,
@@ -8455,6 +8476,7 @@ mod tests {
                 "thread_recv=ok",
                 "thread_paginate=end_reached",
                 "send_media=ok",
+                "media_caption=ok",
                 "recv_media=ok",
                 "read_receipt=ok",
                 "fully_read=ok",
@@ -8639,6 +8661,7 @@ mod tests {
                 "room_space=ok",
                 "timeline=ok",
                 "send_media=ok",
+                "media_caption=ok",
                 "recv_media=ok",
                 "restore_cleanup=ok",
             ]
@@ -8745,6 +8768,7 @@ mod tests {
                 "thread_recv=ok",
                 "thread_paginate=end_reached",
                 "send_media=ok",
+                "media_caption=ok",
                 "recv_media=ok",
                 "read_receipt=ok",
                 "fully_read=ok",

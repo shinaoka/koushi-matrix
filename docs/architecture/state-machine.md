@@ -392,6 +392,17 @@ stateDiagram-v2
   because those are required to send the media. Those fields are private
   visible-content payloads: `Debug`, QA output, logs, and errors must redact
   them.
+- Media captions are part of the single media event, not a follow-up text
+  event. Tauri converts the Composer draft into an optional
+  `FormattedMessageDraft` on `UploadMediaRequest.caption`; the core maps that
+  to Matrix caption-capable attachment content (`body` / optional
+  `formatted_body`) on the same `m.image`, `m.file`, `m.video`, or `m.audio`
+  event. Incoming media captions are projected back through
+  `TimelineItem.body` / `TimelineItem.formatted` beside `TimelineItem.media`.
+- The current GUI staging contract accepts one attachment per send. Selecting a
+  second file replaces the staged attachment; multi-attachment batching is a
+  separate Rust-owned upload workflow and must not be emulated by sending one
+  media event plus separate text events in React.
 - `MediaUploadProgress` carries only request/transaction correlation, progress,
   index, and safe media source metadata. It never carries filenames, captions,
   bytes, Matrix room ids, or raw SDK errors.
@@ -410,7 +421,8 @@ stateDiagram-v2
   not parse Matrix event content, infer encryption details, render MXC URIs, or
   own upload/download success/failure state.
 - The local core `media` QA scenario is the Phase A proof:
-  `send_media=ok recv_media=ok`. Its output must remain private-data-free.
+  `send_media=ok media_caption=ok recv_media=ok`. Its output must remain
+  private-data-free.
 
 ## Timeline Formatted Message Projection
 

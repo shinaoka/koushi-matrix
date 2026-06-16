@@ -7,6 +7,7 @@ import {
   Code2,
   Compass,
   Edit3,
+  FileText,
   Hash,
   HelpCircle,
   Home,
@@ -328,6 +329,7 @@ export function App() {
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerDraft, setComposerDraft] = useState("");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
+  const [stagedAttachment, setStagedAttachment] = useState<File | null>(null);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginDeviceName, setLoginDeviceName] = useState("Matrix Desktop");
@@ -1100,7 +1102,14 @@ export function App() {
   async function sendText() {
     const roomId = snapshot?.state.timeline.room_id;
     const body = composerDraft;
-    if (!roomId || !body.trim()) {
+    if (!roomId || (!body.trim() && !stagedAttachment)) {
+      return;
+    }
+    if (stagedAttachment) {
+      await uploadMediaFile(stagedAttachment, body);
+      setStagedAttachment(null);
+      setComposerDraft("");
+      setComposerMentions(EMPTY_MENTION_INTENT);
       return;
     }
     // Reply semantics are Rust-owned: dispatch sendReply when the composer is
@@ -1146,7 +1155,7 @@ export function App() {
     setComposerMentions((mentions) => pruneMentionIntentForDraft(mentions, value));
   }
 
-  async function uploadMediaFile(file: File) {
+  async function uploadMediaFile(file: File, caption = "") {
     const roomId = snapshot?.state.timeline.room_id;
     if (!roomId || !isTauriRuntime()) {
       return;
@@ -1160,7 +1169,8 @@ export function App() {
       roomId,
       filename: file.name || "attachment",
       mimeType: file.type || "application/octet-stream",
-      bytes
+      bytes,
+      caption
     });
   }
 
@@ -1509,12 +1519,14 @@ export function App() {
             searchResults={searchResults}
             showSearchResults={effectiveRightPanelMode !== "search"}
             snapshot={snapshot}
+            stagedAttachment={stagedAttachment}
             onCancelReply={() => {
               void cancelComposerReply();
             }}
             onAttachFile={(file) => {
-              void uploadMediaFile(file);
+              setStagedAttachment(file);
             }}
+            onClearAttachment={() => setStagedAttachment(null)}
             onComposerDraftChange={updateComposerDraft}
             onMentionIntentChange={setComposerMentions}
             onOpenThread={openThread}
@@ -3092,8 +3104,10 @@ function TimelinePane({
   searchResults,
   showSearchResults,
   snapshot,
+  stagedAttachment,
   onCancelReply,
   onAttachFile,
+  onClearAttachment,
   onComposerDraftChange,
   onMentionIntentChange,
   onEditMessage,
@@ -3118,8 +3132,10 @@ function TimelinePane({
   searchResults: SearchResult[];
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
+  stagedAttachment: File | null;
   onCancelReply: () => void;
   onAttachFile: (file: File) => void | Promise<void>;
+  onClearAttachment: () => void;
   onComposerDraftChange: (value: string) => void;
   onMentionIntentChange: (intent: MentionIntent) => void;
   onEditMessage: (message: TimelineMessage) => void;
@@ -3252,9 +3268,11 @@ function TimelinePane({
         mentionIntent={mentionIntent}
         resolveComposerKeyAction={resolveComposerKeyAction}
         roomName={activeRoomName}
+        stagedAttachment={stagedAttachment}
         value={composerDraft}
         onCancelReply={onCancelReply}
         onAttachFile={onAttachFile}
+        onClearAttachment={onClearAttachment}
         onMentionIntentChange={onMentionIntentChange}
         onSend={onSendText}
         onValueChange={onComposerDraftChange}
@@ -3548,9 +3566,11 @@ export function Composer({
   mentionIntent = EMPTY_MENTION_INTENT,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   roomName,
+  stagedAttachment = null,
   value,
   onCancelReply,
   onAttachFile = async () => undefined,
+  onClearAttachment = () => undefined,
   onMentionIntentChange = () => undefined,
   onSend,
   onValueChange
@@ -3561,9 +3581,11 @@ export function Composer({
   mentionIntent?: MentionIntent;
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   roomName: string;
+  stagedAttachment?: File | null;
   value: string;
   onCancelReply: () => void;
   onAttachFile?: (file: File) => void | Promise<void>;
+  onClearAttachment?: () => void;
   onMentionIntentChange?: (intent: MentionIntent) => void;
   onSend: () => void | Promise<void>;
   onValueChange: (value: string) => void;
@@ -3684,7 +3706,7 @@ export function Composer({
     });
     const resolverOptions = {
       autocomplete_open: autocompleteOpen,
-      send_enabled: !isSending && value.trim().length > 0
+      send_enabled: !isSending && (value.trim().length > 0 || Boolean(stagedAttachment))
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
       void resolveComposerKeyAction("main", keyEvent, resolverOptions).catch(() => undefined);
@@ -3792,6 +3814,23 @@ export function Composer({
           ))}
         </div>
       ) : null}
+      {stagedAttachment ? (
+        <div className="composer-attachment-preview">
+          <FileText size={ICON_SIZE.input} aria-hidden="true" />
+          <span className="composer-attachment-label">
+            <span>{t("composer.attachedFile")}</span>
+            <strong dir="auto">{stagedAttachment.name || t("composer.attachmentFallback")}</strong>
+          </span>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("composer.removeAttachment")}
+            onClick={onClearAttachment}
+          >
+            <X size={ICON_SIZE.small} />
+          </button>
+        </div>
+      ) : null}
       {autocompleteOpen ? (
         <div
           className="composer-autocomplete"
@@ -3862,10 +3901,10 @@ export function Composer({
           </button>
         </div>
         <button
-          className={`send-button ${value.trim() && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
+          className={`send-button ${(value.trim() || stagedAttachment) && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
           type="button"
           aria-label={isSending ? t("action.sending") : t("action.send")}
-          disabled={isSending || !value.trim()}
+          disabled={isSending || (!value.trim() && !stagedAttachment)}
           onClick={onSend}
         >
           <Send size={ICON_SIZE.input} />

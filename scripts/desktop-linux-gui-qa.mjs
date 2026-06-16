@@ -572,8 +572,13 @@ async function runLocalMediaScenario() {
 
     const baselineMediaRows = await elementCount(session.browser, ".message-media");
     const filename = `qa-media-${safeTimestamp()}.txt`;
+    const caption = `QA media caption ${safeTimestamp()}`;
     const fixturePath = join(session.runDir, filename);
     writeFileSync(fixturePath, "Matrix Desktop Linux GUI media fixture\n", "utf8");
+    const composer = await session.browser.$('textarea[aria-label="Message composer"]');
+    await composer.waitForDisplayed({ timeout: timeoutMs });
+    await composer.click();
+    await composer.setValue(caption);
     const fileInputSelector = 'input[type="file"][aria-label="Attach file input"]';
     await setSyntheticFileInput(
       session.browser,
@@ -583,6 +588,21 @@ async function runLocalMediaScenario() {
       "text/plain",
       "Matrix Desktop Linux GUI media fixture"
     );
+    await waitForDocumentText(
+      session.browser,
+      [filename],
+      timeoutMs,
+      "local GUI staged media preview"
+    );
+    const stagedMediaRows = await elementCount(session.browser, ".message-media");
+    if (stagedMediaRows !== baselineMediaRows) {
+      throw new Error(
+        `local GUI media staged attachment sent before Send: baseline=${baselineMediaRows} observed=${stagedMediaRows}`
+      );
+    }
+    const sendButton = await session.browser.$('button[aria-label="Send"]');
+    await sendButton.waitForDisplayed({ timeout: timeoutMs });
+    await sendButton.click();
     await waitForElementCountGreaterThan(
       session.browser,
       ".message-media",
@@ -590,7 +610,12 @@ async function runLocalMediaScenario() {
       timeoutMs,
       "local GUI media render"
     );
-    await waitForDocumentText(session.browser, [filename], timeoutMs, "local GUI media render");
+    await waitForDocumentText(
+      session.browser,
+      [filename, caption],
+      timeoutMs,
+      "local GUI media caption render"
+    );
 
     const downloadButton = await session.browser.$(`button[aria-label="Download ${filename}"]`);
     await downloadButton.waitForDisplayed({ timeout: timeoutMs });
@@ -604,6 +629,7 @@ async function runLocalMediaScenario() {
 
     await recordLocalGuiEvidence(session);
     console.log("gui_local_media=ok");
+    console.log("gui_local_media_caption=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -1575,7 +1601,7 @@ async function waitForTimelineViewMounted(browser, timeout) {
 async function activeRoomDiagnostics(browser) {
   return browser.execute(() => {
     const textFor = (element) =>
-      (element.textContent ?? "").replace(/\s+/g, " ").trim();
+      element ? (element.textContent ?? "").replace(/\s+/g, " ").trim() : "";
     const roomRows = Array.from(document.querySelectorAll('button[data-testid="room-item"]'));
     return {
       title: document.title,
@@ -1677,7 +1703,7 @@ async function waitForMessageSourceDialog(browser, timeout) {
 async function messageActionDiagnostics(browser) {
   return browser.execute(() => {
     const textFor = (element) =>
-      (element.textContent ?? "").replace(/\s+/g, " ").trim();
+      element ? (element.textContent ?? "").replace(/\s+/g, " ").trim() : "";
     const labelsFor = (selector) =>
       Array.from(document.querySelectorAll(selector))
         .map((element) => element.getAttribute("aria-label") ?? textFor(element))

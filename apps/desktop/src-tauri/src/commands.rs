@@ -22,8 +22,9 @@ use matrix_desktop_core::{
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
     ComposerResolverContext, ComposerSurface, DirectoryQuery, IdentityResetAuthRequest,
-    LoginRequest, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
-    RoomTagKind, SessionInfo, SettingsPatch, VerificationCancelReason,
+    LoginRequest, MentionIntent, PresenceKind, RecoveryRequest, RoomModerationAction,
+    RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch, VerificationCancelReason,
+    build_formatted_message_draft,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -843,6 +844,7 @@ pub async fn upload_media(
     filename: String,
     mime_type: String,
     bytes: Vec<u8>,
+    caption: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -864,6 +866,7 @@ pub async fn upload_media(
         filename,
         mime_type,
         bytes,
+        caption,
     ) {
         submit_core_command(state.inner(), command).await?;
     }
@@ -2325,6 +2328,7 @@ pub(crate) fn build_upload_media_command(
     filename: String,
     mime_type: String,
     bytes: Vec<u8>,
+    caption: Option<String>,
 ) -> Option<CoreCommand> {
     if bytes.is_empty() {
         return None;
@@ -2355,9 +2359,22 @@ pub(crate) fn build_upload_media_command(
             mime_type,
             bytes,
             kind,
-            caption: None,
+            caption: media_caption_from_composer_body(caption),
         },
     }))
+}
+
+fn media_caption_from_composer_body(
+    caption: Option<String>,
+) -> Option<matrix_desktop_state::FormattedMessageDraft> {
+    let caption = caption?.trim().to_owned();
+    if caption.is_empty() {
+        return None;
+    }
+    Some(build_formatted_message_draft(
+        caption,
+        MentionIntent::default(),
+    ))
 }
 
 pub(crate) fn build_download_media_command(
@@ -3653,6 +3670,7 @@ mod tests {
             "report.pdf".to_owned(),
             "application/pdf".to_owned(),
             vec![1, 2, 3, 4],
+            None,
         )
         .expect("upload_media should build a command")
         {
@@ -3688,6 +3706,7 @@ mod tests {
             "photo.png".to_owned(),
             "image/png".to_owned(),
             vec![9],
+            Some("single **event** caption".to_owned()),
         )
         .expect("image upload_media should build a command")
         {
@@ -3698,6 +3717,12 @@ mod tests {
                         width: None,
                         height: None
                     }
+                );
+                let caption = request.caption.expect("caption should be preserved");
+                assert_eq!(caption.plain_body, "single **event** caption");
+                assert_eq!(
+                    caption.formatted_body.as_deref(),
+                    Some("single <strong>event</strong> caption")
                 );
             }
             other => panic!("unexpected command: {other:?}"),
@@ -4602,6 +4627,7 @@ mod tests {
                 "empty.bin".to_owned(),
                 "application/octet-stream".to_owned(),
                 vec![],
+                None,
             )
             .is_none()
         );
@@ -5448,6 +5474,7 @@ mod tests {
             "secret-filename.pdf".to_owned(),
             "application/pdf".to_owned(),
             b"secret media bytes".to_vec(),
+            Some("secret media caption".to_owned()),
         )
         .expect("upload_media should build a command");
         let download = build_download_media_command(

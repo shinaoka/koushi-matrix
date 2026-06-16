@@ -1822,8 +1822,14 @@ export function TimelineItemRow({
           ) : null}
         </div>
         {replyQuoteContent}
-        {bodyContent}
-        {mediaContent}
+        {mediaContent ? (
+          <>
+            {mediaContent}
+            {bodyContent}
+          </>
+        ) : (
+          bodyContent
+        )}
         {transactionId && sendStateKind === "notSent" ? (
           <div className="message-send-actions">
             <button className="message-send-action" type="button" onClick={submitRetrySend}>

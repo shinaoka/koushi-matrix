@@ -4,10 +4,10 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    ActivityMarkReadTarget, ActivityTab, DirectoryQuery, IdentityResetAuthRequest,
-    JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest, MentionIntent,
-    NativeAttentionState, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
-    RoomTagKind, SettingsPatch, VerificationCancelReason, VerificationTarget,
+    ActivityMarkReadTarget, ActivityTab, DirectoryQuery, FormattedMessageDraft,
+    IdentityResetAuthRequest, JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest,
+    MentionIntent, NativeAttentionState, PresenceKind, RecoveryRequest, RoomModerationAction,
+    RoomSettingChange, RoomTagKind, SettingsPatch, VerificationCancelReason, VerificationTarget,
 };
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
@@ -962,7 +962,7 @@ pub struct UploadMediaRequest {
     pub mime_type: String,
     pub bytes: Vec<u8>,
     pub kind: UploadMediaKind,
-    pub caption: Option<String>,
+    pub caption: Option<FormattedMessageDraft>,
 }
 
 impl fmt::Debug for UploadMediaRequest {
@@ -1445,7 +1445,10 @@ mod tests {
                     width: Some(2),
                     height: Some(2),
                 },
-                caption: Some("private caption".to_owned()),
+                caption: Some(matrix_desktop_state::build_formatted_message_draft(
+                    "private caption",
+                    MentionIntent::default(),
+                )),
             },
         };
 

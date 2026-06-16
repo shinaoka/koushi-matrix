@@ -47,6 +47,8 @@ export type MessageId =
   | "auth.signIn"
   | "auth.supportedRecoveryMethods"
   | "auth.usernameOrMatrixId"
+  | "composer.attachedFile"
+  | "composer.attachmentFallback"
   | "composer.attachFile"
   | "composer.attachFileInput"
   | "composer.bold"
@@ -60,6 +62,7 @@ export type MessageId =
   | "composer.messageComposer"
   | "composer.placeholder"
   | "composer.replying"
+  | "composer.removeAttachment"
   | "composer.cancelReply"
   | "composer.selectedMentions"
   | "context.editMessage"
@@ -631,6 +634,8 @@ const en: Catalog = {
   "auth.signIn": "Sign in",
   "auth.supportedRecoveryMethods": "Supported recovery methods",
   "auth.usernameOrMatrixId": "Username or Matrix ID",
+  "composer.attachedFile": "Attached file",
+  "composer.attachmentFallback": "Attachment",
   "composer.attachFile": "Attach file",
   "composer.attachFileInput": "Attach file input",
   "composer.bold": "Bold",
@@ -644,6 +649,7 @@ const en: Catalog = {
   "composer.messageComposer": "Message composer",
   "composer.placeholder": "Message {roomName}",
   "composer.replying": "Replying",
+  "composer.removeAttachment": "Remove attachment",
   "composer.cancelReply": "Cancel reply",
   "composer.selectedMentions": "Selected mentions",
   "context.editMessage": "Edit",
@@ -1125,6 +1131,8 @@ const ja: Catalog = {
   "auth.signIn": "サインイン",
   "auth.supportedRecoveryMethods": "対応している復旧方法",
   "auth.usernameOrMatrixId": "ユーザー名またはMatrix ID",
+  "composer.attachedFile": "添付ファイル",
+  "composer.attachmentFallback": "添付",
   "composer.attachFile": "ファイルを添付",
   "composer.attachFileInput": "ファイル添付入力",
   "composer.bold": "太字",
@@ -1138,6 +1146,7 @@ const ja: Catalog = {
   "composer.messageComposer": "メッセージ入力欄",
   "composer.placeholder": "{roomName}にメッセージ",
   "composer.replying": "返信中",
+  "composer.removeAttachment": "添付を削除",
   "composer.cancelReply": "返信をキャンセル",
   "composer.selectedMentions": "選択中のメンション",
   "context.editMessage": "編集",

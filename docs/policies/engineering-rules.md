@@ -153,7 +153,9 @@ Rules:
    filenames, captions, bytes, MXC URIs from real accounts, encrypted media
    keys/hashes, room IDs, event IDs, or raw SDK errors. Download effects emit
    byte counts or app-owned handles only; downloaded bytes stay in Rust-owned
-   effects or platform ports.
+   effects or platform ports. Media captions belong to the Rust-owned media
+   upload request and incoming timeline projection; GUI code must not implement
+   caption semantics by sending a separate `m.text` event after media upload.
 14. Profile/avatar diagnostics are metadata-minimized. Display names and avatar
    bytes may cross only the typed command or snapshot boundaries needed for the
    UI; normal `Debug`, QA logs, errors, window-title tokens, and issue evidence

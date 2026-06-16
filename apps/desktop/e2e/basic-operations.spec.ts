@@ -2427,7 +2427,7 @@ test("message action menu dispatches source and forward through typed Rust contr
     });
 });
 
-test("attach control invokes upload_media and renders Rust-owned media progress", async ({
+test("attach control stages media caption and renders Rust-owned media progress", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -2438,6 +2438,7 @@ test("attach control invokes upload_media and renders Rust-owned media progress"
   });
 
   const fixtureBytes = Buffer.from("browser-headless media fixture");
+  await page.getByRole("textbox", { name: "Message composer" }).fill("single **event** caption");
   await page.getByRole("button", { name: "Attach file", exact: true }).click();
   await page
     .locator('input[type="file"][aria-label="Attach file input"]')
@@ -2447,7 +2448,12 @@ test("attach control invokes upload_media and renders Rust-owned media progress"
       buffer: fixtureBytes
     });
 
+  await expect(page.getByText("media-fixture.txt", { exact: true })).toBeVisible();
+  await expect.poll(() => invocationCount(page, "upload_media")).toBe(0);
+  await page.getByRole("button", { name: "Send" }).click();
+
   await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => invocationCount(page, "send_text")).toBe(0);
   await expect
     .poll(async () =>
       page.evaluate(() => {
@@ -2457,6 +2463,7 @@ test("attach control invokes upload_media and renders Rust-owned media progress"
               roomId: args.roomId,
               filename: args.filename,
               mimeType: args.mimeType,
+              caption: args.caption,
               byteCount: Array.isArray(args.bytes) ? args.bytes.length : -1
             }
           : null;
@@ -2466,6 +2473,7 @@ test("attach control invokes upload_media and renders Rust-owned media progress"
       roomId: "!harness-room:example.invalid",
       filename: "media-fixture.txt",
       mimeType: "text/plain",
+      caption: "single **event** caption",
       byteCount: fixtureBytes.length
     });
 
@@ -2484,7 +2492,7 @@ test("attach control invokes upload_media and renders Rust-owned media progress"
                 item: {
                   id: { Transaction: { transaction_id: "desktop-media-1" } },
                   sender: "@harness-user:example.invalid",
-                  body: null,
+                  body: "single **event** caption",
                   timestamp_ms: 1_800_000_000_300,
                   in_reply_to_event_id: null,
                   thread_root: null,
@@ -2581,6 +2589,9 @@ test("attach control invokes upload_media and renders Rust-owned media progress"
 
   const mediaRow = page.locator('[data-item-id="txn:desktop-media-1"]');
   await expect(mediaRow.getByText("media-fixture.txt", { exact: true })).toBeVisible();
+  await expect(mediaRow.locator(".message-media + .message-body")).toContainText(
+    "single **event** caption"
+  );
   await expect(mediaRow.getByText("50%", { exact: true })).toBeVisible();
 
   const downloadableRow = page.locator('[data-event-id="$media-event:example.invalid"]');

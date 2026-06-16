@@ -368,6 +368,7 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain("application/pdf");
     expect(markup).toContain("1 KB");
     expect(markup).toContain('aria-label="Download release-notes.pdf"');
+    expect(markup.indexOf('class="message-media"')).toBeLessThan(markup.indexOf("Project notes"));
     expect(markup).not.toContain("mxc://example.invalid/private-file");
   });
 

@@ -911,6 +911,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   be located with `getByRole("button", { name: "Attach file", exact: true })`
   because browsers expose file inputs with button semantics and the input label
   contains the button label as a prefix.
+- Media caption GUI tests must assert staging, not immediate upload: selecting
+  a file shows the Composer attachment preview and must not invoke
+  `upload_media` until Send. The Composer text is passed as the single media
+  event caption; the test should assert no separate `send_text` invocation and
+  should render the Rust-owned `TimelineItem.media` row with the caption body
+  below it.
 - Transaction timeline rows use `timelineItemDomId`, so local echoes render
   with `data-item-id="txn:<transaction_id>"`. Headless media-progress specs
   should target that canonical id instead of the raw transaction id.
@@ -991,8 +997,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `--scenario=local-media`. It writes a synthetic fixture file under the
   scenario artifact directory, sets that path on the Composer's hidden file
   input, uses a `DataTransfer` fallback when WebKit leaves `input.files` empty,
-  waits for `timeline_room=true` and the Rust-owned `TimelineItem.media` row in
-  the real Tauri WebView, clicks Download, and prints `gui_local_media=ok`:
+  stages the attachment until Send, uses Composer text as the single media
+  event caption, waits for `timeline_room=true` and the Rust-owned
+  `TimelineItem.media` row plus caption in the real Tauri WebView, clicks
+  Download, and prints `gui_local_media=ok` and
+  `gui_local_media_caption=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000`
 - Room-tag GUI iteration has a focused virtual-display lane:
   `--scenario=local-room-tags`. It opens the real room row context menu in the
@@ -1201,12 +1210,16 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   dialog. WebDriver should write an ignored synthetic fixture file in the
   scenario artifact directory, set that path on
   `input[type=file][aria-label="Attach file input"]`, fall back to
-  `DataTransfer.files` if WebKit does not populate `input.files`, then wait for
-  `timeline_room=true` and a Rust-owned media row. Do not monkeypatch
+  `DataTransfer.files` if WebKit does not populate `input.files`, confirm no
+  `.message-media` row appears before Send, then wait for `timeline_room=true`
+  and a Rust-owned media row plus caption. Do not monkeypatch
   `window.__TAURI_INTERNALS__` from WebDriver; WebKit driver execution contexts
-  do not provide a reliable app-world command recorder. If the lane fails,
-  inspect the scenario-specific artifact run log; the lane uses synthetic
-  filenames/content only and must not write real/private media data.
+  do not provide a reliable app-world command recorder. If frontend source
+  changed, one `local-media` run without `--skip-build` may be needed before
+  returning to the fast loop; stale binaries can still show the old immediate
+  upload behavior. If the lane fails, inspect the scenario-specific artifact
+  run log; the lane uses synthetic filenames/content only and must not write
+  real/private media data.
 - `local-room-tags` must use the real context menu and wait for section
   movement from Rust-owned `RoomSummary.tags`. Do not mutate React state,
   monkeypatch Tauri IPC, or treat menu click completion as evidence until the
