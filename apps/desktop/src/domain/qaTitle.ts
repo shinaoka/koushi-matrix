@@ -20,6 +20,7 @@ export function qaWindowTitle(
     `timeline_subscribed=${snapshot.state.timeline.is_subscribed}`,
     `timeline_items=${snapshot.timeline.length}`,
     `errors=${snapshot.state.errors.length}`,
+    `focused=${snapshot.state.focused_context.kind}`,
     attention.qaTitleToken
   ];
   if (panelMode !== undefined) {

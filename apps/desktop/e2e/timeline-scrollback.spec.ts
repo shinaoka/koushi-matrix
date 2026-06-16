@@ -17,7 +17,7 @@
  * Vite server is owned (started/stopped) by Playwright on port 5183.
  */
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 const ROOM_ID = "!harness-room:example.invalid";
 const ACCOUNT_KEY = "@harness-user:example.invalid";
@@ -43,6 +43,26 @@ function makeItem(id: string, body: string) {
     can_edit: false,
     reactions: []
   };
+}
+
+async function pushInitialTimelineItems(page: Page, count: number) {
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: count }, (_, i) =>
+        makeItem(`$m${String(i).padStart(2, "0")}`, `message ${i}`)
+      )
+    }
+  );
 }
 
 test("scrollback prepend keeps the anchor item visually stable and gates auto-backfill", async ({
@@ -260,4 +280,153 @@ test("scrollback prepend keeps the anchor item visually stable and gates auto-ba
     () => window.__harness.invocationsOf("paginate_timeline_backwards").length
   );
   expect(countAfterEndReached).toBe(1);
+});
+
+test("timeline navigation renders Rust-owned unread controls and sends viewport facts", async ({
+  page
+}) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 30);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(30);
+
+  await container.evaluate((node) => {
+    node.scrollTop = 0;
+  });
+
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() =>
+          window.__harness.invocationsOf("observe_timeline_viewport")[0]?.args
+        ),
+      { timeout: 1_000 }
+    )
+    .toMatchObject({
+      roomId: ROOM_ID,
+      firstVisibleEventId: "$m00",
+      atBottom: false
+    });
+
+  await page.evaluate(
+    ({ key }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key,
+            snapshot: {
+              read_marker_event_id: "$m24",
+              first_unread_event_id: "$m25",
+              unread_event_count: 3,
+              unread_position: "belowViewport",
+              newer_event_count: 5,
+              can_jump_to_bottom: true
+            }
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    { key: timelineKey() }
+  );
+
+  await expect(page.getByRole("separator", { name: "Unread messages" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Jump to first unread, 3 unread" }).click();
+  await expect(page.locator('[data-item-id="$m25"]')).toBeInViewport();
+
+  await page.getByRole("button", { name: "Jump to bottom, 5 new messages" }).click();
+  await expect
+    .poll(() =>
+      container.evaluate((node) =>
+        Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop)
+      )
+    )
+    .toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
+});
+
+test("scrolling to bottom marks the latest readable event", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 40);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(40);
+
+  await container.evaluate((node) => {
+    node.scrollTop = 0;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__harness.invocationsOf("observe_timeline_viewport").at(-1)?.args
+      )
+    )
+    .toMatchObject({ atBottom: false });
+
+  await container.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__harness.invocationsOf("set_fully_read").at(-1)?.args)
+    )
+    .toEqual({
+      roomId: ROOM_ID,
+      eventId: "$m39"
+    });
+});
+
+test("timeline jump-to-date dispatches Rust timestamp resolution", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 8);
+
+  await page.getByLabel("Jump to date").fill("2026-06-16T12:34");
+  await page.getByRole("button", { name: "Open date in timeline" }).click();
+
+  const expectedTimestamp = await page.evaluate(() =>
+    new Date("2026-06-16T12:34").getTime()
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__harness.invocationsOf("open_timeline_at_timestamp")[0]?.args
+      )
+    )
+    .toEqual({
+      roomId: ROOM_ID,
+      timestampMs: expectedTimestamp
+    });
+});
+
+test("timeline jump-to-date reads the submitted input value", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 8);
+
+  await page.getByLabel("Jump to date").evaluate((node) => {
+    (node as HTMLInputElement).value = "2026-06-16T12:35";
+  });
+  await page.getByRole("button", { name: "Open date in timeline" }).click();
+
+  const expectedTimestamp = await page.evaluate(() =>
+    new Date("2026-06-16T12:35").getTime()
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__harness.invocationsOf("open_timeline_at_timestamp")[0]?.args
+      )
+    )
+    .toEqual({
+      roomId: ROOM_ID,
+      timestampMs: expectedTimestamp
+    });
 });

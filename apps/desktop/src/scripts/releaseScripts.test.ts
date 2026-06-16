@@ -339,6 +339,7 @@ describe("desktop release scripts", () => {
       "scenario local-explore",
       "scenario local-message-actions",
       "scenario local-composer",
+      "scenario local-timeline-navigation",
       "scenario local-alias",
       "scenario local-cjk",
       "scenario local-settings",
@@ -485,6 +486,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("--scenario=local-explore");
     expect(docs).toContain("--scenario=local-message-actions");
     expect(docs).toContain("--scenario=local-composer");
+    expect(docs).toContain("--scenario=local-timeline-navigation");
     expect(docs).toContain("--scenario=local-alias");
     expect(docs).toContain("--scenario=local-cjk");
     expect(docs).toContain("--scenario=local-settings");
@@ -543,6 +545,11 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_room_kick=ok");
     expect(source).toContain("gui_local_alias_set=ok");
     expect(source).toContain("gui_local_alias_clear=ok");
+    expect(source).toContain("gui_local_timeline_unread_jump=ok");
+    expect(source).toContain("gui_local_timeline_date_jump=ok");
+    expect(source).toContain("waitForTimelineFocusedContextReady");
+    expect(source).toContain("timelineDateJumpDiagnostics");
+    expect(source).toContain("setDatetimeLocalValue");
     expect(source).toContain("gui_local_cjk=ok");
   });
 

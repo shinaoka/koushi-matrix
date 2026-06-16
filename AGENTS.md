@@ -142,6 +142,37 @@ scroll wiring.
   only the process group for that trial. Do not kill unrelated existing Claude
   sessions.
 
+## Cost-Controlled Agent Delegation
+
+- Use cheaper implementation agents only for bounded, low-ambiguity work:
+  source search, issue inventory, single-file tests, small module-local Rust
+  patches, docs consistency checks, and narrow diff reviews. Prompts must name
+  the issue, allowed files, forbidden shared files, expected verification
+  command, and the exact output format.
+- Main GPT agents own cross-boundary design, state-machine boundary decisions,
+  shared enums/DTOs, Tauri/TypeScript wire contracts, `App.tsx`,
+  `TimelineView.tsx`, `styles.css`, canon docs, commits, issue comments, and
+  close decisions. Cheap-agent output is a draft to verify, not accepted
+  evidence by itself.
+- Do not let two agents edit shared hot files concurrently. Treat
+  `crates/matrix-desktop-state/src/{state.rs,action.rs,reducer.rs}`,
+  `crates/matrix-desktop-core/src/{command.rs,event.rs,runtime.rs}`,
+  `apps/desktop/src-tauri/src/{dto.rs,commands.rs}`,
+  `apps/desktop/src/{App.tsx,components/TimelineView.tsx,i18n/messages.ts,styles.css}`,
+  browser-headless specs, and Linux GUI QA scripts as main-agent integration
+  points unless the task explicitly grants a narrow patch.
+- Before running an expensive Linux/macOS/Windows GUI lane as a debugger, add a
+  cheap private-data-free diagnostic token or title state for the missing
+  product transition, then run focused Rust/Tauri/browser checks. Full native
+  GUI lanes are final evidence for an issue, not the first place to discover
+  command routing failures.
+- Review prompts for cheap agents must ask for consistency with
+  `REPOSITORY_RULES.md`, `docs/architecture/overview.md`,
+  `docs/architecture/state-machine.md` when reducers or state machines change,
+  `docs/policies/engineering-rules.md`, this file, and the relevant dated
+  implementation plan. A silent, timed-out, or budget-exceeded cheap-agent run
+  is not review evidence.
+
 ## Out of Scope (deferred)
 
 Real-time and recorded audio/video are deferred for now and are intentionally
@@ -567,7 +598,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `apps/desktop/src/domain/coreEvents.generated.json`, and
   `apps/desktop/src-tauri/src/lib.rs`'s core-event wire contract test in sync.
 
-## Timeline Navigation Phase A Notes
+## Timeline Navigation Phase A/B Notes
 
 - Timeline navigation semantics stay in Rust. React may report viewport facts
   through `observe_timeline_viewport` (`first_visible_event_id`,
@@ -585,6 +616,20 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - The local core timeline proof now includes token-only `timeline_nav=ok`.
   Keep this private-data-free: no room ids, event ids, user ids, message
   bodies, timestamps, or raw SDK errors.
+- Phase B `TimelineView` renders first-unread/bottom pills only from
+  `TimelineEvent::NavigationUpdated`. The date picker dispatches
+  `open_timeline_at_timestamp`; it must not resolve event IDs in React.
+- The existing read-receipt/fully-read auto dispatch is constrained to the
+  bottom viewport. If the viewport is not at bottom, React reports only
+  `observe_timeline_viewport` facts so Rust can keep unread navigation
+  projection stable.
+- Linux virtual-display coverage is `--scenario=local-timeline-navigation`.
+  It seeds a scrollable local timeline, uses a helper user for unread messages,
+  clicks the first-unread and bottom pills, then drives jump-to-date into
+  focused context. It prints `gui_local_timeline_unread_jump=ok`,
+  `gui_local_timeline_bottom_jump=ok`, and
+  `gui_local_timeline_date_jump=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-timeline-navigation --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-timeline-navigation-fast --timeout-ms=180000`
 
 ## Live Signals Phase A Notes
 
@@ -1097,6 +1142,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Rust-owned send state (`send=sent`) plus composer clear. It prints `gui_local_mention=ok`,
   `gui_local_markdown=ok`, and `gui_local_slash=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-composer-fast --timeout-ms=180000`
+- Timeline navigation GUI iteration has a focused virtual-display lane:
+  `--scenario=local-timeline-navigation`. It drives the real WebView
+  first-unread pill, bottom pill, and jump-to-date focused-context path over
+  Rust-owned `NavigationUpdated` state. It prints
+  `gui_local_timeline_unread_jump=ok`,
+  `gui_local_timeline_bottom_jump=ok`, and
+  `gui_local_timeline_date_jump=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-timeline-navigation --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-timeline-navigation-fast --timeout-ms=180000`
 - Local alias GUI iteration has a focused virtual-display lane:
   `--scenario=local-alias`. It seeds a synthetic helper sender, opens the real
   hover-gated message sender menu, sets a local alias through the typed
@@ -1259,6 +1312,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   reply affordance on `item.body !== null`, so only message rows are replyable.
   A `local-reply` lane must send/target a message and reply to that row, not the
   first event row in a fresh room (whose first events are state events).
+- WebDriverIO/WebKit `setValue()` did not populate a `datetime-local` control in
+  the `local-timeline-navigation` date-jump lane: the DOM input stayed
+  `valueLength=0`, `valid=false`, and the app title stayed `panel=closed
+  focused=closed`. For this control, use the lane's `setDatetimeLocalValue`
+  helper, which sets the native value property and dispatches `input`/`change`,
+  then verify with `timelineDateJumpDiagnostics` before clicking submit. The QA
+  title includes `focused=closed|opening|open` so future failures distinguish
+  command dispatch/focused-context state from plain DOM text waits.
 - Timeline reactions are Rust-owned projection state. React must only dispatch
   typed `SendReaction` / `RedactReaction` commands; do not implement toggle
   semantics in the UI, because `Timeline::toggle_reaction` is only an internal

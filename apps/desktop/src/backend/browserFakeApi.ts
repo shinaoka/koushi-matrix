@@ -63,6 +63,7 @@ export interface DesktopApi {
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
   selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<DesktopSnapshot>;
   closeFocusedContext(): Promise<DesktopSnapshot>;
   paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
   sendText(roomId: string, body: string, mentions?: MentionIntent): Promise<DesktopSnapshot>;
@@ -463,6 +464,29 @@ class BrowserFakeApi implements DesktopApi {
       room_id: roomId,
       event_id: eventId
     };
+    return this.getSnapshot();
+  }
+
+  async openTimelineAtTimestamp(
+    roomId: string,
+    timestampMs: number
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    await this.selectRoom(roomId);
+    const roomMessages = timelineMessages.filter((message) => message.room_id === roomId);
+    const target =
+      roomMessages.find((message) => message.timestamp_ms >= timestampMs) ??
+      roomMessages.at(-1);
+    if (target) {
+      this.snapshot.state.focused_context = {
+        kind: "opening",
+        room_id: roomId,
+        event_id: target.event_id
+      };
+    }
     return this.getSnapshot();
   }
 

@@ -23,6 +23,8 @@
  */
 
 import {
+  ArrowDown,
+  CalendarDays,
   Copy,
   Download,
   Edit3,
@@ -59,6 +61,7 @@ import type {
   MediaTransferProgress,
   TimelineItem,
   TimelineKey,
+  TimelineNavigationSnapshot,
   TimelineMessageSource
 } from "../domain/coreEvents";
 import { timelineItemDomId, timelineKeyEquals } from "../domain/coreEvents";
@@ -134,6 +137,15 @@ export interface TimelineTransport {
     sourceEventId: string,
     destinationRoomId: string
   ): Promise<void>;
+  /** Report viewport facts; Rust owns marker/count semantics. */
+  observeViewport?(
+    roomId: string,
+    firstVisibleEventId: string | null,
+    lastVisibleEventId: string | null,
+    atBottom: boolean
+  ): Promise<void>;
+  /** Resolve a timestamp through Rust and open focused context. */
+  openAtTimestamp?(roomId: string, timestampMs: number): Promise<void>;
 }
 
 /**
@@ -211,12 +223,43 @@ function restoreAnchor(container: HTMLElement, anchor: ScrollAnchor): boolean {
   return true;
 }
 
+function visibleEventIds(container: HTMLElement): {
+  firstVisibleEventId: string | null;
+  lastVisibleEventId: string | null;
+} {
+  const containerRect = container.getBoundingClientRect();
+  const nodes = container.querySelectorAll<HTMLElement>("[data-event-id]");
+  let firstVisibleEventId: string | null = null;
+  let lastVisibleEventId: string | null = null;
+  for (const node of nodes) {
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) {
+      continue;
+    }
+    const eventId = node.dataset["eventId"] ?? null;
+    if (!eventId) {
+      continue;
+    }
+    firstVisibleEventId ??= eventId;
+    lastVisibleEventId = eventId;
+  }
+  return { firstVisibleEventId, lastVisibleEventId };
+}
+
+function isScrolledToBottom(container: HTMLElement): boolean {
+  return (
+    container.scrollHeight - container.clientHeight - container.scrollTop <=
+    SCROLL_EDGE_TOLERANCE_PX
+  );
+}
+
 function cssEscape(value: string): string {
   return value.replace(/["\\]/g, "\\$&");
 }
 
 /** Distance (px) from the top edge that triggers automatic backfill. */
 const AUTO_BACKFILL_THRESHOLD_PX = 80;
+const SCROLL_EDGE_TOLERANCE_PX = 2;
 const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
@@ -923,6 +966,10 @@ export function TimelineView({
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
+  const [navigationSnapshot, setNavigationSnapshot] =
+    useState<TimelineNavigationSnapshot | null>(null);
+  const [jumpDateValue, setJumpDateValue] = useState("");
+  const [viewportAtBottom, setViewportAtBottom] = useState(false);
   const [aliasTarget, setAliasTarget] = useState<TimelineAliasTarget | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
@@ -933,8 +980,10 @@ export function TimelineView({
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
   const readSignalEventRef = useRef<string | null>(null);
+  const lastViewportObservationRef = useRef<string | null>(null);
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
+  const timelineKeyHash = JSON.stringify(timelineKey);
 
   // --- Event subscription: apply CoreEvents to the store ---
   useEffect(() => {
@@ -943,6 +992,7 @@ export function TimelineView({
         // EventStreamLag: clear and await fresh InitialItems.
         pendingAnchorRef.current = null;
         anchorRestorePendingRef.current = false;
+        setNavigationSnapshot(null);
         setStore((current) => applyGlobalResync(current));
         return;
       }
@@ -994,6 +1044,7 @@ export function TimelineView({
       if ("ResyncRequired" in event) {
         pendingAnchorRef.current = null;
         anchorRestorePendingRef.current = false;
+        setNavigationSnapshot(null);
       }
 
       if ("MessageSourceLoaded" in event) {
@@ -1005,10 +1056,22 @@ export function TimelineView({
         return;
       }
 
+      if ("NavigationUpdated" in event) {
+        setNavigationSnapshot(event.NavigationUpdated.snapshot);
+        return;
+      }
+
       setStore((current) => applyTimelineEvent(current, event));
     });
     return unsubscribe;
   }, [transport]);
+
+  useEffect(() => {
+    setNavigationSnapshot(null);
+    setViewportAtBottom(false);
+    lastViewportObservationRef.current = null;
+    readSignalEventRef.current = null;
+  }, [timelineKeyHash]);
 
   const items = getItems(store, timelineKey);
   const notSentTransactionIds = items.flatMap((item) => {
@@ -1134,34 +1197,92 @@ export function TimelineView({
     forwardDestinations.length > 0
       ? forwardDestinations
       : [{ room_id: roomId, display_name: roomId }];
+  const sendReadSignalsForEvent = useCallback(
+    (eventId: string) => {
+      const signalKey = `${roomId}\u0000${eventId}`;
+      if (readSignalEventRef.current === signalKey) {
+        return;
+      }
+      readSignalEventRef.current = signalKey;
+      void transport.sendReadReceipt(roomId, eventId).catch(() => undefined);
+      void transport.setFullyRead(roomId, eventId).catch(() => undefined);
+    },
+    [roomId, transport]
+  );
+  const reportViewportObservation = useCallback(() => {
+    if (!transport.observeViewport || roomTimelineRoomId !== roomId) {
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+    const visible = visibleEventIds(container);
+    if (!visible.firstVisibleEventId && !visible.lastVisibleEventId) {
+      return;
+    }
+    const atBottom = isScrolledToBottom(container);
+    setViewportAtBottom((current) => (current === atBottom ? current : atBottom));
+    if (atBottom && latestReadableEventId) {
+      sendReadSignalsForEvent(latestReadableEventId);
+    }
+    const signature = [
+      roomId,
+      visible.firstVisibleEventId ?? "",
+      visible.lastVisibleEventId ?? "",
+      atBottom ? "bottom" : "not-bottom"
+    ].join("\u0000");
+    if (lastViewportObservationRef.current === signature) {
+      return;
+    }
+    lastViewportObservationRef.current = signature;
+    void transport
+      .observeViewport(
+        roomId,
+        visible.firstVisibleEventId,
+        visible.lastVisibleEventId,
+        atBottom
+      )
+      .catch(() => undefined);
+  }, [
+    latestReadableEventId,
+    roomId,
+    roomTimelineRoomId,
+    sendReadSignalsForEvent,
+    transport
+  ]);
 
   useEffect(() => {
     if (!latestReadableEventId || roomTimelineRoomId !== roomId) {
       return;
     }
-    const signalKey = `${roomId}\u0000${latestReadableEventId}`;
-    if (readSignalEventRef.current === signalKey) {
+    const container = containerRef.current;
+    if (!container || !viewportAtBottom || !isScrolledToBottom(container)) {
       return;
     }
-    readSignalEventRef.current = signalKey;
-    void transport.sendReadReceipt(roomId, latestReadableEventId).catch(() => undefined);
-    void transport.setFullyRead(roomId, latestReadableEventId).catch(() => undefined);
-  }, [latestReadableEventId, roomId, roomTimelineRoomId, transport]);
+    sendReadSignalsForEvent(latestReadableEventId);
+  }, [
+    latestReadableEventId,
+    roomId,
+    roomTimelineRoomId,
+    sendReadSignalsForEvent,
+    viewportAtBottom
+  ]);
 
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
-    if (!anchorRestorePendingRef.current) {
-      return;
+    if (anchorRestorePendingRef.current) {
+      const container = containerRef.current;
+      const anchor = pendingAnchorRef.current;
+      if (container && anchor) {
+        restoreAnchor(container, anchor);
+      }
+      pendingAnchorRef.current = null;
+      // Restoration complete: the next automatic fill request is allowed again.
+      anchorRestorePendingRef.current = false;
     }
-    const container = containerRef.current;
-    const anchor = pendingAnchorRef.current;
-    if (container && anchor) {
-      restoreAnchor(container, anchor);
-    }
-    pendingAnchorRef.current = null;
-    // Restoration complete: the next automatic fill request is allowed again.
-    anchorRestorePendingRef.current = false;
-  }, [items]);
+    reportViewportObservation();
+  }, [items, reportViewportObservation]);
 
   // --- Automatic backfill on scroll near the top ---
   const maybeAutoBackfill = useCallback(() => {
@@ -1191,6 +1312,76 @@ export function TimelineView({
         backfillInFlightRef.current = false;
       });
   }, [store, transport, suppressPaginationUi]);
+  const onTimelineScroll = useCallback(() => {
+    reportViewportObservation();
+    maybeAutoBackfill();
+  }, [maybeAutoBackfill, reportViewportObservation]);
+  const jumpToEvent = useCallback(
+    (eventId: string) => {
+      const container = containerRef.current;
+      const row = container?.querySelector<HTMLElement>(
+        `[data-event-id="${cssEscape(eventId)}"]`
+      );
+      row?.scrollIntoView({ block: "center", inline: "nearest" });
+      reportViewportObservation();
+    },
+    [reportViewportObservation]
+  );
+  const jumpToBottom = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && container.contains(activeElement)) {
+      activeElement.blur();
+    }
+    container.scrollTop = container.scrollHeight;
+    reportViewportObservation();
+    requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight;
+      reportViewportObservation();
+    });
+  }, [reportViewportObservation]);
+  const submitJumpDate = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!transport.openAtTimestamp || roomTimelineRoomId !== roomId) {
+        return;
+      }
+      const dateControl = event.currentTarget.elements.namedItem("timeline-jump-date");
+      const submittedDateValue =
+        dateControl instanceof HTMLInputElement ? dateControl.value : jumpDateValue;
+      if (submittedDateValue !== jumpDateValue) {
+        setJumpDateValue(submittedDateValue);
+      }
+      const timestampMs = new Date(submittedDateValue).getTime();
+      if (!Number.isFinite(timestampMs)) {
+        return;
+      }
+      void transport.openAtTimestamp(roomId, timestampMs).catch(() => undefined);
+    },
+    [jumpDateValue, roomId, roomTimelineRoomId, transport]
+  );
+
+  const canRenderRoomNavigation = roomTimelineRoomId === roomId;
+  const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;
+  const firstUnreadCount = navigationSnapshot?.unread_event_count ?? 0;
+  const canJumpToFirstUnread = Boolean(
+    firstUnreadEventId &&
+      firstUnreadCount > 0 &&
+      navigationSnapshot?.unread_position !== "insideViewport" &&
+      navigationSnapshot?.unread_position !== "none"
+  );
+  const canJumpToBottom = Boolean(
+    navigationSnapshot?.can_jump_to_bottom &&
+      (navigationSnapshot.newer_event_count > 0 || navigationSnapshot.unread_event_count > 0)
+  );
+  const navigationMarkerEventId =
+    navigationSnapshot?.first_unread_event_id ?? roomSignals?.fully_read_event_id ?? null;
+  const navigationMarkerLabel = navigationSnapshot?.first_unread_event_id
+    ? t("timeline.unreadMarker")
+    : t("timeline.readMarker");
 
   return (
     <div
@@ -1200,8 +1391,58 @@ export function TimelineView({
       data-timeline-generation={generation}
       ref={containerRef}
       style={{ overflowY: "auto", height: "100%" }}
-      onScroll={suppressPaginationUi ? undefined : maybeAutoBackfill}
+      onScroll={onTimelineScroll}
     >
+      {canRenderRoomNavigation &&
+      (transport.openAtTimestamp || canJumpToFirstUnread || canJumpToBottom) ? (
+        <div className="timeline-navigation-bar">
+          <div className="timeline-navigation-pills">
+            {canJumpToFirstUnread && firstUnreadEventId ? (
+              <button
+                className="timeline-navigation-pill"
+                type="button"
+                onClick={() => jumpToEvent(firstUnreadEventId)}
+              >
+                <ArrowDown size={14} aria-hidden="true" />
+                <span>{t("timeline.jumpToFirstUnread", { count: firstUnreadCount })}</span>
+              </button>
+            ) : null}
+            {canJumpToBottom ? (
+              <button
+                className="timeline-navigation-pill"
+                type="button"
+                onClick={jumpToBottom}
+              >
+                <ArrowDown size={14} aria-hidden="true" />
+                <span>
+                  {t("timeline.jumpToBottom", {
+                    count: navigationSnapshot?.newer_event_count ?? 0
+                  })}
+                </span>
+              </button>
+            ) : null}
+          </div>
+          {transport.openAtTimestamp ? (
+            <form className="timeline-date-jump" onSubmit={submitJumpDate}>
+              <label className="timeline-date-jump-label">
+                <CalendarDays size={14} aria-hidden="true" />
+                <span>{t("timeline.jumpToDate")}</span>
+                <input
+                  className="timeline-date-jump-input"
+                  type="datetime-local"
+                  name="timeline-jump-date"
+                  aria-label={t("timeline.jumpToDate")}
+                  value={jumpDateValue}
+                  onChange={(event) => setJumpDateValue(event.currentTarget.value)}
+                />
+              </label>
+              <button className="timeline-date-jump-button" type="submit">
+                {t("timeline.openDateInTimeline")}
+              </button>
+            </form>
+          ) : null}
+        </div>
+      ) : null}
       {!suppressPaginationUi && isPaginating ? (
         <div className="timeline-spinner" data-testid="timeline-spinner">
           {t("timeline.loading")}
@@ -1240,13 +1481,13 @@ export function TimelineView({
       {items.filter((item) => !item.is_hidden).map((item) => {
         const eventId = "Event" in item.id ? item.id.Event.event_id : null;
         const isFullyReadMarker = Boolean(
-          eventId && roomSignals?.fully_read_event_id === eventId
+          eventId && navigationMarkerEventId === eventId
         );
         return (
           <div className="timeline-item-frame" key={timelineItemDomId(item.id)}>
             {isFullyReadMarker ? (
-              <div className="read-marker" role="separator">
-                <span>{t("timeline.readMarker")}</span>
+              <div className="read-marker" role="separator" aria-label={navigationMarkerLabel}>
+                <span>{navigationMarkerLabel}</span>
               </div>
             ) : null}
             <TimelineItemRow

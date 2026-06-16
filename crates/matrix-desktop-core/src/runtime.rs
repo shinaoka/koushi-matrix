@@ -335,6 +335,24 @@ impl ActivityProjection {
         }
     }
 
+    fn event_at_or_after(&self, room_id: &str, timestamp_ms: u64) -> Option<String> {
+        let mut rows = self
+            .rows_by_event_id
+            .values()
+            .filter(|row| row.room_id == room_id)
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            left.timestamp_ms
+                .cmp(&right.timestamp_ms)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+
+        rows.iter()
+            .find(|row| row.timestamp_ms >= timestamp_ms)
+            .or_else(|| rows.last())
+            .map(|row| row.event_id.clone())
+    }
+
     fn update_action_for_open_state(&self, state: &AppState) -> Option<AppAction> {
         if !matches!(state.activity, ActivityState::Open { .. }) {
             return None;
@@ -630,6 +648,17 @@ impl AppActor {
                         .await;
                     }
                     self.handle_app_effects(request_id, effects).await;
+                    if let Some(event_id) = self
+                        .activity_projection
+                        .event_at_or_after(&room_id, timestamp_ms)
+                    {
+                        let effects = reduce(
+                            &mut self.state,
+                            AppAction::OpenFocusedContext { room_id, event_id },
+                        );
+                        self.handle_app_effects(request_id, effects).await;
+                        return true;
+                    }
                     let _ = self
                         .account_actor
                         .send(AccountMessage::OpenTimelineAtTimestamp {
@@ -1795,6 +1824,34 @@ mod tests {
         assert!(
             replacement_offset < effects_offset,
             "OpenFocusedContext must unsubscribe a different existing focused timeline before subscribing the replacement"
+        );
+    }
+
+    #[test]
+    fn timestamp_jump_uses_local_activity_projection_before_homeserver_fallback() {
+        let source = include_str!("runtime.rs");
+        let timestamp_arm = source
+            .split("AppCommand::OpenTimelineAtTimestamp")
+            .nth(1)
+            .expect("OpenTimelineAtTimestamp arm should exist")
+            .split("AppCommand::CloseFocusedContext")
+            .next()
+            .expect("CloseFocusedContext arm should follow OpenTimelineAtTimestamp");
+
+        let local_projection_offset = timestamp_arm
+            .find("activity_projection")
+            .expect("timestamp jump must check the Rust-owned local activity projection");
+        let account_fallback_offset = timestamp_arm
+            .find("AccountMessage::OpenTimelineAtTimestamp")
+            .expect("timestamp jump must keep the homeserver fallback");
+
+        assert!(
+            local_projection_offset < account_fallback_offset,
+            "local projection resolution must run before the homeserver timestamp_to_event fallback"
+        );
+        assert!(
+            timestamp_arm.contains("AppAction::OpenFocusedContext"),
+            "local timestamp resolution must still open focused context through the reducer"
         );
     }
 

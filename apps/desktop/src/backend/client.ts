@@ -349,6 +349,13 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("select_search_result", { roomId, eventId });
   }
 
+  async openTimelineAtTimestamp(
+    roomId: string,
+    timestampMs: number
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("open_timeline_at_timestamp", { roomId, timestampMs });
+  }
+
   async closeFocusedContext(): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("close_focused_context");
   }

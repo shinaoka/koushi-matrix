@@ -23,10 +23,10 @@ use matrix_desktop_core::{
 };
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
-    ComposerResolverContext, ComposerSurface, DirectoryQuery, IdentityResetAuthRequest,
-    ImageUploadCompressionMode, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest,
-    RoomModerationAction, RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch,
-    VerificationCancelReason, build_formatted_message_draft,
+    ComposerResolverContext, ComposerSurface, DirectoryQuery, FocusedContextState,
+    IdentityResetAuthRequest, ImageUploadCompressionMode, LoginRequest, MentionIntent,
+    PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange, RoomTagKind,
+    SessionInfo, SettingsPatch, VerificationCancelReason, build_formatted_message_draft,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -206,6 +206,7 @@ pub(crate) async fn submit_login_request(
 
 const LOGIN_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const SELECT_ROOM_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const ROOM_OPERATION_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 async fn submit_login_and_start_sync(
@@ -270,6 +271,57 @@ fn snapshot_has_ready_session(snapshot: &matrix_desktop_state::AppState) -> bool
         snapshot.session,
         matrix_desktop_state::SessionState::Ready(_)
     )
+}
+
+fn snapshot_has_focused_context(snapshot: &matrix_desktop_state::AppState, room_id: &str) -> bool {
+    match &snapshot.focused_context {
+        FocusedContextState::Opening {
+            room_id: focused_room_id,
+            ..
+        }
+        | FocusedContextState::Open {
+            room_id: focused_room_id,
+            ..
+        } => focused_room_id == room_id,
+        FocusedContextState::Closed => false,
+    }
+}
+
+async fn wait_for_focused_context(
+    event_conn: &mut CoreConnection,
+    request_id: RequestId,
+    room_id: &str,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if snapshot_has_focused_context(&event_conn.snapshot(), room_id) {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "focused context did not open".to_owned())?;
+        match event {
+            Ok(CoreEvent::StateChanged(snapshot))
+                if snapshot_has_focused_context(&snapshot, room_id) =>
+            {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed_request_id,
+                ..
+            }) if failed_request_id == request_id => {
+                return Err("focused context open failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_) if snapshot_has_focused_context(&event_conn.snapshot(), room_id) => {
+                return Ok(());
+            }
+            Err(_) => return Err("focused context event stream lagged".to_owned()),
+        }
+    }
 }
 
 async fn wait_for_selected_room(
@@ -739,10 +791,22 @@ pub async fn open_timeline_at_timestamp(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_open_timeline_at_timestamp_command(request_id, room_id, timestamp_ms),
+    let focused_room_id = room_id.clone();
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_open_timeline_at_timestamp_command(
+            request_id,
+            room_id,
+            timestamp_ms,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_focused_context(
+        &mut event_conn,
+        request_id,
+        &focused_room_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -5743,7 +5807,10 @@ mod tests {
                         room_id: "!room:example.org".to_owned()
                     }
                 );
-                assert_eq!(observation.first_visible_event_id.as_deref(), Some("$first"));
+                assert_eq!(
+                    observation.first_visible_event_id.as_deref(),
+                    Some("$first")
+                );
                 assert_eq!(observation.last_visible_event_id.as_deref(), Some("$last"));
                 assert!(!observation.at_bottom);
             }

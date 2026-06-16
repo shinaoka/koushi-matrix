@@ -97,6 +97,28 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("panel=keyboardSettings");
   });
 
+  test("includes focused context state without room or event identifiers", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+
+    const title = qaWindowTitle({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        focused_context: {
+          kind: "open",
+          room_id: "!private-room:example.test",
+          event_id: "$private-event:example.test",
+          is_subscribed: true
+        }
+      }
+    });
+
+    expect(title).toContain("focused=open");
+    expect(title).not.toContain("private-room");
+    expect(title).not.toContain("private-event");
+  });
+
   test("includes an optional send smoke status token when provided", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();

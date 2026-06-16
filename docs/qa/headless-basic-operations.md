@@ -322,6 +322,29 @@ must remain visible after `mark_activity_read` until a later Rust-shaped
 snapshot removes them. React must not sort, filter, synthesize unread
 membership, or locally repair Activity streams.
 
+For timeline navigation Phase B, the browser-headless harness seeds
+`TimelineEvent::NavigationUpdated` and drives the real `TimelineView` DOM. It
+asserts `observe_timeline_viewport`, first-unread/bottom pills rendered from the
+Rust snapshot, and `open_timeline_at_timestamp` dispatch from the date picker.
+The Linux virtual-display lane is `--scenario=local-timeline-navigation`; it
+uses a disposable local homeserver, a helper user, and the real WebView to prove
+the unread jump, bottom jump, and timestamp-to-focused-context path:
+
+```bash
+PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+  npm --prefix apps/desktop run qa:linux-gui -- \
+    --scenario=local-timeline-navigation \
+    --server=conduit \
+    --skip-build \
+    --artifact-dir=artifacts/linux-gui-local-timeline-navigation-fast \
+    --timeout-ms=180000
+```
+
+Success tokens are `gui_local_timeline_unread_jump=ok`,
+`gui_local_timeline_bottom_jump=ok`, and `gui_local_timeline_date_jump=ok`.
+The lane must not print Matrix room IDs, event IDs, user IDs, message bodies,
+or raw SDK errors.
+
 ## matrix.org compatibility lane
 
 This lane is reserved for the last compatibility pass after local headless and

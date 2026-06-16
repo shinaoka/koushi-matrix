@@ -51,6 +51,7 @@ const checks = [
   "scenario local-explore",
   "scenario local-message-actions",
   "scenario local-composer",
+  "scenario local-timeline-navigation",
   "scenario local-rich-formatting",
   "scenario local-alias",
   "scenario local-cjk",
@@ -177,6 +178,9 @@ if (qaRecoveredTitleReadySample !== undefined) {
   process.exit(0);
 }
 
+const TIMELINE_NAVIGATION_SEED_MESSAGE_COUNT = 24;
+const TIMELINE_NAVIGATION_SEED_LINE_COUNT = 12;
+
 if (args.has("--run")) {
   await run();
   process.exit(0);
@@ -243,6 +247,10 @@ async function run() {
   }
   if (guiScenario === "local-composer") {
     await runLocalComposerScenario();
+    return;
+  }
+  if (guiScenario === "local-timeline-navigation") {
+    await runLocalTimelineNavigationScenario();
     return;
   }
   if (guiScenario === "local-rich-formatting") {
@@ -1160,6 +1168,165 @@ async function runLocalComposerScenario() {
   }
 }
 
+async function runLocalTimelineNavigationScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await selectRoomByName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForActiveRoomName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForTimelineViewMounted(session.browser, timeoutMs);
+    await waitForTimelineScrollable(
+      session.browser,
+      timeoutMs,
+      "local GUI timeline navigation seed"
+    );
+
+    await driveTimelineToBottom(
+      session.browser,
+      timeoutMs,
+      "local GUI timeline navigation initial bottom"
+    );
+    const baselineMessages = await elementCount(session.browser, ".message");
+    const composer = await session.browser.$('textarea[aria-label="Message composer"]');
+    await composer.waitForDisplayed({ timeout: timeoutMs });
+    await composer.click();
+    await composer.setValue(`QA timeline navigation baseline ${safeTimestamp()}`);
+    await session.browser.keys("Enter");
+    await waitForComposerSendSettled(
+      session.browser,
+      timeoutMs,
+      "local GUI timeline navigation baseline"
+    );
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".message",
+      baselineMessages,
+      timeoutMs,
+      "local GUI timeline navigation baseline render"
+    );
+    await driveTimelineToBottom(
+      session.browser,
+      timeoutMs,
+      "local GUI timeline navigation baseline bottom"
+    );
+
+    await scrollTimelineToTop(session.browser);
+    await waitForTimelineAwayFromBottom(
+      session.browser,
+      timeoutMs,
+      "local GUI timeline navigation top viewport"
+    );
+    const beforeUnreadMessages = await elementCount(session.browser, ".message");
+    let dateJumpEventId = null;
+    for (let index = 0; index < 3; index += 1) {
+      const response = await sendRoomMessage(
+        session.credentials.homeserver,
+        session.helperAccessToken,
+        session.seedRoomId,
+        `QA timeline navigation unread ${index} ${safeTimestamp()}`,
+        `qa-timeline-nav-${index}-${safeTimestamp()}`
+      );
+      dateJumpEventId = response.event_id ?? dateJumpEventId;
+    }
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".message",
+      beforeUnreadMessages,
+      timeoutMs,
+      "local GUI timeline navigation unread render"
+    );
+
+    await clickVisibleButtonByTextPrefix(
+      session.browser,
+      "Jump to first unread",
+      timeoutMs,
+      "local GUI timeline navigation first unread"
+    );
+    await waitForDocumentText(
+      session.browser,
+      ["Unread messages"],
+      timeoutMs,
+      "local GUI timeline navigation unread divider"
+    );
+    console.log("gui_local_timeline_unread_jump=ok");
+
+    await scrollTimelineToTop(session.browser);
+    await waitForTimelineAwayFromBottom(
+      session.browser,
+      timeoutMs,
+      "local GUI timeline navigation bottom setup viewport"
+    );
+    await clickVisibleButtonByTextPrefix(
+      session.browser,
+      "Jump to bottom",
+      timeoutMs,
+      "local GUI timeline navigation bottom"
+    );
+    await waitForTimelineScrolledToBottom(
+      session.browser,
+      timeoutMs,
+      "local GUI timeline navigation bottom"
+    );
+    console.log("gui_local_timeline_bottom_jump=ok");
+
+    const dateInput = await session.browser.$('input[aria-label="Jump to date"]');
+    await dateInput.waitForDisplayed({ timeout: timeoutMs });
+    if (!dateJumpEventId) {
+      throw new Error("local GUI timeline navigation date setup did not capture an event id");
+    }
+    const dateJumpEvent = await getRoomEvent(
+      session.credentials.homeserver,
+      session.helperAccessToken,
+      session.seedRoomId,
+      dateJumpEventId
+    );
+    const localDateValue = await localDatetimeInputValue(
+      session.browser,
+      dateJumpEvent.origin_server_ts
+    );
+    await setDatetimeLocalValue(session.browser, localDateValue);
+    const dateInputDiagnostics = await timelineDateJumpDiagnostics(
+      session.browser,
+      localDateValue
+    );
+    if (
+      !dateInputDiagnostics.inputExists ||
+      !dateInputDiagnostics.valuePresent ||
+      !dateInputDiagnostics.valueMatchesExpected ||
+      !dateInputDiagnostics.valid
+    ) {
+      throw new Error(
+        `local GUI timeline navigation date input did not accept the synthetic value. Diagnostics: ${JSON.stringify(
+          dateInputDiagnostics
+        )}`
+      );
+    }
+    await clickVisibleButtonByTextPrefix(
+      session.browser,
+      "Open date in timeline",
+      timeoutMs,
+      "local GUI timeline navigation date submit"
+    );
+    await waitForTimelineFocusedContextReady(
+      session.browser,
+      timeoutMs,
+      "local GUI timeline navigation focused context title"
+    );
+    await waitForDocumentText(
+      session.browser,
+      ["Focused context"],
+      timeoutMs,
+      "local GUI timeline navigation date jump"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_timeline_date_jump=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalAliasScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -1387,6 +1554,32 @@ async function waitForQaTitle(browser, predicate, timeout, description) {
   throw new Error(`${description} did not reach its expected state. Last title: ${lastTitle}`);
 }
 
+async function waitForTimelineFocusedContextReady(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastTitle = "";
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    lastTitle = await browser.execute(() => document.title);
+    const status = parseQaTitle(lastTitle);
+    if (status.errors > 0) {
+      throw new Error(`${description} reported errors. Last title: ${lastTitle}`);
+    }
+    lastDiagnostics = await timelineDateJumpDiagnostics(browser);
+    if (
+      status.panel === "focusedContext" &&
+      (status.focused === "opening" || status.focused === "open")
+    ) {
+      return lastTitle;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not reach its expected state. Last title: ${lastTitle}. Last diagnostics: ${JSON.stringify(
+      lastDiagnostics
+    )}`
+  );
+}
+
 async function waitForElementAttribute(browser, selector, attribute, expected, timeout, description) {
   const startedAt = Date.now();
   let lastValue = "";
@@ -1460,6 +1653,94 @@ async function waitForDocumentText(browser, expectedTexts, timeout, description)
     await sleep(250);
   }
   throw new Error(`${description} missing expected text: ${missing.join(", ")}`);
+}
+
+async function getRoomEvent(homeserver, accessToken, roomId, eventId) {
+  const response = await fetch(
+    `${homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`,
+    {
+      headers: {
+        authorization: `Bearer ${accessToken}`
+      }
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`getRoomEvent failed with HTTP ${response.status}`);
+  }
+  const event = await response.json();
+  if (typeof event.origin_server_ts !== "number") {
+    throw new Error("getRoomEvent response did not include origin_server_ts");
+  }
+  return event;
+}
+
+async function localDatetimeInputValue(browser, timestampMs) {
+  return browser.execute((value) => {
+    const date = new Date(value);
+    const offset = date.getTimezoneOffset() * 60_000;
+    return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+  }, timestampMs);
+}
+
+async function setDatetimeLocalValue(browser, value) {
+  const result = await browser.execute((nextValue) => {
+    const input = document.querySelector('input[aria-label="Jump to date"]');
+    if (!(input instanceof HTMLInputElement)) {
+      return {
+        ok: false,
+        reason: "missing-input",
+        inputExists: false,
+        valuePresent: false,
+        valueLength: 0,
+        valid: false
+      };
+    }
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )?.set;
+    valueSetter?.call(input, nextValue);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return {
+      ok: input.value === nextValue && input.validity.valid,
+      reason: input.value === nextValue ? "set" : "value-mismatch",
+      inputExists: true,
+      valuePresent: input.value.length > 0,
+      valueLength: input.value.length,
+      valid: input.validity.valid
+    };
+  }, value);
+  if (!result.ok) {
+    throw new Error(
+      `local GUI timeline navigation date input setter failed. Diagnostics: ${JSON.stringify(
+        result
+      )}`
+    );
+  }
+}
+
+async function timelineDateJumpDiagnostics(browser, expectedValue = null) {
+  return browser.execute((expected) => {
+    const textFor = (element) =>
+      element ? (element.textContent ?? "").replace(/\s+/g, " ").trim() : "";
+    const input = document.querySelector('input[aria-label="Jump to date"]');
+    const form = input?.closest("form") ?? null;
+    const submitButtons = Array.from(form?.querySelectorAll("button") ?? [])
+      .map((button) => textFor(button))
+      .filter(Boolean);
+    return {
+      title: document.title,
+      inputExists: input instanceof HTMLInputElement,
+      valuePresent: input instanceof HTMLInputElement ? input.value.length > 0 : false,
+      valueLength: input instanceof HTMLInputElement ? input.value.length : 0,
+      valueMatchesExpected:
+        input instanceof HTMLInputElement && expected !== null ? input.value === expected : null,
+      valid: input instanceof HTMLInputElement ? input.validity.valid : false,
+      formExists: Boolean(form),
+      submitButtons
+    };
+  }, expectedValue);
 }
 
 async function waitForCompressedImageMedia(browser, expected, timeout) {
@@ -1799,6 +2080,116 @@ async function waitForTimelineViewMounted(browser, timeout) {
   );
 }
 
+async function scrollTimelineToTop(browser) {
+  await browser.execute(() => {
+    const timeline = document.querySelector('[data-testid="timeline-view"]');
+    if (timeline instanceof HTMLElement) {
+      timeline.scrollTop = 0;
+      timeline.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+  });
+}
+
+async function scrollTimelineToBottom(browser) {
+  await browser.execute(() => {
+    const timeline = document.querySelector('[data-testid="timeline-view"]');
+    if (timeline instanceof HTMLElement) {
+      timeline.scrollTop = timeline.scrollHeight;
+      timeline.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+  });
+}
+
+async function waitForTimelineScrolledToBottom(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastMetrics = null;
+  while (Date.now() - startedAt < timeout) {
+    lastMetrics = await timelineScrollMetrics(browser);
+    if (lastMetrics?.atBottom) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not reach timeline bottom. Last metrics=${JSON.stringify(lastMetrics)}`
+  );
+}
+
+async function driveTimelineToBottom(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastMetrics = null;
+  while (Date.now() - startedAt < timeout) {
+    await scrollTimelineToBottom(browser);
+    lastMetrics = await timelineScrollMetrics(browser);
+    if (lastMetrics?.atBottom) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not settle at timeline bottom. Last metrics=${JSON.stringify(lastMetrics)}`
+  );
+}
+
+async function waitForTimelineScrollable(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastMetrics = null;
+  while (Date.now() - startedAt < timeout) {
+    lastMetrics = await timelineScrollMetrics(browser);
+    if (lastMetrics?.scrollable) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not become scrollable. Last metrics=${JSON.stringify(lastMetrics)}`
+  );
+}
+
+async function waitForTimelineAwayFromBottom(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastMetrics = null;
+  while (Date.now() - startedAt < timeout) {
+    lastMetrics = await timelineScrollMetrics(browser);
+    if (lastMetrics?.scrollable && !lastMetrics.atBottom) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not move away from bottom. Last metrics=${JSON.stringify(lastMetrics)}`
+  );
+}
+
+async function timelineScrollMetrics(browser) {
+  return browser.execute(() => {
+    const timeline = document.querySelector('[data-testid="timeline-view"]');
+    if (!(timeline instanceof HTMLElement)) {
+      return null;
+    }
+    const bottomOffset = Math.abs(
+      timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop
+    );
+    return {
+      scrollTop: timeline.scrollTop,
+      scrollHeight: timeline.scrollHeight,
+      clientHeight: timeline.clientHeight,
+      bottomOffset,
+      messageCount: document.querySelectorAll(".message").length,
+      scrollable: timeline.scrollHeight > timeline.clientHeight,
+      atBottom: bottomOffset <= 2
+    };
+  });
+}
+
+function timelineNavigationSeedBody(index) {
+  return Array.from(
+    { length: TIMELINE_NAVIGATION_SEED_LINE_COUNT },
+    (_, lineIndex) =>
+      `QA timeline navigation seed ${index}.${lineIndex} scroll contract`
+  ).join("\n");
+}
+
 async function activeRoomDiagnostics(browser) {
   return browser.execute(() => {
     const textFor = (element) =>
@@ -1819,6 +2210,46 @@ async function activeRoomDiagnostics(browser) {
         .slice(0, 8)
     };
   });
+}
+
+async function clickVisibleButtonByTextPrefix(browser, prefix, timeout, description) {
+  const startedAt = Date.now();
+  let observed = [];
+  while (Date.now() - startedAt < timeout) {
+    const result = await browser.execute((targetPrefix) => {
+      const textFor = (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
+      const isVisible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity) !== 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const labels = buttons.map(textFor).filter(Boolean);
+      const target = buttons.find(
+        (button) => textFor(button).startsWith(targetPrefix) && isVisible(button)
+      );
+      if (!target) {
+        return { clicked: false, labels };
+      }
+      target.click();
+      return { clicked: true, labels };
+    }, prefix);
+    observed = result?.labels ?? [];
+    if (result?.clicked) {
+      return;
+    }
+    await sleep(250);
+  }
+  const metrics = await timelineScrollMetrics(browser).catch(() => null);
+  throw new Error(
+    `${description} button starting with ${prefix} was not found. Observed: ${observed.join(", ")}. Timeline metrics=${JSON.stringify(metrics)}`
+  );
 }
 
 async function clickMenuItemByText(browser, label, timeout) {
@@ -2372,6 +2803,29 @@ async function startLocalGuiScenario() {
         "QA helper seed message",
         `qa-helper-${userSuffix}`
       );
+    }
+
+    if (guiScenario === "local-timeline-navigation") {
+      const helperUsername = `qa_timeline_nav_${userSuffix}`;
+      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
+      const helperAccessToken = helperRegistration.access_token;
+      const helperUserId = helperRegistration.user_id;
+      if (!helperAccessToken || !helperUserId) {
+        throw new Error("local GUI timeline navigation setup did not return helper credentials");
+      }
+      session.helperAccessToken = helperAccessToken;
+      await inviteUserToRoom(homeserver, accessToken, seedRoomId, helperUserId);
+      await joinRoom(homeserver, helperAccessToken, seedRoomId);
+      for (let index = 0; index < TIMELINE_NAVIGATION_SEED_MESSAGE_COUNT; index += 1) {
+        await sendRoomMessage(
+          homeserver,
+          accessToken,
+          seedRoomId,
+          timelineNavigationSeedBody(index),
+          `qa-timeline-nav-seed-${index}-${userSuffix}`
+        );
+      }
     }
 
     if (guiScenario === "local-rich-formatting") {

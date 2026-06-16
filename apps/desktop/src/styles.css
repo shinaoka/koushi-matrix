@@ -73,6 +73,11 @@
   --message-avatar-column-inline-size: 44px;
   --message-avatar-size: 40px;
   --message-avatar-font-size: 14px;
+  --timeline-navigation-gap: 8px;
+  --timeline-navigation-padding-block: 8px;
+  --timeline-navigation-padding-inline: 20px;
+  --timeline-navigation-control-block-size: 32px;
+  --timeline-navigation-date-input-inline-size: 190px;
   --avatar-compact-size: 34px;
   --avatar-compact-radius: 7px;
   --avatar-compact-font-size: 12px;
@@ -1209,7 +1214,84 @@ button {
 }
 
 .timeline-scroll {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
   padding: 0 0 18px;
+}
+
+.timeline-scroll > .message-list {
+  grid-row: 3;
+}
+
+.timeline-navigation-bar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--timeline-navigation-gap);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--timeline-navigation-padding-block) var(--timeline-navigation-padding-inline);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.timeline-navigation-pills,
+.timeline-date-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--timeline-navigation-gap);
+  align-items: center;
+  min-width: 0;
+}
+
+.timeline-navigation-pill,
+.timeline-date-jump-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--timeline-navigation-control-block-size);
+  padding: 0 11px;
+  border: 1px solid var(--brand);
+  border-radius: var(--r-pill);
+  color: var(--brand);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.timeline-navigation-pill:hover,
+.timeline-navigation-pill:focus-visible,
+.timeline-date-jump-button:hover,
+.timeline-date-jump-button:focus-visible {
+  color: var(--brand-contrast);
+  background: var(--brand);
+}
+
+.timeline-date-jump-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.timeline-date-jump-input {
+  inline-size: min(var(--timeline-navigation-date-input-inline-size), 48vw);
+  min-inline-size: 0;
+  min-height: var(--timeline-navigation-control-block-size);
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
 }
 
 .pinned-events {
@@ -1573,6 +1655,10 @@ button {
 }
 
 .message-list {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
   padding: 8px 0 0;
 }
 

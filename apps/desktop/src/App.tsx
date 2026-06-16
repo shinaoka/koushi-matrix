@@ -41,6 +41,7 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useMemo,
   useRef,
   useState
 } from "react";
@@ -323,6 +324,22 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         destinationRoomId: string
       ) {
         await invoke("forward_message", { roomId, sourceEventId, destinationRoomId });
+      },
+      async observeViewport(
+        roomId: string,
+        firstVisibleEventId: string | null,
+        lastVisibleEventId: string | null,
+        atBottom: boolean
+      ) {
+        await invoke("observe_timeline_viewport", {
+          roomId,
+          firstVisibleEventId,
+          lastVisibleEventId,
+          atBottom
+        });
+      },
+      async openAtTimestamp(roomId: string, timestampMs: number) {
+        await invoke("open_timeline_at_timestamp", { roomId, timestampMs });
       }
     }
   : null;
@@ -713,6 +730,20 @@ export function App() {
   const loginPasswordRef = useRef<HTMLInputElement>(null);
   const recoverySecretRef = useRef<HTMLInputElement>(null);
   const roomSettingsLoadRef = useRef<string | null>(null);
+  const appTimelineTransport = useMemo<TimelineTransport | null>(() => {
+    if (!tauriTimelineTransport) {
+      return null;
+    }
+    return {
+      ...tauriTimelineTransport,
+      async openAtTimestamp(roomId: string, timestampMs: number) {
+        const nextSnapshot = await api.openTimelineAtTimestamp(roomId, timestampMs);
+        setSnapshot(nextSnapshot);
+        setPrimaryView("timeline");
+        setRightPanelMode("focusedContext");
+      }
+    };
+  }, []);
   const attentionSummary = snapshot
     ? desktopAttentionSummary(snapshot.state.native_attention)
     : null;
@@ -1898,6 +1929,7 @@ export function App() {
             showSearchResults={effectiveRightPanelMode !== "search"}
             snapshot={snapshot}
             stagedAttachment={stagedAttachment}
+            timelineTransport={appTimelineTransport}
             onCancelReply={() => {
               void cancelComposerReply();
             }}
@@ -1950,7 +1982,7 @@ export function App() {
           recoverySecretFilled={recoverySecretFilled}
           recoverySecretInputRef={recoverySecretRef}
           snapshot={snapshot}
-          timelineTransport={tauriTimelineTransport}
+          timelineTransport={appTimelineTransport}
           searchQuery={searchQuery}
           searchResults={searchResults}
           savedSessions={savedSessions}
@@ -3552,6 +3584,7 @@ function TimelinePane({
   showSearchResults,
   snapshot,
   stagedAttachment,
+  timelineTransport,
   onCancelReply,
   onAttachFile,
   onClearAttachment,
@@ -3580,6 +3613,7 @@ function TimelinePane({
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
   stagedAttachment: File | null;
+  timelineTransport: TimelineTransport | null;
   onCancelReply: () => void;
   onAttachFile: (file: File) => void | Promise<void>;
   onClearAttachment: () => void;
@@ -3671,14 +3705,14 @@ function TimelinePane({
               </span>
             </button>
           </div>
-          {tauriTimelineTransport && timelineRoomId && currentUserId ? (
+          {timelineTransport && timelineRoomId && currentUserId ? (
             // Production path: render from the event-driven timeline store
             // (CoreEvent diffs), never from AppState timeline fields.
             <TimelineView
               key={timelineRoomId}
               roomId={timelineRoomId}
               timelineKey={roomTimelineKey(currentUserId, timelineRoomId)}
-              transport={tauriTimelineTransport}
+              transport={timelineTransport}
               onReply={onReply}
               onOpenThread={onOpenThread}
               resolveComposerKeyAction={resolveComposerKeyAction}

@@ -1107,6 +1107,20 @@ describe("Tauri state refresh wiring", () => {
     expect(selectSearchResultSource).not.toContain("cssEscape");
   });
 
+  test("timeline date jump updates snapshot and opens focused context panel", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const transportStart = source.indexOf("const appTimelineTransport");
+    const transportEnd = source.indexOf("const attentionSummary", transportStart);
+    const transportSource = source.slice(transportStart, transportEnd);
+
+    expect(transportStart).toBeGreaterThanOrEqual(0);
+    expect(transportSource).toContain("api.openTimelineAtTimestamp(roomId, timestampMs)");
+    expect(transportSource).toContain("setSnapshot(nextSnapshot)");
+    expect(transportSource).toContain('setRightPanelMode("focusedContext")');
+    expect(source).toContain("timelineTransport={appTimelineTransport}");
+    expect(source).toContain("transport={timelineTransport}");
+  });
+
   test("closing an active focused context goes through Rust before hiding the panel", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const closeFocusedContextStart = source.indexOf("async function closeFocusedContextIfHiddenBy");

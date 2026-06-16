@@ -105,6 +105,17 @@ const transport: TimelineTransport = {
   },
   forwardMessage(roomId, sourceEventId, destinationRoomId) {
     return ipc.invoke("forward_message", { roomId, sourceEventId, destinationRoomId });
+  },
+  observeViewport(roomId, firstVisibleEventId, lastVisibleEventId, atBottom) {
+    return ipc.invoke("observe_timeline_viewport", {
+      roomId,
+      firstVisibleEventId,
+      lastVisibleEventId,
+      atBottom
+    });
+  },
+  openAtTimestamp(roomId, timestampMs) {
+    return ipc.invoke("open_timeline_at_timestamp", { roomId, timestampMs });
   }
 };
 
