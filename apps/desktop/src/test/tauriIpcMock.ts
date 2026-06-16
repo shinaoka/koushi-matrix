@@ -123,8 +123,14 @@ function sanitiseArgs(args: Record<string, any>): Record<string, any> {
   const REDACTED = "[REDACTED]";
   const SECRET_KEYS = new Set([
     "password",
+    "passphrase",
+    "oldSecret",
+    "newPassphrase",
     "secret",
     "recovery_secret",
+    "destinationPath",
+    "sourcePath",
+    "recoveryKeyDestinationPath",
     "access_token",
     "store_key",
     "search_index_key"

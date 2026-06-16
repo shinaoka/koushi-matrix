@@ -89,6 +89,38 @@ describe("TauriDesktopApi", () => {
     expect(invoke).toHaveBeenCalledWith("submit_identity_reset_oauth", { flowId: 45 });
   });
 
+  test("passes E2EE key-management actions to Rust-owned commands", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.exportRoomKeys("/tmp/export.txt", "room-key-passphrase");
+    await api.importRoomKeys("/tmp/import.txt", "room-key-passphrase");
+    await api.bootstrapSecureBackup("secure-backup-passphrase", "/tmp/recovery.txt");
+    await api.changeSecureBackupPassphrase(
+      "old-secure-backup-passphrase",
+      "new-secure-backup-passphrase",
+      "/tmp/recovery.txt"
+    );
+
+    expect(invoke).toHaveBeenCalledWith("export_room_keys", {
+      destinationPath: "/tmp/export.txt",
+      passphrase: "room-key-passphrase"
+    });
+    expect(invoke).toHaveBeenCalledWith("import_room_keys", {
+      sourcePath: "/tmp/import.txt",
+      passphrase: "room-key-passphrase"
+    });
+    expect(invoke).toHaveBeenCalledWith("bootstrap_secure_backup", {
+      passphrase: "secure-backup-passphrase",
+      recoveryKeyDestinationPath: "/tmp/recovery.txt"
+    });
+    expect(invoke).toHaveBeenCalledWith("change_secure_backup_passphrase", {
+      oldSecret: "old-secure-backup-passphrase",
+      newPassphrase: "new-secure-backup-passphrase",
+      recoveryKeyDestinationPath: "/tmp/recovery.txt"
+    });
+  });
+
   test("passes reaction actions to Rust-owned timeline commands", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

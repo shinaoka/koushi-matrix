@@ -206,6 +206,53 @@ describe("BrowserFakeApi settings preview", () => {
     expect(reset.state.e2ee_trust.key_backup).toEqual({ kind: "disabled" });
   });
 
+  test("updates Rust-shaped key-management state without retaining secrets or paths", async () => {
+    const api = createBrowserFakeApi();
+
+    const exported = await api.exportRoomKeys(
+      "/tmp/private-export.txt",
+      "private-room-key-passphrase"
+    );
+    expect(exported.state.e2ee_trust.key_management.room_key_export).toMatchObject({
+      kind: "exported",
+      exported_sessions: null
+    });
+
+    const imported = await api.importRoomKeys(
+      "/tmp/private-import.txt",
+      "private-room-key-passphrase"
+    );
+    expect(imported.state.e2ee_trust.key_management.room_key_import).toMatchObject({
+      kind: "imported",
+      imported_count: 1,
+      total_count: 1
+    });
+
+    const setup = await api.bootstrapSecureBackup(
+      "private-secure-backup-passphrase",
+      "/tmp/private-recovery.txt"
+    );
+    expect(setup.state.e2ee_trust.key_management.secure_backup_setup).toMatchObject({
+      kind: "recoveryKeyReady",
+      delivery: { kind: "written" }
+    });
+
+    const changed = await api.changeSecureBackupPassphrase(
+      "private-old-secure-backup-passphrase",
+      "private-new-secure-backup-passphrase",
+      null
+    );
+    expect(changed.state.e2ee_trust.key_management.passphrase_change).toMatchObject({
+      kind: "changed",
+      delivery: { kind: "notWritten" }
+    });
+
+    const serialized = JSON.stringify(changed.state.e2ee_trust.key_management);
+    expect(serialized).not.toContain("private-room-key-passphrase");
+    expect(serialized).not.toContain("private-secure-backup-passphrase");
+    expect(serialized).not.toContain("private-recovery");
+  });
+
   test("does not synthesize pin state for an unknown room", async () => {
     const api = createBrowserFakeApi();
 

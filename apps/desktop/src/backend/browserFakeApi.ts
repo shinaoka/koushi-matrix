@@ -51,6 +51,17 @@ export interface DesktopApi {
   resetLocalData(): Promise<DesktopSnapshot>;
   bootstrapCrossSigning(): Promise<DesktopSnapshot>;
   enableKeyBackup(): Promise<DesktopSnapshot>;
+  exportRoomKeys(destinationPath: string, passphrase: string): Promise<DesktopSnapshot>;
+  importRoomKeys(sourcePath: string, passphrase: string): Promise<DesktopSnapshot>;
+  bootstrapSecureBackup(
+    passphrase: string | null,
+    recoveryKeyDestinationPath: string | null
+  ): Promise<DesktopSnapshot>;
+  changeSecureBackupPassphrase(
+    oldSecret: string,
+    newPassphrase: string,
+    recoveryKeyDestinationPath: string | null
+  ): Promise<DesktopSnapshot>;
   acceptVerification(flowId: number): Promise<DesktopSnapshot>;
   confirmSasVerification(flowId: number): Promise<DesktopSnapshot>;
   cancelVerification(flowId: number): Promise<DesktopSnapshot>;
@@ -353,6 +364,73 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.e2ee_trust.key_backup = {
       kind: "enabled",
       version: "browser-preview"
+    };
+    return this.getSnapshot();
+  }
+
+  async exportRoomKeys(destinationPath: string, passphrase: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    void destinationPath;
+    void passphrase;
+    this.snapshot.state.e2ee_trust.key_management.room_key_export = {
+      kind: "exported",
+      request_id: this.nextRequestId(),
+      exported_sessions: null
+    };
+    return this.getSnapshot();
+  }
+
+  async importRoomKeys(sourcePath: string, passphrase: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    void sourcePath;
+    void passphrase;
+    this.snapshot.state.e2ee_trust.key_management.room_key_import = {
+      kind: "imported",
+      request_id: this.nextRequestId(),
+      imported_count: 1,
+      total_count: 1
+    };
+    return this.getSnapshot();
+  }
+
+  async bootstrapSecureBackup(
+    passphrase: string | null,
+    recoveryKeyDestinationPath: string | null
+  ): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    void passphrase;
+    this.snapshot.state.e2ee_trust.key_management.secure_backup_setup = {
+      kind: "recoveryKeyReady",
+      request_id: this.nextRequestId(),
+      delivery: recoveryKeyDestinationPath?.trim() ? { kind: "written" } : { kind: "notWritten" }
+    };
+    return this.getSnapshot();
+  }
+
+  async changeSecureBackupPassphrase(
+    oldSecret: string,
+    newPassphrase: string,
+    recoveryKeyDestinationPath: string | null
+  ): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    void oldSecret;
+    void newPassphrase;
+    this.snapshot.state.e2ee_trust.key_management.passphrase_change = {
+      kind: "changed",
+      request_id: this.nextRequestId(),
+      delivery: recoveryKeyDestinationPath?.trim() ? { kind: "written" } : { kind: "notWritten" }
     };
     return this.getSnapshot();
   }

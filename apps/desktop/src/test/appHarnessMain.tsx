@@ -613,6 +613,91 @@ mock.setCommandResponse("enable_key_backup", () =>
     }
   })
 );
+mock.setCommandResponse("export_room_keys", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        key_management: {
+          ...currentSnapshot.state.e2ee_trust.key_management,
+          room_key_export: {
+            kind: "exported",
+            request_id: 9_200,
+            exported_sessions: null
+          }
+        }
+      }
+    }
+  })
+);
+mock.setCommandResponse("import_room_keys", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        key_management: {
+          ...currentSnapshot.state.e2ee_trust.key_management,
+          room_key_import: {
+            kind: "imported",
+            request_id: 9_201,
+            imported_count: 1,
+            total_count: 1
+          }
+        }
+      }
+    }
+  })
+);
+mock.setCommandResponse(
+  "bootstrap_secure_backup",
+  ({ recoveryKeyDestinationPath }: { recoveryKeyDestinationPath?: string | null }) =>
+    setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        e2ee_trust: {
+          ...currentSnapshot.state.e2ee_trust,
+          key_management: {
+            ...currentSnapshot.state.e2ee_trust.key_management,
+            secure_backup_setup: {
+              kind: "recoveryKeyReady",
+              request_id: 9_202,
+              delivery: recoveryKeyDestinationPath?.trim()
+                ? { kind: "written" }
+                : { kind: "notWritten" }
+            }
+          }
+        }
+      }
+    })
+);
+mock.setCommandResponse(
+  "change_secure_backup_passphrase",
+  ({ recoveryKeyDestinationPath }: { recoveryKeyDestinationPath?: string | null }) =>
+    setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        e2ee_trust: {
+          ...currentSnapshot.state.e2ee_trust,
+          key_management: {
+            ...currentSnapshot.state.e2ee_trust.key_management,
+            passphrase_change: {
+              kind: "changed",
+              request_id: 9_203,
+              delivery: recoveryKeyDestinationPath?.trim()
+                ? { kind: "written" }
+                : { kind: "notWritten" }
+            }
+          }
+        }
+      }
+    })
+);
 mock.setCommandResponse("accept_verification", ({ flowId }: { flowId: number }) => {
   const verification = currentSnapshot.state.e2ee_trust.verification;
   if (verification.kind !== "requested" || verification.request_id !== flowId) {

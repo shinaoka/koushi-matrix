@@ -103,6 +103,10 @@ describe("UserSettingsPanel", () => {
     onSetDisplayName: () => undefined,
     onSubmitIdentityResetOAuth: () => undefined,
     onSubmitIdentityResetPassword: () => undefined,
+    onExportRoomKeys: () => undefined,
+    onImportRoomKeys: () => undefined,
+    onBootstrapSecureBackup: () => undefined,
+    onChangeSecureBackupPassphrase: () => undefined,
     onSwitchAccount: () => undefined,
     onUpdateSettings: () => undefined
   };
@@ -243,5 +247,62 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Not restored");
     expect(markup).toContain("@second-user:example.invalid");
     expect(markup).toContain("Switch");
+  });
+
+  test("renders Rust-owned E2EE key-management controls and status", () => {
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={{
+          ...idleE2eeTrust,
+          key_management: {
+            room_key_export: {
+              kind: "exported",
+              request_id: 10,
+              exported_sessions: null
+            },
+            room_key_import: {
+              kind: "imported",
+              request_id: 11,
+              imported_count: 1,
+              total_count: 1
+            },
+            secure_backup_setup: {
+              kind: "recoveryKeyReady",
+              request_id: 12,
+              delivery: { kind: "written" }
+            },
+            passphrase_change: {
+              kind: "changed",
+              request_id: 13,
+              delivery: { kind: "notWritten" }
+            }
+          }
+        }}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+
+    expect(markup).toContain("Room key export");
+    expect(markup).toContain("Room key import");
+    expect(markup).toContain("Secure backup");
+    expect(markup).toContain("Change secure backup passphrase");
+    expect(markup).toContain("Export room keys");
+    expect(markup).toContain("Import room keys");
+    expect(markup).toContain("Set up secure backup");
+    expect(markup).toContain("Recovery key saved");
+    expect(markup).toContain("1 of 1 imported");
+    expect(markup).not.toContain("private-room-key-passphrase");
+    expect(markup).not.toContain("private-secure-backup-passphrase");
+    expect(markup).not.toContain("/tmp/");
   });
 });

@@ -93,6 +93,36 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("enable_key_backup");
   }
 
+  async exportRoomKeys(destinationPath: string, passphrase: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("export_room_keys", { destinationPath, passphrase });
+  }
+
+  async importRoomKeys(sourcePath: string, passphrase: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("import_room_keys", { sourcePath, passphrase });
+  }
+
+  async bootstrapSecureBackup(
+    passphrase: string | null,
+    recoveryKeyDestinationPath: string | null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("bootstrap_secure_backup", {
+      passphrase,
+      recoveryKeyDestinationPath
+    });
+  }
+
+  async changeSecureBackupPassphrase(
+    oldSecret: string,
+    newPassphrase: string,
+    recoveryKeyDestinationPath: string | null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("change_secure_backup_passphrase", {
+      oldSecret,
+      newPassphrase,
+      recoveryKeyDestinationPath
+    });
+  }
+
   async acceptVerification(flowId: number): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("accept_verification", { flowId });
   }

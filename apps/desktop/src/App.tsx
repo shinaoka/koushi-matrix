@@ -1344,6 +1344,35 @@ export function App() {
     setSnapshot(await api.enableKeyBackup());
   }
 
+  async function exportRoomKeys(destinationPath: string, passphrase: string) {
+    setSnapshot(await api.exportRoomKeys(destinationPath, passphrase));
+  }
+
+  async function importRoomKeys(sourcePath: string, passphrase: string) {
+    setSnapshot(await api.importRoomKeys(sourcePath, passphrase));
+  }
+
+  async function bootstrapSecureBackup(
+    passphrase: string | null,
+    recoveryKeyDestinationPath: string | null
+  ) {
+    setSnapshot(await api.bootstrapSecureBackup(passphrase, recoveryKeyDestinationPath));
+  }
+
+  async function changeSecureBackupPassphrase(
+    oldSecret: string,
+    newPassphrase: string,
+    recoveryKeyDestinationPath: string | null
+  ) {
+    setSnapshot(
+      await api.changeSecureBackupPassphrase(
+        oldSecret,
+        newPassphrase,
+        recoveryKeyDestinationPath
+      )
+    );
+  }
+
   async function probeLocalEncryptionHealth() {
     setSnapshot(await api.probeLocalEncryptionHealth());
   }
@@ -2262,6 +2291,26 @@ export function App() {
           }}
           onConfirmSasVerification={(flowId) => {
             void confirmSasVerification(flowId);
+          }}
+          onExportRoomKeys={(destinationPath, passphrase) => {
+            void exportRoomKeys(destinationPath, passphrase);
+          }}
+          onImportRoomKeys={(sourcePath, passphrase) => {
+            void importRoomKeys(sourcePath, passphrase);
+          }}
+          onBootstrapSecureBackup={(passphrase, recoveryKeyDestinationPath) => {
+            void bootstrapSecureBackup(passphrase, recoveryKeyDestinationPath);
+          }}
+          onChangeSecureBackupPassphrase={(
+            oldSecret,
+            newPassphrase,
+            recoveryKeyDestinationPath
+          ) => {
+            void changeSecureBackupPassphrase(
+              oldSecret,
+              newPassphrase,
+              recoveryKeyDestinationPath
+            );
           }}
           onEnableKeyBackup={() => {
             void enableKeyBackup();
@@ -5132,6 +5181,10 @@ export function ContextualRightPanel({
   onBootstrapCrossSigning,
   onCancelVerification,
   onConfirmSasVerification,
+  onExportRoomKeys,
+  onImportRoomKeys,
+  onBootstrapSecureBackup,
+  onChangeSecureBackupPassphrase,
   onEnableKeyBackup,
   onResetIdentity,
   onResolveComposerKeyAction = ignoreComposerKeyAction,
@@ -5184,6 +5237,17 @@ export function ContextualRightPanel({
   onBootstrapCrossSigning: () => void;
   onCancelVerification: (flowId: number) => void;
   onConfirmSasVerification: (flowId: number) => void;
+  onExportRoomKeys: (destinationPath: string, passphrase: string) => void;
+  onImportRoomKeys: (sourcePath: string, passphrase: string) => void;
+  onBootstrapSecureBackup: (
+    passphrase: string | null,
+    recoveryKeyDestinationPath: string | null
+  ) => void;
+  onChangeSecureBackupPassphrase: (
+    oldSecret: string,
+    newPassphrase: string,
+    recoveryKeyDestinationPath: string | null
+  ) => void;
   onEnableKeyBackup: () => void;
   onResetIdentity: () => void;
   onResolveComposerKeyAction?: ResolveComposerKeyAction;
@@ -5245,6 +5309,10 @@ export function ContextualRightPanel({
           onBootstrapCrossSigning={onBootstrapCrossSigning}
           onCancelVerification={onCancelVerification}
           onConfirmSasVerification={onConfirmSasVerification}
+          onExportRoomKeys={onExportRoomKeys}
+          onImportRoomKeys={onImportRoomKeys}
+          onBootstrapSecureBackup={onBootstrapSecureBackup}
+          onChangeSecureBackupPassphrase={onChangeSecureBackupPassphrase}
           onEnableKeyBackup={onEnableKeyBackup}
           onOpenRecovery={onOpenRecovery}
           onOpenKeyboardSettings={onOpenKeyboardSettings}
