@@ -182,13 +182,16 @@ class BrowserFakeApi implements DesktopApi {
       flows: [
         {
           kind: "password",
-          delegated_oidc_compatibility: false
+          delegated_oidc_compatibility: false,
+          display_name: null
         },
         {
           kind: "sso",
-          delegated_oidc_compatibility: true
+          delegated_oidc_compatibility: true,
+          display_name: null
         }
-      ]
+      ],
+      delegated: defaultDelegatedAuthLinks()
     };
 
     return this.getSnapshot();
@@ -1910,6 +1913,9 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.directory = defaultDirectoryState();
     this.snapshot.state.room_management = defaultRoomManagementState();
     this.snapshot.state.activity = { kind: "closed" };
+    this.snapshot.state.device_sessions = { kind: "idle" };
+    this.snapshot.state.account_management = { kind: "idle" };
+    this.snapshot.state.qr_login = { kind: "idle" };
     this.snapshot.state.basic_operation = { kind: "idle" };
     this.snapshot.state.profile = defaultProfileState(null);
     this.snapshot.state.e2ee_trust = defaultE2eeTrustState();
@@ -1969,6 +1975,9 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         kind: "ready"
       },
       auth: { kind: "unknown" },
+      device_sessions: { kind: "idle" },
+      account_management: { kind: "idle" },
+      qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),
       typography_profile: defaultTypographyDisplayProfile(),
@@ -2070,6 +2079,9 @@ function createSignedOutSnapshot(): DesktopSnapshot {
     state: {
       session: { kind: "signedOut" },
       auth: { kind: "unknown" },
+      device_sessions: { kind: "idle" },
+      account_management: { kind: "idle" },
+      qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),
       typography_profile: defaultTypographyDisplayProfile(),
@@ -2225,7 +2237,27 @@ function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
     cross_signing: { kind: "unknown" },
     key_backup: { kind: "unknown" },
     identity_reset: { kind: "idle" },
+    key_management: defaultE2eeKeyManagementState(),
     devices: []
+  };
+}
+
+function defaultDelegatedAuthLinks(): Extract<
+  DesktopSnapshot["state"]["auth"],
+  { kind: "ready" }
+>["delegated"] {
+  return {
+    registration_url: null,
+    account_management_url: null
+  };
+}
+
+function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["e2ee_trust"]["key_management"] {
+  return {
+    room_key_export: { kind: "idle" },
+    room_key_import: { kind: "idle" },
+    secure_backup_setup: { kind: "idle" },
+    passphrase_change: { kind: "idle" }
   };
 }
 

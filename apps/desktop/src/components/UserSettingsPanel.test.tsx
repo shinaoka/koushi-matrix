@@ -25,6 +25,12 @@ describe("UserSettingsPanel", () => {
     },
     persistence: { kind: "idle" }
   } as const;
+  const keyManagement: E2eeTrustState["key_management"] = {
+    room_key_export: { kind: "idle" },
+    room_key_import: { kind: "idle" },
+    secure_backup_setup: { kind: "idle" },
+    passphrase_change: { kind: "idle" }
+  };
   const e2eeTrust: E2eeTrustState = {
     verification: {
       kind: "sasPresented",
@@ -41,6 +47,7 @@ describe("UserSettingsPanel", () => {
     cross_signing: { kind: "trusted" },
     key_backup: { kind: "enabled", version: "backup-version" },
     identity_reset: { kind: "idle" },
+    key_management: keyManagement,
     devices: [
       {
         user_id: "@demo-user:example.invalid",
@@ -59,6 +66,7 @@ describe("UserSettingsPanel", () => {
     cross_signing: { kind: "unknown" },
     key_backup: { kind: "unknown" },
     identity_reset: { kind: "idle" },
+    key_management: keyManagement,
     devices: []
   };
   const profile: ProfileState = {

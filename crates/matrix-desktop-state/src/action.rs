@@ -1,15 +1,16 @@
 use std::fmt;
 
 use crate::state::{
-    ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab, BasicOperationRequest,
-    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState,
+    AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
+    AuthFailureKind, BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks,
+    DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState,
     IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate,
     LocalEncryptionHealth, LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile,
-    PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomModerationAction,
-    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
-    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
-    StagedUploadCompressionChoice, StagedUploadItem, TimelineMediaGalleryItem,
+    PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod,
+    RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo,
+    RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability, ScheduledSendHandle,
+    ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues,
+    SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem, TimelineMediaGalleryItem,
     TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
@@ -30,10 +31,40 @@ pub enum AppAction {
     LoginDiscoverySucceeded {
         homeserver: String,
         flows: Vec<LoginFlow>,
+        delegated: DelegatedAuthLinks,
     },
     LoginDiscoveryFailed {
         homeserver: String,
-        message: String,
+        kind: AuthFailureKind,
+    },
+    DeviceSessionsLoadRequested {
+        request_id: u64,
+    },
+    DeviceSessionsLoaded {
+        request_id: u64,
+        devices: Vec<DeviceSessionSummary>,
+    },
+    DeviceSessionsLoadFailed {
+        request_id: u64,
+        kind: AuthFailureKind,
+    },
+    AccountManagementRequested {
+        request_id: u64,
+        operation: AccountManagementOperation,
+    },
+    AccountManagementUiaRequired {
+        request_id: u64,
+        flow_id: u64,
+        operation: AccountManagementOperation,
+    },
+    AccountManagementSucceeded {
+        request_id: u64,
+        operation: AccountManagementOperation,
+    },
+    AccountManagementFailed {
+        request_id: u64,
+        operation: AccountManagementOperation,
+        kind: AuthFailureKind,
     },
     SettingsLoaded {
         values: SettingsValues,
@@ -175,6 +206,73 @@ pub enum AppAction {
     ResetIdentityFailed {
         request_id: u64,
         kind: TrustOperationFailureKind,
+    },
+    RoomKeyExportRequested {
+        request_id: u64,
+    },
+    RoomKeyExported {
+        request_id: u64,
+        exported_sessions: u64,
+    },
+    RoomKeyExportFailed {
+        request_id: u64,
+        kind: TrustOperationFailureKind,
+    },
+    RoomKeyImportRequested {
+        request_id: u64,
+    },
+    RoomKeyImported {
+        request_id: u64,
+        imported_count: u64,
+        total_count: u64,
+    },
+    RoomKeyImportFailed {
+        request_id: u64,
+        kind: TrustOperationFailureKind,
+    },
+    SecureBackupSetupRequested {
+        request_id: u64,
+    },
+    SecureBackupRecoveryKeyReady {
+        request_id: u64,
+        delivery: RecoveryKeyDeliveryState,
+    },
+    SecureBackupSetupEnabled {
+        request_id: u64,
+    },
+    SecureBackupSetupFailed {
+        request_id: u64,
+        kind: TrustOperationFailureKind,
+    },
+    SecureBackupPassphraseChangeRequested {
+        request_id: u64,
+    },
+    SecureBackupPassphraseChanged {
+        request_id: u64,
+        delivery: RecoveryKeyDeliveryState,
+    },
+    SecureBackupPassphraseChangeFailed {
+        request_id: u64,
+        kind: TrustOperationFailureKind,
+    },
+    QrLoginCapabilityCheckRequested {
+        request_id: u64,
+    },
+    QrLoginUnavailable {
+        request_id: u64,
+    },
+    QrLoginDisplayRequested {
+        request_id: u64,
+    },
+    QrLoginScanStarted {
+        request_id: u64,
+    },
+    QrLoginVerified {
+        request_id: u64,
+    },
+    QrLoginFailed {
+        request_id: u64,
+        kind: AuthFailureKind,
     },
     LoginFailed {
         message: String,

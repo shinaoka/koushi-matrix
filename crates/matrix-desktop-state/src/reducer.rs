@@ -2,15 +2,17 @@ use crate::{
     action::AppAction,
     effect::{AppEffect, UiEvent},
     state::{
-        ActivityMarkReadState, ActivityState, ActivityStream, ActivityTab, AppError, AppState,
-        BasicOperationRequest, BasicOperationState, ComposerMode, CrossSigningStatus,
-        DirectoryJoinState, DirectoryQueryState, DirectoryState, E2eeRecoveryState, E2eeTrustState,
+        AccountManagementState, ActivityMarkReadState, ActivityState, ActivityStream, ActivityTab,
+        AppError, AppState, BasicOperationRequest, BasicOperationState, ComposerMode,
+        CrossSigningStatus, DeviceSessionListState, DirectoryJoinState, DirectoryQueryState,
+        DirectoryState, E2eeKeyManagementState, E2eeRecoveryState, E2eeTrustState,
         FocusedContextState, IdentityResetState, KeyBackupStatus, LocalEncryptionState,
         NavigationState, OperationFailureKind, PendingComposerSendKind, PinOp, PinOperationState,
-        RoomManagementOperationKind, RoomManagementOperationState, RoomMemberRole,
-        RoomModerationAction, SasEmoji, SearchState, SessionState, SettingsPersistenceState,
-        StagedUploadCompressionChoice, SyncState, ThreadAttentionState, ThreadPaneState,
-        TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
+        QrLoginState, RoomKeyExportState, RoomKeyImportState, RoomManagementOperationKind,
+        RoomManagementOperationState, RoomMemberRole, RoomModerationAction, SasEmoji, SearchState,
+        SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionState,
+        SettingsPersistenceState, StagedUploadCompressionChoice, SyncState, ThreadAttentionState,
+        ThreadPaneState, TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
         VerificationFlowState, VerificationTarget,
     },
 };
@@ -462,6 +464,290 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.e2ee_trust.cross_signing = CrossSigningStatus::Failed { request_id, kind };
             vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
         }
+        AppAction::RoomKeyExportRequested { request_id } => {
+            if !is_session_ready(state)
+                || matches!(
+                    state.e2ee_trust.key_management.room_key_export,
+                    RoomKeyExportState::Exporting { .. }
+                )
+            {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.room_key_export =
+                RoomKeyExportState::Exporting { request_id };
+            e2ee_key_management_events()
+        }
+        AppAction::RoomKeyExported {
+            request_id,
+            exported_sessions,
+        } => {
+            if !matches!(
+                state.e2ee_trust.key_management.room_key_export,
+                RoomKeyExportState::Exporting {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.room_key_export = RoomKeyExportState::Exported {
+                request_id,
+                exported_sessions,
+            };
+            e2ee_key_management_events()
+        }
+        AppAction::RoomKeyExportFailed { request_id, kind } => {
+            if !matches!(
+                state.e2ee_trust.key_management.room_key_export,
+                RoomKeyExportState::Exporting {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.room_key_export =
+                RoomKeyExportState::Failed { request_id, kind };
+            e2ee_key_management_events()
+        }
+        AppAction::RoomKeyImportRequested { request_id } => {
+            if !is_session_ready(state)
+                || matches!(
+                    state.e2ee_trust.key_management.room_key_import,
+                    RoomKeyImportState::Importing { .. }
+                )
+            {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.room_key_import =
+                RoomKeyImportState::Importing { request_id };
+            e2ee_key_management_events()
+        }
+        AppAction::RoomKeyImported {
+            request_id,
+            imported_count,
+            total_count,
+        } => {
+            if !matches!(
+                state.e2ee_trust.key_management.room_key_import,
+                RoomKeyImportState::Importing {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.room_key_import = RoomKeyImportState::Imported {
+                request_id,
+                imported_count,
+                total_count,
+            };
+            e2ee_key_management_events()
+        }
+        AppAction::RoomKeyImportFailed { request_id, kind } => {
+            if !matches!(
+                state.e2ee_trust.key_management.room_key_import,
+                RoomKeyImportState::Importing {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.room_key_import =
+                RoomKeyImportState::Failed { request_id, kind };
+            e2ee_key_management_events()
+        }
+        AppAction::SecureBackupSetupRequested { request_id } => {
+            if !is_session_ready(state)
+                || matches!(
+                    state.e2ee_trust.key_management.secure_backup_setup,
+                    SecureBackupSetupState::SettingUp { .. }
+                )
+            {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.secure_backup_setup =
+                SecureBackupSetupState::SettingUp { request_id };
+            e2ee_key_management_events()
+        }
+        AppAction::SecureBackupRecoveryKeyReady {
+            request_id,
+            delivery,
+        } => {
+            if !matches!(
+                state.e2ee_trust.key_management.secure_backup_setup,
+                SecureBackupSetupState::SettingUp {
+                    request_id: active
+                }
+                | SecureBackupSetupState::RecoveryKeyReady {
+                    request_id: active,
+                    ..
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.secure_backup_setup =
+                SecureBackupSetupState::RecoveryKeyReady {
+                    request_id,
+                    delivery,
+                };
+            e2ee_key_management_events()
+        }
+        AppAction::SecureBackupSetupEnabled { request_id } => {
+            if !matches!(
+                state.e2ee_trust.key_management.secure_backup_setup,
+                SecureBackupSetupState::SettingUp {
+                    request_id: active
+                }
+                | SecureBackupSetupState::RecoveryKeyReady {
+                    request_id: active,
+                    ..
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.secure_backup_setup =
+                SecureBackupSetupState::Enabled { request_id };
+            e2ee_key_management_events()
+        }
+        AppAction::SecureBackupSetupFailed { request_id, kind } => {
+            if !matches!(
+                state.e2ee_trust.key_management.secure_backup_setup,
+                SecureBackupSetupState::SettingUp {
+                    request_id: active
+                }
+                | SecureBackupSetupState::RecoveryKeyReady {
+                    request_id: active,
+                    ..
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.secure_backup_setup =
+                SecureBackupSetupState::Failed { request_id, kind };
+            e2ee_key_management_events()
+        }
+        AppAction::SecureBackupPassphraseChangeRequested { request_id } => {
+            if !is_session_ready(state)
+                || matches!(
+                    state.e2ee_trust.key_management.passphrase_change,
+                    SecureBackupPassphraseChangeState::Changing { .. }
+                )
+            {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.passphrase_change =
+                SecureBackupPassphraseChangeState::Changing { request_id };
+            e2ee_key_management_events()
+        }
+        AppAction::SecureBackupPassphraseChanged {
+            request_id,
+            delivery,
+        } => {
+            if !matches!(
+                state.e2ee_trust.key_management.passphrase_change,
+                SecureBackupPassphraseChangeState::Changing {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.passphrase_change =
+                SecureBackupPassphraseChangeState::Changed {
+                    request_id,
+                    delivery,
+                };
+            e2ee_key_management_events()
+        }
+        AppAction::SecureBackupPassphraseChangeFailed { request_id, kind } => {
+            if !matches!(
+                state.e2ee_trust.key_management.passphrase_change,
+                SecureBackupPassphraseChangeState::Changing {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.e2ee_trust.key_management.passphrase_change =
+                SecureBackupPassphraseChangeState::Failed { request_id, kind };
+            e2ee_key_management_events()
+        }
+        AppAction::QrLoginCapabilityCheckRequested { request_id } => {
+            if matches!(
+                state.qr_login,
+                QrLoginState::CheckingCapability { .. }
+                    | QrLoginState::Displaying { .. }
+                    | QrLoginState::Scanning { .. }
+            ) {
+                return Vec::new();
+            }
+            state.qr_login = QrLoginState::CheckingCapability { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::QrLoginChanged)]
+        }
+        AppAction::QrLoginUnavailable { request_id } => {
+            if !matches!(
+                state.qr_login,
+                QrLoginState::CheckingCapability {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.qr_login = QrLoginState::Unavailable;
+            vec![AppEffect::EmitUiEvent(UiEvent::QrLoginChanged)]
+        }
+        AppAction::QrLoginDisplayRequested { request_id } => {
+            if matches!(
+                state.qr_login,
+                QrLoginState::Displaying { .. } | QrLoginState::Scanning { .. }
+            ) {
+                return Vec::new();
+            }
+            state.qr_login = QrLoginState::Displaying { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::QrLoginChanged)]
+        }
+        AppAction::QrLoginScanStarted { request_id } => {
+            if !matches!(
+                state.qr_login,
+                QrLoginState::Displaying {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.qr_login = QrLoginState::Scanning { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::QrLoginChanged)]
+        }
+        AppAction::QrLoginVerified { request_id } => {
+            if !matches!(
+                state.qr_login,
+                QrLoginState::Displaying {
+                    request_id: active
+                }
+                | QrLoginState::Scanning {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.qr_login = QrLoginState::Verified { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::QrLoginChanged)]
+        }
+        AppAction::QrLoginFailed { request_id, kind } => {
+            if !matches!(
+                state.qr_login,
+                QrLoginState::CheckingCapability {
+                    request_id: active
+                }
+                | QrLoginState::Displaying {
+                    request_id: active
+                }
+                | QrLoginState::Scanning {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.qr_login = QrLoginState::Failed { request_id, kind };
+            vec![AppEffect::EmitUiEvent(UiEvent::QrLoginChanged)]
+        }
         AppAction::RestoreSessionNotFound => {
             state.session = SessionState::SignedOut;
             vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
@@ -503,19 +789,144 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::AuthChanged),
             ]
         }
-        AppAction::LoginDiscoverySucceeded { homeserver, flows } => {
-            state.auth = crate::state::AuthDiscoveryState::Ready { homeserver, flows };
-            vec![AppEffect::EmitUiEvent(UiEvent::AuthChanged)]
-        }
-        AppAction::LoginDiscoveryFailed {
+        AppAction::LoginDiscoverySucceeded {
             homeserver,
-            message,
+            flows,
+            delegated,
         } => {
-            state.auth = crate::state::AuthDiscoveryState::Failed {
+            if !matches!(
+                &state.auth,
+                crate::state::AuthDiscoveryState::Discovering {
+                    homeserver: active
+                } if active == &homeserver
+            ) {
+                return Vec::new();
+            }
+            state.auth = crate::state::AuthDiscoveryState::Ready {
                 homeserver,
-                message,
+                flows,
+                delegated,
             };
             vec![AppEffect::EmitUiEvent(UiEvent::AuthChanged)]
+        }
+        AppAction::LoginDiscoveryFailed { homeserver, kind } => {
+            if !matches!(
+                &state.auth,
+                crate::state::AuthDiscoveryState::Discovering {
+                    homeserver: active
+                } if active == &homeserver
+            ) {
+                return Vec::new();
+            }
+            state.auth = crate::state::AuthDiscoveryState::Failed { homeserver, kind };
+            vec![AppEffect::EmitUiEvent(UiEvent::AuthChanged)]
+        }
+        AppAction::DeviceSessionsLoadRequested { request_id } => {
+            if !is_session_ready(state)
+                || matches!(
+                    state.device_sessions,
+                    DeviceSessionListState::Loading { .. }
+                )
+            {
+                return Vec::new();
+            }
+            state.device_sessions = DeviceSessionListState::Loading { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged)]
+        }
+        AppAction::DeviceSessionsLoaded {
+            request_id,
+            devices,
+        } => {
+            if !matches!(
+                state.device_sessions,
+                DeviceSessionListState::Loading {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.device_sessions = DeviceSessionListState::Loaded { devices };
+            vec![AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged)]
+        }
+        AppAction::DeviceSessionsLoadFailed { request_id, kind } => {
+            if !matches!(
+                state.device_sessions,
+                DeviceSessionListState::Loading {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.device_sessions = DeviceSessionListState::Failed { request_id, kind };
+            vec![AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged)]
+        }
+        AppAction::AccountManagementRequested {
+            request_id,
+            operation,
+        } => {
+            if !is_session_ready(state)
+                || matches!(
+                    state.account_management,
+                    AccountManagementState::Working { .. }
+                        | AccountManagementState::AwaitingUia { .. }
+                )
+            {
+                return Vec::new();
+            }
+            state.account_management = AccountManagementState::Working {
+                request_id,
+                operation,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged)]
+        }
+        AppAction::AccountManagementUiaRequired {
+            request_id,
+            flow_id,
+            operation,
+        } => {
+            if !matches!(
+                state.account_management,
+                AccountManagementState::Working {
+                    request_id: active,
+                    operation: active_operation,
+                } if active == request_id && active_operation == operation
+            ) {
+                return Vec::new();
+            }
+            state.account_management = AccountManagementState::AwaitingUia {
+                request_id,
+                flow_id,
+                operation,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged)]
+        }
+        AppAction::AccountManagementSucceeded {
+            request_id,
+            operation,
+        } => {
+            if !account_management_matches(&state.account_management, request_id, operation) {
+                return Vec::new();
+            }
+            state.account_management = AccountManagementState::Succeeded {
+                request_id,
+                operation,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged)]
+        }
+        AppAction::AccountManagementFailed {
+            request_id,
+            operation,
+            kind,
+        } => {
+            if !account_management_matches(&state.account_management, request_id, operation) {
+                return Vec::new();
+            }
+            state.account_management = AccountManagementState::Failed {
+                request_id,
+                operation,
+                kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged)]
         }
         AppAction::SettingsLoaded { values } => {
             state.settings.values = values;
@@ -2973,6 +3384,32 @@ fn identity_reset_request_matches(identity_reset: &IdentityResetState, request_i
     )
 }
 
+fn account_management_matches(
+    state: &AccountManagementState,
+    request_id: u64,
+    operation: crate::state::AccountManagementOperation,
+) -> bool {
+    matches!(
+        state,
+        AccountManagementState::Working {
+            request_id: active,
+            operation: active_operation,
+        }
+        | AccountManagementState::AwaitingUia {
+            request_id: active,
+            operation: active_operation,
+            ..
+        } if *active == request_id && *active_operation == operation
+    )
+}
+
+fn e2ee_key_management_events() -> Vec<AppEffect> {
+    vec![
+        AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+        AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged),
+    ]
+}
+
 fn first_default_room_id(state: &AppState) -> Option<String> {
     state
         .rooms
@@ -3152,6 +3589,11 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
         || state.thread_attention != ThreadAttentionState::Closed;
     let had_search = state.search != SearchState::Closed;
     let had_e2ee_trust = state.e2ee_trust != E2eeTrustState::default();
+    let had_e2ee_key_management =
+        state.e2ee_trust.key_management != E2eeKeyManagementState::default();
+    let had_device_sessions = state.device_sessions != DeviceSessionListState::Idle;
+    let had_account_management = state.account_management != AccountManagementState::Idle;
+    let had_qr_login = state.qr_login != QrLoginState::Idle;
     let had_live_signals = state.live_signals != Default::default();
     let had_profile = state.profile != Default::default();
     let had_room_interactions = !state.room_interactions.is_empty();
@@ -3180,6 +3622,9 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.focused_context = FocusedContextState::Closed;
     state.search = SearchState::Closed;
     state.e2ee_trust = E2eeTrustState::default();
+    state.device_sessions = DeviceSessionListState::Idle;
+    state.account_management = AccountManagementState::Idle;
+    state.qr_login = QrLoginState::Idle;
     state.live_signals = Default::default();
     state.local_encryption = LocalEncryptionState::Unknown;
     state.native_attention = Default::default();
@@ -3196,6 +3641,18 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_e2ee_trust {
         effects.push(AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged));
+    }
+    if had_e2ee_key_management {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged));
+    }
+    if had_device_sessions {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged));
+    }
+    if had_account_management {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged));
+    }
+    if had_qr_login {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::QrLoginChanged));
     }
     if had_live_signals {
         effects.push(AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged));

@@ -12,6 +12,12 @@ use crate::locale_profile::DisplayPlatform;
 pub struct AppState {
     pub session: SessionState,
     pub auth: AuthDiscoveryState,
+    #[serde(default)]
+    pub device_sessions: DeviceSessionListState,
+    #[serde(default)]
+    pub account_management: AccountManagementState,
+    #[serde(default)]
+    pub qr_login: QrLoginState,
     pub settings: SettingsState,
     pub profile: ProfileState,
     pub sync: SyncState,
@@ -50,6 +56,9 @@ impl Default for AppState {
         Self {
             session: SessionState::SignedOut,
             auth: AuthDiscoveryState::Unknown,
+            device_sessions: DeviceSessionListState::Idle,
+            account_management: AccountManagementState::Idle,
+            qr_login: QrLoginState::Idle,
             settings: SettingsState::default(),
             profile: ProfileState::default(),
             sync: SyncState::Stopped,
@@ -354,17 +363,39 @@ pub enum AuthDiscoveryState {
     Ready {
         homeserver: String,
         flows: Vec<LoginFlow>,
+        #[serde(default)]
+        delegated: DelegatedAuthLinks,
     },
     Failed {
         homeserver: String,
-        message: String,
+        #[serde(rename = "failureKind")]
+        kind: AuthFailureKind,
     },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DelegatedAuthLinks {
+    pub registration_url: Option<String>,
+    pub account_management_url: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AuthFailureKind {
+    Network,
+    Unsupported,
+    Cancelled,
+    Forbidden,
+    Timeout,
+    Sdk,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LoginFlow {
     pub kind: LoginFlowKind,
     pub delegated_oidc_compatibility: bool,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -372,8 +403,99 @@ pub struct LoginFlow {
 pub enum LoginFlowKind {
     Password,
     Sso,
+    Oidc,
     Token,
     Unknown(String),
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DeviceSessionListState {
+    #[default]
+    Idle,
+    Loading {
+        request_id: u64,
+    },
+    Loaded {
+        devices: Vec<DeviceSessionSummary>,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: AuthFailureKind,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeviceSessionSummary {
+    pub device_ordinal: u64,
+    pub display_name: Option<String>,
+    pub current: bool,
+    pub verified: bool,
+    pub inactive: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AccountManagementState {
+    #[default]
+    Idle,
+    Working {
+        request_id: u64,
+        operation: AccountManagementOperation,
+    },
+    AwaitingUia {
+        request_id: u64,
+        flow_id: u64,
+        operation: AccountManagementOperation,
+    },
+    Succeeded {
+        request_id: u64,
+        operation: AccountManagementOperation,
+    },
+    Failed {
+        request_id: u64,
+        operation: AccountManagementOperation,
+        #[serde(rename = "failureKind")]
+        kind: AuthFailureKind,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountManagementOperation {
+    RenameDevice,
+    DeleteDevice,
+    DeleteOtherDevices,
+    ChangePassword,
+    DeactivateAccount,
+    ThreePid,
+    IdentityServer,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum QrLoginState {
+    #[default]
+    Idle,
+    CheckingCapability {
+        request_id: u64,
+    },
+    Unavailable,
+    Displaying {
+        request_id: u64,
+    },
+    Scanning {
+        request_id: u64,
+    },
+    Verified {
+        request_id: u64,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: AuthFailureKind,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -420,7 +542,105 @@ pub struct E2eeTrustState {
     pub cross_signing: CrossSigningStatus,
     pub key_backup: KeyBackupStatus,
     pub identity_reset: IdentityResetState,
+    #[serde(default)]
+    pub key_management: E2eeKeyManagementState,
     pub devices: Vec<DeviceTrustSummary>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct E2eeKeyManagementState {
+    pub room_key_export: RoomKeyExportState,
+    pub room_key_import: RoomKeyImportState,
+    pub secure_backup_setup: SecureBackupSetupState,
+    pub passphrase_change: SecureBackupPassphraseChangeState,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoomKeyExportState {
+    #[default]
+    Idle,
+    Exporting {
+        request_id: u64,
+    },
+    Exported {
+        request_id: u64,
+        exported_sessions: u64,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: TrustOperationFailureKind,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoomKeyImportState {
+    #[default]
+    Idle,
+    Importing {
+        request_id: u64,
+    },
+    Imported {
+        request_id: u64,
+        imported_count: u64,
+        total_count: u64,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: TrustOperationFailureKind,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SecureBackupSetupState {
+    #[default]
+    Idle,
+    SettingUp {
+        request_id: u64,
+    },
+    RecoveryKeyReady {
+        request_id: u64,
+        delivery: RecoveryKeyDeliveryState,
+    },
+    Enabled {
+        request_id: u64,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: TrustOperationFailureKind,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RecoveryKeyDeliveryState {
+    #[default]
+    NotWritten,
+    Written,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SecureBackupPassphraseChangeState {
+    #[default]
+    Idle,
+    Changing {
+        request_id: u64,
+    },
+    Changed {
+        request_id: u64,
+        delivery: RecoveryKeyDeliveryState,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: TrustOperationFailureKind,
+    },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

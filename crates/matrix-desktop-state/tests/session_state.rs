@@ -1,10 +1,11 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, AuthDiscoveryState, AuthSecret, E2eeRecoveryState, LoginFlow,
-    LoginFlowKind, LoginRequest, NativeAttentionCandidate, NativeAttentionCapabilities,
-    NativeAttentionCapability, NativeAttentionState, NativeAttentionSummary, NavigationState,
-    RecoveryMethod, RecoveryRequest, RoomAttentionKind, RoomSummary, RoomTags, SearchScope,
-    SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadAttentionState,
-    ThreadPaneState, TimelinePaneState, UiEvent, reduce,
+    AppAction, AppEffect, AppState, AuthDiscoveryState, AuthFailureKind, AuthSecret,
+    DelegatedAuthLinks, E2eeRecoveryState, LoginFlow, LoginFlowKind, LoginRequest,
+    NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
+    NativeAttentionState, NativeAttentionSummary, NavigationState, RecoveryMethod, RecoveryRequest,
+    RoomAttentionKind, RoomSummary, RoomTags, SearchScope, SearchState, SessionInfo, SessionState,
+    SpaceSummary, SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState, UiEvent,
+    reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -112,10 +113,12 @@ fn login_discovery_success_records_supported_flows() {
         LoginFlow {
             kind: LoginFlowKind::Password,
             delegated_oidc_compatibility: false,
+            display_name: None,
         },
         LoginFlow {
             kind: LoginFlowKind::Sso,
             delegated_oidc_compatibility: true,
+            display_name: None,
         },
     ];
 
@@ -124,6 +127,7 @@ fn login_discovery_success_records_supported_flows() {
         AppAction::LoginDiscoverySucceeded {
             homeserver: "https://matrix.example.org".to_owned(),
             flows: flows.clone(),
+            delegated: DelegatedAuthLinks::default(),
         },
     );
 
@@ -131,10 +135,58 @@ fn login_discovery_success_records_supported_flows() {
         state.auth,
         AuthDiscoveryState::Ready {
             homeserver: "https://matrix.example.org".to_owned(),
-            flows
+            flows,
+            delegated: DelegatedAuthLinks::default(),
         }
     );
     assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::AuthChanged)]);
+}
+
+#[test]
+fn login_discovery_ignores_stale_completions_for_previous_homeserver() {
+    let mut state = AppState {
+        auth: AuthDiscoveryState::Discovering {
+            homeserver: "https://new.example.org".to_owned(),
+        },
+        ..AppState::default()
+    };
+
+    let success_effects = reduce(
+        &mut state,
+        AppAction::LoginDiscoverySucceeded {
+            homeserver: "https://old.example.org".to_owned(),
+            flows: vec![LoginFlow {
+                kind: LoginFlowKind::Password,
+                delegated_oidc_compatibility: false,
+                display_name: None,
+            }],
+            delegated: DelegatedAuthLinks::default(),
+        },
+    );
+
+    assert!(success_effects.is_empty());
+    assert_eq!(
+        state.auth,
+        AuthDiscoveryState::Discovering {
+            homeserver: "https://new.example.org".to_owned(),
+        }
+    );
+
+    let failure_effects = reduce(
+        &mut state,
+        AppAction::LoginDiscoveryFailed {
+            homeserver: "https://old.example.org".to_owned(),
+            kind: AuthFailureKind::Network,
+        },
+    );
+
+    assert!(failure_effects.is_empty());
+    assert_eq!(
+        state.auth,
+        AuthDiscoveryState::Discovering {
+            homeserver: "https://new.example.org".to_owned(),
+        }
+    );
 }
 
 #[test]

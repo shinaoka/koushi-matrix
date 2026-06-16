@@ -35,6 +35,16 @@ export type MessageId =
   | "auth.continue"
   | "auth.deviceName"
   | "auth.encryptionRecovery"
+  | "auth.failureForbidden"
+  | "auth.failureNetwork"
+  | "auth.failureSdk"
+  | "auth.failureTimeout"
+  | "auth.failureUnsupported"
+  | "auth.flowOidc"
+  | "auth.flowPassword"
+  | "auth.flowSso"
+  | "auth.flowToken"
+  | "auth.flowUnknown"
   | "auth.matrixAccount"
   | "auth.matrixDesktop"
   | "auth.noLoginMethods"
@@ -667,6 +677,16 @@ const en: Catalog = {
   "auth.continue": "Continue",
   "auth.deviceName": "Device name",
   "auth.encryptionRecovery": "Encryption Recovery",
+  "auth.failureForbidden": "Login methods are not available for this account",
+  "auth.failureNetwork": "Could not reach the homeserver",
+  "auth.failureSdk": "Could not check login methods",
+  "auth.failureTimeout": "Login method check timed out",
+  "auth.failureUnsupported": "Unsupported homeserver",
+  "auth.flowOidc": "OIDC",
+  "auth.flowPassword": "Password",
+  "auth.flowSso": "Single sign-on",
+  "auth.flowToken": "Token",
+  "auth.flowUnknown": "Unknown method",
   "auth.matrixAccount": "Matrix account",
   "auth.matrixDesktop": "Matrix Desktop",
   "auth.noLoginMethods": "No login methods",

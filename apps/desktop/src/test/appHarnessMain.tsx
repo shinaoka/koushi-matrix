@@ -153,6 +153,9 @@ function readySnapshot(
       ],
       invites: [],
       room_interactions: {},
+      device_sessions: { kind: "idle" },
+      account_management: { kind: "idle" },
+      qr_login: { kind: "idle" },
       directory: { query: { kind: "closed" }, join: { kind: "idle" } },
       room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
       activity: { kind: "closed" },
@@ -236,7 +239,17 @@ function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
     cross_signing: { kind: "unknown" },
     key_backup: { kind: "unknown" },
     identity_reset: { kind: "idle" },
+    key_management: defaultE2eeKeyManagementState(),
     devices: []
+  };
+}
+
+function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["e2ee_trust"]["key_management"] {
+  return {
+    room_key_export: { kind: "idle" },
+    room_key_import: { kind: "idle" },
+    secure_backup_setup: { kind: "idle" },
+    passphrase_change: { kind: "idle" }
   };
 }
 
@@ -450,6 +463,7 @@ function e2eeTrustFixture(): E2eeTrustState {
     cross_signing: { kind: "missing" },
     key_backup: { kind: "disabled" },
     identity_reset: { kind: "idle" },
+    key_management: defaultE2eeKeyManagementState(),
     devices: [
       {
         user_id: USER_ID,

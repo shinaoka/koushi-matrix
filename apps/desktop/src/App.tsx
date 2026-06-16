@@ -130,12 +130,14 @@ import type {
   ActivityState,
   ActivityStream,
   ActivityTab,
+  AuthFailureKind,
   ComposerMode,
   DesktopSnapshot,
   DirectoryRoomSummary,
   ImageUploadCompressionMode,
   ImageUploadCompressionPolicy,
   LocaleDisplayProfile,
+  LoginFlow,
   MentionIntent,
   MentionTarget,
   OperationFailureKind,
@@ -2762,16 +2764,50 @@ function authDiscoveryLabel(auth: DesktopSnapshot["state"]["auth"]) {
     case "discovering":
       return t("auth.checking");
     case "ready": {
-      const labels = auth.flows.map((flow) =>
-        typeof flow.kind === "string" ? flow.kind : "unknown"
-      );
+      const labels = auth.flows.map(authFlowLabel);
       return labels.length ? labels.join(" / ") : t("auth.noLoginMethods");
     }
     case "failed":
-      return auth.message;
+      return authFailureLabel(auth.failureKind);
     case "unknown":
     default:
       return t("auth.notChecked");
+  }
+}
+
+function authFlowLabel(flow: LoginFlow): string {
+  if (flow.display_name) {
+    return flow.display_name;
+  }
+
+  switch (flow.kind) {
+    case "password":
+      return t("auth.flowPassword");
+    case "sso":
+      return t("auth.flowSso");
+    case "oidc":
+      return t("auth.flowOidc");
+    case "token":
+      return t("auth.flowToken");
+    default:
+      return t("auth.flowUnknown");
+  }
+}
+
+function authFailureLabel(kind: AuthFailureKind): string {
+  switch (kind) {
+    case "network":
+      return t("auth.failureNetwork");
+    case "unsupported":
+      return t("auth.failureUnsupported");
+    case "cancelled":
+      return t("auth.notChecked");
+    case "forbidden":
+      return t("auth.failureForbidden");
+    case "timeout":
+      return t("auth.failureTimeout");
+    case "sdk":
+      return t("auth.failureSdk");
   }
 }
 

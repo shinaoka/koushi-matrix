@@ -3607,6 +3607,7 @@ pub fn parse_login_discovery(
         .map(|flow| LoginFlow {
             kind: parse_flow_kind(flow.flow_type),
             delegated_oidc_compatibility: flow.delegated_oidc_compatibility,
+            display_name: None,
         })
         .collect())
 }
