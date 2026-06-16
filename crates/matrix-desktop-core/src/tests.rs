@@ -9,9 +9,11 @@ use matrix_desktop_state::{
     IdentityResetAuthRequest, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
     LoginRequest, MediaSettings, MentionIntent, NotificationSettings, PresenceKind,
     RecoveryRequest, RoomSummary, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
-    SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
-    ThemePreference, VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    ScheduledSendHandle, ScheduledSendItem, SearchState, SessionInfo, SessionState, SettingsPatch,
+    SettingsPersistenceState, ThemePreference, VerificationCancelReason, VerificationFlowState,
+    VerificationTarget,
 };
+use matrix_sdk::ruma::api::FeatureFlag;
 
 use crate::command::{
     AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, SyncCommand,
@@ -177,6 +179,50 @@ fn future_epoch_ms(offset: Duration) -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time after epoch")
         .as_millis() as u64
+}
+
+#[test]
+fn scheduled_send_capability_detects_msc4140_server_support() {
+    let features = [FeatureFlag::from(crate::scheduled_send::MSC4140_FEATURE)]
+        .into_iter()
+        .collect();
+
+    assert_eq!(
+        crate::scheduled_send::capability_from_unstable_features(&features),
+        ScheduledSendCapability::ServerDelayedEvents
+    );
+}
+
+#[test]
+fn scheduled_send_capability_falls_back_when_msc4140_is_absent_or_disabled() {
+    let absent = [FeatureFlag::from("org.matrix.something_else")]
+        .into_iter()
+        .collect();
+    let disabled = std::collections::BTreeMap::from([(
+        crate::scheduled_send::MSC4140_FEATURE.to_owned(),
+        false,
+    )]);
+
+    assert_eq!(
+        crate::scheduled_send::capability_from_unstable_features(&absent),
+        ScheduledSendCapability::LocalFallback
+    );
+    assert_eq!(
+        crate::scheduled_send::capability_from_versions_flags(&disabled),
+        ScheduledSendCapability::LocalFallback
+    );
+}
+
+#[test]
+fn scheduled_send_server_timeout_uses_target_delta_without_private_data() {
+    assert_eq!(
+        crate::scheduled_send::server_delay_timeout(1_500, 1_000),
+        Duration::from_millis(500)
+    );
+    assert_eq!(
+        crate::scheduled_send::server_delay_timeout(1_000, 1_500),
+        Duration::from_millis(0)
+    );
 }
 
 #[test]
@@ -1198,6 +1244,9 @@ async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
             AppAction::TimelineSubscribed {
                 room_id: "!room:example.test".to_owned(),
             },
+            AppAction::ScheduledSendCapabilityChanged {
+                capability: ScheduledSendCapability::LocalFallback,
+            },
             AppAction::ComposerDraftChanged {
                 room_id: "!room:example.test".to_owned(),
                 draft: "scheduled body".to_owned(),
@@ -1276,6 +1325,9 @@ async fn local_fallback_scheduled_send_fires_at_target_and_leaves_rust_state() {
             AppAction::TimelineSubscribed {
                 room_id: "!room:example.test".to_owned(),
             },
+            AppAction::ScheduledSendCapabilityChanged {
+                capability: ScheduledSendCapability::LocalFallback,
+            },
         ])
         .await;
     wait_for_state(&mut conn, |state| {
@@ -1297,6 +1349,52 @@ async fn local_fallback_scheduled_send_fires_at_target_and_leaves_rust_state() {
     let snapshot =
         wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.is_empty()).await;
     assert!(snapshot.scheduled_sends.items.is_empty());
+}
+
+#[tokio::test]
+async fn server_scheduled_send_items_are_not_dispatched_by_local_fallback_timer() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::ScheduledSendCapabilityChanged {
+                capability: ScheduledSendCapability::ServerDelayedEvents,
+            },
+            AppAction::ScheduledSendCreated {
+                item: ScheduledSendItem {
+                    scheduled_id: "server-scheduled".to_owned(),
+                    room_id: "!room:example.test".to_owned(),
+                    body: "server delayed body".to_owned(),
+                    send_at_ms: future_epoch_ms(Duration::from_millis(20)),
+                    handle: ScheduledSendHandle::Server {
+                        delay_id: "delay-private".to_owned(),
+                    },
+                },
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
+
+    executor::sleep(Duration::from_millis(80)).await;
+    let snapshot = conn.snapshot();
+    assert_eq!(snapshot.timeline.scheduled_sends.len(), 1);
+    assert_eq!(
+        snapshot.timeline.scheduled_sends[0].handle,
+        ScheduledSendHandle::Server {
+            delay_id: "delay-private".to_owned()
+        }
+    );
 }
 
 #[tokio::test]

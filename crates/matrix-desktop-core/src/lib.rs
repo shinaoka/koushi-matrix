@@ -15,6 +15,7 @@ pub mod failure;
 pub mod ids;
 pub mod room;
 pub mod runtime;
+pub(crate) mod scheduled_send;
 pub mod search;
 pub mod settings;
 pub mod store;

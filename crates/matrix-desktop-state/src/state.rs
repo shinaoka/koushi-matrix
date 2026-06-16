@@ -2352,8 +2352,29 @@ impl ScheduledSendStore {
             .cloned()
     }
 
+    pub fn next_local_due(&self, now_ms: u64) -> Option<ScheduledSendItem> {
+        self.items
+            .values()
+            .filter(|item| matches!(item.handle, ScheduledSendHandle::Local))
+            .filter(|item| item.send_at_ms <= now_ms)
+            .min_by(|left, right| {
+                left.send_at_ms
+                    .cmp(&right.send_at_ms)
+                    .then_with(|| left.scheduled_id.cmp(&right.scheduled_id))
+            })
+            .cloned()
+    }
+
     pub fn next_send_at_ms(&self) -> Option<u64> {
         self.items.values().map(|item| item.send_at_ms).min()
+    }
+
+    pub fn next_local_send_at_ms(&self) -> Option<u64> {
+        self.items
+            .values()
+            .filter(|item| matches!(item.handle, ScheduledSendHandle::Local))
+            .map(|item| item.send_at_ms)
+            .min()
     }
 
     pub fn retain_rooms(&mut self, room_ids: &BTreeSet<String>) {

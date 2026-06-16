@@ -928,7 +928,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   local fallback timer are Rust/core-owned; React may render only
   `snapshot.state.timeline.scheduled_sends` for the selected room and
   `scheduled_send_capability`, then dispatch typed schedule/cancel/reschedule
-  commands in Phase B. Do not add browser timers, React-local scheduled-message
+  commands in Phase B. MSC4140 delayed-event capability detection and
+  create/cancel/reschedule requests live in `AccountActor` through SDK/Ruma
+  APIs. The local fallback timer must consider only `ScheduledSendHandle::Local`
+  items; server handles are owned by the homeserver and must not be fired by
+  the local timer. Do not add browser timers, React-local scheduled-message
   maps, raw Matrix delayed-event calls, or logs/screenshots containing scheduled
   message bodies or server delayed-event handles.
 - The focused local scheduled-send QA lane is:

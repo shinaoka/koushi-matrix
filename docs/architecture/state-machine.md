@@ -236,9 +236,18 @@ stateDiagram-v2
   pruning, logout, lock, and account switch clear or retain the backing store by
   joined-room account context.
 - `AppActor` owns the local fallback timer. When an item is due, it dispatches
-  `ScheduledSendDispatched` and routes a normal `TimelineCommand::SendText` so
-  the outbound send queue (#33) remains the send/failure/retry source of truth.
-  Server MSC4140 delayed-event support is represented by the capability and
+  `ScheduledSendDispatched` only for `ScheduledSendHandle::Local` items and
+  routes a normal `TimelineCommand::SendText` so the outbound send queue (#33)
+  remains the local-fallback send/failure/retry source of truth. Server
+  `ScheduledSendHandle::Server` items are never fired by the local timer.
+- `AccountActor` owns MSC4140 side effects because it owns the SDK session.
+  It detects `org.matrix.msc4140` through the SDK `/versions` unstable feature
+  set, creates delayed message events through Ruma's
+  `delayed_message_event::unstable` request, and cancel/reschedule operations
+  update the server handle before reducer state changes. If capability
+  detection or server create fails, the command falls back to a Local handle
+  without exposing raw SDK errors or private content.
+- Server MSC4140 delayed-event support is represented by the capability and
   handle boundary; GUI code must not call raw Matrix delayed-event APIs or run
   its own schedule timer.
 - Headless core QA covers the local fallback with the `scheduled_send` scenario.
@@ -254,7 +263,7 @@ stateDiagram-v2
     Queued --> Queued: ScheduledSendRescheduled [known id]
     Queued --> Queued: ScheduledSendCapabilityChanged
     Queued --> Empty: ScheduledSendCancelled [known id]
-    Queued --> Empty: ScheduledSendDispatched [known id] / route SendText
+    Queued --> Empty: ScheduledSendDispatched [known Local handle] / route SendText
     Queued --> Empty: RoomListUpdated [room pruned] / retain joined rooms
     Queued --> Empty: LogoutRequested/SessionCleared
 ```

@@ -128,8 +128,10 @@ Rules:
    serialized to the webview; only the selected-room projection may cross as
    visible UI state. Normal `Debug`, QA logs, issue evidence, and window-title
    tokens must redact scheduled bodies, room ids, server delayed-event handles,
-   and transaction ids. React must not run a local send-later timer or call raw
-   Matrix delayed-event APIs.
+   and transaction ids. MSC4140 support is detected in Rust through the SDK
+   `/versions` unstable feature set, and server delayed-event create/cancel /
+   reschedule operations are AccountActor-owned SDK/Ruma side effects. React
+   must not run a local send-later timer or call raw Matrix delayed-event APIs.
 11. E2EE trust diagnostics are kind-only. Verification, cross-signing,
    key-backup, and identity-reset commands/events may expose structured state to
    the UI, but normal `Debug`, QA logs, and window-title tokens must redact

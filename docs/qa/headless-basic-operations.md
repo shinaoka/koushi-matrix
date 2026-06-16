@@ -289,6 +289,9 @@ the Rust/core-owned scheduled-send local fallback queue and timer. The lane
 selects a room, schedules/reschedules/cancels a future message, schedules a due
 message, and observes Rust state removal plus timeline dispatch without printing
 message bodies, room IDs, transaction IDs, server handles, or raw SDK errors.
+Homeservers that advertise `org.matrix.msc4140` through `/versions` are routed
+through AccountActor-owned SDK/Ruma delayed-event requests instead; the local
+fallback timer is intentionally limited to Local handles.
 
 ## Headless browser IPC-contract lane
 

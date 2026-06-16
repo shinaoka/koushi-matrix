@@ -669,7 +669,7 @@ impl AppActor {
     }
 
     fn scheduled_send_delay(&self) -> Option<Duration> {
-        let next_send_at_ms = self.state.scheduled_sends.next_send_at_ms()?;
+        let next_send_at_ms = self.state.scheduled_sends.next_local_send_at_ms()?;
         let now_ms = current_epoch_ms();
         Some(Duration::from_millis(
             next_send_at_ms.saturating_sub(now_ms),
@@ -677,7 +677,11 @@ impl AppActor {
     }
 
     async fn dispatch_due_scheduled_send(&mut self) -> bool {
-        let Some(item) = self.state.scheduled_sends.next_due(current_epoch_ms()) else {
+        let Some(item) = self
+            .state
+            .scheduled_sends
+            .next_local_due(current_epoch_ms())
+        else {
             return false;
         };
         self.dispatch_scheduled_send(item).await
@@ -822,6 +826,30 @@ impl AppActor {
                     body,
                     send_at_ms,
                 } => {
+                    if self.state.scheduled_sends.capability
+                        != ScheduledSendCapability::LocalFallback
+                    {
+                        let scheduled_id = scheduled_send_id(request_id);
+                        if !self
+                            .account_actor
+                            .send(AccountMessage::ScheduleServerDelayedSend {
+                                request_id,
+                                scheduled_id,
+                                room_id,
+                                body,
+                                send_at_ms,
+                            })
+                            .await
+                        {
+                            self.emit(CoreEvent::OperationFailed {
+                                request_id,
+                                failure: CoreFailure::TimelineOperationFailed {
+                                    kind: TimelineFailureKind::QueueOverflow,
+                                },
+                            });
+                        }
+                        return false;
+                    }
                     let capability_effects = self
                         .reduce_app_action(AppAction::ScheduledSendCapabilityChanged {
                             capability: ScheduledSendCapability::LocalFallback,
@@ -846,6 +874,31 @@ impl AppActor {
                     request_id,
                     scheduled_id,
                 } => {
+                    if let Some(ScheduledSendHandle::Server { delay_id }) = self
+                        .state
+                        .scheduled_sends
+                        .items
+                        .get(&scheduled_id)
+                        .map(|item| item.handle.clone())
+                    {
+                        if !self
+                            .account_actor
+                            .send(AccountMessage::CancelServerDelayedSend {
+                                request_id,
+                                scheduled_id,
+                                delay_id,
+                            })
+                            .await
+                        {
+                            self.emit(CoreEvent::OperationFailed {
+                                request_id,
+                                failure: CoreFailure::TimelineOperationFailed {
+                                    kind: TimelineFailureKind::QueueOverflow,
+                                },
+                            });
+                        }
+                        return false;
+                    }
                     let effects = self
                         .reduce_app_action(AppAction::ScheduledSendCancelled { scheduled_id })
                         .await;
@@ -857,6 +910,30 @@ impl AppActor {
                     scheduled_id,
                     send_at_ms,
                 } => {
+                    if let Some(item) = self.state.scheduled_sends.items.get(&scheduled_id).cloned()
+                        && let ScheduledSendHandle::Server { delay_id } = item.handle
+                    {
+                        if !self
+                            .account_actor
+                            .send(AccountMessage::RescheduleServerDelayedSend {
+                                request_id,
+                                scheduled_id,
+                                room_id: item.room_id,
+                                body: item.body,
+                                delay_id,
+                                send_at_ms,
+                            })
+                            .await
+                        {
+                            self.emit(CoreEvent::OperationFailed {
+                                request_id,
+                                failure: CoreFailure::TimelineOperationFailed {
+                                    kind: TimelineFailureKind::QueueOverflow,
+                                },
+                            });
+                        }
+                        return false;
+                    }
                     let effects = self
                         .reduce_app_action(AppAction::ScheduledSendRescheduled {
                             scheduled_id,

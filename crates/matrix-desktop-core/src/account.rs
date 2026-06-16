@@ -34,8 +34,9 @@ use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
     AppAction, AvatarImage, AvatarThumbnailState, CrossSigningStatus, E2eeRecoveryState,
     IdentityResetAuthType, IdentityResetState, LoginRequest, OwnProfile, PresenceKind,
-    RecoveryMethod, RecoveryRequest, SessionInfo, TrustOperationFailureKind,
-    VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    RecoveryMethod, RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle,
+    ScheduledSendItem, SessionInfo, TrustOperationFailureKind, VerificationCancelReason,
+    VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -66,6 +67,26 @@ pub enum AccountMessage {
     SyncCommand(SyncCommand),
     RoomCommand(RoomCommand),
     TimelineCommand(TimelineCommand),
+    ScheduleServerDelayedSend {
+        request_id: RequestId,
+        scheduled_id: String,
+        room_id: String,
+        body: String,
+        send_at_ms: u64,
+    },
+    CancelServerDelayedSend {
+        request_id: RequestId,
+        scheduled_id: String,
+        delay_id: String,
+    },
+    RescheduleServerDelayedSend {
+        request_id: RequestId,
+        scheduled_id: String,
+        room_id: String,
+        body: String,
+        delay_id: String,
+        send_at_ms: u64,
+    },
     OpenTimelineAtTimestamp {
         request_id: RequestId,
         room_id: String,
@@ -242,6 +263,48 @@ impl AccountActor {
                 AccountMessage::TimelineCommand(timeline_command) => {
                     self.route_timeline_command(timeline_command).await;
                 }
+                AccountMessage::ScheduleServerDelayedSend {
+                    request_id,
+                    scheduled_id,
+                    room_id,
+                    body,
+                    send_at_ms,
+                } => {
+                    self.handle_schedule_server_delayed_send(
+                        request_id,
+                        scheduled_id,
+                        room_id,
+                        body,
+                        send_at_ms,
+                    )
+                    .await;
+                }
+                AccountMessage::CancelServerDelayedSend {
+                    request_id,
+                    scheduled_id,
+                    delay_id,
+                } => {
+                    self.handle_cancel_server_delayed_send(request_id, scheduled_id, delay_id)
+                        .await;
+                }
+                AccountMessage::RescheduleServerDelayedSend {
+                    request_id,
+                    scheduled_id,
+                    room_id,
+                    body,
+                    delay_id,
+                    send_at_ms,
+                } => {
+                    self.handle_reschedule_server_delayed_send(
+                        request_id,
+                        scheduled_id,
+                        room_id,
+                        body,
+                        delay_id,
+                        send_at_ms,
+                    )
+                    .await;
+                }
                 AccountMessage::OpenTimelineAtTimestamp {
                     request_id,
                     room_id,
@@ -328,6 +391,203 @@ impl AccountActor {
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
             }
         }
+    }
+
+    async fn handle_schedule_server_delayed_send(
+        &self,
+        request_id: RequestId,
+        scheduled_id: String,
+        room_id: String,
+        body: String,
+        send_at_ms: u64,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        let capability = crate::scheduled_send::detect_capability(&session.client()).await;
+        if capability == ScheduledSendCapability::ServerDelayedEvents {
+            match self
+                .send_server_delayed_message(session, &room_id, &body, send_at_ms)
+                .await
+            {
+                Ok(delay_id) => {
+                    self.reduce(vec![
+                        AppAction::ScheduledSendCapabilityChanged {
+                            capability: ScheduledSendCapability::ServerDelayedEvents,
+                        },
+                        AppAction::ScheduledSendCreated {
+                            item: ScheduledSendItem {
+                                scheduled_id,
+                                room_id,
+                                body,
+                                send_at_ms,
+                                handle: ScheduledSendHandle::Server { delay_id },
+                            },
+                        },
+                    ]);
+                    return;
+                }
+                Err(()) => {}
+            }
+        }
+
+        self.reduce(vec![
+            AppAction::ScheduledSendCapabilityChanged {
+                capability: ScheduledSendCapability::LocalFallback,
+            },
+            AppAction::ScheduledSendCreated {
+                item: ScheduledSendItem {
+                    scheduled_id,
+                    room_id,
+                    body,
+                    send_at_ms,
+                    handle: ScheduledSendHandle::Local,
+                },
+            },
+        ]);
+    }
+
+    async fn handle_cancel_server_delayed_send(
+        &self,
+        request_id: RequestId,
+        scheduled_id: String,
+        delay_id: String,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match self
+            .update_server_delayed_event(
+                session,
+                delay_id,
+                matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::unstable::UpdateAction::Cancel,
+            )
+            .await
+        {
+            Ok(()) => self.reduce(vec![AppAction::ScheduledSendCancelled { scheduled_id }]),
+            Err(()) => self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            ),
+        }
+    }
+
+    async fn handle_reschedule_server_delayed_send(
+        &self,
+        request_id: RequestId,
+        scheduled_id: String,
+        room_id: String,
+        body: String,
+        delay_id: String,
+        send_at_ms: u64,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        if self
+            .update_server_delayed_event(
+                session,
+                delay_id,
+                matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::unstable::UpdateAction::Cancel,
+            )
+            .await
+            .is_err()
+        {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+            return;
+        }
+
+        match self
+            .send_server_delayed_message(session, &room_id, &body, send_at_ms)
+            .await
+        {
+            Ok(delay_id) => {
+                self.reduce(vec![AppAction::ScheduledSendRescheduled {
+                    scheduled_id,
+                    send_at_ms,
+                    handle: ScheduledSendHandle::Server { delay_id },
+                }]);
+            }
+            Err(()) => {
+                self.reduce(vec![
+                    AppAction::ScheduledSendCapabilityChanged {
+                        capability: ScheduledSendCapability::LocalFallback,
+                    },
+                    AppAction::ScheduledSendRescheduled {
+                        scheduled_id,
+                        send_at_ms,
+                        handle: ScheduledSendHandle::Local,
+                    },
+                ]);
+            }
+        }
+    }
+
+    async fn send_server_delayed_message(
+        &self,
+        session: &MatrixClientSession,
+        room_id: &str,
+        body: &str,
+        send_at_ms: u64,
+    ) -> Result<String, ()> {
+        use matrix_sdk::ruma::TransactionId;
+        use matrix_sdk::ruma::api::client::delayed_events::{
+            DelayParameters, delayed_message_event,
+        };
+        use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+
+        let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| ())?;
+        let content = RoomMessageEventContent::text_plain(body.to_owned());
+        let request = delayed_message_event::unstable::Request::new(
+            room_id,
+            TransactionId::new(),
+            DelayParameters::Timeout {
+                timeout: crate::scheduled_send::server_delay_timeout(
+                    send_at_ms,
+                    crate::scheduled_send::current_epoch_ms(),
+                ),
+            },
+            &content,
+        )
+        .map_err(|_| ())?;
+
+        session
+            .client()
+            .send(request)
+            .await
+            .map(|response| response.delay_id)
+            .map_err(|_| ())
+    }
+
+    async fn update_server_delayed_event(
+        &self,
+        session: &MatrixClientSession,
+        delay_id: String,
+        action: matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::unstable::UpdateAction,
+    ) -> Result<(), ()> {
+        let request =
+            matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::unstable::Request::new(
+                delay_id, action,
+            );
+        session
+            .client()
+            .send(request)
+            .await
+            .map(|_| ())
+            .map_err(|_| ())
     }
 
     async fn emit_search_failed(&self, request_id: RequestId, message: &str) {
@@ -481,13 +741,26 @@ impl AccountActor {
         );
 
         let handle = crate::sync::SyncActor::spawn(
-            session,
+            session.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             self.room_actor.tx.clone(),
             self.timeline_manager.sender(),
         );
         self.sync_actor = Some(handle);
+        self.start_scheduled_send_capability_probe(session);
+    }
+
+    fn start_scheduled_send_capability_probe(&self, session: Arc<MatrixClientSession>) {
+        let action_tx = self.action_tx.clone();
+        crate::executor::spawn(async move {
+            let capability = crate::scheduled_send::detect_capability(&session.client()).await;
+            let _ = action_tx
+                .send(vec![AppAction::ScheduledSendCapabilityChanged {
+                    capability,
+                }])
+                .await;
+        });
     }
 
     fn start_recovery_observer(&mut self, session: Arc<MatrixClientSession>) {
