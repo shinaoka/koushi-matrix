@@ -343,9 +343,11 @@ user/device ids.
 For media/file Phase B, the harness uses a plain hidden `<input type="file">`
 and Playwright `setInputFiles()`; do not open a native file dialog in headless
 tests. The GUI proof asserts file selection stages the attachment without
-invoking `upload_media`, one Send invokes `upload_media` with the Composer text
-as caption, no separate `send_text` is dispatched, and `download_media` uses the
-typed command shape. It then injects Rust-shaped `TimelineEvent` payloads to
+invoking `upload_media`, caption edits go through the Rust-owned Upload
+attachments staging dialog, one Send invokes `upload_media` with the staged
+caption, no separate `send_text` is dispatched, and `download_media` uses the
+typed command shape. It also covers paste/drop staging and the Rust-owned room
+media gallery/viewer projection. It then injects Rust-shaped `TimelineEvent` payloads to
 render media metadata, caption body, and progress. Local echo rows use the
 canonical transaction DOM id prefix from `timelineItemDomId`, e.g.
 `data-item-id="txn:desktop-media-1"`. Do not assert on or render MXC URIs,
@@ -483,14 +485,15 @@ matrix.org is reserved for the final compatibility gate.
 artifact directory, sets that path on the Composer's hidden file input through
 WebDriver, falls back to a browser `DataTransfer` file list when WebKit does not
 populate `input.files`, waits for `timeline_room=true`, confirms staging does
-not create a media timeline row before Send, uses Composer text as the single
-media event caption, waits for a Rust-owned `TimelineItem.media` row plus
-caption to render in the real Tauri WebView, then clicks the rendered Download
-button and checks the QA title stays error-free. It prints only
-`gui_local_media=ok` and `gui_local_media_caption=ok`; it must not open native
-file dialogs, use real/private filenames or captions, print MXC URIs, expose
-downloaded bytes, monkeypatch Tauri internals from WebDriver, or synthesize
-upload/download lifecycle state in React.
+not create a media timeline row before Send, fills the Rust-owned staging
+caption field, waits for a Rust-owned `TimelineItem.media` row plus caption to
+render in the real Tauri WebView, then clicks Download, opens the room media
+gallery, opens the uploaded item in Media viewer, and checks the QA title stays
+error-free. It prints only `gui_local_media_stage=ok`, `gui_local_media=ok`,
+`gui_local_media_caption=ok`, and `gui_local_media_viewer=ok`; it must not open
+native file dialogs, use real/private filenames or captions, print MXC URIs,
+expose downloaded bytes, monkeypatch Tauri internals from WebDriver, or
+synthesize upload/download lifecycle state in React.
 
 `local-room-tags` opens the seeded synthetic room row's real context menu in the
 Linux Tauri WebView, clicks `Add to Favourites`, waits for the row to move from
@@ -626,8 +629,10 @@ gui_local_create_space=ok
 gui_local_invite_accept=ok
 gui_local_dm_start=ok
 gui_local_reply=ok
+gui_local_media_stage=ok
 gui_local_media=ok
 gui_local_media_caption=ok
+gui_local_media_viewer=ok
 gui_local_room_tag_set=ok
 gui_local_room_tag_removed=ok
 gui_local_room_topic=ok

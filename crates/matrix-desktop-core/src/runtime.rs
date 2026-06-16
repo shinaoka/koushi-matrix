@@ -820,6 +820,55 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::SetUploadStaging {
+                    request_id,
+                    room_id,
+                    items,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::UploadStagingChanged { room_id, items })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::UpdateStagedUploadCaption {
+                    request_id,
+                    staged_id,
+                    caption,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::UploadStagingCaptionChanged {
+                            staged_id,
+                            caption,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::UpdateStagedUploadCompression {
+                    request_id,
+                    staged_id,
+                    compression_choice,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::UploadStagingCompressionChanged {
+                            staged_id,
+                            compression_choice,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::ClearUploadStaging {
+                    request_id,
+                    room_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::UploadStagingCleared { room_id })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
                 AppCommand::ScheduleSend {
                     request_id,
                     room_id,

@@ -17,7 +17,9 @@ import type {
   RoomTagKind,
   SavedSessionInfo,
   SearchScopeKind,
-  SettingsPatch
+  SettingsPatch,
+  StagedUploadCompressionChoice,
+  UploadStagingRequestItem
 } from "../domain/types";
 
 export function createDesktopApi(): DesktopApi {
@@ -157,6 +159,34 @@ class TauriDesktopApi implements DesktopApi {
     sendAtMs: number
   ): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("schedule_send", { roomId, body, sendAtMs });
+  }
+
+  async stageUploads(
+    roomId: string,
+    items: UploadStagingRequestItem[]
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("stage_uploads", { roomId, items });
+  }
+
+  async updateStagedUploadCaption(
+    stagedId: string,
+    caption: string | null
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("update_staged_upload_caption", { stagedId, caption });
+  }
+
+  async updateStagedUploadCompression(
+    stagedId: string,
+    compressionChoice: StagedUploadCompressionChoice
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("update_staged_upload_compression", {
+      stagedId,
+      compressionChoice
+    });
+  }
+
+  async clearUploadStaging(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("clear_upload_staging", { roomId });
   }
 
   async cancelScheduledSend(scheduledId: string): Promise<DesktopSnapshot> {

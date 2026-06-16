@@ -28,7 +28,9 @@ import type {
   LiveReadReceipt,
   MentionIntent,
   SpaceSummary,
-  TimelineMessage
+  StagedUploadCompressionChoice,
+  TimelineMessage,
+  UploadStagingRequestItem
 } from "../domain/types";
 
 export interface DesktopApi {
@@ -68,6 +70,13 @@ export interface DesktopApi {
   paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
   sendText(roomId: string, body: string, mentions?: MentionIntent): Promise<DesktopSnapshot>;
   scheduleSend(roomId: string, body: string, sendAtMs: number): Promise<DesktopSnapshot>;
+  stageUploads(roomId: string, items: UploadStagingRequestItem[]): Promise<DesktopSnapshot>;
+  updateStagedUploadCaption(stagedId: string, caption: string | null): Promise<DesktopSnapshot>;
+  updateStagedUploadCompression(
+    stagedId: string,
+    compressionChoice: StagedUploadCompressionChoice
+  ): Promise<DesktopSnapshot>;
+  clearUploadStaging(roomId: string): Promise<DesktopSnapshot>;
   cancelScheduledSend(scheduledId: string): Promise<DesktopSnapshot>;
   rescheduleScheduledSend(scheduledId: string, sendAtMs: number): Promise<DesktopSnapshot>;
   retrySend(roomId: string, transactionId: string): Promise<DesktopSnapshot>;
@@ -591,6 +600,73 @@ class BrowserFakeApi implements DesktopApi {
     ];
     this.snapshot.state.timeline.composer.draft = "";
     this.composerDrafts.delete(roomId);
+    return this.getSnapshot();
+  }
+
+  async stageUploads(
+    roomId: string,
+    items: UploadStagingRequestItem[]
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || this.snapshot.state.timeline.room_id !== roomId) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.timeline.staged_uploads = items.map((item, index) => ({
+      staged_id: item.stagedId,
+      room_id: roomId,
+      position: item.position || index + 1,
+      filename: item.filename.trim() || "attachment",
+      mime_type: item.mimeType.trim() || "application/octet-stream",
+      byte_count: Math.max(0, Math.floor(item.byteCount)),
+      kind: item.kind,
+      caption: null,
+      compression_choice: item.compressionChoice
+    }));
+    return this.getSnapshot();
+  }
+
+  async updateStagedUploadCaption(
+    stagedId: string,
+    caption: string | null
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    const normalized = caption?.trim() ? caption : null;
+    this.snapshot.state.timeline.staged_uploads = this.snapshot.state.timeline.staged_uploads.map(
+      (item) =>
+        item.staged_id === stagedId
+          ? {
+              ...item,
+              caption: normalized
+                ? { plain_body: normalized, formatted_body: null, mentions: { targets: [] } }
+                : null
+            }
+          : item
+    );
+    return this.getSnapshot();
+  }
+
+  async updateStagedUploadCompression(
+    stagedId: string,
+    compressionChoice: StagedUploadCompressionChoice
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.timeline.staged_uploads = this.snapshot.state.timeline.staged_uploads.map(
+      (item) =>
+        item.staged_id === stagedId
+          ? { ...item, compression_choice: compressionChoice }
+          : item
+    );
+    return this.getSnapshot();
+  }
+
+  async clearUploadStaging(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || this.snapshot.state.timeline.room_id !== roomId) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.timeline.staged_uploads = [];
     return this.getSnapshot();
   }
 

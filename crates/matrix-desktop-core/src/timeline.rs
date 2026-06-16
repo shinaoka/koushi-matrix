@@ -54,6 +54,8 @@ use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_state::{
     ActivityRow, AppAction, ComposerSendIntent, FormattedMessageDraft, LiveEventReceipts,
     LiveReadReceipt, MentionIntent, ReplyQuote, ReplyQuoteState, SlashCommandIntent,
+    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
+    TimelineMediaGalleryThumbnail, TimelineMediaKind as GalleryTimelineMediaKind,
     resolve_composer_send_intent,
 };
 use matrix_sdk::attachment::{
@@ -1185,6 +1187,7 @@ struct TimelineActor {
     /// Rust-owned navigation projection source. The webview reports viewport
     /// facts; item ordering, unread marker semantics, and counts stay here.
     navigation_items: Vec<TimelineItem>,
+    media_gallery_items: Vec<TimelineMediaGalleryItem>,
     fully_read_event_id: Option<String>,
     viewport_observation: TimelineViewportObservation,
     last_navigation_snapshot: Option<TimelineNavigationSnapshot>,
@@ -1223,6 +1226,8 @@ impl TimelineActor {
             .collect();
         let navigation_items = initial_items.clone();
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
+        let initial_media_gallery_items =
+            media_gallery_items_from_timeline_items(&key, &initial_items);
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
@@ -1241,6 +1246,11 @@ impl TimelineActor {
             let _ = action_tx.try_send(vec![AppAction::ActivityRowsObserved {
                 rows: initial_activity_rows,
             }]);
+        }
+        if let Some(action) =
+            media_gallery_updated_action(&key, initial_media_gallery_items.clone())
+        {
+            let _ = action_tx.try_send(vec![action]);
         }
 
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
@@ -1308,6 +1318,7 @@ impl TimelineActor {
             search_index_tx,
             thread_attention_counts: ThreadAttentionCounters::default(),
             navigation_items,
+            media_gallery_items: initial_media_gallery_items,
             fully_read_event_id: initial_fully_read_event_id,
             viewport_observation: TimelineViewportObservation::default(),
             last_navigation_snapshot: None,
@@ -2391,6 +2402,7 @@ impl TimelineActor {
                 }]);
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
+        self.emit_media_gallery_if_changed();
 
         let batch_id = self.next_batch_id;
         self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
@@ -2402,6 +2414,17 @@ impl TimelineActor {
             diffs: core_diffs,
         }));
         self.emit_navigation_if_changed();
+    }
+
+    fn emit_media_gallery_if_changed(&mut self) {
+        let items = media_gallery_items_from_timeline_items(&self.key, &self.navigation_items);
+        if items == self.media_gallery_items {
+            return;
+        }
+        self.media_gallery_items = items.clone();
+        if let Some(action) = media_gallery_updated_action(&self.key, items) {
+            let _ = self.action_tx.try_send(vec![action]);
+        }
     }
 
     fn emit_navigation_if_changed(&mut self) {
@@ -3068,6 +3091,101 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
         unread: false,
         highlight: false,
     })
+}
+
+fn media_gallery_updated_action(
+    key: &TimelineKey,
+    items: Vec<TimelineMediaGalleryItem>,
+) -> Option<AppAction> {
+    let TimelineKind::Room { room_id } = &key.kind else {
+        return None;
+    };
+
+    Some(AppAction::MediaGalleryUpdated {
+        room_id: room_id.clone(),
+        items,
+    })
+}
+
+fn media_gallery_items_from_timeline_items(
+    key: &TimelineKey,
+    items: &[TimelineItem],
+) -> Vec<TimelineMediaGalleryItem> {
+    let TimelineKind::Room { room_id } = &key.kind else {
+        return Vec::new();
+    };
+
+    let mut gallery_items = items
+        .iter()
+        .filter_map(|item| media_gallery_item_from_timeline_item(room_id, item))
+        .collect::<Vec<_>>();
+    gallery_items.sort_by(|left, right| {
+        right
+            .timestamp_ms
+            .cmp(&left.timestamp_ms)
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
+    gallery_items
+}
+
+fn media_gallery_item_from_timeline_item(
+    room_id: &str,
+    item: &TimelineItem,
+) -> Option<TimelineMediaGalleryItem> {
+    if item.is_hidden || item.is_redacted {
+        return None;
+    }
+    let TimelineItemId::Event { event_id } = &item.id else {
+        return None;
+    };
+    let media = item.media.as_ref()?;
+
+    Some(TimelineMediaGalleryItem {
+        event_id: event_id.clone(),
+        room_id: room_id.to_owned(),
+        sender: item.sender.clone(),
+        sender_label: item.sender_label.clone(),
+        timestamp_ms: item.timestamp_ms.unwrap_or_default(),
+        media: TimelineMediaGalleryMedia {
+            kind: media_gallery_kind_from_timeline_kind(media.kind),
+            filename: media.filename.clone(),
+            source: media_gallery_source_from_timeline_source(&media.source),
+            mimetype: media.mimetype.clone(),
+            size: media.size,
+            width: media.width,
+            height: media.height,
+            thumbnail: media.thumbnail.as_ref().map(media_gallery_thumbnail),
+        },
+    })
+}
+
+fn media_gallery_kind_from_timeline_kind(kind: TimelineMediaKind) -> GalleryTimelineMediaKind {
+    match kind {
+        TimelineMediaKind::Image => GalleryTimelineMediaKind::Image,
+        TimelineMediaKind::File => GalleryTimelineMediaKind::File,
+        TimelineMediaKind::Audio => GalleryTimelineMediaKind::Audio,
+        TimelineMediaKind::Video => GalleryTimelineMediaKind::Video,
+    }
+}
+
+fn media_gallery_source_from_timeline_source(
+    source: &TimelineMediaSource,
+) -> TimelineMediaGallerySource {
+    TimelineMediaGallerySource {
+        mxc_uri: source.mxc_uri.clone(),
+        encrypted: source.encrypted,
+        encryption_version: source.encryption_version.clone(),
+    }
+}
+
+fn media_gallery_thumbnail(thumbnail: &TimelineMediaThumbnail) -> TimelineMediaGalleryThumbnail {
+    TimelineMediaGalleryThumbnail {
+        source: media_gallery_source_from_timeline_source(&thumbnail.source),
+        mimetype: thumbnail.mimetype.clone(),
+        size: thumbnail.size,
+        width: thumbnail.width,
+        height: thumbnail.height,
+    }
 }
 
 fn derive_timeline_navigation_snapshot(
@@ -4462,6 +4580,7 @@ mod tests {
 
     use matrix_desktop_state::{
         AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState,
+        TimelineMediaKind as GalleryTimelineMediaKind,
     };
     use matrix_sdk::ruma::events::room::message::{
         EmoteMessageEventContent, MessageType, NoticeMessageEventContent, TextMessageEventContent,
@@ -4526,6 +4645,125 @@ mod tests {
             actions: TimelineMessageActions::default(),
             send_state: None,
         }
+    }
+
+    fn timeline_media_item(
+        event_id: &str,
+        sender: &str,
+        sender_label: Option<&str>,
+        timestamp_ms: u64,
+        filename: &str,
+        kind: TimelineMediaKind,
+    ) -> TimelineItem {
+        let mut item = timeline_item(event_id, None, sender, false);
+        item.sender_label = sender_label.map(ToOwned::to_owned);
+        item.timestamp_ms = Some(timestamp_ms);
+        item.media = Some(TimelineMedia {
+            kind,
+            filename: filename.to_owned(),
+            source: TimelineMediaSource {
+                mxc_uri: format!("mxc://example.invalid/{event_id}"),
+                encrypted: true,
+                encryption_version: Some("v2".to_owned()),
+            },
+            mimetype: Some("image/png".to_owned()),
+            size: Some(2048),
+            width: Some(640),
+            height: Some(480),
+            thumbnail: Some(TimelineMediaThumbnail {
+                source: TimelineMediaSource {
+                    mxc_uri: format!("mxc://example.invalid/{event_id}-thumb"),
+                    encrypted: false,
+                    encryption_version: None,
+                },
+                mimetype: Some("image/png".to_owned()),
+                size: Some(512),
+                width: Some(160),
+                height: Some(120),
+            }),
+        });
+        item
+    }
+
+    #[test]
+    fn media_gallery_projection_keeps_event_media_newest_first() {
+        let mut transaction_media = timeline_media_item(
+            "$local:test",
+            "@me:test",
+            None,
+            3,
+            "local.png",
+            TimelineMediaKind::Image,
+        );
+        transaction_media.id = TimelineItemId::Transaction {
+            transaction_id: "txn-local".to_owned(),
+        };
+        let items = vec![
+            timeline_media_item(
+                "$old:test",
+                "@alice:test",
+                Some("Alice"),
+                1,
+                "old.png",
+                TimelineMediaKind::Image,
+            ),
+            timeline_item("$text:test", Some("text"), "@bob:test", false),
+            transaction_media,
+            timeline_media_item(
+                "$new:test",
+                "@carol:test",
+                Some("Carol"),
+                2,
+                "new.png",
+                TimelineMediaKind::Image,
+            ),
+        ];
+
+        let gallery = media_gallery_items_from_timeline_items(&room_key(), &items);
+
+        assert_eq!(gallery.len(), 2);
+        assert_eq!(gallery[0].event_id, "$new:test");
+        assert_eq!(gallery[0].sender.as_deref(), Some("@carol:test"));
+        assert_eq!(gallery[0].sender_label.as_deref(), Some("Carol"));
+        assert_eq!(gallery[0].timestamp_ms, 2);
+        assert_eq!(gallery[0].media.kind, GalleryTimelineMediaKind::Image);
+        assert_eq!(gallery[0].media.filename, "new.png");
+        assert!(gallery[0].media.source.encrypted);
+        assert_eq!(
+            gallery[0].media.thumbnail.as_ref().map(|thumb| thumb.width),
+            Some(Some(160))
+        );
+        assert_eq!(gallery[1].event_id, "$old:test");
+    }
+
+    #[test]
+    fn media_gallery_projection_recomputes_after_timeline_diffs() {
+        let mut items = vec![
+            timeline_media_item(
+                "$old:test",
+                "@alice:test",
+                None,
+                1,
+                "old.png",
+                TimelineMediaKind::Image,
+            ),
+            timeline_media_item(
+                "$new:test",
+                "@bob:test",
+                None,
+                2,
+                "new.png",
+                TimelineMediaKind::Image,
+            ),
+        ];
+
+        apply_timeline_diffs_to_items(&mut items, &[TimelineDiff::Remove { index: 1 }]);
+        let gallery = media_gallery_items_from_timeline_items(&room_key(), &items);
+        assert_eq!(gallery.len(), 1);
+        assert_eq!(gallery[0].event_id, "$old:test");
+
+        apply_timeline_diffs_to_items(&mut items, &[TimelineDiff::Reset { items: Vec::new() }]);
+        assert!(media_gallery_items_from_timeline_items(&room_key(), &items).is_empty());
     }
 
     #[test]

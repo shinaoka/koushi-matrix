@@ -975,8 +975,8 @@ button {
 }
 
 .main-pane {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
   background: var(--surface);
@@ -1096,6 +1096,7 @@ button {
 }
 
 .activity-scroll {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
 }
@@ -1224,8 +1225,10 @@ button {
 }
 
 .timeline-scroll {
+  flex: 1 1 auto;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
   overflow: hidden;
   padding: 0 0 18px;
 }
@@ -1465,6 +1468,7 @@ button {
 }
 
 .directory-results {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 12px 20px 20px;
@@ -1538,6 +1542,7 @@ button {
 }
 
 .invites-layout {
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: minmax(220px, 34%) minmax(0, 1fr);
   min-height: 0;
@@ -3056,6 +3061,184 @@ mark {
   font-size: 13px;
   font-weight: 600;
   color: var(--brand);
+}
+
+.upload-staging-dialog {
+  display: grid;
+  gap: 10px;
+  margin: 0 20px 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.upload-staging-header,
+.media-viewer-header,
+.media-viewer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.upload-staging-header h2,
+.media-viewer-header h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.upload-staging-list {
+  display: grid;
+  gap: 8px;
+}
+
+.upload-staging-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-hover);
+}
+
+.upload-staging-file,
+.room-media-gallery-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.upload-staging-name,
+.room-media-gallery-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-staging-meta,
+.room-media-gallery-meta,
+.media-viewer-header p {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.upload-staging-caption {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.upload-staging-caption input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface);
+  outline: none;
+}
+
+.upload-staging-caption input:focus {
+  border-color: var(--brand);
+}
+
+.upload-staging-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.upload-staging-choice .dialog-button[aria-pressed="true"] {
+  color: var(--brand-contrast);
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.room-media-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-hover);
+}
+
+.room-media-gallery-item {
+  min-height: 48px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  text-align: start;
+}
+
+.room-media-gallery-item:hover,
+.room-media-gallery-item:focus-visible {
+  border-color: var(--brand);
+}
+
+.media-viewer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(15 27 45 / 55%);
+}
+
+.media-viewer {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  width: min(720px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 24px 56px rgb(15 27 45 / 28%);
+}
+
+.media-viewer-stage {
+  display: grid;
+  place-items: center;
+  min-height: 280px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sidebar);
+}
+
+.media-viewer-image-placeholder,
+.media-viewer-file-placeholder {
+  display: grid;
+  gap: 8px;
+  place-items: center;
+  max-width: 80%;
+  color: var(--text-muted);
+  text-align: center;
+  transition: transform 160ms ease;
+}
+
+.media-viewer-image-placeholder span,
+.media-viewer-file-placeholder span {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dialog-overlay {

@@ -1790,7 +1790,7 @@ test("mention autocomplete inserts a pill and sends typed mention intent", async
     page.getByLabel("Selected mentions").getByText("@Alice", { exact: true })
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
 
   await expect.poll(() => invocationCount(page, "send_text")).toBeGreaterThanOrEqual(1);
   await expect
@@ -1821,7 +1821,7 @@ test("markdown toolbar and slash composer input dispatch Rust-owned send bodies"
   await composer.selectText();
   await page.getByRole("button", { name: "Bold" }).click();
   await expect(composer).toHaveValue("**world**");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
 
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
@@ -1833,7 +1833,7 @@ test("markdown toolbar and slash composer input dispatch Rust-owned send bodies"
 
   await page.evaluate(() => window.__harness.clearInvocations());
   await composer.fill("/me waves");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
     .toEqual({
@@ -2757,8 +2757,11 @@ test("attach control stages media caption and renders Rust-owned media progress"
     });
 
   await expect(page.getByText("media-fixture.txt", { exact: true })).toBeVisible();
+  await page
+    .getByRole("textbox", { name: "Caption for media-fixture.txt" })
+    .fill("single **event** caption");
   await expect.poll(() => invocationCount(page, "upload_media")).toBe(0);
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
 
   await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
   await expect.poll(() => invocationCount(page, "send_text")).toBe(0);
@@ -2918,6 +2921,241 @@ test("attach control stages media caption and renders Rust-owned media progress"
     });
 });
 
+test("paste/drop upload UX stages through Rust snapshot and sends dialog captions", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("stage_uploads", ({ roomId, items }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const stagedUploads = items.map((item: any, index: number) => ({
+        staged_id: item.stagedId,
+        room_id: roomId,
+        position: index + 1,
+        filename: item.filename,
+        mime_type: item.mimeType,
+        byte_count: item.byteCount,
+        kind: item.kind,
+        caption: null,
+        compression_choice: item.compressionChoice
+      }));
+      const nextSnapshot = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          timeline: {
+            ...snapshot.state.timeline,
+            staged_uploads: stagedUploads
+          }
+        }
+      };
+      window.__harness.setSnapshot(nextSnapshot);
+      return nextSnapshot;
+    });
+    window.__harness.setCommandResponse(
+      "update_staged_upload_caption",
+      ({ stagedId, caption }) => {
+        const snapshot = window.__harness.currentSnapshot();
+        const nextSnapshot = {
+          ...snapshot,
+          state: {
+            ...snapshot.state,
+            timeline: {
+              ...snapshot.state.timeline,
+              staged_uploads: snapshot.state.timeline.staged_uploads.map((item: any) =>
+                item.staged_id === stagedId
+                  ? {
+                      ...item,
+                      caption: caption
+                        ? { plain_body: caption, formatted_body: null, mentions: { targets: [] } }
+                        : null
+                    }
+                  : item
+              )
+            }
+          }
+        };
+        window.__harness.setSnapshot(nextSnapshot);
+        return nextSnapshot;
+      }
+    );
+    window.__harness.setCommandResponse(
+      "update_staged_upload_compression",
+      ({ stagedId, compressionChoice }) => {
+        const snapshot = window.__harness.currentSnapshot();
+        const nextSnapshot = {
+          ...snapshot,
+          state: {
+            ...snapshot.state,
+            timeline: {
+              ...snapshot.state.timeline,
+              staged_uploads: snapshot.state.timeline.staged_uploads.map((item: any) =>
+                item.staged_id === stagedId
+                  ? { ...item, compression_choice: compressionChoice }
+                  : item
+              )
+            }
+          }
+        };
+        window.__harness.setSnapshot(nextSnapshot);
+        return nextSnapshot;
+      }
+    );
+    window.__harness.setCommandResponse("clear_upload_staging", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      const nextSnapshot = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          timeline: {
+            ...snapshot.state.timeline,
+            staged_uploads: []
+          }
+        }
+      };
+      window.__harness.setSnapshot(nextSnapshot);
+      return nextSnapshot;
+    });
+    window.__harness.setCommandResponse("upload_media", () => window.__harness.currentSnapshot());
+    window.__harness.clearInvocations();
+  });
+
+  await page.evaluate(() => {
+    const file = new File(["paste fixture bytes"], "pasted-fixture.txt", {
+      type: "text/plain"
+    });
+    const data = new DataTransfer();
+    data.items.add(file);
+    const composer = document.querySelector(
+      'textarea[aria-label="Message composer"]'
+    );
+    if (!composer) {
+      throw new Error("composer not found");
+    }
+    composer.dispatchEvent(
+      new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data
+      })
+    );
+  });
+
+  await expect.poll(() => invocationCount(page, "stage_uploads")).toBe(1);
+  await expect.poll(() => invocationCount(page, "upload_media")).toBe(0);
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toBeVisible();
+  await expect(page.getByText("pasted-fixture.txt", { exact: true })).toBeVisible();
+
+  await page.getByRole("textbox", { name: "Caption for pasted-fixture.txt" }).fill("caption from staging");
+  await expect.poll(() => invocationCount(page, "update_staged_upload_caption")).toBeGreaterThanOrEqual(1);
+
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => invocationCount(page, "send_text")).toBe(0);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
+        return args
+          ? {
+              roomId: args.roomId,
+              filename: args.filename,
+              mimeType: args.mimeType,
+              caption: args.caption,
+              byteCount: Array.isArray(args.bytes) ? args.bytes.length : -1
+            }
+          : null;
+      })
+    )
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      filename: "pasted-fixture.txt",
+      mimeType: "text/plain",
+      caption: "caption from staging",
+      byteCount: "paste fixture bytes".length
+    });
+  await expect.poll(() => invocationCount(page, "clear_upload_staging")).toBeGreaterThanOrEqual(1);
+});
+
+test("room media gallery opens a viewer from Rust-owned gallery projection", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const mediaGallery = [
+      {
+        event_id: "$gallery-new:example.invalid",
+        room_id: "!harness-room:example.invalid",
+        sender: "@harness-user:example.invalid",
+        sender_label: "Harness User",
+        timestamp_ms: 1_900_000_060_000,
+        media: {
+          kind: "Image",
+          filename: "new-image.png",
+          source: {
+            mxc_uri: "mxc://example.invalid/new-image",
+            encrypted: false,
+            encryption_version: null
+          },
+          mimetype: "image/png",
+          size: 4096,
+          width: 800,
+          height: 600,
+          thumbnail: null
+        }
+      },
+      {
+        event_id: "$gallery-old:example.invalid",
+        room_id: "!harness-room:example.invalid",
+        sender: "@harness-user:example.invalid",
+        sender_label: "Harness User",
+        timestamp_ms: 1_900_000_000_000,
+        media: {
+          kind: "File",
+          filename: "old-file.pdf",
+          source: {
+            mxc_uri: "mxc://example.invalid/old-file",
+            encrypted: true,
+            encryption_version: "v2"
+          },
+          mimetype: "application/pdf",
+          size: 8192,
+          width: null,
+          height: null,
+          thumbnail: null
+        }
+      }
+    ];
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        timeline: {
+          ...snapshot.state.timeline,
+          media_gallery: mediaGallery
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await page.getByRole("button", { name: "Open media gallery" }).click();
+  const gallery = page.getByRole("region", { name: "Room media gallery" });
+  await expect(gallery.getByRole("button", { name: "Open new-image.png" })).toBeVisible();
+  await gallery.getByRole("button", { name: "Open new-image.png" }).click();
+
+  const viewer = page.getByRole("dialog", { name: "Media viewer" });
+  await expect(viewer).toBeVisible();
+  await expect(viewer.getByText("new-image.png", { exact: true })).toBeVisible();
+  await viewer.getByRole("button", { name: "Next media" }).click();
+  await expect(viewer.getByText("old-file.pdf", { exact: true })).toBeVisible();
+  await viewer.getByRole("button", { name: "Previous media" }).click();
+  await expect(viewer.getByText("new-image.png", { exact: true })).toBeVisible();
+  await viewer.getByRole("button", { name: "Close media viewer" }).click();
+  await expect(viewer).toHaveCount(0);
+});
+
 test("image compression setting and dialog send selected Rust-owned variant metadata", async ({
   page
 }) => {
@@ -2982,12 +3220,13 @@ test("image compression setting and dialog send selected Rust-owned variant meta
     mimeType: "image/png",
     buffer: fixture
   });
-  await page.getByRole("button", { name: "Send" }).click();
-  const dialog = page.getByRole("dialog", { name: "Compress image" });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("button", { name: /Original/ })).toContainText("4x2");
-  await expect(dialog.getByRole("button", { name: /Compressed/ })).toContainText("1x1");
-  await dialog.getByRole("button", { name: /Compressed/ }).click();
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toBeVisible();
+  await page.getByRole("button", { name: "Compressed" }).click();
+  await expect
+    .poll(() => invocationCount(page, "update_staged_upload_compression"))
+    .toBeGreaterThanOrEqual(1);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
 
   await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
   await expect
@@ -3076,7 +3315,7 @@ test("image compression setting and dialog send selected Rust-owned variant meta
     mimeType: "image/png",
     buffer: fixture
   });
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
   await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
   await expect
@@ -3119,7 +3358,7 @@ test("image compression setting and dialog send selected Rust-owned variant meta
     mimeType: "image/png",
     buffer: fixture
   });
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
   await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
   await expect
@@ -3754,7 +3993,7 @@ test("submitting the composer in reply mode invokes send_reply, not send_text", 
 
   const composer = page.getByRole("textbox", { name: "Message composer" });
   await composer.fill("A reply body");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
 
   await expect.poll(() => invocationCount(page, "send_reply")).toBeGreaterThanOrEqual(1);
   expect(await invocationCount(page, "send_text")).toBe(0);
@@ -4142,7 +4381,7 @@ test("reply send does not repair product state by cancelling reply mode", async 
   });
 
   await page.getByRole("textbox", { name: "Message composer" }).fill("A reply body");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
 
   await expect.poll(() => invocationCount(page, "send_reply")).toBeGreaterThanOrEqual(1);
   expect(await invocationCount(page, "cancel_composer_reply")).toBe(0);

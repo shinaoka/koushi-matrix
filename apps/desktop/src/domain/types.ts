@@ -598,6 +598,16 @@ export interface StagedUploadItem {
   compression_choice: StagedUploadCompressionChoice;
 }
 
+export interface UploadStagingRequestItem {
+  stagedId: string;
+  position: number;
+  filename: string;
+  mimeType: string;
+  byteCount: number;
+  kind: StagedUploadKind;
+  compressionChoice: StagedUploadCompressionChoice;
+}
+
 export type TimelineMediaKind = "Image" | "File" | "Audio" | "Video";
 
 export interface TimelineMediaGallerySource {

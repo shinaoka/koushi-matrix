@@ -2,6 +2,8 @@ import {
   AtSign,
   Bell,
   Bold,
+  ChevronLeft,
+  ChevronRight,
   Check,
   Clock3,
   Code2,
@@ -11,6 +13,7 @@ import {
   Hash,
   HelpCircle,
   Home,
+  Image as ImageIcon,
   Italic,
   KeyRound,
   Link2,
@@ -31,7 +34,9 @@ import {
   ShieldCheck,
   Smile,
   Users,
-  X
+  X,
+  ZoomIn,
+  ZoomOut
 } from "lucide-react";
 import {
   type FormEvent,
@@ -145,7 +150,11 @@ import type {
   ScheduledSendCapability,
   ScheduledSendItem,
   SettingsPatch,
+  StagedUploadCompressionChoice,
+  StagedUploadItem,
   TimelineMessage,
+  TimelineMediaGalleryItem,
+  UploadStagingRequestItem,
   UserProfile
 } from "./domain/types";
 
@@ -168,6 +177,28 @@ const ICON_SIZE = {
   auth: 23,
   emptyState: 24
 } as const;
+
+declare global {
+  interface Window {
+    __matrixDesktopQaErrorCaptureInstalled?: boolean;
+    __matrixDesktopQaLastError?: string;
+  }
+}
+
+if (
+  typeof window !== "undefined" &&
+  import.meta.env.VITE_MATRIX_DESKTOP_QA_TITLE === "1" &&
+  !window.__matrixDesktopQaErrorCaptureInstalled
+) {
+  window.__matrixDesktopQaErrorCaptureInstalled = true;
+  window.addEventListener("error", (event) => {
+    window.__matrixDesktopQaLastError = event.message;
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    window.__matrixDesktopQaLastError =
+      event.reason instanceof Error ? event.reason.message : String(event.reason);
+  });
+}
 
 type ImageUploadDimensionsPayload = {
   width: number;
@@ -676,6 +707,51 @@ function formatUploadDimensions(dimensions: ImageUploadDimensionsPayload): strin
   return `${dimensions.width}x${dimensions.height}`;
 }
 
+function createStagedUploadId(index: number): string {
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `staged-upload-${index}-${random}`;
+}
+
+function stagedUploadKindForFile(file: File): StagedUploadItem["kind"] {
+  return file.type.toLowerCase().startsWith("image/")
+    ? { kind: "image", width: null, height: null }
+    : { kind: "file" };
+}
+
+function initialStagedCompressionChoice(
+  file: File,
+  mode: ImageUploadCompressionMode
+): StagedUploadCompressionChoice {
+  if (!isImageCompressionCandidate(file)) {
+    return { kind: "notApplicable" };
+  }
+  return mode === "always" ? { kind: "compressed", mode } : { kind: "original" };
+}
+
+function forcedUploadMode(
+  choice: StagedUploadCompressionChoice | undefined,
+  fallback: ImageUploadCompressionMode
+): ImageUploadCompressionMode {
+  if (choice?.kind === "compressed") {
+    return "always";
+  }
+  if (choice?.kind === "original") {
+    return "never";
+  }
+  return fallback;
+}
+
+function captionBody(item: StagedUploadItem): string {
+  return item.caption?.plain_body ?? "";
+}
+
+function mediaGalleryItemLabel(item: TimelineMediaGalleryItem): string {
+  return item.media.filename || item.event_id;
+}
+
 function rightPanelTargetFromContextMenuTarget(
   target: ContextMenuTarget
 ): RightPanelContextMenuTarget {
@@ -694,7 +770,7 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
-  const [stagedAttachment, setStagedAttachment] = useState<File | null>(null);
+  const [stagedUploadFiles, setStagedUploadFiles] = useState<Map<string, File>>(() => new Map());
   const [imageCompressionDialog, setImageCompressionDialog] =
     useState<ImageCompressionDialogState | null>(null);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
@@ -757,6 +833,18 @@ export function App() {
       qaTitleToken: "unread=0 badge=0 notify=none"
     };
   const composerDraft = snapshot?.state.timeline.composer.draft ?? "";
+  const stagedUploads = snapshot?.state.timeline.staged_uploads ?? [];
+  const stagedUploadIdKey = stagedUploads.map((item) => item.staged_id).join("\n");
+
+  useEffect(() => {
+    const activeIds = new Set(stagedUploads.map((item) => item.staged_id));
+    setStagedUploadFiles((files) => {
+      const next = new Map(
+        [...files.entries()].filter(([stagedId]) => activeIds.has(stagedId))
+      );
+      return next.size === files.size ? files : next;
+    });
+  }, [stagedUploadIdKey]);
 
   function handleShortcutAction(shortcutId: string): boolean {
     switch (shortcutId) {
@@ -1484,15 +1572,23 @@ export function App() {
   async function sendText() {
     const roomId = snapshot?.state.timeline.room_id;
     const body = composerDraft;
-    if (!roomId || (!body.trim() && !stagedAttachment)) {
+    const uploads = snapshot?.state.timeline.staged_uploads ?? [];
+    if (!roomId || (!body.trim() && uploads.length === 0)) {
       return;
     }
-    if (stagedAttachment) {
-      const uploaded = await uploadMediaFile(stagedAttachment, body);
-      if (!uploaded) {
-        return;
+    if (uploads.length > 0) {
+      for (const item of uploads) {
+        const file = stagedUploadFiles.get(item.staged_id);
+        if (!file) {
+          return;
+        }
+        const uploaded = await uploadMediaFile(file, captionBody(item), item.compression_choice);
+        if (!uploaded) {
+          return;
+        }
       }
-      setStagedAttachment(null);
+      setStagedUploadFiles(new Map());
+      setSnapshot(await api.clearUploadStaging(roomId));
       setSnapshot(await api.setComposerDraft(roomId, ""));
       setComposerMentions(EMPTY_MENTION_INTENT);
       return;
@@ -1537,7 +1633,7 @@ export function App() {
   async function scheduleSend(sendAtMs: number) {
     const roomId = snapshot?.state.timeline.room_id;
     const body = composerDraft;
-    if (!roomId || !body.trim() || stagedAttachment) {
+    if (!roomId || !body.trim() || stagedUploads.length > 0) {
       return;
     }
 
@@ -1578,16 +1674,83 @@ export function App() {
     }
   }
 
-  async function uploadMediaFile(file: File, caption = ""): Promise<boolean> {
+  async function stageUploadFiles(files: File[]): Promise<void> {
+    const roomId = snapshot?.state.timeline.room_id;
+    if (!roomId || files.length === 0) {
+      return;
+    }
+    const startPosition = stagedUploads.length;
+    const mediaSettings = snapshot.state.settings.values.media;
+    const existingItems: UploadStagingRequestItem[] = stagedUploads.map((item) => ({
+      stagedId: item.staged_id,
+      position: item.position,
+      filename: item.filename,
+      mimeType: item.mime_type,
+      byteCount: item.byte_count,
+      kind: item.kind,
+      compressionChoice: item.compression_choice
+    }));
+    const newItems: UploadStagingRequestItem[] = files.map((file, index) => {
+      const stagedId = createStagedUploadId(startPosition + index);
+      return {
+        stagedId,
+        position: startPosition + index + 1,
+        filename: file.name || "attachment",
+        mimeType: file.type || "application/octet-stream",
+        byteCount: file.size,
+        kind: stagedUploadKindForFile(file),
+        compressionChoice: initialStagedCompressionChoice(
+          file,
+          mediaSettings.image_upload_compression
+        )
+      };
+    });
+    const items = [...existingItems, ...newItems];
+    setStagedUploadFiles((current) => {
+      const next = new Map(current);
+      newItems.forEach((item, index) => {
+        next.set(item.stagedId, files[index]);
+      });
+      return next;
+    });
+    setSnapshot(await api.stageUploads(roomId, items));
+  }
+
+  async function updateStagedUploadCaption(stagedId: string, caption: string): Promise<void> {
+    setSnapshot(await api.updateStagedUploadCaption(stagedId, caption));
+  }
+
+  async function updateStagedUploadCompression(
+    stagedId: string,
+    compressionChoice: StagedUploadCompressionChoice
+  ): Promise<void> {
+    setSnapshot(await api.updateStagedUploadCompression(stagedId, compressionChoice));
+  }
+
+  async function clearUploadStaging(): Promise<void> {
+    const roomId = snapshot?.state.timeline.room_id;
+    if (!roomId) {
+      return;
+    }
+    setStagedUploadFiles(new Map());
+    setSnapshot(await api.clearUploadStaging(roomId));
+  }
+
+  async function uploadMediaFile(
+    file: File,
+    caption = "",
+    compressionChoice?: StagedUploadCompressionChoice
+  ): Promise<boolean> {
     const roomId = snapshot?.state.timeline.room_id;
     if (!roomId || !isTauriRuntime()) {
       return false;
     }
 
+    const mediaSettings = snapshot.state.settings.values.media;
     const prepared = await prepareMediaUpload(
       file,
-      snapshot.state.settings.values.media.image_upload_compression,
-      snapshot.state.settings.values.media.image_upload_compression_policy,
+      forcedUploadMode(compressionChoice, mediaSettings.image_upload_compression),
+      mediaSettings.image_upload_compression_policy,
       requestImageCompressionChoice
     );
     if (!prepared) {
@@ -1968,7 +2131,6 @@ export function App() {
             searchResults={searchResults}
             showSearchResults={effectiveRightPanelMode !== "search"}
             snapshot={snapshot}
-            stagedAttachment={stagedAttachment}
             timelineTransport={appTimelineTransport}
             onCancelReply={() => {
               void cancelComposerReply();
@@ -1976,10 +2138,16 @@ export function App() {
             onCancelScheduledSend={(scheduledId) => {
               void cancelScheduledSend(scheduledId);
             }}
-            onAttachFile={(file) => {
-              setStagedAttachment(file);
+            onAttachFiles={stageUploadFiles}
+            onClearUploadStaging={() => {
+              void clearUploadStaging();
             }}
-            onClearAttachment={() => setStagedAttachment(null)}
+            onUpdateStagedUploadCaption={(stagedId, caption) => {
+              void updateStagedUploadCaption(stagedId, caption);
+            }}
+            onUpdateStagedUploadCompression={(stagedId, compressionChoice) => {
+              void updateStagedUploadCompression(stagedId, compressionChoice);
+            }}
             onComposerDraftChange={(value) => {
               void updateComposerDraft(value);
             }}
@@ -3634,12 +3802,13 @@ function TimelinePane({
   searchResults,
   showSearchResults,
   snapshot,
-  stagedAttachment,
   timelineTransport,
   onCancelReply,
   onCancelScheduledSend,
-  onAttachFile,
-  onClearAttachment,
+  onAttachFiles,
+  onClearUploadStaging,
+  onUpdateStagedUploadCaption,
+  onUpdateStagedUploadCompression,
   onComposerDraftChange,
   onMentionIntentChange,
   onEditMessage,
@@ -3666,12 +3835,16 @@ function TimelinePane({
   searchResults: SearchResult[];
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
-  stagedAttachment: File | null;
   timelineTransport: TimelineTransport | null;
   onCancelReply: () => void;
   onCancelScheduledSend: (scheduledId: string) => void;
-  onAttachFile: (file: File) => void | Promise<void>;
-  onClearAttachment: () => void;
+  onAttachFiles: (files: File[]) => void | Promise<void>;
+  onClearUploadStaging: () => void | Promise<void>;
+  onUpdateStagedUploadCaption: (stagedId: string, caption: string) => void | Promise<void>;
+  onUpdateStagedUploadCompression: (
+    stagedId: string,
+    compressionChoice: StagedUploadCompressionChoice
+  ) => void | Promise<void>;
   onComposerDraftChange: (value: string) => void;
   onMentionIntentChange: (intent: MentionIntent) => void;
   onEditMessage: (message: TimelineMessage) => void;
@@ -3696,6 +3869,10 @@ function TimelinePane({
     : null;
   const pinnedEvents = pinnedEventsForRoom(snapshot, timelineRoomId);
   const pinnedEventIds = pinnedEvents.map((event) => event.event_id);
+  const stagedUploads = snapshot.state.timeline.staged_uploads ?? [];
+  const mediaGallery = snapshot.state.timeline.media_gallery ?? [];
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
@@ -3713,6 +3890,15 @@ function TimelinePane({
             <Users size={ICON_SIZE.small} />
             <span>8</span>
           </button>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("mediaGallery.open")}
+            disabled={mediaGallery.length === 0}
+            onClick={() => setGalleryOpen((open) => !open)}
+          >
+            <ImageIcon size={ICON_SIZE.panel} />
+          </button>
           <button className="icon-button" type="button" aria-label={t("room.threadToggle")} onClick={onToggleThread}>
             {snapshot.state.thread.kind !== "closed" ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
           </button>
@@ -3726,6 +3912,12 @@ function TimelinePane({
           {t("timeline.messagesTab")}
         </button>
       </nav>
+      {galleryOpen ? (
+        <RoomMediaGallery
+          items={mediaGallery}
+          onOpenItem={(index) => setViewerIndex(index)}
+        />
+      ) : null}
       <section className="timeline-scroll">
         {timelineRoomId && pinnedEvents.length > 0 ? (
           <PinnedEventsList
@@ -3805,24 +3997,251 @@ function TimelinePane({
         onCancel={onCancelScheduledSend}
         onReschedule={onRescheduleScheduledSend}
       />
+      {stagedUploads.length > 0 ? (
+        <UploadStagingDialog
+          items={stagedUploads}
+          onClear={onClearUploadStaging}
+          onUpdateCaption={onUpdateStagedUploadCaption}
+          onUpdateCompression={onUpdateStagedUploadCompression}
+        />
+      ) : null}
       <Composer
         composerMode={composerMode}
+        hasStagedUploads={stagedUploads.length > 0}
         isSending={Boolean(snapshot.state.timeline.composer.pending_transaction_id)}
         mentionCandidates={mentionCandidatesFromSnapshot(snapshot)}
         mentionIntent={mentionIntent}
         resolveComposerKeyAction={resolveComposerKeyAction}
         roomName={activeRoomName}
-        stagedAttachment={stagedAttachment}
         value={composerDraft}
         onCancelReply={onCancelReply}
-        onAttachFile={onAttachFile}
-        onClearAttachment={onClearAttachment}
+        onAttachFiles={onAttachFiles}
         onMentionIntentChange={onMentionIntentChange}
         onScheduleSend={onScheduleSend}
         onSend={onSendText}
         onValueChange={onComposerDraftChange}
       />
+      {viewerIndex !== null && mediaGallery[viewerIndex] ? (
+        <MediaViewer
+          index={viewerIndex}
+          items={mediaGallery}
+          onClose={() => setViewerIndex(null)}
+          onSelectIndex={setViewerIndex}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function UploadStagingDialog({
+  items,
+  onClear,
+  onUpdateCaption,
+  onUpdateCompression
+}: {
+  items: StagedUploadItem[];
+  onClear: () => void | Promise<void>;
+  onUpdateCaption: (stagedId: string, caption: string) => void | Promise<void>;
+  onUpdateCompression: (
+    stagedId: string,
+    compressionChoice: StagedUploadCompressionChoice
+  ) => void | Promise<void>;
+}) {
+  return (
+    <section
+      className="upload-staging-dialog"
+      role="dialog"
+      aria-label={t("upload.dialogTitle")}
+    >
+      <div className="upload-staging-header">
+        <h2>{t("upload.dialogTitle")}</h2>
+        <button className="icon-button" type="button" aria-label={t("upload.clear")} onClick={onClear}>
+          <X size={ICON_SIZE.small} />
+        </button>
+      </div>
+      <div className="upload-staging-list">
+        {items.map((item) => (
+          <article className="upload-staging-item" key={item.staged_id}>
+            <div className="upload-staging-file">
+              {item.kind.kind === "image" ? (
+                <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
+              ) : (
+                <FileText size={ICON_SIZE.control} aria-hidden="true" />
+              )}
+              <span className="upload-staging-name" dir="auto">
+                {item.filename || t("composer.attachmentFallback")}
+              </span>
+              <span className="upload-staging-meta">
+                {formatUploadBytes(item.byte_count)}
+              </span>
+            </div>
+            <label className="upload-staging-caption">
+              <span>{t("upload.captionForFile", { filename: item.filename })}</span>
+              <input
+                value={captionBody(item)}
+                aria-label={t("upload.captionForFile", { filename: item.filename })}
+                onChange={(event) => {
+                  void onUpdateCaption(item.staged_id, event.currentTarget.value);
+                }}
+              />
+            </label>
+            {item.kind.kind === "image" ? (
+              <div className="upload-staging-choice" role="group" aria-label={t("upload.sizeChoice")}>
+                <button
+                  className="dialog-button"
+                  type="button"
+                  aria-pressed={item.compression_choice.kind === "original"}
+                  onClick={() => {
+                    void onUpdateCompression(item.staged_id, { kind: "original" });
+                  }}
+                >
+                  {t("upload.original")}
+                </button>
+                <button
+                  className="dialog-button"
+                  type="button"
+                  aria-pressed={item.compression_choice.kind === "compressed"}
+                  onClick={() => {
+                    void onUpdateCompression(item.staged_id, {
+                      kind: "compressed",
+                      mode: "always"
+                    });
+                  }}
+                >
+                  {t("upload.compressed")}
+                </button>
+              </div>
+            ) : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function RoomMediaGallery({
+  items,
+  onOpenItem
+}: {
+  items: TimelineMediaGalleryItem[];
+  onOpenItem: (index: number) => void;
+}) {
+  return (
+    <section className="room-media-gallery" role="region" aria-label={t("mediaGallery.region")}>
+      {items.map((item, index) => {
+        const label = mediaGalleryItemLabel(item);
+        return (
+          <button
+            className="room-media-gallery-item"
+            key={item.event_id}
+            type="button"
+            aria-label={t("mediaGallery.openItem", { filename: label })}
+            onClick={() => onOpenItem(index)}
+          >
+            {item.media.kind === "Image" ? (
+              <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
+            ) : (
+              <FileText size={ICON_SIZE.control} aria-hidden="true" />
+            )}
+            <span className="room-media-gallery-name" dir="auto">
+              {label}
+            </span>
+            <span className="room-media-gallery-meta">
+              {item.media.size !== null ? formatUploadBytes(item.media.size) : item.media.kind}
+              {item.media.source.encrypted ? ` - ${t("mediaGallery.encrypted")}` : ""}
+            </span>
+          </button>
+        );
+      })}
+    </section>
+  );
+}
+
+function MediaViewer({
+  index,
+  items,
+  onClose,
+  onSelectIndex
+}: {
+  index: number;
+  items: TimelineMediaGalleryItem[];
+  onClose: () => void;
+  onSelectIndex: (index: number) => void;
+}) {
+  const [zoom, setZoom] = useState(1);
+  const item = items[index];
+  const previousIndex = (index + items.length - 1) % items.length;
+  const nextIndex = (index + 1) % items.length;
+  const label = mediaGalleryItemLabel(item);
+
+  return (
+    <div className="media-viewer-backdrop" role="dialog" aria-label={t("mediaGallery.viewerTitle")}>
+      <div className="media-viewer">
+        <header className="media-viewer-header">
+          <div>
+            <h2 dir="auto">{label}</h2>
+            <p>
+              {item.media.mimetype ?? item.media.kind}
+              {item.media.size !== null ? ` - ${formatUploadBytes(item.media.size)}` : ""}
+            </p>
+          </div>
+          <button className="icon-button" type="button" aria-label={t("mediaGallery.close")} onClick={onClose}>
+            <X size={ICON_SIZE.small} />
+          </button>
+        </header>
+        <div className="media-viewer-stage">
+          {item.media.kind === "Image" ? (
+            <div className="media-viewer-image-placeholder" style={{ transform: `scale(${zoom})` }}>
+              <ImageIcon size={ICON_SIZE.emptyState} aria-hidden="true" />
+            </div>
+          ) : (
+            <div className="media-viewer-file-placeholder">
+              <FileText size={ICON_SIZE.emptyState} aria-hidden="true" />
+            </div>
+          )}
+        </div>
+        <footer className="media-viewer-actions">
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("mediaGallery.previous")}
+            onClick={() => {
+              setZoom(1);
+              onSelectIndex(previousIndex);
+            }}
+          >
+            <ChevronLeft size={ICON_SIZE.control} />
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("mediaGallery.zoomOut")}
+            onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}
+          >
+            <ZoomOut size={ICON_SIZE.control} />
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("mediaGallery.zoomIn")}
+            onClick={() => setZoom((value) => Math.min(3, value + 0.25))}
+          >
+            <ZoomIn size={ICON_SIZE.control} />
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("mediaGallery.next")}
+            onClick={() => {
+              setZoom(1);
+              onSelectIndex(nextIndex);
+            }}
+          >
+            <ChevronRight size={ICON_SIZE.control} />
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
 
@@ -4227,32 +4646,30 @@ function MessageArticle({
 
 export function Composer({
   composerMode,
+  hasStagedUploads = false,
   isSending,
   mentionCandidates = [],
   mentionIntent = EMPTY_MENTION_INTENT,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   roomName,
-  stagedAttachment = null,
   value,
   onCancelReply,
-  onAttachFile = async () => undefined,
-  onClearAttachment = () => undefined,
+  onAttachFiles = async () => undefined,
   onMentionIntentChange = () => undefined,
   onScheduleSend = async () => undefined,
   onSend,
   onValueChange
 }: {
   composerMode: ComposerModeProp;
+  hasStagedUploads?: boolean;
   isSending: boolean;
   mentionCandidates?: MentionCandidate[];
   mentionIntent?: MentionIntent;
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   roomName: string;
-  stagedAttachment?: File | null;
   value: string;
   onCancelReply: () => void;
-  onAttachFile?: (file: File) => void | Promise<void>;
-  onClearAttachment?: () => void;
+  onAttachFiles?: (files: File[]) => void | Promise<void>;
   onMentionIntentChange?: (intent: MentionIntent) => void;
   onScheduleSend?: (sendAtMs: number) => void | Promise<void>;
   onSend: () => void | Promise<void>;
@@ -4350,13 +4767,24 @@ export function Composer({
   }
 
   async function onAttachFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.currentTarget.files?.[0] ?? null;
+    const files = Array.from(event.currentTarget.files ?? []);
     event.currentTarget.value = "";
-    if (!file) {
+    if (files.length === 0) {
       return;
     }
     try {
-      await onAttachFile(file);
+      await onAttachFiles(files);
+    } catch {
+      // Upload failure is reported through the Rust-owned operation/event path.
+    }
+  }
+
+  async function attachDroppedOrPastedFiles(files: File[]) {
+    if (files.length === 0) {
+      return;
+    }
+    try {
+      await onAttachFiles(files);
     } catch {
       // Upload failure is reported through the Rust-owned operation/event path.
     }
@@ -4370,7 +4798,7 @@ export function Composer({
   async function submitSchedule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const sendAtMs = scheduledSendTimestampFromInput(scheduleValue);
-    if (sendAtMs === null || !value.trim() || stagedAttachment || isSending) {
+    if (sendAtMs === null || !value.trim() || hasStagedUploads || isSending) {
       return;
     }
     await onScheduleSend(sendAtMs);
@@ -4391,7 +4819,7 @@ export function Composer({
     });
     const resolverOptions = {
       autocomplete_open: autocompleteOpen,
-      send_enabled: !isSending && (value.trim().length > 0 || Boolean(stagedAttachment))
+      send_enabled: !isSending && (value.trim().length > 0 || hasStagedUploads)
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
       void resolveComposerKeyAction("main", keyEvent, resolverOptions).catch(() => undefined);
@@ -4499,23 +4927,6 @@ export function Composer({
           ))}
         </div>
       ) : null}
-      {stagedAttachment ? (
-        <div className="composer-attachment-preview">
-          <FileText size={ICON_SIZE.input} aria-hidden="true" />
-          <span className="composer-attachment-label">
-            <span>{t("composer.attachedFile")}</span>
-            <strong dir="auto">{stagedAttachment.name || t("composer.attachmentFallback")}</strong>
-          </span>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("composer.removeAttachment")}
-            onClick={onClearAttachment}
-          >
-            <X size={ICON_SIZE.small} />
-          </button>
-        </div>
-      ) : null}
       {autocompleteOpen ? (
         <div
           className="composer-autocomplete"
@@ -4551,14 +4962,34 @@ export function Composer({
         value={value}
         placeholder={t("composer.placeholder", { roomName })}
         onKeyDown={onComposerKeyDown}
+        onPaste={(event) => {
+          const files = Array.from(event.clipboardData.files);
+          if (files.length > 0) {
+            event.preventDefault();
+            void attachDroppedOrPastedFiles(files);
+          }
+        }}
         onChange={(event) => onValueChange(event.target.value)}
       />
-      <div className="composer-footer">
+      <div
+        className="composer-footer"
+        onDragOver={(event) => {
+          event.preventDefault();
+        }}
+        onDrop={(event) => {
+          const files = Array.from(event.dataTransfer.files);
+          if (files.length > 0) {
+            event.preventDefault();
+            void attachDroppedOrPastedFiles(files);
+          }
+        }}
+      >
         <div>
           <input
             ref={fileInputRef}
             className="composer-file-input"
             type="file"
+            multiple
             aria-label={t("composer.attachFileInput")}
             onChange={(event) => {
               void onAttachFileChange(event);
@@ -4588,17 +5019,17 @@ export function Composer({
             className="icon-button"
             type="button"
             aria-label={t("scheduled.sendLater")}
-            disabled={isSending || !value.trim() || Boolean(stagedAttachment)}
+            disabled={isSending || !value.trim() || hasStagedUploads}
             onClick={openScheduleForm}
           >
             <Clock3 size={ICON_SIZE.control} />
           </button>
         </div>
         <button
-          className={`send-button ${(value.trim() || stagedAttachment) && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
+          className={`send-button ${(value.trim() || hasStagedUploads) && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
           type="button"
           aria-label={isSending ? t("action.sending") : t("action.send")}
-          disabled={isSending || (!value.trim() && !stagedAttachment)}
+          disabled={isSending || (!value.trim() && !hasStagedUploads)}
           onClick={onSend}
         >
           <Send size={ICON_SIZE.input} />

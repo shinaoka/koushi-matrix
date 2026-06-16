@@ -611,7 +611,6 @@ async function runLocalMediaScenario() {
     const composer = await session.browser.$('textarea[aria-label="Message composer"]');
     await composer.waitForDisplayed({ timeout: timeoutMs });
     await composer.click();
-    await composer.setValue(caption);
     const fileInputSelector = 'input[type="file"][aria-label="Attach file input"]';
     await setSyntheticFileInput(
       session.browser,
@@ -627,12 +626,23 @@ async function runLocalMediaScenario() {
       timeoutMs,
       "local GUI staged media preview"
     );
+    const captionInput = await session.browser.$(`input[aria-label="Caption for ${filename}"]`);
+    await captionInput.waitForDisplayed({ timeout: timeoutMs });
+    await setTextInputValueByLabel(session.browser, caption, `Caption for ${filename}`);
+    await waitForInputValue(
+      session.browser,
+      `Caption for ${filename}`,
+      caption,
+      timeoutMs,
+      "local GUI media staging caption"
+    );
     const stagedMediaRows = await elementCount(session.browser, ".message-media");
     if (stagedMediaRows !== baselineMediaRows) {
       throw new Error(
         `local GUI media staged attachment sent before Send: baseline=${baselineMediaRows} observed=${stagedMediaRows}`
       );
     }
+    console.log("gui_local_media_stage=ok");
     const sendButton = await session.browser.$('button[aria-label="Send"]');
     await sendButton.waitForDisplayed({ timeout: timeoutMs });
     await sendButton.click();
@@ -660,9 +670,34 @@ async function runLocalMediaScenario() {
       "local GUI media download"
     );
 
+    const galleryButton = await session.browser.$('button[aria-label="Open media gallery"]');
+    await galleryButton.waitForDisplayed({ timeout: timeoutMs });
+    await galleryButton.click();
+    const galleryRegion = await session.browser.$('[role="region"][aria-label="Room media gallery"]');
+    await galleryRegion.waitForDisplayed({ timeout: timeoutMs });
+    await clickVisibleButtonByAriaLabel(
+      session.browser,
+      `Open ${filename}`,
+      timeoutMs,
+      "local GUI media gallery item",
+      '[role="region"][aria-label="Room media gallery"]'
+    );
+    const mediaViewer = await session.browser.$('[role="dialog"][aria-label="Media viewer"]');
+    await mediaViewer.waitForDisplayed({ timeout: timeoutMs });
+    await waitForDocumentText(
+      session.browser,
+      [filename],
+      timeoutMs,
+      "local GUI media viewer"
+    );
+    const closeViewer = await session.browser.$('button[aria-label="Close media viewer"]');
+    await closeViewer.waitForDisplayed({ timeout: timeoutMs });
+    await closeViewer.click();
+
     await recordLocalGuiEvidence(session);
     console.log("gui_local_media=ok");
     console.log("gui_local_media_caption=ok");
+    console.log("gui_local_media_viewer=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -2390,6 +2425,7 @@ async function activeRoomDiagnostics(browser) {
     const roomRows = Array.from(document.querySelectorAll('button[data-testid="room-item"]'));
     return {
       title: document.title,
+      qaLastError: window.__matrixDesktopQaLastError ?? null,
       activeHeader: textFor(document.querySelector(".channel-title > span")),
       activeRows: roomRows
         .filter((row) => row.classList.contains("is-active"))
@@ -2442,6 +2478,64 @@ async function clickVisibleButtonByTextPrefix(browser, prefix, timeout, descript
   const metrics = await timelineScrollMetrics(browser).catch(() => null);
   throw new Error(
     `${description} button starting with ${prefix} was not found. Observed: ${observed.join(", ")}. Timeline metrics=${JSON.stringify(metrics)}`
+  );
+}
+
+async function clickVisibleButtonByAriaLabel(browser, label, timeout, description, scopeSelector = null) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await browser.execute((targetLabel, targetScopeSelector) => {
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity) !== 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const labelFor = (element) =>
+        element?.getAttribute("aria-label") ?? element?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+      const scope = targetScopeSelector ? document.querySelector(targetScopeSelector) : document;
+      if (!scope) {
+        return { clicked: false, reason: "missing-scope", labels: [] };
+      }
+      const buttons = Array.from(scope.querySelectorAll("button"));
+      const labels = buttons.map(labelFor).filter(Boolean);
+      const target = buttons.find(
+        (button) => button.getAttribute("aria-label") === targetLabel && visible(button)
+      );
+      if (!target) {
+        return { clicked: false, reason: "missing", labels };
+      }
+      target.scrollIntoView({ block: "center", inline: "center" });
+      const rect = target.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const topElement = document.elementFromPoint(centerX, centerY);
+      if (topElement !== target && !target.contains(topElement)) {
+        return {
+          clicked: false,
+          reason: "covered",
+          labels,
+          topLabel: labelFor(topElement),
+          topTag: topElement?.tagName ?? null,
+          topClass: topElement instanceof HTMLElement ? topElement.className : null
+        };
+      }
+      target.click();
+      return { clicked: true, labels };
+    }, label, scopeSelector);
+    if (lastState?.clicked) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} button with aria-label ${label} was not clickable. Last state=${JSON.stringify(lastState)}`
   );
 }
 
@@ -2537,6 +2631,7 @@ async function messageActionDiagnostics(browser) {
     const active = document.activeElement;
     return {
       title: document.title,
+      qaLastError: window.__matrixDesktopQaLastError ?? null,
       activeHeader: textFor(document.querySelector(".channel-title > span")),
       timelineViews: document.querySelectorAll('[data-testid="timeline-view"]').length,
       messageLists: document.querySelectorAll(".message-list").length,
@@ -2654,6 +2749,50 @@ function roomSectionSelector(sectionId) {
     default:
       throw new Error(`unknown room section: ${sectionId}`);
   }
+}
+
+async function setTextInputValueByLabel(browser, value, label) {
+  const result = await browser.execute(({ nextValue, ariaLabel }) => {
+    const input = Array.from(document.querySelectorAll("input")).find(
+      (candidate) => candidate.getAttribute("aria-label") === ariaLabel
+    );
+    if (!(input instanceof HTMLInputElement)) {
+      return { ok: false, reason: "missing-input" };
+    }
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )?.set;
+    valueSetter?.call(input, nextValue);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return {
+      ok: true,
+      reason: input.value === nextValue ? "set" : "value-mismatch"
+    };
+  }, { nextValue: value, ariaLabel: label });
+  if (!result?.ok) {
+    throw new Error(`text input set failed: ${result?.reason ?? "unknown"}`);
+  }
+}
+
+async function waitForInputValue(browser, label, expectedValue, timeout, description) {
+  const startedAt = Date.now();
+  let lastValue = "";
+  while (Date.now() - startedAt < timeout) {
+    const observed = await browser.execute((ariaLabel) => {
+      const input = Array.from(document.querySelectorAll("input")).find(
+        (candidate) => candidate.getAttribute("aria-label") === ariaLabel
+      );
+      return input instanceof HTMLInputElement ? input.value : null;
+    }, label);
+    lastValue = observed ?? "";
+    if (observed === expectedValue) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} did not become expected value. Last value: ${lastValue}`);
 }
 
 function roomButtonXpath(sectionId, roomName) {

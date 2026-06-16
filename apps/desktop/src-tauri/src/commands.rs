@@ -26,9 +26,9 @@ use matrix_desktop_state::{
     ComposerResolverContext, ComposerSurface, DirectoryQuery, FocusedContextState,
     IdentityResetAuthRequest, ImageUploadCompressionMode, LoginRequest, MentionIntent,
     PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange, RoomTagKind,
-    SessionInfo, SettingsPatch, VerificationCancelReason, build_formatted_message_draft,
+    SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
+    StagedUploadKind, VerificationCancelReason, build_formatted_message_draft,
 };
-#[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
 #[cfg(any(debug_assertions, test))]
 use tauri::Emitter;
@@ -208,6 +208,7 @@ const LOGIN_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const SELECT_ROOM_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const ROOM_OPERATION_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const UPLOAD_STAGING_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 async fn submit_login_and_start_sync(
     app: AppHandle,
@@ -362,6 +363,35 @@ async fn wait_for_selected_room(
 
 fn snapshot_has_active_room(snapshot: &matrix_desktop_state::AppState, room_id: &str) -> bool {
     snapshot.navigation.active_room_id.as_deref() == Some(room_id)
+}
+
+async fn wait_for_upload_staging_snapshot(
+    event_conn: &mut CoreConnection,
+    request_id: RequestId,
+    predicate: impl Fn(&matrix_desktop_state::AppState) -> bool,
+    description: &str,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + UPLOAD_STAGING_EVENT_TIMEOUT;
+
+    loop {
+        if predicate(&event_conn.snapshot()) {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| description.to_owned())?;
+        match event {
+            Ok(CoreEvent::StateChanged(snapshot)) if predicate(&snapshot) => return Ok(()),
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed_request_id,
+                ..
+            }) if failed_request_id == request_id => return Err(description.to_owned()),
+            Ok(_) => {}
+            Err(_) if predicate(&event_conn.snapshot()) => return Ok(()),
+            Err(_) => return Err("upload staging event stream lagged".to_owned()),
+        }
+    }
 }
 
 /// How long the adapter waits for the `SavedSessionsListed` answer before
@@ -924,6 +954,198 @@ pub async fn schedule_send(
     if let Some(command) = build_schedule_send_command(request_id, room_id, body, send_at_ms) {
         submit_core_command(state.inner(), command).await?;
     }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageUploadInputItem {
+    staged_id: String,
+    position: u64,
+    filename: String,
+    mime_type: String,
+    byte_count: u64,
+    kind: StagedUploadKind,
+    compression_choice: StagedUploadCompressionChoice,
+}
+
+#[tauri::command]
+pub async fn stage_uploads(
+    room_id: String,
+    items: Vec<StageUploadInputItem>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if room_id.trim().is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let room_id_for_wait = room_id.trim().to_owned();
+    let expected_ids = items
+        .iter()
+        .filter(|item| !item.staged_id.trim().is_empty())
+        .map(|item| item.staged_id.clone())
+        .collect::<Vec<_>>();
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_set_upload_staging_command(request_id, room_id, items))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_upload_staging_snapshot(
+        &mut event_conn,
+        request_id,
+        |snapshot| {
+            snapshot.timeline.room_id.as_deref() == Some(room_id_for_wait.as_str())
+                && snapshot.timeline.staged_uploads.len() == expected_ids.len()
+                && expected_ids.iter().all(|expected_id| {
+                    snapshot
+                        .timeline
+                        .staged_uploads
+                        .iter()
+                        .any(|item| item.staged_id == *expected_id)
+                })
+        },
+        "upload staging did not update",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn update_staged_upload_caption(
+    staged_id: String,
+    caption: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if staged_id.trim().is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let expected_caption = caption.as_ref().and_then(|body| {
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    });
+    let caption = caption.and_then(|body| {
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(build_formatted_message_draft(
+                trimmed.to_owned(),
+                MentionIntent::default(),
+            ))
+        }
+    });
+    let staged_id_for_wait = staged_id.clone();
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::UpdateStagedUploadCaption {
+            request_id,
+            staged_id,
+            caption,
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_upload_staging_snapshot(
+        &mut event_conn,
+        request_id,
+        |snapshot| {
+            snapshot
+                .timeline
+                .staged_uploads
+                .iter()
+                .find(|item| item.staged_id == staged_id_for_wait)
+                .map(|item| item.caption.as_ref().map(|caption| caption.plain_body.as_str()))
+                == Some(expected_caption.as_deref())
+        },
+        "staged upload caption did not update",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn update_staged_upload_compression(
+    staged_id: String,
+    compression_choice: StagedUploadCompressionChoice,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if staged_id.trim().is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let staged_id_for_wait = staged_id.clone();
+    let expected_choice = compression_choice;
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::UpdateStagedUploadCompression {
+            request_id,
+            staged_id,
+            compression_choice,
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_upload_staging_snapshot(
+        &mut event_conn,
+        request_id,
+        |snapshot| {
+            snapshot
+                .timeline
+                .staged_uploads
+                .iter()
+                .find(|item| item.staged_id == staged_id_for_wait)
+                .map(|item| item.compression_choice)
+                == Some(expected_choice)
+        },
+        "staged upload compression did not update",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn clear_upload_staging(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    if room_id.trim().is_empty() {
+        return current_snapshot(state.inner()).await;
+    }
+
+    let room_id_for_wait = room_id.trim().to_owned();
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::ClearUploadStaging {
+            request_id,
+            room_id,
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_upload_staging_snapshot(
+        &mut event_conn,
+        request_id,
+        |snapshot| {
+            snapshot.timeline.room_id.as_deref() == Some(room_id_for_wait.as_str())
+                && snapshot.timeline.staged_uploads.is_empty()
+        },
+        "upload staging did not clear",
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -2518,6 +2740,40 @@ pub(crate) fn build_schedule_send_command(
         body,
         send_at_ms,
     }))
+}
+
+pub(crate) fn build_set_upload_staging_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    items: Vec<StageUploadInputItem>,
+) -> CoreCommand {
+    let room_id = room_id.trim().to_owned();
+    let staged_items = items
+        .into_iter()
+        .filter(|item| !item.staged_id.trim().is_empty())
+        .map(|item| StagedUploadItem {
+            staged_id: item.staged_id,
+            room_id: room_id.clone(),
+            position: item.position,
+            filename: match item.filename.trim() {
+                "" => "attachment".to_owned(),
+                value => value.to_owned(),
+            },
+            mime_type: match item.mime_type.trim() {
+                "" => "application/octet-stream".to_owned(),
+                value => value.to_owned(),
+            },
+            byte_count: item.byte_count,
+            kind: item.kind,
+            caption: None,
+            compression_choice: item.compression_choice,
+        })
+        .collect();
+    CoreCommand::App(AppCommand::SetUploadStaging {
+        request_id,
+        room_id,
+        items: staged_items,
+    })
 }
 
 pub(crate) fn build_cancel_scheduled_send_command(

@@ -8,7 +8,7 @@ use matrix_desktop_state::{
     IdentityResetAuthRequest, ImageUploadCompressionMode, JapaneseCatalogProfile,
     LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionState, PresenceKind,
     RecoveryRequest, RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
-    VerificationCancelReason, VerificationTarget,
+    StagedUploadCompressionChoice, StagedUploadItem, VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,10 @@ impl CoreCommand {
                 | AppCommand::CancelComposerReply { request_id }
                 | AppCommand::SetComposerDraft { request_id, .. }
                 | AppCommand::SetThreadComposerDraft { request_id, .. }
+                | AppCommand::SetUploadStaging { request_id, .. }
+                | AppCommand::UpdateStagedUploadCaption { request_id, .. }
+                | AppCommand::UpdateStagedUploadCompression { request_id, .. }
+                | AppCommand::ClearUploadStaging { request_id, .. }
                 | AppCommand::ScheduleSend { request_id, .. }
                 | AppCommand::CancelScheduledSend { request_id, .. }
                 | AppCommand::RescheduleScheduledSend { request_id, .. }
@@ -155,6 +159,10 @@ impl CoreCommand {
                         | AppCommand::ScheduleSend { .. }
                         | AppCommand::CancelScheduledSend { .. }
                         | AppCommand::RescheduleScheduledSend { .. }
+                        | AppCommand::SetUploadStaging { .. }
+                        | AppCommand::UpdateStagedUploadCaption { .. }
+                        | AppCommand::UpdateStagedUploadCompression { .. }
+                        | AppCommand::ClearUploadStaging { .. }
                 )
             )
     }
@@ -182,6 +190,25 @@ pub enum AppCommand {
         room_id: String,
         root_event_id: String,
         draft: String,
+    },
+    SetUploadStaging {
+        request_id: RequestId,
+        room_id: String,
+        items: Vec<StagedUploadItem>,
+    },
+    UpdateStagedUploadCaption {
+        request_id: RequestId,
+        staged_id: String,
+        caption: Option<FormattedMessageDraft>,
+    },
+    UpdateStagedUploadCompression {
+        request_id: RequestId,
+        staged_id: String,
+        compression_choice: StagedUploadCompressionChoice,
+    },
+    ClearUploadStaging {
+        request_id: RequestId,
+        room_id: String,
     },
     ScheduleSend {
         request_id: RequestId,
@@ -297,6 +324,35 @@ impl fmt::Debug for AppCommand {
                 .field("room_id", room_id)
                 .field("root_event_id", &"EventId(..)")
                 .field("draft", &"MessageBody(..)")
+                .finish(),
+            Self::SetUploadStaging {
+                request_id, items, ..
+            } => formatter
+                .debug_struct("SetUploadStaging")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("item_count", &items.len())
+                .finish(),
+            Self::UpdateStagedUploadCaption { request_id, .. } => formatter
+                .debug_struct("UpdateStagedUploadCaption")
+                .field("request_id", request_id)
+                .field("staged_id", &"StagedUploadId(..)")
+                .field("caption", &"MediaCaption(..)")
+                .finish(),
+            Self::UpdateStagedUploadCompression {
+                request_id,
+                compression_choice,
+                ..
+            } => formatter
+                .debug_struct("UpdateStagedUploadCompression")
+                .field("request_id", request_id)
+                .field("staged_id", &"StagedUploadId(..)")
+                .field("compression_choice", compression_choice)
+                .finish(),
+            Self::ClearUploadStaging { request_id, .. } => formatter
+                .debug_struct("ClearUploadStaging")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
                 .finish(),
             Self::ScheduleSend {
                 request_id,
@@ -2045,6 +2101,110 @@ mod tests {
             assert!(!debug.contains("private-page-token"), "{debug}");
             assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
             assert!(!debug.contains("$private-event:example.invalid"), "{debug}");
+        }
+    }
+
+    #[test]
+    fn upload_staging_commands_require_ready_session_and_redact_debug() {
+        use matrix_desktop_state::{StagedUploadKind, build_formatted_message_draft};
+
+        let set_request_id = fake_rid(24);
+        let update_caption_request_id = fake_rid(25);
+        let update_compression_request_id = fake_rid(26);
+        let clear_request_id = fake_rid(27);
+        let set = AppCommand::SetUploadStaging {
+            request_id: set_request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+            items: vec![StagedUploadItem {
+                staged_id: "private-staged-id".to_owned(),
+                room_id: "!private-room:example.invalid".to_owned(),
+                position: 1,
+                filename: "private-image.png".to_owned(),
+                mime_type: "image/png".to_owned(),
+                byte_count: 99,
+                kind: StagedUploadKind::Image {
+                    width: Some(4),
+                    height: Some(2),
+                },
+                caption: Some(build_formatted_message_draft(
+                    "private staged caption",
+                    MentionIntent::default(),
+                )),
+                compression_choice: StagedUploadCompressionChoice::Original,
+            }],
+        };
+        let update_caption = AppCommand::UpdateStagedUploadCaption {
+            request_id: update_caption_request_id,
+            staged_id: "private-staged-id".to_owned(),
+            caption: Some(build_formatted_message_draft(
+                "private staged caption",
+                MentionIntent::default(),
+            )),
+        };
+        let update_compression = AppCommand::UpdateStagedUploadCompression {
+            request_id: update_compression_request_id,
+            staged_id: "private-staged-id".to_owned(),
+            compression_choice: StagedUploadCompressionChoice::Compressed {
+                mode: ImageUploadCompressionMode::Always,
+            },
+        };
+        let clear = AppCommand::ClearUploadStaging {
+            request_id: clear_request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+        };
+
+        assert_eq!(CoreCommand::App(set).request_id(), set_request_id);
+        for command in [
+            AppCommand::SetUploadStaging {
+                request_id: set_request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                items: Vec::new(),
+            },
+            AppCommand::UpdateStagedUploadCaption {
+                request_id: update_caption_request_id,
+                staged_id: "private-staged-id".to_owned(),
+                caption: None,
+            },
+            AppCommand::UpdateStagedUploadCompression {
+                request_id: update_compression_request_id,
+                staged_id: "private-staged-id".to_owned(),
+                compression_choice: StagedUploadCompressionChoice::Original,
+            },
+            AppCommand::ClearUploadStaging {
+                request_id: clear_request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+            },
+        ] {
+            assert!(CoreCommand::App(command).requires_ready_session());
+        }
+
+        for debug in [
+            format!("{update_caption:?}"),
+            format!("{update_compression:?}"),
+            format!("{clear:?}"),
+            format!(
+                "{:?}",
+                AppCommand::SetUploadStaging {
+                    request_id: set_request_id,
+                    room_id: "!private-room:example.invalid".to_owned(),
+                    items: vec![StagedUploadItem {
+                        staged_id: "private-staged-id".to_owned(),
+                        room_id: "!private-room:example.invalid".to_owned(),
+                        position: 1,
+                        filename: "private-image.png".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                        byte_count: 99,
+                        kind: StagedUploadKind::File,
+                        caption: None,
+                        compression_choice: StagedUploadCompressionChoice::NotApplicable,
+                    }],
+                }
+            ),
+        ] {
+            assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+            assert!(!debug.contains("private-staged-id"), "{debug}");
+            assert!(!debug.contains("private-image.png"), "{debug}");
+            assert!(!debug.contains("private staged caption"), "{debug}");
         }
     }
 

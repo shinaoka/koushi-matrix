@@ -1016,9 +1016,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   because browsers expose file inputs with button semantics and the input label
   contains the button label as a prefix.
 - Media caption GUI tests must assert staging, not immediate upload: selecting
-  a file shows the Composer attachment preview and must not invoke
-  `upload_media` until Send. The Composer text is passed as the single media
-  event caption; the test should assert no separate `send_text` invocation and
+  a file shows the Rust-owned Upload attachments staging dialog and must not
+  invoke `upload_media` until Send. Captions are edited through the staging
+  dialog (`TimelinePaneState.staged_uploads[*].caption`), not inferred from the
+  Composer draft; tests should assert no separate `send_text` invocation and
   should render the Rust-owned `TimelineItem.media` row with the caption body
   below it.
 - Transaction timeline rows use `timelineItemDomId`, so local echoes render
@@ -1043,8 +1044,8 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   with `send_media=ok`, `media_caption=ok`, `image_compress=ok`, and
   `recv_media=ok`. Those tokens prove the Rust-owned upload-staging/gallery
   contracts only; codec/canvas/native transform behavior and the visible
-  drag-drop/paste/gallery/viewer workflow still need browser-headless plus
-  Linux virtual-display evidence after Phase B lands.
+  drag-drop/paste/gallery/viewer workflow must be covered by browser-headless
+  plus Linux virtual-display evidence.
 - `TimelinePaneState` includes `staged_uploads` and `media_gallery`. When the
   Rust snapshot adds fields, update the TypeScript snapshot fixtures and
   `apps/desktop/src-tauri/src/dto.rs` serialization-contract tests in the same
@@ -1124,11 +1125,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `--scenario=local-media`. It writes a synthetic fixture file under the
   scenario artifact directory, sets that path on the Composer's hidden file
   input, uses a `DataTransfer` fallback when WebKit leaves `input.files` empty,
-  stages the attachment until Send, uses Composer text as the single media
-  event caption, waits for `timeline_room=true` and the Rust-owned
-  `TimelineItem.media` row plus caption in the real Tauri WebView, clicks
-  Download, and prints `gui_local_media=ok` and
-  `gui_local_media_caption=ok`:
+  stages the attachment until Send, fills the Rust-owned staging dialog caption,
+  waits for `timeline_room=true` and the Rust-owned `TimelineItem.media` row
+  plus caption in the real Tauri WebView, clicks Download, opens the
+  Rust-owned room media gallery/viewer, and prints `gui_local_media_stage=ok`,
+  `gui_local_media=ok`, `gui_local_media_caption=ok`, and
+  `gui_local_media_viewer=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000`
 - Image-compression GUI iteration has a focused virtual-display lane:
   `--scenario=local-image-compression`. It sets Compress images to Always from
@@ -1383,8 +1385,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   scenario artifact directory, set that path on
   `input[type=file][aria-label="Attach file input"]`, fall back to
   `DataTransfer.files` if WebKit does not populate `input.files`, confirm no
-  `.message-media` row appears before Send, then wait for `timeline_room=true`
-  and a Rust-owned media row plus caption. Do not monkeypatch
+  `.message-media` row appears before Send, fill the staged upload caption
+  field, then wait for `timeline_room=true` and a Rust-owned media row plus
+  caption. It should also open `Open media gallery`, open the uploaded item in
+  `Media viewer`, and close the viewer before recording evidence. Do not monkeypatch
   `window.__TAURI_INTERNALS__` from WebDriver; WebKit driver execution contexts
   do not provide a reliable app-world command recorder. If frontend source
   changed, one `local-media` run without `--skip-build` may be needed before

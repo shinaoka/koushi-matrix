@@ -35,7 +35,9 @@ import type {
   E2eeTrustState,
   LocaleDisplayProfile,
   LocaleSettings,
-  SettingsPatch
+  SettingsPatch,
+  StagedUploadCompressionChoice,
+  UploadStagingRequestItem
 } from "../domain/types";
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
 import "../styles.css";
@@ -990,6 +992,85 @@ mock.setCommandResponse("moderate_room_member", () => currentSnapshot);
 mock.setCommandResponse("update_room_member_role", () => currentSnapshot);
 mock.setCommandResponse("pin_event", () => currentSnapshot);
 mock.setCommandResponse("unpin_event", () => currentSnapshot);
+mock.setCommandResponse(
+  "stage_uploads",
+  ({ roomId, items }: { roomId: string; items: UploadStagingRequestItem[] }) => {
+  const stagedUploads = (items ?? []).map((item, index: number) => ({
+    staged_id: item.stagedId,
+    room_id: roomId,
+    position: item.position ?? index + 1,
+    filename: item.filename,
+    mime_type: item.mimeType,
+    byte_count: item.byteCount,
+    kind: item.kind,
+    caption: null,
+    compression_choice: item.compressionChoice
+  }));
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      timeline: {
+        ...currentSnapshot.state.timeline,
+        staged_uploads: stagedUploads
+      }
+    }
+  });
+});
+mock.setCommandResponse("update_staged_upload_caption", ({ stagedId, caption }: {
+  stagedId: string;
+  caption: string | null;
+}) => {
+  const normalized = typeof caption === "string" && caption.trim() ? caption : null;
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      timeline: {
+        ...currentSnapshot.state.timeline,
+        staged_uploads: currentSnapshot.state.timeline.staged_uploads.map((item) =>
+          item.staged_id === stagedId
+            ? {
+                ...item,
+                caption: normalized
+                  ? { plain_body: normalized, formatted_body: null, mentions: { targets: [] } }
+                  : null
+              }
+            : item
+        )
+      }
+    }
+  });
+});
+mock.setCommandResponse("update_staged_upload_compression", ({ stagedId, compressionChoice }: {
+  stagedId: string;
+  compressionChoice: StagedUploadCompressionChoice;
+}) =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      timeline: {
+        ...currentSnapshot.state.timeline,
+        staged_uploads: currentSnapshot.state.timeline.staged_uploads.map((item) =>
+          item.staged_id === stagedId ? { ...item, compression_choice: compressionChoice } : item
+        )
+      }
+    }
+  })
+);
+mock.setCommandResponse("clear_upload_staging", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      timeline: {
+        ...currentSnapshot.state.timeline,
+        staged_uploads: []
+      }
+    }
+  })
+);
 mock.setCommandResponse("upload_media", () => currentSnapshot);
 mock.setCommandResponse("download_media", () => currentSnapshot);
 mock.setCommandResponse("load_message_source", () => currentSnapshot);

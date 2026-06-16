@@ -551,8 +551,10 @@ stateDiagram-v2
   `MediaDownloadCompleted` with `byte_count` only. A future GUI save/open flow
   must use a Rust-owned platform port or Tauri command that does not put bytes
   into React state.
-- Phase B GUI wiring is a transport client only: the Composer file input reads
-  synthetic/user-selected bytes and invokes `upload_media`; `TimelineView`
+- Phase B GUI wiring is a transport client only: the Composer file input,
+  paste, and drop paths dispatch `stage_uploads`; caption/compression edits
+  dispatch typed staging commands; Send resolves the browser `File` handles and
+  invokes `upload_media` with the Rust-owned staged metadata. `TimelineView`
   renders `TimelineItem.media` plus `MediaUploadProgress` keyed by the
   transaction id; event-backed media rows invoke `download_media`. React does
   not parse Matrix event content, infer encryption details, render MXC URIs, or

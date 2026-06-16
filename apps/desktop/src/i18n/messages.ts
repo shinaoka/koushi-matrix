@@ -69,6 +69,12 @@ export type MessageId =
   | "composer.removeAttachment"
   | "composer.cancelReply"
   | "composer.selectedMentions"
+  | "upload.captionForFile"
+  | "upload.clear"
+  | "upload.compressed"
+  | "upload.dialogTitle"
+  | "upload.original"
+  | "upload.sizeChoice"
   | "context.editMessage"
   | "context.addToFavourites"
   | "context.addToLowPriority"
@@ -129,6 +135,16 @@ export type MessageId =
   | "invite.tabs"
   | "invite.topic"
   | "invite.unknownInviter"
+  | "mediaGallery.close"
+  | "mediaGallery.encrypted"
+  | "mediaGallery.next"
+  | "mediaGallery.open"
+  | "mediaGallery.openItem"
+  | "mediaGallery.previous"
+  | "mediaGallery.region"
+  | "mediaGallery.viewerTitle"
+  | "mediaGallery.zoomIn"
+  | "mediaGallery.zoomOut"
   | "panel.context"
   | "panel.keyboard"
   | "panel.focusedContext"
@@ -685,6 +701,12 @@ const en: Catalog = {
   "composer.removeAttachment": "Remove attachment",
   "composer.cancelReply": "Cancel reply",
   "composer.selectedMentions": "Selected mentions",
+  "upload.captionForFile": "Caption for {filename}",
+  "upload.clear": "Clear upload staging",
+  "upload.compressed": "Compressed",
+  "upload.dialogTitle": "Upload attachments",
+  "upload.original": "Original",
+  "upload.sizeChoice": "Upload size",
   "context.editMessage": "Edit",
   "context.addToFavourites": "Add to Favourites",
   "context.addToLowPriority": "Move to Low priority",
@@ -745,6 +767,16 @@ const en: Catalog = {
   "invite.tabs": "Invite views",
   "invite.topic": "Topic",
   "invite.unknownInviter": "Unknown inviter",
+  "mediaGallery.close": "Close media viewer",
+  "mediaGallery.encrypted": "Encrypted",
+  "mediaGallery.next": "Next media",
+  "mediaGallery.open": "Open media gallery",
+  "mediaGallery.openItem": "Open {filename}",
+  "mediaGallery.previous": "Previous media",
+  "mediaGallery.region": "Room media gallery",
+  "mediaGallery.viewerTitle": "Media viewer",
+  "mediaGallery.zoomIn": "Zoom in",
+  "mediaGallery.zoomOut": "Zoom out",
   "panel.context": "Context panel",
   "panel.keyboard": "Keyboard",
   "panel.focusedContext": "Focused context",
@@ -1211,6 +1243,12 @@ const ja: Catalog = {
   "composer.imageCompressionOriginal": "元の画像",
   "composer.imageCompressionPreviewAlt": "圧縮後の画像プレビュー",
   "composer.imageCompressionTitle": "画像を圧縮",
+  "upload.captionForFile": "{filename}のキャプション",
+  "upload.clear": "アップロード準備をクリア",
+  "upload.compressed": "圧縮",
+  "upload.dialogTitle": "添付をアップロード",
+  "upload.original": "オリジナル",
+  "upload.sizeChoice": "アップロードサイズ",
   "context.editMessage": "編集",
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",
@@ -1271,6 +1309,16 @@ const ja: Catalog = {
   "invite.tabs": "招待ビュー",
   "invite.topic": "トピック",
   "invite.unknownInviter": "不明な招待者",
+  "mediaGallery.close": "メディアビューアを閉じる",
+  "mediaGallery.encrypted": "暗号化済み",
+  "mediaGallery.next": "次のメディア",
+  "mediaGallery.open": "メディアギャラリーを開く",
+  "mediaGallery.openItem": "{filename}を開く",
+  "mediaGallery.previous": "前のメディア",
+  "mediaGallery.region": "ルームメディアギャラリー",
+  "mediaGallery.viewerTitle": "メディアビューア",
+  "mediaGallery.zoomIn": "拡大",
+  "mediaGallery.zoomOut": "縮小",
   "panel.context": "コンテキストパネル",
   "panel.keyboard": "キーボード",
   "panel.focusedContext": "フォーカス中のコンテキスト",
