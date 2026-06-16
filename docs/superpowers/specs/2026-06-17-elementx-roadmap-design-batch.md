@@ -125,7 +125,10 @@ Keep #46 as one issue, but implement it internally as:
 1. A1 room-key file export/import.
    Use `matrix-rust-sdk` public `export_room_keys` and `import_room_keys` APIs.
    Rust/Tauri owns file paths and passphrases. State contains request id,
-   running/succeeded/failed, counts, and coarse failure kind only.
+   running/succeeded/failed, counts, and coarse failure kind only. The file
+   format is the Matrix key-export format used by Element clients, including
+   the encrypted Megolm session data header/footer; Ruri must not add a custom
+   JSON, archive, or wrapper format around it.
 2. A2 secure-backup setup and passphrase change.
    Use SDK recovery APIs such as `enable`, `reset_key`, and
    `recover_and_reset`. Recovery-key material is delivered through a one-shot

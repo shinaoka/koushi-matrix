@@ -59,6 +59,12 @@ Package A is reviewed or explicitly paused.
   IPs, URLs, access tokens, refresh tokens, passphrases, recovery keys,
   exported room-key file contents, file paths containing usernames, room IDs,
   event IDs, or message content.
+- #46 room-key import/export uses the Matrix key-export file format used by
+  Element clients. Use the public Matrix Rust SDK room-key export/import APIs
+  and do not introduce a Ruri-specific JSON, archive, or wrapper file format.
+  Synthetic fixture tests may assert the encrypted Megolm session data
+  header/footer, but must never log or snapshot file contents from real
+  accounts.
 
 ## Task 0: Package A Baseline And Issue Refresh
 
@@ -906,7 +912,10 @@ pub async fn import_room_keys_from_file(
 
 Use `session.client().encryption().export_room_keys(path, passphrase.expose_secret(), |_| true).await`.
 Use `import_room_keys(path, passphrase.expose_secret()).await` for import.
-Do not read file bytes into React or DTO state.
+Do not read file bytes into React or DTO state. Do not implement custom file
+serialization. The file must remain the Matrix key-export format used by
+Element clients, as produced and consumed by the SDK, including the encrypted
+Megolm session data header/footer.
 
 - [ ] **Step 4: Project actor results**
 
@@ -960,6 +969,11 @@ cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
 ```
 
 Expected: all commands PASS.
+
+Also add a synthetic interoperability check that proves the export path produces
+the Matrix/Element key-export envelope and the import path accepts that
+envelope. The fixture must be synthetic and the test must not print the file
+contents.
 
 - [ ] **Step 7: Commit and update #46**
 

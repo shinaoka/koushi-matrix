@@ -142,6 +142,12 @@ conflict is being resolved.
   errors must never cross the command/event/snapshot boundary. Debug output and
   QA tokens for these flows must redact account keys, verification target user
   and device IDs, and backup version identifiers.
+- Manual room-key file export/import MUST use the Matrix key-export file
+  format that Element clients use, including the encrypted Megolm session data
+  header/footer handled by the public Matrix Rust SDK APIs. Do not introduce a
+  Ruri-specific JSON, archive, or wrapper file format for room-key transfer.
+  Tests for this flow must use synthetic fixtures and assert interoperability
+  without logging or snapshotting room-key file contents.
 - `.local-secrets/` is reserved for local, ignored manual-testing notes or
   scratch files only. It is not an application secret store, must not be
   required for tests or builds, and must not replace OS secret storage.
