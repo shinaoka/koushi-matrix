@@ -54,6 +54,7 @@ const checks = [
   "scenario local-message-actions",
   "scenario local-message-types",
   "scenario local-composer",
+  "scenario local-scheduled-send",
   "scenario local-timeline-navigation",
   "scenario local-rich-formatting",
   "scenario local-alias",
@@ -254,6 +255,10 @@ async function run() {
   }
   if (guiScenario === "local-composer") {
     await runLocalComposerScenario();
+    return;
+  }
+  if (guiScenario === "local-scheduled-send") {
+    await runLocalScheduledSendScenario();
     return;
   }
   if (guiScenario === "local-timeline-navigation") {
@@ -1270,6 +1275,90 @@ async function runLocalComposerScenario() {
   }
 }
 
+async function runLocalScheduledSendScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const composer = await session.browser.$('textarea[aria-label="Message composer"]');
+    await composer.waitForDisplayed({ timeout: timeoutMs });
+    await composer.click();
+    await composer.setValue(`QA scheduled body ${safeTimestamp()}`);
+
+    const sendLater = await session.browser.$('button[aria-label="Send later"]');
+    await sendLater.waitForDisplayed({ timeout: timeoutMs });
+    await sendLater.click();
+
+    const scheduleInput = await session.browser.$('input[aria-label="Scheduled send time"]');
+    await scheduleInput.waitForDisplayed({ timeout: timeoutMs });
+    const scheduledValue = await localDatetimeInputValue(
+      session.browser,
+      Date.now() + 24 * 60 * 60_000
+    );
+    await setDatetimeLocalValue(session.browser, scheduledValue, "Scheduled send time");
+    await clickVisibleButtonByTextPrefix(
+      session.browser,
+      "Schedule send",
+      timeoutMs,
+      "local GUI scheduled send create"
+    );
+    await waitForDocumentText(
+      session.browser,
+      ["Scheduled messages", "Local fallback"],
+      timeoutMs,
+      "local GUI scheduled send create"
+    );
+    await waitForTextareaValue(
+      session.browser,
+      'textarea[aria-label="Message composer"]',
+      "",
+      timeoutMs,
+      "local GUI scheduled send draft clear"
+    );
+    console.log("gui_local_scheduled_create=ok");
+
+    const editButton = await session.browser.$('button[aria-label="Edit scheduled send"]');
+    await editButton.waitForDisplayed({ timeout: timeoutMs });
+    await editButton.click();
+    const editedValue = await localDatetimeInputValue(
+      session.browser,
+      Date.now() + 48 * 60 * 60_000
+    );
+    await setDatetimeLocalValue(session.browser, editedValue, "Scheduled send time");
+    await clickVisibleButtonByTextPrefix(
+      session.browser,
+      "Save scheduled send",
+      timeoutMs,
+      "local GUI scheduled send reschedule"
+    );
+    await waitForElementCount(
+      session.browser,
+      'section[aria-label="Scheduled messages"]',
+      1,
+      timeoutMs,
+      "local GUI scheduled send reschedule"
+    );
+    console.log("gui_local_scheduled_reschedule=ok");
+
+    const cancelButton = await session.browser.$('button[aria-label="Cancel scheduled send"]');
+    await cancelButton.waitForDisplayed({ timeout: timeoutMs });
+    await cancelButton.click();
+    await waitForElementCount(
+      session.browser,
+      'section[aria-label="Scheduled messages"]',
+      0,
+      timeoutMs,
+      "local GUI scheduled send cancel"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_scheduled_cancel=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalTimelineNavigationScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -1784,9 +1873,11 @@ async function localDatetimeInputValue(browser, timestampMs) {
   }, timestampMs);
 }
 
-async function setDatetimeLocalValue(browser, value) {
-  const result = await browser.execute((nextValue) => {
-    const input = document.querySelector('input[aria-label="Jump to date"]');
+async function setDatetimeLocalValue(browser, value, label = "Jump to date") {
+  const result = await browser.execute(({ nextValue, ariaLabel }) => {
+    const input = Array.from(document.querySelectorAll("input")).find(
+      (candidate) => candidate.getAttribute("aria-label") === ariaLabel
+    );
     if (!(input instanceof HTMLInputElement)) {
       return {
         ok: false,
@@ -1812,10 +1903,10 @@ async function setDatetimeLocalValue(browser, value) {
       valueLength: input.value.length,
       valid: input.validity.valid
     };
-  }, value);
+  }, { nextValue: value, ariaLabel: label });
   if (!result.ok) {
     throw new Error(
-      `local GUI timeline navigation date input setter failed. Diagnostics: ${JSON.stringify(
+      `local GUI datetime input setter failed for ${label}. Diagnostics: ${JSON.stringify(
         result
       )}`
     );

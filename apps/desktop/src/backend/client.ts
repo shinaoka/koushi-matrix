@@ -151,6 +151,25 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("send_text", { roomId, body, mentions });
   }
 
+  async scheduleSend(
+    roomId: string,
+    body: string,
+    sendAtMs: number
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("schedule_send", { roomId, body, sendAtMs });
+  }
+
+  async cancelScheduledSend(scheduledId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("cancel_scheduled_send", { scheduledId });
+  }
+
+  async rescheduleScheduledSend(
+    scheduledId: string,
+    sendAtMs: number
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("reschedule_scheduled_send", { scheduledId, sendAtMs });
+  }
+
   async retrySend(roomId: string, transactionId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("retry_send", { roomId, transactionId });
   }

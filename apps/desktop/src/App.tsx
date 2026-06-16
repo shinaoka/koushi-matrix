@@ -142,6 +142,8 @@ import type {
   SavedSessionInfo,
   SearchResult,
   SearchScopeKind,
+  ScheduledSendCapability,
+  ScheduledSendItem,
   SettingsPatch,
   TimelineMessage,
   UserProfile
@@ -1532,6 +1534,37 @@ export function App() {
     setComposerMentions(EMPTY_MENTION_INTENT);
   }
 
+  async function scheduleSend(sendAtMs: number) {
+    const roomId = snapshot?.state.timeline.room_id;
+    const body = composerDraft;
+    if (!roomId || !body.trim() || stagedAttachment) {
+      return;
+    }
+
+    try {
+      setSnapshot(await api.scheduleSend(roomId, body, sendAtMs));
+      setComposerMentions(EMPTY_MENTION_INTENT);
+    } catch {
+      // Command failures are surfaced through the Rust-owned error/event path.
+    }
+  }
+
+  async function cancelScheduledSend(scheduledId: string) {
+    try {
+      setSnapshot(await api.cancelScheduledSend(scheduledId));
+    } catch {
+      // Command failures are surfaced through the Rust-owned error/event path.
+    }
+  }
+
+  async function rescheduleScheduledSend(scheduledId: string, sendAtMs: number) {
+    try {
+      setSnapshot(await api.rescheduleScheduledSend(scheduledId, sendAtMs));
+    } catch {
+      // Command failures are surfaced through the Rust-owned error/event path.
+    }
+  }
+
   async function updateComposerDraft(value: string) {
     const roomId = snapshot?.state.timeline.room_id;
     setComposerMentions((mentions) => pruneMentionIntentForDraft(mentions, value));
@@ -1940,6 +1973,9 @@ export function App() {
             onCancelReply={() => {
               void cancelComposerReply();
             }}
+            onCancelScheduledSend={(scheduledId) => {
+              void cancelScheduledSend(scheduledId);
+            }}
             onAttachFile={(file) => {
               setStagedAttachment(file);
             }}
@@ -1952,6 +1988,12 @@ export function App() {
             onPaginateBackwards={paginateTimelineBackwards}
             onReply={(roomId, eventId) => {
               void setComposerReplyTarget(roomId, eventId);
+            }}
+            onRescheduleScheduledSend={(scheduledId, sendAtMs) => {
+              void rescheduleScheduledSend(scheduledId, sendAtMs);
+            }}
+            onScheduleSend={(sendAtMs) => {
+              void scheduleSend(sendAtMs);
             }}
             onSendText={sendText}
             onEditMessage={editMessage}
@@ -3595,6 +3637,7 @@ function TimelinePane({
   stagedAttachment,
   timelineTransport,
   onCancelReply,
+  onCancelScheduledSend,
   onAttachFile,
   onClearAttachment,
   onComposerDraftChange,
@@ -3605,7 +3648,9 @@ function TimelinePane({
   onPaginateBackwards,
   onRedactMessage,
   onReply,
+  onRescheduleScheduledSend,
   onResultSelect,
+  onScheduleSend,
   onSendText,
   onSetLocalUserAlias,
   onUnpinPinnedEvent,
@@ -3624,6 +3669,7 @@ function TimelinePane({
   stagedAttachment: File | null;
   timelineTransport: TimelineTransport | null;
   onCancelReply: () => void;
+  onCancelScheduledSend: (scheduledId: string) => void;
   onAttachFile: (file: File) => void | Promise<void>;
   onClearAttachment: () => void;
   onComposerDraftChange: (value: string) => void;
@@ -3634,7 +3680,9 @@ function TimelinePane({
   onPaginateBackwards: (roomId: string) => void;
   onRedactMessage: (roomId: string, eventId: string) => void;
   onReply: TimelineRowActionHandlers["onReply"];
+  onRescheduleScheduledSend: (scheduledId: string, sendAtMs: number) => void;
   onResultSelect: (roomId: string, eventId: string) => void;
+  onScheduleSend: (sendAtMs: number) => void;
   onSendText: () => void;
   onSetLocalUserAlias: (userId: string, alias: string | null) => void;
   onUnpinPinnedEvent: (roomId: string, eventId: string) => void;
@@ -3751,6 +3799,12 @@ function TimelinePane({
           )}
         </div>
       </section>
+      <ScheduledMessagesList
+        capability={snapshot.state.timeline.scheduled_send_capability}
+        items={snapshot.state.timeline.scheduled_sends}
+        onCancel={onCancelScheduledSend}
+        onReschedule={onRescheduleScheduledSend}
+      />
       <Composer
         composerMode={composerMode}
         isSending={Boolean(snapshot.state.timeline.composer.pending_transaction_id)}
@@ -3764,10 +3818,132 @@ function TimelinePane({
         onAttachFile={onAttachFile}
         onClearAttachment={onClearAttachment}
         onMentionIntentChange={onMentionIntentChange}
+        onScheduleSend={onScheduleSend}
         onSend={onSendText}
         onValueChange={onComposerDraftChange}
       />
     </main>
+  );
+}
+
+function ScheduledMessagesList({
+  capability,
+  items,
+  onCancel,
+  onReschedule
+}: {
+  capability: ScheduledSendCapability;
+  items: ScheduledSendItem[];
+  onCancel: (scheduledId: string) => void;
+  onReschedule: (scheduledId: string, sendAtMs: number) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+
+  if (items.length === 0) {
+    return null;
+  }
+
+  function openEdit(item: ScheduledSendItem) {
+    setEditingId(item.scheduled_id);
+    setEditValue(datetimeLocalValueFromTimestamp(item.send_at_ms));
+  }
+
+  function submitEdit(event: FormEvent<HTMLFormElement>, item: ScheduledSendItem) {
+    event.preventDefault();
+    const sendAtMs = scheduledSendTimestampFromInput(editValue);
+    if (sendAtMs === null) {
+      return;
+    }
+    onReschedule(item.scheduled_id, sendAtMs);
+    setEditingId(null);
+  }
+
+  return (
+    <section className="scheduled-messages" aria-label={t("scheduled.title")}>
+      <div className="scheduled-messages-heading">
+        <span>
+          <Clock3 size={ICON_SIZE.compact} aria-hidden="true" />
+          <strong>{t("scheduled.title")}</strong>
+        </span>
+        <span className="scheduled-messages-capability">
+          {scheduledSendCapabilityLabel(capability)}
+        </span>
+      </div>
+      {capability === "localFallback" ? (
+        <p className="scheduled-messages-note">{t("scheduled.localFallbackNotice")}</p>
+      ) : null}
+      <ul className="scheduled-message-list">
+        {items.map((item) => {
+          const isEditing = editingId === item.scheduled_id;
+          return (
+            <li className="scheduled-message-item" key={item.scheduled_id}>
+              <div className="scheduled-message-main">
+                <span className="scheduled-message-time">
+                  {formatScheduledSendTime(item.send_at_ms)}
+                </span>
+                <span className="scheduled-message-body" dir="auto">
+                  {item.body}
+                </span>
+              </div>
+              {isEditing ? (
+                <form
+                  className="scheduled-message-edit"
+                  onSubmit={(event) => submitEdit(event, item)}
+                >
+                  <label className="scheduled-send-field">
+                    <span>{t("scheduled.timeInput")}</span>
+                    <input
+                      aria-label={t("scheduled.timeInput")}
+                      type="datetime-local"
+                      value={editValue}
+                      onChange={(event) => setEditValue(event.currentTarget.value)}
+                    />
+                  </label>
+                  <div className="scheduled-message-actions">
+                    <button
+                      className="timeline-send-bar-action"
+                      type="button"
+                      onClick={() => setEditingId(null)}
+                    >
+                      {t("action.cancel")}
+                    </button>
+                    <button
+                      className="timeline-send-bar-action"
+                      type="submit"
+                      disabled={scheduledSendTimestampFromInput(editValue) === null}
+                    >
+                      {t("scheduled.save")}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="scheduled-message-actions">
+                  <button
+                    className="timeline-send-bar-action"
+                    type="button"
+                    aria-label={t("scheduled.edit")}
+                    onClick={() => openEdit(item)}
+                  >
+                    <Edit3 size={ICON_SIZE.micro} aria-hidden="true" />
+                    <span>{t("context.editMessage")}</span>
+                  </button>
+                  <button
+                    className="timeline-send-bar-action danger"
+                    type="button"
+                    aria-label={t("scheduled.cancel")}
+                    onClick={() => onCancel(item.scheduled_id)}
+                  >
+                    <X size={ICON_SIZE.micro} aria-hidden="true" />
+                    <span>{t("action.cancel")}</span>
+                  </button>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -4062,6 +4238,7 @@ export function Composer({
   onAttachFile = async () => undefined,
   onClearAttachment = () => undefined,
   onMentionIntentChange = () => undefined,
+  onScheduleSend = async () => undefined,
   onSend,
   onValueChange
 }: {
@@ -4077,11 +4254,14 @@ export function Composer({
   onAttachFile?: (file: File) => void | Promise<void>;
   onClearAttachment?: () => void;
   onMentionIntentChange?: (intent: MentionIntent) => void;
+  onScheduleSend?: (sendAtMs: number) => void | Promise<void>;
   onSend: () => void | Promise<void>;
   onValueChange: (value: string) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleValue, setScheduleValue] = useState(() => defaultScheduleDateTimeValue());
   const activeMention = activeMentionQuery(value);
   const activeMentionSuggestions =
     activeMention === null
@@ -4180,6 +4360,21 @@ export function Composer({
     } catch {
       // Upload failure is reported through the Rust-owned operation/event path.
     }
+  }
+
+  function openScheduleForm() {
+    setScheduleValue(defaultScheduleDateTimeValue());
+    setScheduleOpen(true);
+  }
+
+  async function submitSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const sendAtMs = scheduledSendTimestampFromInput(scheduleValue);
+    if (sendAtMs === null || !value.trim() || stagedAttachment || isSending) {
+      return;
+    }
+    await onScheduleSend(sendAtMs);
+    setScheduleOpen(false);
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -4389,6 +4584,15 @@ export function Composer({
           <button className="icon-button" type="button" aria-label={t("composer.emoji")}>
             <Smile size={ICON_SIZE.control} />
           </button>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("scheduled.sendLater")}
+            disabled={isSending || !value.trim() || Boolean(stagedAttachment)}
+            onClick={openScheduleForm}
+          >
+            <Clock3 size={ICON_SIZE.control} />
+          </button>
         </div>
         <button
           className={`send-button ${(value.trim() || stagedAttachment) && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
@@ -4400,6 +4604,31 @@ export function Composer({
           <Send size={ICON_SIZE.input} />
         </button>
       </div>
+      {scheduleOpen ? (
+        <form className="scheduled-send-form" onSubmit={submitSchedule}>
+          <label className="scheduled-send-field">
+            <span>{t("scheduled.timeInput")}</span>
+            <input
+              aria-label={t("scheduled.timeInput")}
+              type="datetime-local"
+              value={scheduleValue}
+              onChange={(event) => setScheduleValue(event.currentTarget.value)}
+            />
+          </label>
+          <div className="scheduled-send-form-actions">
+            <button className="dialog-button" type="button" onClick={() => setScheduleOpen(false)}>
+              {t("action.cancel")}
+            </button>
+            <button
+              className="dialog-button is-primary"
+              type="submit"
+              disabled={scheduledSendTimestampFromInput(scheduleValue) === null}
+            >
+              {t("scheduled.schedule")}
+            </button>
+          </div>
+        </form>
+      ) : null}
     </section>
   );
 }
@@ -4974,6 +5203,54 @@ function formatTime(timestampMs: number): string {
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(timestampMs));
+}
+
+function formatScheduledSendTime(timestampMs: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(timestampMs));
+}
+
+function defaultScheduleDateTimeValue(): string {
+  return datetimeLocalValueFromTimestamp(Date.now() + 10 * 60 * 1000);
+}
+
+function datetimeLocalValueFromTimestamp(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    "-",
+    pad(date.getMonth() + 1),
+    "-",
+    pad(date.getDate()),
+    "T",
+    pad(date.getHours()),
+    ":",
+    pad(date.getMinutes())
+  ].join("");
+}
+
+function scheduledSendTimestampFromInput(value: string): number | null {
+  if (!value.trim()) {
+    return null;
+  }
+  const timestampMs = new Date(`${value}:00`).getTime();
+  return Number.isFinite(timestampMs) ? timestampMs : null;
+}
+
+function scheduledSendCapabilityLabel(capability: ScheduledSendCapability): string {
+  switch (capability) {
+    case "serverDelayedEvents":
+      return t("scheduled.serverDelayedEvents");
+    case "localFallback":
+      return t("scheduled.localFallback");
+    case "unknown":
+      return t("scheduled.unknownCapability");
+  }
 }
 
 function initialSearchQuery(): string {

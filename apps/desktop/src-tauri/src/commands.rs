@@ -913,6 +913,53 @@ pub async fn send_text(
 }
 
 #[tauri::command]
+pub async fn schedule_send(
+    room_id: String,
+    body: String,
+    send_at_ms: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) = build_schedule_send_command(request_id, room_id, body, send_at_ms) {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn cancel_scheduled_send(
+    scheduled_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) = build_cancel_scheduled_send_command(request_id, scheduled_id) {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn reschedule_scheduled_send(
+    scheduled_id: String,
+    send_at_ms: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) =
+        build_reschedule_scheduled_send_command(request_id, scheduled_id, send_at_ms)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn retry_send(
     room_id: String,
     transaction_id: String,
@@ -2456,6 +2503,51 @@ pub(crate) fn build_send_text_command(
     }))
 }
 
+pub(crate) fn build_schedule_send_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    body: String,
+    send_at_ms: u64,
+) -> Option<CoreCommand> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::App(AppCommand::ScheduleSend {
+        request_id,
+        room_id,
+        body,
+        send_at_ms,
+    }))
+}
+
+pub(crate) fn build_cancel_scheduled_send_command(
+    request_id: matrix_desktop_core::RequestId,
+    scheduled_id: String,
+) -> Option<CoreCommand> {
+    if scheduled_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::App(AppCommand::CancelScheduledSend {
+        request_id,
+        scheduled_id,
+    }))
+}
+
+pub(crate) fn build_reschedule_scheduled_send_command(
+    request_id: matrix_desktop_core::RequestId,
+    scheduled_id: String,
+    send_at_ms: u64,
+) -> Option<CoreCommand> {
+    if scheduled_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::App(AppCommand::RescheduleScheduledSend {
+        request_id,
+        scheduled_id,
+        send_at_ms,
+    }))
+}
+
 pub(crate) fn build_retry_send_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -3477,8 +3569,8 @@ mod tests {
     use super::SearchScopeKind;
     use super::{
         build_accept_invite_command, build_accept_verification_command,
-        build_bootstrap_cross_signing_command, build_cancel_send_command,
-        build_cancel_verification_command, build_close_activity_command,
+        build_bootstrap_cross_signing_command, build_cancel_scheduled_send_command,
+        build_cancel_send_command, build_cancel_verification_command, build_close_activity_command,
         build_confirm_sas_verification_command, build_create_room_command,
         build_create_space_command, build_decline_invite_command, build_download_media_command,
         build_edit_message_command, build_enable_key_backup_command, build_forget_room_command,
@@ -3493,7 +3585,8 @@ mod tests {
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
         build_reset_identity_command, build_reset_local_data_command, build_restart_sync_command,
-        build_retry_send_command, build_select_room_command, build_select_space_command,
+        build_reschedule_scheduled_send_command, build_retry_send_command,
+        build_schedule_send_command, build_select_room_command, build_select_space_command,
         build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
         build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
         build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
@@ -3807,6 +3900,63 @@ mod tests {
                 );
                 assert_eq!(route_transaction_id, transaction_id);
                 assert_eq!(route_body, body);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_schedule_send_command(
+            fake_request_id(33),
+            room_id.clone(),
+            "send later body".to_owned(),
+            1_900_000_000_000,
+        )
+        .expect("schedule_send should build a command")
+        {
+            CoreCommand::App(AppCommand::ScheduleSend {
+                request_id,
+                room_id: route_room_id,
+                body,
+                send_at_ms,
+            }) => {
+                assert_eq!(request_id, fake_request_id(33));
+                assert_eq!(route_room_id, room_id);
+                assert_eq!(body, "send later body");
+                assert_eq!(send_at_ms, 1_900_000_000_000);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_cancel_scheduled_send_command(
+            fake_request_id(34),
+            "scheduled-1".to_owned(),
+        )
+        .expect("cancel_scheduled_send should build a command")
+        {
+            CoreCommand::App(AppCommand::CancelScheduledSend {
+                request_id,
+                scheduled_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(34));
+                assert_eq!(scheduled_id, "scheduled-1");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_reschedule_scheduled_send_command(
+            fake_request_id(35),
+            "scheduled-1".to_owned(),
+            1_900_000_060_000,
+        )
+        .expect("reschedule_scheduled_send should build a command")
+        {
+            CoreCommand::App(AppCommand::RescheduleScheduledSend {
+                request_id,
+                scheduled_id,
+                send_at_ms,
+            }) => {
+                assert_eq!(request_id, fake_request_id(35));
+                assert_eq!(scheduled_id, "scheduled-1");
+                assert_eq!(send_at_ms, 1_900_000_060_000);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5213,6 +5363,42 @@ mod tests {
                 "pub async fn cancel_send",
                 "build_cancel_send_command",
                 "commands::cancel_send",
+            ),
+        ] {
+            assert!(
+                commands_source.contains(command_name),
+                "Tauri command should expose {command_name}"
+            );
+            assert!(
+                commands_source.contains(route_name),
+                "Tauri command should route through {route_name}"
+            );
+            assert!(
+                lib_source.contains(registration_name),
+                "Tauri command should register {registration_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn scheduled_send_tauri_command_contracts_are_present() {
+        let commands_source = include_str!("commands.rs");
+        let lib_source = include_str!("lib.rs");
+        for (command_name, route_name, registration_name) in [
+            (
+                "pub async fn schedule_send",
+                "build_schedule_send_command",
+                "commands::schedule_send",
+            ),
+            (
+                "pub async fn cancel_scheduled_send",
+                "build_cancel_scheduled_send_command",
+                "commands::cancel_scheduled_send",
+            ),
+            (
+                "pub async fn reschedule_scheduled_send",
+                "build_reschedule_scheduled_send_command",
+                "commands::reschedule_scheduled_send",
             ),
         ] {
             assert!(

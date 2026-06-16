@@ -44,6 +44,8 @@
  *      Rust-shaped selected image variant contract.
  *  19. Drive main composer drafts through set_composer_draft and hydrate them
  *      from Rust-shaped per-room snapshots.
+ *  20. Drive scheduled-send composer/list controls through Rust-owned snapshot
+ *      state and typed schedule/cancel/reschedule commands.
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -1947,6 +1949,158 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
   await expect(composer).toHaveValue("Room A draft");
   await page.getByRole("button", { name: "Draft Room B" }).click();
   await expect(composer).toHaveValue("Room B draft");
+});
+
+test("scheduled send UI dispatches typed commands and waits for Rust snapshot changes", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const initialSendAt = await page.evaluate(() => new Date("2030-01-02T03:04:00").getTime());
+  const editedSendAt = await page.evaluate(() => new Date("2030-01-03T04:05:00").getTime());
+
+  await page.evaluate(
+    ({ initialSendAt, editedSendAt }) => {
+      const scheduledId = "scheduled-harness-1";
+      const projectScheduled = (
+        items: Array<{
+          scheduled_id: string;
+          room_id: string;
+          body: string;
+          send_at_ms: number;
+          handle: { kind: "local" } | { kind: "server"; delay_id: string };
+        }>,
+        draft = window.__harness.currentSnapshot().state.timeline.composer.draft
+      ) => {
+        const current = window.__harness.currentSnapshot();
+        return {
+          ...current,
+          state: {
+            ...current.state,
+            timeline: {
+              ...current.state.timeline,
+              scheduled_send_capability: "localFallback",
+              scheduled_sends: items,
+              composer: {
+                ...current.state.timeline.composer,
+                draft
+              }
+            }
+          }
+        };
+      };
+      const scheduledItem = {
+        scheduled_id: scheduledId,
+        room_id: "!harness-room:example.invalid",
+        body: "Phase B scheduled body",
+        send_at_ms: initialSendAt,
+        handle: { kind: "local" } as const
+      };
+      const editedItem = {
+        ...scheduledItem,
+        send_at_ms: editedSendAt
+      };
+
+      window.__harness.setSnapshot(projectScheduled([], ""));
+      window.__harness.setCommandResponse(
+        "schedule_send",
+        ({ body }: { body: string; sendAtMs: number }) => {
+          const next = projectScheduled([{ ...scheduledItem, body: String(body) }], "");
+          window.__harness.setSnapshot(next);
+          return next;
+        }
+      );
+      window.__harness.setCommandResponse("reschedule_scheduled_send", () =>
+        window.__harness.currentSnapshot()
+      );
+      window.__harness.setCommandResponse("cancel_scheduled_send", () =>
+        window.__harness.currentSnapshot()
+      );
+      window.__harness.pushStateChanged();
+      window.__harness.clearInvocations();
+    },
+    { initialSendAt, editedSendAt }
+  );
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("Phase B scheduled body");
+  await page.getByRole("button", { name: "Send later" }).click();
+  const scheduleInput = page.getByLabel("Scheduled send time");
+  await expect(scheduleInput).toHaveAttribute("aria-label", "Scheduled send time");
+  await scheduleInput.fill("2030-01-02T03:04");
+  await page.getByRole("button", { name: "Schedule send" }).click();
+
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("schedule_send")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      body: "Phase B scheduled body",
+      sendAtMs: initialSendAt
+    });
+  await expect(page.getByRole("region", { name: "Scheduled messages" })).toContainText(
+    "Phase B scheduled body"
+  );
+  await expect(page.getByRole("textbox", { name: "Message composer" })).toHaveValue("");
+
+  await page.getByRole("button", { name: "Edit scheduled send" }).click();
+  await page.getByLabel("Scheduled send time").fill("2030-01-03T04:05");
+  await page.getByRole("button", { name: "Save scheduled send" }).click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("reschedule_scheduled_send")[0]?.args)
+    )
+    .toEqual({
+      scheduledId: "scheduled-harness-1",
+      sendAtMs: editedSendAt
+    });
+  await expect(page.getByRole("region", { name: "Scheduled messages" })).not.toContainText(
+    "Jan 3"
+  );
+  await page.evaluate(({ editedSendAt }) => {
+    const current = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...current,
+      state: {
+        ...current.state,
+        timeline: {
+          ...current.state.timeline,
+          scheduled_sends: current.state.timeline.scheduled_sends.map((item) =>
+            item.scheduled_id === "scheduled-harness-1"
+              ? { ...item, send_at_ms: editedSendAt }
+              : item
+          )
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  }, { editedSendAt });
+  await expect(page.getByRole("region", { name: "Scheduled messages" })).toContainText(
+    "Jan 3"
+  );
+
+  await page.getByRole("button", { name: "Cancel scheduled send" }).click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("cancel_scheduled_send")[0]?.args)
+    )
+    .toEqual({ scheduledId: "scheduled-harness-1" });
+  await expect(page.getByRole("region", { name: "Scheduled messages" })).toContainText(
+    "Phase B scheduled body"
+  );
+  await page.evaluate(() => {
+    const current = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...current,
+      state: {
+        ...current.state,
+        timeline: {
+          ...current.state.timeline,
+          scheduled_sends: []
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await expect(page.getByRole("region", { name: "Scheduled messages" })).toBeHidden();
 });
 
 test("main composer composing Enter never sends or accepts mention autocomplete", async ({

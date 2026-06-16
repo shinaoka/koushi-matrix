@@ -339,6 +339,7 @@ describe("desktop release scripts", () => {
       "scenario local-explore",
       "scenario local-message-actions",
       "scenario local-composer",
+      "scenario local-scheduled-send",
       "scenario local-timeline-navigation",
       "scenario local-alias",
       "scenario local-cjk",
@@ -382,6 +383,9 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_mention=ok");
     expect(source).toContain("gui_local_markdown=ok");
     expect(source).toContain("gui_local_slash=ok");
+    expect(source).toContain("gui_local_scheduled_create=ok");
+    expect(source).toContain("gui_local_scheduled_reschedule=ok");
+    expect(source).toContain("gui_local_scheduled_cancel=ok");
     expect(source).toContain("gui_local_settings=ok");
     expect(source).toContain("gui_local_trust_settings=ok");
   });
@@ -486,6 +490,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("--scenario=local-explore");
     expect(docs).toContain("--scenario=local-message-actions");
     expect(docs).toContain("--scenario=local-composer");
+    expect(docs).toContain("--scenario=local-scheduled-send");
     expect(docs).toContain("--scenario=local-timeline-navigation");
     expect(docs).toContain("--scenario=local-alias");
     expect(docs).toContain("--scenario=local-cjk");
@@ -503,6 +508,9 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("gui_local_message_forward=ok");
     expect(docs).toContain("gui_local_hide_redacted=ok");
     expect(docs).toContain("gui_local_mention=ok");
+    expect(docs).toContain("gui_local_scheduled_create=ok");
+    expect(docs).toContain("gui_local_scheduled_reschedule=ok");
+    expect(docs).toContain("gui_local_scheduled_cancel=ok");
     expect(docs).toContain("gui_local_markdown=ok");
     expect(docs).toContain("gui_local_slash=ok");
     expect(docs).toContain("gui_local_alias_set=ok");
@@ -545,6 +553,8 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_room_kick=ok");
     expect(source).toContain("gui_local_alias_set=ok");
     expect(source).toContain("gui_local_alias_clear=ok");
+    expect(source).toContain("gui_local_scheduled_create=ok");
+    expect(source).toContain("gui_local_scheduled_cancel=ok");
     expect(source).toContain("gui_local_timeline_unread_jump=ok");
     expect(source).toContain("gui_local_timeline_date_jump=ok");
     expect(source).toContain("waitForTimelineFocusedContextReady");

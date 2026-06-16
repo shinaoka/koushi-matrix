@@ -935,6 +935,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   the local timer. Do not add browser timers, React-local scheduled-message
   maps, raw Matrix delayed-event calls, or logs/screenshots containing scheduled
   message bodies or server delayed-event handles.
+- Phase B scheduled-send browser-headless proof drives the real Composer
+  `Send later` control and scheduled-message list, records typed
+  `schedule_send`, `reschedule_scheduled_send`, and `cancel_scheduled_send`
+  IPC calls, and verifies rows stay visible until a later Rust-shaped snapshot
+  changes `scheduled_sends`. Use:
+  `cd apps/desktop && npx playwright test e2e/basic-operations.spec.ts -g "scheduled send UI"`.
 - The focused local scheduled-send QA lane is:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=scheduled_send --core --core-backend=probed --timeout-ms=240000`.
   Required private-data-free tokens are
@@ -1164,6 +1170,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Rust-owned send state (`send=sent`) plus composer clear. It prints `gui_local_mention=ok`,
   `gui_local_markdown=ok`, and `gui_local_slash=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-composer-fast --timeout-ms=180000`
+- Scheduled-send GUI iteration has a focused virtual-display lane:
+  `--scenario=local-scheduled-send`. It drives the real Composer `Send later`
+  affordance, fills the `datetime-local` control through the shared WebDriver
+  setter, waits for Rust-owned scheduled-send snapshots after create/edit/cancel,
+  and prints only `gui_local_scheduled_create=ok`,
+  `gui_local_scheduled_reschedule=ok`, and
+  `gui_local_scheduled_cancel=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-scheduled-send --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-scheduled-send-fast --timeout-ms=180000`
 - Timeline navigation GUI iteration has a focused virtual-display lane:
   `--scenario=local-timeline-navigation`. It drives the real WebView
   first-unread pill, bottom pill, and jump-to-date focused-context path over
@@ -1345,7 +1359,8 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `valueLength=0`, `valid=false`, and the app title stayed `panel=closed
   focused=closed`. For this control, use the lane's `setDatetimeLocalValue`
   helper, which sets the native value property and dispatches `input`/`change`,
-  then verify with `timelineDateJumpDiagnostics` before clicking submit. The QA
+  then verify with `timelineDateJumpDiagnostics` before clicking submit. Reuse
+  the same helper for scheduled-send `datetime-local` controls. The QA
   title includes `focused=closed|opening|open` so future failures distinguish
   command dispatch/focused-context state from plain DOM text waits.
 - Timeline reactions are Rust-owned projection state. React must only dispatch

@@ -78,6 +78,16 @@
   --timeline-navigation-padding-inline: 20px;
   --timeline-navigation-control-block-size: 32px;
   --timeline-navigation-date-input-inline-size: 190px;
+  --scheduled-panel-margin-inline: 20px;
+  --scheduled-panel-padding-block: 10px;
+  --scheduled-panel-padding-inline: 12px;
+  --scheduled-panel-gap: 8px;
+  --scheduled-action-gap: 6px;
+  --scheduled-nested-gap: 2px;
+  --scheduled-field-gap: 4px;
+  --scheduled-chip-padding-inline: 8px;
+  --scheduled-input-block-size: 34px;
+  --scheduled-input-padding-inline: 10px;
   --avatar-compact-size: 34px;
   --avatar-compact-radius: 7px;
   --avatar-compact-font-size: 12px;
@@ -1977,6 +1987,131 @@ button {
 .message-send-action.danger:focus-visible {
   color: var(--danger);
   background: var(--surface-hover);
+}
+
+.scheduled-messages {
+  display: grid;
+  gap: var(--scheduled-panel-gap);
+  margin: 0 var(--scheduled-panel-margin-inline) var(--scheduled-panel-gap);
+  padding: var(--scheduled-panel-padding-block) var(--scheduled-panel-padding-inline);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.scheduled-messages-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--scheduled-action-gap);
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.scheduled-messages-heading > span:first-child {
+  display: inline-flex;
+  gap: var(--scheduled-action-gap);
+  align-items: center;
+  min-width: 0;
+}
+
+.scheduled-messages-capability {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding-inline: var(--scheduled-chip-padding-inline);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--text-muted);
+  background: var(--surface-hover);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.scheduled-messages-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.scheduled-message-list {
+  display: grid;
+  gap: var(--scheduled-panel-gap);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scheduled-message-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--scheduled-panel-gap);
+  align-items: start;
+  padding-block: var(--scheduled-panel-gap);
+  border-block-start: 1px solid var(--line);
+}
+
+.scheduled-message-main {
+  display: grid;
+  gap: var(--scheduled-nested-gap);
+  min-width: 0;
+}
+
+.scheduled-message-time {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.scheduled-message-body {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.scheduled-message-actions,
+.scheduled-send-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--scheduled-action-gap);
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.scheduled-message-edit,
+.scheduled-send-form {
+  display: grid;
+  gap: var(--scheduled-panel-gap);
+}
+
+.scheduled-send-form {
+  padding: 0 var(--scheduled-panel-padding-inline) var(--scheduled-panel-padding-block);
+  border-block-start: 1px solid var(--line);
+}
+
+.scheduled-send-field {
+  display: grid;
+  gap: var(--scheduled-field-gap);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.scheduled-send-field input {
+  min-width: 0;
+  min-height: var(--scheduled-input-block-size);
+  padding-inline: var(--scheduled-input-padding-inline);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: var(--surface);
+}
+
+.scheduled-send-field input:focus {
+  border-color: var(--brand);
+  outline: 0;
 }
 
 .reaction-control {

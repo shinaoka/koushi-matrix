@@ -307,6 +307,20 @@ Focused E2EE trust GUI proof:
 cd apps/desktop && npx playwright test e2e/basic-operations.spec.ts -g "E2EE trust controls"
 ```
 
+Focused scheduled-send GUI proof:
+
+```bash
+cd apps/desktop && npx playwright test e2e/basic-operations.spec.ts -g "scheduled send UI"
+```
+
+This browser-headless proof drives the real Composer `Send later` control and
+the scheduled-message list over mocked Tauri IPC. It asserts typed
+`schedule_send`, `reschedule_scheduled_send`, and `cancel_scheduled_send`
+payloads, then waits for Rust-shaped `TimelinePaneState.scheduled_sends`
+snapshots before rows appear, change time, or disappear. React must not keep a
+scheduled-message map, run a browser timer, call Matrix delayed-event APIs, or
+remove scheduled rows locally after a cancel/reschedule click.
+
 Focused media/file GUI proof:
 
 ```bash
@@ -440,6 +454,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --artifact-dir=artifacts/linux-gui-local-explore --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --artifact-dir=artifacts/linux-gui-local-message-actions --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-scheduled-send --server=conduit --artifact-dir=artifacts/linux-gui-local-scheduled-send --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting --server=conduit --artifact-dir=artifacts/linux-gui-local-rich-formatting --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-alias --server=conduit --artifact-dir=artifacts/linux-gui-local-alias --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-cjk --server=conduit --artifact-dir=artifacts/linux-gui-local-cjk --timeout-ms=180000
@@ -537,6 +552,15 @@ mention, select text and click Bold, then send a slash command. It prints only
 must not monkeypatch Tauri IPC, synthesize `m.mentions` or formatted HTML in
 React, print Matrix IDs, or treat DOM-local text insertion as enough evidence
 before the Rust-owned send state reaches `send=sent` and the composer clears.
+
+`local-scheduled-send` drives the real Composer `Send later` affordance in the
+Linux Tauri WebView, fills the `datetime-local` control through the shared
+WebDriver setter, submits Schedule send, edits the scheduled item, and cancels
+it. The lane waits for Rust-owned scheduled-send snapshots to create, retain,
+reschedule, and remove the row; it does not monkeypatch IPC, run a browser-local
+timer, or remove scheduled rows in React. It prints only
+`gui_local_scheduled_create=ok`, `gui_local_scheduled_reschedule=ok`, and
+`gui_local_scheduled_cancel=ok`.
 
 `local-alias` registers a synthetic helper account, joins it to the seeded local
 room, sends one helper message, opens the real hover-gated message sender menu,

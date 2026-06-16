@@ -292,6 +292,17 @@ export type MessageId =
   | "settings.twemojiColr"
   | "settings.typography"
   | "settings.uiFont"
+  | "scheduled.cancel"
+  | "scheduled.edit"
+  | "scheduled.localFallback"
+  | "scheduled.localFallbackNotice"
+  | "scheduled.save"
+  | "scheduled.schedule"
+  | "scheduled.sendLater"
+  | "scheduled.serverDelayedEvents"
+  | "scheduled.timeInput"
+  | "scheduled.title"
+  | "scheduled.unknownCapability"
   | "trust.acceptVerification"
   | "trust.closeVerification"
   | "trust.confirmSas"
@@ -897,6 +908,17 @@ const en: Catalog = {
   "settings.twemojiColr": "Twemoji COLR",
   "settings.typography": "Typography",
   "settings.uiFont": "UI font",
+  "scheduled.cancel": "Cancel scheduled send",
+  "scheduled.edit": "Edit scheduled send",
+  "scheduled.localFallback": "Local fallback",
+  "scheduled.localFallbackNotice": "Will send only while this app is running.",
+  "scheduled.save": "Save scheduled send",
+  "scheduled.schedule": "Schedule send",
+  "scheduled.sendLater": "Send later",
+  "scheduled.serverDelayedEvents": "Server scheduled",
+  "scheduled.timeInput": "Scheduled send time",
+  "scheduled.title": "Scheduled messages",
+  "scheduled.unknownCapability": "Checking support",
   "trust.acceptVerification": "Accept",
   "trust.closeVerification": "Close",
   "trust.confirmSas": "Confirm",
@@ -1410,6 +1432,17 @@ const ja: Catalog = {
   "settings.themeSystem": "システム",
   "settings.typography": "タイポグラフィ",
   "settings.uiFont": "UIフォント",
+  "scheduled.cancel": "予約送信をキャンセル",
+  "scheduled.edit": "予約送信を編集",
+  "scheduled.localFallback": "ローカルフォールバック",
+  "scheduled.localFallbackNotice": "このアプリが起動中のときだけ送信されます。",
+  "scheduled.save": "予約送信を保存",
+  "scheduled.schedule": "予約送信",
+  "scheduled.sendLater": "あとで送信",
+  "scheduled.serverDelayedEvents": "サーバー予約",
+  "scheduled.timeInput": "予約送信日時",
+  "scheduled.title": "予約メッセージ",
+  "scheduled.unknownCapability": "対応状況を確認中",
   "trust.acceptVerification": "承認",
   "trust.closeVerification": "閉じる",
   "trust.confirmSas": "確認",

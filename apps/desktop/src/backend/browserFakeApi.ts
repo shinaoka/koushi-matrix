@@ -67,6 +67,9 @@ export interface DesktopApi {
   closeFocusedContext(): Promise<DesktopSnapshot>;
   paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
   sendText(roomId: string, body: string, mentions?: MentionIntent): Promise<DesktopSnapshot>;
+  scheduleSend(roomId: string, body: string, sendAtMs: number): Promise<DesktopSnapshot>;
+  cancelScheduledSend(scheduledId: string): Promise<DesktopSnapshot>;
+  rescheduleScheduledSend(scheduledId: string, sendAtMs: number): Promise<DesktopSnapshot>;
   retrySend(roomId: string, transactionId: string): Promise<DesktopSnapshot>;
   cancelSend(roomId: string, transactionId: string): Promise<DesktopSnapshot>;
   sendReaction(roomId: string, eventId: string, reactionKey: string): Promise<DesktopSnapshot>;
@@ -557,6 +560,62 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.timeline.composer.pending_transaction_id = null;
     this.snapshot.state.timeline.composer.draft = "";
     this.composerDrafts.delete(roomId);
+    return this.getSnapshot();
+  }
+
+  async scheduleSend(
+    roomId: string,
+    body: string,
+    sendAtMs: number
+  ): Promise<DesktopSnapshot> {
+    const session = this.snapshot.state.session;
+    if (
+      session.kind !== "ready" ||
+      this.snapshot.state.timeline.room_id !== roomId ||
+      body.trim().length === 0 ||
+      !Number.isFinite(sendAtMs)
+    ) {
+      return this.getSnapshot();
+    }
+
+    this.snapshot.state.timeline.scheduled_send_capability = "localFallback";
+    this.snapshot.state.timeline.scheduled_sends = [
+      ...this.snapshot.state.timeline.scheduled_sends,
+      {
+        scheduled_id: `browser-scheduled-${this.snapshot.state.timeline.scheduled_sends.length + 1}`,
+        room_id: roomId,
+        body,
+        send_at_ms: sendAtMs,
+        handle: { kind: "local" }
+      }
+    ];
+    this.snapshot.state.timeline.composer.draft = "";
+    this.composerDrafts.delete(roomId);
+    return this.getSnapshot();
+  }
+
+  async cancelScheduledSend(scheduledId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.timeline.scheduled_sends =
+      this.snapshot.state.timeline.scheduled_sends.filter(
+        (item) => item.scheduled_id !== scheduledId
+      );
+    return this.getSnapshot();
+  }
+
+  async rescheduleScheduledSend(
+    scheduledId: string,
+    sendAtMs: number
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !Number.isFinite(sendAtMs)) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.timeline.scheduled_sends =
+      this.snapshot.state.timeline.scheduled_sends.map((item) =>
+        item.scheduled_id === scheduledId ? { ...item, send_at_ms: sendAtMs } : item
+      );
     return this.getSnapshot();
   }
 
