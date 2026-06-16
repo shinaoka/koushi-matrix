@@ -364,6 +364,11 @@ pub struct RoomKeyImportSummary {
     pub total_count: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecureBackupSetupSummary {
+    pub recovery_key_written: bool,
+}
+
 #[derive(Clone, Eq, Error, PartialEq)]
 pub enum E2eeTrustError {
     #[error("Matrix encryption is not initialized")]
@@ -636,6 +641,63 @@ pub async fn import_room_keys_from_file(
         imported_count: result.imported_count as u64,
         total_count: result.total_count as u64,
     })
+}
+
+pub async fn bootstrap_secure_backup(
+    session: &MatrixClientSession,
+    passphrase: Option<&AuthSecret>,
+    recovery_key_destination_path: Option<PathBuf>,
+) -> Result<SecureBackupSetupSummary, E2eeTrustError> {
+    let recovery = session.client().encryption().recovery();
+    let recovery_key = match passphrase {
+        Some(passphrase) => {
+            recovery
+                .enable()
+                .wait_for_backups_to_upload()
+                .with_passphrase(passphrase.expose_secret())
+                .await?
+        }
+        None => recovery.enable().wait_for_backups_to_upload().await?,
+    };
+    let recovery_key_written =
+        write_recovery_key_if_requested(recovery_key, recovery_key_destination_path)?;
+    Ok(SecureBackupSetupSummary {
+        recovery_key_written,
+    })
+}
+
+pub async fn change_secure_backup_passphrase(
+    session: &MatrixClientSession,
+    old_secret: &AuthSecret,
+    new_passphrase: &AuthSecret,
+    recovery_key_destination_path: Option<PathBuf>,
+) -> Result<SecureBackupSetupSummary, E2eeTrustError> {
+    let recovery_key = session
+        .client()
+        .encryption()
+        .recovery()
+        .recover_and_reset(old_secret.expose_secret())
+        .with_passphrase(new_passphrase.expose_secret())
+        .await?;
+    let recovery_key_written =
+        write_recovery_key_if_requested(recovery_key, recovery_key_destination_path)?;
+    Ok(SecureBackupSetupSummary {
+        recovery_key_written,
+    })
+}
+
+fn write_recovery_key_if_requested(
+    recovery_key: String,
+    destination_path: Option<PathBuf>,
+) -> Result<bool, E2eeTrustError> {
+    let recovery_key = Zeroizing::new(recovery_key);
+    let Some(destination_path) = destination_path else {
+        return Ok(false);
+    };
+    std::fs::write(destination_path, recovery_key.as_bytes()).map_err(|_| {
+        E2eeTrustError::Sdk("secure backup recovery key delivery failed".to_owned())
+    })?;
+    Ok(true)
 }
 
 pub async fn reset_identity(
@@ -937,15 +999,16 @@ mod e2ee_trust_tests {
         E2eeTrustError, KeyBackupRestoreScope, KeyBackupRestoreSummary, MatrixCrossSigningStatus,
         MatrixDeviceSessionSummary, MatrixIdentityResetAuthType, MatrixIncomingVerificationRequest,
         MatrixIncomingVerificationRequestObserver, PersistableMatrixSession, RoomKeyExportSummary,
-        RoomKeyImportSummary, accept_sas_verification, accept_verification_request,
-        bootstrap_cross_signing, cancel_sas_verification, cancel_verification_request,
+        RoomKeyImportSummary, SecureBackupSetupSummary, accept_sas_verification,
+        accept_verification_request, bootstrap_cross_signing, bootstrap_secure_backup,
+        cancel_sas_verification, cancel_verification_request, change_secure_backup_passphrase,
         complete_identity_reset, confirm_sas_verification, cross_signing_status, delete_devices,
         enable_key_backup, export_room_keys_to_file, import_room_keys_from_file, list_devices,
         map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
         map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
         mismatch_sas_verification, observe_incoming_verification_requests, rename_device,
         request_device_verification, reset_identity, restore_key_backup, restore_session,
-        start_sas_verification,
+        start_sas_verification, write_recovery_key_if_requested,
     };
 
     const MATRIX_KEY_EXPORT_HEADER: &str = "-----BEGIN MEGOLM SESSION DATA-----";
@@ -1074,6 +1137,33 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
         assert!(!format!("{import_summary:?}").contains("MEGOLM"));
     }
 
+    #[test]
+    fn secure_backup_setup_summary_is_private_data_free() {
+        let summary = SecureBackupSetupSummary {
+            recovery_key_written: true,
+        };
+
+        let debug = format!("{summary:?}");
+        assert!(debug.contains("recovery_key_written"));
+        assert!(!debug.contains("RecoveryKey("));
+    }
+
+    #[test]
+    fn recovery_key_delivery_writes_native_artifact_without_debugging_material() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("recovery-artifact.txt");
+        let artifact_payload = String::from("fixture-artifact-material");
+
+        let written = write_recovery_key_if_requested(artifact_payload.clone(), Some(path.clone()))
+            .expect("artifact write should succeed");
+
+        assert!(written);
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read artifact"),
+            artifact_payload
+        );
+    }
+
     #[tokio::test]
     async fn room_key_import_accepts_element_compatible_key_export_envelope() {
         assert!(ELEMENT_COMPATIBLE_KEY_EXPORT.starts_with(MATRIX_KEY_EXPORT_HEADER));
@@ -1119,6 +1209,8 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
         let _ = delete_devices;
         let _ = export_room_keys_to_file;
         let _ = import_room_keys_from_file;
+        let _ = bootstrap_secure_backup;
+        let _ = change_secure_backup_passphrase;
         let _: Option<MatrixIncomingVerificationRequest> = None;
         let _: Option<MatrixIncomingVerificationRequestObserver> = None;
     }

@@ -789,7 +789,7 @@ device_session_ordinals: BTreeMap<u64, String>,
 
 Clear it on logout, account switch, and actor shutdown.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -1005,7 +1005,7 @@ Expected: commit succeeds and #46 has a Phase A1 comment.
 - Modify docs: `AGENTS.md`
 - Modify docs: `docs/policies/engineering-rules.md`
 
-- [ ] **Step 1: Add failing reducer test**
+- [x] **Step 1: Add failing reducer test**
 
 Add:
 
@@ -1039,7 +1039,7 @@ cargo test -p matrix-desktop-state --test e2ee_trust_state secure_backup_setup_r
 
 Expected: FAIL until secure-backup setup actions exist.
 
-- [ ] **Step 2: Add command request structs**
+- [x] **Step 2: Add command request structs**
 
 In `command.rs`, add:
 
@@ -1070,7 +1070,7 @@ BootstrapSecureBackup { request_id: RequestId, request: SecureBackupSetupRequest
 ChangeSecureBackupPassphrase { request_id: RequestId, request: SecureBackupPassphraseChangeRequest },
 ```
 
-- [ ] **Step 3: Add SDK functions**
+- [x] **Step 3: Add SDK functions**
 
 In `matrix-desktop-sdk/src/lib.rs`, add:
 
@@ -1118,7 +1118,7 @@ write_recovery_key_if_requested(recovery_key, recovery_key_destination_path)?;
 native path and drops the string immediately after writing. It returns only
 `recovery_key_written`.
 
-- [ ] **Step 4: Document secret-delivery divergence from Element X**
+- [x] **Step 4: Document secret-delivery divergence from Element X**
 
 In `AGENTS.md` and `docs/policies/engineering-rules.md`, add:
 

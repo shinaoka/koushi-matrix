@@ -1662,6 +1662,16 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: request_id.sequence,
             })
         }
+        AccountCommand::BootstrapSecureBackup { request_id, .. } => {
+            Some(AppAction::SecureBackupSetupRequested {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::ChangeSecureBackupPassphrase { request_id, .. } => {
+            Some(AppAction::SecureBackupPassphraseChangeRequested {
+                request_id: request_id.sequence,
+            })
+        }
         AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
             request_id: request_id.sequence,
         }),

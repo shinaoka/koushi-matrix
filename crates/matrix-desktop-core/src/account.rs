@@ -34,15 +34,16 @@ use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
     AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage, AvatarThumbnailState,
     CrossSigningStatus, DeviceSessionSummary, E2eeRecoveryState, IdentityResetAuthType,
-    IdentityResetState, LoginRequest, OwnProfile, PresenceKind, RecoveryMethod, RecoveryRequest,
-    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SessionInfo,
-    TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    IdentityResetState, LoginRequest, OwnProfile, PresenceKind, RecoveryKeyDeliveryState,
+    RecoveryMethod, RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle,
+    ScheduledSendItem, SessionInfo, TrustOperationFailureKind, VerificationCancelReason,
+    VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
-    SyncCommand, TimelineCommand,
+    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, TimelineCommand,
 };
 use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
@@ -957,6 +958,20 @@ impl AccountActor {
                 request,
             } => {
                 self.handle_import_room_keys(request_id, request).await;
+            }
+            AccountCommand::BootstrapSecureBackup {
+                request_id,
+                request,
+            } => {
+                self.handle_bootstrap_secure_backup(request_id, request)
+                    .await;
+            }
+            AccountCommand::ChangeSecureBackupPassphrase {
+                request_id,
+                request,
+            } => {
+                self.handle_change_secure_backup_passphrase(request_id, request)
+                    .await;
             }
             AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
                 self.handle_probe_local_encryption_health(request_id);
@@ -2029,6 +2044,124 @@ impl AccountActor {
             }
             Err(_) => {
                 self.reduce(vec![AppAction::RoomKeyImportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_bootstrap_secure_backup(
+        &self,
+        request_id: RequestId,
+        request: SecureBackupSetupRequest,
+    ) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::SecureBackupSetupFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let SecureBackupSetupRequest {
+            passphrase,
+            recovery_key_destination_path,
+        } = request;
+        let result = matrix_desktop_sdk::bootstrap_secure_backup(
+            &session,
+            passphrase.as_ref(),
+            recovery_key_destination_path,
+        )
+        .await;
+        drop(passphrase);
+        match result {
+            Ok(summary) => {
+                let delivery = if summary.recovery_key_written {
+                    RecoveryKeyDeliveryState::Written
+                } else {
+                    RecoveryKeyDeliveryState::NotWritten
+                };
+                self.reduce(vec![
+                    AppAction::SecureBackupRecoveryKeyReady {
+                        request_id: request_id.sequence,
+                        delivery,
+                    },
+                    AppAction::SecureBackupSetupEnabled {
+                        request_id: request_id.sequence,
+                    },
+                ]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::SecureBackupSetupFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_change_secure_backup_passphrase(
+        &self,
+        request_id: RequestId,
+        request: SecureBackupPassphraseChangeRequest,
+    ) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::SecureBackupPassphraseChangeFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let SecureBackupPassphraseChangeRequest {
+            old_secret,
+            new_passphrase,
+            recovery_key_destination_path,
+        } = request;
+        let result = matrix_desktop_sdk::change_secure_backup_passphrase(
+            &session,
+            &old_secret,
+            &new_passphrase,
+            recovery_key_destination_path,
+        )
+        .await;
+        drop(old_secret);
+        drop(new_passphrase);
+        match result {
+            Ok(summary) => {
+                let delivery = if summary.recovery_key_written {
+                    RecoveryKeyDeliveryState::Written
+                } else {
+                    RecoveryKeyDeliveryState::NotWritten
+                };
+                self.reduce(vec![AppAction::SecureBackupPassphraseChanged {
+                    request_id: request_id.sequence,
+                    delivery,
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::SecureBackupPassphraseChangeFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
                 }]);

@@ -792,6 +792,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   passphrase-backed local proof or future product input, but never project the
   passphrase or returned recovery key into reducer state, DTOs, logs, or QA
   output.
+- Secure-backup setup/passphrase-change may produce a new recovery key through
+  the SDK. Do not project that key into reducer state, Tauri DTO snapshots,
+  React state, logs, QA tokens, screenshots, or issue comments. Desktop
+  recovery-key delivery writes through the Rust/Tauri native artifact path and
+  reports only `Written`/`NotWritten` style status.
 - `RestoreKeyBackup` is secret-bearing only at the `CoreCommand::Account`
   boundary. Its reducer projection, `AppEffect`, `CoreEvent`, Tauri DTO, and
   React state must never carry the recovery secret.

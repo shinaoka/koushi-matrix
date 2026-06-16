@@ -71,6 +71,8 @@ impl CoreCommand {
                 | AccountCommand::SoftLogoutReauth { request_id, .. }
                 | AccountCommand::ExportRoomKeys { request_id, .. }
                 | AccountCommand::ImportRoomKeys { request_id, .. }
+                | AccountCommand::BootstrapSecureBackup { request_id, .. }
+                | AccountCommand::ChangeSecureBackupPassphrase { request_id, .. }
                 | AccountCommand::ProbeLocalEncryptionHealth { request_id }
                 | AccountCommand::ResetLocalData { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
@@ -552,6 +554,46 @@ impl fmt::Debug for RoomKeyImportRequest {
     }
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct SecureBackupSetupRequest {
+    pub passphrase: Option<matrix_desktop_state::AuthSecret>,
+    pub recovery_key_destination_path: Option<PathBuf>,
+}
+
+impl fmt::Debug for SecureBackupSetupRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecureBackupSetupRequest")
+            .field("has_passphrase", &self.passphrase.is_some())
+            .field(
+                "has_recovery_key_destination_path",
+                &self.recovery_key_destination_path.is_some(),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct SecureBackupPassphraseChangeRequest {
+    pub old_secret: matrix_desktop_state::AuthSecret,
+    pub new_passphrase: matrix_desktop_state::AuthSecret,
+    pub recovery_key_destination_path: Option<PathBuf>,
+}
+
+impl fmt::Debug for SecureBackupPassphraseChangeRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecureBackupPassphraseChangeRequest")
+            .field(
+                "has_recovery_key_destination_path",
+                &self.recovery_key_destination_path.is_some(),
+            )
+            .field("old_secret", &"AuthSecret(..)")
+            .field("new_passphrase", &"AuthSecret(..)")
+            .finish()
+    }
+}
+
 // LoginRequest and RecoveryRequest redact their own Debug in
 // matrix-desktop-state (username, password, device name, recovery secret).
 pub enum AccountCommand {
@@ -613,6 +655,14 @@ pub enum AccountCommand {
     ImportRoomKeys {
         request_id: RequestId,
         request: RoomKeyImportRequest,
+    },
+    BootstrapSecureBackup {
+        request_id: RequestId,
+        request: SecureBackupSetupRequest,
+    },
+    ChangeSecureBackupPassphrase {
+        request_id: RequestId,
+        request: SecureBackupPassphraseChangeRequest,
     },
     ProbeLocalEncryptionHealth {
         request_id: RequestId,
@@ -706,6 +756,8 @@ impl AccountCommand {
                 | Self::SoftLogoutReauth { .. }
                 | Self::ExportRoomKeys { .. }
                 | Self::ImportRoomKeys { .. }
+                | Self::BootstrapSecureBackup { .. }
+                | Self::ChangeSecureBackupPassphrase { .. }
                 | Self::SetPresence { .. }
                 | Self::SetDisplayName { .. }
                 | Self::SetLocalUserAlias { .. }
@@ -818,6 +870,22 @@ impl fmt::Debug for AccountCommand {
                 request,
             } => formatter
                 .debug_struct("ImportRoomKeys")
+                .field("request_id", request_id)
+                .field("request", request)
+                .finish(),
+            Self::BootstrapSecureBackup {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("BootstrapSecureBackup")
+                .field("request_id", request_id)
+                .field("request", request)
+                .finish(),
+            Self::ChangeSecureBackupPassphrase {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("ChangeSecureBackupPassphrase")
                 .field("request_id", request_id)
                 .field("request", request)
                 .finish(),

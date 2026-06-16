@@ -18,8 +18,9 @@ use matrix_desktop_core::{
     ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
     ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
     RoomEvent, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchScope,
-    SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
-    TimelineViewportObservation, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
+    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
+    TimelineCommand, TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind,
+    UploadMediaRequest, UploadMediaThumbnail,
 };
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
@@ -593,6 +594,50 @@ pub async fn enable_key_backup(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(state.inner(), build_enable_key_backup_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn bootstrap_secure_backup(
+    passphrase: Option<String>,
+    recovery_key_destination_path: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_bootstrap_secure_backup_command(
+            request_id,
+            passphrase.map(AuthSecret::new),
+            recovery_key_destination_path,
+        ),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn change_secure_backup_passphrase(
+    old_secret: String,
+    new_passphrase: String,
+    recovery_key_destination_path: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_change_secure_backup_passphrase_command(
+            request_id,
+            AuthSecret::new(old_secret),
+            AuthSecret::new(new_passphrase),
+            recovery_key_destination_path,
+        ),
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -2589,6 +2634,36 @@ pub(crate) fn build_enable_key_backup_command(
     })
 }
 
+pub(crate) fn build_bootstrap_secure_backup_command(
+    request_id: matrix_desktop_core::RequestId,
+    passphrase: Option<AuthSecret>,
+    recovery_key_destination_path: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::BootstrapSecureBackup {
+        request_id,
+        request: SecureBackupSetupRequest {
+            passphrase,
+            recovery_key_destination_path: recovery_key_destination_path.map(PathBuf::from),
+        },
+    })
+}
+
+pub(crate) fn build_change_secure_backup_passphrase_command(
+    request_id: matrix_desktop_core::RequestId,
+    old_secret: AuthSecret,
+    new_passphrase: AuthSecret,
+    recovery_key_destination_path: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ChangeSecureBackupPassphrase {
+        request_id,
+        request: SecureBackupPassphraseChangeRequest {
+            old_secret,
+            new_passphrase,
+            recovery_key_destination_path: recovery_key_destination_path.map(PathBuf::from),
+        },
+    })
+}
+
 pub(crate) fn build_export_room_keys_command(
     request_id: matrix_desktop_core::RequestId,
     destination_path: String,
@@ -3921,13 +3996,13 @@ mod tests {
     use super::{
         build_accept_invite_command, build_accept_verification_command,
         build_bootstrap_cross_signing_command, build_cancel_scheduled_send_command,
-        build_cancel_send_command, build_cancel_verification_command, build_close_activity_command,
-        build_confirm_sas_verification_command, build_create_room_command,
-        build_create_space_command, build_decline_invite_command, build_discover_login_command,
-        build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
-        build_export_room_keys_command, build_forget_room_command, build_forward_message_command,
-        build_import_room_keys_command, build_invite_user_command, build_join_directory_room_command,
-        build_leave_room_command,
+        build_cancel_send_command, build_cancel_verification_command,
+        build_change_secure_backup_passphrase_command, build_close_activity_command,
+        build_confirm_sas_verification_command, build_create_room_command, build_create_space_command,
+        build_decline_invite_command, build_discover_login_command, build_download_media_command,
+        build_edit_message_command, build_enable_key_backup_command, build_export_room_keys_command,
+        build_forget_room_command, build_forward_message_command, build_import_room_keys_command,
+        build_invite_user_command, build_join_directory_room_command, build_leave_room_command,
         build_load_message_source_command, build_load_room_settings_command, build_logout_command,
         build_mark_activity_read_command, build_moderate_room_member_command,
         build_observe_timeline_viewport_command, build_open_activity_command,
@@ -3948,6 +4023,7 @@ mod tests {
         build_start_direct_message_command,
         build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
         build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
+        build_bootstrap_secure_backup_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
         build_update_room_member_role_command, build_update_room_setting_command,
@@ -4179,6 +4255,53 @@ mod tests {
                     std::path::PathBuf::from("/tmp/element-compatible-import.txt")
                 );
                 assert_eq!(request.passphrase.expose_secret(), "room-key-transfer-phrase");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_bootstrap_secure_backup_command(
+            fake_request_id(35),
+            Some(AuthSecret::new("backup-setup-phrase")),
+            Some("/tmp/recovery-artifact.txt".to_owned()),
+        ) {
+            CoreCommand::Account(AccountCommand::BootstrapSecureBackup {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(35));
+                assert_eq!(
+                    request
+                        .passphrase
+                        .as_ref()
+                        .expect("passphrase")
+                        .expose_secret(),
+                    "backup-setup-phrase"
+                );
+                assert_eq!(
+                    request.recovery_key_destination_path,
+                    Some(std::path::PathBuf::from("/tmp/recovery-artifact.txt"))
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_change_secure_backup_passphrase_command(
+            fake_request_id(36),
+            AuthSecret::new("old-backup-phrase"),
+            AuthSecret::new("new-backup-phrase"),
+            Some("/tmp/recovery-artifact.txt".to_owned()),
+        ) {
+            CoreCommand::Account(AccountCommand::ChangeSecureBackupPassphrase {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(36));
+                assert_eq!(request.old_secret.expose_secret(), "old-backup-phrase");
+                assert_eq!(request.new_passphrase.expose_secret(), "new-backup-phrase");
+                assert_eq!(
+                    request.recovery_key_destination_path,
+                    Some(std::path::PathBuf::from("/tmp/recovery-artifact.txt"))
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -6139,6 +6262,16 @@ mod tests {
                 "commands::import_room_keys",
             ),
             (
+                "pub async fn bootstrap_secure_backup",
+                "build_bootstrap_secure_backup_command",
+                "commands::bootstrap_secure_backup",
+            ),
+            (
+                "pub async fn change_secure_backup_passphrase",
+                "build_change_secure_backup_passphrase_command",
+                "commands::change_secure_backup_passphrase",
+            ),
+            (
                 "pub async fn accept_verification",
                 "build_accept_verification_command",
                 "commands::accept_verification",
@@ -6622,6 +6755,17 @@ mod tests {
             "/tmp/private-room-key-import.txt".to_owned(),
             AuthSecret::new("room-key-transfer-phrase"),
         );
+        let secure_backup_setup = build_bootstrap_secure_backup_command(
+            fake_request_id(25),
+            Some(AuthSecret::new("backup-setup-phrase")),
+            Some("/tmp/private-recovery-artifact.txt".to_owned()),
+        );
+        let secure_backup_change = build_change_secure_backup_passphrase_command(
+            fake_request_id(26),
+            AuthSecret::new("old-backup-phrase"),
+            AuthSecret::new("new-backup-phrase"),
+            Some("/tmp/private-recovery-artifact.txt".to_owned()),
+        );
 
         for (command, secret) in [
             (&login, "password-123"),
@@ -6636,6 +6780,11 @@ mod tests {
             (&room_key_export, "room-key-transfer-phrase"),
             (&room_key_import, "/tmp/private-room-key-import.txt"),
             (&room_key_import, "room-key-transfer-phrase"),
+            (&secure_backup_setup, "backup-setup-phrase"),
+            (&secure_backup_setup, "/tmp/private-recovery-artifact.txt"),
+            (&secure_backup_change, "old-backup-phrase"),
+            (&secure_backup_change, "new-backup-phrase"),
+            (&secure_backup_change, "/tmp/private-recovery-artifact.txt"),
         ] {
             let debug = format!("{command:?}");
             assert!(

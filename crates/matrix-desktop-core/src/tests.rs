@@ -17,7 +17,8 @@ use matrix_sdk::ruma::api::FeatureFlag;
 
 use crate::command::{
     AccountCommand, AppCommand, CoreCommand, RoomCommand, RoomKeyExportRequest,
-    RoomKeyImportRequest, SearchCommand, SyncCommand, TimelineCommand,
+    RoomKeyImportRequest, SearchCommand, SecureBackupPassphraseChangeRequest,
+    SecureBackupSetupRequest, SyncCommand, TimelineCommand,
 };
 use crate::event::{CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection};
 use crate::executor;
@@ -434,6 +435,49 @@ fn room_key_file_transfer_commands_are_correlated_ready_gated_and_redacted() {
             "{debug}"
         );
         assert!(debug.contains("AuthSecret(..)"), "{debug}");
+    }
+}
+
+#[test]
+fn secure_backup_commands_are_correlated_ready_gated_and_redacted() {
+    let request_id = fake_request_id();
+    let setup_phrase = "secure-backup-setup-phrase";
+    let old_phrase = "secure-backup-old-phrase";
+    let new_phrase = "secure-backup-new-phrase";
+    let destination = PathBuf::from("/tmp/private-recovery-artifact.txt");
+    let commands = vec![
+        CoreCommand::Account(AccountCommand::BootstrapSecureBackup {
+            request_id,
+            request: SecureBackupSetupRequest {
+                passphrase: Some(AuthSecret::new(setup_phrase)),
+                recovery_key_destination_path: Some(destination.clone()),
+            },
+        }),
+        CoreCommand::Account(AccountCommand::ChangeSecureBackupPassphrase {
+            request_id,
+            request: SecureBackupPassphraseChangeRequest {
+                old_secret: AuthSecret::new(old_phrase),
+                new_passphrase: AuthSecret::new(new_phrase),
+                recovery_key_destination_path: Some(destination.clone()),
+            },
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(!debug.contains(setup_phrase), "{debug}");
+        assert!(!debug.contains(old_phrase), "{debug}");
+        assert!(!debug.contains(new_phrase), "{debug}");
+        assert!(
+            !debug.contains(destination.to_string_lossy().as_ref()),
+            "{debug}"
+        );
+        assert!(
+            debug.contains("has_recovery_key_destination_path"),
+            "{debug}"
+        );
     }
 }
 

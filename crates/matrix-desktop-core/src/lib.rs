@@ -26,8 +26,9 @@ pub use command::{
     AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
     ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
     ImageUploadVariantKind, MediaDownloadSelection, RoomCommand, RoomKeyExportRequest,
-    RoomKeyImportRequest, SearchCommand, SearchScope, SetAvatarRequest, SyncCommand,
-    TimelineCommand, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
+    RoomKeyImportRequest, SearchCommand, SearchScope, SecureBackupPassphraseChangeRequest,
+    SecureBackupSetupRequest, SetAvatarRequest, SyncCommand, TimelineCommand, UploadMediaKind,
+    UploadMediaRequest, UploadMediaThumbnail,
 };
 pub use event::{
     AccountEvent, ActivityEvent, AppStateSnapshot, CjkTextPolicyEvent, CoreEvent, E2eeTrustEvent,
