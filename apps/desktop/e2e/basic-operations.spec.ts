@@ -3877,7 +3877,8 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
     )
     .toEqual({
       patch: {
-        display: { code_block_wrap: false, hide_redacted: false }
+        display: { code_block_wrap: false, hide_redacted: false },
+        media: { image_upload_compression: "never" }
       }
     });
   await expect(wrapToggle).toHaveAttribute("aria-checked", "false");
@@ -3952,7 +3953,8 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
     )
     .toEqual({
       patch: {
-        display: { code_block_wrap: true, hide_redacted: true }
+        display: { code_block_wrap: true, hide_redacted: true },
+        media: { image_upload_compression: "never" }
       }
     });
   await expect(redactedRow.getByText(t("timeline.redactedMessage"))).toBeVisible();

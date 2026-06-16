@@ -90,6 +90,8 @@ pub struct SettingsValues {
     pub notifications: NotificationSettings,
     #[serde(default)]
     pub display: DisplaySettings,
+    #[serde(default)]
+    pub media: MediaSettings,
 }
 
 impl SettingsValues {
@@ -112,6 +114,9 @@ impl SettingsValues {
         if let Some(display) = patch.display {
             self.display = display;
         }
+        if let Some(media) = patch.media {
+            self.media = media;
+        }
     }
 }
 
@@ -124,6 +129,7 @@ impl Default for SettingsValues {
             keyboard: KeyboardSettings::default(),
             notifications: NotificationSettings::default(),
             display: DisplaySettings::default(),
+            media: MediaSettings::default(),
         }
     }
 }
@@ -260,6 +266,29 @@ fn default_code_block_wrap() -> bool {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MediaSettings {
+    #[serde(default)]
+    pub image_upload_compression: ImageUploadCompressionMode,
+}
+
+impl Default for MediaSettings {
+    fn default() -> Self {
+        Self {
+            image_upload_compression: ImageUploadCompressionMode::Never,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImageUploadCompressionMode {
+    Always,
+    Ask,
+    #[default]
+    Never,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SettingsPersistenceState {
     Idle,
@@ -274,6 +303,7 @@ pub struct SettingsPatch {
     pub keyboard: Option<KeyboardSettings>,
     pub notifications: Option<NotificationSettings>,
     pub display: Option<DisplaySettings>,
+    pub media: Option<MediaSettings>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

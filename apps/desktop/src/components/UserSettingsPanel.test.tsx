@@ -12,7 +12,8 @@ describe("UserSettingsPanel", () => {
       typography: { font: "system", emoji: "system" },
       keyboard: { composer_send_shortcut: "enter" },
       notifications: { desktop_notifications: true, sound: true, badges: true },
-      display: { code_block_wrap: true, hide_redacted: false }
+      display: { code_block_wrap: true, hide_redacted: false },
+      media: { image_upload_compression: "never" }
     },
     persistence: { kind: "idle" }
   } as const;
@@ -177,7 +178,8 @@ describe("UserSettingsPanel", () => {
           ...settings,
           values: {
             ...settings.values,
-            display: { code_block_wrap: false, hide_redacted: true }
+            display: { code_block_wrap: false, hide_redacted: true },
+            media: { image_upload_compression: "never" }
           }
         }}
         {...handlers}

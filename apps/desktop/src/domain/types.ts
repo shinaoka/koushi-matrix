@@ -55,6 +55,7 @@ export interface SettingsValues {
   keyboard: KeyboardSettings;
   notifications: NotificationSettings;
   display: DisplaySettings;
+  media: MediaSettings;
 }
 
 export interface SettingsPatch {
@@ -64,6 +65,7 @@ export interface SettingsPatch {
   keyboard?: KeyboardSettings;
   notifications?: NotificationSettings;
   display?: DisplaySettings;
+  media?: MediaSettings;
 }
 
 export interface LocaleSettings {
@@ -132,6 +134,12 @@ export interface DisplaySettings {
   code_block_wrap: boolean;
   hide_redacted: boolean;
 }
+
+export interface MediaSettings {
+  image_upload_compression: ImageUploadCompressionMode;
+}
+
+export type ImageUploadCompressionMode = "always" | "ask" | "never";
 
 export type SettingsPersistenceState =
   | { kind: "idle" }

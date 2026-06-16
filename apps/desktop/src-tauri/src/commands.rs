@@ -15,16 +15,17 @@ use std::path::PathBuf;
 
 use matrix_desktop_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
+    ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantKind,
     MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand,
     SearchScope, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
-    UploadMediaKind, UploadMediaRequest,
+    UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
 };
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
     ComposerResolverContext, ComposerSurface, DirectoryQuery, IdentityResetAuthRequest,
-    LoginRequest, MentionIntent, PresenceKind, RecoveryRequest, RoomModerationAction,
-    RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch, VerificationCancelReason,
-    build_formatted_message_draft,
+    ImageUploadCompressionMode, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest,
+    RoomModerationAction, RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch,
+    VerificationCancelReason, build_formatted_message_draft,
 };
 #[cfg(any(debug_assertions, test))]
 use serde::Deserialize;
@@ -845,6 +846,9 @@ pub async fn upload_media(
     mime_type: String,
     bytes: Vec<u8>,
     caption: Option<String>,
+    image_dimensions: Option<ImageUploadDimensions>,
+    image_compression: Option<ImageUploadCompressionState>,
+    thumbnail: Option<UploadMediaThumbnail>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -857,6 +861,7 @@ pub async fn upload_media(
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
     let account_key = account_key_from_snapshot(state.inner()).await;
+    let image_compression_mode = image_upload_compression_mode_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
     if let Some(command) = build_upload_media_command(
         request_id,
@@ -867,6 +872,10 @@ pub async fn upload_media(
         mime_type,
         bytes,
         caption,
+        image_compression_mode,
+        image_dimensions,
+        image_compression,
+        thumbnail,
     ) {
         submit_core_command(state.inner(), command).await?;
     }
@@ -2329,6 +2338,10 @@ pub(crate) fn build_upload_media_command(
     mime_type: String,
     bytes: Vec<u8>,
     caption: Option<String>,
+    image_compression_mode: ImageUploadCompressionMode,
+    image_dimensions: Option<ImageUploadDimensions>,
+    image_compression: Option<ImageUploadCompressionState>,
+    thumbnail: Option<UploadMediaThumbnail>,
 ) -> Option<CoreCommand> {
     if bytes.is_empty() {
         return None;
@@ -2341,10 +2354,28 @@ pub(crate) fn build_upload_media_command(
         "" => "application/octet-stream".to_owned(),
         value => value.to_owned(),
     };
-    let kind = if mime_type.to_ascii_lowercase().starts_with("image/") {
+    let is_image = mime_type.to_ascii_lowercase().starts_with("image/");
+    let selected_byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let image_compression = if is_image {
+        Some(normalize_image_upload_compression(
+            image_compression_mode,
+            mime_type.clone(),
+            selected_byte_count,
+            image_dimensions,
+            image_compression,
+            thumbnail.is_some(),
+        ))
+    } else {
+        None
+    };
+    let selected_dimensions = image_compression
+        .as_ref()
+        .and_then(|compression| compression.selected.dimensions)
+        .or(image_dimensions);
+    let kind = if is_image {
         UploadMediaKind::Image {
-            width: None,
-            height: None,
+            width: selected_dimensions.map(|dimensions| dimensions.width),
+            height: selected_dimensions.map(|dimensions| dimensions.height),
         }
     } else {
         UploadMediaKind::File
@@ -2359,9 +2390,49 @@ pub(crate) fn build_upload_media_command(
             mime_type,
             bytes,
             kind,
+            compression: image_compression,
+            thumbnail: if is_image { thumbnail } else { None },
             caption: media_caption_from_composer_body(caption),
         },
     }))
+}
+
+fn normalize_image_upload_compression(
+    mode: ImageUploadCompressionMode,
+    mime_type: String,
+    selected_byte_count: u64,
+    image_dimensions: Option<ImageUploadDimensions>,
+    image_compression: Option<ImageUploadCompressionState>,
+    thumbnail_present: bool,
+) -> ImageUploadCompressionState {
+    match image_compression {
+        Some(mut compression) => {
+            compression.mode = mode;
+            if compression.original.mime_type.trim().is_empty() {
+                compression.original.mime_type = mime_type.clone();
+            }
+            if compression.selected.mime_type.trim().is_empty() {
+                compression.selected.mime_type = mime_type;
+            }
+            compression.selected.byte_count = selected_byte_count;
+            if compression.selected.dimensions.is_none() {
+                compression.selected.dimensions = image_dimensions;
+            }
+            if compression.selected_variant == ImageUploadVariantKind::Original {
+                compression.metadata_stripped = false;
+            }
+            if thumbnail_present {
+                compression.thumbnail_refreshed = true;
+            }
+            compression
+        }
+        None => ImageUploadCompressionState::original(
+            mode,
+            mime_type,
+            selected_byte_count,
+            image_dimensions,
+        ),
+    }
 }
 
 fn media_caption_from_composer_body(
@@ -2941,6 +3012,20 @@ async fn account_key_from_snapshot(state: &CoreRuntimeState) -> AccountKey {
     }
 }
 
+async fn image_upload_compression_mode_from_snapshot(
+    state: &CoreRuntimeState,
+) -> ImageUploadCompressionMode {
+    state
+        .connection
+        .lock()
+        .await
+        .snapshot()
+        .settings
+        .values
+        .media
+        .image_upload_compression
+}
+
 fn resolve_search_scope_from_active_room(
     scope: SearchScopeKind,
     active_room_id: Option<String>,
@@ -3185,12 +3270,15 @@ async fn read_qa_control_pipe(pipe_path: PathBuf) -> Result<String, String> {
 mod tests {
     use matrix_desktop_core::AccountKey;
     use matrix_desktop_core::{
-        AccountCommand, AppCommand, CoreCommand, MediaDownloadSelection, PaginationDirection,
-        RoomCommand, SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
+        AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
+        ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
+        ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RoomCommand,
+        SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
+        UploadMediaThumbnail,
     };
     use matrix_desktop_state::{
-        ActivityMarkReadTarget, ActivityTab, AppearanceSettings, LocaleSettings, SettingsPatch,
-        TextDirectionPreference, ThemePreference,
+        ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
+        LocaleSettings, SettingsPatch, TextDirectionPreference, ThemePreference,
     };
     use matrix_desktop_state::{
         AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent, MentionTarget,
@@ -3671,6 +3759,10 @@ mod tests {
             "application/pdf".to_owned(),
             vec![1, 2, 3, 4],
             None,
+            ImageUploadCompressionMode::Never,
+            None,
+            None,
+            None,
         )
         .expect("upload_media should build a command")
         {
@@ -3707,6 +3799,10 @@ mod tests {
             "image/png".to_owned(),
             vec![9],
             Some("single **event** caption".to_owned()),
+            ImageUploadCompressionMode::Never,
+            None,
+            None,
+            None,
         )
         .expect("image upload_media should build a command")
         {
@@ -3723,6 +3819,83 @@ mod tests {
                 assert_eq!(
                     caption.formatted_body.as_deref(),
                     Some("single <strong>event</strong> caption")
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_upload_media_command(
+            fake_request_id(37),
+            active_account_key.clone(),
+            room_id.clone(),
+            "desktop-media-3".to_owned(),
+            "screenshot.jpg".to_owned(),
+            "image/jpeg".to_owned(),
+            vec![7, 8, 9, 10],
+            None,
+            ImageUploadCompressionMode::Always,
+            Some(ImageUploadDimensions {
+                width: 1200,
+                height: 900,
+            }),
+            Some(ImageUploadCompressionState {
+                mode: matrix_desktop_state::ImageUploadCompressionMode::Always,
+                policy: ImageUploadCompressionPolicy::default(),
+                original: ImageUploadVariantInfo {
+                    mime_type: "image/jpeg".to_owned(),
+                    byte_count: 3_200_000,
+                    dimensions: Some(ImageUploadDimensions {
+                        width: 4032,
+                        height: 3024,
+                    }),
+                },
+                selected: ImageUploadVariantInfo {
+                    mime_type: "image/jpeg".to_owned(),
+                    byte_count: 999,
+                    dimensions: Some(ImageUploadDimensions {
+                        width: 1200,
+                        height: 900,
+                    }),
+                },
+                selected_variant: ImageUploadVariantKind::Compressed,
+                skipped_small_image: false,
+                metadata_stripped: true,
+                thumbnail_refreshed: true,
+            }),
+            Some(UploadMediaThumbnail {
+                mime_type: "image/jpeg".to_owned(),
+                bytes: vec![1, 1, 1],
+                width: 320,
+                height: 240,
+            }),
+        )
+        .expect("compressed image upload_media should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia { request, .. }) => {
+                assert_eq!(
+                    request.kind,
+                    UploadMediaKind::Image {
+                        width: Some(1200),
+                        height: Some(900)
+                    }
+                );
+                let compression = request
+                    .compression
+                    .expect("image compression contract should be preserved");
+                assert_eq!(compression.selected_variant, ImageUploadVariantKind::Compressed);
+                assert_eq!(compression.selected.byte_count, 4);
+                assert!(compression.metadata_stripped);
+                assert!(compression.thumbnail_refreshed);
+                assert_eq!(
+                    request.thumbnail.as_ref().map(|thumbnail| {
+                        (
+                            thumbnail.mime_type.as_str(),
+                            thumbnail.bytes.len(),
+                            thumbnail.width,
+                            thumbnail.height,
+                        )
+                    }),
+                    Some(("image/jpeg", 3, 320, 240))
                 );
             }
             other => panic!("unexpected command: {other:?}"),
@@ -4628,6 +4801,10 @@ mod tests {
                 "application/octet-stream".to_owned(),
                 vec![],
                 None,
+                ImageUploadCompressionMode::Never,
+                None,
+                None,
+                None,
             )
             .is_none()
         );
@@ -5475,6 +5652,10 @@ mod tests {
             "application/pdf".to_owned(),
             b"secret media bytes".to_vec(),
             Some("secret media caption".to_owned()),
+            ImageUploadCompressionMode::Never,
+            None,
+            None,
+            None,
         )
         .expect("upload_media should build a command");
         let download = build_download_media_command(

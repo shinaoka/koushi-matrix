@@ -5,10 +5,12 @@ use std::fmt;
 
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, DirectoryQuery, FormattedMessageDraft,
-    IdentityResetAuthRequest, JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest,
-    MentionIntent, NativeAttentionState, PresenceKind, RecoveryRequest, RoomModerationAction,
-    RoomSettingChange, RoomTagKind, SettingsPatch, VerificationCancelReason, VerificationTarget,
+    IdentityResetAuthRequest, ImageUploadCompressionMode, JapaneseCatalogProfile,
+    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionState, PresenceKind,
+    RecoveryRequest, RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
+    VerificationCancelReason, VerificationTarget,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{AccountKey, RequestId, TimelineKey};
 
@@ -947,7 +949,7 @@ impl fmt::Debug for RoomCommand {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum UploadMediaKind {
     Image {
         width: Option<u64>,
@@ -956,12 +958,162 @@ pub enum UploadMediaKind {
     File,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageUploadDimensions {
+    pub width: u64,
+    pub height: u64,
+}
+
+impl ImageUploadDimensions {
+    pub fn long_edge(self) -> u64 {
+        self.width.max(self.height)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageUploadCompressionPolicy {
+    pub threshold_bytes: u64,
+    pub threshold_long_edge: u64,
+    pub target_long_edge: u64,
+    pub quality_percent: u8,
+}
+
+impl Default for ImageUploadCompressionPolicy {
+    fn default() -> Self {
+        Self {
+            threshold_bytes: 1_048_576,
+            threshold_long_edge: 2560,
+            target_long_edge: 2048,
+            quality_percent: 82,
+        }
+    }
+}
+
+impl ImageUploadCompressionPolicy {
+    pub fn should_skip(self, info: &ImageUploadVariantInfo) -> bool {
+        if info.byte_count > self.threshold_bytes {
+            return false;
+        }
+        match info.dimensions {
+            Some(dimensions) => dimensions.long_edge() <= self.threshold_long_edge,
+            None => true,
+        }
+    }
+
+    pub fn target_dimensions_for(self, dimensions: ImageUploadDimensions) -> ImageUploadDimensions {
+        let long_edge = dimensions.long_edge();
+        if long_edge == 0 || long_edge <= self.target_long_edge {
+            return dimensions;
+        }
+
+        ImageUploadDimensions {
+            width: scale_dimension(dimensions.width, long_edge, self.target_long_edge),
+            height: scale_dimension(dimensions.height, long_edge, self.target_long_edge),
+        }
+    }
+}
+
+fn scale_dimension(value: u64, source_long_edge: u64, target_long_edge: u64) -> u64 {
+    if value == 0 || source_long_edge == 0 {
+        return value;
+    }
+    let numerator = u128::from(value) * u128::from(target_long_edge);
+    let denominator = u128::from(source_long_edge);
+    let rounded = (numerator + (denominator / 2)) / denominator;
+    u64::try_from(rounded.max(1)).unwrap_or(u64::MAX)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageUploadVariantInfo {
+    pub mime_type: String,
+    pub byte_count: u64,
+    pub dimensions: Option<ImageUploadDimensions>,
+}
+
+impl ImageUploadVariantInfo {
+    pub fn selected(
+        mime_type: String,
+        byte_count: u64,
+        dimensions: Option<ImageUploadDimensions>,
+    ) -> Self {
+        Self {
+            mime_type,
+            byte_count,
+            dimensions,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ImageUploadVariantKind {
+    Original,
+    Compressed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageUploadCompressionState {
+    pub mode: ImageUploadCompressionMode,
+    pub policy: ImageUploadCompressionPolicy,
+    pub original: ImageUploadVariantInfo,
+    pub selected: ImageUploadVariantInfo,
+    pub selected_variant: ImageUploadVariantKind,
+    pub skipped_small_image: bool,
+    pub metadata_stripped: bool,
+    pub thumbnail_refreshed: bool,
+}
+
+impl ImageUploadCompressionState {
+    pub fn original(
+        mode: ImageUploadCompressionMode,
+        mime_type: String,
+        byte_count: u64,
+        dimensions: Option<ImageUploadDimensions>,
+    ) -> Self {
+        let policy = ImageUploadCompressionPolicy::default();
+        let original = ImageUploadVariantInfo::selected(mime_type, byte_count, dimensions);
+        let skipped_small_image = policy.should_skip(&original);
+        Self {
+            mode,
+            policy,
+            original: original.clone(),
+            selected: original,
+            selected_variant: ImageUploadVariantKind::Original,
+            skipped_small_image,
+            metadata_stripped: false,
+            thumbnail_refreshed: false,
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UploadMediaThumbnail {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+    pub width: u64,
+    pub height: u64,
+}
+
+impl fmt::Debug for UploadMediaThumbnail {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UploadMediaThumbnail")
+            .field("mime_type", &self.mime_type)
+            .field("bytes", &"ThumbnailBytes(..)")
+            .field("bytes_len", &self.bytes.len())
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish()
+    }
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct UploadMediaRequest {
     pub filename: String,
     pub mime_type: String,
     pub bytes: Vec<u8>,
     pub kind: UploadMediaKind,
+    pub compression: Option<ImageUploadCompressionState>,
+    pub thumbnail: Option<UploadMediaThumbnail>,
     pub caption: Option<FormattedMessageDraft>,
 }
 
@@ -974,6 +1126,8 @@ impl fmt::Debug for UploadMediaRequest {
             .field("bytes", &"MediaBytes(..)")
             .field("bytes_len", &self.bytes.len())
             .field("kind", &self.kind)
+            .field("compression", &self.compression)
+            .field("thumbnail", &self.thumbnail)
             .field(
                 "caption",
                 &self.caption.as_ref().map(|_| "MediaCaption(..)"),
@@ -1194,6 +1348,8 @@ impl fmt::Debug for TimelineCommand {
                 .field("kind", &request.kind)
                 .field("filename", &"MediaFilename(..)")
                 .field("bytes", &"MediaBytes(..)")
+                .field("compression", &request.compression)
+                .field("thumbnail", &request.thumbnail)
                 .field(
                     "caption",
                     &request.caption.as_ref().map(|_| "MediaCaption(..)"),
@@ -1318,9 +1474,10 @@ impl fmt::Debug for SearchCommand {
 #[cfg(test)]
 mod tests {
     use matrix_desktop_state::{
-        MentionIntent, MentionTarget, NativeAttentionCandidate, NativeAttentionCapabilities,
-        NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionState,
-        NativeAttentionSummary, NativeAttentionSuppressionReason, RoomAttentionKind,
+        ImageUploadCompressionMode, MentionIntent, MentionTarget, NativeAttentionCandidate,
+        NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionDispatchState,
+        NativeAttentionState, NativeAttentionSummary, NativeAttentionSuppressionReason,
+        RoomAttentionKind,
     };
 
     use super::*;
@@ -1433,6 +1590,31 @@ mod tests {
 
     #[test]
     fn upload_media_debug_redacts_filename_caption_and_bytes() {
+        let dimensions = ImageUploadDimensions {
+            width: 1200,
+            height: 900,
+        };
+        let compression = ImageUploadCompressionState {
+            mode: ImageUploadCompressionMode::Always,
+            policy: ImageUploadCompressionPolicy::default(),
+            original: ImageUploadVariantInfo {
+                mime_type: "image/jpeg".to_owned(),
+                byte_count: 3_200_000,
+                dimensions: Some(ImageUploadDimensions {
+                    width: 4032,
+                    height: 3024,
+                }),
+            },
+            selected: ImageUploadVariantInfo {
+                mime_type: "image/jpeg".to_owned(),
+                byte_count: 128_000,
+                dimensions: Some(dimensions),
+            },
+            selected_variant: ImageUploadVariantKind::Compressed,
+            skipped_small_image: false,
+            metadata_stripped: true,
+            thumbnail_refreshed: true,
+        };
         let command = TimelineCommand::UploadAndSendMedia {
             request_id: fake_rid(8),
             key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test"),
@@ -1445,6 +1627,13 @@ mod tests {
                     width: Some(2),
                     height: Some(2),
                 },
+                compression: Some(compression),
+                thumbnail: Some(UploadMediaThumbnail {
+                    mime_type: "image/jpeg".to_owned(),
+                    bytes: vec![9, 8, 7, 6],
+                    width: 320,
+                    height: 240,
+                }),
                 caption: Some(matrix_desktop_state::build_formatted_message_draft(
                     "private caption",
                     MentionIntent::default(),
@@ -1456,9 +1645,71 @@ mod tests {
         assert!(debug.contains("UploadAndSendMedia"), "{debug}");
         assert!(debug.contains("txn-media"), "{debug}");
         assert!(debug.contains("image/png"), "{debug}");
+        assert!(debug.contains("Compressed"), "{debug}");
+        assert!(debug.contains("thumbnail"), "{debug}");
         assert!(!debug.contains("private-fixture-name.png"), "{debug}");
         assert!(!debug.contains("private caption"), "{debug}");
         assert!(!debug.contains("1, 2, 3, 4"), "{debug}");
+        assert!(!debug.contains("9, 8, 7, 6"), "{debug}");
+    }
+
+    #[test]
+    fn image_upload_compression_policy_preserves_aspect_ratio_and_skips_small_images() {
+        let policy = ImageUploadCompressionPolicy::default();
+
+        assert_eq!(policy.threshold_bytes, 1_048_576);
+        assert_eq!(policy.threshold_long_edge, 2560);
+        assert_eq!(policy.target_long_edge, 2048);
+        assert_eq!(policy.quality_percent, 82);
+        assert_eq!(
+            policy.target_dimensions_for(ImageUploadDimensions {
+                width: 4032,
+                height: 3024
+            }),
+            ImageUploadDimensions {
+                width: 2048,
+                height: 1536
+            }
+        );
+        assert_eq!(
+            policy.target_dimensions_for(ImageUploadDimensions {
+                width: 1024,
+                height: 768
+            }),
+            ImageUploadDimensions {
+                width: 1024,
+                height: 768
+            }
+        );
+
+        let small = ImageUploadVariantInfo {
+            mime_type: "image/png".to_owned(),
+            byte_count: 64_000,
+            dimensions: Some(ImageUploadDimensions {
+                width: 800,
+                height: 600,
+            }),
+        };
+        let large_by_size = ImageUploadVariantInfo {
+            mime_type: "image/png".to_owned(),
+            byte_count: 2_000_000,
+            dimensions: Some(ImageUploadDimensions {
+                width: 800,
+                height: 600,
+            }),
+        };
+        let large_by_dimension = ImageUploadVariantInfo {
+            mime_type: "image/png".to_owned(),
+            byte_count: 64_000,
+            dimensions: Some(ImageUploadDimensions {
+                width: 4096,
+                height: 512,
+            }),
+        };
+
+        assert!(policy.should_skip(&small));
+        assert!(!policy.should_skip(&large_by_size));
+        assert!(!policy.should_skip(&large_by_dimension));
     }
 
     #[test]

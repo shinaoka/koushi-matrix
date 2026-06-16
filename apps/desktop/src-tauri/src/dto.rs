@@ -594,6 +594,10 @@ mod tests {
             })
         );
         assert_eq!(
+            value["state"]["settings"]["values"]["media"]["image_upload_compression"],
+            json!("never")
+        );
+        assert_eq!(
             value["state"]["settings"]["persistence"]["kind"],
             json!("idle")
         );

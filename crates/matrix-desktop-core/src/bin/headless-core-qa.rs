@@ -43,8 +43,10 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use matrix_desktop_core::command::{
-    AccountCommand, AppCommand, CoreCommand, MediaDownloadSelection, RoomCommand, SearchCommand,
-    SearchScope, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
+    AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
+    ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
+    ImageUploadVariantKind, MediaDownloadSelection, RoomCommand, SearchCommand, SearchScope,
+    SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
 };
 use matrix_desktop_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
@@ -60,15 +62,16 @@ use matrix_desktop_state::{
     ComposerKeyModifiers, ComposerResolvedAction, ComposerResolverContext, ComposerSelection,
     ComposerSendShortcut, ComposerSurface, CrossSigningStatus, DirectoryQuery,
     DirectoryRoomSummary, DisplaySettings, IdentityResetAuthRequest, IdentityResetAuthType,
-    IdentityResetState, KeyBackupStatus, LocalEncryptionHealth, LocalEncryptionState,
-    MentionIntent, MentionTarget, NativeAttentionCapabilities, NativeAttentionCapability,
-    NativeAttentionDispatchState, NativeAttentionObservationKind, NativeAttentionProjectionInput,
-    NativeAttentionState, NativeAttentionSuppressionReason, OperationFailureKind, PresenceKind,
-    RecoveryRequest, ReplyQuoteState, RoomAttentionKind, RoomManagementOperationKind,
-    RoomManagementOperationState, RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot,
-    RoomSummary, RoomTags, SasEmoji, SessionInfo, SessionState, SettingsPatch,
-    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
-    build_formatted_message_draft, native_attention_state_from_rooms, resolve_composer_key_action,
+    IdentityResetState, ImageUploadCompressionMode, KeyBackupStatus, LocalEncryptionHealth,
+    LocalEncryptionState, MentionIntent, MentionTarget, NativeAttentionCapabilities,
+    NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionObservationKind,
+    NativeAttentionProjectionInput, NativeAttentionState, NativeAttentionSuppressionReason,
+    OperationFailureKind, PresenceKind, RecoveryRequest, ReplyQuoteState, RoomAttentionKind,
+    RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
+    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji, SessionInfo,
+    SessionState, SettingsPatch, TrustOperationFailureKind, VerificationFlowState,
+    VerificationTarget, build_formatted_message_draft, native_attention_state_from_rooms,
+    resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -418,7 +421,12 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "pinned_state=ok",
             "unpin_event=ok",
         ],
-        QaStage::Media => &["send_media=ok", "media_caption=ok", "recv_media=ok"],
+        QaStage::Media => &[
+            "send_media=ok",
+            "media_caption=ok",
+            "image_compress=ok",
+            "recv_media=ok",
+        ],
         QaStage::LiveSignals => &[
             "read_receipt=ok",
             "fully_read=ok",
@@ -484,6 +492,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "thread_paginate=end_reached",
         "send_media=ok",
         "media_caption=ok",
+        "image_compress=ok",
         "recv_media=ok",
         "read_receipt=ok",
         "fully_read=ok",
@@ -6833,6 +6842,8 @@ async fn run_media_stage(
                 mime_type: "application/octet-stream".to_owned(),
                 bytes: MEDIA_BYTES.to_vec(),
                 kind: UploadMediaKind::File,
+                compression: None,
+                thumbnail: None,
                 caption: Some(build_formatted_message_draft(
                     MEDIA_CAPTION,
                     MentionIntent::default(),
@@ -6864,6 +6875,8 @@ async fn run_media_stage(
         return Err("media caption did not project onto timeline item body".to_owned());
     }
     println!("media_caption=ok");
+    assert_image_upload_compression_contract()?;
+    println!("image_compress=ok");
     let media_event_id = match &media_item.id {
         matrix_desktop_core::event::TimelineItemId::Event { event_id } => event_id.clone(),
         matrix_desktop_core::event::TimelineItemId::Transaction { .. }
@@ -6894,6 +6907,87 @@ async fn run_media_stage(
     .await?;
     println!("recv_media=ok");
 
+    Ok(())
+}
+
+fn assert_image_upload_compression_contract() -> Result<(), String> {
+    let policy = ImageUploadCompressionPolicy::default();
+    let original_dimensions = ImageUploadDimensions {
+        width: 4032,
+        height: 3024,
+    };
+    let selected_dimensions = policy.target_dimensions_for(original_dimensions);
+    if selected_dimensions
+        != (ImageUploadDimensions {
+            width: 2048,
+            height: 1536,
+        })
+    {
+        return Err("image compression target dimensions did not preserve aspect ratio".to_owned());
+    }
+
+    let original = ImageUploadVariantInfo {
+        mime_type: "image/jpeg".to_owned(),
+        byte_count: 3_200_000,
+        dimensions: Some(original_dimensions),
+    };
+    if policy.should_skip(&original) {
+        return Err("large image was incorrectly classified as skip-small".to_owned());
+    }
+    let selected = ImageUploadVariantInfo {
+        mime_type: "image/jpeg".to_owned(),
+        byte_count: 128_000,
+        dimensions: Some(selected_dimensions),
+    };
+    let compression = ImageUploadCompressionState {
+        mode: ImageUploadCompressionMode::Always,
+        policy,
+        original,
+        selected: selected.clone(),
+        selected_variant: ImageUploadVariantKind::Compressed,
+        skipped_small_image: false,
+        metadata_stripped: true,
+        thumbnail_refreshed: true,
+    };
+    let request = UploadMediaRequest {
+        filename: "matrix-desktop-qa-private-name.jpg".to_owned(),
+        mime_type: selected.mime_type,
+        bytes: vec![0; 128_000],
+        kind: UploadMediaKind::Image {
+            width: selected.dimensions.map(|dimensions| dimensions.width),
+            height: selected.dimensions.map(|dimensions| dimensions.height),
+        },
+        compression: Some(compression),
+        thumbnail: Some(UploadMediaThumbnail {
+            mime_type: "image/jpeg".to_owned(),
+            bytes: vec![0; 4096],
+            width: 320,
+            height: 240,
+        }),
+        caption: None,
+    };
+
+    let Some(compression) = request.compression.as_ref() else {
+        return Err("image upload request did not carry compression contract".to_owned());
+    };
+    if compression.selected_variant != ImageUploadVariantKind::Compressed {
+        return Err("image upload request did not carry selected compressed variant".to_owned());
+    }
+    if !compression.metadata_stripped {
+        return Err("compressed image contract did not require metadata stripping".to_owned());
+    }
+    if !compression.thumbnail_refreshed || request.thumbnail.is_none() {
+        return Err(
+            "compressed image contract did not carry refreshed thumbnail metadata".to_owned(),
+        );
+    }
+    if compression.selected.byte_count != u64::try_from(request.bytes.len()).unwrap_or(u64::MAX) {
+        return Err("selected compression byte count diverged from upload bytes".to_owned());
+    }
+    let debug = format!("{request:?}");
+    if debug.contains("matrix-desktop-qa-private-name.jpg") || debug.contains("0, 0, 0") {
+        return Err("image compression request debug leaked private filename or bytes".to_owned());
+    }
     Ok(())
 }
 
@@ -8612,6 +8706,7 @@ mod tests {
                 "thread_paginate=end_reached",
                 "send_media=ok",
                 "media_caption=ok",
+                "image_compress=ok",
                 "recv_media=ok",
                 "read_receipt=ok",
                 "fully_read=ok",
@@ -8802,6 +8897,7 @@ mod tests {
                 "hide_redacted=ok",
                 "send_media=ok",
                 "media_caption=ok",
+                "image_compress=ok",
                 "recv_media=ok",
                 "restore_cleanup=ok",
             ]
@@ -8913,6 +9009,7 @@ mod tests {
                 "thread_paginate=end_reached",
                 "send_media=ok",
                 "media_caption=ok",
+                "image_compress=ok",
                 "recv_media=ok",
                 "read_receipt=ok",
                 "fully_read=ok",

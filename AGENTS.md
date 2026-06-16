@@ -932,6 +932,21 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   filename/mimetype/size/dimensions/encrypted flag and
   `MediaUploadProgress`, but it must not parse Matrix event content, render MXC
   URIs, store downloaded bytes, or synthesize upload/download lifecycle state.
+- Image upload compression keeps the same split: Rust owns
+  `SettingsValues.media.image_upload_compression`, policy
+  threshold/target/quality values, original-vs-selected variant metadata,
+  metadata-stripped assertion, and thumbnail-refresh assertion. The GUI/effect
+  layer may run the actual pixel transform, but it must return selected
+  bytes/dimensions/thumbnail through `upload_media`; Tauri then builds
+  `UploadMediaRequest.compression` from the current Rust-owned setting.
+- `build_upload_media_command` normalizes selected image byte count from
+  `bytes.len()` instead of trusting GUI metadata. Phase B compression tests
+  should assert the selected variant payload and also check that command Debug
+  output redacts filenames, captions, media bytes, and thumbnail bytes.
+- The local core media lane prints `image_compress=ok` with
+  `send_media=ok`, `media_caption=ok`, and `recv_media=ok`. That token proves
+  the Rust contract only; codec/canvas/native transform behavior still needs
+  browser-headless plus Linux virtual-display evidence after Phase B lands.
 
 ## Linux GUI QA Container
 

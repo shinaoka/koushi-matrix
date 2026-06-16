@@ -7,10 +7,10 @@ use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityRow, ActivityState, AppAction, AppearanceSettings, AuthSecret,
     AvatarImage, AvatarThumbnailState, ComposerMode, CrossSigningStatus, DisplaySettings,
     IdentityResetAuthRequest, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
-    LoginRequest, MentionIntent, NotificationSettings, PresenceKind, RecoveryRequest, RoomSummary,
-    RoomTagKind, RoomTags, SasEmoji, SearchState, SessionInfo, SessionState, SettingsPatch,
-    SettingsPersistenceState, ThemePreference, VerificationCancelReason, VerificationFlowState,
-    VerificationTarget,
+    LoginRequest, MediaSettings, MentionIntent, NotificationSettings, PresenceKind,
+    RecoveryRequest, RoomSummary, RoomTagKind, RoomTags, SasEmoji, SearchState, SessionInfo,
+    SessionState, SettingsPatch, SettingsPersistenceState, ThemePreference,
+    VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 
 use crate::command::{
@@ -793,6 +793,7 @@ fn settings_store_loads_legacy_json_without_notification_settings() {
     assert_eq!(values.appearance.theme, ThemePreference::Dark);
     assert_eq!(values.notifications, NotificationSettings::default());
     assert_eq!(values.display, DisplaySettings::default());
+    assert_eq!(values.media, MediaSettings::default());
 }
 
 #[test]

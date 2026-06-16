@@ -314,6 +314,13 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    `TimelineItem.is_hidden`. React may omit rows only when this DTO flag is
    true; it must not remove redacted events from state or derive visibility
    from a React-local setting.
+   Image upload compression preference is a Rust-owned media setting:
+   `SettingsValues.media.image_upload_compression` defaults to `never`,
+   persists through the settings store, and is read by Tauri before building the
+   upload command. React may run the browser/native pixel transform, but the
+   mode, policy thresholds, selected/original variant metadata, metadata-strip
+   assertion, and thumbnail-refresh assertion must cross the boundary through
+   `UploadMediaRequest.compression`, not through React-local semantics.
    Received message formatting is a Rust-owned security projection:
    `TimelineItem.formatted` is sanitized from Matrix `formatted_body` before it
    crosses the WebView boundary, and carries only sanitized HTML plus derived

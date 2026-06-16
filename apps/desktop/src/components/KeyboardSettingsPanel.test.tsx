@@ -15,7 +15,8 @@ describe("KeyboardSettingsPanel", () => {
             typography: { font: "system", emoji: "system" },
             keyboard: { composer_send_shortcut: "enter" },
             notifications: { desktop_notifications: true, sound: true, badges: true },
-            display: { code_block_wrap: true, hide_redacted: false }
+            display: { code_block_wrap: true, hide_redacted: false },
+            media: { image_upload_compression: "never" }
           },
           persistence: { kind: "idle" }
         }}
@@ -43,7 +44,8 @@ describe("KeyboardSettingsPanel", () => {
             typography: { font: "system", emoji: "system" },
             keyboard: { composer_send_shortcut: "modEnter" },
             notifications: { desktop_notifications: true, sound: true, badges: true },
-            display: { code_block_wrap: true, hide_redacted: false }
+            display: { code_block_wrap: true, hide_redacted: false },
+            media: { image_upload_compression: "never" }
           },
           persistence: { kind: "saving", request_id: 7 }
         }}

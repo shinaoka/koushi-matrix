@@ -22,9 +22,11 @@ pub mod sync;
 pub mod timeline;
 
 pub use command::{
-    AccountCommand, AppCommand, CoreCommand, MediaDownloadSelection, RoomCommand, SearchCommand,
-    SearchScope, SetAvatarRequest, SyncCommand, TimelineCommand, UploadMediaKind,
-    UploadMediaRequest,
+    AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
+    ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
+    ImageUploadVariantKind, MediaDownloadSelection, RoomCommand, SearchCommand, SearchScope,
+    SetAvatarRequest, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
+    UploadMediaThumbnail,
 };
 pub use event::{
     AccountEvent, ActivityEvent, AppStateSnapshot, CjkTextPolicyEvent, CoreEvent, E2eeTrustEvent,

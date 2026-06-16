@@ -56,7 +56,9 @@ use matrix_desktop_state::{
     LiveReadReceipt, MentionIntent, ReplyQuote, ReplyQuoteState, SlashCommandIntent,
     resolve_composer_send_intent,
 };
-use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
+use matrix_sdk::attachment::{
+    AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbnail,
+};
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
@@ -1911,6 +1913,7 @@ impl TimelineActor {
                 client_txn_id.clone(),
             ))
             .info(attachment_info_for_upload(&request))
+            .thumbnail(thumbnail_for_upload(&request))
             .caption(
                 request
                     .caption
@@ -3715,6 +3718,17 @@ fn attachment_info_for_upload(request: &UploadMediaRequest) -> AttachmentInfo {
     }
 }
 
+fn thumbnail_for_upload(request: &UploadMediaRequest) -> Option<Thumbnail> {
+    let thumbnail = request.thumbnail.as_ref()?;
+    Some(Thumbnail {
+        data: thumbnail.bytes.clone(),
+        content_type: thumbnail.mime_type.parse().ok()?,
+        height: uint_from_u64(thumbnail.height)?,
+        width: uint_from_u64(thumbnail.width)?,
+        size: uint_from_u64(u64::try_from(thumbnail.bytes.len()).ok()?)?,
+    })
+}
+
 fn media_request_for_download(
     entry: &PrivateMediaEntry,
     selection: MediaDownloadSelection,
@@ -4106,7 +4120,10 @@ mod tests {
     use tokio::sync::broadcast;
 
     use super::*;
-    use crate::command::{CoreCommand, TimelineCommand};
+    use crate::command::{
+        CoreCommand, ImageUploadCompressionPolicy, ImageUploadCompressionState,
+        ImageUploadDimensions, ImageUploadVariantInfo, ImageUploadVariantKind, TimelineCommand,
+    };
     use crate::event::{CoreEvent, PaginationDirection, TimelineEvent};
     use crate::failure::{CoreFailure, TimelineFailureKind};
     use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId};
@@ -4121,6 +4138,54 @@ mod tests {
 
     fn room_key() -> TimelineKey {
         TimelineKey::room(AccountKey("@a:test".to_owned()), "!r:test")
+    }
+
+    #[test]
+    fn attachment_info_for_image_upload_uses_selected_variant_metadata() {
+        let request = UploadMediaRequest {
+            filename: "private-screenshot.jpg".to_owned(),
+            mime_type: "image/jpeg".to_owned(),
+            bytes: vec![1, 2, 3, 4],
+            kind: UploadMediaKind::Image {
+                width: Some(1200),
+                height: Some(900),
+            },
+            compression: Some(ImageUploadCompressionState {
+                mode: matrix_desktop_state::ImageUploadCompressionMode::Always,
+                policy: ImageUploadCompressionPolicy::default(),
+                original: ImageUploadVariantInfo {
+                    mime_type: "image/jpeg".to_owned(),
+                    byte_count: 3_200_000,
+                    dimensions: Some(ImageUploadDimensions {
+                        width: 4032,
+                        height: 3024,
+                    }),
+                },
+                selected: ImageUploadVariantInfo {
+                    mime_type: "image/jpeg".to_owned(),
+                    byte_count: 4,
+                    dimensions: Some(ImageUploadDimensions {
+                        width: 1200,
+                        height: 900,
+                    }),
+                },
+                selected_variant: ImageUploadVariantKind::Compressed,
+                skipped_small_image: false,
+                metadata_stripped: true,
+                thumbnail_refreshed: true,
+            }),
+            thumbnail: None,
+            caption: None,
+        };
+
+        match attachment_info_for_upload(&request) {
+            AttachmentInfo::Image(info) => {
+                assert_eq!(info.width, Some(uint!(1200)));
+                assert_eq!(info.height, Some(uint!(900)));
+                assert_eq!(info.size, Some(uint!(4)));
+            }
+            other => panic!("expected image info, got {other:?}"),
+        }
     }
 
     fn reaction_groups_fixture() -> ReactionsByKeyBySender {

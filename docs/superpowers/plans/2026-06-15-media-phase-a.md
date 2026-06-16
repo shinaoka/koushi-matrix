@@ -28,7 +28,7 @@ infer Matrix media semantics.
   - upload progress and media download CoreEvents.
   - media captions as optional `FormattedMessageDraft` on a single media event.
   - private-data-free headless QA tokens: `send_media=ok`, `media_caption=ok`,
-    and `recv_media=ok`.
+    `image_compress=ok`, and `recv_media=ok`.
 - Phase B is GUI:
   - attach control, file picker, progress UI, image/file bubbles,
     click-to-open/download, and i18n copy.
@@ -67,6 +67,8 @@ infer Matrix media semantics.
   private-data-free tokens.
 - [x] Carry optional media captions through the outbound media request and
   assert the `media_caption=ok` local core token.
+- [x] Carry the Rust-owned image compression policy/variant contract through the
+  outbound media request and assert the `image_compress=ok` local core token.
 - [x] Update TypeScript wire types and checked-in `coreEvents.generated.json`.
 - [x] Update architecture/QA docs and operational notes with lessons learned.
 

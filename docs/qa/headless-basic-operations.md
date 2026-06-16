@@ -83,6 +83,7 @@ thread_recv=ok
 thread_paginate=end_reached
 send_media=ok
 media_caption=ok
+image_compress=ok
 recv_media=ok
 read_receipt=ok
 fully_read=ok
@@ -131,14 +132,16 @@ resolves to `CommitImeCandidate` rather than send or autocomplete acceptance.
 The composer stage prints only these tokens and must not print mentioned Matrix
 IDs, message bodies, raw SDK errors, or composer transaction/event IDs.
 
-`send_media=ok`, `media_caption=ok`, and `recv_media=ok` are the Phase A
-media/file state-machine signals. The core lane sends a synthetic file through
-`TimelineCommand::UploadAndSendMedia`, carries an optional caption on the same
-media event, observes Rust-owned upload progress and local-echo media metadata,
-receives the event on the second account timeline, and downloads it through a
-Rust-only effect that emits only byte-count completion. The lane must not print
-filenames, captions, MXC URIs, room IDs, event IDs, media bytes, encrypted media
-keys/hashes, or raw SDK errors.
+`send_media=ok`, `media_caption=ok`, `image_compress=ok`, and `recv_media=ok`
+are the Phase A media/file state-machine signals. The core lane sends a
+synthetic file through `TimelineCommand::UploadAndSendMedia`, carries an
+optional caption on the same media event, observes Rust-owned upload progress
+and local-echo media metadata, verifies the Rust-owned image compression
+policy/variant/metadata-strip/thumbnail-refresh contract without writing image
+data, receives the event on the second account timeline, and downloads it
+through a Rust-only effect that emits only byte-count completion. The lane must
+not print filenames, captions, MXC URIs, room IDs, event IDs, media bytes,
+encrypted media keys/hashes, or raw SDK errors.
 
 `read_receipt=ok`, `fully_read=ok`, `typing=ok`, `presence=ok`, and
 `live_signals=ok` are the Phase A live-signal state-machine proof. The core

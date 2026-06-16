@@ -209,7 +209,8 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       typography: { font: "system", emoji: "system" },
       keyboard: { composer_send_shortcut: "enter" },
       notifications: { desktop_notifications: true, sound: true, badges: true },
-      display: { code_block_wrap: true, hide_redacted: false }
+      display: { code_block_wrap: true, hide_redacted: false },
+      media: { image_upload_compression: "never" }
     },
     persistence: { kind: "idle" }
   };
@@ -282,7 +283,8 @@ function applySettingsPatch(
     typography: patch.typography ?? values.typography,
     keyboard: patch.keyboard ?? values.keyboard,
     notifications: patch.notifications ?? values.notifications,
-    display: patch.display ?? values.display
+    display: patch.display ?? values.display,
+    media: patch.media ?? values.media
   };
 }
 

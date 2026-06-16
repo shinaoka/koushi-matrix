@@ -399,6 +399,15 @@ stateDiagram-v2
   `formatted_body`) on the same `m.image`, `m.file`, `m.video`, or `m.audio`
   event. Incoming media captions are projected back through
   `TimelineItem.body` / `TimelineItem.formatted` beside `TimelineItem.media`.
+- Image upload compression policy is Rust-owned.
+  `SettingsValues.media.image_upload_compression` carries `always` / `ask` /
+  `never`; Tauri reads that snapshot value before building
+  `UploadMediaRequest.compression`.
+  `ImageUploadCompressionState` carries the threshold/target/quality contract,
+  original and selected variant metadata, skip-small decision, EXIF/geolocation
+  strip assertion for re-encoded images, and thumbnail-refresh assertion. The
+  GUI/effect layer may perform the pixel transform, but it must report the
+  selected bytes/dimensions/thumbnail through this Rust command contract.
 - The current GUI staging contract accepts one attachment per send. Selecting a
   second file replaces the staged attachment; multi-attachment batching is a
   separate Rust-owned upload workflow and must not be emulated by sending one
@@ -421,8 +430,8 @@ stateDiagram-v2
   not parse Matrix event content, infer encryption details, render MXC URIs, or
   own upload/download success/failure state.
 - The local core `media` QA scenario is the Phase A proof:
-  `send_media=ok media_caption=ok recv_media=ok`. Its output must remain
-  private-data-free.
+  `send_media=ok media_caption=ok image_compress=ok recv_media=ok`. Its output
+  must remain private-data-free.
 
 ## Timeline Formatted Message Projection
 

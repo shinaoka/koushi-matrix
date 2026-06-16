@@ -1,8 +1,8 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AppearanceSettings, ComposerSendShortcut, DisplaySettings,
-    EmojiPreference, FontPreference, KeyboardSettings, LocaleSettings, NotificationSettings,
-    SettingsPatch, SettingsPersistenceState, SettingsValues, TextDirectionPreference,
-    ThemePreference, UiEvent, reduce,
+    EmojiPreference, FontPreference, ImageUploadCompressionMode, KeyboardSettings, LocaleSettings,
+    MediaSettings, NotificationSettings, SettingsPatch, SettingsPersistenceState, SettingsValues,
+    TextDirectionPreference, ThemePreference, UiEvent, reduce,
 };
 
 fn dark_theme_patch() -> SettingsPatch {
@@ -50,6 +50,12 @@ fn app_state_carries_default_non_secret_settings() {
             hide_redacted: false
         }
     );
+    assert_eq!(
+        state.settings.values.media,
+        MediaSettings {
+            image_upload_compression: ImageUploadCompressionMode::Never,
+        }
+    );
     assert_eq!(state.settings.persistence, SettingsPersistenceState::Idle);
 }
 
@@ -79,6 +85,9 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         display: DisplaySettings {
             code_block_wrap: false,
             hide_redacted: true,
+        },
+        media: MediaSettings {
+            image_upload_compression: ImageUploadCompressionMode::Always,
         },
     };
 
@@ -134,6 +143,29 @@ fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_o
         DisplaySettings {
             code_block_wrap: false,
             hide_redacted: false
+        }
+    );
+}
+
+#[test]
+fn settings_values_deserialize_legacy_without_media_as_default_never() {
+    let values = serde_json::from_str::<SettingsValues>(
+        r#"{
+  "locale": { "language_tag": null, "text_direction": "auto" },
+  "appearance": { "theme": "system" },
+  "typography": { "font": "system", "emoji": "system" },
+  "keyboard": { "composer_send_shortcut": "enter" },
+  "notifications": { "desktop_notifications": true, "sound": true, "badges": true },
+  "display": { "code_block_wrap": true, "hide_redacted": false }
+}
+"#,
+    )
+    .expect("legacy settings without media should deserialize");
+
+    assert_eq!(
+        values.media,
+        MediaSettings {
+            image_upload_compression: ImageUploadCompressionMode::Never,
         }
     );
 }
@@ -240,6 +272,41 @@ fn hide_redacted_patch_is_rust_owned_and_persisted() {
         vec![
             AppEffect::PersistSettings {
                 request_id: 79,
+                values: state.settings.values.clone(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+        ]
+    );
+}
+
+#[test]
+fn image_upload_compression_patch_is_rust_owned_and_persisted() {
+    let mut state = AppState::default();
+    let media_settings = MediaSettings {
+        image_upload_compression: ImageUploadCompressionMode::Ask,
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 80,
+            patch: SettingsPatch {
+                media: Some(media_settings.clone()),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert_eq!(state.settings.values.media, media_settings);
+    assert_eq!(
+        state.settings.persistence,
+        SettingsPersistenceState::Saving { request_id: 80 }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSettings {
+                request_id: 80,
                 values: state.settings.values.clone(),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
