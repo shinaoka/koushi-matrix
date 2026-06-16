@@ -26,17 +26,17 @@
 //!   stop timeline subscriptions → stop search → stop sync → drop SDK handles.
 //! SDK handles dropped inside the Tokio runtime context.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use futures_util::StreamExt;
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
-    AppAction, AuthFailureKind, AvatarImage, AvatarThumbnailState, CrossSigningStatus,
-    E2eeRecoveryState, IdentityResetAuthType, IdentityResetState, LoginRequest, OwnProfile,
-    PresenceKind, RecoveryMethod, RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SessionInfo, TrustOperationFailureKind, VerificationCancelReason,
-    VerificationFlowState, VerificationTarget,
+    AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage, AvatarThumbnailState,
+    CrossSigningStatus, DeviceSessionSummary, E2eeRecoveryState, IdentityResetAuthType,
+    IdentityResetState, LoginRequest, OwnProfile, PresenceKind, RecoveryMethod, RecoveryRequest,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SessionInfo,
+    TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -192,6 +192,9 @@ pub struct AccountActor {
     recovery_observer: Option<RecoveryStateObservation>,
     /// Pending SDK identity reset continuation, held only inside AccountActor.
     identity_reset_handle: Option<matrix_desktop_sdk::MatrixIdentityResetHandle>,
+    /// Actor-private mapping from app-owned device ordinal to raw Matrix
+    /// device id. Raw ids never enter reducer state or snapshots.
+    device_session_ordinals: BTreeMap<u64, String>,
     /// Pending SDK verification request continuation, held only inside
     /// AccountActor and never projected into AppState.
     verification_request: Option<PendingVerificationRequest>,
@@ -236,6 +239,7 @@ impl AccountActor {
             search_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
+            device_session_ordinals: BTreeMap::new(),
             verification_request: None,
             sas_verification: None,
             verification_request_observer: None,
@@ -349,6 +353,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.device_session_ordinals.clear();
         // Drop the session handle inside the runtime context
         // (overview.md Async rule 11 — deadpool-runtime panic prevention).
         drop(self.session.take());
@@ -912,6 +917,31 @@ impl AccountActor {
             }
             AccountCommand::QuerySavedSessions { request_id } => {
                 self.handle_query_saved_sessions(request_id);
+            }
+            AccountCommand::QueryDevices { request_id } => {
+                self.handle_query_devices(request_id).await;
+            }
+            AccountCommand::RenameDevice {
+                request_id,
+                device_ordinal,
+                display_name,
+            } => {
+                self.handle_rename_device(request_id, device_ordinal, display_name)
+                    .await;
+            }
+            AccountCommand::DeleteDevices {
+                request_id,
+                device_ordinals,
+                auth,
+            } => {
+                self.handle_delete_devices(request_id, device_ordinals, auth)
+                    .await;
+            }
+            AccountCommand::SoftLogoutReauth {
+                request_id,
+                password,
+            } => {
+                self.handle_soft_logout_reauth(request_id, password).await;
             }
             AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
                 self.handle_probe_local_encryption_health(request_id);
@@ -2063,6 +2093,7 @@ impl AccountActor {
         drop(login_session);
 
         let session_arc = Arc::new(store_backed);
+        self.device_session_ordinals.clear();
         self.session = Some(session_arc.clone());
         self.session_key_id = Some(key_id);
 
@@ -2168,6 +2199,190 @@ impl AccountActor {
         }
     }
 
+    async fn handle_query_devices(&mut self, request_id: RequestId) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::DeviceSessionsLoadFailed {
+                    request_id: request_id.sequence,
+                    kind: AuthFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        match matrix_desktop_sdk::list_devices(&session).await {
+            Ok(devices) => {
+                let mut ordinal_map = BTreeMap::new();
+                let summaries = devices
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, device)| {
+                        let ordinal = index as u64 + 1;
+                        ordinal_map.insert(ordinal, device.raw_device_id);
+                        DeviceSessionSummary {
+                            device_ordinal: ordinal,
+                            display_name: device.display_name,
+                            current: device.current,
+                            verified: device.verified,
+                            inactive: device.inactive,
+                        }
+                    })
+                    .collect();
+                self.device_session_ordinals = ordinal_map;
+                self.reduce(vec![AppAction::DeviceSessionsLoaded {
+                    request_id: request_id.sequence,
+                    devices: summaries,
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::DeviceSessionsLoadFailed {
+                    request_id: request_id.sequence,
+                    kind: AuthFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+            }
+        }
+    }
+
+    async fn handle_rename_device(
+        &mut self,
+        request_id: RequestId,
+        device_ordinal: u64,
+        display_name: String,
+    ) {
+        let operation = AccountManagementOperation::RenameDevice;
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::SessionRequired,
+                );
+                return;
+            }
+        };
+        let Some(raw_device_id) = self.device_session_ordinals.get(&device_ordinal).cloned() else {
+            self.project_account_management_failure(
+                request_id,
+                operation,
+                AuthFailureKind::Sdk,
+                CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Sdk,
+                },
+            );
+            return;
+        };
+
+        let result =
+            matrix_desktop_sdk::rename_device(&session, &raw_device_id, &display_name).await;
+        drop(display_name);
+        match result {
+            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
+                request_id: request_id.sequence,
+                operation,
+            }]),
+            Err(_) => self.project_account_management_failure(
+                request_id,
+                operation,
+                AuthFailureKind::Sdk,
+                CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Sdk,
+                },
+            ),
+        }
+    }
+
+    async fn handle_delete_devices(
+        &mut self,
+        request_id: RequestId,
+        device_ordinals: Vec<u64>,
+        auth: Option<matrix_desktop_state::IdentityResetAuthRequest>,
+    ) {
+        let operation = if device_ordinals.len() == 1 {
+            AccountManagementOperation::DeleteDevice
+        } else {
+            AccountManagementOperation::DeleteOtherDevices
+        };
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::SessionRequired,
+                );
+                return;
+            }
+        };
+        let mut raw_device_ids = Vec::with_capacity(device_ordinals.len());
+        for ordinal in device_ordinals {
+            let Some(raw_device_id) = self.device_session_ordinals.get(&ordinal) else {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+                return;
+            };
+            raw_device_ids.push(raw_device_id.clone());
+        }
+
+        let result =
+            matrix_desktop_sdk::delete_devices(&session, &raw_device_ids, auth.as_ref()).await;
+        drop(auth);
+        match result {
+            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
+                request_id: request_id.sequence,
+                operation,
+            }]),
+            Err(_) => self.project_account_management_failure(
+                request_id,
+                operation,
+                AuthFailureKind::Sdk,
+                CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Sdk,
+                },
+            ),
+        }
+    }
+
+    async fn handle_soft_logout_reauth(
+        &self,
+        request_id: RequestId,
+        password: matrix_desktop_state::AuthSecret,
+    ) {
+        drop(password);
+        self.emit_failure(
+            request_id,
+            CoreFailure::AccountOperationFailed {
+                kind: AuthFailureKind::Unsupported,
+            },
+        );
+    }
+
+    fn project_account_management_failure(
+        &self,
+        request_id: RequestId,
+        operation: AccountManagementOperation,
+        kind: AuthFailureKind,
+        failure: CoreFailure,
+    ) {
+        self.reduce(vec![AppAction::AccountManagementFailed {
+            request_id: request_id.sequence,
+            operation,
+            kind,
+        }]);
+        self.emit_failure(request_id, failure);
+    }
+
     async fn handle_switch_account(&mut self, request_id: RequestId, account_key: AccountKey) {
         // Ordered shutdown of the current account runtime WITHOUT clearing
         // credentials or stores.
@@ -2178,6 +2393,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.device_session_ordinals.clear();
         // Drop the SDK handle inside the runtime context (Async rule 11).
         drop(self.session.take());
         self.session_key_id = None;
@@ -2257,6 +2473,7 @@ impl AccountActor {
                 let account_key = account_key_from_info(&info);
 
                 let session_arc = Arc::new(session);
+                self.device_session_ordinals.clear();
                 self.session = Some(session_arc.clone());
                 self.session_key_id = Some(key_id);
 
@@ -2354,6 +2571,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.device_session_ordinals.clear();
 
         // Attempt server-side logout (best-effort; local cleanup always happens).
         let _ = matrix_desktop_sdk::logout(&session).await;
@@ -2547,6 +2765,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.device_session_ordinals.clear();
 
         drop(self.session.take());
         self.clear_account_persistence(&key_id);
@@ -3345,6 +3564,7 @@ mod tests {
             search_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
+            device_session_ordinals: BTreeMap::new(),
             verification_request: None,
             sas_verification: None,
             verification_request_observer: None,

@@ -1182,6 +1182,13 @@ stateDiagram-v2
 - Device summaries use app-owned ordinals and coarse current/verified/inactive
   facts. Raw device ids and IP addresses are command-boundary values until a
   later explicitly reviewed DTO admits a redacted display form.
+- `AccountCommand::QueryDevices` calls the SDK-owned device-list API in
+  `AccountActor`, stores the ordinal-to-raw-device-id map actor-private, and
+  projects only `DeviceSessionSummary` DTOs through `DeviceSessionsLoaded`.
+- `AccountCommand::RenameDevice` and `AccountCommand::DeleteDevices` accept
+  app-owned ordinals only. The actor resolves those ordinals to raw SDK device
+  ids immediately before calling the SDK and clears the private map on logout,
+  account switch, local reset, and actor shutdown.
 
 Shared UIA and account management:
 
@@ -1201,6 +1208,9 @@ stateDiagram-v2
 - UIA continuation state carries only a local `flow_id`, request id, operation
   enum, and coarse failure kind. Passwords, auth sessions, and identity-server
   secrets remain in the account actor or native adapter.
+- Device rename/delete completion uses `AccountManagementSucceeded` /
+  `AccountManagementFailed`; reducer state does not include raw device ids,
+  device IPs, auth passwords, or SDK errors.
 
 E2EE key management:
 

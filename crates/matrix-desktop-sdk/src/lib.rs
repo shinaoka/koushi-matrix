@@ -62,6 +62,31 @@ pub enum MatrixLoginFlowKind {
     Unknown(String),
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct MatrixDeviceSessionSummary {
+    pub raw_device_id: String,
+    pub display_name: Option<String>,
+    pub current: bool,
+    pub verified: bool,
+    pub inactive: bool,
+}
+
+impl fmt::Debug for MatrixDeviceSessionSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixDeviceSessionSummary")
+            .field("raw_device_id", &"DeviceId(..)")
+            .field(
+                "display_name",
+                &self.display_name.as_ref().map(|_| "DeviceDisplayName(..)"),
+            )
+            .field("current", &self.current)
+            .field("verified", &self.verified)
+            .field("inactive", &self.inactive)
+            .finish()
+    }
+}
+
 pub type E2eeRecoveryStateStream = Pin<Box<dyn Stream<Item = E2eeRecoveryState> + Send>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -598,6 +623,80 @@ pub async fn complete_identity_reset(
     handle.reset(session, request).await
 }
 
+pub async fn list_devices(
+    session: &MatrixClientSession,
+) -> Result<Vec<MatrixDeviceSessionSummary>, E2eeTrustError> {
+    let response = session
+        .client()
+        .devices()
+        .await
+        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
+    Ok(response
+        .devices
+        .into_iter()
+        .map(|device| MatrixDeviceSessionSummary {
+            current: device.device_id.as_str() == session.info.device_id,
+            raw_device_id: device.device_id.to_string(),
+            display_name: device.display_name,
+            verified: false,
+            inactive: false,
+        })
+        .collect())
+}
+
+pub async fn rename_device(
+    session: &MatrixClientSession,
+    raw_device_id: &str,
+    display_name: &str,
+) -> Result<(), E2eeTrustError> {
+    let device_id = matrix_sdk::ruma::OwnedDeviceId::from(raw_device_id);
+    session
+        .client()
+        .rename_device(&device_id, display_name)
+        .await
+        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
+    Ok(())
+}
+
+pub async fn delete_devices(
+    session: &MatrixClientSession,
+    raw_device_ids: &[String],
+    auth: Option<&IdentityResetAuthRequest>,
+) -> Result<(), E2eeTrustError> {
+    let device_ids = raw_device_ids
+        .iter()
+        .map(|id| matrix_sdk::ruma::OwnedDeviceId::from(id.as_str()))
+        .collect::<Vec<_>>();
+    let auth_data = delete_devices_auth_data(session, auth);
+    session
+        .client()
+        .delete_devices(&device_ids, auth_data)
+        .await
+        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
+    Ok(())
+}
+
+fn delete_devices_auth_data(
+    session: &MatrixClientSession,
+    auth: Option<&IdentityResetAuthRequest>,
+) -> Option<matrix_sdk::ruma::api::client::uiaa::AuthData> {
+    let IdentityResetAuthRequest::UiaaPassword { password } = auth? else {
+        return None;
+    };
+    let identifier = matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
+        matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(
+            session.info.user_id.clone(),
+        ),
+    );
+    let password_auth = matrix_sdk::ruma::api::client::uiaa::Password::new(
+        identifier,
+        password.expose_secret().to_owned(),
+    );
+    Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
+        password_auth,
+    ))
+}
+
 pub async fn request_device_verification(
     session: &MatrixClientSession,
     target: &VerificationTarget,
@@ -791,15 +890,15 @@ mod e2ee_trust_tests {
 
     use super::{
         E2eeTrustError, KeyBackupRestoreScope, KeyBackupRestoreSummary, MatrixCrossSigningStatus,
-        MatrixIdentityResetAuthType, MatrixIncomingVerificationRequest,
+        MatrixDeviceSessionSummary, MatrixIdentityResetAuthType, MatrixIncomingVerificationRequest,
         MatrixIncomingVerificationRequestObserver, accept_sas_verification,
         accept_verification_request, bootstrap_cross_signing, cancel_sas_verification,
         cancel_verification_request, complete_identity_reset, confirm_sas_verification,
-        cross_signing_status, enable_key_backup, map_backup_state_to_desktop,
-        map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
-        map_sdk_sas_emojis_to_desktop, mismatch_sas_verification,
-        observe_incoming_verification_requests, request_device_verification, reset_identity,
-        restore_key_backup, start_sas_verification,
+        cross_signing_status, delete_devices, enable_key_backup, list_devices,
+        map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
+        map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
+        mismatch_sas_verification, observe_incoming_verification_requests, rename_device,
+        request_device_verification, reset_identity, restore_key_backup, start_sas_verification,
     };
 
     #[test]
@@ -875,6 +974,25 @@ mod e2ee_trust_tests {
     }
 
     #[test]
+    fn device_session_summary_is_private_data_free() {
+        let summary = MatrixDeviceSessionSummary {
+            raw_device_id: "DEVICEID".to_owned(),
+            display_name: Some("Alice private laptop".to_owned()),
+            current: true,
+            verified: false,
+            inactive: false,
+        };
+
+        assert_eq!(summary.raw_device_id, "DEVICEID");
+        let debug = format!("{summary:?}");
+        assert!(!debug.contains("DEVICEID"), "{debug}");
+        assert!(!debug.contains("Alice private laptop"), "{debug}");
+        assert!(debug.contains("current"));
+        assert!(debug.contains("verified"));
+        assert!(debug.contains("inactive"));
+    }
+
+    #[test]
     fn e2ee_trust_public_async_api_is_exposed() {
         let _ = cross_signing_status;
         let _ = bootstrap_cross_signing;
@@ -891,6 +1009,9 @@ mod e2ee_trust_tests {
         let _ = cancel_verification_request;
         let _ = cancel_sas_verification;
         let _ = observe_incoming_verification_requests;
+        let _ = list_devices;
+        let _ = rename_device;
+        let _ = delete_devices;
         let _: Option<MatrixIncomingVerificationRequest> = None;
         let _: Option<MatrixIncomingVerificationRequestObserver> = None;
     }

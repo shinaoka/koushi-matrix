@@ -65,6 +65,10 @@ impl CoreCommand {
                 | AccountCommand::RestoreSession { request_id, .. }
                 | AccountCommand::RestoreLastSession { request_id }
                 | AccountCommand::QuerySavedSessions { request_id }
+                | AccountCommand::QueryDevices { request_id }
+                | AccountCommand::RenameDevice { request_id, .. }
+                | AccountCommand::DeleteDevices { request_id, .. }
+                | AccountCommand::SoftLogoutReauth { request_id, .. }
                 | AccountCommand::ProbeLocalEncryptionHealth { request_id }
                 | AccountCommand::ResetLocalData { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
@@ -551,6 +555,23 @@ pub enum AccountCommand {
     QuerySavedSessions {
         request_id: RequestId,
     },
+    QueryDevices {
+        request_id: RequestId,
+    },
+    RenameDevice {
+        request_id: RequestId,
+        device_ordinal: u64,
+        display_name: String,
+    },
+    DeleteDevices {
+        request_id: RequestId,
+        device_ordinals: Vec<u64>,
+        auth: Option<IdentityResetAuthRequest>,
+    },
+    SoftLogoutReauth {
+        request_id: RequestId,
+        password: matrix_desktop_state::AuthSecret,
+    },
     ProbeLocalEncryptionHealth {
         request_id: RequestId,
     },
@@ -637,6 +658,10 @@ impl AccountCommand {
                 | Self::EnableKeyBackup { .. }
                 | Self::ResetIdentity { .. }
                 | Self::SubmitIdentityResetAuth { .. }
+                | Self::QueryDevices { .. }
+                | Self::RenameDevice { .. }
+                | Self::DeleteDevices { .. }
+                | Self::SoftLogoutReauth { .. }
                 | Self::SetPresence { .. }
                 | Self::SetDisplayName { .. }
                 | Self::SetLocalUserAlias { .. }
@@ -706,6 +731,35 @@ impl fmt::Debug for AccountCommand {
             Self::QuerySavedSessions { request_id } => formatter
                 .debug_struct("QuerySavedSessions")
                 .field("request_id", request_id)
+                .finish(),
+            Self::QueryDevices { request_id } => formatter
+                .debug_struct("QueryDevices")
+                .field("request_id", request_id)
+                .finish(),
+            Self::RenameDevice {
+                request_id,
+                device_ordinal,
+                ..
+            } => formatter
+                .debug_struct("RenameDevice")
+                .field("request_id", request_id)
+                .field("device_ordinal", device_ordinal)
+                .field("display_name", &"DeviceDisplayName(..)")
+                .finish(),
+            Self::DeleteDevices {
+                request_id,
+                device_ordinals,
+                auth,
+            } => formatter
+                .debug_struct("DeleteDevices")
+                .field("request_id", request_id)
+                .field("device_ordinals", device_ordinals)
+                .field("auth", auth)
+                .finish(),
+            Self::SoftLogoutReauth { request_id, .. } => formatter
+                .debug_struct("SoftLogoutReauth")
+                .field("request_id", request_id)
+                .field("password", &"AuthSecret(..)")
                 .finish(),
             Self::ProbeLocalEncryptionHealth { request_id } => formatter
                 .debug_struct("ProbeLocalEncryptionHealth")
