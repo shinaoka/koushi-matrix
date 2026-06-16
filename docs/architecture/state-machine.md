@@ -94,7 +94,18 @@ search state. The reducer emits UI events for any cleared visible panes.
   in the room list.
 - Room-list updates clear an active Space or room if the item disappears.
 - Selecting a room closes any open thread pane and emits a timeline subscription
-  effect.
+  effect. It hydrates the selected room's active composer from the Rust-owned
+  draft store; it does not reset the draft to an empty composer unless no stored
+  draft exists.
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoRoom
+    NoRoom --> RoomSelected: SelectRoom [joined room] / hydrate composer
+    RoomSelected --> RoomSelected: SelectRoom [joined room] / close thread + hydrate composer
+    RoomSelected --> NoRoom: RoomListUpdated [selected room removed]
+    RoomSelected --> NoRoom: LogoutRequested/SessionCleared
+```
 
 ## Room Tags
 
@@ -188,6 +199,14 @@ stateDiagram-v2
 - Timeline subscription signals only affect the selected room.
 - The main composer tracks one pending transaction. A second send is ignored
   until the pending transaction completes.
+- Main-composer drafts are backed by a Rust-owned keyed draft store outside the
+  transient `TimelinePaneState`. `ComposerDraftChanged` writes the selected
+  room's draft through to that store, `SelectRoom` hydrates the active composer
+  from it, and `SendTextSubmitted` clears the selected room's stored draft.
+  `RoomListUpdated`, logout, lock, and account switch prune or clear drafts so
+  only joined-room account context remains. The draft store is not serialized to
+  the frontend snapshot; React receives only the active composer for the
+  selected room.
 - The thread pane is either closed, opening a root event, or open with a focused
   thread timeline.
 - Thread subscription success must match the current opening room and root event;
@@ -205,7 +224,10 @@ stateDiagram-v2
   sends by routing `TimelineCommand::SendReply` to
   `TimelineKind::Thread { room_id, root_event_id }`, with
   `in_reply_to_event_id == root_event_id`. Focused timelines do not own
-  composer state.
+  composer state. Thread drafts use the same Rust-owned draft store keyed by
+  `(room_id, root_event_id)`: `ThreadComposerDraftChanged` writes through,
+  `ThreadSubscribed` hydrates the open thread composer, and
+  `ThreadReplySubmitted` clears the matching stored thread draft.
 - Pane-level thread attention is Rust-owned `AppState.thread_attention`. It is
   initialized when a thread is opened, receives counts only for the currently
   open room/root event pair, and is cleared when the thread closes or navigation
@@ -763,12 +785,15 @@ stateDiagram-v2
 
 - `ThreadComposerDraftChanged { room_id, root_event_id, draft }` applies only
   when a ready session has that exact thread open. Stale room/root signals and
-  closed/opening thread states are ignored.
+  closed/opening thread states are ignored. Accepted changes update both the
+  open thread composer and the Rust-owned `(room_id, root_event_id)` draft
+  entry.
 - `ThreadReplySubmitted { room_id, root_event_id, transaction_id, body }`
   applies only when a ready session has that exact thread open and the thread
   composer has no pending transaction. It records the pending transaction as a
-  reply to `root_event_id`, clears the thread draft, and emits `ThreadChanged`.
-  It does not mutate the selected room's main composer.
+  reply to `root_event_id`, clears the thread draft and stored thread draft,
+  and emits `ThreadChanged`. It does not mutate the selected room's main
+  composer.
 - `ThreadReplyFinished { room_id, root_event_id, transaction_id }` clears only
   the matching thread composer pending transaction and emits `ThreadChanged`.
   Stale room/root/transaction signals are ignored.
@@ -800,7 +825,8 @@ stateDiagram-v2
 - `SendTextSubmitted { room_id, transaction_id, body }` records one pending
   transaction only when no send is already pending. The pending state records the
   submitted composer kind: plain send, or reply send with the reply target that
-  was current at submission time.
+  was current at submission time. It also clears the selected room's stored
+  draft so switching away and back cannot resurrect a submitted message.
 - `SendTextFinished { room_id, transaction_id }` clears only the matching pending
   transaction. It returns the composer to `Plain` only when the matched pending
   send was submitted as a reply and the current reply target still equals the

@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +19,8 @@ pub struct AppState {
     pub rooms: Vec<RoomSummary>,
     pub invites: Vec<InvitePreview>,
     pub room_interactions: BTreeMap<String, RoomInteractionState>,
+    #[serde(skip)]
+    pub composer_drafts: ComposerDraftStore,
     pub directory: DirectoryState,
     pub room_management: RoomManagementState,
     pub activity: ActivityState,
@@ -46,6 +51,7 @@ impl Default for AppState {
             rooms: Vec::new(),
             invites: Vec::new(),
             room_interactions: BTreeMap::new(),
+            composer_drafts: ComposerDraftStore::default(),
             directory: DirectoryState::default(),
             room_management: RoomManagementState::default(),
             activity: ActivityState::Closed,
@@ -2235,6 +2241,97 @@ pub struct TimelinePaneState {
     pub is_subscribed: bool,
     pub is_paginating_backwards: bool,
     pub composer: ComposerState,
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ComposerDraftStore {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rooms: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub threads: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl ComposerDraftStore {
+    pub fn is_empty(&self) -> bool {
+        self.rooms.is_empty() && self.threads.is_empty()
+    }
+
+    pub fn composer_for_room(&self, room_id: &str) -> ComposerState {
+        let mut composer = ComposerState::default();
+        if let Some(draft) = self.rooms.get(room_id) {
+            composer.draft = draft.clone();
+        }
+        composer
+    }
+
+    pub fn set_room_draft(&mut self, room_id: String, draft: String) {
+        if draft.is_empty() {
+            self.rooms.remove(&room_id);
+        } else {
+            self.rooms.insert(room_id, draft);
+        }
+    }
+
+    pub fn clear_room_draft(&mut self, room_id: &str) {
+        self.rooms.remove(room_id);
+    }
+
+    pub fn composer_for_thread(&self, room_id: &str, root_event_id: &str) -> ComposerState {
+        let mut composer = ComposerState::default();
+        if let Some(draft) = self
+            .threads
+            .get(room_id)
+            .and_then(|room_threads| room_threads.get(root_event_id))
+        {
+            composer.draft = draft.clone();
+        }
+        composer
+    }
+
+    pub fn set_thread_draft(&mut self, room_id: String, root_event_id: String, draft: String) {
+        if draft.is_empty() {
+            self.clear_thread_draft(&room_id, &root_event_id);
+            return;
+        }
+
+        self.threads
+            .entry(room_id)
+            .or_default()
+            .insert(root_event_id, draft);
+    }
+
+    pub fn clear_thread_draft(&mut self, room_id: &str, root_event_id: &str) {
+        let should_remove_room = if let Some(room_threads) = self.threads.get_mut(room_id) {
+            room_threads.remove(root_event_id);
+            room_threads.is_empty()
+        } else {
+            false
+        };
+        if should_remove_room {
+            self.threads.remove(room_id);
+        }
+    }
+
+    pub fn retain_rooms(&mut self, room_ids: &BTreeSet<String>) {
+        self.rooms.retain(|room_id, _| room_ids.contains(room_id));
+        self.threads
+            .retain(|room_id, room_threads| room_ids.contains(room_id) && !room_threads.is_empty());
+    }
+}
+
+impl fmt::Debug for ComposerDraftStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let thread_count: usize = self
+            .threads
+            .values()
+            .map(std::collections::BTreeMap::len)
+            .sum();
+        formatter
+            .debug_struct("ComposerDraftStore")
+            .field("rooms", &format_args!("{} room draft(s)", self.rooms.len()))
+            .field("threads", &format_args!("{thread_count} thread draft(s)"))
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

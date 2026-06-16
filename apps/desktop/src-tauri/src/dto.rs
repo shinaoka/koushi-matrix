@@ -654,6 +654,10 @@ mod tests {
             value["state"]["timeline"]["composer"]["mode"],
             json!("Plain")
         );
+        // The keyed draft backing store can contain non-visible unsent message
+        // bodies. It stays Rust/core-internal; the webview receives only the
+        // selected room/thread active composer.
+        assert_eq!(value["state"]["composer_drafts"], json!(null));
     }
 
     #[test]

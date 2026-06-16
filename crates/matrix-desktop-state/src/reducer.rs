@@ -907,9 +907,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 &state.profile,
                 own_user_id.as_deref(),
             );
+            let retained_room_ids = rooms
+                .iter()
+                .map(|room| room.room_id.clone())
+                .collect::<BTreeSet<_>>();
             let had_active_room_before_update = state.navigation.active_room_id.is_some();
             state.spaces = spaces;
             state.rooms = rooms;
+            state.composer_drafts.retain_rooms(&retained_room_ids);
 
             let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
 
@@ -975,7 +980,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                     room_id: Some(room_id.clone()),
                     is_subscribed: false,
                     is_paginating_backwards: false,
-                    composer: Default::default(),
+                    composer: state.composer_drafts.composer_for_room(&room_id),
                 };
                 effects.push(AppEffect::SubscribeTimeline {
                     room_id: room_id.clone(),
@@ -1843,7 +1848,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 room_id: Some(room_id.clone()),
                 is_subscribed: false,
                 is_paginating_backwards: false,
-                composer: Default::default(),
+                composer: state.composer_drafts.composer_for_room(&room_id),
             };
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
@@ -1923,7 +1928,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
-            state.timeline.composer.draft = draft;
+            state.timeline.composer.draft = draft.clone();
+            state.composer_drafts.set_room_draft(room_id.clone(), draft);
             vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
         }
         AppAction::SendTextSubmitted {
@@ -1948,6 +1954,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 },
             });
             state.timeline.composer.draft.clear();
+            state.composer_drafts.clear_room_draft(&room_id);
             vec![
                 AppEffect::SendText {
                     room_id: room_id.clone(),
@@ -2026,7 +2033,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                     composer,
                     ..
                 } if open_room_id == &room_id && open_root_event_id == &root_event_id => {
-                    composer.draft = draft;
+                    composer.draft = draft.clone();
+                    state
+                        .composer_drafts
+                        .set_thread_draft(room_id, root_event_id, draft);
                     vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
                 }
                 _ => Vec::new(),
@@ -2054,9 +2064,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 {
                     composer.pending_transaction_id = Some(transaction_id);
                     composer.pending_send_kind = Some(PendingComposerSendKind::Reply {
-                        in_reply_to_event_id: root_event_id,
+                        in_reply_to_event_id: root_event_id.clone(),
                     });
                     composer.draft.clear();
+                    state
+                        .composer_drafts
+                        .clear_thread_draft(&room_id, &root_event_id);
                     vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
                 }
                 _ => Vec::new(),
@@ -2171,10 +2184,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
 
             state.thread = ThreadPaneState::Open {
+                composer: state
+                    .composer_drafts
+                    .composer_for_thread(&room_id, &root_event_id),
                 room_id,
                 root_event_id,
                 is_subscribed: true,
-                composer: Default::default(),
             };
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
@@ -2860,7 +2875,7 @@ fn select_active_room_after_room_list_update(
         room_id: Some(room_id.clone()),
         is_subscribed: false,
         is_paginating_backwards: false,
-        composer: Default::default(),
+        composer: state.composer_drafts.composer_for_room(&room_id),
     };
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
@@ -2908,6 +2923,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.rooms.clear();
     state.invites.clear();
     state.room_interactions.clear();
+    state.composer_drafts = Default::default();
     state.directory = DirectoryState::default();
     state.activity = ActivityState::Closed;
     state.room_management = Default::default();

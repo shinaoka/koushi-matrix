@@ -176,6 +176,100 @@ fn composer_draft_change_only_affects_active_room() {
 }
 
 #[test]
+fn composer_draft_is_restored_when_switching_back_to_room() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            draft: "room a draft".to_owned(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-b".to_owned(),
+        },
+    );
+    assert_eq!(state.timeline.composer.draft, "");
+
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChanged {
+            room_id: "room-b".to_owned(),
+            draft: "room b draft".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-a".to_owned(),
+        },
+    );
+
+    assert_eq!(state.timeline.composer.draft, "room a draft");
+
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-b".to_owned(),
+        },
+    );
+    assert_eq!(state.timeline.composer.draft, "room b draft");
+}
+
+#[test]
+fn composer_draft_store_is_cleared_on_send_and_room_removal() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            draft: "send me".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmitted {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn1".to_owned(),
+            body: "send me".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-b".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-a".to_owned(),
+        },
+    );
+    assert_eq!(state.timeline.composer.draft, "");
+
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            draft: "prune me".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![room("room-b")],
+        },
+    );
+
+    assert!(state.composer_drafts.rooms.is_empty());
+}
+
+#[test]
 fn send_text_sets_pending_transaction_and_emits_send_effect() {
     let mut state = selected_room_state("room-a");
     state.timeline.composer.draft = "hello".to_owned();
@@ -563,6 +657,95 @@ fn thread_composer_draft_change_only_affects_matching_open_thread() {
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
     );
+}
+
+#[test]
+fn thread_composer_draft_is_restored_when_thread_reopens() {
+    let mut state = open_thread_state("room-a", "$root");
+
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            draft: "thread draft".to_owned(),
+        },
+    );
+    reduce(&mut state, AppAction::CloseThread);
+    assert_eq!(state.thread, ThreadPaneState::Closed);
+
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadSubscribed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+
+    assert_eq!(open_thread_composer(&state).draft, "thread draft");
+}
+
+#[test]
+fn thread_composer_draft_store_is_cleared_on_reply_and_room_removal() {
+    let mut state = open_thread_state("room-a", "$root");
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            draft: "reply me".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadReplySubmitted {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            body: "reply me".to_owned(),
+        },
+    );
+    reduce(&mut state, AppAction::CloseThread);
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadSubscribed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    assert_eq!(open_thread_composer(&state).draft, "");
+
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChanged {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            draft: "prune me".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![room("room-b")],
+        },
+    );
+
+    assert!(state.composer_drafts.threads.is_empty());
 }
 
 #[test]

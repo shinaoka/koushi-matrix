@@ -551,6 +551,12 @@ display (`text`, `emote`, `notice`) and spoiler spans are projected in Rust on
 render unsanitized server HTML or own Matrix HTML sanitizer policy. TimelineView
 may only adapt that DTO into rendered nodes, copy-code controls, spoiler reveal
 state, search highlights, and CSS driven by `SettingsValues.display.code_block_wrap`.
+Composer drafts are also Rust-owned product state. The reducer keeps a keyed
+per-room and per-thread draft store outside transient pane state and hydrates
+only the active composer into the snapshot; React may render and dispatch typed
+draft changes, but it must not own cross-room or cross-thread draft survival.
+The backing draft store is not sent to the webview because unsent message
+content for non-visible rooms should not be exposed as snapshot data.
 
 Initial channel capacities are named constants, not scattered literals:
 
