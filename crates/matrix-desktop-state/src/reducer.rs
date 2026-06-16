@@ -915,6 +915,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.spaces = spaces;
             state.rooms = rooms;
             state.composer_drafts.retain_rooms(&retained_room_ids);
+            state.scheduled_sends.retain_rooms(&retained_room_ids);
+            refresh_timeline_scheduled_sends(state);
 
             let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
 
@@ -981,6 +983,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                     is_subscribed: false,
                     is_paginating_backwards: false,
                     composer: state.composer_drafts.composer_for_room(&room_id),
+                    scheduled_send_capability: state.scheduled_sends.capability.clone(),
+                    scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
                 };
                 effects.push(AppEffect::SubscribeTimeline {
                     room_id: room_id.clone(),
@@ -1849,6 +1853,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 is_subscribed: false,
                 is_paginating_backwards: false,
                 composer: state.composer_drafts.composer_for_room(&room_id),
+                scheduled_send_capability: state.scheduled_sends.capability.clone(),
+                scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
             };
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
@@ -1920,6 +1926,76 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             state.timeline.is_paginating_backwards = false;
             vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+        }
+        AppAction::ScheduledSendCapabilityChanged { capability } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            if state.scheduled_sends.capability == capability {
+                return Vec::new();
+            }
+            state.scheduled_sends.capability = capability;
+            state.timeline.scheduled_send_capability = state.scheduled_sends.capability.clone();
+            state
+                .timeline
+                .room_id
+                .clone()
+                .map(|room_id| vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })])
+                .unwrap_or_default()
+        }
+        AppAction::ScheduledSendCreated { item } => {
+            if !is_session_ready(state) || !room_exists(state, &item.room_id) {
+                return Vec::new();
+            }
+
+            let room_id = item.room_id.clone();
+            state.scheduled_sends.insert(item);
+            state.composer_drafts.clear_room_draft(&room_id);
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                state.timeline.composer = Default::default();
+                refresh_timeline_scheduled_sends(state);
+                return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+            }
+            Vec::new()
+        }
+        AppAction::ScheduledSendRescheduled {
+            scheduled_id,
+            send_at_ms,
+            handle,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(item) = state
+                .scheduled_sends
+                .reschedule(&scheduled_id, send_at_ms, handle)
+            else {
+                return Vec::new();
+            };
+            let room_id = item.room_id;
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                refresh_timeline_scheduled_sends(state);
+                return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+            }
+            Vec::new()
+        }
+        AppAction::ScheduledSendCancelled { scheduled_id }
+        | AppAction::ScheduledSendDispatched { scheduled_id } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(item) = state.scheduled_sends.remove(&scheduled_id) else {
+                return Vec::new();
+            };
+            let room_id = item.room_id;
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                refresh_timeline_scheduled_sends(state);
+                return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+            }
+            Vec::new()
         }
         AppAction::ComposerDraftsLoaded { drafts } => {
             if !is_session_ready(state) {
@@ -2912,6 +2988,8 @@ fn select_active_room_after_room_list_update(
         is_subscribed: false,
         is_paginating_backwards: false,
         composer: state.composer_drafts.composer_for_room(&room_id),
+        scheduled_send_capability: state.scheduled_sends.capability.clone(),
+        scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
     };
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
@@ -2923,6 +3001,16 @@ fn select_active_room_after_room_list_update(
     if had_thread {
         effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
     }
+}
+
+fn refresh_timeline_scheduled_sends(state: &mut AppState) {
+    state.timeline.scheduled_send_capability = state.scheduled_sends.capability.clone();
+    state.timeline.scheduled_sends = state
+        .timeline
+        .room_id
+        .as_deref()
+        .map(|room_id| state.scheduled_sends.items_for_room(room_id))
+        .unwrap_or_default();
 }
 
 fn current_session_info(state: &AppState) -> Option<crate::state::SessionInfo> {
@@ -2960,6 +3048,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.invites.clear();
     state.room_interactions.clear();
     state.composer_drafts = Default::default();
+    state.scheduled_sends = Default::default();
     state.directory = DirectoryState::default();
     state.activity = ActivityState::Closed;
     state.room_management = Default::default();

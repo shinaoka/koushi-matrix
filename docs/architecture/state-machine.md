@@ -223,6 +223,38 @@ stateDiagram-v2
     Editing --> Empty: LogoutRequested/SessionCleared
     Empty --> Editing: ComposerDraftsLoaded [active composer empty and persisted draft exists]
 ```
+- Scheduled send is Rust-owned state, not a React timer. The full queue lives in
+  an `AppState.scheduled_sends` backing store that is excluded from the full
+  webview snapshot because it can contain future message bodies for non-visible
+  rooms. `TimelinePaneState.scheduled_sends` is the selected-room projection
+  only, and `TimelinePaneState.scheduled_send_capability` advertises whether
+  server delayed events or the local fallback is active.
+- `ScheduledSendCreated` inserts a queued item, clears the selected room's
+  composer draft through the Rust draft store, and refreshes the selected-room
+  projection. `ScheduledSendRescheduled` updates the due timestamp and handle;
+  `ScheduledSendCancelled` and `ScheduledSendDispatched` remove the item. Room
+  pruning, logout, lock, and account switch clear or retain the backing store by
+  joined-room account context.
+- `AppActor` owns the local fallback timer. When an item is due, it dispatches
+  `ScheduledSendDispatched` and routes a normal `TimelineCommand::SendText` so
+  the outbound send queue (#33) remains the send/failure/retry source of truth.
+  Server MSC4140 delayed-event support is represented by the capability and
+  handle boundary; GUI code must not call raw Matrix delayed-event APIs or run
+  its own schedule timer.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Empty
+    Empty --> Queued: ScheduledSendCreated [Ready, joined room] / clear room draft
+    Queued --> Queued: ScheduledSendCreated [same or other joined room]
+    Queued --> Queued: ScheduledSendRescheduled [known id]
+    Queued --> Queued: ScheduledSendCapabilityChanged
+    Queued --> Empty: ScheduledSendCancelled [known id]
+    Queued --> Empty: ScheduledSendDispatched [known id] / route SendText
+    Queued --> Empty: RoomListUpdated [room pruned] / retain joined rooms
+    Queued --> Empty: LogoutRequested/SessionCleared
+```
+
 - The thread pane is either closed, opening a root event, or open with a focused
   thread timeline.
 - Thread subscription success must match the current opening room and root event;

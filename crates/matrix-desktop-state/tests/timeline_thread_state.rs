@@ -1113,6 +1113,8 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
                 draft: "draft".to_owned(),
                 mode: Default::default(),
             },
+            scheduled_send_capability: Default::default(),
+            scheduled_sends: Vec::new(),
         },
         thread: ThreadPaneState::Opening {
             room_id: "room-a".to_owned(),

@@ -35,6 +35,9 @@ impl CoreCommand {
                 | AppCommand::CancelComposerReply { request_id }
                 | AppCommand::SetComposerDraft { request_id, .. }
                 | AppCommand::SetThreadComposerDraft { request_id, .. }
+                | AppCommand::ScheduleSend { request_id, .. }
+                | AppCommand::CancelScheduledSend { request_id, .. }
+                | AppCommand::RescheduleScheduledSend { request_id, .. }
                 | AppCommand::OpenThread { request_id, .. }
                 | AppCommand::CloseThread { request_id }
                 | AppCommand::OpenFocusedContext { request_id, .. }
@@ -145,7 +148,15 @@ impl CoreCommand {
                 self,
                 Self::Account(command) if command.requires_ready_session()
             )
-            || matches!(self, Self::App(AppCommand::OpenTimelineAtTimestamp { .. }))
+            || matches!(
+                self,
+                Self::App(
+                    AppCommand::OpenTimelineAtTimestamp { .. }
+                        | AppCommand::ScheduleSend { .. }
+                        | AppCommand::CancelScheduledSend { .. }
+                        | AppCommand::RescheduleScheduledSend { .. }
+                )
+            )
     }
 }
 
@@ -171,6 +182,21 @@ pub enum AppCommand {
         room_id: String,
         root_event_id: String,
         draft: String,
+    },
+    ScheduleSend {
+        request_id: RequestId,
+        room_id: String,
+        body: String,
+        send_at_ms: u64,
+    },
+    CancelScheduledSend {
+        request_id: RequestId,
+        scheduled_id: String,
+    },
+    RescheduleScheduledSend {
+        request_id: RequestId,
+        scheduled_id: String,
+        send_at_ms: u64,
     },
     OpenThread {
         request_id: RequestId,
@@ -271,6 +297,35 @@ impl fmt::Debug for AppCommand {
                 .field("room_id", room_id)
                 .field("root_event_id", &"EventId(..)")
                 .field("draft", &"MessageBody(..)")
+                .finish(),
+            Self::ScheduleSend {
+                request_id,
+                send_at_ms,
+                ..
+            } => formatter
+                .debug_struct("ScheduleSend")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("body", &"MessageBody(..)")
+                .field("send_at_ms", &send_at_ms)
+                .finish(),
+            Self::CancelScheduledSend {
+                request_id,
+                scheduled_id,
+            } => formatter
+                .debug_struct("CancelScheduledSend")
+                .field("request_id", request_id)
+                .field("scheduled_id", scheduled_id)
+                .finish(),
+            Self::RescheduleScheduledSend {
+                request_id,
+                scheduled_id,
+                send_at_ms,
+            } => formatter
+                .debug_struct("RescheduleScheduledSend")
+                .field("request_id", request_id)
+                .field("scheduled_id", scheduled_id)
+                .field("send_at_ms", send_at_ms)
                 .finish(),
             Self::OpenThread {
                 request_id,

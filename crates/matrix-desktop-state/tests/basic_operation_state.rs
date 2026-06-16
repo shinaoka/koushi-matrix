@@ -29,6 +29,8 @@ fn ready_state() -> AppState {
             is_subscribed: true,
             is_paginating_backwards: false,
             composer: ComposerState::default(),
+            scheduled_send_capability: Default::default(),
+            scheduled_sends: Vec::new(),
         },
         ..AppState::default()
     }

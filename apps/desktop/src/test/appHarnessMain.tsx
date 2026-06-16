@@ -162,7 +162,9 @@ function readySnapshot(
           pending_transaction_id: null,
           draft: "",
           mode: composerMode
-        }
+        },
+        scheduled_send_capability: "unknown",
+        scheduled_sends: []
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },

@@ -153,7 +153,9 @@ function snapshotForPanelMode(
         room_id: null,
         is_subscribed: false,
         is_paginating_backwards: false,
-        composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
+        composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
+        scheduled_send_capability: "unknown",
+        scheduled_sends: []
       },
       thread: hasThread
         ? { kind: "open", room_id: "!room:example", root_event_id: "$event" }

@@ -551,7 +551,23 @@ export interface TimelinePaneState {
   is_subscribed: boolean;
   is_paginating_backwards: boolean;
   composer: ComposerState;
+  scheduled_send_capability: ScheduledSendCapability;
+  scheduled_sends: ScheduledSendItem[];
 }
+
+export type ScheduledSendCapability = "unknown" | "serverDelayedEvents" | "localFallback";
+
+export interface ScheduledSendItem {
+  scheduled_id: string;
+  room_id: string;
+  body: string;
+  send_at_ms: number;
+  handle: ScheduledSendHandle;
+}
+
+export type ScheduledSendHandle =
+  | { kind: "local" }
+  | { kind: "server"; delay_id: string };
 
 export interface ComposerState {
   pending_transaction_id: string | null;

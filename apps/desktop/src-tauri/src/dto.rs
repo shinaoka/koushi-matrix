@@ -658,6 +658,15 @@ mod tests {
         // bodies. It stays Rust/core-internal; the webview receives only the
         // selected room/thread active composer.
         assert_eq!(value["state"]["composer_drafts"], json!(null));
+        // Scheduled-send backing state follows the same privacy boundary:
+        // the full queue can contain future message bodies for non-visible
+        // rooms, so only the selected timeline projection is serialized.
+        assert_eq!(value["state"]["scheduled_sends"], json!(null));
+        assert_eq!(
+            value["state"]["timeline"]["scheduled_send_capability"],
+            json!("unknown")
+        );
+        assert_eq!(value["state"]["timeline"]["scheduled_sends"], json!([]));
     }
 
     #[test]

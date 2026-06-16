@@ -271,6 +271,8 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
             is_subscribed: true,
             is_paginating_backwards: false,
             composer: Default::default(),
+            scheduled_send_capability: Default::default(),
+            scheduled_sends: Vec::new(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
@@ -487,6 +489,8 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
             is_subscribed: true,
             is_paginating_backwards: false,
             composer: Default::default(),
+            scheduled_send_capability: Default::default(),
+            scheduled_sends: Vec::new(),
         },
         ..AppState::default()
     };
@@ -613,6 +617,8 @@ fn logout_clears_session_views_and_notifies_ui() {
             is_subscribed: true,
             is_paginating_backwards: true,
             composer: Default::default(),
+            scheduled_send_capability: Default::default(),
+            scheduled_sends: Vec::new(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),

@@ -119,7 +119,10 @@ Crate responsibilities:
   patch proves that broader scope.
 - `matrix-desktop-core` — actor lifecycle, command routing, event emission,
   SDK session handles, background tasks, AppState projection, headless QA
-  binaries. Production Matrix behavior lives here and nowhere else.
+  binaries. Production Matrix behavior lives here and nowhere else. Scheduled
+  send uses this layer for the local fallback timer and for routing due items
+  back through the normal outbound send queue; the GUI never owns delayed-send
+  timers or Matrix delayed-event API calls.
 - `matrix-desktop-backend` — fixture/demo data only. Never on a production
   Matrix path.
 - `matrix-desktop-key` — OS credential store, key derivation (HKDF from the

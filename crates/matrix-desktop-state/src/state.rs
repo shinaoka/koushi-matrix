@@ -21,6 +21,8 @@ pub struct AppState {
     pub room_interactions: BTreeMap<String, RoomInteractionState>,
     #[serde(skip)]
     pub composer_drafts: ComposerDraftStore,
+    #[serde(skip)]
+    pub scheduled_sends: ScheduledSendStore,
     pub directory: DirectoryState,
     pub room_management: RoomManagementState,
     pub activity: ActivityState,
@@ -52,6 +54,7 @@ impl Default for AppState {
             invites: Vec::new(),
             room_interactions: BTreeMap::new(),
             composer_drafts: ComposerDraftStore::default(),
+            scheduled_sends: ScheduledSendStore::default(),
             directory: DirectoryState::default(),
             room_management: RoomManagementState::default(),
             activity: ActivityState::Closed,
@@ -2241,6 +2244,135 @@ pub struct TimelinePaneState {
     pub is_subscribed: bool,
     pub is_paginating_backwards: bool,
     pub composer: ComposerState,
+    pub scheduled_send_capability: ScheduledSendCapability,
+    pub scheduled_sends: Vec<ScheduledSendItem>,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScheduledSendItem {
+    pub scheduled_id: String,
+    pub room_id: String,
+    pub body: String,
+    pub send_at_ms: u64,
+    pub handle: ScheduledSendHandle,
+}
+
+impl fmt::Debug for ScheduledSendItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScheduledSendItem")
+            .field("scheduled_id", &self.scheduled_id)
+            .field("room_id", &"RoomId(..)")
+            .field("body", &"MessageBody(..)")
+            .field("send_at_ms", &"Timestamp(..)")
+            .field("handle", &self.handle)
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ScheduledSendHandle {
+    Local,
+    Server { delay_id: String },
+}
+
+impl fmt::Debug for ScheduledSendHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local => formatter.write_str("Local"),
+            Self::Server { .. } => formatter
+                .debug_struct("Server")
+                .field("delay_id", &"DelayedEventHandle(..)")
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScheduledSendCapability {
+    #[default]
+    Unknown,
+    ServerDelayedEvents,
+    LocalFallback,
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScheduledSendStore {
+    pub capability: ScheduledSendCapability,
+    pub items: BTreeMap<String, ScheduledSendItem>,
+}
+
+impl ScheduledSendStore {
+    pub fn items_for_room(&self, room_id: &str) -> Vec<ScheduledSendItem> {
+        let mut items = self
+            .items
+            .values()
+            .filter(|item| item.room_id == room_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            left.send_at_ms
+                .cmp(&right.send_at_ms)
+                .then_with(|| left.scheduled_id.cmp(&right.scheduled_id))
+        });
+        items
+    }
+
+    pub fn insert(&mut self, item: ScheduledSendItem) {
+        self.items.insert(item.scheduled_id.clone(), item);
+    }
+
+    pub fn remove(&mut self, scheduled_id: &str) -> Option<ScheduledSendItem> {
+        self.items.remove(scheduled_id)
+    }
+
+    pub fn reschedule(
+        &mut self,
+        scheduled_id: &str,
+        send_at_ms: u64,
+        handle: ScheduledSendHandle,
+    ) -> Option<ScheduledSendItem> {
+        let item = self.items.get_mut(scheduled_id)?;
+        item.send_at_ms = send_at_ms;
+        item.handle = handle;
+        Some(item.clone())
+    }
+
+    pub fn next_due(&self, now_ms: u64) -> Option<ScheduledSendItem> {
+        self.items
+            .values()
+            .filter(|item| item.send_at_ms <= now_ms)
+            .min_by(|left, right| {
+                left.send_at_ms
+                    .cmp(&right.send_at_ms)
+                    .then_with(|| left.scheduled_id.cmp(&right.scheduled_id))
+            })
+            .cloned()
+    }
+
+    pub fn next_send_at_ms(&self) -> Option<u64> {
+        self.items.values().map(|item| item.send_at_ms).min()
+    }
+
+    pub fn retain_rooms(&mut self, room_ids: &BTreeSet<String>) {
+        self.items
+            .retain(|_, item| room_ids.contains(item.room_id.as_str()));
+    }
+}
+
+impl fmt::Debug for ScheduledSendStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScheduledSendStore")
+            .field("capability", &self.capability)
+            .field(
+                "items",
+                &format_args!("{} scheduled send(s)", self.items.len()),
+            )
+            .finish()
+    }
 }
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]

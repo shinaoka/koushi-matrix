@@ -924,6 +924,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   React-local per-room/per-thread draft map. The backing store is encrypted,
   debounced, and account-scoped in `matrix-desktop-core`; it is not serialized as
   a full draft map to the webview snapshot.
+- Scheduled/send-later state follows the same boundary. The full queue and
+  local fallback timer are Rust/core-owned; React may render only
+  `snapshot.state.timeline.scheduled_sends` for the selected room and
+  `scheduled_send_capability`, then dispatch typed schedule/cancel/reschedule
+  commands in Phase B. Do not add browser timers, React-local scheduled-message
+  maps, raw Matrix delayed-event calls, or logs/screenshots containing scheduled
+  message bodies or server delayed-event handles.
 - The focused local composer QA lane is:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000`.
   Required private-data-free tokens are `mention_send=ok`,

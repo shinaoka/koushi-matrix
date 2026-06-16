@@ -40,6 +40,8 @@ fn ready_selected_room_state() -> AppState {
                     in_reply_to_event_id: "$reply-root:example.invalid".to_owned(),
                 },
             },
+            scheduled_send_capability: Default::default(),
+            scheduled_sends: Vec::new(),
         },
         ..AppState::default()
     }

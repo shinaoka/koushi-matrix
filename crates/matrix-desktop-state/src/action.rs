@@ -7,8 +7,9 @@ use crate::state::{
     LocalEncryptionHealth, LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile,
     PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomModerationAction,
     RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SasEmoji, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
-    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
+    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
+    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, TrustOperationFailureKind,
+    UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -406,6 +407,23 @@ pub enum AppAction {
     },
     TimelineBackPaginationFinished {
         room_id: String,
+    },
+    ScheduledSendCapabilityChanged {
+        capability: ScheduledSendCapability,
+    },
+    ScheduledSendCreated {
+        item: ScheduledSendItem,
+    },
+    ScheduledSendRescheduled {
+        scheduled_id: String,
+        send_at_ms: u64,
+        handle: ScheduledSendHandle,
+    },
+    ScheduledSendCancelled {
+        scheduled_id: String,
+    },
+    ScheduledSendDispatched {
+        scheduled_id: String,
     },
     ComposerDraftsLoaded {
         drafts: crate::state::ComposerDraftStore,

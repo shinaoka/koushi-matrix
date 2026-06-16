@@ -122,6 +122,14 @@ Rules:
    domain, debounced, size-bounded, and excluded from general settings JSON,
    logs, QA tokens, and full webview snapshots. React may render only the active
    composer DTO and dispatch typed draft commands.
+   Scheduled-send message bodies are also future unsent message content. The
+   Rust state machine owns the queue, capability, cancellation, reschedule, and
+   due-time dispatch semantics. Full scheduled-send backing state must not be
+   serialized to the webview; only the selected-room projection may cross as
+   visible UI state. Normal `Debug`, QA logs, issue evidence, and window-title
+   tokens must redact scheduled bodies, room ids, server delayed-event handles,
+   and transaction ids. React must not run a local send-later timer or call raw
+   Matrix delayed-event APIs.
 11. E2EE trust diagnostics are kind-only. Verification, cross-signing,
    key-backup, and identity-reset commands/events may expose structured state to
    the UI, but normal `Debug`, QA logs, and window-title tokens must redact

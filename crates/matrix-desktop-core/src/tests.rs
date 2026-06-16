@@ -8,8 +8,9 @@ use matrix_desktop_state::{
     AvatarImage, AvatarThumbnailState, ComposerMode, CrossSigningStatus, DisplaySettings,
     IdentityResetAuthRequest, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
     LoginRequest, MediaSettings, MentionIntent, NotificationSettings, PresenceKind,
-    RecoveryRequest, RoomSummary, RoomTagKind, RoomTags, SasEmoji, SearchState, SessionInfo,
-    SessionState, SettingsPatch, SettingsPersistenceState, ThemePreference,
+    RecoveryRequest, RoomSummary, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
+    SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
+    ThemePreference,
     VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 
@@ -135,6 +136,12 @@ fn secret_bearing_commands_redact_debug() {
         root_event_id: "$root".to_owned(),
         draft: BODY.to_owned(),
     });
+    let scheduled_send = CoreCommand::App(AppCommand::ScheduleSend {
+        request_id: fake_request_id(),
+        room_id: "!room:example.test".to_owned(),
+        body: BODY.to_owned(),
+        send_at_ms: 1_900_000_000_000,
+    });
 
     for (command, secrets) in [
         (&login, vec![PASSWORD, "alice-login-name", "Alice Laptop"]),
@@ -150,6 +157,7 @@ fn secret_bearing_commands_redact_debug() {
         (&edit, vec![BODY]),
         (&search, vec![QUERY]),
         (&thread_draft, vec![BODY, "$root"]),
+        (&scheduled_send, vec![BODY, "!room:example.test"]),
     ] {
         let debug = format!("{command:?}");
         for secret in secrets {
@@ -161,6 +169,15 @@ fn secret_bearing_commands_redact_debug() {
     }
     // Non-secret correlation data stays visible.
     assert!(format!("{send:?}").contains("txn-1"));
+}
+
+fn future_epoch_ms(offset: Duration) -> u64 {
+    std::time::SystemTime::now()
+        .checked_add(offset)
+        .expect("future timestamp")
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time after epoch")
+        .as_millis() as u64
 }
 
 #[test]
@@ -1163,6 +1180,122 @@ async fn app_command_sets_selected_room_composer_draft() {
     })
     .await;
     assert_eq!(snapshot.timeline.composer.draft, "room draft");
+}
+
+#[tokio::test]
+async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::ComposerDraftChanged {
+                room_id: "!room:example.test".to_owned(),
+                draft: "scheduled body".to_owned(),
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        state.timeline.composer.draft == "scheduled body"
+    })
+    .await;
+
+    conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+        request_id: conn.next_request_id(),
+        room_id: "!room:example.test".to_owned(),
+        body: "scheduled body".to_owned(),
+        send_at_ms: future_epoch_ms(Duration::from_secs(60)),
+    }))
+    .await
+    .expect("schedule send");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        state.timeline.composer.draft.is_empty() && state.timeline.scheduled_sends.len() == 1
+    })
+    .await;
+    assert_eq!(
+        snapshot.timeline.scheduled_send_capability,
+        ScheduledSendCapability::LocalFallback
+    );
+    assert_eq!(snapshot.timeline.scheduled_sends[0].body, "scheduled body");
+    let scheduled_id = snapshot.timeline.scheduled_sends[0].scheduled_id.clone();
+
+    conn.command(CoreCommand::App(AppCommand::RescheduleScheduledSend {
+        request_id: conn.next_request_id(),
+        scheduled_id: scheduled_id.clone(),
+        send_at_ms: future_epoch_ms(Duration::from_secs(120)),
+    }))
+    .await
+    .expect("reschedule send");
+
+    let rescheduled = wait_for_state(&mut conn, |state| {
+        state
+            .timeline
+            .scheduled_sends
+            .first()
+            .is_some_and(|item| item.send_at_ms > snapshot.timeline.scheduled_sends[0].send_at_ms)
+    })
+    .await;
+    assert_eq!(rescheduled.timeline.scheduled_sends[0].scheduled_id, scheduled_id);
+
+    conn.command(CoreCommand::App(AppCommand::CancelScheduledSend {
+        request_id: conn.next_request_id(),
+        scheduled_id,
+    }))
+    .await
+    .expect("cancel scheduled send");
+
+    wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.is_empty()).await;
+}
+
+#[tokio::test]
+async fn local_fallback_scheduled_send_fires_at_target_and_leaves_rust_state() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.timeline.room_id.as_deref() == Some("!room:example.test")
+    })
+    .await;
+
+    conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+        request_id: conn.next_request_id(),
+        room_id: "!room:example.test".to_owned(),
+        body: "fire later".to_owned(),
+        send_at_ms: future_epoch_ms(Duration::from_millis(60)),
+    }))
+    .await
+    .expect("schedule send");
+
+    wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
+    let snapshot =
+        wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.is_empty()).await;
+    assert!(snapshot.scheduled_sends.items.is_empty());
 }
 
 #[tokio::test]

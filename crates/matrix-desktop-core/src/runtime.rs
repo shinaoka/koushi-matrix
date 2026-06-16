@@ -11,12 +11,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityRow, ActivityState, ActivityStream, ActivityTab, AppAction,
-    AppEffect, AppState, ComposerDraftStore, ProfileUpdateRequest, RoomSummary,
-    SearchScope as AppSearchScope, SessionState, ThreadPaneState, UiEvent, reduce,
+    AppEffect, AppState, ComposerDraftStore, MentionIntent, ProfileUpdateRequest, RoomSummary,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
+    SessionState, ThreadPaneState, UiEvent, reduce,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -37,6 +38,7 @@ use crate::store::{StoreActor, session_key_id_from_info};
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
 pub const EVENT_QUEUE_CAPACITY: usize = 1024;
 pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150);
+const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommandSubmitError {
@@ -161,6 +163,7 @@ impl CoreRuntime {
             pending_composer_draft_persist: None,
             account_actor,
             activity_projection: ActivityProjection::default(),
+            next_internal_request_sequence: 1,
         };
         let actor = executor::spawn(actor.run());
 
@@ -298,6 +301,7 @@ struct AppActor {
     pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
+    next_internal_request_sequence: u64,
 }
 
 struct PendingComposerDraftPersist {
@@ -498,10 +502,39 @@ fn sort_activity_rows(rows: &mut [ActivityRow]) {
     });
 }
 
+fn current_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn scheduled_send_id(request_id: RequestId) -> String {
+    format!(
+        "scheduled-{}-{}",
+        request_id.connection_id.0, request_id.sequence
+    )
+}
+
+fn scheduled_send_transaction_id(scheduled_id: &str) -> String {
+    let sanitized = scheduled_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    format!("desktop-{sanitized}")
+}
+
 impl AppActor {
     async fn run(mut self) {
         loop {
             let composer_draft_persist_delay = self.composer_draft_persist_delay();
+            let scheduled_send_delay = self.scheduled_send_delay();
             tokio::select! {
                 _ = async {
                     match composer_draft_persist_delay {
@@ -510,6 +543,16 @@ impl AppActor {
                     }
                 } => {
                     self.flush_pending_composer_drafts().await;
+                }
+                _ = async {
+                    match scheduled_send_delay {
+                        Some(delay) => executor::sleep(delay).await,
+                        None => future::pending::<()>().await,
+                    }
+                } => {
+                    if self.dispatch_due_scheduled_send().await {
+                        self.publish_snapshot();
+                    }
                 }
                 command = self.command_rx.recv() => {
                     let Some(command) = command else { break };
@@ -625,6 +668,54 @@ impl AppActor {
             .save_composer_drafts(&pending.key_id, &pending.drafts);
     }
 
+    fn scheduled_send_delay(&self) -> Option<Duration> {
+        let next_send_at_ms = self.state.scheduled_sends.next_send_at_ms()?;
+        let now_ms = current_epoch_ms();
+        Some(Duration::from_millis(next_send_at_ms.saturating_sub(now_ms)))
+    }
+
+    async fn dispatch_due_scheduled_send(&mut self) -> bool {
+        let Some(item) = self.state.scheduled_sends.next_due(current_epoch_ms()) else {
+            return false;
+        };
+        self.dispatch_scheduled_send(item).await
+    }
+
+    async fn dispatch_scheduled_send(&mut self, item: ScheduledSendItem) -> bool {
+        let effects = self
+            .reduce_app_action(AppAction::ScheduledSendDispatched {
+                scheduled_id: item.scheduled_id.clone(),
+            })
+            .await;
+        self.handle_ui_event_effects(&effects);
+
+        let Some(account_key) = self.current_account_key() else {
+            return !effects.is_empty();
+        };
+        let request_id = self.next_internal_request_id();
+        self.send_timeline_command_or_fail(
+            request_id,
+            TimelineCommand::SendText {
+                request_id,
+                key: TimelineKey::room(account_key, item.room_id),
+                transaction_id: scheduled_send_transaction_id(&item.scheduled_id),
+                body: item.body,
+                mentions: MentionIntent::default(),
+            },
+        )
+        .await;
+        true
+    }
+
+    fn next_internal_request_id(&mut self) -> RequestId {
+        let sequence = self.next_internal_request_sequence;
+        self.next_internal_request_sequence = self.next_internal_request_sequence.saturating_add(1);
+        RequestId {
+            connection_id: INTERNAL_RUNTIME_CONNECTION_ID,
+            sequence,
+        }
+    }
+
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, command: CoreCommand) -> bool {
         if command.requires_ready_session()
@@ -718,6 +809,56 @@ impl AppActor {
                             room_id,
                             root_event_id,
                             draft,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::ScheduleSend {
+                    request_id,
+                    room_id,
+                    body,
+                    send_at_ms,
+                } => {
+                    let capability_effects = self
+                        .reduce_app_action(AppAction::ScheduledSendCapabilityChanged {
+                            capability: ScheduledSendCapability::LocalFallback,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, capability_effects).await;
+                    let item = ScheduledSendItem {
+                        scheduled_id: scheduled_send_id(request_id),
+                        room_id,
+                        body,
+                        send_at_ms,
+                        handle: ScheduledSendHandle::Local,
+                    };
+                    let effects = self
+                        .reduce_app_action(AppAction::ScheduledSendCreated { item })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::CancelScheduledSend {
+                    request_id,
+                    scheduled_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::ScheduledSendCancelled { scheduled_id })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::RescheduleScheduledSend {
+                    request_id,
+                    scheduled_id,
+                    send_at_ms,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::ScheduledSendRescheduled {
+                            scheduled_id,
+                            send_at_ms,
+                            handle: ScheduledSendHandle::Local,
                         })
                         .await;
                     self.handle_app_effects(request_id, effects).await;

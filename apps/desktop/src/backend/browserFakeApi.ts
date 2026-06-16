@@ -1763,7 +1763,9 @@ class BrowserFakeApi implements DesktopApi {
         pending_transaction_id: null,
         draft: "",
         mode: "Plain"
-      }
+      },
+      scheduled_send_capability: "unknown",
+      scheduled_sends: []
     };
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.state.focused_context = { kind: "closed" };
@@ -1854,7 +1856,9 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
           pending_transaction_id: null,
           draft: "",
           mode: "Plain"
-        }
+        },
+        scheduled_send_capability: "unknown",
+        scheduled_sends: []
       },
       thread: {
         kind: "open",
@@ -1951,7 +1955,9 @@ function createSignedOutSnapshot(): DesktopSnapshot {
           pending_transaction_id: null,
           draft: "",
           mode: "Plain"
-        }
+        },
+        scheduled_send_capability: "unknown",
+        scheduled_sends: []
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },
