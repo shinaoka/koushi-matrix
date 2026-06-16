@@ -483,6 +483,14 @@ stateDiagram-v2
   the latest Rust `AppState.profile` before events reach consumers. Timeline
   GUI surfaces render those label fields; they must not display raw sender ids
   except as explicit identity/debug/source data.
+- When `ProfileChanged` follows a profile or local-alias transition, the core
+  runtime emits a keyless `TimelineEvent::DisplayLabelsUpdated` containing
+  Rust-resolved `user_id -> display_label` patches. Timeline stores may apply
+  those patches to already-loaded rows by matching raw identity fields
+  (`sender`, reply quote `sender`, thread `latest_sender`), but must not derive
+  the label values in React. `SetLocalUserAlias` includes its target user id in
+  that emission so clearing an alias also relabels rows for users that are not
+  present in the profile cache.
 - `LocalUserAliasUpdateRequested` is accepted only for a Ready session and only
   while `local_alias_update` is idle. It trims non-empty aliases, treats empty
   aliases as clear, records `Saving { request_id }`, and emits

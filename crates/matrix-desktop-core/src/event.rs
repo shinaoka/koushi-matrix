@@ -7,8 +7,8 @@ use matrix_desktop_state::{
     ActivityStream, ActivityTab, AppState, CrossSigningStatus, DirectoryQuery,
     DirectoryRoomSummary, IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus,
     LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionSummary, PinnedEvent, PresenceKind,
-    ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState,
-    VerificationFlowState, resolve_user_display_name,
+    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
+    SessionState, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 
@@ -656,6 +656,9 @@ pub enum TimelineEvent {
         key: TimelineKey,
         reason: TimelineResyncReason,
     },
+    DisplayLabelsUpdated {
+        labels: Vec<TimelineDisplayLabelUpdate>,
+    },
 }
 
 impl fmt::Debug for TimelineEvent {
@@ -756,7 +759,27 @@ impl fmt::Debug for TimelineEvent {
                 .field("key", &"TimelineKey(..)")
                 .field("reason", reason)
                 .finish(),
+            Self::DisplayLabelsUpdated { labels } => formatter
+                .debug_struct("DisplayLabelsUpdated")
+                .field("label_count", &labels.len())
+                .finish(),
         }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineDisplayLabelUpdate {
+    pub user_id: String,
+    pub display_label: String,
+}
+
+impl fmt::Debug for TimelineDisplayLabelUpdate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineDisplayLabelUpdate")
+            .field("user_id", &"UserId(..)")
+            .field("display_label", &"DisplayLabel(..)")
+            .finish()
     }
 }
 
@@ -1138,7 +1161,8 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
         | TimelineEvent::MessageForwarded { .. }
         | TimelineEvent::MediaUploadProgress { .. }
         | TimelineEvent::MediaDownloadCompleted { .. }
-        | TimelineEvent::ResyncRequired { .. } => {}
+        | TimelineEvent::ResyncRequired { .. }
+        | TimelineEvent::DisplayLabelsUpdated { .. } => {}
     }
 }
 
@@ -1178,7 +1202,7 @@ fn timeline_sender_label(sender: Option<&str>, state: &AppState) -> Option<Strin
     ))
 }
 
-fn timeline_projection_own_user_id(state: &AppState) -> Option<&str> {
+pub fn timeline_projection_own_user_id(state: &AppState) -> Option<&str> {
     match &state.session {
         SessionState::Ready(info) => Some(info.user_id.as_str()),
         SessionState::SignedOut
@@ -1190,6 +1214,48 @@ fn timeline_projection_own_user_id(state: &AppState) -> Option<&str> {
         | SessionState::Locked(_)
         | SessionState::SwitchingAccount { .. } => None,
     }
+}
+
+pub fn derive_display_label_updates(
+    profile: &ProfileState,
+    own_user_id: Option<&str>,
+) -> Vec<TimelineDisplayLabelUpdate> {
+    derive_display_label_updates_for_user_ids(profile, own_user_id, std::iter::empty::<&str>())
+}
+
+pub fn derive_display_label_updates_for_user_ids<'a>(
+    profile: &ProfileState,
+    own_user_id: Option<&str>,
+    additional_user_ids: impl IntoIterator<Item = &'a str>,
+) -> Vec<TimelineDisplayLabelUpdate> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut updates = Vec::new();
+
+    let mut push = |user_id: &str| {
+        if !seen.insert(user_id.to_owned()) {
+            return;
+        }
+        let label = resolve_user_display_name(profile, user_id, None, own_user_id);
+        updates.push(TimelineDisplayLabelUpdate {
+            user_id: user_id.to_owned(),
+            display_label: label,
+        });
+    };
+
+    for uid in profile.local_aliases.keys() {
+        push(uid);
+    }
+    for uid in profile.users.keys() {
+        push(uid);
+    }
+    if let Some(uid) = own_user_id {
+        push(uid);
+    }
+    for uid in additional_user_ids {
+        push(uid);
+    }
+
+    updates
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1763,5 +1829,107 @@ mod tests {
             !debug.contains("@private-target:example.invalid"),
             "{debug}"
         );
+    }
+
+    #[test]
+    fn display_labels_updated_event_serializes_and_redacts_debug() {
+        let labels = vec![
+            TimelineDisplayLabelUpdate {
+                user_id: "@alice:example.invalid".to_owned(),
+                display_label: "Alice Alias".to_owned(),
+            },
+            TimelineDisplayLabelUpdate {
+                user_id: "@bob:example.invalid".to_owned(),
+                display_label: "Bobby".to_owned(),
+            },
+        ];
+        let event = TimelineEvent::DisplayLabelsUpdated { labels };
+
+        let value = serde_json::to_value(&event).expect("DisplayLabelsUpdated serializes");
+        assert_eq!(
+            value,
+            json!({
+                "DisplayLabelsUpdated": {
+                    "labels": [
+                        { "user_id": "@alice:example.invalid", "display_label": "Alice Alias" },
+                        { "user_id": "@bob:example.invalid", "display_label": "Bobby" }
+                    ]
+                }
+            })
+        );
+
+        let debug = format!("{event:?}");
+        assert!(debug.contains("DisplayLabelsUpdated"), "{debug}");
+        assert!(!debug.contains("@alice:example.invalid"), "{debug}");
+        assert!(!debug.contains("@bob:example.invalid"), "{debug}");
+        assert!(!debug.contains("Alice Alias"), "{debug}");
+        assert!(!debug.contains("Bobby"), "{debug}");
+    }
+
+    #[test]
+    fn derive_display_label_updates_resolves_from_profile_state() {
+        let mut state = AppState::default();
+        state.profile.own.display_name = Some("My Name".to_owned());
+        state.profile.local_aliases.insert(
+            "@alice:example.invalid".to_owned(),
+            "Alice Alias".to_owned(),
+        );
+        state.profile.local_aliases.insert(
+            "@bob:example.invalid".to_owned(),
+            "".to_owned(), // empty alias = cleared, falls through
+        );
+        state.profile.users.insert(
+            "@carol:example.invalid".to_owned(),
+            matrix_desktop_state::UserProfile {
+                user_id: "@carol:example.invalid".to_owned(),
+                display_name: Some("Carol Upstream".to_owned()),
+                display_label: String::new(),
+                mention_search_terms: Vec::new(),
+                avatar: None,
+            },
+        );
+        // own user id for resolve_user_display_name own-user fallback
+        let own_user_id = Some("@me:example.invalid");
+
+        let updates = derive_display_label_updates(&state.profile, own_user_id);
+
+        // Alice: alias present -> label = alias
+        let alice = updates
+            .iter()
+            .find(|u| u.user_id == "@alice:example.invalid")
+            .expect("alice in updates");
+        assert_eq!(alice.display_label, "Alice Alias");
+
+        // Bob: alias is empty -> falls through to MXID since no upstream
+        let bob = updates
+            .iter()
+            .find(|u| u.user_id == "@bob:example.invalid")
+            .expect("bob in updates");
+        assert_eq!(bob.display_label, "@bob:example.invalid");
+
+        // Carol: upstream display_name in users, no alias -> label = upstream
+        let carol = updates
+            .iter()
+            .find(|u| u.user_id == "@carol:example.invalid")
+            .expect("carol in updates");
+        assert_eq!(carol.display_label, "Carol Upstream");
+
+        // Own user is included when own display_name is set
+        let me = updates
+            .iter()
+            .find(|u| u.user_id == "@me:example.invalid")
+            .expect("own user in updates");
+        assert_eq!(me.display_label, "My Name");
+
+        let updates = derive_display_label_updates_for_user_ids(
+            &state.profile,
+            own_user_id,
+            ["@unknown:example.invalid"].into_iter(),
+        );
+        let unknown = updates
+            .iter()
+            .find(|u| u.user_id == "@unknown:example.invalid")
+            .expect("additional user id in updates");
+        assert_eq!(unknown.display_label, "@unknown:example.invalid");
     }
 }

@@ -201,6 +201,11 @@ export interface MediaTransferProgress {
   total: number;
 }
 
+export interface TimelineDisplayLabelUpdate {
+  user_id: string;
+  display_label: string;
+}
+
 // ---------------------------------------------------------------------------
 // Timeline events (externally tagged on the wire)
 // ---------------------------------------------------------------------------
@@ -279,6 +284,11 @@ export type TimelineEvent =
       ResyncRequired: {
         key: TimelineKey;
         reason: TimelineResyncReason;
+      };
+    }
+  | {
+      DisplayLabelsUpdated: {
+        labels: TimelineDisplayLabelUpdate[];
       };
     };
 

@@ -96,6 +96,13 @@ Phase B GUI/browser-headless work for the same issue follows
   DeepSeek V4 Pro produced no output after several minutes and was terminated by
   its process group. For broad privacy/cross-boundary reviews, either shrink the
   prompt to one subsystem or use the main agent's review as authoritative.
+- In the #63 timeline-relabel implementation trial, DeepSeek V4 Pro produced a
+  partial diff after several minutes but no final status: it added part of the
+  Rust event DTO/helper and TS tests, then stalled before TS implementation,
+  `TimelineView` keyless handling, contract fixture updates, docs, or full
+  verification. Treat this mode as useful for a rough first draft only; the main
+  agent must review for missing cross-boundary surfaces and finish or replace
+  the implementation.
 - When reviewing uncommitted work, include untracked new files explicitly.
   `git diff -- path/to/new-file` is empty for untracked files, and the
   reviewer may correctly report that the core file is missing from the review.
@@ -373,6 +380,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   TimelineView display must use `sender_label`, `reply_quote.sender_label`, and
   `thread_summary.latest_sender_label` when present. Do not repair missing
   labels in React by joining sender ids to `local_aliases`.
+- Existing timeline rows are relabeled through the keyless Rust
+  `TimelineEvent::DisplayLabelsUpdated` patch stream after profile/alias
+  changes. Frontend stores may match raw identity fields and apply the supplied
+  labels across loaded timelines, but React must not resolve alias precedence or
+  synthesize fallback labels. When clearing an alias, keep the target user id in
+  the Rust emission even if the user is absent from `profile.users`.
 - Local aliases are private "only I see this" data. Do not print alias user ids
   or alias text in normal Debug, QA titles/logs, screenshots, issue comments, or
   docs examples. `ProfileState` Debug should expose only profile/avatar presence

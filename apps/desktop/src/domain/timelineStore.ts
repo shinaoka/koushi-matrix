@@ -100,6 +100,9 @@ export function applyTimelineEvent(
   if ("ItemsUpdated" in event) {
     return applyItemsUpdated(store, event.ItemsUpdated);
   }
+  if ("DisplayLabelsUpdated" in event) {
+    return applyDisplayLabelsUpdated(store, event.DisplayLabelsUpdated);
+  }
   if ("PaginationStateChanged" in event) {
     return applyPaginationStateChanged(store, event.PaginationStateChanged);
   }
@@ -249,6 +252,94 @@ function applyResyncRequired(
     mediaUploadProgress: new Map()
   });
   return { keys: next };
+}
+
+function applyDisplayLabelsUpdated(
+  store: TimelineStoreState,
+  payload: Extract<TimelineEvent, { DisplayLabelsUpdated: unknown }>["DisplayLabelsUpdated"]
+): TimelineStoreState {
+  if (payload.labels.length === 0 || store.keys.size === 0) {
+    return store;
+  }
+
+  const labels = new Map<string, string | null>(
+    payload.labels.map((label) => [
+      label.user_id,
+      label.display_label.trim().length === 0 ? null : label.display_label
+    ])
+  );
+  let changed = false;
+  const next = new Map<string, TimelineKeyState>();
+
+  for (const [key, state] of store.keys) {
+    let itemsChanged = false;
+    const items = state.items.map((item) => {
+      const updated = applyDisplayLabelUpdateToItem(item, labels);
+      if (updated !== item) {
+        itemsChanged = true;
+      }
+      return updated;
+    });
+
+    if (itemsChanged) {
+      changed = true;
+      next.set(key, { ...state, items });
+    } else {
+      next.set(key, state);
+    }
+  }
+
+  return changed ? { keys: next } : store;
+}
+
+function applyDisplayLabelUpdateToItem(
+  item: TimelineItem,
+  labels: Map<string, string | null>
+): TimelineItem {
+  let updated: TimelineItem = item;
+
+  const senderLabel = labelUpdateFor(item.sender, labels);
+  if (senderLabel !== undefined && item.sender_label !== senderLabel) {
+    updated = { ...updated, sender_label: senderLabel };
+  }
+
+  if (updated.reply_quote) {
+    const quoteLabel = labelUpdateFor(updated.reply_quote.sender, labels);
+    if (quoteLabel !== undefined && updated.reply_quote.sender_label !== quoteLabel) {
+      updated = {
+        ...updated,
+        reply_quote: { ...updated.reply_quote, sender_label: quoteLabel }
+      };
+    }
+  }
+
+  if (updated.thread_summary) {
+    const latestSenderLabel = labelUpdateFor(updated.thread_summary.latest_sender, labels);
+    if (
+      latestSenderLabel !== undefined &&
+      updated.thread_summary.latest_sender_label !== latestSenderLabel
+    ) {
+      updated = {
+        ...updated,
+        thread_summary: {
+          ...updated.thread_summary,
+          latest_sender_label: latestSenderLabel
+        }
+      };
+    }
+  }
+
+  return updated;
+}
+
+function labelUpdateFor(
+  userId: string | null | undefined,
+  labels: Map<string, string | null>
+): string | null | undefined {
+  if (!userId || !labels.has(userId)) {
+    return undefined;
+  }
+  return labels.get(userId) ?? null;
 }
 
 // ---------------------------------------------------------------------------

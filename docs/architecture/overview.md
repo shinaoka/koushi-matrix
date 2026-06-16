@@ -50,7 +50,10 @@ Crate responsibilities:
   also Rust-owned profile state: `ProfileState.local_aliases` stores the
   account-data-backed map, reducer actions own set/clear/list lifecycle, and
   display-name resolution follows `alias ?? upstream display name ?? MXID`
-  before React sees labels. React may render the DTO and dispatch typed alias
+  before React sees labels. Timeline relabeling after profile or alias changes
+  is also a Rust-owned `CoreEvent::Timeline` patch stream; React may match rows
+  by raw identity fields and apply Rust-provided labels, but it must not
+  recompute alias precedence. React may render the DTO and dispatch typed alias
   commands only; it must not maintain a separate alias cache or write aliases to
   Matrix profile/events.
 - `SettingsState` is serializable Rust product state owned by

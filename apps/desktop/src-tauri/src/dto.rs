@@ -698,6 +698,8 @@ mod tests {
             UserProfile {
                 user_id: "@bob:matrix.org".to_owned(),
                 display_name: Some("Bob".to_owned()),
+                display_label: "Bob".to_owned(),
+                mention_search_terms: vec!["Bob".to_owned(), "@bob:matrix.org".to_owned()],
                 avatar: Some(ready_avatar),
             },
         );

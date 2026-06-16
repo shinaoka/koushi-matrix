@@ -852,6 +852,123 @@ describe("pagination state — per direction tracking", () => {
 });
 
 // ---------------------------------------------------------------------------
+// DisplayLabelsUpdated relabels existing rows across all timelines
+// ---------------------------------------------------------------------------
+
+describe("DisplayLabelsUpdated", () => {
+  test("patches sender_label, reply_quote sender_label, and thread_summary latest_sender_label while preserving raw ids", () => {
+    let store = createTimelineStore();
+
+    // Seed two timelines with items that have raw senders but no labels
+    const keyA = roomTimelineKey(ACCOUNT_KEY, "!room-a:example.invalid");
+    const keyB = roomTimelineKey(ACCOUNT_KEY, "!room-b:example.invalid");
+
+    const itemWithReply: TimelineItem = {
+      ...makeMsg("$a", "hello"),
+      sender: "@alice:example.invalid",
+      sender_label: null,
+      reply_quote: {
+        event_id: "$quoted:example.invalid",
+        sender: "@bob:example.invalid",
+        sender_label: null,
+        body_preview: "quoted text",
+        state: "ready",
+      },
+    };
+    const itemWithThread: TimelineItem = {
+      ...makeMsg("$b", "thread root"),
+      sender: "@carol:example.invalid",
+      sender_label: null,
+      thread_root: "$b",
+      thread_summary: {
+        reply_count: 3,
+        latest_sender: "@dave:example.invalid",
+        latest_sender_label: null,
+        latest_body_preview: "latest reply text",
+        latest_timestamp_ms: 3000,
+      },
+    };
+
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: keyA,
+        generation: 0,
+        items: [itemWithReply],
+      },
+    });
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: keyB,
+        generation: 0,
+        items: [itemWithThread],
+      },
+    });
+
+    // Apply DisplayLabelsUpdated across both timelines
+    store = applyTimelineEvent(store, {
+      DisplayLabelsUpdated: {
+        labels: [
+          { user_id: "@alice:example.invalid", display_label: "Alice Alias" },
+          { user_id: "@bob:example.invalid", display_label: "Bobby" },
+          { user_id: "@carol:example.invalid", display_label: "Carol Alias" },
+          { user_id: "@dave:example.invalid", display_label: "Davey" },
+        ],
+      },
+    });
+
+    // Timeline A: sender_label patched, raw sender unchanged
+    const itemsA = getItems(store, keyA);
+    expect(itemsA).toHaveLength(1);
+    expect(itemsA[0].sender).toBe("@alice:example.invalid");
+    expect(itemsA[0].sender_label).toBe("Alice Alias");
+    expect(itemsA[0].reply_quote?.sender).toBe("@bob:example.invalid");
+    expect(itemsA[0].reply_quote?.sender_label).toBe("Bobby");
+
+    // Timeline B: sender_label + thread_summary.latest_sender_label patched
+    const itemsB = getItems(store, keyB);
+    expect(itemsB).toHaveLength(1);
+    expect(itemsB[0].sender).toBe("@carol:example.invalid");
+    expect(itemsB[0].sender_label).toBe("Carol Alias");
+    expect(itemsB[0].thread_summary?.latest_sender).toBe("@dave:example.invalid");
+    expect(itemsB[0].thread_summary?.latest_sender_label).toBe("Davey");
+  });
+
+  test("clears sender_label when display_label is empty", () => {
+    let store = createTimelineStore();
+
+    const item: TimelineItem = {
+      ...makeMsg("$c", "msg"),
+      sender: "@eve:example.invalid",
+      sender_label: "Old Eve Label",
+    };
+
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 0,
+        items: [item],
+      },
+    });
+
+    // Update with empty display_label -> clears sender_label
+    store = applyTimelineEvent(store, {
+      DisplayLabelsUpdated: {
+        labels: [
+          { user_id: "@eve:example.invalid", display_label: "" },
+        ],
+      },
+    });
+
+    const items = getItems(store, KEY);
+    expect(items[0].sender).toBe("@eve:example.invalid");
+    expect(items[0].sender_label).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Additional: applyDiffs is a pure function (no mutation)
 // ---------------------------------------------------------------------------
 

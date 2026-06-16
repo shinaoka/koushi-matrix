@@ -1189,11 +1189,11 @@ mod tests {
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LiveSignalsEvent,
                 LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent,
-                PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineEvent,
-                TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
-                TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
-                TimelineMessageActions, TimelineMessageSource, TimelineSendFailureReason,
-                TimelineSendState,
+                PaginationDirection, PaginationState, ReactionGroup, RoomEvent,
+                TimelineDisplayLabelUpdate, TimelineEvent, TimelineItem, TimelineItemId,
+                TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+                TimelineMessageActions, TimelineMessageSource, TimelineResyncReason,
+                TimelineSendFailureReason, TimelineSendState,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1203,10 +1203,9 @@ mod tests {
             IdentityResetAuthType, IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts,
             LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
             NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
-            PresenceKind, ReplyQuote, ReplyQuoteState,
-            RoomHistoryVisibility, RoomJoinRule, RoomMemberRole, RoomModerationAction,
-            RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji,
-            VerificationFlowState, VerificationTarget,
+            PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
+            RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
+            RoomTagKind, SasEmoji, VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -1220,6 +1219,7 @@ mod tests {
                 event_id: "$e1".to_owned(),
             },
             sender: Some("@u:example.test".to_owned()),
+            sender_label: None,
             body: Some("hello".to_owned()),
             timestamp_ms: Some(123),
             in_reply_to_event_id: None,
@@ -1253,6 +1253,7 @@ mod tests {
                 event_id: "$media1".to_owned(),
             },
             sender: Some("@u:example.test".to_owned()),
+            sender_label: None,
             body: Some("caption".to_owned()),
             timestamp_ms: Some(456),
             in_reply_to_event_id: None,
@@ -1303,6 +1304,7 @@ mod tests {
                 transaction_id: "txn-not-sent".to_owned(),
             },
             sender: Some("@u:example.test".to_owned()),
+            sender_label: None,
             body: Some("queued".to_owned()),
             timestamp_ms: Some(789),
             in_reply_to_event_id: None,
@@ -1326,12 +1328,14 @@ mod tests {
                 event_id: "$reply1".to_owned(),
             },
             sender: Some("@u:example.test".to_owned()),
+            sender_label: None,
             body: Some("reply body".to_owned()),
             timestamp_ms: Some(987),
             in_reply_to_event_id: Some("$root1".to_owned()),
             reply_quote: Some(ReplyQuote {
                 event_id: "$root1".to_owned(),
                 sender: Some("@other:example.test".to_owned()),
+                sender_label: None,
                 body_preview: Some("quoted preview".to_owned()),
                 state: ReplyQuoteState::Ready,
             }),
@@ -1381,6 +1385,7 @@ mod tests {
             json!({
                 "id": { "Event": { "event_id": "$e1" } },
                 "sender": "@u:example.test",
+                "sender_label": null,
                 "body": "hello",
                 "timestamp_ms": 123,
                 "in_reply_to_event_id": null,
@@ -1493,6 +1498,7 @@ mod tests {
             json!({
                 "event_id": "$root1",
                 "sender": "@other:example.test",
+                "sender_label": null,
                 "body_preview": "quoted preview",
                 "state": "ready"
             })
@@ -1527,8 +1533,8 @@ mod tests {
         ))
         .expect("serialize media download completion");
 
-        let message_source_loaded = serialize_core_event(&CoreEvent::Timeline(
-            TimelineEvent::MessageSourceLoaded {
+        let message_source_loaded =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MessageSourceLoaded {
                 request_id,
                 key: key.clone(),
                 source: TimelineMessageSource {
@@ -1542,9 +1548,8 @@ mod tests {
                     is_edited: true,
                     has_media: false,
                 },
-            },
-        ))
-        .expect("serialize message source loaded");
+            }))
+            .expect("serialize message source loaded");
         let message_forwarded =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MessageForwarded {
                 request_id,
@@ -1579,6 +1584,22 @@ mod tests {
         assert_eq!(
             resync["event"]["ResyncRequired"]["reason"],
             json!("QueueOverflow")
+        );
+
+        let display_labels_updated =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated {
+                labels: vec![TimelineDisplayLabelUpdate {
+                    user_id: "@u:example.test".to_owned(),
+                    display_label: "User Alias".to_owned(),
+                }],
+            }))
+            .expect("serialize display label update event");
+        assert_eq!(
+            display_labels_updated["event"]["DisplayLabelsUpdated"]["labels"][0],
+            json!({
+                "user_id": "@u:example.test",
+                "display_label": "User Alias"
+            })
         );
 
         // Account events are externally tagged under the Account envelope
@@ -1824,8 +1845,8 @@ mod tests {
             activity_opened["event"]["Opened"]["request_id"],
             json!({ "connection_id": 3, "sequence": 7 })
         );
-        let activity_snapshot_loaded = serialize_core_event(&CoreEvent::Activity(
-            ActivityEvent::SnapshotLoaded {
+        let activity_snapshot_loaded =
+            serialize_core_event(&CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
                 request_id,
                 active_tab: ActivityTab::Unread,
                 recent: ActivityStream {
@@ -1854,9 +1875,8 @@ mod tests {
                     }],
                     next_batch: Some("unread-next".to_owned()),
                 },
-            },
-        ))
-        .expect("serialize activity snapshot event");
+            }))
+            .expect("serialize activity snapshot event");
         assert_eq!(
             activity_snapshot_loaded["event"]["SnapshotLoaded"]["active_tab"],
             json!("unread")
@@ -1950,6 +1970,7 @@ mod tests {
             "roomSettingsLoaded": room_settings_loaded,
             "roomTagRemoved": room_tag_removed,
             "roomTagSet": room_tag_set,
+            "timelineDisplayLabelsUpdated": display_labels_updated,
             "timelineInitialItems": initial,
             "timelineItemsUpdated": updated,
             "timelineMediaDownloadCompleted": media_download_completed,

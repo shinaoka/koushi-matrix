@@ -428,6 +428,11 @@ export function TimelineView({
       }
       const event = payload.event;
 
+      if ("DisplayLabelsUpdated" in event) {
+        setStore((current) => applyTimelineEvent(current, event));
+        return;
+      }
+
       // Key filter: only this timeline's events.
       const eventKey =
         "InitialItems" in event

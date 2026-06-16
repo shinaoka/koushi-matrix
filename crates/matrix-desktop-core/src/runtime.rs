@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityRow, ActivityState, ActivityStream, ActivityTab, AppAction,
     AppEffect, AppState, ProfileUpdateRequest, RoomSummary, SearchScope as AppSearchScope,
-    SessionState, ThreadPaneState, reduce,
+    SessionState, ThreadPaneState, UiEvent, reduce,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -23,7 +23,8 @@ use crate::command::{
     AccountCommand, AppCommand, CoreCommand, SearchCommand, SearchScope, TimelineCommand,
 };
 use crate::event::{
-    ActivityEvent, AppStateSnapshot, CoreEvent, project_timeline_event_display_labels,
+    ActivityEvent, AppStateSnapshot, CoreEvent, TimelineEvent,
+    project_timeline_event_display_labels,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -441,6 +442,7 @@ impl AppActor {
                         {
                             let _activity_effects = reduce(&mut self.state, activity_update);
                         }
+                        self.handle_ui_event_effects(&_post_projection_effects);
                         state_changed = true;
                     }
                     if state_changed {
@@ -470,10 +472,19 @@ impl AppActor {
 
         match command {
             CoreCommand::Account(account_command) => {
+                let display_label_user_id = match &account_command {
+                    AccountCommand::SetLocalUserAlias { user_id, .. } => Some(user_id.as_str()),
+                    _ => None,
+                };
+                let display_label_user_ids = display_label_user_id.into_iter().collect::<Vec<_>>();
                 let effects = account_command_projected_action(&account_command)
                     .map(|action| reduce(&mut self.state, action))
                     .unwrap_or_default();
                 let projected_state_changed = !effects.is_empty();
+                self.handle_ui_event_effects_with_display_label_users(
+                    &effects,
+                    &display_label_user_ids,
+                );
                 let should_route =
                     !matches!(&account_command, AccountCommand::ResetLocalData { .. })
                         || projected_state_changed;
@@ -889,7 +900,45 @@ impl AppActor {
                     },
                 };
                 let _ = reduce(&mut self.state, action);
+            } else if let AppEffect::EmitUiEvent(ui_event) = effect {
+                self.handle_ui_event_effect(&ui_event, &[]);
             }
+        }
+    }
+
+    fn handle_ui_event_effects(&self, effects: &[AppEffect]) {
+        self.handle_ui_event_effects_with_display_label_users(effects, &[]);
+    }
+
+    fn handle_ui_event_effects_with_display_label_users(
+        &self,
+        effects: &[AppEffect],
+        additional_user_ids: &[&str],
+    ) {
+        for effect in effects {
+            if let AppEffect::EmitUiEvent(ui_event) = effect {
+                self.handle_ui_event_effect(ui_event, additional_user_ids);
+            }
+        }
+    }
+
+    fn handle_ui_event_effect(&self, ui_event: &UiEvent, additional_user_ids: &[&str]) {
+        if *ui_event == UiEvent::ProfileChanged {
+            self.emit_timeline_display_label_updates(additional_user_ids);
+        }
+    }
+
+    fn emit_timeline_display_label_updates(&self, additional_user_ids: &[&str]) {
+        let own_user_id = crate::event::timeline_projection_own_user_id(&self.state);
+        let labels = crate::event::derive_display_label_updates_for_user_ids(
+            &self.state.profile,
+            own_user_id,
+            additional_user_ids.iter().copied(),
+        );
+        if !labels.is_empty() {
+            self.emit(CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated {
+                labels,
+            }));
         }
     }
 
@@ -1383,6 +1432,125 @@ mod tests {
             }
             other => panic!("expected projected timeline diff event, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn actor_profile_changes_emit_timeline_display_label_updates() {
+        let runtime = CoreRuntime::start_with_event_capacity(8);
+        let mut connection = runtime.attach();
+
+        runtime
+            .inject_actions(vec![
+                AppAction::RestoreSessionSucceeded(SessionInfo {
+                    homeserver: "https://example.invalid".to_owned(),
+                    user_id: "@me:example.invalid".to_owned(),
+                    device_id: "DEVICE".to_owned(),
+                }),
+                AppAction::UserProfilesUpdated {
+                    profiles: vec![UserProfile {
+                        user_id: "@alice:example.invalid".to_owned(),
+                        display_name: Some("Alice Upstream".to_owned()),
+                        display_label: String::new(),
+                        mention_search_terms: Vec::new(),
+                        avatar: None,
+                    }],
+                },
+                AppAction::LocalUserAliasesLoaded {
+                    aliases: BTreeMap::from([(
+                        "@alice:example.invalid".to_owned(),
+                        "Alice Alias".to_owned(),
+                    )]),
+                },
+            ])
+            .await;
+
+        let mut saw_alias_update = false;
+        for _ in 0..4 {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
+                    .await
+                    .expect("runtime should emit profile/timeline events")
+                    .expect("event stream should stay open");
+            if let CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated { labels }) = event
+                && labels.iter().any(|label| {
+                    label.user_id == "@alice:example.invalid"
+                        && label.display_label == "Alice Alias"
+                })
+            {
+                saw_alias_update = true;
+                break;
+            }
+        }
+
+        assert!(
+            saw_alias_update,
+            "actor-origin ProfileChanged effects must relabel already-loaded timeline rows"
+        );
+        runtime.shutdown_handle().abort();
+    }
+
+    #[tokio::test]
+    async fn local_alias_clear_command_emits_target_display_label_update() {
+        let runtime = CoreRuntime::start_with_event_capacity(16);
+        let mut connection = runtime.attach();
+        let user_id = "@unknown:example.invalid";
+
+        runtime
+            .inject_actions(vec![
+                AppAction::RestoreSessionSucceeded(SessionInfo {
+                    homeserver: "https://example.invalid".to_owned(),
+                    user_id: "@me:example.invalid".to_owned(),
+                    device_id: "DEVICE".to_owned(),
+                }),
+                AppAction::LocalUserAliasesLoaded {
+                    aliases: BTreeMap::from([(user_id.to_owned(), "Unknown Alias".to_owned())]),
+                },
+            ])
+            .await;
+
+        for _ in 0..4 {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
+                    .await
+                    .expect("runtime should emit initial profile events")
+                    .expect("event stream should stay open");
+            if matches!(event, CoreEvent::StateChanged(_)) {
+                break;
+            }
+        }
+
+        let request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::Account(AccountCommand::SetLocalUserAlias {
+                request_id,
+                user_id: user_id.to_owned(),
+                alias: None,
+            }))
+            .await
+            .expect("alias clear command should be accepted");
+
+        let mut saw_clear_update = false;
+        for _ in 0..4 {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
+                    .await
+                    .expect("runtime should emit alias-clear events")
+                    .expect("event stream should stay open");
+            if let CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated { labels }) = event
+                && labels
+                    .iter()
+                    .any(|label| label.user_id == user_id && label.display_label == user_id)
+            {
+                saw_clear_update = true;
+                break;
+            }
+        }
+
+        assert!(
+            saw_clear_update,
+            "alias clear must relabel rows even when the target user is absent from profile.users"
+        );
+        runtime.shutdown_handle().abort();
     }
 
     #[test]

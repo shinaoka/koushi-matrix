@@ -174,6 +174,11 @@ Rules:
    `ThreadSummaryDto.latest_sender_label` are Rust-projected display fields.
    Raw sender ids stay identity/source data and must not be used as normal
    timeline display labels when a projected label is present.
+   Existing timeline rows are relabeled only from Rust-provided
+   `TimelineEvent::DisplayLabelsUpdated` patches. React may apply the supplied
+   `user_id -> display_label` values to already-loaded rows by matching raw
+   identity fields, but it must not resolve aliases, inspect `local_aliases`,
+   or invent fallback labels locally.
    Read-receipt reader avatars use the same boundary: `AppState.live_signals`
    carries Rust-resolved reader labels, avatar DTOs, read timestamps, capped
    reader ordering, and overflow counts; React must not resolve reader profiles
