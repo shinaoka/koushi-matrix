@@ -40,7 +40,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use matrix_desktop_core::command::{
     AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
@@ -68,10 +68,10 @@ use matrix_desktop_state::{
     NativeAttentionProjectionInput, NativeAttentionState, NativeAttentionSuppressionReason,
     OperationFailureKind, PresenceKind, RecoveryRequest, ReplyQuoteState, RoomAttentionKind,
     RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
-    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji, SessionInfo,
-    SessionState, SettingsPatch, TrustOperationFailureKind, VerificationFlowState,
-    VerificationTarget, build_formatted_message_draft, native_attention_state_from_rooms,
-    resolve_composer_key_action,
+    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
+    ScheduledSendCapability, SessionInfo, SessionState, SettingsPatch, TrustOperationFailureKind,
+    VerificationFlowState, VerificationTarget, build_formatted_message_draft,
+    native_attention_state_from_rooms, resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -120,6 +120,7 @@ enum QaScenario {
     LiveSignals,
     Thread,
     EditRedactSearch,
+    ScheduledSend,
     SendQueue,
     RestoreCleanup,
 }
@@ -143,6 +144,7 @@ enum QaStage {
     LiveSignals,
     Thread,
     EditRedactSearch,
+    ScheduledSend,
     SendQueue,
     RestoreCleanup,
 }
@@ -238,10 +240,11 @@ impl QaScenario {
             "live_signals" => Ok(Self::LiveSignals),
             "thread" => Ok(Self::Thread),
             "edit_redact_search" => Ok(Self::EditRedactSearch),
+            "scheduled_send" => Ok(Self::ScheduledSend),
             "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, send_queue, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, scheduled_send, send_queue, restore_cleanup; got {other}"
             )),
         }
     }
@@ -343,6 +346,14 @@ impl QaScenario {
                     | QaStage::Timeline
                     | QaStage::EditRedactSearch
             ),
+            Self::ScheduledSend => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::ScheduledSend
+            ),
             Self::SendQueue => matches!(
                 stage,
                 QaStage::Safety
@@ -368,6 +379,7 @@ impl QaScenario {
             self,
             Self::LiveSignals
                 | Self::SendQueue
+                | Self::ScheduledSend
                 | Self::RoomManagement
                 | Self::Activity
                 | Self::CredentialHealth
@@ -441,6 +453,13 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "thread_paginate=end_reached",
         ],
         QaStage::EditRedactSearch => &["edit_redact_search=ok"],
+        QaStage::ScheduledSend => &[
+            "scheduled_capability=local_fallback",
+            "scheduled_create=ok",
+            "scheduled_reschedule=ok",
+            "scheduled_cancel=ok",
+            "scheduled_fire=ok",
+        ],
         QaStage::SendQueue => &[
             "send_fail=ok",
             "resend=ok",
@@ -501,6 +520,11 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "presence=ok",
         "live_signals=ok",
         "edit_redact_search=ok",
+        "scheduled_capability=local_fallback",
+        "scheduled_create=ok",
+        "scheduled_reschedule=ok",
+        "scheduled_cancel=ok",
+        "scheduled_fire=ok",
         "send_fail=ok",
         "resend=ok",
         "cancel_send=ok",
@@ -597,6 +621,13 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Timeline,
             QaStage::EditRedactSearch,
         ],
+        QaScenario::ScheduledSend => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::ScheduledSend,
+        ],
         QaScenario::SendQueue => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -629,6 +660,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::LiveSignals,
             QaStage::Thread,
             QaStage::EditRedactSearch,
+            QaStage::ScheduledSend,
             QaStage::SendQueue,
             QaStage::E2eeTrust,
             QaStage::RestoreCleanup,
@@ -663,6 +695,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::LiveSignals
         | QaScenario::Thread
         | QaScenario::EditRedactSearch
+        | QaScenario::ScheduledSend
         | QaScenario::SendQueue
         | QaScenario::RestoreCleanup => {
             let mut tokens = stages_for_scenario(scenario)
@@ -1243,6 +1276,258 @@ async fn cleanup_logged_in_runtime(
     drop(runtime);
     tokio::time::sleep(Duration::from_millis(500)).await;
     Ok(())
+}
+
+async fn run_scheduled_send_stage(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    room_id: &str,
+) -> Result<(), String> {
+    const SCHEDULED_CREATE_BODY: &str = "Matrix Desktop scheduled create QA body";
+    const SCHEDULED_FIRE_BODY: &str = "Matrix Desktop scheduled fire QA body";
+
+    let select_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+        request_id: select_id,
+        room_id: room_id.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("scheduled_send: submit room select failed: {e}"))?;
+    wait_for_selected_room(conn, room_id, "scheduled_send selected room").await?;
+
+    let create_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+        request_id: create_id,
+        room_id: room_id.to_owned(),
+        body: SCHEDULED_CREATE_BODY.to_owned(),
+        send_at_ms: scheduled_qa_epoch_ms(Duration::from_secs(300)),
+    }))
+    .await
+    .map_err(|e| format!("scheduled_send: submit create failed: {e}"))?;
+
+    let created = wait_for_scheduled_send_count(conn, 1, "scheduled_send create").await?;
+    if created.timeline.scheduled_send_capability != ScheduledSendCapability::LocalFallback {
+        return Err(
+            "scheduled_send: local fallback capability was not projected to the snapshot"
+                .to_owned(),
+        );
+    }
+    println!("scheduled_capability=local_fallback");
+    println!("scheduled_create=ok");
+
+    let scheduled_id = created
+        .timeline
+        .scheduled_sends
+        .first()
+        .map(|item| item.scheduled_id.clone())
+        .ok_or_else(|| "scheduled_send: created item was missing from projection".to_owned())?;
+    let rescheduled_at_ms = scheduled_qa_epoch_ms(Duration::from_secs(600));
+    let reschedule_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::RescheduleScheduledSend {
+        request_id: reschedule_id,
+        scheduled_id: scheduled_id.clone(),
+        send_at_ms: rescheduled_at_ms,
+    }))
+    .await
+    .map_err(|e| format!("scheduled_send: submit reschedule failed: {e}"))?;
+    wait_for_scheduled_send_due(
+        conn,
+        &scheduled_id,
+        rescheduled_at_ms,
+        "scheduled_send reschedule",
+    )
+    .await?;
+    println!("scheduled_reschedule=ok");
+
+    let cancel_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::CancelScheduledSend {
+        request_id: cancel_id,
+        scheduled_id,
+    }))
+    .await
+    .map_err(|e| format!("scheduled_send: submit cancel failed: {e}"))?;
+    wait_for_scheduled_send_count(conn, 0, "scheduled_send cancel").await?;
+    println!("scheduled_cancel=ok");
+
+    let fire_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+        request_id: fire_id,
+        room_id: room_id.to_owned(),
+        body: SCHEDULED_FIRE_BODY.to_owned(),
+        send_at_ms: scheduled_qa_epoch_ms(Duration::from_millis(250)),
+    }))
+    .await
+    .map_err(|e| format!("scheduled_send: submit fire schedule failed: {e}"))?;
+    let fire_created = wait_for_scheduled_send_count(conn, 1, "scheduled_send fire create").await?;
+    let fire_scheduled_id = fire_created
+        .timeline
+        .scheduled_sends
+        .first()
+        .map(|item| item.scheduled_id.clone())
+        .ok_or_else(|| "scheduled_send: fire item was missing from projection".to_owned())?;
+    wait_for_scheduled_send_fired(
+        conn,
+        key,
+        &fire_scheduled_id,
+        SCHEDULED_FIRE_BODY,
+        "scheduled_send fire",
+    )
+    .await?;
+    println!("scheduled_fire=ok");
+    Ok(())
+}
+
+fn scheduled_qa_epoch_ms(offset: Duration) -> u64 {
+    SystemTime::now()
+        .checked_add(offset)
+        .unwrap_or_else(SystemTime::now)
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+async fn wait_for_selected_room(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    if conn.snapshot().timeline.room_id.as_deref() == Some(room_id) {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for selected room"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot)
+                if snapshot.timeline.room_id.as_deref() == Some(room_id) =>
+            {
+                return Ok(());
+            }
+            _ if conn.snapshot().timeline.room_id.as_deref() == Some(room_id) => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_scheduled_send_count(
+    conn: &mut CoreConnection,
+    expected_count: usize,
+    label: &str,
+) -> Result<AppState, String> {
+    let snapshot = conn.snapshot();
+    if snapshot.timeline.scheduled_sends.len() == expected_count {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for scheduled-send projection"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot)
+                if snapshot.timeline.scheduled_sends.len() == expected_count =>
+            {
+                return Ok(snapshot);
+            }
+            _ if conn.snapshot().timeline.scheduled_sends.len() == expected_count => {
+                return Ok(conn.snapshot());
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_scheduled_send_due(
+    conn: &mut CoreConnection,
+    scheduled_id: &str,
+    expected_send_at_ms: u64,
+    label: &str,
+) -> Result<(), String> {
+    let matches_due =
+        |snapshot: &AppState| {
+            snapshot.timeline.scheduled_sends.iter().any(|item| {
+                item.scheduled_id == scheduled_id && item.send_at_ms == expected_send_at_ms
+            })
+        };
+    if matches_due(&conn.snapshot()) {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for scheduled-send reschedule"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) if matches_due(&snapshot) => return Ok(()),
+            _ if matches_due(&conn.snapshot()) => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_scheduled_send_fired(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    scheduled_id: &str,
+    expected_body: &str,
+    label: &str,
+) -> Result<(), String> {
+    let mut queue_removed = scheduled_item_absent(&conn.snapshot(), scheduled_id);
+    let mut timeline_observed = false;
+
+    loop {
+        if queue_removed && timeline_observed {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for scheduled-send dispatch"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) => {
+                queue_removed = scheduled_item_absent(&snapshot, scheduled_id);
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                visit_timeline_diff_items(&diffs, |item| {
+                    if timeline_item_body_matches(item, expected_body) {
+                        timeline_observed = true;
+                    }
+                    Ok(())
+                })?;
+            }
+            CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } if request_id.connection_id.0 == 0 => {
+                return Err(format!(
+                    "{label}: internal scheduled-send dispatch failed: {failure:?}"
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scheduled_item_absent(snapshot: &AppState, scheduled_id: &str) -> bool {
+    snapshot
+        .timeline
+        .scheduled_sends
+        .iter()
+        .all(|item| item.scheduled_id != scheduled_id)
 }
 
 async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
@@ -2363,6 +2648,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             }))
             .await
             .map_err(|e| format!("submit unsubscribe thread B: {e}"))?;
+    }
+
+    if scenario.should_run_stage(QaStage::ScheduledSend) {
+        run_scheduled_send_stage(&mut conn_a, &key_a, &room_id).await?;
     }
 
     // Unsubscribe A and B to confirm no leaks.
@@ -7986,6 +8275,10 @@ mod tests {
             QaScenario::EditRedactSearch
         );
         assert_eq!(
+            QaScenario::from_env_value("scheduled_send").unwrap(),
+            QaScenario::ScheduledSend
+        );
+        assert_eq!(
             QaScenario::from_env_value("restore_cleanup").unwrap(),
             QaScenario::RestoreCleanup
         );
@@ -8025,6 +8318,7 @@ mod tests {
             QaScenario::LiveSignals,
             QaScenario::Thread,
             QaScenario::EditRedactSearch,
+            QaScenario::ScheduledSend,
             QaScenario::SendQueue,
             QaScenario::RestoreCleanup,
             QaScenario::E2eeTrust,
@@ -8042,6 +8336,7 @@ mod tests {
     fn privacy_sensitive_scenarios_suppress_matrix_identifiers() {
         assert!(QaScenario::LiveSignals.suppress_matrix_identifiers());
         assert!(QaScenario::SendQueue.suppress_matrix_identifiers());
+        assert!(QaScenario::ScheduledSend.suppress_matrix_identifiers());
         assert!(QaScenario::CredentialHealth.suppress_matrix_identifiers());
         assert!(QaScenario::NativeAttention.suppress_matrix_identifiers());
         assert!(!QaScenario::Timeline.suppress_matrix_identifiers());
@@ -8666,6 +8961,7 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::LiveSignals));
         assert!(QaScenario::All.should_run_stage(QaStage::Thread));
         assert!(QaScenario::All.should_run_stage(QaStage::EditRedactSearch));
+        assert!(QaScenario::All.should_run_stage(QaStage::ScheduledSend));
         assert!(QaScenario::All.should_run_stage(QaStage::SendQueue));
         assert!(QaScenario::All.should_run_stage(QaStage::RestoreCleanup));
     }
@@ -8694,6 +8990,40 @@ mod tests {
                 "cancel_send=ok",
                 "fifo=ok",
                 "unsent_restart=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+    }
+
+    #[test]
+    fn scheduled_send_scenario_runs_after_timeline_and_reports_private_tokens() {
+        assert_eq!(
+            QaScenario::from_env_value("scheduled_send").unwrap(),
+            QaScenario::ScheduledSend
+        );
+        assert!(QaScenario::ScheduledSend.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::ScheduledSend.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::ScheduledSend.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::ScheduledSend.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::ScheduledSend.should_run_stage(QaStage::ScheduledSend));
+        assert!(QaScenario::ScheduledSend.suppress_matrix_identifiers());
+        assert!(!QaScenario::ScheduledSend.should_run_stage(QaStage::Reply));
+        assert!(!QaScenario::ScheduledSend.should_run_stage(QaStage::EditRedactSearch));
+
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::ScheduledSend),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "timeline_nav=ok",
+                "hide_redacted=ok",
+                "scheduled_capability=local_fallback",
+                "scheduled_create=ok",
+                "scheduled_reschedule=ok",
+                "scheduled_cancel=ok",
+                "scheduled_fire=ok",
                 "restore_cleanup=ok",
             ]
         );
@@ -8801,6 +9131,11 @@ mod tests {
                 "presence=ok",
                 "live_signals=ok",
                 "edit_redact_search=ok",
+                "scheduled_capability=local_fallback",
+                "scheduled_create=ok",
+                "scheduled_reschedule=ok",
+                "scheduled_cancel=ok",
+                "scheduled_fire=ok",
                 "send_fail=ok",
                 "resend=ok",
                 "cancel_send=ok",
@@ -9046,6 +9381,23 @@ mod tests {
             ]
         );
         assert_eq!(
+            final_tokens_for_scenario(QaScenario::ScheduledSend),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "timeline_nav=ok",
+                "hide_redacted=ok",
+                "scheduled_capability=local_fallback",
+                "scheduled_create=ok",
+                "scheduled_reschedule=ok",
+                "scheduled_cancel=ok",
+                "scheduled_fire=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
             final_tokens_for_scenario(QaScenario::All),
             implemented_final_tokens()
         );
@@ -9113,6 +9465,11 @@ mod tests {
                 "presence=ok",
                 "live_signals=ok",
                 "edit_redact_search=ok",
+                "scheduled_capability=local_fallback",
+                "scheduled_create=ok",
+                "scheduled_reschedule=ok",
+                "scheduled_cancel=ok",
+                "scheduled_fire=ok",
                 "send_fail=ok",
                 "resend=ok",
                 "cancel_send=ok",

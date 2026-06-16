@@ -671,7 +671,9 @@ impl AppActor {
     fn scheduled_send_delay(&self) -> Option<Duration> {
         let next_send_at_ms = self.state.scheduled_sends.next_send_at_ms()?;
         let now_ms = current_epoch_ms();
-        Some(Duration::from_millis(next_send_at_ms.saturating_sub(now_ms)))
+        Some(Duration::from_millis(
+            next_send_at_ms.saturating_sub(now_ms),
+        ))
     }
 
     async fn dispatch_due_scheduled_send(&mut self) -> bool {
@@ -825,7 +827,8 @@ impl AppActor {
                             capability: ScheduledSendCapability::LocalFallback,
                         })
                         .await;
-                    self.handle_app_effects(request_id, capability_effects).await;
+                    self.handle_app_effects(request_id, capability_effects)
+                        .await;
                     let item = ScheduledSendItem {
                         scheduled_id: scheduled_send_id(request_id),
                         room_id,

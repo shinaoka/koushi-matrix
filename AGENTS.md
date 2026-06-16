@@ -931,6 +931,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   commands in Phase B. Do not add browser timers, React-local scheduled-message
   maps, raw Matrix delayed-event calls, or logs/screenshots containing scheduled
   message bodies or server delayed-event handles.
+- The focused local scheduled-send QA lane is:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=scheduled_send --core --core-backend=probed --timeout-ms=240000`.
+  Required private-data-free tokens are
+  `scheduled_capability=local_fallback`, `scheduled_create=ok`,
+  `scheduled_reschedule=ok`, `scheduled_cancel=ok`, and `scheduled_fire=ok`.
 - The focused local composer QA lane is:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000`.
   Required private-data-free tokens are `mention_send=ok`,

@@ -36,6 +36,7 @@ const checks = [
   "scenario live_signals",
   "scenario thread",
   "scenario edit_redact_search",
+  "scenario scheduled_send",
   "scenario send_queue",
   "scenario restore_cleanup",
   "verify installed Conduit binary",

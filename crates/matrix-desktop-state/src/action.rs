@@ -8,8 +8,8 @@ use crate::state::{
     PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomModerationAction,
     RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
     SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
-    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, TrustOperationFailureKind,
-    UserProfile, VerificationCancelReason, VerificationTarget,
+    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
+    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]

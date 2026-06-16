@@ -91,6 +91,11 @@ typing=ok
 presence=ok
 live_signals=ok
 edit_redact_search=ok
+scheduled_capability=local_fallback
+scheduled_create=ok
+scheduled_reschedule=ok
+scheduled_cancel=ok
+scheduled_fire=ok
 send_fail=ok
 resend=ok
 cancel_send=ok
@@ -226,6 +231,7 @@ npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=a
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=native_attention --core --core-backend=both --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=scheduled_send --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=send_queue --core --core-backend=both --timeout-ms=240000
 ```
 
@@ -247,6 +253,11 @@ ja_catalog=ok
 cjk_normalize=ok
 cjk_collation=ok
 joined_room_restore=ok
+scheduled_capability=local_fallback
+scheduled_create=ok
+scheduled_reschedule=ok
+scheduled_cancel=ok
+scheduled_fire=ok
 ```
 
 `credential_health=ok` / `fail_closed=ok` prove StoreActor-fed, Rust-owned
@@ -272,6 +283,12 @@ send-vs-commit contracts.
 `joined_room_restore=ok` proves the explicit #30 MVP restore scope from
 Rust-observed joined-room hydration progress. It must not be described as a
 backup-wide restore token.
+`scheduled_capability=local_fallback`, `scheduled_create=ok`,
+`scheduled_reschedule=ok`, `scheduled_cancel=ok`, and `scheduled_fire=ok` prove
+the Rust/core-owned scheduled-send local fallback queue and timer. The lane
+selects a room, schedules/reschedules/cancels a future message, schedules a due
+message, and observes Rust state removal plus timeline dispatch without printing
+message bodies, room IDs, transaction IDs, server handles, or raw SDK errors.
 
 ## Headless browser IPC-contract lane
 

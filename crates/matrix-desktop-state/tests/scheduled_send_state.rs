@@ -125,7 +125,10 @@ fn scheduled_send_cancel_and_reschedule_update_store_and_projection() {
             },
         },
     );
-    assert_eq!(state.timeline.scheduled_sends[0].send_at_ms, 1_900_000_030_000);
+    assert_eq!(
+        state.timeline.scheduled_sends[0].send_at_ms,
+        1_900_000_030_000
+    );
     assert_eq!(
         state.timeline.scheduled_sends[0].handle,
         ScheduledSendHandle::Server {
@@ -234,7 +237,13 @@ fn timeline_pane_snapshot_contains_only_selected_room_scheduled_sends() {
         serialized["timeline"]["scheduled_sends"][0]["scheduled_id"],
         "sched-1"
     );
-    assert_eq!(serialized["timeline"]["scheduled_sends"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        serialized["timeline"]["scheduled_sends"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
     let timeline = TimelinePaneState {
         room_id: Some("room-a".to_owned()),

@@ -241,6 +241,10 @@ stateDiagram-v2
   Server MSC4140 delayed-event support is represented by the capability and
   handle boundary; GUI code must not call raw Matrix delayed-event APIs or run
   its own schedule timer.
+- Headless core QA covers the local fallback with the `scheduled_send` scenario.
+  Its tokens are private-data-free: `scheduled_capability=local_fallback`,
+  `scheduled_create=ok`, `scheduled_reschedule=ok`, `scheduled_cancel=ok`, and
+  `scheduled_fire=ok`.
 
 ```mermaid
 stateDiagram-v2

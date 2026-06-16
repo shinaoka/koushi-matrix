@@ -10,8 +10,7 @@ use matrix_desktop_state::{
     LoginRequest, MediaSettings, MentionIntent, NotificationSettings, PresenceKind,
     RecoveryRequest, RoomSummary, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
     SearchState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
-    ThemePreference,
-    VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    ThemePreference, VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 
 use crate::command::{
@@ -1238,15 +1237,17 @@ async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
     .await
     .expect("reschedule send");
 
-    let rescheduled = wait_for_state(&mut conn, |state| {
-        state
-            .timeline
-            .scheduled_sends
-            .first()
-            .is_some_and(|item| item.send_at_ms > snapshot.timeline.scheduled_sends[0].send_at_ms)
-    })
-    .await;
-    assert_eq!(rescheduled.timeline.scheduled_sends[0].scheduled_id, scheduled_id);
+    let rescheduled =
+        wait_for_state(&mut conn, |state| {
+            state.timeline.scheduled_sends.first().is_some_and(|item| {
+                item.send_at_ms > snapshot.timeline.scheduled_sends[0].send_at_ms
+            })
+        })
+        .await;
+    assert_eq!(
+        rescheduled.timeline.scheduled_sends[0].scheduled_id,
+        scheduled_id
+    );
 
     conn.command(CoreCommand::App(AppCommand::CancelScheduledSend {
         request_id: conn.next_request_id(),
