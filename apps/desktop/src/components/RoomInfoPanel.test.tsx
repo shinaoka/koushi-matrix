@@ -147,6 +147,62 @@ describe("RoomInfoPanel", () => {
     expect(markup).toContain("Kick Local Remark");
   });
 
+  test("renders alias edit controls with Rust-projected original member context", () => {
+    const markup = renderToStaticMarkup(
+      <RoomInfoPanel
+        room={{
+          room_id: "!room-alpha:example.invalid",
+          display_name: "Alpha Room",
+          display_label: "Alpha Room",
+          original_display_label: "Alpha Room",
+          avatar: null,
+          is_dm: false,
+          dm_user_ids: [],
+          tags: { favourite: null, low_priority: null },
+          parent_space_ids: [],
+          unread_count: 0
+        }}
+        spaces={[]}
+        onSetLocalUserAlias={() => undefined}
+        roomManagement={{
+          selected_room_id: "!room-alpha:example.invalid",
+          settings: {
+            room_id: "!room-alpha:example.invalid",
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_kick: true,
+              can_ban: true,
+              can_unban: false
+            },
+            members: [
+              {
+                user_id: "@member:example.invalid",
+                display_name: "Upstream Member",
+                display_label: "Local Remark",
+                original_display_label: "Upstream Member",
+                avatar_url: null,
+                power_level: 0,
+                role: "user"
+              }
+            ]
+          },
+          operation: { kind: "idle" }
+        }}
+      />
+    );
+
+    expect(markup).toContain("Local Remark");
+    expect(markup).toContain("Original: Upstream Member");
+    expect(markup).toContain("Edit alias for Local Remark");
+    expect(markup).toContain("Clear alias for Local Remark");
+  });
+
   test("does not synthesize room member labels when the projected label is empty", () => {
     const markup = renderToStaticMarkup(
       <RoomInfoPanel

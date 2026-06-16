@@ -126,11 +126,21 @@ describe("TauriDesktopApi", () => {
     const api = createDesktopApi();
     await api.setDisplayName("Alice");
     await api.setAvatar("image/png", [1, 2, 3, 4]);
+    await api.setLocalUserAlias("@target:example.invalid", "Desk Alias");
+    await api.setLocalUserAlias("@target:example.invalid", null);
 
     expect(invoke).toHaveBeenCalledWith("set_display_name", { displayName: "Alice" });
     expect(invoke).toHaveBeenCalledWith("set_avatar", {
       mimeType: "image/png",
       bytes: [1, 2, 3, 4]
+    });
+    expect(invoke).toHaveBeenCalledWith("set_local_user_alias", {
+      userId: "@target:example.invalid",
+      alias: "Desk Alias"
+    });
+    expect(invoke).toHaveBeenCalledWith("set_local_user_alias", {
+      userId: "@target:example.invalid",
+      alias: null
     });
   });
 

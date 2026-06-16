@@ -388,6 +388,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --artifact-dir=artifacts/linux-gui-local-explore --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --artifact-dir=artifacts/linux-gui-local-message-actions --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-alias --server=conduit --artifact-dir=artifacts/linux-gui-local-alias --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-cjk --server=conduit --artifact-dir=artifacts/linux-gui-local-cjk --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
 ```
@@ -477,6 +478,16 @@ mention, select text and click Bold, then send a slash command. It prints only
 must not monkeypatch Tauri IPC, synthesize `m.mentions` or formatted HTML in
 React, print Matrix IDs, or treat DOM-local text insertion as enough evidence
 before the Rust-owned send state reaches `send=sent` and the composer clears.
+
+`local-alias` registers a synthetic helper account, joins it to the seeded local
+room, sends one helper message, opens the real hover-gated message sender menu,
+sets a local alias through `set_local_user_alias`, waits for the Rust-projected
+timeline sender and room-member labels to update, clears the alias from the real
+Room info member list, and waits for both surfaces to revert to the upstream
+label. It prints only `gui_local_alias_set=ok` and
+`gui_local_alias_clear=ok`; it must not monkeypatch Tauri IPC, synthesize
+profile/member/timeline labels in React, or print Matrix IDs, event IDs, alias
+values, upstream display names, account-data payloads, or raw SDK errors.
 
 `local-cjk` creates a synthetic local room with a long Japanese/CJK display
 name, sends a long Japanese/CJK message through the real composer, and inspects

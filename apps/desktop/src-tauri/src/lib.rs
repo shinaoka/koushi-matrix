@@ -775,6 +775,7 @@ pub fn run() {
             commands::set_typing,
             commands::set_presence,
             commands::set_display_name,
+            commands::set_local_user_alias,
             commands::set_avatar,
             commands::leave_room,
             commands::forget_room,

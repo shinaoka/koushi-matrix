@@ -830,6 +830,8 @@ test("room management panel updates settings, roles, and members from Rust state
               {
                 user_id: "@target-member:example.invalid",
                 display_name: "Target Member",
+                display_label: "Target Member",
+                original_display_label: "Target Member",
                 avatar_url: null,
                 power_level: 0,
                 role: "user"
@@ -1025,6 +1027,204 @@ test("room management panel updates settings, roles, and members from Rust state
   });
 
   await expect(targetMemberRow).toHaveCount(0);
+});
+
+test("local aliases dispatch typed account command and render Rust-projected labels", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate((roomId) => {
+    const targetUserId = "@target-member:example.invalid";
+    const snapshot = window.__harness.currentSnapshot();
+    const dmRoom = {
+      room_id: "!dm-target-member:example.invalid",
+      display_name: "Target Member",
+      display_label: "Target Member",
+      original_display_label: "Target Member",
+      avatar: null,
+      is_dm: true,
+      dm_user_ids: [targetUserId],
+      tags: { favourite: null, low_priority: null },
+      unread_count: 0,
+      notification_count: 0,
+      highlight_count: 0,
+      parent_space_ids: []
+    };
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        profile: {
+          ...snapshot.state.profile,
+          users: {
+            ...snapshot.state.profile.users,
+            [targetUserId]: {
+              user_id: targetUserId,
+              display_name: "Target Member",
+              display_label: "Target Member",
+              original_display_label: "Target Member",
+              mention_search_terms: ["Target Member", targetUserId],
+              avatar: null
+            }
+          }
+        },
+        rooms: [...snapshot.state.rooms, dmRoom],
+        room_management: {
+          selected_room_id: roomId,
+          settings: {
+            room_id: roomId,
+            name: "Harness Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_kick: true,
+              can_ban: false,
+              can_unban: false
+            },
+            members: [
+              {
+                user_id: targetUserId,
+                display_name: "Target Member",
+                display_label: "Target Member",
+                original_display_label: "Target Member",
+                avatar_url: null,
+                power_level: 0,
+                role: "user"
+              }
+            ]
+          },
+          operation: { kind: "idle" }
+        }
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        global_dms: [
+          ...snapshot.sidebar.global_dms,
+          {
+            room_id: dmRoom.room_id,
+            display_name: "Target Member",
+            avatar: null,
+            tags: { favourite: null, low_priority: null },
+            unread_count: 0,
+            highlight_count: 0
+          }
+        ]
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  }, HARNESS_ROOM_ID);
+
+  await page.getByRole("button", { name: "Room info" }).click();
+  const targetMemberRow = page.locator(".room-member-row").filter({
+    hasText: "Target Member"
+  });
+  await expect(targetMemberRow).toBeVisible();
+  await targetMemberRow.getByRole("button", { name: "Set alias for Target Member" }).click();
+  const aliasInput = page.getByRole("textbox", { name: "Alias" });
+  await aliasInput.fill("Desk Alias");
+  await page.getByRole("button", { name: "Save alias" }).click();
+
+  await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_local_user_alias")[0]?.args)
+    )
+    .toEqual({
+      userId: "@target-member:example.invalid",
+      alias: "Desk Alias"
+    });
+  const aliasedMemberRow = page.locator(".room-member-row").filter({
+    hasText: "Desk Alias"
+  });
+  await expect(aliasedMemberRow).toBeVisible();
+  await expect(aliasedMemberRow.getByText("Original: Target Member")).toBeVisible();
+  await expect(page.locator('[data-room-section="people"]').getByText("Desk Alias")).toBeVisible();
+
+  await seedTimelineItems(
+    page,
+    [
+      {
+        id: { Event: { event_id: "$alias-menu-target:example.invalid" } },
+        sender: "@target-member:example.invalid",
+        sender_label: "Desk Alias",
+        body: "Alias menu target",
+        timestamp_ms: 1_800_000_003_000,
+        in_reply_to_event_id: null,
+        thread_root: null,
+        thread_summary: null,
+        reactions: [],
+        can_react: true,
+        is_redacted: false,
+        can_redact: false,
+        is_edited: false,
+        can_edit: false
+      }
+    ],
+    63
+  );
+  const timelineAliasRow = page.locator(".message").filter({ hasText: "Alias menu target" });
+  await timelineAliasRow.hover();
+  await timelineAliasRow.getByRole("button", { name: "Message actions" }).click();
+  await timelineAliasRow.getByRole("menuitem", { name: "Edit alias for Desk Alias" }).click();
+  const timelineAliasInput = page.getByRole("textbox", { name: "Alias" });
+  await timelineAliasInput.fill("Timeline Alias");
+  await page.getByRole("button", { name: "Save alias" }).click();
+  await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(2);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_local_user_alias")[1]?.args)
+    )
+    .toEqual({
+      userId: "@target-member:example.invalid",
+      alias: "Timeline Alias"
+    });
+  await page.evaluate(async () => {
+    await window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        DisplayLabelsUpdated: {
+          labels: [
+            {
+              user_id: "@target-member:example.invalid",
+              display_label: "Timeline Alias"
+            }
+          ]
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  });
+  await expect(timelineAliasRow.locator(".sender")).toHaveText("Timeline Alias");
+  const timelineAliasedMemberRow = page.locator(".room-member-row").filter({
+    hasText: "Timeline Alias"
+  });
+  await expect(timelineAliasedMemberRow).toBeVisible();
+  await expect(
+    page.locator('[data-room-section="people"]').getByText("Timeline Alias")
+  ).toBeVisible();
+
+  await timelineAliasedMemberRow
+    .getByRole("button", { name: "Clear alias for Timeline Alias" })
+    .click();
+  await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(3);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_local_user_alias")[2]?.args)
+    )
+    .toEqual({
+      userId: "@target-member:example.invalid",
+      alias: null
+    });
+  await expect(page.locator(".room-member-row").filter({ hasText: "Target Member" })).toBeVisible();
+  await expect(
+    page.locator('[data-room-section="people"]').getByText("Target Member")
+  ).toBeVisible();
+  await expect(page.locator('[data-room-section="people"]').getByText("Desk Alias")).toHaveCount(0);
 });
 
 test("room tag context menu dispatches typed commands and waits for Rust section state", async ({
@@ -1490,6 +1690,9 @@ test("mention autocomplete inserts a pill and sends typed mention intent", async
             "@alice:example.invalid": {
               user_id: "@alice:example.invalid",
               display_name: "Alice",
+              display_label: "Alice",
+              original_display_label: "Alice",
+              mention_search_terms: ["Alice", "@alice:example.invalid"],
               avatar: null
             }
           }
@@ -1611,6 +1814,9 @@ test("main composer composing Enter never sends or accepts mention autocomplete"
             "@alice:example.invalid": {
               user_id: "@alice:example.invalid",
               display_name: "Alice",
+              display_label: "Alice",
+              original_display_label: "Alice",
+              mention_search_terms: ["Alice", "@alice:example.invalid"],
               avatar: null
             }
           }
@@ -3045,7 +3251,9 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
     const cjkRooms = roomNames.map((displayName, index) => ({
       ...snapshot.state.rooms[0],
       room_id: index === roomNames.length - 1 ? snapshot.state.rooms[0].room_id : `!cjk-order-${index}:example.invalid`,
-      display_name: displayName
+      display_name: displayName,
+      display_label: displayName,
+      original_display_label: displayName
     }));
     window.__harness.setSnapshot({
       ...snapshot,
@@ -3118,7 +3326,12 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
             ...next.state,
             rooms: next.state.rooms.map((room) =>
               room.room_id === "!harness-room:example.invalid"
-                ? { ...room, display_name: "かな先頭" }
+                ? {
+                    ...room,
+                    display_name: "かな先頭",
+                    display_label: "かな先頭",
+                    original_display_label: "かな先頭"
+                  }
                 : room
             ),
             search: {
@@ -3264,6 +3477,8 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
       modifier_labels: { primary: "Ctrl" }
     };
     snapshot.state.rooms[0].display_name = roomName;
+    snapshot.state.rooms[0].display_label = roomName;
+    snapshot.state.rooms[0].original_display_label = roomName;
     snapshot.sidebar.space_rooms[0].display_name = roomName;
     snapshot.state.spaces[0].display_name = "日本語 Space العربية";
     snapshot.sidebar.space_rail[0].display_name = "日本語 Space العربية";
@@ -3595,6 +3810,9 @@ test("profile settings dispatch Rust-owned commands and avatars render from prof
             "@avatar-user:example.invalid": {
               user_id: "@avatar-user:example.invalid",
               display_name: "Avatar User",
+              display_label: "Avatar User",
+              original_display_label: "Avatar User",
+              mention_search_terms: ["Avatar User", "@avatar-user:example.invalid"],
               avatar
             }
           }

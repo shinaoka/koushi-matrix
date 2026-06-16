@@ -125,6 +125,52 @@ describe("BrowserFakeApi settings preview", () => {
     expect(avatar.state.profile.update).toEqual({ kind: "idle" });
   });
 
+  test("updates Rust-shaped local alias projections for profile, rooms, and room members", async () => {
+    const api = createBrowserFakeApi();
+    const targetUserId = "@member-1:example.invalid";
+
+    const aliased = await api.setLocalUserAlias(targetUserId, "Desk Alias");
+
+    expect(aliased.state.profile.local_aliases[targetUserId]).toBe("Desk Alias");
+    expect(aliased.state.profile.local_alias_update).toEqual({ kind: "idle" });
+    expect(aliased.state.profile.users[targetUserId]).toMatchObject({
+      display_label: "Desk Alias",
+      original_display_label: "Member 1"
+    });
+    expect(
+      aliased.state.profile.users[targetUserId]?.mention_search_terms
+    ).toEqual(["Desk Alias", "Member 1", targetUserId]);
+    expect(
+      aliased.state.rooms.find((room) => room.room_id === "!dm-member-1:example.invalid")
+    ).toMatchObject({
+      display_label: "Desk Alias",
+      original_display_label: "Member 1"
+    });
+
+    const loaded = await api.loadRoomSettings("!room-alpha:example.invalid");
+    expect(
+      loaded.state.room_management.settings?.members.find(
+        (member) => member.user_id === targetUserId
+      )
+    ).toMatchObject({
+      display_label: "Desk Alias",
+      original_display_label: "Member 1"
+    });
+
+    const cleared = await api.setLocalUserAlias(targetUserId, null);
+    expect(cleared.state.profile.local_aliases[targetUserId]).toBeUndefined();
+    expect(cleared.state.profile.users[targetUserId]).toMatchObject({
+      display_label: "Member 1",
+      original_display_label: "Member 1"
+    });
+    expect(
+      cleared.state.rooms.find((room) => room.room_id === "!dm-member-1:example.invalid")
+    ).toMatchObject({
+      display_label: "Member 1",
+      original_display_label: "Member 1"
+    });
+  });
+
   test("updates the Rust-shaped E2EE trust snapshot for preview controls", async () => {
     const api = createBrowserFakeApi();
 

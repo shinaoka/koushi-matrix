@@ -160,6 +160,7 @@ export interface TimelineRowActionHandlers {
   onLoadMessageSource: (roomId: string, eventId: string) => void;
   onForwardMessage: (roomId: string, sourceEventId: string, destinationRoomId: string) => void;
   onCopyText: (value: string) => void;
+  onSetLocalUserAlias: (userId: string, alias: string | null) => void;
   onRetrySend: (roomId: string, transactionId: string) => void;
   onCancelSend: (roomId: string, transactionId: string) => void;
 }
@@ -224,6 +225,12 @@ const ignoreSendQueueAction = () => undefined;
 type TimelineMentionToken = {
   token: string;
   userId: string;
+};
+
+type TimelineAliasTarget = {
+  userId: string;
+  displayLabel: string;
+  originalDisplayLabel: string;
 };
 
 export function renderTimelineMessageText(
@@ -386,6 +393,7 @@ export function TimelineView({
   profileUsers = {},
   pinnedEventIds = [],
   forwardDestinations = [],
+  onSetLocalUserAlias,
   suppressPaginationUi = false
 }: {
   timelineKey: TimelineKey;
@@ -398,10 +406,13 @@ export function TimelineView({
   profileUsers?: Record<string, UserProfile>;
   pinnedEventIds?: readonly string[];
   forwardDestinations?: readonly TimelineForwardDestination[];
+  onSetLocalUserAlias?: TimelineRowActionHandlers["onSetLocalUserAlias"];
   suppressPaginationUi?: boolean;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
+  const [aliasTarget, setAliasTarget] = useState<TimelineAliasTarget | null>(null);
+  const [aliasDraft, setAliasDraft] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
   /** Anchor captured before the latest prepend batch was applied. */
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null);
@@ -586,6 +597,25 @@ export function TimelineView({
   const onCopyText = useCallback((value: string) => {
     void writeClipboardText(value).catch(() => undefined);
   }, []);
+  const openAliasDialog = useCallback((target: TimelineAliasTarget) => {
+    setAliasTarget(target);
+    setAliasDraft(aliasTargetIsActive(target) ? target.displayLabel : "");
+  }, []);
+  const closeAliasDialog = useCallback(() => {
+    setAliasTarget(null);
+    setAliasDraft("");
+  }, []);
+  const submitAliasDialog = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!aliasTarget || !onSetLocalUserAlias) {
+        return;
+      }
+      onSetLocalUserAlias(aliasTarget.userId, aliasDraft.trim() || null);
+      closeAliasDialog();
+    },
+    [aliasDraft, aliasTarget, closeAliasDialog, onSetLocalUserAlias]
+  );
   const effectiveForwardDestinations =
     forwardDestinations.length > 0
       ? forwardDestinations
@@ -723,6 +753,7 @@ export function TimelineView({
               onLoadMessageSource={onLoadMessageSource}
               onForwardMessage={onForwardMessage}
               onCopyText={onCopyText}
+              onOpenAliasDialog={onSetLocalUserAlias ? openAliasDialog : undefined}
               forwardDestinations={effectiveForwardDestinations}
               onRetrySend={onRetrySend}
               onCancelSend={onCancelSend}
@@ -751,6 +782,42 @@ export function TimelineView({
           onClose={() => setMessageSource(null)}
         />
       ) : null}
+      {aliasTarget ? (
+        <div className="dialog-overlay" role="presentation" onMouseDown={closeAliasDialog}>
+          <form
+            className="dialog-box timeline-alias-dialog"
+            aria-label={t("room.aliasDialogTitle", { name: aliasTarget.displayLabel })}
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={submitAliasDialog}
+          >
+            <h3 className="dialog-title">
+              {t("room.aliasDialogTitle", { name: aliasTarget.displayLabel })}
+            </h3>
+            {aliasTargetIsActive(aliasTarget) ? (
+              <p className="room-member-original-context" dir="auto">
+                {t("room.memberOriginalName", {
+                  name: aliasTarget.originalDisplayLabel
+                })}
+              </p>
+            ) : null}
+            <input
+              className="dialog-input"
+              aria-label={t("room.aliasInput")}
+              value={aliasDraft}
+              onChange={(event) => setAliasDraft(event.currentTarget.value)}
+              autoFocus
+            />
+            <div className="dialog-actions">
+              <button className="dialog-button" type="button" onClick={closeAliasDialog}>
+                {t("action.cancel")}
+              </button>
+              <button className="dialog-button is-primary" type="submit">
+                {t("room.saveAlias")}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -773,6 +840,7 @@ export function TimelineItemRow({
   onLoadMessageSource = () => undefined,
   onForwardMessage = () => undefined,
   onCopyText = () => undefined,
+  onOpenAliasDialog,
   forwardDestinations = [],
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
@@ -800,6 +868,7 @@ export function TimelineItemRow({
   onLoadMessageSource?: TimelineRowActionHandlers["onLoadMessageSource"];
   onForwardMessage?: TimelineRowActionHandlers["onForwardMessage"];
   onCopyText?: TimelineRowActionHandlers["onCopyText"];
+  onOpenAliasDialog?: (target: TimelineAliasTarget) => void;
   forwardDestinations?: readonly TimelineForwardDestination[];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
@@ -1101,8 +1170,9 @@ export function TimelineItemRow({
   );
   const canViewSource = Boolean(eventId && item.actions?.can_view_source);
   const canForward = Boolean(eventId && item.actions?.can_forward);
+  const canSetSenderAlias = Boolean(eventId && item.sender && onOpenAliasDialog);
   const canShowMessageActionMenu =
-    canCopyMessage || canCopyPermalink || canViewSource || canForward;
+    canSetSenderAlias || canCopyMessage || canCopyPermalink || canViewSource || canForward;
   const canShowThreadSummary = Boolean(eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
   const sendStateLabel =
@@ -1116,6 +1186,16 @@ export function TimelineItemRow({
   const avatarUrl =
     profile?.avatar?.thumbnail.kind === "ready" ? profile.avatar.thumbnail.source_url : null;
   const senderDisplayLabel = item.sender_label?.trim() || item.sender || "";
+  const senderOriginalLabel =
+    profile?.original_display_label.trim() || profile?.display_name?.trim() || "";
+  const senderAliasTarget =
+    item.sender && canSetSenderAlias
+      ? {
+          userId: item.sender,
+          displayLabel: senderDisplayLabel || item.sender,
+          originalDisplayLabel: senderOriginalLabel
+        }
+      : null;
   const threadSummaryText = item.thread_summary
     ? formatThreadSummary(
         item.thread_summary.reply_count,
@@ -1436,9 +1516,31 @@ export function TimelineItemRow({
                   }
                 }}
               >
-                {canCopyMessage ? (
+                {senderAliasTarget ? (
                   <button
                     ref={firstActionMenuItemRef}
+                    className="message-action-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onOpenAliasDialog?.(senderAliasTarget);
+                      closeActionMenu();
+                    }}
+                  >
+                    <Edit3 size={14} aria-hidden="true" />
+                    <span>
+                      {t(
+                        aliasTargetIsActive(senderAliasTarget)
+                          ? "room.editAliasForMember"
+                          : "room.setAliasForMember",
+                        { name: senderAliasTarget.displayLabel }
+                      )}
+                    </span>
+                  </button>
+                ) : null}
+                {canCopyMessage ? (
+                  <button
+                    ref={!senderAliasTarget ? firstActionMenuItemRef : undefined}
                     className="message-action-menu-item"
                     type="button"
                     role="menuitem"
@@ -1450,7 +1552,7 @@ export function TimelineItemRow({
                 ) : null}
                 {canCopyPermalink ? (
                   <button
-                    ref={!canCopyMessage ? firstActionMenuItemRef : undefined}
+                    ref={!senderAliasTarget && !canCopyMessage ? firstActionMenuItemRef : undefined}
                     className="message-action-menu-item"
                     type="button"
                     role="menuitem"
@@ -1462,7 +1564,11 @@ export function TimelineItemRow({
                 ) : null}
                 {canViewSource ? (
                   <button
-                    ref={!canCopyMessage && !canCopyPermalink ? firstActionMenuItemRef : undefined}
+                    ref={
+                      !senderAliasTarget && !canCopyMessage && !canCopyPermalink
+                        ? firstActionMenuItemRef
+                        : undefined
+                    }
                     className="message-action-menu-item"
                     type="button"
                     role="menuitem"
@@ -1475,10 +1581,13 @@ export function TimelineItemRow({
                 {canForward ? (
                   <div className="message-forward-menu-control">
                     <button
-                      ref={
-                        !canCopyMessage && !canCopyPermalink && !canViewSource
-                          ? firstActionMenuItemRef
-                          : undefined
+	                      ref={
+	                        !senderAliasTarget &&
+	                        !canCopyMessage &&
+	                        !canCopyPermalink &&
+	                        !canViewSource
+	                          ? firstActionMenuItemRef
+	                          : undefined
                       }
                       className="message-action-menu-item"
                       type="button"
@@ -1535,6 +1644,12 @@ function latestEventBackedItemId(items: TimelineItem[]): string | null {
     }
   }
   return null;
+}
+
+function aliasTargetIsActive(target: TimelineAliasTarget): boolean {
+  const displayLabel = target.displayLabel.trim();
+  const originalDisplayLabel = target.originalDisplayLabel.trim();
+  return Boolean(displayLabel && originalDisplayLabel && displayLabel !== originalDisplayLabel);
 }
 
 function MessageSourceDialog({

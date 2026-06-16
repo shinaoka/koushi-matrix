@@ -402,6 +402,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   lists, sort order, action labels, and original-name affordances must consume
   these projected fields and must not join `settings.members` with
   `local_aliases` or the global profile cache.
+- Local alias GUI affordances dispatch only the typed
+  `set_local_user_alias(user_id, alias)` account command. React may own dialog
+  visibility and input draft text, including trimming empty input to a clear,
+  but it must not update member rows, DM titles, timeline labels, receipts, or
+  mention candidates locally; those must change only after the returned
+  Rust-shaped snapshot or timeline label event changes. Browser-headless tests
+  should assert the typed command arguments and then assert Rust-projected
+  `display_label` / `original_display_label` rendering.
 - Room summaries use the same Rust-owned display projection:
   `RoomSummary.display_label` is the sidebar/header/search/forward/space-child
   display value, while `RoomSummary.original_display_label` is the alias-free
@@ -424,6 +432,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   or alias text in normal Debug, QA titles/logs, screenshots, issue comments, or
   docs examples. `ProfileState` Debug should expose only profile/avatar presence
   and counts; SDK alias DTO Debug should expose counts only.
+- When adding GUI labels for alias/profile affordances, update the
+  `MessageId` union, English and Japanese catalogs, and `messages.test.ts`
+  coverage together; adding only the English catalog makes runtime `t(...)`
+  calls fail before the typecheck catches the missing key.
 - `SetAvatar` may carry image bytes only through the typed command boundary.
   Debug output, QA logs, screenshots, issue comments, and docs examples must not
   contain real avatar bytes, real avatar MXC URIs, local thumbnail paths, or raw
@@ -984,6 +996,15 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Rust-owned send state (`send=sent`) plus composer clear. It prints `gui_local_mention=ok`,
   `gui_local_markdown=ok`, and `gui_local_slash=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-composer-fast --timeout-ms=180000`
+- Local alias GUI iteration has a focused virtual-display lane:
+  `--scenario=local-alias`. It seeds a synthetic helper sender, opens the real
+  hover-gated message sender menu, sets a local alias through the typed
+  `set_local_user_alias` path, waits for Rust-projected timeline/member labels,
+  clears through the real Room info member list, and waits for both surfaces to
+  revert. It prints only `gui_local_alias_set=ok` and
+  `gui_local_alias_clear=ok`; do not print Matrix IDs, event IDs, alias values,
+  account-data payloads, or raw SDK errors:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-alias --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-alias-fast --timeout-ms=180000`
 - CJK visual fitting has a focused virtual-display lane:
   `--scenario=local-cjk`. It creates a long Japanese/CJK local room name, sends
   a long Japanese/CJK message through the real composer, and verifies the Tauri

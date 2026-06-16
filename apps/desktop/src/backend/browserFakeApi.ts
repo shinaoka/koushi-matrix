@@ -80,6 +80,7 @@ export interface DesktopApi {
   setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot>;
   setPresence(presence: PresenceKind): Promise<DesktopSnapshot>;
   setDisplayName(displayName: string | null): Promise<DesktopSnapshot>;
+  setLocalUserAlias(userId: string, alias: string | null): Promise<DesktopSnapshot>;
   setAvatar(mimeType: string, bytes: number[]): Promise<DesktopSnapshot>;
   editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
   redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
@@ -624,6 +625,31 @@ class BrowserFakeApi implements DesktopApi {
     };
     this.snapshot.state.profile.own.display_name = normalized;
     this.snapshot.state.profile.update = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async setLocalUserAlias(userId: string, alias: string | null): Promise<DesktopSnapshot> {
+    if (!this.isReady() || userId.trim().length === 0) {
+      return this.getSnapshot();
+    }
+
+    const normalizedUserId = userId.trim();
+    const normalizedAlias = alias?.trim() ? alias.trim() : null;
+    const requestId = this.nextRequestId();
+    this.snapshot.state.profile.local_alias_update = {
+      kind: "saving",
+      request_id: requestId
+    };
+
+    await Promise.resolve();
+
+    if (normalizedAlias) {
+      this.snapshot.state.profile.local_aliases[normalizedUserId] = normalizedAlias;
+    } else {
+      delete this.snapshot.state.profile.local_aliases[normalizedUserId];
+    }
+    this.refreshLocalAliasProjections(normalizedUserId);
+    this.snapshot.state.profile.local_alias_update = { kind: "idle" };
     return this.getSnapshot();
   }
 
@@ -1580,6 +1606,71 @@ class BrowserFakeApi implements DesktopApi {
       .sort((left, right) => left.user_id.localeCompare(right.user_id));
   }
 
+  private refreshLocalAliasProjections(userId: string): void {
+    const profile = this.ensureUserProfile(userId);
+    const originalDisplayLabel =
+      profile.original_display_label.trim() || profile.display_name?.trim() || userId;
+    const displayLabel = this.snapshot.state.profile.local_aliases[userId] ?? originalDisplayLabel;
+    this.snapshot.state.profile.users[userId] = {
+      ...profile,
+      display_label: displayLabel,
+      original_display_label: originalDisplayLabel,
+      mention_search_terms: uniqueNonBlank([displayLabel, originalDisplayLabel, userId])
+    };
+    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+      room.is_dm && room.dm_user_ids.includes(userId)
+        ? {
+            ...room,
+            display_label: displayLabel,
+            original_display_label: originalDisplayLabel
+          }
+        : room
+    );
+    this.snapshot.state.room_management =
+      this.snapshot.state.room_management.settings === null
+        ? this.snapshot.state.room_management
+        : {
+            ...this.snapshot.state.room_management,
+            settings: {
+              ...this.snapshot.state.room_management.settings,
+              members: this.snapshot.state.room_management.settings.members.map((member) =>
+                member.user_id === userId
+                  ? {
+                      ...member,
+                      display_label: displayLabel,
+                      original_display_label: originalDisplayLabel
+                    }
+                  : member
+              )
+            }
+          };
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
+  }
+
+  private ensureUserProfile(userId: string): DesktopSnapshot["state"]["profile"]["users"][string] {
+    const existing = this.snapshot.state.profile.users[userId];
+    if (existing) {
+      return existing;
+    }
+    const originalDisplayLabel =
+      this.snapshot.state.rooms.find((room) => room.is_dm && room.dm_user_ids.includes(userId))
+        ?.original_display_label.trim() || userId;
+    const profile = {
+      user_id: userId,
+      display_name: originalDisplayLabel === userId ? null : originalDisplayLabel,
+      display_label: originalDisplayLabel,
+      original_display_label: originalDisplayLabel,
+      mention_search_terms: uniqueNonBlank([originalDisplayLabel, userId]),
+      avatar: null
+    };
+    this.snapshot.state.profile.users[userId] = profile;
+    return profile;
+  }
+
   private canRestartSync() {
     const sync = this.snapshot.state.sync;
     return (
@@ -2333,6 +2424,17 @@ function emptyRoomTags(): RoomTags {
 
 function emptyMentionIntent(): MentionIntent {
   return { targets: [] };
+}
+
+function uniqueNonBlank(values: Array<string | null | undefined>): string[] {
+  const terms: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (normalized && !terms.includes(normalized)) {
+      terms.push(normalized);
+    }
+  }
+  return terms;
 }
 
 const spaces: SpaceSummary[] = [

@@ -850,6 +850,10 @@ export function App() {
     setSnapshot(await api.setDisplayName(displayName));
   }
 
+  async function setLocalUserAlias(userId: string, alias: string | null) {
+    setSnapshot(await api.setLocalUserAlias(userId, alias));
+  }
+
   async function setAvatar(file: File) {
     const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
     if (bytes.length === 0) {
@@ -1523,6 +1527,9 @@ export function App() {
             onOpenContextMenu={openContextMenu}
             onRedactMessage={redactMessage}
             onResultSelect={selectSearchResult}
+            onSetLocalUserAlias={(userId, alias) => {
+              void setLocalUserAlias(userId, alias);
+            }}
             onUnpinPinnedEvent={unpinPinnedEvent}
             onToggleThread={() => {
               if (rightPanelOpen) {
@@ -1578,6 +1585,9 @@ export function App() {
           onInviteUser={openInviteUserDialog}
           onModerateMember={(roomId, targetUserId, action, reason) => {
             void moderateRoomMember(roomId, targetUserId, action, reason);
+          }}
+          onSetLocalUserAlias={(userId, alias) => {
+            void setLocalUserAlias(userId, alias);
           }}
           onUpdateMemberRole={(roomId, targetUserId, powerLevel) => {
             void updateRoomMemberRole(roomId, targetUserId, powerLevel);
@@ -3094,6 +3104,7 @@ function TimelinePane({
   onReply,
   onResultSelect,
   onSendText,
+  onSetLocalUserAlias,
   onUnpinPinnedEvent,
   onToggleThread,
   onOpenRoomInfo
@@ -3119,6 +3130,7 @@ function TimelinePane({
   onReply: TimelineRowActionHandlers["onReply"];
   onResultSelect: (roomId: string, eventId: string) => void;
   onSendText: () => void;
+  onSetLocalUserAlias: (userId: string, alias: string | null) => void;
   onUnpinPinnedEvent: (roomId: string, eventId: string) => void;
   onToggleThread: () => void;
   onOpenRoomInfo: () => void;
@@ -3211,6 +3223,7 @@ function TimelinePane({
               profileUsers={snapshot.state.profile.users}
               pinnedEventIds={pinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
+              onSetLocalUserAlias={onSetLocalUserAlias}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -3881,6 +3894,7 @@ export function ContextualRightPanel({
   onResetLocalData,
   onInviteUser = () => undefined,
   onModerateMember = () => undefined,
+  onSetLocalUserAlias = () => undefined,
   onUpdateMemberRole = () => undefined,
   onRecoverySecretPresenceChange,
   onReply,
@@ -3928,6 +3942,7 @@ export function ContextualRightPanel({
     action: RoomModerationAction,
     reason: string | null
   ) => void;
+  onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
   onUpdateMemberRole?: (
     roomId: string,
     targetUserId: string,
@@ -4039,6 +4054,7 @@ export function ContextualRightPanel({
               : undefined
           }
           onModerateMember={onModerateMember}
+          onSetLocalUserAlias={onSetLocalUserAlias}
           onUpdateMemberRole={onUpdateMemberRole}
           onUpdateRoomSetting={onUpdateRoomSetting}
         />
@@ -4110,6 +4126,7 @@ export function ContextualRightPanel({
               profileUsers={snapshot.state.profile.users}
               pinnedEventIds={focusedPinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
+              onSetLocalUserAlias={onSetLocalUserAlias}
             />
           </section>
         ) : null}
@@ -4161,6 +4178,7 @@ export function ContextualRightPanel({
             profileUsers={snapshot.state.profile.users}
             pinnedEventIds={threadPinnedEventIds}
             forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
+            onSetLocalUserAlias={onSetLocalUserAlias}
           />
         ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>

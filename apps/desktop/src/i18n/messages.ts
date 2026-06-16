@@ -158,6 +158,16 @@ export type MessageId =
   | "room.kick"
   | "room.kickMember"
   | "room.management"
+  | "room.aliasDialogTitle"
+  | "room.aliasInput"
+  | "room.clearAlias"
+  | "room.clearAliasForMember"
+  | "room.editAlias"
+  | "room.editAliasForMember"
+  | "room.memberOriginalName"
+  | "room.saveAlias"
+  | "room.setAlias"
+  | "room.setAliasForMember"
   | "room.noMembers"
   | "room.noTopic"
   | "room.noRoomSelected"
@@ -731,6 +741,16 @@ const en: Catalog = {
   "room.management": "Room management",
   "room.memberRole": "Member role",
   "room.memberRoleFor": "Member role for {name}",
+  "room.aliasDialogTitle": "Alias for {name}",
+  "room.aliasInput": "Alias",
+  "room.clearAlias": "Clear alias",
+  "room.clearAliasForMember": "Clear alias for {name}",
+  "room.editAlias": "Edit alias",
+  "room.editAliasForMember": "Edit alias for {name}",
+  "room.memberOriginalName": "Original: {name}",
+  "room.saveAlias": "Save alias",
+  "room.setAlias": "Set alias",
+  "room.setAliasForMember": "Set alias for {name}",
   "room.noAvatar": "No avatar",
   "room.noMembers": "No members loaded",
   "room.noTopic": "No topic",
@@ -1212,6 +1232,16 @@ const ja: Catalog = {
   "room.management": "ルーム管理",
   "room.memberRole": "メンバーロール",
   "room.memberRoleFor": "{name}のメンバーロール",
+  "room.aliasDialogTitle": "{name}のエイリアス",
+  "room.aliasInput": "エイリアス",
+  "room.clearAlias": "エイリアスを解除",
+  "room.clearAliasForMember": "{name}のエイリアスを解除",
+  "room.editAlias": "エイリアスを編集",
+  "room.editAliasForMember": "{name}のエイリアスを編集",
+  "room.memberOriginalName": "元の名前: {name}",
+  "room.saveAlias": "エイリアスを保存",
+  "room.setAlias": "エイリアスを設定",
+  "room.setAliasForMember": "{name}のエイリアスを設定",
   "room.noAvatar": "アバターなし",
   "room.noMembers": "読み込まれたメンバーはありません",
   "room.noTopic": "トピックなし",

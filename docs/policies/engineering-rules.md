@@ -189,6 +189,12 @@ Rules:
    `display_label`/`original_display_label` are room/user data and are not a
    place for catalog prose or generic English fallbacks such as `Member`. React
    must not infer DM targets from room titles.
+   Alias set/edit/clear GUI controls may own only dialog visibility and input
+   draft text. They dispatch the typed `set_local_user_alias(user_id,
+   alias|null)` command and wait for Rust-shaped snapshots or
+   `TimelineEvent::DisplayLabelsUpdated` before visible names change. Browser
+   headless coverage for alias UI must assert both the typed command arguments
+   and the Rust-projected `display_label` / `original_display_label` rendering.
    Read-receipt reader avatars use the same boundary: `AppState.live_signals`
    carries Rust-resolved reader labels, avatar DTOs, read timestamps, capped
    reader ordering, and overflow counts; React must not resolve reader profiles

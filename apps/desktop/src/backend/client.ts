@@ -201,6 +201,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("set_display_name", { displayName });
   }
 
+  async setLocalUserAlias(userId: string, alias: string | null): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_local_user_alias", { userId, alias });
+  }
+
   async setAvatar(mimeType: string, bytes: number[]): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("set_avatar", { mimeType, bytes });
   }

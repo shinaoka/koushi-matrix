@@ -41,6 +41,7 @@ const checks = [
   "scenario local-explore",
   "scenario local-message-actions",
   "scenario local-composer",
+  "scenario local-alias",
   "scenario local-cjk",
   "scenario local-settings",
   "verify local-settings trust section",
@@ -227,6 +228,10 @@ async function run() {
   }
   if (guiScenario === "local-composer") {
     await runLocalComposerScenario();
+    return;
+  }
+  if (guiScenario === "local-alias") {
+    await runLocalAliasScenario();
     return;
   }
   if (guiScenario === "local-cjk") {
@@ -950,6 +955,77 @@ async function runLocalComposerScenario() {
   }
 }
 
+async function runLocalAliasScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await selectRoomByName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForActiveRoomName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForTimelineViewMounted(session.browser, timeoutMs);
+    await waitForTimelineSenderLabel(
+      session.browser,
+      session.aliasMemberDisplayName,
+      timeoutMs,
+      "local GUI alias timeline original label"
+    );
+
+    const actionButton = await waitForLatestMessageActionButton(session.browser, timeoutMs);
+    await actionButton.moveTo();
+    await actionButton.waitForDisplayed({ timeout: timeoutMs });
+    await actionButton.click();
+    await clickVisibleMenuItemByText(
+      session.browser,
+      `Set alias for ${session.aliasMemberDisplayName}`,
+      timeoutMs
+    );
+    const aliasInput = await session.browser.$('input[aria-label="Alias"]');
+    await aliasInput.waitForDisplayed({ timeout: timeoutMs });
+    await aliasInput.setValue(session.aliasLocalDisplayName);
+    const saveAliasButton = await session.browser.$("//button[normalize-space()='Save alias']");
+    await saveAliasButton.waitForDisplayed({ timeout: timeoutMs });
+    await saveAliasButton.click();
+
+    await waitForTimelineSenderLabel(
+      session.browser,
+      session.aliasLocalDisplayName,
+      timeoutMs,
+      "local GUI alias timeline set"
+    );
+    const roomInfoButton = await session.browser.$('button[aria-label="Room info"]');
+    await roomInfoButton.waitForDisplayed({ timeout: timeoutMs });
+    await roomInfoButton.click();
+    await waitForRoomMemberAlias(
+      session.browser,
+      session.aliasLocalDisplayName,
+      session.aliasMemberDisplayName,
+      timeoutMs,
+      "local GUI alias member set"
+    );
+    console.log("gui_local_alias_set=ok");
+
+    await clickRoomMemberAliasClear(session.browser, session.aliasLocalDisplayName, timeoutMs);
+    await waitForTimelineSenderLabel(
+      session.browser,
+      session.aliasMemberDisplayName,
+      timeoutMs,
+      "local GUI alias timeline clear"
+    );
+    await waitForRoomMemberAlias(
+      session.browser,
+      session.aliasMemberDisplayName,
+      null,
+      timeoutMs,
+      "local GUI alias member clear"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_alias_clear=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalCjkScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -1249,6 +1325,82 @@ async function waitForRoomMemberRole(browser, expectedLabel, expectedValue, time
   }
   throw new Error(
     `${description} did not observe the Rust-owned role snapshot. Last label=${observed.label} value=${observed.value}`
+  );
+}
+
+async function waitForRoomMemberAlias(browser, expectedLabel, expectedOriginal, timeout, description) {
+  const startedAt = Date.now();
+  let observed = null;
+  while (Date.now() - startedAt < timeout) {
+    observed = await browser.execute(({ label, original }) => {
+      const rowText = (element) => (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+      const rows = Array.from(document.querySelectorAll(".room-member-row"));
+      const matchedRow = rows.find((row) => rowText(row).includes(label));
+      if (!matchedRow) {
+        return { matched: false, rows: rows.length };
+      }
+      const contextText = rowText(matchedRow.querySelector(".room-member-original-context"));
+      return {
+        matched: original === null ? !contextText : contextText.includes(original),
+        rows: rows.length
+      };
+    }, { label: expectedLabel, original: expectedOriginal });
+    if (observed?.matched) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not observe the Rust-owned member alias projection. Last rows=${observed?.rows ?? 0}`
+  );
+}
+
+async function waitForTimelineSenderLabel(browser, expectedLabel, timeout, description) {
+  const startedAt = Date.now();
+  let observedCount = 0;
+  while (Date.now() - startedAt < timeout) {
+    observedCount = await browser.execute((label) => {
+      return Array.from(document.querySelectorAll(".sender")).filter((element) =>
+        (element.textContent ?? "").includes(label)
+      ).length;
+    }, expectedLabel);
+    if (observedCount > 0) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} did not observe the Rust-owned timeline sender projection. Last matches=${observedCount}`
+  );
+}
+
+async function clickRoomMemberAliasClear(browser, aliasLabel, timeout) {
+  const startedAt = Date.now();
+  let observedRows = 0;
+  while (Date.now() - startedAt < timeout) {
+    const result = await browser.execute((label) => {
+      const textFor = (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
+      const rows = Array.from(document.querySelectorAll(".room-member-row"));
+      const targetRow = rows.find((row) => textFor(row).includes(label));
+      const button = targetRow
+        ? Array.from(targetRow.querySelectorAll("button")).find((candidate) =>
+            textFor(candidate) === "Clear alias"
+          )
+        : null;
+      if (!(button instanceof HTMLButtonElement)) {
+        return { clicked: false, rows: rows.length };
+      }
+      button.click();
+      return { clicked: true, rows: rows.length };
+    }, aliasLabel);
+    observedRows = result?.rows ?? 0;
+    if (result?.clicked) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `local GUI alias clear control was not found in the Rust-owned member list. Last rows=${observedRows}`
   );
 }
 
@@ -1723,6 +1875,8 @@ async function startLocalGuiScenario() {
     cjkRoomName: null,
     directoryRoomName: null,
     roomManagementTopic: null,
+    aliasMemberDisplayName: null,
+    aliasLocalDisplayName: null,
     primaryUserId: null,
     seedRoomId: null,
     seedInviteRoomName: null
@@ -1798,6 +1952,29 @@ async function startLocalGuiScenario() {
         seedRoomId,
         "QA helper seed message",
         `qa-helper-${userSuffix}`
+      );
+    }
+
+    if (guiScenario === "local-alias") {
+      const helperUsername = `qa_alias_${userSuffix}`;
+      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
+      const helperAccessToken = helperRegistration.access_token;
+      const helperUserId = helperRegistration.user_id;
+      if (!helperAccessToken || !helperUserId) {
+        throw new Error("local GUI alias setup did not return helper credentials");
+      }
+      session.aliasMemberDisplayName = "Alias Helper";
+      session.aliasLocalDisplayName = "Local Remark";
+      await setDisplayName(homeserver, helperAccessToken, helperUserId, session.aliasMemberDisplayName);
+      await inviteUserToRoom(homeserver, accessToken, seedRoomId, helperUserId);
+      await joinRoom(homeserver, helperAccessToken, seedRoomId);
+      await sendRoomMessage(
+        homeserver,
+        helperAccessToken,
+        seedRoomId,
+        "QA alias seed message",
+        `qa-alias-${userSuffix}`
       );
     }
 

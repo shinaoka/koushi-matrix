@@ -981,6 +981,17 @@ mock.setCommandResponse("set_display_name", ({ displayName }: { displayName: str
     }
   });
 });
+mock.setCommandResponse(
+  "set_local_user_alias",
+  ({ userId, alias }: { userId: string; alias: string | null }) => {
+    const normalizedUserId = userId.trim();
+    const normalizedAlias = alias?.trim() ? alias.trim() : null;
+    if (!normalizedUserId) {
+      return currentSnapshot;
+    }
+    return setCurrentSnapshot(projectAliasSnapshot(currentSnapshot, normalizedUserId, normalizedAlias));
+  }
+);
 mock.setCommandResponse("set_avatar", () =>
   setCurrentSnapshot({
     ...currentSnapshot,
@@ -1002,6 +1013,102 @@ mock.setCommandResponse("set_avatar", () =>
 );
 mock.setCommandResponse("paginate_timeline_backwards", () => currentSnapshot);
 mock.setCommandResponse("paginate_thread_timeline_backwards", () => currentSnapshot);
+
+function projectAliasSnapshot(
+  snapshot: DesktopSnapshot,
+  userId: string,
+  alias: string | null
+): DesktopSnapshot {
+  const existingProfile = snapshot.state.profile.users[userId];
+  const dmRoom = snapshot.state.rooms.find(
+    (room) => room.is_dm && room.dm_user_ids.includes(userId)
+  );
+  const originalDisplayLabel =
+    existingProfile?.original_display_label.trim() ||
+    existingProfile?.display_name?.trim() ||
+    dmRoom?.original_display_label.trim() ||
+    dmRoom?.display_name.trim() ||
+    userId;
+  const displayLabel = alias ?? originalDisplayLabel;
+  const localAliases = { ...snapshot.state.profile.local_aliases };
+  if (alias) {
+    localAliases[userId] = alias;
+  } else {
+    delete localAliases[userId];
+  }
+  const profile = {
+    user_id: userId,
+    display_name:
+      existingProfile?.display_name ??
+      (originalDisplayLabel === userId ? null : originalDisplayLabel),
+    display_label: displayLabel,
+    original_display_label: originalDisplayLabel,
+    mention_search_terms: uniqueNonBlank([displayLabel, originalDisplayLabel, userId]),
+    avatar: existingProfile?.avatar ?? null
+  };
+  return {
+    ...snapshot,
+    state: {
+      ...snapshot.state,
+      profile: {
+        ...snapshot.state.profile,
+        users: {
+          ...snapshot.state.profile.users,
+          [userId]: profile
+        },
+        local_aliases: localAliases,
+        local_alias_update: { kind: "idle" }
+      },
+      rooms: snapshot.state.rooms.map((room) =>
+        room.is_dm && room.dm_user_ids.includes(userId)
+          ? {
+              ...room,
+              display_label: displayLabel,
+              original_display_label: originalDisplayLabel
+            }
+          : room
+      ),
+      room_management:
+        snapshot.state.room_management.settings === null
+          ? snapshot.state.room_management
+          : {
+              ...snapshot.state.room_management,
+              settings: {
+                ...snapshot.state.room_management.settings,
+                members: snapshot.state.room_management.settings.members.map((member) =>
+                  member.user_id === userId
+                    ? {
+                        ...member,
+                        display_label: displayLabel,
+                        original_display_label: originalDisplayLabel
+                      }
+                    : member
+                )
+              }
+            }
+    },
+    sidebar: {
+      ...snapshot.sidebar,
+      global_dms: snapshot.sidebar.global_dms.map((room) =>
+        room.room_id === dmRoom?.room_id ? { ...room, display_name: displayLabel } : room
+      ),
+      space_rooms: snapshot.sidebar.space_rooms.map((room) =>
+        room.room_id === dmRoom?.room_id ? { ...room, display_name: displayLabel } : room
+      )
+    }
+  };
+}
+
+function uniqueNonBlank(values: Array<string | null | undefined>): string[] {
+  const terms: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (normalized && !terms.includes(normalized)) {
+      terms.push(normalized);
+    }
+  }
+  return terms;
+}
 
 // Route ALL Tauri IPC through the recording mock. Plugin commands
 // (window setTitle/setBadge, notifications, etc.) must NOT throw: they are

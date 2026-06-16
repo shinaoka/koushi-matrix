@@ -1142,6 +1142,23 @@ pub async fn set_display_name(
 }
 
 #[tauri::command]
+pub async fn set_local_user_alias(
+    user_id: String,
+    alias: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_local_user_alias_command(request_id, user_id, alias),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn set_avatar(
     mime_type: String,
     bytes: Vec<u8>,
@@ -2554,6 +2571,18 @@ pub(crate) fn build_set_display_name_command(
     })
 }
 
+pub(crate) fn build_set_local_user_alias_command(
+    request_id: matrix_desktop_core::RequestId,
+    user_id: String,
+    alias: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SetLocalUserAlias {
+        request_id,
+        user_id,
+        alias,
+    })
+}
+
 pub(crate) fn build_set_avatar_command(
     request_id: matrix_desktop_core::RequestId,
     mime_type: String,
@@ -3174,11 +3203,11 @@ mod tests {
         build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
         build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
         build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
-        build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
-        build_set_thread_composer_draft_command, build_set_typing_command,
-        build_start_direct_message_command, build_submit_identity_reset_oauth_command,
-        build_submit_identity_reset_password_command, build_submit_login_command,
-        build_submit_recovery_command, build_submit_search_command,
+        build_set_local_user_alias_command, build_set_presence_command, build_set_room_tag_command,
+        build_set_space_child_command, build_set_thread_composer_draft_command,
+        build_set_typing_command, build_start_direct_message_command,
+        build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
+        build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
         build_update_room_member_role_command, build_update_room_setting_command,
@@ -3961,6 +3990,50 @@ mod tests {
                     })
                 );
                 assert!(!debug.contains("Private Display"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_local_user_alias_command(
+            fake_request_id(34),
+            "@target:example.invalid".to_owned(),
+            Some("Desk Alias".to_owned()),
+        ) {
+            CoreCommand::Account(AccountCommand::SetLocalUserAlias {
+                request_id,
+                user_id,
+                alias,
+            }) => {
+                assert_eq!(request_id, fake_request_id(34));
+                assert_eq!(user_id, "@target:example.invalid");
+                assert_eq!(alias.as_deref(), Some("Desk Alias"));
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Account(AccountCommand::SetLocalUserAlias {
+                        request_id,
+                        user_id,
+                        alias,
+                    })
+                );
+                assert!(!debug.contains("@target:example.invalid"), "{debug}");
+                assert!(!debug.contains("Desk Alias"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_local_user_alias_command(
+            fake_request_id(35),
+            "@target:example.invalid".to_owned(),
+            None,
+        ) {
+            CoreCommand::Account(AccountCommand::SetLocalUserAlias {
+                request_id,
+                user_id,
+                alias,
+            }) => {
+                assert_eq!(request_id, fake_request_id(35));
+                assert_eq!(user_id, "@target:example.invalid");
+                assert_eq!(alias, None);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5052,6 +5125,11 @@ mod tests {
                 "pub async fn set_display_name",
                 "build_set_display_name_command",
                 "commands::set_display_name",
+            ),
+            (
+                "pub async fn set_local_user_alias",
+                "build_set_local_user_alias_command",
+                "commands::set_local_user_alias",
             ),
             (
                 "pub async fn set_avatar",

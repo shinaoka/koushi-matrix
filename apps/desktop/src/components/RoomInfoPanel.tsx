@@ -21,6 +21,7 @@ export function RoomInfoPanel({
   spaces,
   onInvitePeople,
   onModerateMember,
+  onSetLocalUserAlias,
   onUpdateMemberRole,
   onUpdateRoomSetting
 }: {
@@ -35,6 +36,7 @@ export function RoomInfoPanel({
     action: RoomModerationAction,
     reason: string | null
   ) => void;
+  onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onUpdateMemberRole?: (roomId: string, targetUserId: string, powerLevel: number) => void;
 }) {
@@ -63,6 +65,8 @@ export function RoomInfoPanel({
   );
   const [historyVisibilityDraft, setHistoryVisibilityDraft] =
     useState<RoomHistoryVisibility>(settings?.history_visibility ?? "shared");
+  const [aliasTarget, setAliasTarget] = useState<RoomMemberSummary | null>(null);
+  const [aliasDraft, setAliasDraft] = useState("");
 
   useEffect(() => {
     setNameDraft(settings?.name ?? roomName);
@@ -71,6 +75,16 @@ export function RoomInfoPanel({
     setJoinRuleDraft(settings?.join_rule ?? "invite");
     setHistoryVisibilityDraft(settings?.history_visibility ?? "shared");
   }, [roomName, settings]);
+
+  const closeAliasDialog = () => {
+    setAliasTarget(null);
+    setAliasDraft("");
+  };
+
+  const openAliasDialog = (profile: RoomMemberSummary) => {
+    setAliasTarget(profile);
+    setAliasDraft(aliasIsActive(profile) ? profile.display_label : "");
+  };
 
   const canEditSettings =
     Boolean(settings?.permissions.can_edit_settings) &&
@@ -321,6 +335,13 @@ export function RoomInfoPanel({
                 <span className="room-member-main">
                   <span dir="auto">{memberLabel(profile)}</span>
                   <small dir="auto">{profile.user_id}</small>
+                  {aliasIsActive(profile) ? (
+                    <small className="room-member-original-context" dir="auto">
+                      {t("room.memberOriginalName", {
+                        name: profile.original_display_label
+                      })}
+                    </small>
+                  ) : null}
                   <small>{roomMemberRoleLabel(profile.role)}</small>
                 </span>
                 <span className="room-member-actions">
@@ -353,6 +374,35 @@ export function RoomInfoPanel({
                       ))}
                     </select>
                   </label>
+                  {onSetLocalUserAlias ? (
+                    <>
+                      <button
+                        className="profile-settings-action room-member-action"
+                        type="button"
+                        aria-label={t(
+                          aliasIsActive(profile)
+                            ? "room.editAliasForMember"
+                            : "room.setAliasForMember",
+                          { name: memberLabel(profile) }
+                        )}
+                        onClick={() => openAliasDialog(profile)}
+                      >
+                        {t(aliasIsActive(profile) ? "room.editAlias" : "room.setAlias")}
+                      </button>
+                      {aliasIsActive(profile) ? (
+                        <button
+                          className="profile-settings-action room-member-action"
+                          type="button"
+                          aria-label={t("room.clearAliasForMember", {
+                            name: memberLabel(profile)
+                          })}
+                          onClick={() => onSetLocalUserAlias(profile.user_id, null)}
+                        >
+                          {t("room.clearAlias")}
+                        </button>
+                      ) : null}
+                    </>
+                  ) : null}
                   <ModerationButton
                     action="kick"
                     disabled={
@@ -429,6 +479,46 @@ export function RoomInfoPanel({
           { icon: <Settings size={16} />, label: t("room.roomSettings") }
         ]}
       />
+      {aliasTarget ? (
+        <div className="dialog-overlay" role="presentation" onMouseDown={closeAliasDialog}>
+          <form
+            className="dialog-box room-alias-dialog"
+            aria-label={t("room.aliasDialogTitle", { name: memberLabel(aliasTarget) })}
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSetLocalUserAlias?.(aliasTarget.user_id, aliasDraft.trim() || null);
+              closeAliasDialog();
+            }}
+          >
+            <h3 className="dialog-title">
+              {t("room.aliasDialogTitle", { name: memberLabel(aliasTarget) })}
+            </h3>
+            {aliasIsActive(aliasTarget) ? (
+              <p className="room-member-original-context" dir="auto">
+                {t("room.memberOriginalName", {
+                  name: aliasTarget.original_display_label
+                })}
+              </p>
+            ) : null}
+            <input
+              className="dialog-input"
+              aria-label={t("room.aliasInput")}
+              value={aliasDraft}
+              onChange={(event) => setAliasDraft(event.currentTarget.value)}
+              autoFocus
+            />
+            <div className="dialog-actions">
+              <button className="dialog-button" type="button" onClick={closeAliasDialog}>
+                {t("action.cancel")}
+              </button>
+              <button className="dialog-button is-primary" type="submit">
+                {t("room.saveAlias")}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -460,6 +550,12 @@ function ModerationButton({
 
 function memberLabel(profile: RoomMemberSummary): string {
   return profile.display_label;
+}
+
+function aliasIsActive(profile: RoomMemberSummary): boolean {
+  const displayLabel = profile.display_label.trim();
+  const originalDisplayLabel = profile.original_display_label.trim();
+  return Boolean(displayLabel && originalDisplayLabel && displayLabel !== originalDisplayLabel);
 }
 
 const roomMemberRoleOptions: Array<{ role: RoomMemberRole; powerLevel: number }> = [
