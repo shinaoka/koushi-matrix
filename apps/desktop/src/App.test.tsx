@@ -371,6 +371,127 @@ describe("ContextualRightPanel", () => {
     expect(markup).not.toContain("mxc://example.invalid/private-file");
   });
 
+  test("TimelineItemRow renders Rust-owned formatted bodies and code block controls", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={{
+          id: { Event: { event_id: "$formatted:example.invalid" } },
+          sender: "@alice:example.invalid",
+          body: "plain fallback should not render when formatted exists",
+          timestamp_ms: 1_800_000_000_000,
+          in_reply_to_event_id: null,
+          formatted: {
+            html:
+              '<strong>Bold body</strong><blockquote>Quoted body</blockquote><ul><li>List item</li></ul><a href="https://example.invalid/path">safe link</a><pre><code class="language-rust">fn main() {}</code></pre>',
+            plain_text: "Bold bodyQuoted bodyList itemsafe linkfn main() {}",
+            code_blocks: [{ language: "rust", body: "fn main() {}" }]
+          },
+          thread_root: null,
+          thread_summary: null,
+          can_react: true,
+          is_redacted: false,
+          can_redact: false,
+          is_edited: false,
+          can_edit: true,
+          reactions: []
+        }}
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('class="message-body message-formatted-body"');
+    expect(markup).toContain("<strong>Bold body</strong>");
+    expect(markup).toContain("<blockquote>Quoted body</blockquote>");
+    expect(markup).toContain("<li>List item</li>");
+    expect(markup).toContain('href="https://example.invalid/path"');
+    expect(markup).toContain('class="message-code-block"');
+    expect(markup).toContain('data-code-block-wrap="true"');
+    expect(markup).toContain('class="language-rust"');
+    expect(markup).toContain('aria-label="Copy code"');
+    expect(markup).not.toContain("plain fallback should not render");
+  });
+
+  test("TimelineItemRow reflects the Rust-owned code block wrap preference", () => {
+    const item = {
+      id: { Event: { event_id: "$formatted-nowrap:example.invalid" } },
+      sender: "@alice:example.invalid",
+      body: "plain fallback",
+      timestamp_ms: 1_800_000_000_000,
+      in_reply_to_event_id: null,
+      formatted: {
+        html: '<pre><code class="language-rust">let long_line = "value";</code></pre>',
+        plain_text: 'let long_line = "value";',
+        code_blocks: [{ language: "rust", body: 'let long_line = "value";' }]
+      },
+      thread_root: null,
+      thread_summary: null,
+      can_react: true,
+      is_redacted: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: true,
+      reactions: []
+    } as TimelineItem;
+
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={item}
+        roomId="!room:example.invalid"
+        codeBlockWrap={false}
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('data-code-block-wrap="false"');
+  });
+
+  test("TimelineItemRow preserves search highlighting over formatted text", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={
+          {
+            id: { Event: { event_id: "$formatted-search:example.invalid" } },
+            sender: "@alice:example.invalid",
+            body: "plain fallback",
+            timestamp_ms: 1_800_000_000_000,
+            in_reply_to_event_id: null,
+            formatted: {
+              html: "<strong>Formatted keyword body</strong>",
+              plain_text: "Formatted keyword body",
+              code_blocks: []
+            },
+            thread_root: null,
+            thread_summary: null,
+            can_react: true,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: true,
+            reactions: []
+          } as TimelineItem
+        }
+        roomId="!room:example.invalid"
+        searchQuery="keyword"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("<strong>Formatted <mark>keyword</mark> body</strong>");
+  });
+
   test("TimelineItemRow renders redaction affordance and redacted placeholder", () => {
     const redactableMarkup = renderToStaticMarkup(
       <TimelineItemRow

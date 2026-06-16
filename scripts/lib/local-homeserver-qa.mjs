@@ -193,6 +193,38 @@ export async function joinRoom(homeserver, accessToken, roomIdOrAlias) {
 }
 
 export async function sendRoomMessage(homeserver, accessToken, roomId, body, transactionId) {
+  return sendRoomMessageContent(
+    homeserver,
+    accessToken,
+    roomId,
+    { msgtype: "m.text", body },
+    transactionId
+  );
+}
+
+export async function sendRoomFormattedMessage(
+  homeserver,
+  accessToken,
+  roomId,
+  body,
+  formattedBody,
+  transactionId
+) {
+  return sendRoomMessageContent(
+    homeserver,
+    accessToken,
+    roomId,
+    {
+      msgtype: "m.text",
+      body,
+      format: "org.matrix.custom.html",
+      formatted_body: formattedBody
+    },
+    transactionId
+  );
+}
+
+async function sendRoomMessageContent(homeserver, accessToken, roomId, content, transactionId) {
   const path =
     `${homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}` +
     `/send/m.room.message/${encodeURIComponent(transactionId)}`;
@@ -204,12 +236,13 @@ export async function sendRoomMessage(homeserver, accessToken, roomId, body, tra
         authorization: `Bearer ${accessToken}`,
         "content-type": "application/json"
       },
-      body: JSON.stringify({ msgtype: "m.text", body })
+      body: JSON.stringify(content)
     }
   );
   if (!response.ok) {
     throw new Error(`sendRoomMessage failed with HTTP ${response.status}`);
   }
+  return response.json();
 }
 
 export async function setDisplayName(homeserver, accessToken, userId, displayName) {

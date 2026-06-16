@@ -36,6 +36,8 @@
  *      focused-context and mark-read commands, and wait for Rust to remove rows.
  *  15. Render Settings/Security local-encryption health from Rust-owned
  *      snapshots and dispatch credential health probes only through Tauri IPC.
+ *  16. Render Rust-owned formatted timeline DTOs and drive the display
+ *      code-block wrap setting through `update_settings`.
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -3780,6 +3782,77 @@ test("notification settings dispatch Rust-owned update_settings patches", async 
       }
     });
   await expect(sound).toHaveAttribute("aria-checked", "false");
+});
+
+test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: "$formatted-rich:example.invalid" } },
+      sender: "@harness-user:example.invalid",
+      body: "plain fallback should not render",
+      timestamp_ms: 1_800_000_000_900,
+      in_reply_to_event_id: null,
+      formatted: {
+        html:
+          '<strong>Formatted keyword</strong><blockquote>Quoted body</blockquote><ul><li>List item</li></ul><a href="https://example.invalid/path">safe link</a><pre><code class="language-rust">const veryLongToken = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";</code></pre>',
+        plain_text:
+          'Formatted keywordQuoted bodyList itemsafe linkconst veryLongToken = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";',
+        code_blocks: [
+          {
+            language: "rust",
+            body:
+              'const veryLongToken = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";'
+          }
+        ]
+      },
+      thread_root: null,
+      thread_summary: null,
+      reactions: [],
+      can_react: false,
+      is_redacted: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false
+    }
+  ]);
+
+  const row = page.locator('[data-event-id="$formatted-rich:example.invalid"]');
+  await expect(row.locator("strong")).toHaveText("Formatted keyword");
+  await expect(row.locator("blockquote")).toContainText("Quoted body");
+  await expect(row.locator("li")).toHaveText("List item");
+  await expect(row.locator('a[href="https://example.invalid/path"]')).toHaveText("safe link");
+  await expect(row.locator("pre code.language-rust")).toContainText("veryLongToken");
+  await expect(row.getByRole("button", { name: "Copy code" })).toBeVisible();
+  await expect(row.getByText("plain fallback should not render")).toHaveCount(0);
+
+  const pre = row.locator("pre").first();
+  await expect.poll(() => pre.evaluate((element) => getComputedStyle(element).whiteSpace)).toBe(
+    "pre-wrap"
+  );
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.getByRole("button", { name: "User settings" }).click();
+  const wrapToggle = page.getByRole("switch", { name: "Wrap long lines in code blocks" });
+  await expect(wrapToggle).toHaveAttribute("aria-checked", "true");
+  await wrapToggle.click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        display: { code_block_wrap: false }
+      }
+    });
+  await expect(wrapToggle).toHaveAttribute("aria-checked", "false");
+  await expect.poll(() => pre.evaluate((element) => getComputedStyle(element).whiteSpace)).toBe(
+    "pre"
+  );
 });
 
 test("profile settings dispatch Rust-owned commands and avatars render from profile state", async ({

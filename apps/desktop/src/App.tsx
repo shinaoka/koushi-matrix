@@ -3224,6 +3224,8 @@ function TimelinePane({
               pinnedEventIds={pinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
               onSetLocalUserAlias={onSetLocalUserAlias}
+              codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
+              searchQuery={searchQuery}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -4127,6 +4129,8 @@ export function ContextualRightPanel({
               pinnedEventIds={focusedPinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
               onSetLocalUserAlias={onSetLocalUserAlias}
+              codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
+              searchQuery={searchQuery}
             />
           </section>
         ) : null}
@@ -4179,6 +4183,8 @@ export function ContextualRightPanel({
             pinnedEventIds={threadPinnedEventIds}
             forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
             onSetLocalUserAlias={onSetLocalUserAlias}
+            codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
+            searchQuery={searchQuery}
           />
         ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>

@@ -230,6 +230,8 @@ export type MessageId =
   | "settings.homeserver"
   | "settings.keyboard"
   | "settings.keyboardDescription"
+  | "settings.display"
+  | "settings.codeBlockWrap"
   | "settings.notificationBadges"
   | "settings.notificationDesktop"
   | "settings.notificationSound"
@@ -437,6 +439,7 @@ export type MessageId =
   | "timeline.replyToMessage"
   | "timeline.messageActions"
   | "timeline.copyMessage"
+  | "timeline.copyCode"
   | "timeline.copyPermalink"
   | "timeline.viewSource"
   | "timeline.forwardMessage"
@@ -811,6 +814,8 @@ const en: Catalog = {
   "settings.homeserver": "Homeserver",
   "settings.keyboard": "Keyboard",
   "settings.keyboardDescription": "Element-compatible shortcuts for implemented desktop actions.",
+  "settings.display": "Display",
+  "settings.codeBlockWrap": "Wrap long lines in code blocks",
   "settings.notificationBadges": "Badges",
   "settings.notificationDesktop": "Desktop notifications",
   "settings.notificationSound": "Sound",
@@ -1018,6 +1023,7 @@ const en: Catalog = {
   "timeline.replyToMessage": "Reply to message",
   "timeline.messageActions": "Message actions",
   "timeline.copyMessage": "Copy message",
+  "timeline.copyCode": "Copy code",
   "timeline.copyPermalink": "Copy permalink",
   "timeline.viewSource": "View source",
   "timeline.forwardMessage": "Forward",
@@ -1301,6 +1307,8 @@ const ja: Catalog = {
   "settings.homeserver": "ホームサーバー",
   "settings.keyboard": "キーボード",
   "settings.keyboardDescription": "実装済みデスクトップ操作用のElement互換ショートカットです。",
+  "settings.display": "表示",
+  "settings.codeBlockWrap": "コードブロックの長い行を折り返す",
   "settings.notificationBadges": "バッジ",
   "settings.notificationDesktop": "デスクトップ通知",
   "settings.notificationSound": "サウンド",
@@ -1507,6 +1515,7 @@ const ja: Catalog = {
   "timeline.replyToMessage": "メッセージに返信",
   "timeline.messageActions": "メッセージ操作",
   "timeline.copyMessage": "メッセージをコピー",
+  "timeline.copyCode": "コードをコピー",
   "timeline.copyPermalink": "パーマリンクをコピー",
   "timeline.viewSource": "ソースを表示",
   "timeline.forwardMessage": "転送",

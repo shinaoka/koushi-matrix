@@ -431,6 +431,11 @@ sanitizes it before exposing it through `TimelineItem.formatted`.
   `SettingsValues.display.code_block_wrap`, defaulting to `true` and persisted
   through the settings store. GUI code may map the snapshot value to CSS only;
   it must not keep a separate wrap preference.
+- The React timeline renderer is a presentation adapter over this DTO. It may
+  map sanitized tags into React nodes, attach copy-code controls using the
+  Rust-provided code-block body, and highlight search terms over rendered text.
+  It must not decide Matrix HTML safety or render server `formatted_body`
+  directly.
 
 ## Profiles And Avatars
 

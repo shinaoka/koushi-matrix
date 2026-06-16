@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   Bell,
+  Code2,
   Check,
   Image,
   KeyRound,
@@ -90,6 +91,7 @@ export function UserSettingsPanel({
   const selectedFont = settings.values.typography.font;
   const selectedEmoji = settings.values.typography.emoji;
   const selectedNotifications = settings.values.notifications;
+  const selectedDisplay = settings.values.display;
   const isSaving = settings.persistence.kind === "saving";
   const [displayNameDraft, setDisplayNameDraft] = useState(profile.own.display_name ?? "");
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
@@ -297,6 +299,20 @@ export function UserSettingsPanel({
               />
             </div>
           </div>
+        </div>
+      </section>
+
+      <section className="settings-section" aria-label={t("settings.display")}>
+        <div className="settings-section-heading">
+          <h3>{t("settings.display")}</h3>
+          {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
+        </div>
+        <div className="settings-toggle-list">
+          <DisplayToggle
+            label={t("settings.codeBlockWrap")}
+            current={selectedDisplay}
+            onSelect={onUpdateSettings}
+          />
         </div>
       </section>
 
@@ -1218,6 +1234,44 @@ function NotificationToggle({
       <span className="settings-toggle-copy">
         <span className="settings-toggle-label">
           <Bell size={15} aria-hidden="true" />
+          <span>{label}</span>
+        </span>
+      </span>
+      <span className="settings-switch-track" aria-hidden="true">
+        <span className="settings-switch-thumb" />
+      </span>
+    </button>
+  );
+}
+
+function DisplayToggle({
+  label,
+  current,
+  onSelect
+}: {
+  label: string;
+  current: { code_block_wrap: boolean };
+  onSelect: (patch: SettingsPatch) => void;
+}) {
+  const checked = current.code_block_wrap;
+  return (
+    <button
+      className="settings-toggle-row"
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => {
+        onSelect({
+          display: {
+            code_block_wrap: !checked
+          }
+        });
+      }}
+    >
+      <span className="settings-toggle-copy">
+        <span className="settings-toggle-label">
+          <Code2 size={15} aria-hidden="true" />
           <span>{label}</span>
         </span>
       </span>

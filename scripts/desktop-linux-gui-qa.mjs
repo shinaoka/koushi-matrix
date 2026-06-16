@@ -15,6 +15,7 @@ import {
   inviteUser as inviteUserToRoom,
   joinRoom,
   registerUser,
+  sendRoomFormattedMessage,
   sendRoomMessage,
   setDisplayName,
   startHomeserver,
@@ -41,6 +42,7 @@ const checks = [
   "scenario local-explore",
   "scenario local-message-actions",
   "scenario local-composer",
+  "scenario local-rich-formatting",
   "scenario local-alias",
   "scenario local-cjk",
   "scenario local-settings",
@@ -228,6 +230,10 @@ async function run() {
   }
   if (guiScenario === "local-composer") {
     await runLocalComposerScenario();
+    return;
+  }
+  if (guiScenario === "local-rich-formatting") {
+    await runLocalRichFormattingScenario();
     return;
   }
   if (guiScenario === "local-alias") {
@@ -1026,6 +1032,50 @@ async function runLocalAliasScenario() {
   }
 }
 
+async function runLocalRichFormattingScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await selectRoomByName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForActiveRoomName(session.browser, "QA Seed Room", timeoutMs);
+
+    await waitForRichFormattedTimeline(session.browser, session.richFormatted, "pre-wrap", timeoutMs);
+
+    const userSettings = await session.browser.$('button[aria-label="User settings"]');
+    await userSettings.waitForDisplayed({ timeout: timeoutMs });
+    await userSettings.click();
+    const wrapToggleSelector =
+      '//button[@role="switch" and @aria-label="Wrap long lines in code blocks"]';
+    const wrapToggle = await session.browser.$(wrapToggleSelector);
+    await wrapToggle.waitForDisplayed({ timeout: timeoutMs });
+    await waitForElementAttribute(
+      session.browser,
+      wrapToggleSelector,
+      "aria-checked",
+      "true",
+      timeoutMs,
+      "code block wrap setting before toggle"
+    );
+    await wrapToggle.click();
+    await waitForElementAttribute(
+      session.browser,
+      wrapToggleSelector,
+      "aria-checked",
+      "false",
+      timeoutMs,
+      "code block wrap setting after toggle"
+    );
+    await waitForRichFormattedTimeline(session.browser, session.richFormatted, "pre", timeoutMs);
+
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_rich_formatting=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function runLocalCjkScenario() {
   const session = await startLocalGuiScenario();
   try {
@@ -1211,6 +1261,63 @@ async function waitForDocumentText(browser, expectedTexts, timeout, description)
     await sleep(250);
   }
   throw new Error(`${description} missing expected text: ${missing.join(", ")}`);
+}
+
+async function waitForRichFormattedTimeline(browser, expected, expectedWhiteSpace, timeout) {
+  const startedAt = Date.now();
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    lastDiagnostics = await browser.execute(({ expected, expectedWhiteSpace }) => {
+      const rows = Array.from(document.querySelectorAll(".message"));
+      const row = rows.find((candidate) =>
+        (candidate.querySelector(".message-formatted-body")?.textContent ?? "").includes(
+          expected.strongText
+        )
+      );
+      if (!row) {
+        return { found: false, expectedWhiteSpace };
+      }
+      const link = Array.from(row.querySelectorAll("a")).find(
+        (candidate) =>
+          candidate.getAttribute("href") === expected.linkHref &&
+          (candidate.textContent ?? "").trim() === expected.linkText
+      );
+      const pre = row.querySelector(".message-code-block-pre");
+      const copyButton = Array.from(row.querySelectorAll("button")).find((button) =>
+        (button.textContent ?? "").includes("Copy code")
+      );
+      return {
+        found: true,
+        strong: (row.querySelector("strong")?.textContent ?? "").trim(),
+        quote: (row.querySelector("blockquote")?.textContent ?? "").trim(),
+        list: (row.querySelector("li")?.textContent ?? "").trim(),
+        linkOk: Boolean(link),
+        code: (row.querySelector("pre code.language-rust")?.textContent ?? "").trim(),
+        copyButtonOk: Boolean(copyButton),
+        whiteSpace: pre ? window.getComputedStyle(pre).whiteSpace : "",
+        expectedWhiteSpace
+      };
+    }, { expected, expectedWhiteSpace });
+
+    if (
+      lastDiagnostics.found &&
+      lastDiagnostics.strong === expected.strongText &&
+      lastDiagnostics.quote === expected.quoteText &&
+      lastDiagnostics.list === expected.listText &&
+      lastDiagnostics.linkOk &&
+      lastDiagnostics.code === expected.codeText &&
+      lastDiagnostics.copyButtonOk &&
+      lastDiagnostics.whiteSpace === expectedWhiteSpace
+    ) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `rich formatted timeline did not reach expected DOM state. Last diagnostics: ${JSON.stringify(
+      lastDiagnostics
+    )}`
+  );
 }
 
 async function waitForCjkVisualContract(browser, expected, timeout) {
@@ -1952,6 +2059,36 @@ async function startLocalGuiScenario() {
         seedRoomId,
         "QA helper seed message",
         `qa-helper-${userSuffix}`
+      );
+    }
+
+    if (guiScenario === "local-rich-formatting") {
+      session.richFormatted = {
+        strongText: "Formatted keyword",
+        quoteText: "Quoted body",
+        listText: "List item",
+        linkText: "safe link",
+        linkHref: "https://example.invalid/path",
+        codeText:
+          'const veryLongToken = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";'
+      };
+      await sendRoomFormattedMessage(
+        homeserver,
+        accessToken,
+        seedRoomId,
+        [
+          session.richFormatted.strongText,
+          session.richFormatted.quoteText,
+          session.richFormatted.listText,
+          session.richFormatted.linkText,
+          session.richFormatted.codeText
+        ].join(" "),
+        `<strong>${session.richFormatted.strongText}</strong>` +
+          `<blockquote>${session.richFormatted.quoteText}</blockquote>` +
+          `<ul><li>${session.richFormatted.listText}</li></ul>` +
+          `<a href="${session.richFormatted.linkHref}">${session.richFormatted.linkText}</a>` +
+          `<pre><code class="language-rust">${session.richFormatted.codeText}</code></pre>`,
+        `qa-rich-formatting-${userSuffix}`
       );
     }
 
@@ -2851,6 +2988,6 @@ function sleep(ms) {
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-linux-gui-qa.mjs --list|--check-tools|--child-env|--child-env-keys|--print-artifact-root|--print-real-login-transport|--print-webdriver-capabilities --app-binary=PATH|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-attention-ready=TITLE|--qa-window-state-ready=PATH|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
+    "Usage: node scripts/desktop-linux-gui-qa.mjs --list|--check-tools|--child-env|--child-env-keys|--print-artifact-root|--print-real-login-transport|--print-webdriver-capabilities --app-binary=PATH|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-attention-ready=TITLE|--qa-window-state-ready=PATH|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--skip-build] [--real-login-from-stdin] [--qa-profile=NAME] [--allow-empty-timeline] [--artifact-dir=PATH] [--timeout-ms=MS]"
   );
 }

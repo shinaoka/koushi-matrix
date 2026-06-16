@@ -160,6 +160,36 @@ describe("UserSettingsPanel", () => {
     expect(markup).not.toContain("TARGETDEVICE");
   });
 
+  test("renders the Rust-owned code block wrap display setting", () => {
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        savedSessions={[]}
+        profile={profile}
+        settings={{
+          ...settings,
+          values: {
+            ...settings.values,
+            display: { code_block_wrap: false }
+          }
+        }}
+        {...handlers}
+      />
+    );
+
+    expect(markup).toContain("Display");
+    expect(markup).toContain("Wrap long lines in code blocks");
+    expect(markup).toContain('role="switch"');
+    expect(markup).toContain('aria-checked="false"');
+  });
+
   test("renders saved sessions when the current session is unavailable", () => {
     const markup = renderToStaticMarkup(
       <UserSettingsPanel

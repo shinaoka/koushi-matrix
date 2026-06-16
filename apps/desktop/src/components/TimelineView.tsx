@@ -308,6 +308,514 @@ function renderQueryHighlight(text: string, query: string): ReactNode {
   );
 }
 
+type FormattedNode =
+  | { kind: "text"; value: string }
+  | {
+      kind: "element";
+      tagName: string;
+      attrs: Record<string, string>;
+      children: FormattedNode[];
+    };
+
+const FORMATTED_TAGS = new Set([
+  "a",
+  "b",
+  "blockquote",
+  "br",
+  "code",
+  "del",
+  "em",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "i",
+  "li",
+  "ol",
+  "p",
+  "pre",
+  "s",
+  "span",
+  "strong",
+  "ul"
+]);
+
+const VOID_FORMATTED_TAGS = new Set(["br"]);
+
+function renderFormattedBody(
+  formatted: NonNullable<TimelineItem["formatted"]>,
+  codeBlockWrap: boolean,
+  onCopyText: TimelineRowActionHandlers["onCopyText"],
+  searchQuery: string
+): ReactNode {
+  const nodes = parseFormattedHtml(formatted.html);
+  const codeBlockIndexRef = { current: 0 };
+  return renderFormattedNodes(
+    nodes,
+    formatted,
+    codeBlockWrap,
+    codeBlockIndexRef,
+    onCopyText,
+    searchQuery
+  );
+}
+
+function parseFormattedHtml(html: string): FormattedNode[] {
+  const root: Extract<FormattedNode, { kind: "element" }> = {
+    kind: "element",
+    tagName: "fragment",
+    attrs: {},
+    children: []
+  };
+  const stack: Array<Extract<FormattedNode, { kind: "element" }>> = [root];
+  // Rust owns Matrix HTML safety and emits normalized sanitized HTML. This
+  // tokenizer is only a renderer adapter for that DTO, not a sanitizer.
+  const tokenPattern = /<!--[\s\S]*?-->|<\/?[^>]+>|[^<]+/g;
+  for (const match of html.matchAll(tokenPattern)) {
+    const token = match[0];
+    if (token.startsWith("<!--")) {
+      continue;
+    }
+    if (token.startsWith("</")) {
+      const closeName = token.slice(2, -1).trim().toLowerCase();
+      if (!closeName) {
+        continue;
+      }
+      for (let index = stack.length - 1; index >= 0; index -= 1) {
+        if (stack[index].tagName === closeName) {
+          stack.length = index;
+          break;
+        }
+      }
+      continue;
+    }
+    if (token.startsWith("<")) {
+      const parsed = parseFormattedStartTag(token);
+      if (!parsed) {
+        continue;
+      }
+      const node: FormattedNode = {
+        kind: "element",
+        tagName: parsed.tagName,
+        attrs: parsed.attrs,
+        children: []
+      };
+      stack[stack.length - 1].children.push(node);
+      if (!parsed.selfClosing && !VOID_FORMATTED_TAGS.has(parsed.tagName)) {
+        stack.push(node);
+      }
+      continue;
+    }
+    stack[stack.length - 1].children.push({ kind: "text", value: decodeHtmlEntities(token) });
+  }
+  return root.children;
+}
+
+function parseFormattedStartTag(
+  token: string
+): { tagName: string; attrs: Record<string, string>; selfClosing: boolean } | null {
+  const inner = token.slice(1, -1).trim();
+  const selfClosing = inner.endsWith("/");
+  const withoutSlash = selfClosing ? inner.slice(0, -1).trim() : inner;
+  const tagMatch = withoutSlash.match(/^([a-z0-9-]+)/i);
+  if (!tagMatch) {
+    return null;
+  }
+  const tagName = tagMatch[1].toLowerCase();
+  const attrs: Record<string, string> = {};
+  if (FORMATTED_TAGS.has(tagName)) {
+    const attrPattern = /([^\s=/>]+)(?:\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+    for (const match of withoutSlash.slice(tagMatch[0].length).matchAll(attrPattern)) {
+      const name = match[1].toLowerCase();
+      const value = decodeHtmlEntities(match[3] ?? match[4] ?? match[5] ?? "");
+      attrs[name] = value;
+    }
+  }
+  return { tagName, attrs, selfClosing };
+}
+
+function renderFormattedNodes(
+  nodes: FormattedNode[],
+  formatted: NonNullable<TimelineItem["formatted"]>,
+  codeBlockWrap: boolean,
+  codeBlockIndexRef: { current: number },
+  onCopyText: TimelineRowActionHandlers["onCopyText"],
+  searchQuery: string
+): ReactNode {
+  return nodes.map((node, index) =>
+    renderFormattedNode(
+      node,
+      `${index}`,
+      formatted,
+      codeBlockWrap,
+      codeBlockIndexRef,
+      onCopyText,
+      searchQuery
+    )
+  );
+}
+
+function renderFormattedNode(
+  node: FormattedNode,
+  key: string,
+  formatted: NonNullable<TimelineItem["formatted"]>,
+  codeBlockWrap: boolean,
+  codeBlockIndexRef: { current: number },
+  onCopyText: TimelineRowActionHandlers["onCopyText"],
+  searchQuery: string
+): ReactNode {
+  if (node.kind === "text") {
+    return <Fragment key={key}>{renderQueryHighlight(node.value, searchQuery)}</Fragment>;
+  }
+  const children = renderFormattedNodes(
+    node.children,
+    formatted,
+    codeBlockWrap,
+    codeBlockIndexRef,
+    onCopyText,
+    searchQuery
+  );
+  const renderer = formattedTagRenderers[node.tagName as keyof typeof formattedTagRenderers];
+  if (!renderer) {
+    return <Fragment key={key}>{children}</Fragment>;
+  }
+  return renderer(node, key, children, formatted, codeBlockWrap, codeBlockIndexRef, onCopyText);
+}
+
+type FormattedTagRenderer = (
+  node: Extract<FormattedNode, { kind: "element" }>,
+  key: string,
+  children: ReactNode,
+  formatted: NonNullable<TimelineItem["formatted"]>,
+  codeBlockWrap: boolean,
+  codeBlockIndexRef: { current: number },
+  onCopyText: TimelineRowActionHandlers["onCopyText"]
+) => ReactNode;
+
+const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
+  a(
+    node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    const href = node.attrs.href?.trim();
+    return (
+      <a key={key} href={href || undefined} rel="noopener noreferrer" target="_blank">
+        {children}
+      </a>
+    );
+  },
+  b(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <strong key={key}>{children}</strong>;
+  },
+  blockquote(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <blockquote key={key}>{children}</blockquote>;
+  },
+  br(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    _children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <br key={key} />;
+  },
+  code(
+    node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    const className = node.attrs.class?.trim();
+    return (
+      <code key={key} className={className || undefined}>
+        {children}
+      </code>
+    );
+  },
+  del(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <del key={key}>{children}</del>;
+  },
+  em(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <em key={key}>{children}</em>;
+  },
+  h1(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <h1 key={key}>{children}</h1>;
+  },
+  h2(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <h2 key={key}>{children}</h2>;
+  },
+  h3(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <h3 key={key}>{children}</h3>;
+  },
+  h4(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <h4 key={key}>{children}</h4>;
+  },
+  h5(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <h5 key={key}>{children}</h5>;
+  },
+  h6(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <h6 key={key}>{children}</h6>;
+  },
+  i(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <em key={key}>{children}</em>;
+  },
+  li(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <li key={key}>{children}</li>;
+  },
+  ol(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <ol key={key}>{children}</ol>;
+  },
+  p(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <p key={key}>{children}</p>;
+  },
+  pre(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    _children: ReactNode,
+    formatted: NonNullable<TimelineItem["formatted"]>,
+    codeBlockWrap: boolean,
+    codeBlockIndexRef: { current: number },
+    onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    const codeBlock = formatted.code_blocks[codeBlockIndexRef.current];
+    codeBlockIndexRef.current += 1;
+    if (!codeBlock) {
+      return <pre key={key} />;
+    }
+    const languageClass = codeBlock.language ? `language-${codeBlock.language}` : null;
+    return (
+      <div key={key} className="message-code-block">
+        <div className="message-code-block-actions">
+          <button
+            className="message-code-block-copy"
+            type="button"
+            aria-label={t("timeline.copyCode")}
+            onClick={() => onCopyText(codeBlock.body)}
+          >
+            <Copy size={13} aria-hidden="true" />
+            <span>{t("timeline.copyCode")}</span>
+          </button>
+        </div>
+        <pre className="message-code-block-pre" data-code-block-wrap={codeBlockWrap ? "true" : "false"}>
+          <code className={languageClass || undefined}>{codeBlock.body}</code>
+        </pre>
+      </div>
+    );
+  },
+  s(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <del key={key}>{children}</del>;
+  },
+  span(
+    node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    const className = node.attrs.class?.trim();
+    const spoiler = node.attrs["data-mx-spoiler"];
+    const color = node.attrs["data-mx-color"];
+    return (
+      <span
+        key={key}
+        className={className || undefined}
+        data-mx-color={color || undefined}
+        data-mx-spoiler={spoiler ?? undefined}
+      >
+        {children}
+      </span>
+    );
+  },
+  strong(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <strong key={key}>{children}</strong>;
+  },
+  ul(
+    _node: Extract<FormattedNode, { kind: "element" }>,
+    key: string,
+    children: ReactNode,
+    _formatted: NonNullable<TimelineItem["formatted"]>,
+    _codeBlockWrap: boolean,
+    _codeBlockIndexRef: { current: number },
+    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+  ) {
+    return <ul key={key}>{children}</ul>;
+  }
+} as const;
+
+function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (match, entity: string) => {
+    if (entity.startsWith("#x") || entity.startsWith("#X")) {
+      const codePoint = Number.parseInt(entity.slice(2), 16);
+      return isValidHtmlCodePoint(codePoint) ? String.fromCodePoint(codePoint) : match;
+    }
+    if (entity.startsWith("#")) {
+      const codePoint = Number.parseInt(entity.slice(1), 10);
+      return isValidHtmlCodePoint(codePoint) ? String.fromCodePoint(codePoint) : match;
+    }
+    switch (entity) {
+      case "amp":
+        return "&";
+      case "lt":
+        return "<";
+      case "gt":
+        return ">";
+      case "quot":
+        return '"';
+      case "apos":
+      case "nbsp":
+        return entity === "nbsp" ? " " : "'";
+      default:
+        return match;
+    }
+  });
+}
+
+function isValidHtmlCodePoint(codePoint: number): boolean {
+  return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff;
+}
+
 function findNextMentionToken(
   line: string,
   start: number,
@@ -394,7 +902,9 @@ export function TimelineView({
   pinnedEventIds = [],
   forwardDestinations = [],
   onSetLocalUserAlias,
-  suppressPaginationUi = false
+  suppressPaginationUi = false,
+  codeBlockWrap = true,
+  searchQuery = ""
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -408,6 +918,8 @@ export function TimelineView({
   forwardDestinations?: readonly TimelineForwardDestination[];
   onSetLocalUserAlias?: TimelineRowActionHandlers["onSetLocalUserAlias"];
   suppressPaginationUi?: boolean;
+  codeBlockWrap?: boolean;
+  searchQuery?: string;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
@@ -738,6 +1250,8 @@ export function TimelineView({
             <TimelineItemRow
               item={item}
               roomId={roomId}
+              codeBlockWrap={codeBlockWrap}
+              searchQuery={searchQuery}
               onReply={onReply}
               onOpenThread={onOpenThread}
               resolveComposerKeyAction={resolveComposerKeyAction}
@@ -825,6 +1339,8 @@ export function TimelineView({
 export function TimelineItemRow({
   item,
   roomId,
+  codeBlockWrap = true,
+  searchQuery = "",
   onReply,
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
@@ -853,6 +1369,8 @@ export function TimelineItemRow({
 }: {
   item: TimelineItem;
   roomId: string;
+  codeBlockWrap?: boolean;
+  searchQuery?: string;
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
@@ -1247,9 +1765,17 @@ export function TimelineItemRow({
         </button>
       </div>
     </form>
+  ) : item.formatted ? (
+    <div
+      className="message-body message-formatted-body"
+      dir="auto"
+      data-code-block-wrap={codeBlockWrap ? "true" : "false"}
+    >
+      {renderFormattedBody(item.formatted, codeBlockWrap, onCopyText, searchQuery)}
+    </div>
   ) : (
     <div className="message-body" dir="auto">
-      {renderTimelineMessageText(item.body ?? "", "", mentionProfileUsers)}
+      {renderTimelineMessageText(item.body ?? "", searchQuery, mentionProfileUsers)}
     </div>
   );
   const mediaContent =

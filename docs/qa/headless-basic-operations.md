@@ -388,6 +388,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --artifact-dir=artifacts/linux-gui-local-explore --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --artifact-dir=artifacts/linux-gui-local-message-actions --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting --server=conduit --artifact-dir=artifacts/linux-gui-local-rich-formatting --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-alias --server=conduit --artifact-dir=artifacts/linux-gui-local-alias --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-cjk --server=conduit --artifact-dir=artifacts/linux-gui-local-cjk --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
@@ -520,6 +521,7 @@ For fast iteration, build the debug app once and reuse it with `--skip-build`
 ```bash
 npm --prefix apps/desktop run tauri build -- --debug --no-bundle
 PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-create-room-fast --timeout-ms=180000
+PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-rich-formatting-fast --timeout-ms=180000
 ```
 
 The combined Linux lane is exposed through the shared release aggregator:

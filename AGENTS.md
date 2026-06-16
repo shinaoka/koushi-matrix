@@ -256,6 +256,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   WebView boundary, including plain-text and code-block metadata. React must
   render only that Rust-owned DTO; it must never render unsanitized server HTML
   or own ad hoc Matrix HTML sanitizer policy.
+- The TimelineView formatted-message renderer is presentation-only. It may map
+  the Rust-owned sanitized HTML/code-block DTO into React nodes and copy-code
+  controls, but any tag/attribute safety decision belongs in Rust. When adding
+  supported tags, extend the Rust projection tests first, then the React
+  renderer and browser-headless checks.
 - React attention helpers may only map `snapshot.state.native_attention` to
   window title, badge, and native adapter payloads. They must not aggregate
   `rooms`, diff previous room snapshots, or infer focused-room/muted/duplicate
@@ -975,6 +980,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   settings section renders in the real Tauri WebView, and waits for
   `aria-pressed="true"` / `data-theme="dark"` from the snapshot-driven UI:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-settings-fast --timeout-ms=180000`
+- Rich formatted timeline rendering uses `--scenario=local-rich-formatting`.
+  It sends a sanitized Matrix HTML event through the local homeserver, verifies
+  the real Tauri WebView renders the Rust-owned formatted DTO (`strong`,
+  blockquote/list/link/code block/copy control), then toggles
+  `display.code_block_wrap` through Settings and waits for the code block CSS
+  to switch from `pre-wrap` to `pre`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-rich-formatting-fast --timeout-ms=180000`
 - Media GUI iteration has a focused virtual-display lane:
   `--scenario=local-media`. It writes a synthetic fixture file under the
   scenario artifact directory, sets that path on the Composer's hidden file

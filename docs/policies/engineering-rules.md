@@ -310,7 +310,9 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    `TimelineItem.formatted` is sanitized from Matrix `formatted_body` before it
    crosses the WebView boundary, and carries only sanitized HTML plus derived
    plain text/code-block metadata. React must never render unsanitized server
-   HTML or own sanitizer policy.
+   HTML or own sanitizer policy. TimelineView's formatted renderer is a
+   presentation adapter only: it maps the Rust-owned DTO into React nodes,
+   code-copy controls, search highlights, and `code_block_wrap` CSS.
    Composer mention GUI tests must use Rust-shaped `ProfileState.users` member
    profiles for autocomplete candidates. React may render the popover/pills and
    pass a typed `MentionIntent`, but it must not synthesize Matrix

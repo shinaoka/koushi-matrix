@@ -546,7 +546,9 @@ the default policy before any GUI reads the snapshot.
 Message formatting is also projected before it reaches React:
 `TimelineItem.formatted` is sanitized in Rust from Matrix `formatted_body` and
 carries sanitized HTML plus plain-text/code-block metadata. React must not
-render unsanitized server HTML or own Matrix HTML sanitizer policy.
+render unsanitized server HTML or own Matrix HTML sanitizer policy. TimelineView
+may only adapt that DTO into rendered nodes, copy-code controls, search
+highlights, and CSS driven by `SettingsValues.display.code_block_wrap`.
 
 Initial channel capacities are named constants, not scattered literals:
 

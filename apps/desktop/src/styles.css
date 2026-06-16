@@ -2013,6 +2013,161 @@ button {
   color: var(--text);
   font-family: var(--font-message);
   line-height: 1.48;
+  overflow-wrap: anywhere;
+}
+
+.message-body.message-formatted-body {
+  display: grid;
+  gap: 8px;
+}
+
+.message-body.message-formatted-body > p,
+.message-body.message-formatted-body > blockquote,
+.message-body.message-formatted-body > pre,
+.message-body.message-formatted-body > ul,
+.message-body.message-formatted-body > ol,
+.message-body.message-formatted-body > h1,
+.message-body.message-formatted-body > h2,
+.message-body.message-formatted-body > h3,
+.message-body.message-formatted-body > h4,
+.message-body.message-formatted-body > h5,
+.message-body.message-formatted-body > h6 {
+  margin: 0;
+}
+
+.message-body.message-formatted-body > p {
+  line-height: 1.5;
+}
+
+.message-body.message-formatted-body > blockquote {
+  padding: 6px 10px;
+  border-inline-start: 3px solid var(--brand);
+  color: var(--text-muted);
+  background: var(--surface-hover);
+}
+
+.message-body.message-formatted-body > ul,
+.message-body.message-formatted-body > ol {
+  padding-inline-start: 22px;
+}
+
+.message-body.message-formatted-body > li {
+  margin: 0;
+}
+
+.message-body.message-formatted-body a {
+  color: var(--brand);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.message-body.message-formatted-body code:not([class*="language-"]) {
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-hover);
+  font-family: var(--font-ui);
+  font-size: 0.95em;
+  overflow-wrap: anywhere;
+}
+
+.message-code-block {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-hover);
+}
+
+.message-code-block-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.message-code-block-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.message-code-block-copy:hover,
+.message-code-block-copy:focus-visible {
+  border-color: var(--brand);
+  color: var(--brand-contrast);
+  background: var(--brand);
+}
+
+.message-code-block-pre {
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.message-code-block-pre[data-code-block-wrap="true"] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message-code-block-pre[data-code-block-wrap="true"] code {
+  white-space: inherit;
+}
+
+.message-code-block-pre[data-code-block-wrap="false"] {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.message-code-block-pre[data-code-block-wrap="false"] code {
+  white-space: inherit;
+}
+
+.message-code-block-pre code {
+  display: block;
+  min-width: 0;
+  color: inherit;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: inherit;
+}
+
+.message-code-block.language-rust .message-code-block-pre code,
+.message-code-block code[class*="language-"] {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.message-body.message-formatted-body > h1 {
+  font-size: 1.3em;
+  line-height: 1.25;
+}
+
+.message-body.message-formatted-body > h2 {
+  font-size: 1.2em;
+  line-height: 1.28;
+}
+
+.message-body.message-formatted-body > h3 {
+  font-size: 1.12em;
+  line-height: 1.3;
+}
+
+.message-body.message-formatted-body > h4,
+.message-body.message-formatted-body > h5,
+.message-body.message-formatted-body > h6 {
+  font-size: 1em;
+  line-height: 1.3;
 }
 
 .message-mention-pill {
