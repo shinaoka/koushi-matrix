@@ -252,6 +252,8 @@ fn timeline_pane_snapshot_contains_only_selected_room_scheduled_sends() {
         composer: ComposerState::default(),
         scheduled_send_capability: ScheduledSendCapability::Unknown,
         scheduled_sends: state.timeline.scheduled_sends.clone(),
+        staged_uploads: Vec::new(),
+        media_gallery: Vec::new(),
     };
     assert_eq!(timeline.scheduled_sends.len(), 1);
 }

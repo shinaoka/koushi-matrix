@@ -273,6 +273,8 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
             composer: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
@@ -491,6 +493,8 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
             composer: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
         },
         ..AppState::default()
     };
@@ -619,6 +623,8 @@ fn logout_clears_session_views_and_notifies_ui() {
             composer: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),

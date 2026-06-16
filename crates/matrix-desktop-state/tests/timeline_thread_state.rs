@@ -1115,6 +1115,8 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
             },
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
         },
         thread: ThreadPaneState::Opening {
             room_id: "room-a".to_owned(),

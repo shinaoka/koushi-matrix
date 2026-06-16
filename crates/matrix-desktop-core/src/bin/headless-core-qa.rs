@@ -58,9 +58,9 @@ use matrix_desktop_core::failure::{CoreFailure, RoomFailureKind};
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{
-    ActivityMarkReadTarget, ActivityState, AppState, AuthSecret, ComposerKey, ComposerKeyEvent,
-    ComposerKeyModifiers, ComposerResolvedAction, ComposerResolverContext, ComposerSelection,
-    ComposerSendShortcut, ComposerSurface, CrossSigningStatus, DirectoryQuery,
+    ActivityMarkReadTarget, ActivityState, AppAction, AppState, AuthSecret, ComposerKey,
+    ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction, ComposerResolverContext,
+    ComposerSelection, ComposerSendShortcut, ComposerSurface, CrossSigningStatus, DirectoryQuery,
     DirectoryRoomSummary, DisplaySettings, IdentityResetAuthRequest, IdentityResetAuthType,
     IdentityResetState, ImageUploadCompressionMode, KeyBackupStatus, LocalEncryptionHealth,
     LocalEncryptionState, MentionIntent, MentionTarget, NativeAttentionCapabilities,
@@ -69,9 +69,12 @@ use matrix_desktop_state::{
     OperationFailureKind, PresenceKind, RecoveryRequest, ReplyQuoteState, RoomAttentionKind,
     RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
     RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
-    ScheduledSendCapability, SessionInfo, SessionState, SettingsPatch, TrustOperationFailureKind,
-    VerificationFlowState, VerificationTarget, build_formatted_message_draft,
-    native_attention_state_from_rooms, resolve_composer_key_action,
+    ScheduledSendCapability, SessionInfo, SessionState, SettingsPatch,
+    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, TimelineMediaGalleryItem,
+    TimelineMediaGalleryMedia, TimelineMediaGallerySource, TimelineMediaKind,
+    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
+    build_formatted_message_draft, native_attention_state_from_rooms, reduce,
+    resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -437,6 +440,8 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "send_media=ok",
             "media_caption=ok",
             "image_compress=ok",
+            "upload_staging=ok",
+            "media_gallery=ok",
             "recv_media=ok",
         ],
         QaStage::LiveSignals => &[
@@ -513,6 +518,8 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "send_media=ok",
         "media_caption=ok",
         "image_compress=ok",
+        "upload_staging=ok",
+        "media_gallery=ok",
         "recv_media=ok",
         "read_receipt=ok",
         "fully_read=ok",
@@ -7200,6 +7207,9 @@ async fn run_media_stage(
     println!("media_caption=ok");
     assert_image_upload_compression_contract()?;
     println!("image_compress=ok");
+    assert_upload_ux_state_contract(key_a.room_id())?;
+    println!("upload_staging=ok");
+    println!("media_gallery=ok");
     let media_event_id = match &media_item.id {
         matrix_desktop_core::event::TimelineItemId::Event { event_id } => event_id.clone(),
         matrix_desktop_core::event::TimelineItemId::Transaction { .. }
@@ -7312,6 +7322,156 @@ fn assert_image_upload_compression_contract() -> Result<(), String> {
         return Err("image compression request debug leaked private filename or bytes".to_owned());
     }
     Ok(())
+}
+
+fn assert_upload_ux_state_contract(room_id: &str) -> Result<(), String> {
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://qa.example.invalid".to_owned(),
+            user_id: "@qa:example.invalid".to_owned(),
+            device_id: "QADEVICE".to_owned(),
+        }),
+        rooms: vec![native_attention_room(room_id, "QA Room", false, 0, 0, 0)],
+        ..AppState::default()
+    };
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: room_id.to_owned(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::UploadStagingChanged {
+            room_id: room_id.to_owned(),
+            items: vec![
+                StagedUploadItem {
+                    staged_id: "stage-2".to_owned(),
+                    room_id: room_id.to_owned(),
+                    position: 2,
+                    filename: "private-two.txt".to_owned(),
+                    mime_type: "text/plain".to_owned(),
+                    byte_count: 256,
+                    kind: StagedUploadKind::File,
+                    caption: Some(build_formatted_message_draft(
+                        "private staged caption",
+                        MentionIntent::default(),
+                    )),
+                    compression_choice: StagedUploadCompressionChoice::NotApplicable,
+                },
+                StagedUploadItem {
+                    staged_id: "stage-1".to_owned(),
+                    room_id: room_id.to_owned(),
+                    position: 1,
+                    filename: "private-one.jpg".to_owned(),
+                    mime_type: "image/jpeg".to_owned(),
+                    byte_count: 3_200_000,
+                    kind: StagedUploadKind::Image {
+                        width: Some(4032),
+                        height: Some(3024),
+                    },
+                    caption: None,
+                    compression_choice: StagedUploadCompressionChoice::Original,
+                },
+            ],
+        },
+    );
+    if state.timeline.staged_uploads.len() != 2
+        || state.timeline.staged_uploads[0].staged_id != "stage-1"
+    {
+        return Err("upload staging projection did not keep multiple files in order".to_owned());
+    }
+
+    reduce(
+        &mut state,
+        AppAction::UploadStagingCompressionChanged {
+            staged_id: "stage-1".to_owned(),
+            compression_choice: StagedUploadCompressionChoice::Compressed {
+                mode: ImageUploadCompressionMode::Ask,
+            },
+        },
+    );
+    if state.timeline.staged_uploads[0].compression_choice
+        != (StagedUploadCompressionChoice::Compressed {
+            mode: ImageUploadCompressionMode::Ask,
+        })
+    {
+        return Err("upload staging did not preserve per-file compression choice".to_owned());
+    }
+
+    reduce(
+        &mut state,
+        AppAction::MediaGalleryUpdated {
+            room_id: room_id.to_owned(),
+            items: vec![
+                media_gallery_contract_item("$old-media", room_id, 1_900_000_000_000),
+                media_gallery_contract_item("$new-media", room_id, 1_900_000_060_000),
+            ],
+        },
+    );
+    if state.timeline.media_gallery.len() != 2
+        || state.timeline.media_gallery[0].event_id != "$new-media"
+    {
+        return Err("media gallery projection did not sort newest media first".to_owned());
+    }
+
+    let value = serde_json::to_value(&state).map_err(|e| format!("serialize upload state: {e}"))?;
+    if value.get("upload_staging").is_some() || value.get("media_gallery").is_some() {
+        return Err(
+            "upload staging/gallery root stores leaked into serialized AppState".to_owned(),
+        );
+    }
+    if value["timeline"]["staged_uploads"][0]["staged_id"] != "stage-1"
+        || value["timeline"]["media_gallery"][0]["event_id"] != "$new-media"
+    {
+        return Err("selected timeline upload/gallery projection did not serialize".to_owned());
+    }
+
+    let debug = format!(
+        "{:?} {:?}",
+        state.timeline.staged_uploads[0], state.timeline.media_gallery[0]
+    );
+    for private in [
+        room_id,
+        "private-one.jpg",
+        "private staged caption",
+        "mxc://example.invalid/private-gallery",
+    ] {
+        if debug.contains(private) {
+            return Err("upload staging/gallery debug leaked private media data".to_owned());
+        }
+    }
+
+    Ok(())
+}
+
+fn media_gallery_contract_item(
+    event_id: &str,
+    room_id: &str,
+    timestamp_ms: u64,
+) -> TimelineMediaGalleryItem {
+    TimelineMediaGalleryItem {
+        event_id: event_id.to_owned(),
+        room_id: room_id.to_owned(),
+        sender: Some("@sender:example.invalid".to_owned()),
+        sender_label: Some("Sender".to_owned()),
+        timestamp_ms,
+        media: TimelineMediaGalleryMedia {
+            kind: TimelineMediaKind::Image,
+            filename: "private-gallery.jpg".to_owned(),
+            source: TimelineMediaGallerySource {
+                mxc_uri: "mxc://example.invalid/private-gallery".to_owned(),
+                encrypted: true,
+                encryption_version: Some("v2".to_owned()),
+            },
+            mimetype: Some("image/jpeg".to_owned()),
+            size: Some(2048),
+            width: Some(800),
+            height: Some(600),
+            thumbnail: None,
+        },
+    }
 }
 
 /// Wait for an item whose body contains `expected_body` and return the item so
@@ -9124,6 +9284,8 @@ mod tests {
                 "send_media=ok",
                 "media_caption=ok",
                 "image_compress=ok",
+                "upload_staging=ok",
+                "media_gallery=ok",
                 "recv_media=ok",
                 "read_receipt=ok",
                 "fully_read=ok",
@@ -9325,6 +9487,8 @@ mod tests {
                 "send_media=ok",
                 "media_caption=ok",
                 "image_compress=ok",
+                "upload_staging=ok",
+                "media_gallery=ok",
                 "recv_media=ok",
                 "restore_cleanup=ok",
             ]
@@ -9458,6 +9622,8 @@ mod tests {
                 "send_media=ok",
                 "media_caption=ok",
                 "image_compress=ok",
+                "upload_staging=ok",
+                "media_gallery=ok",
                 "recv_media=ok",
                 "read_receipt=ok",
                 "fully_read=ok",

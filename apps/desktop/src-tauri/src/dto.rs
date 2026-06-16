@@ -662,11 +662,18 @@ mod tests {
         // the full queue can contain future message bodies for non-visible
         // rooms, so only the selected timeline projection is serialized.
         assert_eq!(value["state"]["scheduled_sends"], json!(null));
+        // Upload staging and media-gallery backing stores follow the same
+        // selected-room projection boundary. Hidden room filenames, captions,
+        // and MXC URIs must not leak through the root AppState DTO.
+        assert_eq!(value["state"]["upload_staging"], json!(null));
+        assert_eq!(value["state"]["media_gallery"], json!(null));
         assert_eq!(
             value["state"]["timeline"]["scheduled_send_capability"],
             json!("unknown")
         );
         assert_eq!(value["state"]["timeline"]["scheduled_sends"], json!([]));
+        assert_eq!(value["state"]["timeline"]["staged_uploads"], json!([]));
+        assert_eq!(value["state"]["timeline"]["media_gallery"], json!([]));
     }
 
     #[test]

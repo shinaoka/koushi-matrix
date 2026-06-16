@@ -155,7 +155,9 @@ function snapshotForPanelMode(
         is_paginating_backwards: false,
         composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
         scheduled_send_capability: "unknown",
-        scheduled_sends: []
+        scheduled_sends: [],
+        staged_uploads: [],
+        media_gallery: []
       },
       thread: hasThread
         ? { kind: "open", room_id: "!room:example", root_event_id: "$event" }

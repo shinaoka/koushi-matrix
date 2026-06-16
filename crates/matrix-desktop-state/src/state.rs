@@ -5,6 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::composer_shortcuts::FormattedMessageDraft;
 use crate::locale_profile::DisplayPlatform;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -23,6 +24,10 @@ pub struct AppState {
     pub composer_drafts: ComposerDraftStore,
     #[serde(skip)]
     pub scheduled_sends: ScheduledSendStore,
+    #[serde(skip)]
+    pub upload_staging: UploadStagingStore,
+    #[serde(skip)]
+    pub media_gallery: MediaGalleryStore,
     pub directory: DirectoryState,
     pub room_management: RoomManagementState,
     pub activity: ActivityState,
@@ -55,6 +60,8 @@ impl Default for AppState {
             room_interactions: BTreeMap::new(),
             composer_drafts: ComposerDraftStore::default(),
             scheduled_sends: ScheduledSendStore::default(),
+            upload_staging: UploadStagingStore::default(),
+            media_gallery: MediaGalleryStore::default(),
             directory: DirectoryState::default(),
             room_management: RoomManagementState::default(),
             activity: ActivityState::Closed,
@@ -2246,6 +2253,273 @@ pub struct TimelinePaneState {
     pub composer: ComposerState,
     pub scheduled_send_capability: ScheduledSendCapability,
     pub scheduled_sends: Vec<ScheduledSendItem>,
+    pub staged_uploads: Vec<StagedUploadItem>,
+    pub media_gallery: Vec<TimelineMediaGalleryItem>,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StagedUploadItem {
+    pub staged_id: String,
+    pub room_id: String,
+    pub position: u64,
+    pub filename: String,
+    pub mime_type: String,
+    pub byte_count: u64,
+    pub kind: StagedUploadKind,
+    pub caption: Option<FormattedMessageDraft>,
+    pub compression_choice: StagedUploadCompressionChoice,
+}
+
+impl fmt::Debug for StagedUploadItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StagedUploadItem")
+            .field("staged_id", &self.staged_id)
+            .field("room_id", &"RoomId(..)")
+            .field("position", &self.position)
+            .field("filename", &"MediaFilename(..)")
+            .field("mime_type", &self.mime_type)
+            .field("byte_count", &self.byte_count)
+            .field("kind", &self.kind)
+            .field(
+                "caption",
+                &self.caption.as_ref().map(|_| "MediaCaption(..)"),
+            )
+            .field("compression_choice", &self.compression_choice)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StagedUploadKind {
+    Image {
+        width: Option<u64>,
+        height: Option<u64>,
+    },
+    File,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StagedUploadCompressionChoice {
+    NotApplicable,
+    Original,
+    Compressed { mode: ImageUploadCompressionMode },
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UploadStagingStore {
+    pub items: BTreeMap<String, StagedUploadItem>,
+}
+
+impl UploadStagingStore {
+    pub fn items_for_room(&self, room_id: &str) -> Vec<StagedUploadItem> {
+        let mut items = self
+            .items
+            .values()
+            .filter(|item| item.room_id == room_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            left.position
+                .cmp(&right.position)
+                .then_with(|| left.staged_id.cmp(&right.staged_id))
+        });
+        items
+    }
+
+    pub fn replace_room_items(&mut self, room_id: &str, items: Vec<StagedUploadItem>) {
+        self.items.retain(|_, item| item.room_id != room_id);
+        for item in items.into_iter().filter(|item| item.room_id == room_id) {
+            self.items.insert(item.staged_id.clone(), item);
+        }
+    }
+
+    pub fn update_caption(
+        &mut self,
+        staged_id: &str,
+        caption: Option<FormattedMessageDraft>,
+    ) -> Option<StagedUploadItem> {
+        let item = self.items.get_mut(staged_id)?;
+        item.caption = caption;
+        Some(item.clone())
+    }
+
+    pub fn update_compression_choice(
+        &mut self,
+        staged_id: &str,
+        compression_choice: StagedUploadCompressionChoice,
+    ) -> Option<StagedUploadItem> {
+        let item = self.items.get_mut(staged_id)?;
+        item.compression_choice = compression_choice;
+        Some(item.clone())
+    }
+
+    pub fn clear_room(&mut self, room_id: &str) -> bool {
+        let before = self.items.len();
+        self.items.retain(|_, item| item.room_id != room_id);
+        self.items.len() != before
+    }
+
+    pub fn retain_rooms(&mut self, room_ids: &BTreeSet<String>) {
+        self.items
+            .retain(|_, item| room_ids.contains(item.room_id.as_str()));
+    }
+}
+
+impl fmt::Debug for UploadStagingStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UploadStagingStore")
+            .field(
+                "items",
+                &format_args!("{} staged upload(s)", self.items.len()),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineMediaGalleryItem {
+    pub event_id: String,
+    pub room_id: String,
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub sender_label: Option<String>,
+    pub timestamp_ms: u64,
+    pub media: TimelineMediaGalleryMedia,
+}
+
+impl fmt::Debug for TimelineMediaGalleryItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineMediaGalleryItem")
+            .field("event_id", &self.event_id)
+            .field("room_id", &"RoomId(..)")
+            .field("sender", &self.sender.as_ref().map(|_| "UserId(..)"))
+            .field(
+                "sender_label",
+                &self.sender_label.as_ref().map(|_| "SenderLabel(..)"),
+            )
+            .field("timestamp_ms", &"Timestamp(..)")
+            .field("media", &self.media)
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineMediaGalleryMedia {
+    pub kind: TimelineMediaKind,
+    pub filename: String,
+    pub source: TimelineMediaGallerySource,
+    pub mimetype: Option<String>,
+    pub size: Option<u64>,
+    pub width: Option<u64>,
+    pub height: Option<u64>,
+    pub thumbnail: Option<TimelineMediaGalleryThumbnail>,
+}
+
+impl fmt::Debug for TimelineMediaGalleryMedia {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineMediaGalleryMedia")
+            .field("kind", &self.kind)
+            .field("filename", &"MediaFilename(..)")
+            .field("source", &self.source)
+            .field("mimetype", &self.mimetype)
+            .field("size", &self.size)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("thumbnail", &self.thumbnail)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TimelineMediaKind {
+    Image,
+    File,
+    Audio,
+    Video,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineMediaGallerySource {
+    pub mxc_uri: String,
+    pub encrypted: bool,
+    pub encryption_version: Option<String>,
+}
+
+impl fmt::Debug for TimelineMediaGallerySource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineMediaGallerySource")
+            .field("mxc_uri", &"MxcUri(..)")
+            .field("encrypted", &self.encrypted)
+            .field("encryption_version", &self.encryption_version)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineMediaGalleryThumbnail {
+    pub source: TimelineMediaGallerySource,
+    pub mimetype: Option<String>,
+    pub size: Option<u64>,
+    pub width: Option<u64>,
+    pub height: Option<u64>,
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MediaGalleryStore {
+    pub rooms: BTreeMap<String, Vec<TimelineMediaGalleryItem>>,
+}
+
+impl MediaGalleryStore {
+    pub fn items_for_room(&self, room_id: &str) -> Vec<TimelineMediaGalleryItem> {
+        let mut items = self.rooms.get(room_id).cloned().unwrap_or_default();
+        items.sort_by(|left, right| {
+            right
+                .timestamp_ms
+                .cmp(&left.timestamp_ms)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        items
+    }
+
+    pub fn replace_room_items(&mut self, room_id: &str, items: Vec<TimelineMediaGalleryItem>) {
+        let mut items = items
+            .into_iter()
+            .filter(|item| item.room_id == room_id)
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            right
+                .timestamp_ms
+                .cmp(&left.timestamp_ms)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        if items.is_empty() {
+            self.rooms.remove(room_id);
+        } else {
+            self.rooms.insert(room_id.to_owned(), items);
+        }
+    }
+
+    pub fn retain_rooms(&mut self, room_ids: &BTreeSet<String>) {
+        self.rooms.retain(|room_id, _| room_ids.contains(room_id));
+    }
+}
+
+impl fmt::Debug for MediaGalleryStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let item_count = self.rooms.values().map(Vec::len).sum::<usize>();
+        formatter
+            .debug_struct("MediaGalleryStore")
+            .field("rooms", &format_args!("{} room(s)", self.rooms.len()))
+            .field("items", &format_args!("{item_count} media gallery item(s)"))
+            .finish()
+    }
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

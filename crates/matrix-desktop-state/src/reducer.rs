@@ -9,9 +9,9 @@ use crate::{
         NavigationState, OperationFailureKind, PendingComposerSendKind, PinOp, PinOperationState,
         RoomManagementOperationKind, RoomManagementOperationState, RoomMemberRole,
         RoomModerationAction, SasEmoji, SearchState, SessionState, SettingsPersistenceState,
-        SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState,
-        TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
-        VerificationTarget,
+        StagedUploadCompressionChoice, SyncState, ThreadAttentionState, ThreadPaneState,
+        TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
+        VerificationFlowState, VerificationTarget,
     },
 };
 
@@ -916,7 +916,11 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.rooms = rooms;
             state.composer_drafts.retain_rooms(&retained_room_ids);
             state.scheduled_sends.retain_rooms(&retained_room_ids);
+            state.upload_staging.retain_rooms(&retained_room_ids);
+            state.media_gallery.retain_rooms(&retained_room_ids);
             refresh_timeline_scheduled_sends(state);
+            refresh_timeline_upload_staging(state);
+            refresh_timeline_media_gallery(state);
 
             let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
 
@@ -985,6 +989,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                     composer: state.composer_drafts.composer_for_room(&room_id),
                     scheduled_send_capability: state.scheduled_sends.capability.clone(),
                     scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
+                    staged_uploads: state.upload_staging.items_for_room(&room_id),
+                    media_gallery: state.media_gallery.items_for_room(&room_id),
                 };
                 effects.push(AppEffect::SubscribeTimeline {
                     room_id: room_id.clone(),
@@ -1855,6 +1861,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 composer: state.composer_drafts.composer_for_room(&room_id),
                 scheduled_send_capability: state.scheduled_sends.capability.clone(),
                 scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
+                staged_uploads: state.upload_staging.items_for_room(&room_id),
+                media_gallery: state.media_gallery.items_for_room(&room_id),
             };
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
@@ -1993,6 +2001,81 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             let room_id = item.room_id;
             if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
                 refresh_timeline_scheduled_sends(state);
+                return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+            }
+            Vec::new()
+        }
+        AppAction::UploadStagingChanged { room_id, items } => {
+            if !is_session_ready(state) || !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+
+            state.upload_staging.replace_room_items(&room_id, items);
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                refresh_timeline_upload_staging(state);
+                return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+            }
+            Vec::new()
+        }
+        AppAction::UploadStagingCaptionChanged { staged_id, caption } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(item) = state.upload_staging.update_caption(&staged_id, caption) else {
+                return Vec::new();
+            };
+            let room_id = item.room_id;
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                refresh_timeline_upload_staging(state);
+                return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+            }
+            Vec::new()
+        }
+        AppAction::UploadStagingCompressionChanged {
+            staged_id,
+            compression_choice,
+        } => {
+            if !is_session_ready(state)
+                || !staged_compression_choice_is_valid_for_item(
+                    state.upload_staging.items.get(&staged_id),
+                    compression_choice,
+                )
+            {
+                return Vec::new();
+            }
+
+            let Some(item) = state
+                .upload_staging
+                .update_compression_choice(&staged_id, compression_choice)
+            else {
+                return Vec::new();
+            };
+            let room_id = item.room_id;
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                refresh_timeline_upload_staging(state);
+                return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+            }
+            Vec::new()
+        }
+        AppAction::UploadStagingCleared { room_id } => {
+            if !is_session_ready(state) || !state.upload_staging.clear_room(&room_id) {
+                return Vec::new();
+            }
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                refresh_timeline_upload_staging(state);
+                return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+            }
+            Vec::new()
+        }
+        AppAction::MediaGalleryUpdated { room_id, items } => {
+            if !is_session_ready(state) || !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+
+            state.media_gallery.replace_room_items(&room_id, items);
+            if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+                refresh_timeline_media_gallery(state);
                 return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
             }
             Vec::new()
@@ -2990,6 +3073,8 @@ fn select_active_room_after_room_list_update(
         composer: state.composer_drafts.composer_for_room(&room_id),
         scheduled_send_capability: state.scheduled_sends.capability.clone(),
         scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
+        staged_uploads: state.upload_staging.items_for_room(&room_id),
+        media_gallery: state.media_gallery.items_for_room(&room_id),
     };
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
@@ -3011,6 +3096,40 @@ fn refresh_timeline_scheduled_sends(state: &mut AppState) {
         .as_deref()
         .map(|room_id| state.scheduled_sends.items_for_room(room_id))
         .unwrap_or_default();
+}
+
+fn refresh_timeline_upload_staging(state: &mut AppState) {
+    state.timeline.staged_uploads = state
+        .timeline
+        .room_id
+        .as_deref()
+        .map(|room_id| state.upload_staging.items_for_room(room_id))
+        .unwrap_or_default();
+}
+
+fn refresh_timeline_media_gallery(state: &mut AppState) {
+    state.timeline.media_gallery = state
+        .timeline
+        .room_id
+        .as_deref()
+        .map(|room_id| state.media_gallery.items_for_room(room_id))
+        .unwrap_or_default();
+}
+
+fn staged_compression_choice_is_valid_for_item(
+    item: Option<&crate::state::StagedUploadItem>,
+    compression_choice: StagedUploadCompressionChoice,
+) -> bool {
+    match (item, compression_choice) {
+        (Some(item), StagedUploadCompressionChoice::NotApplicable) => {
+            matches!(item.kind, crate::state::StagedUploadKind::File)
+        }
+        (Some(item), StagedUploadCompressionChoice::Original)
+        | (Some(item), StagedUploadCompressionChoice::Compressed { .. }) => {
+            matches!(item.kind, crate::state::StagedUploadKind::Image { .. })
+        }
+        (None, _) => false,
+    }
 }
 
 fn current_session_info(state: &AppState) -> Option<crate::state::SessionInfo> {
@@ -3049,6 +3168,8 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.room_interactions.clear();
     state.composer_drafts = Default::default();
     state.scheduled_sends = Default::default();
+    state.upload_staging = Default::default();
+    state.media_gallery = Default::default();
     state.directory = DirectoryState::default();
     state.activity = ActivityState::Closed;
     state.room_management = Default::default();

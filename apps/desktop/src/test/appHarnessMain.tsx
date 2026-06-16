@@ -164,7 +164,9 @@ function readySnapshot(
           mode: composerMode
         },
         scheduled_send_capability: "unknown",
-        scheduled_sends: []
+        scheduled_sends: [],
+        staged_uploads: [],
+        media_gallery: []
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },

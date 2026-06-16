@@ -527,10 +527,19 @@ stateDiagram-v2
   strip assertion for re-encoded images, and thumbnail-refresh assertion. The
   GUI/effect layer may perform the pixel transform, but it must report the
   selected bytes/dimensions/thumbnail through this Rust command contract.
-- The current GUI staging contract accepts one attachment per send. Selecting a
-  second file replaces the staged attachment; multi-attachment batching is a
-  separate Rust-owned upload workflow and must not be emulated by sending one
-  media event plus separate text events in React.
+- Upload staging is Rust-owned. `AppState.upload_staging` is the reducer backing
+  store and is not serialized directly; the selected-room projection is
+  `TimelinePaneState.staged_uploads`. It supports multiple staged files,
+  stable per-file positions, optional per-file captions, and per-image
+  compression choices. React may dispatch typed staging/caption/compression
+  commands and render the projection, but it must not keep a parallel staging
+  map or emulate multi-file sends as one media event plus separate text events.
+- Room media gallery state is Rust-owned. `AppState.media_gallery` is the
+  reducer backing store and is not serialized directly; the selected-room
+  projection is `TimelinePaneState.media_gallery`, ordered by Rust from media
+  event facts. React may render the gallery/viewer from this projection only; it
+  must not scrape timeline DOM, parse Matrix event content, or assemble a
+  gallery from local UI state.
 - `MediaUploadProgress` carries only request/transaction correlation, progress,
   index, and safe media source metadata. It never carries filenames, captions,
   bytes, Matrix room ids, or raw SDK errors.
@@ -549,8 +558,8 @@ stateDiagram-v2
   not parse Matrix event content, infer encryption details, render MXC URIs, or
   own upload/download success/failure state.
 - The local core `media` QA scenario is the Phase A proof:
-  `send_media=ok media_caption=ok image_compress=ok recv_media=ok`. Its output
-  must remain private-data-free.
+  `send_media=ok media_caption=ok image_compress=ok upload_staging=ok
+  media_gallery=ok recv_media=ok`. Its output must remain private-data-free.
 
 ## Timeline Formatted Message Projection
 

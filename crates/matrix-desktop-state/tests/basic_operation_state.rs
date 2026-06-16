@@ -31,6 +31,8 @@ fn ready_state() -> AppState {
             composer: ComposerState::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
         },
         ..AppState::default()
     }

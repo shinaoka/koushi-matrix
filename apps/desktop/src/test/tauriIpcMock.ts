@@ -201,7 +201,11 @@ function defaultSnapshotResponse() {
         room_id: null,
         is_subscribed: false,
         is_paginating_backwards: false,
-        composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
+        composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
+        scheduled_send_capability: "unknown",
+        scheduled_sends: [],
+        staged_uploads: [],
+        media_gallery: []
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },

@@ -282,6 +282,8 @@ fn room_list_update_clears_missing_active_space_and_room() {
             composer: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
@@ -380,6 +382,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             composer: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
@@ -487,6 +491,8 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             composer: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
         },
         ..AppState::default()
     };
@@ -555,6 +561,8 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
             composer: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
         },
         ..AppState::default()
     };

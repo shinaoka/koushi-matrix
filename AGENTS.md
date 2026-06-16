@@ -1039,10 +1039,18 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `bytes.len()` instead of trusting GUI metadata. Phase B compression tests
   should assert the selected variant payload and also check that command Debug
   output redacts filenames, captions, media bytes, and thumbnail bytes.
-- The local core media lane prints `image_compress=ok` with
-  `send_media=ok`, `media_caption=ok`, and `recv_media=ok`. That token proves
-  the Rust contract only; codec/canvas/native transform behavior still needs
-  browser-headless plus Linux virtual-display evidence after Phase B lands.
+- The local core media lane prints `upload_staging=ok` and `media_gallery=ok`
+  with `send_media=ok`, `media_caption=ok`, `image_compress=ok`, and
+  `recv_media=ok`. Those tokens prove the Rust-owned upload-staging/gallery
+  contracts only; codec/canvas/native transform behavior and the visible
+  drag-drop/paste/gallery/viewer workflow still need browser-headless plus
+  Linux virtual-display evidence after Phase B lands.
+- `TimelinePaneState` includes `staged_uploads` and `media_gallery`. When the
+  Rust snapshot adds fields, update the TypeScript snapshot fixtures and
+  `apps/desktop/src-tauri/src/dto.rs` serialization-contract tests in the same
+  change. GUI Phase B must render these Rust projections and dispatch typed
+  commands only; do not keep upload staging/gallery maps in React, synthesize a
+  gallery from DOM rows, or parse Matrix media events in the webview.
 
 ## Linux GUI QA Container
 

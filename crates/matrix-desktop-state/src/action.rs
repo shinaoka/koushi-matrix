@@ -9,6 +9,7 @@ use crate::state::{
     RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
     SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
     SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
+    StagedUploadCompressionChoice, StagedUploadItem, TimelineMediaGalleryItem,
     TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
@@ -424,6 +425,25 @@ pub enum AppAction {
     },
     ScheduledSendDispatched {
         scheduled_id: String,
+    },
+    UploadStagingChanged {
+        room_id: String,
+        items: Vec<StagedUploadItem>,
+    },
+    UploadStagingCaptionChanged {
+        staged_id: String,
+        caption: Option<crate::FormattedMessageDraft>,
+    },
+    UploadStagingCompressionChanged {
+        staged_id: String,
+        compression_choice: StagedUploadCompressionChoice,
+    },
+    UploadStagingCleared {
+        room_id: String,
+    },
+    MediaGalleryUpdated {
+        room_id: String,
+        items: Vec<TimelineMediaGalleryItem>,
     },
     ComposerDraftsLoaded {
         drafts: crate::state::ComposerDraftStore,

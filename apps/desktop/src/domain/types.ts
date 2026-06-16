@@ -197,6 +197,12 @@ export interface MentionIntent {
   targets: MentionTarget[];
 }
 
+export interface FormattedMessageDraft {
+  plain_body: string;
+  formatted_body: string | null;
+  mentions: MentionIntent;
+}
+
 export type ResolveComposerKeyAction = (
   surface: ComposerSurface,
   keyEvent: ComposerKeyEvent,
@@ -553,6 +559,8 @@ export interface TimelinePaneState {
   composer: ComposerState;
   scheduled_send_capability: ScheduledSendCapability;
   scheduled_sends: ScheduledSendItem[];
+  staged_uploads: StagedUploadItem[];
+  media_gallery: TimelineMediaGalleryItem[];
 }
 
 export type ScheduledSendCapability = "unknown" | "serverDelayedEvents" | "localFallback";
@@ -568,6 +576,63 @@ export interface ScheduledSendItem {
 export type ScheduledSendHandle =
   | { kind: "local" }
   | { kind: "server"; delay_id: string };
+
+export type StagedUploadKind =
+  | { kind: "image"; width: number | null; height: number | null }
+  | { kind: "file" };
+
+export type StagedUploadCompressionChoice =
+  | { kind: "notApplicable" }
+  | { kind: "original" }
+  | { kind: "compressed"; mode: ImageUploadCompressionMode };
+
+export interface StagedUploadItem {
+  staged_id: string;
+  room_id: string;
+  position: number;
+  filename: string;
+  mime_type: string;
+  byte_count: number;
+  kind: StagedUploadKind;
+  caption: FormattedMessageDraft | null;
+  compression_choice: StagedUploadCompressionChoice;
+}
+
+export type TimelineMediaKind = "Image" | "File" | "Audio" | "Video";
+
+export interface TimelineMediaGallerySource {
+  mxc_uri: string;
+  encrypted: boolean;
+  encryption_version: string | null;
+}
+
+export interface TimelineMediaGalleryThumbnail {
+  source: TimelineMediaGallerySource;
+  mimetype: string | null;
+  size: number | null;
+  width: number | null;
+  height: number | null;
+}
+
+export interface TimelineMediaGalleryMedia {
+  kind: TimelineMediaKind;
+  filename: string;
+  source: TimelineMediaGallerySource;
+  mimetype: string | null;
+  size: number | null;
+  width: number | null;
+  height: number | null;
+  thumbnail: TimelineMediaGalleryThumbnail | null;
+}
+
+export interface TimelineMediaGalleryItem {
+  event_id: string;
+  room_id: string;
+  sender: string | null;
+  sender_label?: string | null;
+  timestamp_ms: number;
+  media: TimelineMediaGalleryMedia;
+}
 
 export interface ComposerState {
   pending_transaction_id: string | null;

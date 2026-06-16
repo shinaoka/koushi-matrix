@@ -236,8 +236,12 @@ An in-process actor system in `matrix-desktop-core`:
   instead of depending on the server echoing them back; for own sent events whose
   remote echo has not arrived, the actor resolves the event id back to the
   local-echo transaction identity. Media messages are projected into
-  `TimelineItem.media` from SDK message content. React renders that DTO only:
-  it does not infer Matrix media semantics, upload state, encrypted media
+  `TimelineItem.media` from SDK message content. Upload staging and room media
+  gallery state are also Rust-owned: reducer backing stores are projected into
+  `TimelinePaneState.staged_uploads` and `TimelinePaneState.media_gallery` for
+  the selected room. React renders those DTOs and dispatches typed commands
+  only; it does not infer Matrix media semantics, keep a parallel upload-staging
+  store, synthesize gallery membership, own upload state, encrypted media
   metadata, or download behavior. Downloaded bytes and encrypted media keys or
   hashes stay inside Rust actor effects and are never sent through CoreEvents.
   Reaction groups are projected the same way from SDK aggregation data; React
