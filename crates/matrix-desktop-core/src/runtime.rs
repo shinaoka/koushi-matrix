@@ -943,6 +943,9 @@ impl AppActor {
         if *ui_event == UiEvent::ProfileChanged {
             self.emit_timeline_display_label_updates(additional_user_ids);
         }
+        if *ui_event == UiEvent::SettingsChanged {
+            self.emit_timeline_display_policy_update();
+        }
     }
 
     fn emit_timeline_display_label_updates(&self, additional_user_ids: &[&str]) {
@@ -957,6 +960,12 @@ impl AppActor {
                 labels,
             }));
         }
+    }
+
+    fn emit_timeline_display_policy_update(&self) {
+        self.emit(CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated {
+            hide_redacted: self.state.settings.values.display.hide_redacted,
+        }));
     }
 
     async fn send_timeline_command_or_fail(&self, request_id: RequestId, command: TimelineCommand) {
@@ -1251,7 +1260,8 @@ mod tests {
         ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
     };
     use matrix_desktop_state::{
-        LocalUserAliasUpdateState, OwnProfile, ProfileState, SessionInfo, UserProfile, reduce,
+        DisplaySettings, LocalUserAliasUpdateState, OwnProfile, ProfileState, SessionInfo,
+        SettingsPatch, UserProfile, reduce,
     };
 
     #[test]
@@ -1380,6 +1390,7 @@ mod tests {
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
+                is_hidden: false,
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
@@ -1434,6 +1445,7 @@ mod tests {
                     reactions: Vec::new(),
                     can_react: false,
                     is_redacted: false,
+                    is_hidden: false,
                     can_redact: false,
                     is_edited: false,
                     can_edit: false,
@@ -1508,6 +1520,50 @@ mod tests {
         assert!(
             saw_alias_update,
             "actor-origin ProfileChanged effects must relabel already-loaded timeline rows"
+        );
+        runtime.shutdown_handle().abort();
+    }
+
+    #[tokio::test]
+    async fn settings_update_emits_timeline_display_policy_update() {
+        let runtime = CoreRuntime::start_with_event_capacity(16);
+        let mut connection = runtime.attach();
+
+        let request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::App(
+                crate::command::AppCommand::UpdateSettings {
+                    request_id,
+                    patch: SettingsPatch {
+                        display: Some(DisplaySettings {
+                            code_block_wrap: true,
+                            hide_redacted: true,
+                        }),
+                        ..SettingsPatch::default()
+                    },
+                },
+            ))
+            .await
+            .expect("settings update command should be accepted");
+
+        let mut saw_policy_update = false;
+        for _ in 0..4 {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
+                    .await
+                    .expect("runtime should emit settings/timeline events")
+                    .expect("event stream should stay open");
+            if let CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated { hide_redacted }) =
+                event
+            {
+                saw_policy_update = hide_redacted;
+                break;
+            }
+        }
+
+        assert!(
+            saw_policy_update,
+            "SettingsChanged must reproject already-loaded redacted timeline rows"
         );
         runtime.shutdown_handle().abort();
     }

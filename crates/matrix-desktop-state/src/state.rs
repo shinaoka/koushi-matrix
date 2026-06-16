@@ -242,12 +242,15 @@ impl Default for NotificationSettings {
 pub struct DisplaySettings {
     #[serde(default = "default_code_block_wrap")]
     pub code_block_wrap: bool,
+    #[serde(default)]
+    pub hide_redacted: bool,
 }
 
 impl Default for DisplaySettings {
     fn default() -> Self {
         Self {
             code_block_wrap: true,
+            hide_redacted: false,
         }
     }
 }

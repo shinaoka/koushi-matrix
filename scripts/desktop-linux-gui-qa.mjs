@@ -925,9 +925,80 @@ async function runLocalMessageActionsScenario() {
       timeoutMs,
       "local GUI message forward"
     );
+    console.log("gui_local_message_forward=ok");
+
+    const redactedBaselineMessages = await elementCount(
+      session.browser,
+      '.message[data-redacted="true"]'
+    );
+    const hideRedactedBody = "QA hide redacted seed";
+    const hideRedactedBaselineMessages = await elementCount(session.browser, ".message");
+    const hideRedactedComposer = await session.browser.$('textarea[aria-label="Message composer"]');
+    await hideRedactedComposer.waitForDisplayed({ timeout: timeoutMs });
+    await hideRedactedComposer.click();
+    await hideRedactedComposer.setValue(hideRedactedBody);
+    await session.browser.keys("Enter");
+    await waitForComposerSendSettled(
+      session.browser,
+      timeoutMs,
+      "local GUI hide redacted seed"
+    );
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".message",
+      hideRedactedBaselineMessages,
+      timeoutMs,
+      "local GUI hide redacted seed message render"
+    );
+    await clickLatestMessageRedactButtonByText(session.browser, hideRedactedBody, timeoutMs);
+    await waitForElementCountGreaterThan(
+      session.browser,
+      '.message[data-redacted="true"]',
+      redactedBaselineMessages,
+      timeoutMs,
+      "local GUI redacted message render"
+    );
+    await waitForDocumentText(
+      session.browser,
+      ["Message redacted"],
+      timeoutMs,
+      "local GUI redacted message placeholder"
+    );
+
+    const userSettings = await session.browser.$('button[aria-label="User settings"]');
+    await userSettings.waitForDisplayed({ timeout: timeoutMs });
+    await userSettings.click();
+    const hideDeletedToggleSelector =
+      '//button[@role="switch" and @aria-label="Hide deleted messages"]';
+    const hideDeletedToggle = await session.browser.$(hideDeletedToggleSelector);
+    await hideDeletedToggle.waitForDisplayed({ timeout: timeoutMs });
+    await waitForElementAttribute(
+      session.browser,
+      hideDeletedToggleSelector,
+      "aria-checked",
+      "false",
+      timeoutMs,
+      "hide redacted setting before toggle"
+    );
+    await hideDeletedToggle.click();
+    await waitForElementAttribute(
+      session.browser,
+      hideDeletedToggleSelector,
+      "aria-checked",
+      "true",
+      timeoutMs,
+      "hide redacted setting after toggle"
+    );
+    await waitForElementCount(
+      session.browser,
+      '.message[data-redacted="true"]',
+      redactedBaselineMessages,
+      timeoutMs,
+      "local GUI hide redacted projection"
+    );
 
     await recordLocalGuiEvidence(session);
-    console.log("gui_local_message_forward=ok");
+    console.log("gui_local_hide_redacted=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -1745,6 +1816,38 @@ async function waitForLatestMessageActionButton(browser, timeout) {
   }
   throw new Error(
     `message action button was not found. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
+  );
+}
+
+async function clickLatestMessageRedactButtonByText(browser, bodyText, timeout) {
+  const row = await waitForLatestEventMessageRowByText(
+    browser,
+    bodyText,
+    timeout,
+    "local GUI redaction target"
+  );
+  await row.moveTo();
+  const redactButton = await row.$('button[aria-label="Redact message"]');
+  await redactButton.waitForDisplayed({ timeout });
+  await redactButton.click();
+}
+
+async function waitForLatestEventMessageRowByText(browser, bodyText, timeout, description) {
+  const startedAt = Date.now();
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    const rows = await browser.$$(".message[data-event-id]");
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const rowText = (await rows[index].getText()).replace(/\s+/g, " ").trim();
+      if (rowText.includes(bodyText)) {
+        return rows[index];
+      }
+    }
+    lastDiagnostics = await messageActionDiagnostics(browser);
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} event row was not found. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
   );
 }
 

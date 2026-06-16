@@ -130,6 +130,7 @@ export interface NotificationSettings {
 
 export interface DisplaySettings {
   code_block_wrap: boolean;
+  hide_redacted: boolean;
 }
 
 export type SettingsPersistenceState =

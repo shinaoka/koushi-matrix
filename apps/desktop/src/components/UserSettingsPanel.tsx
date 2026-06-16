@@ -3,6 +3,7 @@ import {
   Bell,
   Code2,
   Check,
+  EyeOff,
   Image,
   KeyRound,
   Keyboard,
@@ -21,6 +22,7 @@ import { t } from "../i18n/messages";
 import type {
   CrossSigningStatus,
   DeviceTrustLevel,
+  DisplaySettings,
   E2eeTrustState,
   EmojiPreference,
   DisplayPlatform,
@@ -310,6 +312,15 @@ export function UserSettingsPanel({
         <div className="settings-toggle-list">
           <DisplayToggle
             label={t("settings.codeBlockWrap")}
+            settingKey="code_block_wrap"
+            icon="code"
+            current={selectedDisplay}
+            onSelect={onUpdateSettings}
+          />
+          <DisplayToggle
+            label={t("settings.hideRedacted")}
+            settingKey="hide_redacted"
+            icon="hideRedacted"
             current={selectedDisplay}
             onSelect={onUpdateSettings}
           />
@@ -1246,14 +1257,19 @@ function NotificationToggle({
 
 function DisplayToggle({
   label,
+  settingKey,
+  icon,
   current,
   onSelect
 }: {
   label: string;
-  current: { code_block_wrap: boolean };
+  settingKey: keyof DisplaySettings;
+  icon: "code" | "hideRedacted";
+  current: DisplaySettings;
   onSelect: (patch: SettingsPatch) => void;
 }) {
-  const checked = current.code_block_wrap;
+  const checked = current[settingKey];
+  const Icon = icon === "code" ? Code2 : EyeOff;
   return (
     <button
       className="settings-toggle-row"
@@ -1264,14 +1280,15 @@ function DisplayToggle({
       onClick={() => {
         onSelect({
           display: {
-            code_block_wrap: !checked
+            ...current,
+            [settingKey]: !checked
           }
         });
       }}
     >
       <span className="settings-toggle-copy">
         <span className="settings-toggle-label">
-          <Code2 size={15} aria-hidden="true" />
+          <Icon size={15} aria-hidden="true" />
           <span>{label}</span>
         </span>
       </span>

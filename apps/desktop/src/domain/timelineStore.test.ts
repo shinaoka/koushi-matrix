@@ -54,6 +54,7 @@ function makeMsg(id: string, body: string): TimelineItem {
     thread_summary: null,
     can_react: true,
     is_redacted: false,
+    is_hidden: false,
     can_redact: false,
     is_edited: false,
     can_edit: false,
@@ -80,6 +81,7 @@ function makeLocalEcho(txnId: string, body: string): TimelineItem {
     thread_summary: null,
     can_react: false,
     is_redacted: false,
+    is_hidden: false,
     can_redact: false,
     is_edited: false,
     can_edit: false,
@@ -190,6 +192,7 @@ describe("timeline store — diff application", () => {
                 ],
                 can_react: true,
                 is_redacted: false,
+                is_hidden: false,
                 can_redact: false,
                 is_edited: true,
                 can_edit: false
@@ -965,6 +968,52 @@ describe("DisplayLabelsUpdated", () => {
     const items = getItems(store, KEY);
     expect(items[0].sender).toBe("@eve:example.invalid");
     expect(items[0].sender_label).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DisplayPolicyUpdated reprojects hidden redacted rows across timelines
+// ---------------------------------------------------------------------------
+
+describe("DisplayPolicyUpdated", () => {
+  test("marks only redacted rows hidden while preserving non-redacted rows", () => {
+    let store = createTimelineStore();
+    const redacted: TimelineItem = {
+      ...makeMsg("$redacted", ""),
+      body: null,
+      is_redacted: true,
+      is_hidden: false
+    };
+    const visible = makeMsg("$visible", "Visible message");
+
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 0,
+        items: [redacted, visible],
+      },
+    });
+
+    store = applyTimelineEvent(store, {
+      DisplayPolicyUpdated: {
+        hide_redacted: true,
+      },
+    });
+
+    let items = getItems(store, KEY);
+    expect(items[0]).toMatchObject({ is_redacted: true, is_hidden: true });
+    expect(items[1]).toMatchObject({ is_redacted: false, is_hidden: false });
+
+    store = applyTimelineEvent(store, {
+      DisplayPolicyUpdated: {
+        hide_redacted: false,
+      },
+    });
+
+    items = getItems(store, KEY);
+    expect(items[0]).toMatchObject({ is_redacted: true, is_hidden: false });
+    expect(items[1]).toMatchObject({ is_redacted: false, is_hidden: false });
   });
 });
 

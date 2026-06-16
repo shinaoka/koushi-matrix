@@ -1246,6 +1246,7 @@ mod tests {
             }],
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: true,
             is_edited: true,
             can_edit: true,
@@ -1298,6 +1299,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: true,
             is_edited: false,
             can_edit: false,
@@ -1327,6 +1329,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
+            is_hidden: false,
             can_redact: false,
             is_edited: false,
             can_edit: false,
@@ -1358,6 +1361,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: true,
             is_edited: false,
             can_edit: false,
@@ -1416,6 +1420,7 @@ mod tests {
                 "thread_summary": null,
                 "can_react": true,
                 "is_redacted": false,
+                "is_hidden": false,
                 "can_redact": true,
                 "is_edited": true,
                 "can_edit": true,
@@ -1623,6 +1628,15 @@ mod tests {
                 "user_id": "@u:example.test",
                 "display_label": "User Alias"
             })
+        );
+        let display_policy_updated =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated {
+                hide_redacted: true,
+            }))
+            .expect("serialize display policy update event");
+        assert_eq!(
+            display_policy_updated["event"]["DisplayPolicyUpdated"]["hide_redacted"],
+            json!(true)
         );
 
         // Account events are externally tagged under the Account envelope
@@ -1997,6 +2011,7 @@ mod tests {
             "roomTagRemoved": room_tag_removed,
             "roomTagSet": room_tag_set,
             "timelineDisplayLabelsUpdated": display_labels_updated,
+            "timelineDisplayPolicyUpdated": display_policy_updated,
             "timelineInitialItems": initial,
             "timelineItemsUpdated": updated,
             "timelineMediaDownloadCompleted": media_download_completed,

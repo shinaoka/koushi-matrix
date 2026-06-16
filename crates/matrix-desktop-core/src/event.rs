@@ -656,6 +656,9 @@ pub enum TimelineEvent {
         key: TimelineKey,
         reason: TimelineResyncReason,
     },
+    DisplayPolicyUpdated {
+        hide_redacted: bool,
+    },
     DisplayLabelsUpdated {
         labels: Vec<TimelineDisplayLabelUpdate>,
     },
@@ -758,6 +761,10 @@ impl fmt::Debug for TimelineEvent {
                 .debug_struct("ResyncRequired")
                 .field("key", &"TimelineKey(..)")
                 .field("reason", reason)
+                .finish(),
+            Self::DisplayPolicyUpdated { hide_redacted } => formatter
+                .debug_struct("DisplayPolicyUpdated")
+                .field("hide_redacted", hide_redacted)
                 .finish(),
             Self::DisplayLabelsUpdated { labels } => formatter
                 .debug_struct("DisplayLabelsUpdated")
@@ -1054,6 +1061,8 @@ pub struct TimelineItem {
     #[serde(default)]
     pub is_redacted: bool,
     #[serde(default)]
+    pub is_hidden: bool,
+    #[serde(default)]
     pub can_redact: bool,
     #[serde(default)]
     pub is_edited: bool,
@@ -1098,6 +1107,7 @@ impl fmt::Debug for TimelineItem {
             .field("reactions", &self.reactions)
             .field("can_react", &self.can_react)
             .field("is_redacted", &self.is_redacted)
+            .field("is_hidden", &self.is_hidden)
             .field("can_redact", &self.can_redact)
             .field("is_edited", &self.is_edited)
             .field("can_edit", &self.can_edit)
@@ -1205,6 +1215,7 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
         | TimelineEvent::MediaUploadProgress { .. }
         | TimelineEvent::MediaDownloadCompleted { .. }
         | TimelineEvent::ResyncRequired { .. }
+        | TimelineEvent::DisplayPolicyUpdated { .. }
         | TimelineEvent::DisplayLabelsUpdated { .. } => {}
     }
 }
@@ -1243,6 +1254,7 @@ pub fn project_room_event_display_labels(event: &mut RoomEvent, state: &AppState
 
 pub fn project_timeline_item_display_labels(item: &mut TimelineItem, state: &AppState) {
     item.sender_label = timeline_sender_label(item.sender.as_deref(), state);
+    item.is_hidden = state.settings.values.display.hide_redacted && item.is_redacted;
     if let Some(reply_quote) = item.reply_quote.as_mut() {
         reply_quote.sender_label = timeline_sender_label(reply_quote.sender.as_deref(), state);
     }
@@ -1480,6 +1492,7 @@ mod tests {
             }],
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: true,
             is_edited: true,
             can_edit: true,
@@ -1544,6 +1557,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: true,
             is_edited: false,
             can_edit: false,
@@ -1596,6 +1610,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: true,
             is_edited: false,
             can_edit: true,
@@ -1645,6 +1660,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: true,
             is_edited: false,
             can_edit: true,
@@ -1804,6 +1820,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
+            is_hidden: false,
             can_redact: false,
             is_edited: false,
             can_edit: false,
@@ -1869,6 +1886,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: true,
             is_edited: false,
             can_edit: false,
@@ -2001,6 +2019,87 @@ mod tests {
         assert!(!debug.contains("@bob:example.invalid"), "{debug}");
         assert!(!debug.contains("Alice Alias"), "{debug}");
         assert!(!debug.contains("Bobby"), "{debug}");
+    }
+
+    #[test]
+    fn timeline_items_project_redacted_visibility_from_settings() {
+        let mut state = AppState::default();
+        state.settings.values.display.hide_redacted = true;
+        let key = TimelineKey::room(
+            AccountKey("@me:example.invalid".to_owned()),
+            "!room:example.invalid",
+        );
+        let mut event = TimelineEvent::InitialItems {
+            request_id: None,
+            key,
+            generation: TimelineGeneration(0),
+            items: vec![
+                timeline_item_fixture("$redacted:example.invalid", true),
+                timeline_item_fixture("$visible:example.invalid", false),
+            ],
+        };
+
+        project_timeline_event_display_labels(&mut event, &state);
+
+        let TimelineEvent::InitialItems { items, .. } = event else {
+            panic!("expected InitialItems");
+        };
+        assert!(items[0].is_redacted);
+        assert!(items[0].is_hidden);
+        assert!(!items[1].is_redacted);
+        assert!(!items[1].is_hidden);
+    }
+
+    #[test]
+    fn timeline_display_policy_update_serializes_and_redacts_debug() {
+        let event = TimelineEvent::DisplayPolicyUpdated {
+            hide_redacted: true,
+        };
+
+        let value = serde_json::to_value(&event).expect("DisplayPolicyUpdated serializes");
+        assert_eq!(
+            value,
+            json!({
+                "DisplayPolicyUpdated": {
+                    "hide_redacted": true
+                }
+            })
+        );
+
+        let debug = format!("{event:?}");
+        assert!(debug.contains("DisplayPolicyUpdated"), "{debug}");
+        assert!(debug.contains("hide_redacted"), "{debug}");
+    }
+
+    fn timeline_item_fixture(event_id: &str, is_redacted: bool) -> TimelineItem {
+        TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: event_id.to_owned(),
+            },
+            sender: Some("@alice:example.invalid".to_owned()),
+            sender_label: None,
+            body: if is_redacted {
+                None
+            } else {
+                Some("visible body".to_owned())
+            },
+            timestamp_ms: Some(1),
+            in_reply_to_event_id: None,
+            formatted: None,
+            reply_quote: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: !is_redacted,
+            is_redacted,
+            is_hidden: false,
+            can_redact: !is_redacted,
+            is_edited: false,
+            can_edit: false,
+            actions: TimelineMessageActions::default(),
+            send_state: None,
+        }
     }
 
     #[test]

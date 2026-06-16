@@ -38,6 +38,8 @@
  *      snapshots and dispatch credential health probes only through Tauri IPC.
  *  16. Render Rust-owned formatted timeline DTOs and drive the display
  *      code-block wrap setting through `update_settings`.
+ *  17. Hide redacted timeline rows only after the Rust-owned display policy
+ *      event marks redacted item DTOs hidden.
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -61,6 +63,7 @@ function makeThreadItem(index: number, rootEventId = "$seed-event:example.invali
     reactions: [],
     can_react: true,
     is_redacted: false,
+    is_hidden: false,
     can_redact: false,
     is_edited: false,
     can_edit: false
@@ -83,6 +86,7 @@ function makeSendQueueItem(
     reactions: [],
     can_react: false,
     is_redacted: false,
+    is_hidden: false,
     can_redact: false,
     is_edited: false,
     can_edit: false,
@@ -1162,6 +1166,7 @@ test("local aliases dispatch typed account command and render Rust-projected lab
         reactions: [],
         can_react: true,
         is_redacted: false,
+        is_hidden: false,
         can_redact: false,
         is_edited: false,
         can_edit: false
@@ -1720,6 +1725,7 @@ test("mention autocomplete inserts a pill and sends typed mention intent", async
             thread_summary: null,
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: true,
             is_edited: false,
             can_edit: true,
@@ -2091,6 +2097,7 @@ test("clicking an own reaction pill invokes redact_reaction", async ({ page }) =
                   thread_summary: null,
                   can_react: true,
                   is_redacted: false,
+                  is_hidden: false,
                   can_redact: true,
                   is_edited: false,
                   can_edit: true,
@@ -2178,6 +2185,7 @@ test("reply quote block renders from Rust-owned timeline item data", async ({ pa
       reactions: [],
       can_react: true,
       is_redacted: false,
+      is_hidden: false,
       can_redact: false,
       is_edited: false,
       can_edit: false
@@ -2303,6 +2311,7 @@ test("message action menu copies Rust-owned body and permalink values", async ({
       reactions: [],
       can_react: false,
       is_redacted: false,
+      is_hidden: false,
       can_redact: false,
       is_edited: false,
       can_edit: false,
@@ -2349,6 +2358,7 @@ test("message action menu dispatches source and forward through typed Rust contr
       reactions: [],
       can_react: false,
       is_redacted: false,
+      is_hidden: false,
       can_redact: false,
       is_edited: false,
       can_edit: false,
@@ -2394,6 +2404,7 @@ test("message action menu dispatches source and forward through typed Rust contr
             in_reply_to_event_id: null,
             thread_root: null,
             is_redacted: false,
+            is_hidden: false,
             is_edited: true,
             has_media: false
           }
@@ -2514,6 +2525,7 @@ test("attach control stages media caption and renders Rust-owned media progress"
                   reactions: [],
                   can_react: false,
                   is_redacted: false,
+                  is_hidden: false,
                   can_redact: false,
                   is_edited: false,
                   can_edit: false
@@ -2574,6 +2586,7 @@ test("attach control stages media caption and renders Rust-owned media progress"
                   reactions: [],
                   can_react: true,
                   is_redacted: false,
+                  is_hidden: false,
                   can_redact: false,
                   is_edited: false,
                   can_edit: false
@@ -2790,6 +2803,7 @@ test("redact message invokes redact_message and shows the redacted placeholder",
                   thread_summary: null,
                   can_react: false,
                   is_redacted: true,
+                  is_hidden: false,
                   can_redact: false,
                   is_edited: false,
                   can_edit: false,
@@ -2866,6 +2880,7 @@ test("editing a message invokes edit_message and renders the edited marker", asy
                   thread_summary: null,
                   can_react: true,
                   is_redacted: false,
+                  is_hidden: false,
                   can_redact: true,
                   is_edited: true,
                   can_edit: true,
@@ -2945,6 +2960,7 @@ test("selecting a search result opens focused context from Rust-owned state", as
               reactions: [],
               can_react: true,
               is_redacted: false,
+              is_hidden: false,
               can_redact: false,
               is_edited: false,
               can_edit: false
@@ -3023,6 +3039,7 @@ test("thread summary chip opens a thread timeline from keyed CoreEvents", async 
               reactions: [],
               can_react: true,
               is_redacted: false,
+              is_hidden: false,
               can_redact: false,
               is_edited: false,
               can_edit: false
@@ -3322,6 +3339,7 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
       reactions: [],
       can_react: true,
       is_redacted: false,
+      is_hidden: false,
       can_redact: false,
       is_edited: false,
       can_edit: false
@@ -3513,6 +3531,7 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
       thread_summary: null,
       can_react: true,
       is_redacted: false,
+      is_hidden: false,
       can_redact: false,
       is_edited: false,
       can_edit: true,
@@ -3824,6 +3843,7 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
       reactions: [],
       can_react: false,
       is_redacted: false,
+      is_hidden: false,
       can_redact: false,
       is_edited: false,
       can_edit: false
@@ -3857,13 +3877,113 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
     )
     .toEqual({
       patch: {
-        display: { code_block_wrap: false }
+        display: { code_block_wrap: false, hide_redacted: false }
       }
     });
   await expect(wrapToggle).toHaveAttribute("aria-checked", "false");
   await expect.poll(() => pre.evaluate((element) => getComputedStyle(element).whiteSpace)).toBe(
     "pre"
   );
+});
+
+test("hide deleted messages setting hides only Rust-marked redacted timeline rows", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const redactedEventId = "$redacted-hidden:example.invalid";
+  const replyEventId = "$reply-to-hidden-redacted:example.invalid";
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: redactedEventId } },
+      sender: "@harness-user:example.invalid",
+      body: null,
+      timestamp_ms: 1_800_000_000_950,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      reactions: [],
+      can_react: false,
+      is_redacted: true,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false
+    },
+    {
+      id: { Event: { event_id: replyEventId } },
+      sender: "@harness-user:example.invalid",
+      body: "Visible reply to a deleted event",
+      timestamp_ms: 1_800_000_000_960,
+      in_reply_to_event_id: redactedEventId,
+      reply_quote: {
+        event_id: redactedEventId,
+        sender: "@sender:example.invalid",
+        sender_label: "Sender",
+        body_preview: null,
+        state: "redacted"
+      },
+      thread_root: null,
+      thread_summary: null,
+      reactions: [],
+      can_react: false,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false
+    }
+  ]);
+
+  const redactedRow = page.locator(`[data-event-id="${redactedEventId}"]`);
+  const replyRow = page.locator(`[data-event-id="${replyEventId}"]`);
+  await expect(redactedRow.getByText(t("timeline.redactedMessage"))).toBeVisible();
+  await expect(replyRow.getByText("Visible reply to a deleted event")).toBeVisible();
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.getByRole("button", { name: "User settings" }).click();
+  const hideDeleted = page.getByRole("switch", { name: "Hide deleted messages" });
+  await expect(hideDeleted).toHaveAttribute("aria-checked", "false");
+  await hideDeleted.click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        display: { code_block_wrap: true, hide_redacted: true }
+      }
+    });
+  await expect(redactedRow.getByText(t("timeline.redactedMessage"))).toBeVisible();
+
+  await page.evaluate(async () => {
+    await window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        DisplayPolicyUpdated: {
+          hide_redacted: true
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  });
+  await expect(redactedRow).toHaveCount(0);
+  await expect(replyRow.getByText(t("timeline.redactedMessage"))).toBeVisible();
+
+  await hideDeleted.click();
+  await page.evaluate(async () => {
+    await window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        DisplayPolicyUpdated: {
+          hide_redacted: false
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  });
+  await expect(redactedRow.getByText(t("timeline.redactedMessage"))).toBeVisible();
 });
 
 test("profile settings dispatch Rust-owned commands and avatars render from profile state", async ({
@@ -3938,6 +4058,7 @@ test("profile settings dispatch Rust-owned commands and avatars render from prof
                   thread_summary: null,
                   media: null,
                   is_redacted: false,
+                  is_hidden: false,
                   can_redact: false,
                   is_edited: false,
                   can_edit: false,

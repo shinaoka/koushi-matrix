@@ -168,6 +168,7 @@ export interface TimelineItem {
   reactions: ReactionGroup[];
   can_react: boolean;
   is_redacted: boolean;
+  is_hidden: boolean;
   can_redact: boolean;
   is_edited: boolean;
   can_edit: boolean;
@@ -296,6 +297,11 @@ export type TimelineEvent =
       ResyncRequired: {
         key: TimelineKey;
         reason: TimelineResyncReason;
+      };
+    }
+  | {
+      DisplayPolicyUpdated: {
+        hide_redacted: boolean;
       };
     }
   | {

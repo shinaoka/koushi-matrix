@@ -49,7 +49,8 @@ use matrix_desktop_core::command::{
 use matrix_desktop_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
     PaginationDirection, PaginationState, RoomEvent, SearchEvent, SyncBackendKind, SyncEvent,
-    TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineSendState,
+    TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMessageActions,
+    TimelineSendState,
 };
 use matrix_desktop_core::failure::{CoreFailure, RoomFailureKind};
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -58,16 +59,16 @@ use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityState, AppState, AuthSecret, ComposerKey, ComposerKeyEvent,
     ComposerKeyModifiers, ComposerResolvedAction, ComposerResolverContext, ComposerSelection,
     ComposerSendShortcut, ComposerSurface, CrossSigningStatus, DirectoryQuery,
-    DirectoryRoomSummary, IdentityResetAuthRequest, IdentityResetAuthType, IdentityResetState,
-    KeyBackupStatus, LocalEncryptionHealth, LocalEncryptionState, MentionIntent, MentionTarget,
-    NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionDispatchState,
-    NativeAttentionObservationKind, NativeAttentionProjectionInput, NativeAttentionState,
-    NativeAttentionSuppressionReason, OperationFailureKind, PresenceKind, RecoveryRequest,
-    ReplyQuoteState, RoomAttentionKind, RoomManagementOperationKind, RoomManagementOperationState,
-    RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
-    SessionInfo, SessionState, TrustOperationFailureKind, VerificationFlowState,
-    VerificationTarget, build_formatted_message_draft, native_attention_state_from_rooms,
-    resolve_composer_key_action,
+    DirectoryRoomSummary, DisplaySettings, IdentityResetAuthRequest, IdentityResetAuthType,
+    IdentityResetState, KeyBackupStatus, LocalEncryptionHealth, LocalEncryptionState,
+    MentionIntent, MentionTarget, NativeAttentionCapabilities, NativeAttentionCapability,
+    NativeAttentionDispatchState, NativeAttentionObservationKind, NativeAttentionProjectionInput,
+    NativeAttentionState, NativeAttentionSuppressionReason, OperationFailureKind, PresenceKind,
+    RecoveryRequest, ReplyQuoteState, RoomAttentionKind, RoomManagementOperationKind,
+    RoomManagementOperationState, RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot,
+    RoomSummary, RoomTags, SasEmoji, SessionInfo, SessionState, SettingsPatch,
+    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
+    build_formatted_message_draft, native_attention_state_from_rooms, resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
@@ -398,7 +399,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Directory => &["directory_query=ok", "directory_join=ok"],
         QaStage::RoomManagement => &["room_settings=ok", "moderation=ok", "permission_guard=ok"],
-        QaStage::Timeline => &["timeline=ok"],
+        QaStage::Timeline => &["timeline=ok", "hide_redacted=ok"],
         QaStage::Activity => &[
             "activity_recent=ok",
             "activity_unread=ok",
@@ -464,6 +465,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "moderation=ok",
         "permission_guard=ok",
         "timeline=ok",
+        "hide_redacted=ok",
         "activity_recent=ok",
         "activity_unread=ok",
         "activity_markread=ok",
@@ -2032,6 +2034,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     wait_for_redact_diff(&mut conn_a, &key_a, redact2_id, "redact msg2").await?;
     println!("redact_msg2=ok");
+
+    run_hide_redacted_stage(&mut conn_a, &key_a).await?;
 
     // A paginates backward with a small page size until EndReached.
     // Assert Paginating → EndReached and strictly increasing batch_ids per generation.
@@ -7420,6 +7424,127 @@ async fn wait_for_redact_diff(
     }
 }
 
+async fn run_hide_redacted_stage(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::UpdateSettings {
+        request_id,
+        patch: SettingsPatch {
+            display: Some(DisplaySettings {
+                code_block_wrap: true,
+                hide_redacted: true,
+            }),
+            ..SettingsPatch::default()
+        },
+    }))
+    .await
+    .map_err(|e| format!("submit hide redacted settings update: {e}"))?;
+
+    wait_for_display_policy_update(conn, key, request_id, true, "hide redacted policy").await?;
+    assert_hide_redacted_projection()?;
+    println!("hide_redacted=ok");
+    Ok(())
+}
+
+async fn wait_for_display_policy_update(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    request_id: RequestId,
+    expected_hide_redacted: bool,
+    label: &str,
+) -> Result<(), String> {
+    let _ = key;
+    let timeout = Duration::from_secs(10);
+    loop {
+        let event = tokio::time::timeout(timeout, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for display policy update"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::DisplayPolicyUpdated { hide_redacted })
+                if hide_redacted == expected_hide_redacted =>
+            {
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: settings update failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+fn assert_hide_redacted_projection() -> Result<(), String> {
+    let mut state = AppState::default();
+    state.settings.values.display = DisplaySettings {
+        code_block_wrap: true,
+        hide_redacted: true,
+    };
+    let key = TimelineKey::room(
+        AccountKey("@projection:example.invalid".to_owned()),
+        "!projection:example.invalid",
+    );
+    let mut event = TimelineEvent::InitialItems {
+        request_id: None,
+        key,
+        generation: matrix_desktop_core::ids::TimelineGeneration(0),
+        items: vec![
+            projection_timeline_item("$redacted:example.invalid", true),
+            projection_timeline_item("$visible:example.invalid", false),
+        ],
+    };
+
+    matrix_desktop_core::event::project_timeline_event_display_labels(&mut event, &state);
+
+    let TimelineEvent::InitialItems { items, .. } = event else {
+        return Err("hide redacted projection did not keep InitialItems shape".to_owned());
+    };
+    if !(items[0].is_redacted && items[0].is_hidden) {
+        return Err("redacted item was not marked hidden by Rust projection".to_owned());
+    }
+    if items[1].is_redacted || items[1].is_hidden {
+        return Err("non-redacted item was hidden by Rust projection".to_owned());
+    }
+    Ok(())
+}
+
+fn projection_timeline_item(event_id: &str, is_redacted: bool) -> TimelineItem {
+    TimelineItem {
+        id: TimelineItemId::Event {
+            event_id: event_id.to_owned(),
+        },
+        sender: Some("@projection:example.invalid".to_owned()),
+        sender_label: None,
+        body: if is_redacted {
+            None
+        } else {
+            Some("projection body".to_owned())
+        },
+        timestamp_ms: None,
+        in_reply_to_event_id: None,
+        formatted: None,
+        reply_quote: None,
+        thread_root: None,
+        thread_summary: None,
+        media: None,
+        reactions: Vec::new(),
+        can_react: false,
+        is_redacted,
+        is_hidden: false,
+        can_redact: false,
+        is_edited: false,
+        can_edit: false,
+        actions: TimelineMessageActions::default(),
+        send_state: None,
+    }
+}
+
 /// Paginate backward in a loop until `EndReached`, asserting the state
 /// sequence. Returns `"end_reached"` on success.
 ///
@@ -7780,6 +7905,7 @@ mod tests {
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
+                is_hidden: false,
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
@@ -7803,6 +7929,7 @@ mod tests {
                 reactions: Vec::new(),
                 can_react: true,
                 is_redacted: false,
+                is_hidden: false,
                 can_redact: false,
                 is_edited: false,
                 can_edit: true,
@@ -7837,6 +7964,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
+            is_hidden: false,
             can_redact: false,
             is_edited: false,
             can_edit: false,
@@ -7869,6 +7997,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
+            is_hidden: false,
             can_redact: false,
             is_edited: false,
             can_edit: false,
@@ -7912,6 +8041,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
+            is_hidden: false,
             can_redact: false,
             is_edited: false,
             can_edit: false,
@@ -8134,6 +8264,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
+            is_hidden: false,
             can_redact: false,
             is_edited: false,
             can_edit: false,
@@ -8168,6 +8299,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
+            is_hidden: false,
             can_redact: false,
             is_edited: false,
             can_edit: false,
@@ -8229,6 +8361,7 @@ mod tests {
                         reactions: Vec::new(),
                         can_react: false,
                         is_redacted: false,
+                        is_hidden: false,
                         can_redact: false,
                         is_edited: false,
                         can_edit: false,
@@ -8375,6 +8508,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "send_fail=ok",
                 "resend=ok",
                 "cancel_send=ok",
@@ -8459,6 +8593,7 @@ mod tests {
                 "moderation=ok",
                 "permission_guard=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "activity_recent=ok",
                 "activity_unread=ok",
                 "activity_markread=ok",
@@ -8551,6 +8686,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "mention_send=ok",
                 "markdown_send=ok",
                 "slash_command=ok",
@@ -8586,6 +8722,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "restore_cleanup=ok",
             ]
         );
@@ -8596,6 +8733,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "activity_recent=ok",
                 "activity_unread=ok",
                 "activity_markread=ok",
@@ -8641,6 +8779,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "mention_send=ok",
                 "markdown_send=ok",
                 "slash_command=ok",
@@ -8660,6 +8799,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "send_media=ok",
                 "media_caption=ok",
                 "recv_media=ok",
@@ -8673,6 +8813,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "read_receipt=ok",
                 "fully_read=ok",
                 "typing=ok",
@@ -8688,6 +8829,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "reply=ok",
                 "reply_quote=ok",
                 "pin_event=ok",
@@ -8707,6 +8849,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "edit_redact_search=ok",
                 "restore_cleanup=ok",
             ]
@@ -8751,6 +8894,7 @@ mod tests {
                 "moderation=ok",
                 "permission_guard=ok",
                 "timeline=ok",
+                "hide_redacted=ok",
                 "activity_recent=ok",
                 "activity_unread=ok",
                 "activity_markread=ok",

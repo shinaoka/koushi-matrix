@@ -46,7 +46,8 @@ fn app_state_carries_default_non_secret_settings() {
     assert_eq!(
         state.settings.values.display,
         DisplaySettings {
-            code_block_wrap: true
+            code_block_wrap: true,
+            hide_redacted: false
         }
     );
     assert_eq!(state.settings.persistence, SettingsPersistenceState::Idle);
@@ -77,6 +78,7 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         },
         display: DisplaySettings {
             code_block_wrap: false,
+            hide_redacted: true,
         },
     };
 
@@ -110,6 +112,30 @@ fn settings_values_deserialize_empty_display_as_default() {
     .expect("empty display object should deserialize");
 
     assert_eq!(values.display, DisplaySettings::default());
+}
+
+#[test]
+fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_off() {
+    let values = serde_json::from_str::<SettingsValues>(
+        r#"{
+  "locale": { "language_tag": null, "text_direction": "auto" },
+  "appearance": { "theme": "system" },
+  "typography": { "font": "system", "emoji": "system" },
+  "keyboard": { "composer_send_shortcut": "enter" },
+  "notifications": { "desktop_notifications": true, "sound": true, "badges": true },
+  "display": { "code_block_wrap": false }
+}
+"#,
+    )
+    .expect("legacy display object should deserialize");
+
+    assert_eq!(
+        values.display,
+        DisplaySettings {
+            code_block_wrap: false,
+            hide_redacted: false
+        }
+    );
 }
 
 #[test]
@@ -154,6 +180,7 @@ fn code_block_wrap_patch_is_rust_owned_and_persisted() {
     let mut state = AppState::default();
     let display_settings = DisplaySettings {
         code_block_wrap: false,
+        hide_redacted: false,
     };
 
     let effects = reduce(
@@ -177,6 +204,42 @@ fn code_block_wrap_patch_is_rust_owned_and_persisted() {
         vec![
             AppEffect::PersistSettings {
                 request_id: 78,
+                values: state.settings.values.clone(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+        ]
+    );
+}
+
+#[test]
+fn hide_redacted_patch_is_rust_owned_and_persisted() {
+    let mut state = AppState::default();
+    let display_settings = DisplaySettings {
+        code_block_wrap: true,
+        hide_redacted: true,
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 79,
+            patch: SettingsPatch {
+                display: Some(display_settings.clone()),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert_eq!(state.settings.values.display, display_settings);
+    assert_eq!(
+        state.settings.persistence,
+        SettingsPersistenceState::Saving { request_id: 79 }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSettings {
+                request_id: 79,
                 values: state.settings.values.clone(),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),

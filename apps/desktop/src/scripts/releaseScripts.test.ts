@@ -377,6 +377,7 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_room_kick=ok");
     expect(source).toContain("gui_local_message_source=ok");
     expect(source).toContain("gui_local_message_forward=ok");
+    expect(source).toContain("gui_local_hide_redacted=ok");
     expect(source).toContain("gui_local_mention=ok");
     expect(source).toContain("gui_local_markdown=ok");
     expect(source).toContain("gui_local_slash=ok");
@@ -444,6 +445,9 @@ describe("desktop release scripts", () => {
     expect(source).toContain("View source");
     expect(source).toContain("Message source");
     expect(source).toContain("Forward");
+    expect(source).toContain("Redact message");
+    expect(source).toContain("Hide deleted messages");
+    expect(source).toContain('.message[data-redacted="true"]');
     expect(source).toContain("QA Seed Room");
     expect(source).toContain("QA message action seed");
     expect(source).not.toContain("installTauriInvokeRecorder(");
@@ -495,6 +499,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("gui_local_room_kick=ok");
     expect(docs).toContain("gui_local_message_source=ok");
     expect(docs).toContain("gui_local_message_forward=ok");
+    expect(docs).toContain("gui_local_hide_redacted=ok");
     expect(docs).toContain("gui_local_mention=ok");
     expect(docs).toContain("gui_local_markdown=ok");
     expect(docs).toContain("gui_local_slash=ok");

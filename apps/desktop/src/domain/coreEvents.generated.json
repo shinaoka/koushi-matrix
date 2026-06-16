@@ -170,13 +170,13 @@
           {
             "event_id": "$e1",
             "receipts": [
-            {
-              "avatar": null,
-              "display_name": "Other",
-              "original_display_label": "",
-              "timestamp_ms": 123,
-              "user_id": "@other:example.test"
-            }
+              {
+                "avatar": null,
+                "display_name": "Other",
+                "original_display_label": "",
+                "timestamp_ms": 123,
+                "user_id": "@other:example.test"
+              }
             ]
           }
         ],
@@ -484,7 +484,8 @@
               "can_permalink": true,
               "can_view_source": true,
               "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
-            }
+            },
+            "is_hidden": false
           }
         ],
         "key": {
@@ -555,7 +556,8 @@
                   "can_permalink": true,
                   "can_view_source": true,
                   "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
-                }
+                },
+                "is_hidden": false
               }
             }
           },
@@ -655,7 +657,8 @@
               "can_permalink": true,
               "can_view_source": true,
               "permalink": "https://matrix.to/#/!r%3Aexample.test/%24media1"
-            }
+            },
+            "is_hidden": false
           }
         ],
         "key": {
@@ -759,7 +762,8 @@
               "can_permalink": true,
               "can_view_source": true,
               "permalink": "https://matrix.to/#/!r%3Aexample.test/%24reply1"
-            }
+            },
+            "is_hidden": false
           }
         ],
         "key": {
@@ -827,7 +831,8 @@
               "can_forward": false,
               "can_permalink": false,
               "can_view_source": false
-            }
+            },
+            "is_hidden": false
           }
         ],
         "key": {
@@ -897,5 +902,13 @@
       }
     },
     "kind": "Timeline"
+  },
+  "timelineDisplayPolicyUpdated": {
+    "kind": "Timeline",
+    "event": {
+      "DisplayPolicyUpdated": {
+        "hide_redacted": true
+      }
+    }
   }
 }

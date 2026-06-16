@@ -103,6 +103,9 @@ export function applyTimelineEvent(
   if ("DisplayLabelsUpdated" in event) {
     return applyDisplayLabelsUpdated(store, event.DisplayLabelsUpdated);
   }
+  if ("DisplayPolicyUpdated" in event) {
+    return applyDisplayPolicyUpdated(store, event.DisplayPolicyUpdated);
+  }
   if ("PaginationStateChanged" in event) {
     return applyPaginationStateChanged(store, event.PaginationStateChanged);
   }
@@ -252,6 +255,38 @@ function applyResyncRequired(
     mediaUploadProgress: new Map()
   });
   return { keys: next };
+}
+
+function applyDisplayPolicyUpdated(
+  store: TimelineStoreState,
+  payload: Extract<TimelineEvent, { DisplayPolicyUpdated: unknown }>["DisplayPolicyUpdated"]
+): TimelineStoreState {
+  if (store.keys.size === 0) {
+    return store;
+  }
+
+  let changed = false;
+  const next = new Map<string, TimelineKeyState>();
+  for (const [key, state] of store.keys) {
+    let itemsChanged = false;
+    const items = state.items.map((item) => {
+      const isHidden = payload.hide_redacted && item.is_redacted;
+      if (item.is_hidden === isHidden) {
+        return item;
+      }
+      itemsChanged = true;
+      return { ...item, is_hidden: isHidden };
+    });
+
+    if (itemsChanged) {
+      changed = true;
+      next.set(key, { ...state, items });
+    } else {
+      next.set(key, state);
+    }
+  }
+
+  return changed ? { keys: next } : store;
 }
 
 function applyDisplayLabelsUpdated(

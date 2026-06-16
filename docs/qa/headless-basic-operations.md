@@ -64,6 +64,7 @@ room_settings=ok
 moderation=ok
 permission_guard=ok
 timeline=ok
+hide_redacted=ok
 activity_recent=ok
 activity_unread=ok
 activity_markread=ok
@@ -470,11 +471,15 @@ errors.
 `local-message-actions` sends one synthetic message, opens the real hover-gated
 message action menu in the Linux Tauri WebView, clicks View source, waits for
 the Rust-owned `MessageSourceLoaded` DTO to render the Message source dialog,
-then forwards the event to the Rust-snapshot destination room. The lane prints
-only `gui_local_message_source=ok` and `gui_local_message_forward=ok`; it must
-not monkeypatch Tauri IPC, generate Matrix permalinks in React, copy message
-bodies through React for forwarding, or print Matrix IDs, message bodies,
-generated permalinks, or raw SDK errors.
+then forwards the event to the Rust-snapshot destination room. It also redacts a
+separate synthetic message, toggles the User settings `Hide deleted messages`
+switch, and waits for the Rust-owned hidden projection to remove the redacted
+timeline row from the WebView. The lane prints only
+`gui_local_message_source=ok`, `gui_local_message_forward=ok`, and
+`gui_local_hide_redacted=ok`; it must not monkeypatch Tauri IPC, generate Matrix
+permalinks in React, copy message bodies through React for forwarding, derive
+redacted visibility in React, or print Matrix IDs, message bodies, generated
+permalinks, or raw SDK errors.
 
 `local-composer` registers a synthetic helper account, gives it a synthetic
 display name, joins it to the seeded local room, and sends one helper seed
@@ -559,6 +564,7 @@ gui_local_activity_unread_tab=ok
 gui_local_activity_recent_tab=ok
 gui_local_message_source=ok
 gui_local_message_forward=ok
+gui_local_hide_redacted=ok
 gui_local_settings=ok
 gui_local_trust_settings=ok
 ```

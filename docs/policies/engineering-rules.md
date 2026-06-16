@@ -308,6 +308,12 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    Older settings JSON must backfill safe display defaults before React reads a
    snapshot. GUI code may map `code_block_wrap` to CSS only and must not keep a
    separate local wrap policy.
+   Redacted-message visibility is also a Rust-owned display preference:
+   `SettingsValues.display.hide_redacted` defaults to `false`, persists through
+   the settings store, and is projected onto timeline DTOs as
+   `TimelineItem.is_hidden`. React may omit rows only when this DTO flag is
+   true; it must not remove redacted events from state or derive visibility
+   from a React-local setting.
    Received message formatting is a Rust-owned security projection:
    `TimelineItem.formatted` is sanitized from Matrix `formatted_body` before it
    crosses the WebView boundary, and carries only sanitized HTML plus derived

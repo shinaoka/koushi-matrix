@@ -12,7 +12,7 @@ describe("UserSettingsPanel", () => {
       typography: { font: "system", emoji: "system" },
       keyboard: { composer_send_shortcut: "enter" },
       notifications: { desktop_notifications: true, sound: true, badges: true },
-      display: { code_block_wrap: true }
+      display: { code_block_wrap: true, hide_redacted: false }
     },
     persistence: { kind: "idle" }
   } as const;
@@ -177,7 +177,7 @@ describe("UserSettingsPanel", () => {
           ...settings,
           values: {
             ...settings.values,
-            display: { code_block_wrap: false }
+            display: { code_block_wrap: false, hide_redacted: true }
           }
         }}
         {...handlers}
@@ -186,6 +186,7 @@ describe("UserSettingsPanel", () => {
 
     expect(markup).toContain("Display");
     expect(markup).toContain("Wrap long lines in code blocks");
+    expect(markup).toContain("Hide deleted messages");
     expect(markup).toContain('role="switch"');
     expect(markup).toContain('aria-checked="false"');
   });

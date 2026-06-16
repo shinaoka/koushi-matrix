@@ -443,6 +443,13 @@ sanitizes it before exposing it through `TimelineItem.formatted`.
   `SettingsValues.display.code_block_wrap`, defaulting to `true` and persisted
   through the settings store. GUI code may map the snapshot value to CSS only;
   it must not keep a separate wrap preference.
+- Redacted-event visibility is controlled by Rust-owned
+  `SettingsValues.display.hide_redacted`, defaulting to `false` and persisted
+  through the settings store. Redacted events remain in timeline state; Rust
+  projection marks redacted timeline DTOs with `TimelineItem.is_hidden` when
+  the preference is enabled. React omits rows only from that DTO flag and must
+  not filter redacted events from a local preference. `DisplayPolicyUpdated`
+  reprojects already-loaded rows without removing non-redacted items.
 - The React timeline renderer is a presentation adapter over this DTO. It may
   map sanitized tags into React nodes, attach copy-code controls using the
   Rust-provided code-block body, and highlight search terms over rendered text.

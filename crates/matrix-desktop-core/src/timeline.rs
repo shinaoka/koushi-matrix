@@ -1911,7 +1911,12 @@ impl TimelineActor {
                 client_txn_id.clone(),
             ))
             .info(attachment_info_for_upload(&request))
-            .caption(request.caption.as_ref().map(media_caption_content_from_draft))
+            .caption(
+                request
+                    .caption
+                    .as_ref()
+                    .map(media_caption_content_from_draft),
+            )
             .mentions(caption_mentions);
 
         match room
@@ -3200,6 +3205,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 reactions,
                 can_react,
                 is_redacted: event_item.content().is_redacted(),
+                is_hidden: false,
                 can_redact,
                 is_edited,
                 can_edit,
@@ -3228,6 +3234,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
+                is_hidden: false,
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
@@ -4309,6 +4316,7 @@ mod tests {
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
+            is_hidden: false,
             can_redact: false,
             is_edited: false,
             can_edit: false,

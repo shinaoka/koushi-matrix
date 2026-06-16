@@ -153,7 +153,7 @@ function defaultSnapshotResponse() {
           typography: { font: "system", emoji: "system" },
           keyboard: { composer_send_shortcut: "enter" },
           notifications: { desktop_notifications: true, sound: true, badges: true },
-          display: { code_block_wrap: true }
+          display: { code_block_wrap: true, hide_redacted: false }
         },
         persistence: { kind: "idle" }
       },

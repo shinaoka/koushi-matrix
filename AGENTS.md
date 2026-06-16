@@ -118,6 +118,12 @@ Phase B GUI/browser-headless work for the same issue follows
   review to one file or one invariant, or use `deepseek-v4-flash` only as a
   cheap implementation probe; do not block commits indefinitely on a silent Pro
   review when local gates and main-agent review are available.
+- In the #35 hide-redacted trial, `claude-deepseek` was not on the
+  non-interactive shell PATH but did start through `bash -ic`. A
+  `deepseek-v4-flash` prompt with `--max-budget-usd 2` exited immediately with
+  "Exceeded USD budget (2)" before returning useful output. For future trials,
+  invoke it through an interactive shell, set a larger budget, keep prompts
+  file-local, and do not count a budget-exceeded run as review evidence.
 - When reviewing uncommitted work, include untracked new files explicitly.
   `git diff -- path/to/new-file` is empty for untracked files, and the
   reviewer may correctly report that the core file is missing from the review.
@@ -249,8 +255,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Display preferences such as code-block line wrapping are Rust-owned
   `SettingsValues.display` product state and must persist through the same
   settings store with legacy JSON backfill. React may map
-  `code_block_wrap` to CSS in Phase B, but it must not keep a separate local
-  display-policy store or repair switch state after dispatch.
+  `code_block_wrap` to CSS in Phase B and may omit timeline rows only from the
+  Rust-projected `TimelineItem.is_hidden` flag. It must not keep a separate
+  local display-policy store, derive redacted visibility from React settings
+  state, or repair switch state after dispatch.
 - Received Matrix `formatted_body` is a Rust-owned security projection. Core
   sanitizes Matrix HTML into `TimelineItem.formatted` before it crosses the
   WebView boundary, including plain-text and code-block metadata. React must
@@ -1030,6 +1038,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   prints `gui_local_activity_open=ok`, `gui_local_activity_unread_tab=ok`, and
   `gui_local_activity_recent_tab=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-activity-fast --timeout-ms=180000`
+- Message-action/redacted-visibility GUI iteration has a focused
+  virtual-display lane: `--scenario=local-message-actions`. It opens the real
+  hover-gated message action menu, verifies source/forward behavior, redacts a
+  synthetic message, toggles `Hide deleted messages`, and waits for the
+  Rust-owned `TimelineItem.is_hidden` projection to remove the redacted row.
+  After rebuilding once for frontend/Rust changes, use:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-message-actions-fast --timeout-ms=180000`
 - Composer GUI iteration has a focused virtual-display lane:
   `--scenario=local-composer`. It seeds a synthetic helper member, waits for
   Rust-owned `ProfileState.users` to feed the mention autocomplete, drives the

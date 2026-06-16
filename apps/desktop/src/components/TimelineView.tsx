@@ -951,7 +951,7 @@ export function TimelineView({
       }
       const event = payload.event;
 
-      if ("DisplayLabelsUpdated" in event) {
+      if ("DisplayLabelsUpdated" in event || "DisplayPolicyUpdated" in event) {
         setStore((current) => applyTimelineEvent(current, event));
         return;
       }
@@ -1235,7 +1235,7 @@ export function TimelineView({
           </div>
         </div>
       ) : null}
-      {items.map((item) => {
+      {items.filter((item) => !item.is_hidden).map((item) => {
         const eventId = "Event" in item.id ? item.id.Event.event_id : null;
         const isFullyReadMarker = Boolean(
           eventId && roomSignals?.fully_read_event_id === eventId

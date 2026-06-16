@@ -37,6 +37,7 @@ function makeItem(id: string, body: string) {
     in_reply_to_event_id: null,
     can_react: false,
     is_redacted: false,
+    is_hidden: false,
     can_redact: false,
     is_edited: false,
     can_edit: false,
