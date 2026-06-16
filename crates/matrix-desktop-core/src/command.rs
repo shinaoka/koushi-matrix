@@ -59,6 +59,9 @@ impl CoreCommand {
             ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
+                | AccountCommand::DiscoverLogin { request_id, .. }
+                | AccountCommand::StartOidcLogin { request_id, .. }
+                | AccountCommand::CompleteOidcLogin { request_id, .. }
                 | AccountCommand::RestoreSession { request_id, .. }
                 | AccountCommand::RestoreLastSession { request_id }
                 | AccountCommand::QuerySavedSessions { request_id }
@@ -514,6 +517,19 @@ fn settings_patch_field_names(patch: &SettingsPatch) -> Vec<&'static str> {
 // LoginRequest and RecoveryRequest redact their own Debug in
 // matrix-desktop-state (username, password, device name, recovery secret).
 pub enum AccountCommand {
+    DiscoverLogin {
+        request_id: RequestId,
+        homeserver: String,
+    },
+    StartOidcLogin {
+        request_id: RequestId,
+        homeserver: String,
+    },
+    CompleteOidcLogin {
+        request_id: RequestId,
+        homeserver: String,
+        callback_url: String,
+    },
     LoginPassword {
         request_id: RequestId,
         request: LoginRequest,
@@ -651,6 +667,22 @@ impl fmt::Debug for SetAvatarRequest {
 impl fmt::Debug for AccountCommand {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DiscoverLogin { request_id, .. } => formatter
+                .debug_struct("DiscoverLogin")
+                .field("request_id", request_id)
+                .field("homeserver", &"Homeserver(..)")
+                .finish(),
+            Self::StartOidcLogin { request_id, .. } => formatter
+                .debug_struct("StartOidcLogin")
+                .field("request_id", request_id)
+                .field("homeserver", &"Homeserver(..)")
+                .finish(),
+            Self::CompleteOidcLogin { request_id, .. } => formatter
+                .debug_struct("CompleteOidcLogin")
+                .field("request_id", request_id)
+                .field("homeserver", &"Homeserver(..)")
+                .field("callback_url", &"CallbackUrl(..)")
+                .finish(),
             Self::LoginPassword {
                 request_id,
                 request,

@@ -172,6 +172,43 @@ fn secret_bearing_commands_redact_debug() {
     assert!(format!("{send:?}").contains("txn-1"));
 }
 
+#[test]
+fn auth_discovery_and_oidc_commands_redact_debug_and_do_not_require_ready_session() {
+    let request_id = fake_request_id();
+    let homeserver = "https://example.test".to_owned();
+    let callback_url = "matrix-desktop://auth/callback?code=secret-code".to_owned();
+    let commands = [
+        CoreCommand::Account(AccountCommand::DiscoverLogin {
+            request_id,
+            homeserver: homeserver.clone(),
+        }),
+        CoreCommand::Account(AccountCommand::StartOidcLogin {
+            request_id,
+            homeserver: homeserver.clone(),
+        }),
+        CoreCommand::Account(AccountCommand::CompleteOidcLogin {
+            request_id,
+            homeserver: homeserver.clone(),
+            callback_url: callback_url.clone(),
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(!command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(debug.contains("request_id"));
+        assert!(
+            !debug.contains(&homeserver),
+            "Debug leaked homeserver: {debug}"
+        );
+        assert!(
+            !debug.contains(&callback_url),
+            "Debug leaked callback URL: {debug}"
+        );
+    }
+}
+
 fn future_epoch_ms(offset: Duration) -> u64 {
     std::time::SystemTime::now()
         .checked_add(offset)

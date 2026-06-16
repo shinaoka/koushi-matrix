@@ -1604,6 +1604,13 @@ fn map_core_search_scope_to_state(scope: SearchScope) -> AppSearchScope {
 
 fn account_command_projected_action(command: &AccountCommand) -> Option<AppAction> {
     match command {
+        AccountCommand::DiscoverLogin { homeserver, .. }
+        | AccountCommand::StartOidcLogin { homeserver, .. }
+        | AccountCommand::CompleteOidcLogin { homeserver, .. } => {
+            Some(AppAction::LoginDiscoveryRequested {
+                homeserver: homeserver.clone(),
+            })
+        }
         AccountCommand::RequestVerification { request_id, target } => {
             Some(AppAction::VerificationRequested {
                 request_id: request_id.sequence,
@@ -2298,6 +2305,25 @@ mod tests {
             }),
             Some(AppAction::ResetIdentityAuthSubmitted {
                 request_id: flow_id
+            })
+        );
+    }
+
+    #[test]
+    fn oidc_completion_projects_auth_discovery_before_actor_placeholder() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 8,
+        };
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::CompleteOidcLogin {
+                request_id,
+                homeserver: "https://matrix.example.org".to_owned(),
+                callback_url: "matrix-desktop://auth/callback?code=secret".to_owned(),
+            }),
+            Some(AppAction::LoginDiscoveryRequested {
+                homeserver: "https://matrix.example.org".to_owned(),
             })
         );
     }

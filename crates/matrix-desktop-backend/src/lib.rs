@@ -456,7 +456,7 @@ impl FakeDesktopBackend {
                     Ok(discovery) => vec![AppAction::LoginDiscoverySucceeded {
                         homeserver: discovery.homeserver,
                         flows: discovery.flows,
-                        delegated: DelegatedAuthLinks::default(),
+                        delegated: discovery.delegated,
                     }],
                     Err(error) => vec![AppAction::LoginDiscoveryFailed {
                         homeserver: homeserver.to_owned(),

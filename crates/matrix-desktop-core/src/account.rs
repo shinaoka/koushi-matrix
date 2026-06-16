@@ -32,9 +32,9 @@ use futures_util::StreamExt;
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
-    AppAction, AvatarImage, AvatarThumbnailState, CrossSigningStatus, E2eeRecoveryState,
-    IdentityResetAuthType, IdentityResetState, LoginRequest, OwnProfile, PresenceKind,
-    RecoveryMethod, RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle,
+    AppAction, AuthFailureKind, AvatarImage, AvatarThumbnailState, CrossSigningStatus,
+    E2eeRecoveryState, IdentityResetAuthType, IdentityResetState, LoginRequest, OwnProfile,
+    PresenceKind, RecoveryMethod, RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle,
     ScheduledSendItem, SessionInfo, TrustOperationFailureKind, VerificationCancelReason,
     VerificationFlowState, VerificationTarget,
 };
@@ -875,6 +875,26 @@ impl AccountActor {
 
     async fn handle_command(&mut self, command: AccountCommand) {
         match command {
+            AccountCommand::DiscoverLogin {
+                request_id,
+                homeserver,
+            } => {
+                self.handle_discover_login(request_id, homeserver).await;
+            }
+            AccountCommand::StartOidcLogin {
+                request_id,
+                homeserver,
+            } => {
+                self.handle_start_oidc_login(request_id, homeserver).await;
+            }
+            AccountCommand::CompleteOidcLogin {
+                request_id,
+                homeserver,
+                callback_url,
+            } => {
+                self.handle_complete_oidc_login(request_id, homeserver, callback_url)
+                    .await;
+            }
             AccountCommand::LoginPassword {
                 request_id,
                 request,
@@ -1936,6 +1956,55 @@ impl AccountActor {
         }
     }
 
+    async fn handle_discover_login(&mut self, _request_id: RequestId, homeserver: String) {
+        let requested_homeserver = homeserver.clone();
+        let discovery_result = tokio::task::spawn_blocking(move || {
+            matrix_desktop_sdk::discover_login_flows(&homeserver)
+        })
+        .await;
+
+        match discovery_result {
+            Ok(Ok(discovery)) => {
+                self.reduce(vec![AppAction::LoginDiscoverySucceeded {
+                    homeserver: requested_homeserver,
+                    flows: discovery.flows,
+                    delegated: discovery.delegated,
+                }]);
+            }
+            Ok(Err(error)) => {
+                self.reduce(vec![AppAction::LoginDiscoveryFailed {
+                    homeserver: requested_homeserver,
+                    kind: login_discovery_failure_kind(&error),
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::LoginDiscoveryFailed {
+                    homeserver: requested_homeserver,
+                    kind: AuthFailureKind::Sdk,
+                }]);
+            }
+        }
+    }
+
+    async fn handle_start_oidc_login(&mut self, _request_id: RequestId, homeserver: String) {
+        self.reduce(vec![AppAction::LoginDiscoveryFailed {
+            homeserver,
+            kind: AuthFailureKind::Unsupported,
+        }]);
+    }
+
+    async fn handle_complete_oidc_login(
+        &mut self,
+        _request_id: RequestId,
+        homeserver: String,
+        _callback_url: String,
+    ) {
+        self.reduce(vec![AppAction::LoginDiscoveryFailed {
+            homeserver,
+            kind: AuthFailureKind::Unsupported,
+        }]);
+    }
+
     async fn handle_login_password(&mut self, request_id: RequestId, request: LoginRequest) {
         // Store bootstrap step 1: the password exchange runs on a storeless
         // client. The device id (and therefore the store path) is unknown
@@ -2906,6 +2975,25 @@ fn classify_login_error(error: &matrix_desktop_sdk::PasswordLoginError) -> Login
         PasswordLoginError::Runtime(_) => LoginFailureKind::Server,
         PasswordLoginError::MissingSession => LoginFailureKind::Server,
         PasswordLoginError::Serialization(_) => LoginFailureKind::Store,
+    }
+}
+
+fn login_discovery_failure_kind(
+    error: &matrix_desktop_sdk::LoginDiscoveryError,
+) -> AuthFailureKind {
+    match error {
+        matrix_desktop_sdk::LoginDiscoveryError::RequestFailed(_) => AuthFailureKind::Network,
+        matrix_desktop_sdk::LoginDiscoveryError::HttpStatus { status: 403, .. } => {
+            AuthFailureKind::Forbidden
+        }
+        matrix_desktop_sdk::LoginDiscoveryError::HttpStatus { .. }
+        | matrix_desktop_sdk::LoginDiscoveryError::MissingFlows
+        | matrix_desktop_sdk::LoginDiscoveryError::InvalidResponse(_) => AuthFailureKind::Sdk,
+        matrix_desktop_sdk::LoginDiscoveryError::InvalidHomeserver(_)
+        | matrix_desktop_sdk::LoginDiscoveryError::UnsupportedHomeserverScheme
+        | matrix_desktop_sdk::LoginDiscoveryError::InsecureHomeserverScheme => {
+            AuthFailureKind::Unsupported
+        }
     }
 }
 

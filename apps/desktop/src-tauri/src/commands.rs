@@ -163,16 +163,13 @@ pub async fn discover_login_methods(
     homeserver: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // KNOWN DEFERRED SHIM (tracked, not endorsed): login-flow discovery is
-    // currently implicit in LoginPassword, so this command returns the snapshot
-    // without driving the `auth` LoginDiscovery state machine. Per
-    // REPOSITORY_RULES "State-Machine Discipline" this should become a real core
-    // command that transitions auth `unknown -> discovering -> ready/failed` from
-    // an SDK homeserver/login-flow query (the `LoginDiscovery` reducer state
-    // already exists). It is intentionally left for a focused auth-discovery
-    // change rather than deleted, because removing it would drop the homeserver
-    // login-method UX (e.g. SSO discovery). Do not extend this shim.
-    let _ = homeserver;
+    let mut event_conn = state.inner().runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_discover_login_command(request_id, homeserver))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_auth_changed(&mut event_conn, LOGIN_EVENT_TIMEOUT).await?;
     current_snapshot(state.inner()).await
 }
 
@@ -263,6 +260,32 @@ async fn wait_for_logged_in_ready(
             }
             Ok(_) => {}
             Err(_) => return Err("login event stream lagged".to_owned()),
+        }
+    }
+}
+
+async fn wait_for_auth_changed(
+    event_conn: &mut CoreConnection,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "login discovery did not complete".to_owned())?;
+        match event {
+            Ok(CoreEvent::StateChanged(snapshot))
+                if matches!(
+                    snapshot.auth,
+                    matrix_desktop_state::AuthDiscoveryState::Ready { .. }
+                        | matrix_desktop_state::AuthDiscoveryState::Failed { .. }
+                ) =>
+            {
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(_) => return Err("login discovery event stream lagged".to_owned()),
         }
     }
 }
@@ -2419,6 +2442,16 @@ pub(crate) fn build_submit_login_command(
     })
 }
 
+pub(crate) fn build_discover_login_command(
+    request_id: matrix_desktop_core::RequestId,
+    homeserver: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::DiscoverLogin {
+        request_id,
+        homeserver,
+    })
+}
+
 pub(crate) fn build_switch_account_command(
     request_id: matrix_desktop_core::RequestId,
     user_id: String,
@@ -3828,9 +3861,9 @@ mod tests {
         build_bootstrap_cross_signing_command, build_cancel_scheduled_send_command,
         build_cancel_send_command, build_cancel_verification_command, build_close_activity_command,
         build_confirm_sas_verification_command, build_create_room_command,
-        build_create_space_command, build_decline_invite_command, build_download_media_command,
-        build_edit_message_command, build_enable_key_backup_command, build_forget_room_command,
-        build_forward_message_command, build_invite_user_command,
+        build_create_space_command, build_decline_invite_command, build_discover_login_command,
+        build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
+        build_forget_room_command, build_forward_message_command, build_invite_user_command,
         build_join_directory_room_command, build_leave_room_command,
         build_load_message_source_command, build_load_room_settings_command, build_logout_command,
         build_mark_activity_read_command, build_moderate_room_member_command,
@@ -4006,6 +4039,20 @@ mod tests {
                 assert_eq!(request.username, "alice");
                 assert_eq!(request.password.expose_secret(), "password-123");
                 assert_eq!(request.device_display_name.as_deref(), Some("Laptop"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_discover_login_command(
+            fake_request_id(101),
+            "https://matrix.example.org".to_owned(),
+        ) {
+            CoreCommand::Account(AccountCommand::DiscoverLogin {
+                request_id,
+                homeserver,
+            }) => {
+                assert_eq!(request_id, fake_request_id(101));
+                assert_eq!(homeserver, "https://matrix.example.org");
             }
             other => panic!("unexpected command: {other:?}"),
         }

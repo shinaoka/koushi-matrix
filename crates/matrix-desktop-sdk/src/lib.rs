@@ -1,9 +1,10 @@
 use futures_util::{Stream, StreamExt};
 pub use matrix_desktop_state::E2eeRecoveryState;
 use matrix_desktop_state::{
-    AuthSecret, CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType,
-    KeyBackupStatus, LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, RoomAttentionSummary,
-    SasEmoji, SessionInfo, VerificationTarget, room_attention_summary,
+    AuthSecret, CrossSigningStatus, DelegatedAuthLinks, IdentityResetAuthRequest,
+    IdentityResetAuthType, KeyBackupStatus, LoginFlow, LoginFlowKind, LoginRequest,
+    RecoveryRequest, RoomAttentionSummary, SasEmoji, SessionInfo, VerificationTarget,
+    room_attention_summary,
 };
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::room::ParentSpace;
@@ -35,6 +36,30 @@ pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.ruri.local_aliases";
 pub struct LoginDiscovery {
     pub homeserver: String,
     pub flows: Vec<LoginFlow>,
+    pub delegated: DelegatedAuthLinks,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixLoginDiscovery {
+    pub homeserver: String,
+    pub flows: Vec<MatrixLoginFlow>,
+    pub delegated: DelegatedAuthLinks,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixLoginFlow {
+    pub kind: MatrixLoginFlowKind,
+    pub delegated_oidc_compatibility: bool,
+    pub display_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MatrixLoginFlowKind {
+    Password,
+    Sso,
+    Oidc,
+    Token,
+    Unknown(String),
 }
 
 pub type E2eeRecoveryStateStream = Pin<Box<dyn Stream<Item = E2eeRecoveryState> + Send>>;
@@ -1782,6 +1807,8 @@ struct RawLoginFlow {
     flow_type: String,
     #[serde(default, rename = "org.matrix.msc3824.delegated_oidc_compatibility")]
     delegated_oidc_compatibility: bool,
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1809,6 +1836,7 @@ pub fn discover_login_flows(homeserver: &str) -> Result<LoginDiscovery, LoginDis
     Ok(LoginDiscovery {
         homeserver: homeserver.normalized(),
         flows,
+        delegated: DelegatedAuthLinks::default(),
     })
 }
 
@@ -3594,6 +3622,12 @@ pub fn parse_login_discovery_http_response(
 pub fn parse_login_discovery(
     value: &serde_json::Value,
 ) -> Result<Vec<LoginFlow>, LoginDiscoveryError> {
+    Ok(map_login_flows_to_desktop(parse_matrix_login_flows(value)?))
+}
+
+pub fn parse_matrix_login_flows(
+    value: &serde_json::Value,
+) -> Result<Vec<MatrixLoginFlow>, LoginDiscoveryError> {
     if !value.get("flows").is_some_and(serde_json::Value::is_array) {
         return Err(LoginDiscoveryError::MissingFlows);
     }
@@ -3604,20 +3638,38 @@ pub fn parse_login_discovery(
     Ok(response
         .flows
         .into_iter()
-        .map(|flow| LoginFlow {
+        .map(|flow| MatrixLoginFlow {
             kind: parse_flow_kind(flow.flow_type),
             delegated_oidc_compatibility: flow.delegated_oidc_compatibility,
-            display_name: None,
+            display_name: flow.display_name,
         })
         .collect())
 }
 
-fn parse_flow_kind(flow_type: String) -> LoginFlowKind {
+pub fn map_login_flows_to_desktop(flows: Vec<MatrixLoginFlow>) -> Vec<LoginFlow> {
+    flows
+        .into_iter()
+        .map(|flow| LoginFlow {
+            kind: match flow.kind {
+                MatrixLoginFlowKind::Password => LoginFlowKind::Password,
+                MatrixLoginFlowKind::Sso => LoginFlowKind::Sso,
+                MatrixLoginFlowKind::Oidc => LoginFlowKind::Oidc,
+                MatrixLoginFlowKind::Token => LoginFlowKind::Token,
+                MatrixLoginFlowKind::Unknown(value) => LoginFlowKind::Unknown(value),
+            },
+            delegated_oidc_compatibility: flow.delegated_oidc_compatibility,
+            display_name: flow.display_name,
+        })
+        .collect()
+}
+
+fn parse_flow_kind(flow_type: String) -> MatrixLoginFlowKind {
     match flow_type.as_str() {
-        "m.login.password" => LoginFlowKind::Password,
-        "m.login.sso" => LoginFlowKind::Sso,
-        "m.login.token" => LoginFlowKind::Token,
-        _ => LoginFlowKind::Unknown(flow_type),
+        "m.login.password" => MatrixLoginFlowKind::Password,
+        "m.login.sso" => MatrixLoginFlowKind::Sso,
+        "m.login.oidc" | "m.login.oauth2" => MatrixLoginFlowKind::Oidc,
+        "m.login.token" => MatrixLoginFlowKind::Token,
+        _ => MatrixLoginFlowKind::Unknown(flow_type),
     }
 }
 

@@ -13,6 +13,17 @@ describe("TauriDesktopApi", () => {
     vi.clearAllMocks();
   });
 
+  test("discovers login methods through typed Tauri command", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.discoverLoginMethods("https://example.test");
+
+    expect(invoke).toHaveBeenCalledWith("discover_login_methods", {
+      homeserver: "https://example.test"
+    });
+  });
+
   test("passes settings patches to the Rust update_settings command", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

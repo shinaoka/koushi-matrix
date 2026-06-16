@@ -41,6 +41,11 @@ Current SDK-only patch area:
 - Should key-backup restore expose a public backup-wide room-key download API
   with private-data-free progress/counter semantics, or should apps continue to
   hydrate keys room-by-room for currently joined rooms?
+- Should login discovery expose MAS / delegated-auth metadata, especially
+  delegated registration and account-management URLs, through a stable public
+  SDK DTO? The desktop app can parse Matrix login flows and delegated OIDC
+  compatibility today, but keeps `DelegatedAuthLinks::default()` until the SDK
+  has a reviewed public path for these non-secret capabilities.
 
 ## Desktop Integration Findings
 
