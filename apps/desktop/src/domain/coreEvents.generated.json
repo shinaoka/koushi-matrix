@@ -447,6 +447,16 @@
               }
             },
             "in_reply_to_event_id": null,
+            "formatted": {
+              "html": "<strong>hello</strong><pre><code class=\"language-rust\">fn main() {}</code></pre>",
+              "plain_text": "hellofn main() {}",
+              "code_blocks": [
+                {
+                  "language": "rust",
+                  "body": "fn main() {}"
+                }
+              ]
+            },
             "thread_root": null,
             "thread_summary": null,
             "can_react": true,
@@ -508,6 +518,16 @@
                   }
                 },
                 "in_reply_to_event_id": null,
+                "formatted": {
+                  "html": "<strong>hello</strong><pre><code class=\"language-rust\">fn main() {}</code></pre>",
+                  "plain_text": "hellofn main() {}",
+                  "code_blocks": [
+                    {
+                      "language": "rust",
+                      "body": "fn main() {}"
+                    }
+                  ]
+                },
                 "thread_root": null,
                 "thread_summary": null,
                 "can_react": true,

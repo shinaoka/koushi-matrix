@@ -69,6 +69,9 @@ Crate responsibilities:
   only apply the resulting font, emoji, and asset-status tokens to root
   attributes/CSS. Inter and Twemoji COLR are bundled-preferred choices with
   system fallbacks; React must not choose fallback semantics per component.
+  Display preferences such as code-block line wrapping live under
+  `SettingsValues.display`; React may map the snapshot value to presentation
+  CSS but must not keep an independent display-policy store.
   Composer key handling uses the pure Rust-owned resolver in
   `matrix-desktop-state`; GUI code supplies typed key facts and
   renders/dispatches the resolved action. Because the resolver may cross an
@@ -540,6 +543,10 @@ and reaches React only through the Tauri/TypeScript DTO.
 User notification preferences are the same boundary: `SettingsValues.notifications`
 is the Rust-owned persisted source of truth, and legacy settings files backfill
 the default policy before any GUI reads the snapshot.
+Message formatting is also projected before it reaches React:
+`TimelineItem.formatted` is sanitized in Rust from Matrix `formatted_body` and
+carries sanitized HTML plus plain-text/code-block metadata. React must not
+render unsanitized server HTML or own Matrix HTML sanitizer policy.
 
 Initial channel capacities are named constants, not scattered literals:
 

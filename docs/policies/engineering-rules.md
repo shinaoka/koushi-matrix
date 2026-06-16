@@ -301,6 +301,16 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    section counts, unread badges, and mention dots from Rust-shaped
    `SidebarModel` fields (`unread_count` / `highlight_count`), not from local
    React-derived notification state.
+   Display preferences such as code-block wrapping live in Rust-owned
+   `SettingsValues.display` and are persisted through the same settings store.
+   Older settings JSON must backfill safe display defaults before React reads a
+   snapshot. GUI code may map `code_block_wrap` to CSS only and must not keep a
+   separate local wrap policy.
+   Received message formatting is a Rust-owned security projection:
+   `TimelineItem.formatted` is sanitized from Matrix `formatted_body` before it
+   crosses the WebView boundary, and carries only sanitized HTML plus derived
+   plain text/code-block metadata. React must never render unsanitized server
+   HTML or own sanitizer policy.
    Composer mention GUI tests must use Rust-shaped `ProfileState.users` member
    profiles for autocomplete candidates. React may render the popover/pills and
    pass a typed `MentionIntent`, but it must not synthesize Matrix

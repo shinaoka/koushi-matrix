@@ -142,6 +142,17 @@ export interface TimelineMessageSource {
   has_media: boolean;
 }
 
+export interface TimelineCodeBlock {
+  language: string | null;
+  body: string;
+}
+
+export interface TimelineFormattedBody {
+  html: string;
+  plain_text: string;
+  code_blocks: TimelineCodeBlock[];
+}
+
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
@@ -149,6 +160,7 @@ export interface TimelineItem {
   body: string | null;
   timestamp_ms: number | null;
   in_reply_to_event_id: string | null;
+  formatted?: TimelineFormattedBody | null;
   reply_quote?: ReplyQuote | null;
   thread_root: string | null;
   thread_summary: ThreadSummaryDto | null;

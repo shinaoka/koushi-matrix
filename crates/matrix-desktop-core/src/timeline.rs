@@ -63,11 +63,13 @@ use matrix_sdk::room::reply::{EnforceThread, Reply};
 use matrix_sdk::ruma::UserId;
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::events::Mentions;
+use matrix_sdk::ruma::events::room::message::FormattedBody;
 use matrix_sdk::ruma::events::room::message::{
-    AddMentions, MessageType, ReplyWithinThread, RoomMessageEventContent,
+    AddMentions, MessageFormat, MessageType, ReplyWithinThread, RoomMessageEventContent,
     RoomMessageEventContentWithoutRelation, TextMessageEventContent,
 };
 use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
+use matrix_sdk::ruma::html::{Html, SanitizerConfig};
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
 use matrix_sdk_ui::timeline::{
     EmbeddedEvent, EventSendState as SdkEventSendState, InReplyToDetails, ReactionStatus,
@@ -3109,7 +3111,12 @@ fn sdk_item_to_timeline_item_with_send_states(
             let body = message_projection
                 .as_ref()
                 .and_then(|projection| projection.body.clone());
-            let media = message_projection.and_then(|projection| projection.media);
+            let media = message_projection
+                .as_ref()
+                .and_then(|projection| projection.media.clone());
+            let formatted = message_projection
+                .as_ref()
+                .and_then(|projection| projection.formatted.clone());
             let has_renderable_content = body.is_some() || media.is_some();
             let can_hold_reactions = event_item.content().reactions().is_some();
             let can_react = timeline_item_can_react(
@@ -3176,6 +3183,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 body,
                 timestamp_ms,
                 in_reply_to_event_id,
+                formatted,
                 reply_quote,
                 thread_root,
                 thread_summary,
@@ -3203,6 +3211,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 body: None,
                 timestamp_ms: None,
                 in_reply_to_event_id: None,
+                formatted: None,
                 reply_quote: None,
                 thread_root: None,
                 thread_summary: None,
@@ -3245,6 +3254,7 @@ fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> T
 struct MessageProjection {
     body: Option<String>,
     media: Option<TimelineMedia>,
+    formatted: Option<crate::event::TimelineFormattedBody>,
 }
 
 fn reply_quote_from_details(details: &InReplyToDetails) -> ReplyQuote {
@@ -3323,18 +3333,162 @@ fn message_projection_from_msgtype(
     fallback_body: &str,
 ) -> MessageProjection {
     match msgtype {
-        MessageType::Image(content) => MessageProjection {
+        MessageType::Audio(content) => MessageProjection {
             body: content.caption().map(str::to_owned),
-            media: Some(timeline_media_from_image(content)),
+            media: Some(timeline_media_from_audio(content)),
+            formatted: content.formatted_caption().and_then(project_formatted_body),
+        },
+        MessageType::Emote(content) => MessageProjection {
+            body: Some(fallback_body.to_owned()),
+            media: None,
+            formatted: content.formatted.as_ref().and_then(project_formatted_body),
         },
         MessageType::File(content) => MessageProjection {
             body: content.caption().map(str::to_owned),
             media: Some(timeline_media_from_file(content)),
+            formatted: content.formatted_caption().and_then(project_formatted_body),
+        },
+        MessageType::Image(content) => MessageProjection {
+            body: content.caption().map(str::to_owned),
+            media: Some(timeline_media_from_image(content)),
+            formatted: content.formatted_caption().and_then(project_formatted_body),
+        },
+        MessageType::Notice(content) => MessageProjection {
+            body: Some(fallback_body.to_owned()),
+            media: None,
+            formatted: content.formatted.as_ref().and_then(project_formatted_body),
+        },
+        MessageType::Text(content) => MessageProjection {
+            body: Some(fallback_body.to_owned()),
+            media: None,
+            formatted: content.formatted.as_ref().and_then(project_formatted_body),
+        },
+        MessageType::Video(content) => MessageProjection {
+            body: content.caption().map(str::to_owned),
+            media: Some(timeline_media_from_video(content)),
+            formatted: content.formatted_caption().and_then(project_formatted_body),
         },
         _ => MessageProjection {
             body: Some(fallback_body.to_owned()),
             media: None,
+            formatted: None,
         },
+    }
+}
+
+fn project_formatted_body(
+    formatted_body: &FormattedBody,
+) -> Option<crate::event::TimelineFormattedBody> {
+    if !matches!(&formatted_body.format, MessageFormat::Html) {
+        return None;
+    }
+
+    let html = Html::parse(&formatted_body.body);
+    html.sanitize_with(
+        &SanitizerConfig::compat()
+            .remove_reply_fallback()
+            .remove_elements(["script", "style"]),
+    );
+    let sanitized_body = html.to_string();
+
+    if sanitized_body.trim().is_empty() {
+        return None;
+    }
+
+    let html = Html::parse(&sanitized_body);
+    let plain_text = plain_text_from_html(&html);
+    let code_blocks = code_blocks_from_html(&html);
+
+    Some(crate::event::TimelineFormattedBody {
+        html: sanitized_body,
+        plain_text,
+        code_blocks,
+    })
+}
+
+fn plain_text_from_html(html: &Html) -> String {
+    let mut text = String::new();
+    collect_plain_text_from_nodes(html.children(), &mut text);
+    text
+}
+
+fn collect_plain_text_from_nodes(
+    nodes: impl Iterator<Item = matrix_sdk::ruma::html::NodeRef>,
+    out: &mut String,
+) {
+    for node in nodes {
+        if let Some(text) = node.as_text() {
+            out.push_str(&text.borrow());
+            continue;
+        }
+
+        if node.as_element().is_some() {
+            collect_plain_text_from_nodes(node.children(), out);
+        }
+    }
+}
+
+fn code_blocks_from_html(html: &Html) -> Vec<crate::event::TimelineCodeBlock> {
+    let mut blocks = Vec::new();
+    collect_code_blocks_from_nodes(html.children(), &mut blocks);
+    blocks
+}
+
+fn collect_code_blocks_from_nodes(
+    nodes: impl Iterator<Item = matrix_sdk::ruma::html::NodeRef>,
+    out: &mut Vec<crate::event::TimelineCodeBlock>,
+) {
+    for node in nodes {
+        let Some(element) = node.as_element() else {
+            continue;
+        };
+        if element.name.local.as_ref() != "pre" {
+            collect_code_blocks_from_nodes(node.children(), out);
+            continue;
+        }
+
+        for child in node.children() {
+            let Some(code_element) = child.as_element() else {
+                continue;
+            };
+            if code_element.name.local.as_ref() != "code" {
+                continue;
+            }
+
+            let language = code_element.attrs.borrow().iter().find_map(|attr| {
+                if attr.name.local.as_ref() != "class" {
+                    return None;
+                }
+
+                attr.value
+                    .split_ascii_whitespace()
+                    .find_map(|class_name| class_name.strip_prefix("language-"))
+                    .map(|language| language.to_owned())
+            });
+            let mut body = String::new();
+            collect_plain_text_from_nodes(child.children(), &mut body);
+
+            out.push(crate::event::TimelineCodeBlock { language, body });
+            break;
+        }
+
+        collect_code_blocks_from_nodes(node.children(), out);
+    }
+}
+
+fn timeline_media_from_audio(
+    content: &matrix_sdk::ruma::events::room::message::AudioMessageEventContent,
+) -> TimelineMedia {
+    let info = content.info.as_deref();
+    TimelineMedia {
+        kind: TimelineMediaKind::Audio,
+        filename: content.filename().to_owned(),
+        source: timeline_media_source_from_sdk(&content.source),
+        mimetype: info.and_then(|info| info.mimetype.clone()),
+        size: info.and_then(|info| uint_to_u64(info.size.as_ref())),
+        width: None,
+        height: None,
+        thumbnail: None,
     }
 }
 
@@ -3371,6 +3525,27 @@ fn timeline_media_from_file(
         size: info.and_then(|info| uint_to_u64(info.size.as_ref())),
         width: None,
         height: None,
+        thumbnail: info.and_then(|info| {
+            timeline_media_thumbnail_from_sdk(
+                info.thumbnail_source.as_ref(),
+                info.thumbnail_info.as_deref(),
+            )
+        }),
+    }
+}
+
+fn timeline_media_from_video(
+    content: &matrix_sdk::ruma::events::room::message::VideoMessageEventContent,
+) -> TimelineMedia {
+    let info = content.info.as_deref();
+    TimelineMedia {
+        kind: TimelineMediaKind::Video,
+        filename: content.filename().to_owned(),
+        source: timeline_media_source_from_sdk(&content.source),
+        mimetype: info.and_then(|info| info.mimetype.clone()),
+        size: info.and_then(|info| uint_to_u64(info.size.as_ref())),
+        width: info.and_then(|info| uint_to_u64(info.width.as_ref())),
+        height: info.and_then(|info| uint_to_u64(info.height.as_ref())),
         thumbnail: info.and_then(|info| {
             timeline_media_thumbnail_from_sdk(
                 info.thumbnail_source.as_ref(),
@@ -3907,7 +4082,9 @@ mod tests {
     use matrix_desktop_state::{
         AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState,
     };
-    use matrix_sdk::ruma::events::room::message::MessageType;
+    use matrix_sdk::ruma::events::room::message::{
+        EmoteMessageEventContent, MessageType, TextMessageEventContent,
+    };
     use matrix_sdk::ruma::{OwnedUserId, uint};
     use matrix_sdk_ui::timeline::{ReactionInfo, ReactionStatus, ReactionsByKeyBySender};
     use tokio::sync::broadcast;
@@ -4026,6 +4203,57 @@ mod tests {
     }
 
     #[test]
+    fn message_projection_sanitizes_formatted_html_and_extracts_code_blocks() {
+        let msgtype = MessageType::Text(TextMessageEventContent::html(
+            "plain fallback",
+            r#"<strong>ok</strong><script>alert(1)</script><a href="javascript:alert(1)">bad</a><a href="https://example.invalid/path">safe</a><pre><code class="language-rust ignored">fn main() {}</code></pre>"#,
+        ));
+
+        let projection = message_projection_from_msgtype(&msgtype, "plain fallback");
+        let formatted = projection
+            .formatted
+            .expect("html formatted_body should project to a Rust-owned render model");
+
+        assert!(formatted.html.contains("<strong>ok</strong>"));
+        assert!(!formatted.html.contains("<script"));
+        assert!(!formatted.html.contains("alert(1)"));
+        assert!(!formatted.html.contains("javascript:"));
+        assert!(formatted.html.contains("https://example.invalid/path"));
+        assert_eq!(formatted.plain_text, "okbadsafefn main() {}");
+        assert_eq!(formatted.code_blocks.len(), 1);
+        assert_eq!(formatted.code_blocks[0].language.as_deref(), Some("rust"));
+        assert_eq!(formatted.code_blocks[0].body, "fn main() {}");
+    }
+
+    #[test]
+    fn message_projection_keeps_allowed_formatted_blocks_and_spoilers() {
+        let msgtype = MessageType::Emote(EmoteMessageEventContent::html(
+            "plain fallback",
+            r#"<blockquote>quote</blockquote><ul><li>one</li></ul><span data-mx-spoiler="reason">secret</span>"#,
+        ));
+
+        let projection = message_projection_from_msgtype(&msgtype, "plain fallback");
+        let formatted = projection
+            .formatted
+            .expect("allowed formatted_body should project to a render model");
+
+        assert!(formatted.html.contains("<blockquote>quote</blockquote>"));
+        assert!(formatted.html.contains("<ul><li>one</li></ul>"));
+        assert!(formatted.html.contains("data-mx-spoiler=\"reason\""));
+        assert!(formatted.html.contains(">secret<"));
+    }
+
+    #[test]
+    fn message_projection_falls_back_to_plain_body_when_formatted_body_is_empty() {
+        let msgtype = MessageType::Text(TextMessageEventContent::html("plain fallback", "   "));
+
+        let projection = message_projection_from_msgtype(&msgtype, "plain fallback");
+
+        assert_eq!(projection.body.as_deref(), Some("plain fallback"));
+        assert!(projection.formatted.is_none());
+    }
+
+    #[test]
     fn composer_core_rejects_unknown_slash_command_locally() {
         assert_eq!(
             build_room_message_content_from_composer_body("/shrug nope", MentionIntent::default(),)
@@ -4064,6 +4292,7 @@ mod tests {
             body: Some("body".to_owned()),
             timestamp_ms: Some(1),
             in_reply_to_event_id: None,
+            formatted: None,
             reply_quote: None,
             thread_root: None,
             thread_summary: None,

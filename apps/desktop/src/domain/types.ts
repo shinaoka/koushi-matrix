@@ -54,6 +54,7 @@ export interface SettingsValues {
   typography: TypographySettings;
   keyboard: KeyboardSettings;
   notifications: NotificationSettings;
+  display: DisplaySettings;
 }
 
 export interface SettingsPatch {
@@ -62,6 +63,7 @@ export interface SettingsPatch {
   typography?: TypographySettings;
   keyboard?: KeyboardSettings;
   notifications?: NotificationSettings;
+  display?: DisplaySettings;
 }
 
 export interface LocaleSettings {
@@ -124,6 +126,10 @@ export interface NotificationSettings {
   desktop_notifications: boolean;
   sound: boolean;
   badges: boolean;
+}
+
+export interface DisplaySettings {
+  code_block_wrap: boolean;
 }
 
 export type SettingsPersistenceState =

@@ -412,6 +412,26 @@ stateDiagram-v2
 - The local core `media` QA scenario is the Phase A proof:
   `send_media=ok recv_media=ok`. Its output must remain private-data-free.
 
+## Timeline Formatted Message Projection
+
+Received Matrix `formatted_body` is a Rust-owned security projection. The
+timeline actor extracts SDK `FormattedBody` from text, notice, emote, and
+caption-capable media message content, accepts only Matrix HTML format, and
+sanitizes it before exposing it through `TimelineItem.formatted`.
+
+- `TimelineItem.formatted` carries a safe render contract: sanitized HTML,
+  plain text derived from that sanitized tree, and extracted code-block metadata
+  (`language` plus code body).
+- Unsafe tags, unsafe attributes, unsafe URL schemes, and script/style contents
+  are removed in Rust. React must never render server `formatted_body` directly
+  or re-run ad hoc sanitization as product logic.
+- Plain `TimelineItem.body` remains the fallback when formatted content is
+  absent, empty after sanitization, unsupported, or invalid.
+- Code-block line wrapping is controlled by Rust-owned
+  `SettingsValues.display.code_block_wrap`, defaulting to `true` and persisted
+  through the settings store. GUI code may map the snapshot value to CSS only;
+  it must not keep a separate wrap preference.
+
 ## Profiles And Avatars
 
 Profiles and avatars are Rust-owned account and room projections.

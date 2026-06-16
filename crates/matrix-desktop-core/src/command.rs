@@ -361,6 +361,9 @@ fn settings_patch_field_names(patch: &SettingsPatch) -> Vec<&'static str> {
     if patch.notifications.is_some() {
         fields.push("notifications");
     }
+    if patch.display.is_some() {
+        fields.push("display");
+    }
     fields
 }
 

@@ -1360,6 +1360,7 @@ mod tests {
                 body: Some("hello".to_owned()),
                 timestamp_ms: Some(1),
                 in_reply_to_event_id: Some("$root:example.invalid".to_owned()),
+                formatted: None,
                 reply_quote: Some(matrix_desktop_state::ReplyQuote {
                     event_id: "$root:example.invalid".to_owned(),
                     sender: Some("@bob:example.invalid".to_owned()),
@@ -1425,6 +1426,7 @@ mod tests {
                     body: Some("later".to_owned()),
                     timestamp_ms: Some(3),
                     in_reply_to_event_id: None,
+                    formatted: None,
                     reply_quote: None,
                     thread_root: None,
                     thread_summary: None,

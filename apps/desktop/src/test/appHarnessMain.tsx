@@ -208,7 +208,8 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       appearance: { theme: "system" },
       typography: { font: "system", emoji: "system" },
       keyboard: { composer_send_shortcut: "enter" },
-      notifications: { desktop_notifications: true, sound: true, badges: true }
+      notifications: { desktop_notifications: true, sound: true, badges: true },
+      display: { code_block_wrap: true }
     },
     persistence: { kind: "idle" }
   };
@@ -280,7 +281,8 @@ function applySettingsPatch(
     appearance: patch.appearance ?? values.appearance,
     typography: patch.typography ?? values.typography,
     keyboard: patch.keyboard ?? values.keyboard,
-    notifications: patch.notifications ?? values.notifications
+    notifications: patch.notifications ?? values.notifications,
+    display: patch.display ?? values.display
   };
 }
 

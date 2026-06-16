@@ -1191,8 +1191,9 @@ mod tests {
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LiveSignalsEvent,
                 LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent,
                 PaginationDirection, PaginationState, ReactionGroup, RoomEvent,
-                TimelineDisplayLabelUpdate, TimelineEvent, TimelineItem, TimelineItemId,
-                TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+                TimelineCodeBlock, TimelineDisplayLabelUpdate, TimelineEvent,
+                TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
+                TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
                 TimelineMessageActions, TimelineMessageSource, TimelineResyncReason,
                 TimelineSendFailureReason, TimelineSendState,
             },
@@ -1224,6 +1225,14 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(123),
             in_reply_to_event_id: None,
+            formatted: Some(TimelineFormattedBody {
+                html: "<strong>hello</strong><pre><code class=\"language-rust\">fn main() {}</code></pre>".to_owned(),
+                plain_text: "hellofn main() {}".to_owned(),
+                code_blocks: vec![TimelineCodeBlock {
+                    language: Some("rust".to_owned()),
+                    body: "fn main() {}".to_owned(),
+                }],
+            }),
             reply_quote: None,
             thread_root: None,
             thread_summary: None,
@@ -1258,6 +1267,7 @@ mod tests {
             body: Some("caption".to_owned()),
             timestamp_ms: Some(456),
             in_reply_to_event_id: None,
+            formatted: None,
             reply_quote: None,
             thread_root: None,
             thread_summary: None,
@@ -1309,6 +1319,7 @@ mod tests {
             body: Some("queued".to_owned()),
             timestamp_ms: Some(789),
             in_reply_to_event_id: None,
+            formatted: None,
             reply_quote: None,
             thread_root: None,
             thread_summary: None,
@@ -1333,6 +1344,7 @@ mod tests {
             body: Some("reply body".to_owned()),
             timestamp_ms: Some(987),
             in_reply_to_event_id: Some("$root1".to_owned()),
+            formatted: None,
             reply_quote: Some(ReplyQuote {
                 event_id: "$root1".to_owned(),
                 sender: Some("@other:example.test".to_owned()),
@@ -1390,6 +1402,16 @@ mod tests {
                 "body": "hello",
                 "timestamp_ms": 123,
                 "in_reply_to_event_id": null,
+                "formatted": {
+                    "html": "<strong>hello</strong><pre><code class=\"language-rust\">fn main() {}</code></pre>",
+                    "plain_text": "hellofn main() {}",
+                    "code_blocks": [
+                        {
+                            "language": "rust",
+                            "body": "fn main() {}"
+                        }
+                    ]
+                },
                 "thread_root": null,
                 "thread_summary": null,
                 "can_react": true,

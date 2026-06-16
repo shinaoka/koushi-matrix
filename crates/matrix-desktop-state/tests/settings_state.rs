@@ -1,8 +1,8 @@
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, AppearanceSettings, ComposerSendShortcut, EmojiPreference,
-    FontPreference, KeyboardSettings, LocaleSettings, NotificationSettings, SettingsPatch,
-    SettingsPersistenceState, SettingsValues, TextDirectionPreference, ThemePreference, UiEvent,
-    reduce,
+    AppAction, AppEffect, AppState, AppearanceSettings, ComposerSendShortcut, DisplaySettings,
+    EmojiPreference, FontPreference, KeyboardSettings, LocaleSettings, NotificationSettings,
+    SettingsPatch, SettingsPersistenceState, SettingsValues, TextDirectionPreference,
+    ThemePreference, UiEvent, reduce,
 };
 
 fn dark_theme_patch() -> SettingsPatch {
@@ -43,6 +43,12 @@ fn app_state_carries_default_non_secret_settings() {
         state.settings.values.notifications,
         NotificationSettings::default()
     );
+    assert_eq!(
+        state.settings.values.display,
+        DisplaySettings {
+            code_block_wrap: true
+        }
+    );
     assert_eq!(state.settings.persistence, SettingsPersistenceState::Idle);
 }
 
@@ -69,6 +75,9 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
             sound: false,
             badges: true,
         },
+        display: DisplaySettings {
+            code_block_wrap: false,
+        },
     };
 
     let effects = reduce(
@@ -83,6 +92,24 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::SettingsChanged)]
     );
+}
+
+#[test]
+fn settings_values_deserialize_empty_display_as_default() {
+    let values = serde_json::from_str::<SettingsValues>(
+        r#"{
+  "locale": { "language_tag": null, "text_direction": "auto" },
+  "appearance": { "theme": "system" },
+  "typography": { "font": "system", "emoji": "system" },
+  "keyboard": { "composer_send_shortcut": "enter" },
+  "notifications": { "desktop_notifications": true, "sound": true, "badges": true },
+  "display": {}
+}
+"#,
+    )
+    .expect("empty display object should deserialize");
+
+    assert_eq!(values.display, DisplaySettings::default());
 }
 
 #[test]
@@ -115,6 +142,41 @@ fn notification_settings_patch_is_rust_owned_and_persisted() {
         vec![
             AppEffect::PersistSettings {
                 request_id: 77,
+                values: state.settings.values.clone(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+        ]
+    );
+}
+
+#[test]
+fn code_block_wrap_patch_is_rust_owned_and_persisted() {
+    let mut state = AppState::default();
+    let display_settings = DisplaySettings {
+        code_block_wrap: false,
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 78,
+            patch: SettingsPatch {
+                display: Some(display_settings.clone()),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert_eq!(state.settings.values.display, display_settings);
+    assert_eq!(
+        state.settings.persistence,
+        SettingsPersistenceState::Saving { request_id: 78 }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSettings {
+                request_id: 78,
                 values: state.settings.values.clone(),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),

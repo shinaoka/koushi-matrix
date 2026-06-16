@@ -989,6 +989,43 @@ pub fn message_source_for_timeline_item(item: &TimelineItem) -> Option<TimelineM
     })
 }
 
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineCodeBlock {
+    pub language: Option<String>,
+    pub body: String,
+}
+
+impl fmt::Debug for TimelineCodeBlock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineCodeBlock")
+            .field(
+                "language",
+                &self.language.as_ref().map(|_| "CodeBlockLanguage(..)"),
+            )
+            .field("body", &"CodeBlockBody(..)")
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineFormattedBody {
+    pub html: String,
+    pub plain_text: String,
+    pub code_blocks: Vec<TimelineCodeBlock>,
+}
+
+impl fmt::Debug for TimelineFormattedBody {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineFormattedBody")
+            .field("html", &"FormattedHtml(..)")
+            .field("plain_text", &"FormattedPlainText(..)")
+            .field("code_blocks", &self.code_blocks.len())
+            .finish()
+    }
+}
+
 /// Timeline item DTO. Phase 5 concretizes content kinds from the SDK
 /// projection; the identity contract is stable from Phase 1.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -1000,6 +1037,8 @@ pub struct TimelineItem {
     pub body: Option<String>,
     pub timestamp_ms: Option<u64>,
     pub in_reply_to_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatted: Option<TimelineFormattedBody>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_quote: Option<ReplyQuote>,
     #[serde(default)]
@@ -1041,6 +1080,10 @@ impl fmt::Debug for TimelineItem {
             .field(
                 "in_reply_to_event_id",
                 &self.in_reply_to_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "formatted",
+                &self.formatted.as_ref().map(|_| "TimelineFormattedBody(..)"),
             )
             .field(
                 "reply_quote",
@@ -1417,6 +1460,7 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            formatted: None,
             reply_quote: None,
             thread_root: Some("$root:test".to_owned()),
             thread_summary: Some(ThreadSummaryDto {
@@ -1486,6 +1530,7 @@ mod tests {
             body: Some("reply body".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: Some("$root:test".to_owned()),
+            formatted: None,
             reply_quote: Some(matrix_desktop_state::ReplyQuote {
                 event_id: "$root:test".to_owned(),
                 sender: Some("@bob:example.invalid".to_owned()),
@@ -1525,6 +1570,63 @@ mod tests {
     }
 
     #[test]
+    fn timeline_item_serializes_formatted_body_without_debugging_content() {
+        let item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: "$formatted:test".to_owned(),
+            },
+            sender: Some("@alice:example.invalid".to_owned()),
+            sender_label: None,
+            body: Some("plain fallback".to_owned()),
+            timestamp_ms: Some(1_234),
+            in_reply_to_event_id: None,
+            formatted: Some(TimelineFormattedBody {
+                html: "<strong>private html</strong><pre><code class=\"language-rust\">private_code()</code></pre>"
+                    .to_owned(),
+                plain_text: "private htmlprivate_code()".to_owned(),
+                code_blocks: vec![TimelineCodeBlock {
+                    language: Some("rust".to_owned()),
+                    body: "private_code()".to_owned(),
+                }],
+            }),
+            reply_quote: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: true,
+            is_redacted: false,
+            can_redact: true,
+            is_edited: false,
+            can_edit: true,
+            actions: TimelineMessageActions::default(),
+            send_state: None,
+        };
+
+        let value = serde_json::to_value(&item).expect("timeline item serializes");
+
+        assert_eq!(
+            value["formatted"],
+            json!({
+                "html": "<strong>private html</strong><pre><code class=\"language-rust\">private_code()</code></pre>",
+                "plain_text": "private htmlprivate_code()",
+                "code_blocks": [
+                    {
+                        "language": "rust",
+                        "body": "private_code()"
+                    }
+                ]
+            })
+        );
+        let debug = format!("{item:?}");
+        assert!(debug.contains("TimelineFormattedBody"));
+        assert!(!debug.contains("private html"), "{debug}");
+        assert!(!debug.contains("private_code"), "{debug}");
+        assert!(!debug.contains("language-rust"), "{debug}");
+        assert!(!debug.contains("$formatted:test"), "{debug}");
+    }
+
+    #[test]
     fn timeline_item_serializes_rust_owned_message_actions() {
         let item = TimelineItem {
             id: TimelineItemId::Event {
@@ -1535,6 +1637,7 @@ mod tests {
             body: Some("copyable body".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            formatted: None,
             reply_quote: None,
             thread_root: None,
             thread_summary: None,
@@ -1693,6 +1796,7 @@ mod tests {
             body: Some("hello".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            formatted: None,
             reply_quote: None,
             thread_root: None,
             thread_summary: None,
@@ -1734,6 +1838,7 @@ mod tests {
             body: Some("synthetic caption".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
+            formatted: None,
             reply_quote: None,
             thread_root: None,
             thread_summary: None,

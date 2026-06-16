@@ -104,7 +104,8 @@ function snapshotForPanelMode(
           appearance: { theme: "system" },
           typography: { font: "system", emoji: "system" },
           keyboard: { composer_send_shortcut: "enter" },
-          notifications: { desktop_notifications: true, sound: true, badges: true }
+          notifications: { desktop_notifications: true, sound: true, badges: true },
+          display: { code_block_wrap: true }
         },
         persistence: { kind: "idle" }
       },

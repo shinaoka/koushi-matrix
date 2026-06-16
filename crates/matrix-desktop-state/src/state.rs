@@ -88,6 +88,8 @@ pub struct SettingsValues {
     pub keyboard: KeyboardSettings,
     #[serde(default)]
     pub notifications: NotificationSettings,
+    #[serde(default)]
+    pub display: DisplaySettings,
 }
 
 impl SettingsValues {
@@ -107,6 +109,9 @@ impl SettingsValues {
         if let Some(notifications) = patch.notifications {
             self.notifications = notifications;
         }
+        if let Some(display) = patch.display {
+            self.display = display;
+        }
     }
 }
 
@@ -118,6 +123,7 @@ impl Default for SettingsValues {
             typography: TypographySettings::default(),
             keyboard: KeyboardSettings::default(),
             notifications: NotificationSettings::default(),
+            display: DisplaySettings::default(),
         }
     }
 }
@@ -233,6 +239,24 @@ impl Default for NotificationSettings {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DisplaySettings {
+    #[serde(default = "default_code_block_wrap")]
+    pub code_block_wrap: bool,
+}
+
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        Self {
+            code_block_wrap: true,
+        }
+    }
+}
+
+fn default_code_block_wrap() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SettingsPersistenceState {
     Idle,
@@ -246,6 +270,7 @@ pub struct SettingsPatch {
     pub typography: Option<TypographySettings>,
     pub keyboard: Option<KeyboardSettings>,
     pub notifications: Option<NotificationSettings>,
+    pub display: Option<DisplaySettings>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

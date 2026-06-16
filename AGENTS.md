@@ -79,6 +79,9 @@ Phase B GUI/browser-headless work for the same issue follows
   `printf '%s\n' "$PROMPT" | timeout 600s bash -ic 'claude-deepseek -p --no-session-persistence --max-budget-usd 2 --tools ""'`.
   Passing the prompt as a trailing argv can be swallowed by `--tools ""`; stdin
   avoided that failure in this environment.
+- `claude-deepseek --help` does not expose a `--fast` flag in this environment.
+  Choose speed/cost by explicitly setting `--model deepseek-v4-flash` for
+  implementation probes and `--model "deepseek-v4-pro[1m]"` for review probes.
 - Do not use very short timeouts for real reviews. A simple smoke prompt
   returned in about four seconds, while a diff review took over a minute. Use a
   5-10 minute timeout for implementation/review evaluation unless the user asks
@@ -108,6 +111,13 @@ Phase B GUI/browser-headless work for the same issue follows
   scoped cross-boundary reviews can be too slow in this setup; prefer much
   smaller file-local prompts, or treat main-agent review and local gates as
   authoritative when the DeepSeek review is silent.
+- In the #69 formatted-message Phase A scoped diff review, DeepSeek V4 Pro again
+  produced no output after more than six minutes despite an explicit
+  `--model "deepseek-v4-pro[1m]"`, `$5` budget, stdin prompt, and no tools. The
+  trial was terminated by process group. For similar Phase A reviews, shrink the
+  review to one file or one invariant, or use `deepseek-v4-flash` only as a
+  cheap implementation probe; do not block commits indefinitely on a silent Pro
+  review when local gates and main-agent review are available.
 - When reviewing uncommitted work, include untracked new files explicitly.
   `git diff -- path/to/new-file` is empty for untracked files, and the
   reviewer may correctly report that the core file is missing from the review.
@@ -236,6 +246,16 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Browser-headless notification settings tests must click the visible switches
   and assert the resulting `update_settings` payload; the UI must reflect
   changed switch state only after the Rust-shaped settings snapshot updates.
+- Display preferences such as code-block line wrapping are Rust-owned
+  `SettingsValues.display` product state and must persist through the same
+  settings store with legacy JSON backfill. React may map
+  `code_block_wrap` to CSS in Phase B, but it must not keep a separate local
+  display-policy store or repair switch state after dispatch.
+- Received Matrix `formatted_body` is a Rust-owned security projection. Core
+  sanitizes Matrix HTML into `TimelineItem.formatted` before it crosses the
+  WebView boundary, including plain-text and code-block metadata. React must
+  render only that Rust-owned DTO; it must never render unsanitized server HTML
+  or own ad hoc Matrix HTML sanitizer policy.
 - React attention helpers may only map `snapshot.state.native_attention` to
   window title, badge, and native adapter payloads. They must not aggregate
   `rooms`, diff previous room snapshots, or infer focused-room/muted/duplicate
