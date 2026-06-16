@@ -598,6 +598,15 @@ mod tests {
             json!("never")
         );
         assert_eq!(
+            value["state"]["settings"]["values"]["media"]["image_upload_compression_policy"],
+            json!({
+                "threshold_bytes": 1048576,
+                "threshold_long_edge": 2560,
+                "target_long_edge": 2048,
+                "quality_percent": 82
+            })
+        );
+        assert_eq!(
             value["state"]["settings"]["persistence"]["kind"],
             json!("idle")
         );

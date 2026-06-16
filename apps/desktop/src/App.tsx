@@ -127,6 +127,8 @@ import type {
   ComposerMode,
   DesktopSnapshot,
   DirectoryRoomSummary,
+  ImageUploadCompressionMode,
+  ImageUploadCompressionPolicy,
   LocaleDisplayProfile,
   MentionIntent,
   MentionTarget,
@@ -163,6 +165,69 @@ const ICON_SIZE = {
   auth: 23,
   emptyState: 24
 } as const;
+
+type ImageUploadDimensionsPayload = {
+  width: number;
+  height: number;
+};
+
+type ImageUploadVariantInfoPayload = {
+  mime_type: string;
+  byte_count: number;
+  dimensions: ImageUploadDimensionsPayload | null;
+};
+
+type ImageUploadVariantKindPayload = "Original" | "Compressed";
+
+type ImageUploadCompressionStatePayload = {
+  mode: ImageUploadCompressionMode;
+  policy: ImageUploadCompressionPolicy;
+  original: ImageUploadVariantInfoPayload;
+  selected: ImageUploadVariantInfoPayload;
+  selected_variant: ImageUploadVariantKindPayload;
+  skipped_small_image: boolean;
+  metadata_stripped: boolean;
+  thumbnail_refreshed: boolean;
+};
+
+type UploadMediaThumbnailPayload = {
+  mime_type: string;
+  bytes: number[];
+  width: number;
+  height: number;
+};
+
+type PreparedMediaUpload = {
+  filename: string;
+  mimeType: string;
+  bytes: number[];
+  imageDimensions?: ImageUploadDimensionsPayload;
+  imageCompression?: ImageUploadCompressionStatePayload;
+  thumbnail?: UploadMediaThumbnailPayload;
+};
+
+type ImageCompressionVariant = {
+  filename: string;
+  mimeType: string;
+  bytes: number[];
+  byteCount: number;
+  dimensions: ImageUploadDimensionsPayload;
+  previewUrl: string;
+  thumbnail: UploadMediaThumbnailPayload;
+};
+
+type ImageCompressionPlan = {
+  mode: ImageUploadCompressionMode;
+  policy: ImageUploadCompressionPolicy;
+  original: ImageCompressionVariant;
+  compressed: ImageCompressionVariant;
+  skippedSmallImage: boolean;
+};
+
+type ImageCompressionDialogState = {
+  plan: ImageCompressionPlan;
+  resolve: (choice: ImageUploadVariantKindPayload | "cancel") => void;
+};
 
 /**
  * Tauri transport for the event-driven timeline (Async rule 4: timeline data
@@ -310,6 +375,288 @@ function composerModeProp(mode: ComposerMode): ComposerModeProp {
     : { kind: "reply", in_reply_to_event_id: mode.Reply.in_reply_to_event_id };
 }
 
+async function prepareMediaUpload(
+  file: File,
+  mode: ImageUploadCompressionMode,
+  policy: ImageUploadCompressionPolicy,
+  chooseImageVariant: (
+    plan: ImageCompressionPlan
+  ) => Promise<ImageUploadVariantKindPayload | "cancel">
+): Promise<PreparedMediaUpload | null> {
+  const originalBytes = await bytesFromFile(file);
+  if (originalBytes.length === 0) {
+    return null;
+  }
+
+  if (!isImageCompressionCandidate(file)) {
+    return {
+      filename: file.name || "attachment",
+      mimeType: file.type || "application/octet-stream",
+      bytes: originalBytes
+    };
+  }
+
+  const loaded = await loadImageElement(file).catch(() => null);
+  if (!loaded) {
+    return {
+      filename: file.name || "attachment",
+      mimeType: file.type || "application/octet-stream",
+      bytes: originalBytes
+    };
+  }
+
+  const originalDimensions = loaded.dimensions;
+  const originalThumbnail = await thumbnailForImageElement(loaded.image, originalDimensions);
+  const originalVariant: ImageCompressionVariant = {
+    filename: file.name || "attachment",
+    mimeType: file.type || "image/png",
+    bytes: originalBytes,
+    byteCount: originalBytes.length,
+    dimensions: originalDimensions,
+    previewUrl: loaded.objectUrl,
+    thumbnail: originalThumbnail
+  };
+  const skippedSmallImage = imageCompressionShouldSkip(originalVariant, policy);
+  let plan: ImageCompressionPlan | null = null;
+
+  try {
+    if (mode === "never" || skippedSmallImage) {
+      return preparedImageUploadFromChoice(
+        {
+          mode,
+          policy,
+          original: originalVariant,
+          compressed: originalVariant,
+          skippedSmallImage
+        },
+        "Original"
+      );
+    }
+
+    const compressed = await compressedImageVariantForElement(
+      loaded.image,
+      originalDimensions,
+      file.name || "attachment",
+      policy
+    );
+    plan = {
+      mode,
+      policy,
+      original: originalVariant,
+      compressed,
+      skippedSmallImage: false
+    };
+
+    const choice = mode === "always" ? "Compressed" : await chooseImageVariant(plan);
+    if (choice === "cancel") {
+      return null;
+    }
+    return preparedImageUploadFromChoice(plan, choice);
+  } finally {
+    if (!plan || mode !== "ask") {
+      releaseImageCompressionPlan(plan ?? {
+        mode,
+        policy,
+        original: originalVariant,
+        compressed: originalVariant,
+        skippedSmallImage
+      });
+    }
+  }
+}
+
+function preparedImageUploadFromChoice(
+  plan: ImageCompressionPlan,
+  choice: ImageUploadVariantKindPayload
+): PreparedMediaUpload {
+  const selected = choice === "Compressed" ? plan.compressed : plan.original;
+  return {
+    filename: selected.filename,
+    mimeType: selected.mimeType,
+    bytes: selected.bytes,
+    imageDimensions: selected.dimensions,
+    imageCompression: {
+      mode: plan.mode,
+      policy: plan.policy,
+      original: variantInfoForUpload(plan.original),
+      selected: variantInfoForUpload(selected),
+      selected_variant: choice,
+      skipped_small_image: plan.skippedSmallImage,
+      metadata_stripped: choice === "Compressed",
+      thumbnail_refreshed: true
+    },
+    thumbnail: selected.thumbnail
+  };
+}
+
+function variantInfoForUpload(variant: ImageCompressionVariant): ImageUploadVariantInfoPayload {
+  return {
+    mime_type: variant.mimeType,
+    byte_count: variant.byteCount,
+    dimensions: variant.dimensions
+  };
+}
+
+async function bytesFromFile(file: File): Promise<number[]> {
+  return Array.from(new Uint8Array(await file.arrayBuffer()));
+}
+
+function isImageCompressionCandidate(file: File): boolean {
+  return ["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase());
+}
+
+async function loadImageElement(
+  file: File
+): Promise<{ image: HTMLImageElement; objectUrl: string; dimensions: ImageUploadDimensionsPayload }> {
+  const objectUrl = URL.createObjectURL(file);
+  const image = new globalThis.Image();
+  image.decoding = "async";
+  image.src = objectUrl;
+  try {
+    await image.decode();
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+  return {
+    image,
+    objectUrl,
+    dimensions: {
+      width: image.naturalWidth,
+      height: image.naturalHeight
+    }
+  };
+}
+
+function imageCompressionShouldSkip(
+  variant: ImageCompressionVariant,
+  policy: ImageUploadCompressionPolicy
+): boolean {
+  return (
+    variant.byteCount <= policy.threshold_bytes &&
+    Math.max(variant.dimensions.width, variant.dimensions.height) <= policy.threshold_long_edge
+  );
+}
+
+async function compressedImageVariantForElement(
+  image: HTMLImageElement,
+  originalDimensions: ImageUploadDimensionsPayload,
+  originalFilename: string,
+  policy: ImageUploadCompressionPolicy
+): Promise<ImageCompressionVariant> {
+  const dimensions = targetImageDimensions(originalDimensions, policy.target_long_edge);
+  const mimeType = "image/jpeg";
+  const blob = await imageBlobForElement(
+    image,
+    dimensions,
+    mimeType,
+    policy.quality_percent / 100
+  );
+  const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+  return {
+    filename: imageFilenameWithExtension(originalFilename, "jpg"),
+    mimeType,
+    bytes,
+    byteCount: bytes.length,
+    dimensions,
+    previewUrl: URL.createObjectURL(blob),
+    thumbnail: await thumbnailForImageElement(image, dimensions)
+  };
+}
+
+async function thumbnailForImageElement(
+  image: HTMLImageElement,
+  sourceDimensions: ImageUploadDimensionsPayload
+): Promise<UploadMediaThumbnailPayload> {
+  const dimensions = targetImageDimensions(sourceDimensions, 320);
+  const blob = await imageBlobForElement(image, dimensions, "image/jpeg", 0.78);
+  return {
+    mime_type: "image/jpeg",
+    bytes: Array.from(new Uint8Array(await blob.arrayBuffer())),
+    width: dimensions.width,
+    height: dimensions.height
+  };
+}
+
+async function imageBlobForElement(
+  image: HTMLImageElement,
+  dimensions: ImageUploadDimensionsPayload,
+  mimeType: string,
+  quality: number
+): Promise<Blob> {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, dimensions.width);
+  canvas.height = Math.max(1, dimensions.height);
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("2d canvas unavailable");
+  }
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error("image encode failed"));
+        }
+      },
+      mimeType,
+      quality
+    );
+  });
+}
+
+function targetImageDimensions(
+  dimensions: ImageUploadDimensionsPayload,
+  targetLongEdge: number
+): ImageUploadDimensionsPayload {
+  const longEdge = Math.max(dimensions.width, dimensions.height);
+  if (longEdge <= 0 || longEdge <= targetLongEdge) {
+    return dimensions;
+  }
+  const scale = targetLongEdge / longEdge;
+  return {
+    width: Math.max(1, Math.round(dimensions.width * scale)),
+    height: Math.max(1, Math.round(dimensions.height * scale))
+  };
+}
+
+function imageFilenameWithExtension(filename: string, extension: string): string {
+  const fallback = `attachment.${extension}`;
+  if (!filename.trim()) {
+    return fallback;
+  }
+  const dot = filename.lastIndexOf(".");
+  if (dot <= 0) {
+    return `${filename}.${extension}`;
+  }
+  return `${filename.slice(0, dot)}.${extension}`;
+}
+
+function releaseImageCompressionPlan(plan: ImageCompressionPlan) {
+  URL.revokeObjectURL(plan.original.previewUrl);
+  if (plan.compressed.previewUrl !== plan.original.previewUrl) {
+    URL.revokeObjectURL(plan.compressed.previewUrl);
+  }
+}
+
+function formatUploadBytes(byteCount: number): string {
+  if (byteCount >= 1024 * 1024) {
+    return `${(byteCount / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (byteCount >= 1024) {
+    return `${Math.max(1, Math.round(byteCount / 1024))} KB`;
+  }
+  return `${byteCount} B`;
+}
+
+function formatUploadDimensions(dimensions: ImageUploadDimensionsPayload): string {
+  return `${dimensions.width}x${dimensions.height}`;
+}
+
 function rightPanelTargetFromContextMenuTarget(
   target: ContextMenuTarget
 ): RightPanelContextMenuTarget {
@@ -330,6 +677,8 @@ export function App() {
   const [composerDraft, setComposerDraft] = useState("");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [stagedAttachment, setStagedAttachment] = useState<File | null>(null);
+  const [imageCompressionDialog, setImageCompressionDialog] =
+    useState<ImageCompressionDialogState | null>(null);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginDeviceName, setLoginDeviceName] = useState("Matrix Desktop");
@@ -1106,7 +1455,10 @@ export function App() {
       return;
     }
     if (stagedAttachment) {
-      await uploadMediaFile(stagedAttachment, body);
+      const uploaded = await uploadMediaFile(stagedAttachment, body);
+      if (!uploaded) {
+        return;
+      }
       setStagedAttachment(null);
       setComposerDraft("");
       setComposerMentions(EMPTY_MENTION_INTENT);
@@ -1155,23 +1507,49 @@ export function App() {
     setComposerMentions((mentions) => pruneMentionIntentForDraft(mentions, value));
   }
 
-  async function uploadMediaFile(file: File, caption = "") {
+  async function uploadMediaFile(file: File, caption = ""): Promise<boolean> {
     const roomId = snapshot?.state.timeline.room_id;
     if (!roomId || !isTauriRuntime()) {
-      return;
+      return false;
     }
 
-    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-    if (bytes.length === 0) {
-      return;
+    const prepared = await prepareMediaUpload(
+      file,
+      snapshot.state.settings.values.media.image_upload_compression,
+      snapshot.state.settings.values.media.image_upload_compression_policy,
+      requestImageCompressionChoice
+    );
+    if (!prepared) {
+      return false;
     }
     await invoke("upload_media", {
       roomId,
-      filename: file.name || "attachment",
-      mimeType: file.type || "application/octet-stream",
-      bytes,
-      caption
+      filename: prepared.filename,
+      mimeType: prepared.mimeType,
+      bytes: prepared.bytes,
+      caption,
+      imageDimensions: prepared.imageDimensions,
+      imageCompression: prepared.imageCompression,
+      thumbnail: prepared.thumbnail
     });
+    return true;
+  }
+
+  function requestImageCompressionChoice(
+    plan: ImageCompressionPlan
+  ): Promise<ImageUploadVariantKindPayload | "cancel"> {
+    return new Promise((resolve) => {
+      setImageCompressionDialog({ plan, resolve });
+    });
+  }
+
+  function settleImageCompressionDialog(choice: ImageUploadVariantKindPayload | "cancel") {
+    if (!imageCompressionDialog) {
+      return;
+    }
+    imageCompressionDialog.resolve(choice);
+    releaseImageCompressionPlan(imageCompressionDialog.plan);
+    setImageCompressionDialog(null);
   }
 
   async function editMessage(message: TimelineMessage) {
@@ -1707,6 +2085,13 @@ export function App() {
           onValueChange={setInviteUserDraftUserId}
         />
       ) : null}
+      {imageCompressionDialog ? (
+        <ImageCompressionDialog
+          plan={imageCompressionDialog.plan}
+          onCancel={() => settleImageCompressionDialog("cancel")}
+          onChoose={(choice) => settleImageCompressionDialog(choice)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1791,6 +2176,68 @@ function CreateEntityDialog({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function ImageCompressionDialog({
+  plan,
+  onCancel,
+  onChoose
+}: {
+  plan: ImageCompressionPlan;
+  onCancel: () => void;
+  onChoose: (choice: ImageUploadVariantKindPayload) => void;
+}) {
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("composer.imageCompressionTitle")}
+      onKeyDown={onDialogKeyDown}
+    >
+      <div className="dialog-box image-compression-dialog">
+        <div className="dialog-title">{t("composer.imageCompressionTitle")}</div>
+        <div className="image-compression-preview">
+          <img src={plan.compressed.previewUrl} alt={t("composer.imageCompressionPreviewAlt")} />
+        </div>
+        <div className="image-compression-options">
+          <button
+            className="image-compression-option"
+            type="button"
+            onClick={() => onChoose("Original")}
+          >
+            <span>{t("composer.imageCompressionOriginal")}</span>
+            <strong>
+              {formatUploadBytes(plan.original.byteCount)} · {formatUploadDimensions(plan.original.dimensions)}
+            </strong>
+          </button>
+          <button
+            className="image-compression-option is-preferred"
+            type="button"
+            autoFocus
+            onClick={() => onChoose("Compressed")}
+          >
+            <span>{t("composer.imageCompressionCompressed")}</span>
+            <strong>
+              {formatUploadBytes(plan.compressed.byteCount)} · {formatUploadDimensions(plan.compressed.dimensions)}
+            </strong>
+          </button>
+        </div>
+        <div className="dialog-actions">
+          <button className="dialog-button" type="button" onClick={onCancel}>
+            {t("dialog.cancel")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -269,12 +269,15 @@ fn default_code_block_wrap() -> bool {
 pub struct MediaSettings {
     #[serde(default)]
     pub image_upload_compression: ImageUploadCompressionMode,
+    #[serde(default)]
+    pub image_upload_compression_policy: ImageUploadCompressionPolicy,
 }
 
 impl Default for MediaSettings {
     fn default() -> Self {
         Self {
             image_upload_compression: ImageUploadCompressionMode::Never,
+            image_upload_compression_policy: ImageUploadCompressionPolicy::default(),
         }
     }
 }
@@ -286,6 +289,25 @@ pub enum ImageUploadCompressionMode {
     Ask,
     #[default]
     Never,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageUploadCompressionPolicy {
+    pub threshold_bytes: u64,
+    pub threshold_long_edge: u64,
+    pub target_long_edge: u64,
+    pub quality_percent: u8,
+}
+
+impl Default for ImageUploadCompressionPolicy {
+    fn default() -> Self {
+        Self {
+            threshold_bytes: 1_048_576,
+            threshold_long_edge: 2560,
+            target_long_edge: 2048,
+            quality_percent: 82,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

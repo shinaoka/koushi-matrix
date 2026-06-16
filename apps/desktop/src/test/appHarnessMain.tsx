@@ -210,7 +210,15 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       keyboard: { composer_send_shortcut: "enter" },
       notifications: { desktop_notifications: true, sound: true, badges: true },
       display: { code_block_wrap: true, hide_redacted: false },
-      media: { image_upload_compression: "never" }
+      media: {
+        image_upload_compression: "never",
+        image_upload_compression_policy: {
+          threshold_bytes: 1048576,
+          threshold_long_edge: 2560,
+          target_long_edge: 2048,
+          quality_percent: 82
+        }
+      }
     },
     persistence: { kind: "idle" }
   };

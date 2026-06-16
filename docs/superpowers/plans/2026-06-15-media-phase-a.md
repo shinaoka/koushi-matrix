@@ -91,6 +91,14 @@ infer Matrix media semantics.
   render MXC URIs, encrypted media keys/hashes, or downloaded bytes.
 - [x] Update headless app harness responses for `upload_media` and
   `download_media`.
+- [x] Render the Rust-owned image upload compression setting and use the
+  Rust-owned policy from the snapshot for GUI/effect-layer pixel transforms.
+- [x] Add ask-mode image compression choice UI, always-mode automatic
+  compression, small-image skip behavior, refreshed thumbnail payloads, and
+  selected-variant metadata in `upload_media`.
+- [x] Add browser-headless coverage for ask/always/small-image paths and a
+  Linux virtual-display `local-image-compression` lane for real WebView canvas
+  transform evidence.
 
 ## Verification
 
@@ -122,4 +130,9 @@ PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
   npm --prefix apps/desktop run qa:linux-gui -- \
   --scenario=local-media --server=conduit --skip-build \
   --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000
+
+PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+  npm --prefix apps/desktop run qa:linux-gui -- \
+  --scenario=local-image-compression --server=conduit --skip-build \
+  --artifact-dir=artifacts/linux-gui-local-image-compression-fast --timeout-ms=180000
 ```

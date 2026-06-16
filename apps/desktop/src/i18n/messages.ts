@@ -60,6 +60,10 @@ export type MessageId =
   | "composer.mention"
   | "composer.mentionSuggestions"
   | "composer.messageComposer"
+  | "composer.imageCompressionCompressed"
+  | "composer.imageCompressionOriginal"
+  | "composer.imageCompressionPreviewAlt"
+  | "composer.imageCompressionTitle"
   | "composer.placeholder"
   | "composer.replying"
   | "composer.removeAttachment"
@@ -80,6 +84,7 @@ export type MessageId =
   | "context.selectRoom"
   | "context.selectSpace"
   | "context.switchAccount"
+  | "dialog.cancel"
   | "dialog.cancelCreate"
   | "dialog.createRoomTitle"
   | "dialog.createSpaceTitle"
@@ -236,6 +241,11 @@ export type MessageId =
   | "settings.display"
   | "settings.codeBlockWrap"
   | "settings.hideRedacted"
+  | "settings.media"
+  | "settings.compressImages"
+  | "settings.compressImagesAlways"
+  | "settings.compressImagesAsk"
+  | "settings.compressImagesNever"
   | "settings.notificationBadges"
   | "settings.notificationDesktop"
   | "settings.notificationSound"
@@ -648,6 +658,10 @@ const en: Catalog = {
   "composer.mention": "Mention",
   "composer.mentionSuggestions": "Mention suggestions",
   "composer.messageComposer": "Message composer",
+  "composer.imageCompressionCompressed": "Compressed",
+  "composer.imageCompressionOriginal": "Original",
+  "composer.imageCompressionPreviewAlt": "Compressed image preview",
+  "composer.imageCompressionTitle": "Compress image",
   "composer.placeholder": "Message {roomName}",
   "composer.replying": "Replying",
   "composer.removeAttachment": "Remove attachment",
@@ -668,6 +682,7 @@ const en: Catalog = {
   "context.selectRoom": "Open",
   "context.selectSpace": "Open Space",
   "context.switchAccount": "Switch account",
+  "dialog.cancel": "Cancel",
   "dialog.cancelCreate": "Cancel create",
   "dialog.createRoomTitle": "Create room",
   "dialog.createSpaceTitle": "Create space",
@@ -824,6 +839,11 @@ const en: Catalog = {
   "settings.display": "Display",
   "settings.codeBlockWrap": "Wrap long lines in code blocks",
   "settings.hideRedacted": "Hide deleted messages",
+  "settings.media": "Media",
+  "settings.compressImages": "Compress images",
+  "settings.compressImagesAlways": "Always",
+  "settings.compressImagesAsk": "Ask",
+  "settings.compressImagesNever": "Never",
   "settings.notificationBadges": "Badges",
   "settings.notificationDesktop": "Desktop notifications",
   "settings.notificationSound": "Sound",
@@ -1151,6 +1171,10 @@ const ja: Catalog = {
   "composer.removeAttachment": "添付を削除",
   "composer.cancelReply": "返信をキャンセル",
   "composer.selectedMentions": "選択中のメンション",
+  "composer.imageCompressionCompressed": "圧縮済み",
+  "composer.imageCompressionOriginal": "元の画像",
+  "composer.imageCompressionPreviewAlt": "圧縮後の画像プレビュー",
+  "composer.imageCompressionTitle": "画像を圧縮",
   "context.editMessage": "編集",
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",
@@ -1166,6 +1190,7 @@ const ja: Catalog = {
   "context.selectRoom": "開く",
   "context.selectSpace": "スペースを開く",
   "context.switchAccount": "アカウントを切り替え",
+  "dialog.cancel": "キャンセル",
   "dialog.cancelCreate": "作成をキャンセル",
   "dialog.createRoomTitle": "ルームを作成",
   "dialog.createSpaceTitle": "スペースを作成",
@@ -1321,6 +1346,11 @@ const ja: Catalog = {
   "settings.display": "表示",
   "settings.codeBlockWrap": "コードブロックの長い行を折り返す",
   "settings.hideRedacted": "削除されたメッセージを非表示",
+  "settings.media": "メディア",
+  "settings.compressImages": "画像を圧縮",
+  "settings.compressImagesAlways": "常に圧縮",
+  "settings.compressImagesAsk": "毎回確認",
+  "settings.compressImagesNever": "圧縮しない",
   "settings.notificationBadges": "バッジ",
   "settings.notificationDesktop": "デスクトップ通知",
   "settings.notificationSound": "サウンド",

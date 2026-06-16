@@ -40,6 +40,8 @@
  *      code-block wrap setting through `update_settings`.
  *  17. Hide redacted timeline rows only after the Rust-owned display policy
  *      event marks redacted item DTOs hidden.
+ *  18. Drive image-compression settings and assert upload_media receives the
+ *      Rust-shaped selected image variant contract.
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -50,6 +52,37 @@ import { pseudoLocalize, t } from "../src/i18n/messages";
 const HARNESS_ACCOUNT_KEY = "@harness-user:example.invalid";
 const HARNESS_ROOM_ID = "!harness-room:example.invalid";
 const HARNESS_ROOM_KEY = roomTimelineKey(HARNESS_ACCOUNT_KEY, HARNESS_ROOM_ID);
+
+async function canvasPngBuffer(page: Page, width: number, height: number): Promise<Buffer> {
+  const base64 = await page.evaluate(
+    ({ width, height }) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error("2d canvas unavailable");
+      }
+      context.fillStyle = "#2d6fef";
+      context.fillRect(0, 0, width, height);
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, Math.max(1, Math.floor(width / 2)), height);
+      return canvas.toDataURL("image/png").split(",")[1];
+    },
+    { width, height }
+  );
+  return Buffer.from(base64, "base64");
+}
+
+async function attachFile(
+  page: Page,
+  file: { name: string; mimeType: string; buffer: Buffer }
+): Promise<void> {
+  await page.getByRole("button", { name: "Attach file", exact: true }).click();
+  await page
+    .locator('input[type="file"][aria-label="Attach file input"]')
+    .setInputFiles(file);
+}
 
 function makeThreadItem(index: number, rootEventId = "$seed-event:example.invalid") {
   return {
@@ -2621,6 +2654,232 @@ test("attach control stages media caption and renders Rust-owned media progress"
     });
 });
 
+test("image compression setting and dialog send selected Rust-owned variant metadata", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("upload_media", () => window.__harness.currentSnapshot());
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "User settings" }).click();
+  await page.getByRole("group", { name: "Compress images" }).getByRole("button", { name: "Ask" }).click();
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        media: {
+          image_upload_compression: "ask",
+          image_upload_compression_policy: {
+            threshold_bytes: 1048576,
+            threshold_long_edge: 2560,
+            target_long_edge: 2048,
+            quality_percent: 82
+          }
+        }
+      }
+    });
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        settings: {
+          ...snapshot.state.settings,
+          values: {
+            ...snapshot.state.settings.values,
+            media: {
+              ...snapshot.state.settings.values.media,
+              image_upload_compression: "ask",
+              image_upload_compression_policy: {
+                threshold_bytes: 1,
+                threshold_long_edge: 1,
+                target_long_edge: 1,
+                quality_percent: 82
+              }
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const fixture = await canvasPngBuffer(page, 4, 2);
+  await attachFile(page, {
+    name: "screen.png",
+    mimeType: "image/png",
+    buffer: fixture
+  });
+  await page.getByRole("button", { name: "Send" }).click();
+  const dialog = page.getByRole("dialog", { name: "Compress image" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: /Original/ })).toContainText("4x2");
+  await expect(dialog.getByRole("button", { name: /Compressed/ })).toContainText("1x1");
+  await dialog.getByRole("button", { name: /Compressed/ }).click();
+
+  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
+        return args
+          ? {
+              filename: args.filename,
+              mimeType: args.mimeType,
+              byteCount: Array.isArray(args.bytes) ? args.bytes.length : -1,
+              imageDimensions: args.imageDimensions,
+              selectedVariant: args.imageCompression?.selected_variant,
+              selected: args.imageCompression?.selected,
+              metadataStripped: args.imageCompression?.metadata_stripped,
+              thumbnailRefreshed: args.imageCompression?.thumbnail_refreshed,
+              thumbnail: args.thumbnail
+                ? {
+                    width: args.thumbnail.width,
+                    height: args.thumbnail.height,
+                    mimeType: args.thumbnail.mime_type,
+                    byteCount: Array.isArray(args.thumbnail.bytes)
+                      ? args.thumbnail.bytes.length
+                      : -1
+                  }
+                : null
+            }
+          : null;
+      })
+    )
+    .toMatchObject({
+      filename: "screen.jpg",
+      mimeType: "image/jpeg",
+      imageDimensions: { width: 1, height: 1 },
+      selectedVariant: "Compressed",
+      selected: {
+        mime_type: "image/jpeg",
+        dimensions: { width: 1, height: 1 }
+      },
+      metadataStripped: true,
+      thumbnailRefreshed: true,
+      thumbnail: {
+        width: 1,
+        height: 1,
+        mimeType: "image/jpeg"
+      }
+    });
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
+        return args?.imageCompression?.selected?.byte_count === args?.bytes?.length;
+      })
+    )
+    .toBe(true);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        settings: {
+          ...snapshot.state.settings,
+          values: {
+            ...snapshot.state.settings.values,
+            media: {
+              ...snapshot.state.settings.values.media,
+              image_upload_compression: "always",
+              image_upload_compression_policy: {
+                threshold_bytes: 1,
+                threshold_long_edge: 1,
+                target_long_edge: 1,
+                quality_percent: 82
+              }
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+  await attachFile(page, {
+    name: "auto.png",
+    mimeType: "image/png",
+    buffer: fixture
+  });
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
+  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("upload_media")[0]?.args?.imageCompression?.selected_variant
+      )
+    )
+    .toBe("Compressed");
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        settings: {
+          ...snapshot.state.settings,
+          values: {
+            ...snapshot.state.settings.values,
+            media: {
+              ...snapshot.state.settings.values.media,
+              image_upload_compression: "ask",
+              image_upload_compression_policy: {
+                threshold_bytes: 10_000_000,
+                threshold_long_edge: 5000,
+                target_long_edge: 2048,
+                quality_percent: 82
+              }
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+  await attachFile(page, {
+    name: "small.png",
+    mimeType: "image/png",
+    buffer: fixture
+  });
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
+  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
+        return args
+          ? {
+              selectedVariant: args.imageCompression?.selected_variant,
+              skippedSmallImage: args.imageCompression?.skipped_small_image,
+              metadataStripped: args.imageCompression?.metadata_stripped,
+              imageDimensions: args.imageDimensions
+            }
+          : null;
+      })
+    )
+    .toEqual({
+      selectedVariant: "Original",
+      skippedSmallImage: true,
+      metadataStripped: false,
+      imageDimensions: { width: 4, height: 2 }
+    });
+});
+
 test("live signals render from Rust state and dispatch read/typing commands", async ({
   page
 }) => {
@@ -3877,8 +4136,7 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
     )
     .toEqual({
       patch: {
-        display: { code_block_wrap: false, hide_redacted: false },
-        media: { image_upload_compression: "never" }
+        display: { code_block_wrap: false, hide_redacted: false }
       }
     });
   await expect(wrapToggle).toHaveAttribute("aria-checked", "false");
@@ -3953,8 +4211,7 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
     )
     .toEqual({
       patch: {
-        display: { code_block_wrap: true, hide_redacted: true },
-        media: { image_upload_compression: "never" }
+        display: { code_block_wrap: true, hide_redacted: true }
       }
     });
   await expect(redactedRow.getByText(t("timeline.redactedMessage"))).toBeVisible();

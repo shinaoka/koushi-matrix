@@ -15,10 +15,10 @@ use std::path::PathBuf;
 
 use matrix_desktop_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
-    ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantKind,
-    MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent, SearchCommand,
-    SearchScope, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
-    UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
+    ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
+    ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
+    RoomEvent, SearchCommand, SearchScope, SetAvatarRequest, SyncCommand, TimelineCommand,
+    TimelineKey, TimelineKind, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
 };
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
@@ -861,7 +861,8 @@ pub async fn upload_media(
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let image_compression_mode = image_upload_compression_mode_from_snapshot(state.inner()).await;
+    let (image_compression_mode, image_compression_policy) =
+        image_upload_compression_contract_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
     if let Some(command) = build_upload_media_command(
         request_id,
@@ -873,6 +874,7 @@ pub async fn upload_media(
         bytes,
         caption,
         image_compression_mode,
+        image_compression_policy,
         image_dimensions,
         image_compression,
         thumbnail,
@@ -2339,6 +2341,7 @@ pub(crate) fn build_upload_media_command(
     bytes: Vec<u8>,
     caption: Option<String>,
     image_compression_mode: ImageUploadCompressionMode,
+    image_compression_policy: ImageUploadCompressionPolicy,
     image_dimensions: Option<ImageUploadDimensions>,
     image_compression: Option<ImageUploadCompressionState>,
     thumbnail: Option<UploadMediaThumbnail>,
@@ -2359,6 +2362,7 @@ pub(crate) fn build_upload_media_command(
     let image_compression = if is_image {
         Some(normalize_image_upload_compression(
             image_compression_mode,
+            image_compression_policy,
             mime_type.clone(),
             selected_byte_count,
             image_dimensions,
@@ -2399,6 +2403,7 @@ pub(crate) fn build_upload_media_command(
 
 fn normalize_image_upload_compression(
     mode: ImageUploadCompressionMode,
+    policy: ImageUploadCompressionPolicy,
     mime_type: String,
     selected_byte_count: u64,
     image_dimensions: Option<ImageUploadDimensions>,
@@ -2408,6 +2413,7 @@ fn normalize_image_upload_compression(
     match image_compression {
         Some(mut compression) => {
             compression.mode = mode;
+            compression.policy = policy;
             if compression.original.mime_type.trim().is_empty() {
                 compression.original.mime_type = mime_type.clone();
             }
@@ -2426,12 +2432,17 @@ fn normalize_image_upload_compression(
             }
             compression
         }
-        None => ImageUploadCompressionState::original(
-            mode,
-            mime_type,
-            selected_byte_count,
-            image_dimensions,
-        ),
+        None => {
+            let mut compression = ImageUploadCompressionState::original(
+                mode,
+                mime_type,
+                selected_byte_count,
+                image_dimensions,
+            );
+            compression.policy = policy;
+            compression.skipped_small_image = policy.should_skip(&compression.original);
+            compression
+        }
     }
 }
 
@@ -3012,18 +3023,26 @@ async fn account_key_from_snapshot(state: &CoreRuntimeState) -> AccountKey {
     }
 }
 
-async fn image_upload_compression_mode_from_snapshot(
+async fn image_upload_compression_contract_from_snapshot(
     state: &CoreRuntimeState,
-) -> ImageUploadCompressionMode {
-    state
+) -> (ImageUploadCompressionMode, ImageUploadCompressionPolicy) {
+    let media = state
         .connection
         .lock()
         .await
         .snapshot()
         .settings
         .values
-        .media
-        .image_upload_compression
+        .media;
+    (
+        media.image_upload_compression,
+        ImageUploadCompressionPolicy {
+            threshold_bytes: media.image_upload_compression_policy.threshold_bytes,
+            threshold_long_edge: media.image_upload_compression_policy.threshold_long_edge,
+            target_long_edge: media.image_upload_compression_policy.target_long_edge,
+            quality_percent: media.image_upload_compression_policy.quality_percent,
+        },
+    )
 }
 
 fn resolve_search_scope_from_active_room(
@@ -3760,6 +3779,7 @@ mod tests {
             vec![1, 2, 3, 4],
             None,
             ImageUploadCompressionMode::Never,
+            ImageUploadCompressionPolicy::default(),
             None,
             None,
             None,
@@ -3800,6 +3820,7 @@ mod tests {
             vec![9],
             Some("single **event** caption".to_owned()),
             ImageUploadCompressionMode::Never,
+            ImageUploadCompressionPolicy::default(),
             None,
             None,
             None,
@@ -3834,6 +3855,7 @@ mod tests {
             vec![7, 8, 9, 10],
             None,
             ImageUploadCompressionMode::Always,
+            ImageUploadCompressionPolicy::default(),
             Some(ImageUploadDimensions {
                 width: 1200,
                 height: 900,
@@ -3882,7 +3904,10 @@ mod tests {
                 let compression = request
                     .compression
                     .expect("image compression contract should be preserved");
-                assert_eq!(compression.selected_variant, ImageUploadVariantKind::Compressed);
+                assert_eq!(
+                    compression.selected_variant,
+                    ImageUploadVariantKind::Compressed
+                );
                 assert_eq!(compression.selected.byte_count, 4);
                 assert!(compression.metadata_stripped);
                 assert!(compression.thumbnail_refreshed);
@@ -4802,6 +4827,7 @@ mod tests {
                 vec![],
                 None,
                 ImageUploadCompressionMode::Never,
+                ImageUploadCompressionPolicy::default(),
                 None,
                 None,
                 None,
@@ -5653,6 +5679,7 @@ mod tests {
             b"secret media bytes".to_vec(),
             Some("secret media caption".to_owned()),
             ImageUploadCompressionMode::Never,
+            ImageUploadCompressionPolicy::default(),
             None,
             None,
             None,

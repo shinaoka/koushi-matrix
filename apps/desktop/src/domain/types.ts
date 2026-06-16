@@ -137,9 +137,17 @@ export interface DisplaySettings {
 
 export interface MediaSettings {
   image_upload_compression: ImageUploadCompressionMode;
+  image_upload_compression_policy: ImageUploadCompressionPolicy;
 }
 
 export type ImageUploadCompressionMode = "always" | "ask" | "never";
+
+export interface ImageUploadCompressionPolicy {
+  threshold_bytes: number;
+  threshold_long_edge: number;
+  target_long_edge: number;
+  quality_percent: number;
+}
 
 export type SettingsPersistenceState =
   | { kind: "idle" }

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { createRequire } from "node:module";
 import * as net from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { deflateSync } from "node:zlib";
 
 import {
   checkInstalledHomeserver,
@@ -27,6 +28,13 @@ import {
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopDir = join(repoRoot, "apps", "desktop");
 const desktopPackageRequire = createRequire(new URL("../apps/desktop/package.json", import.meta.url));
+const pngCrc32Table = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  return value >>> 0;
+});
 const checks = [
   "scenario signed-out",
   "scenario local-login",
@@ -36,6 +44,7 @@ const checks = [
   "scenario local-invites-dm",
   "scenario local-reply",
   "scenario local-media",
+  "scenario local-image-compression",
   "scenario local-room-tags",
   "scenario local-room-management",
   "scenario local-activity",
@@ -206,6 +215,10 @@ async function run() {
   }
   if (guiScenario === "local-media") {
     await runLocalMediaScenario();
+    return;
+  }
+  if (guiScenario === "local-image-compression") {
+    await runLocalImageCompressionScenario();
     return;
   }
   if (guiScenario === "local-room-tags") {
@@ -630,6 +643,95 @@ async function runLocalMediaScenario() {
     await recordLocalGuiEvidence(session);
     console.log("gui_local_media=ok");
     console.log("gui_local_media_caption=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalImageCompressionScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.timeline_room === true,
+      timeoutMs,
+      "local GUI image compression timeline room"
+    );
+
+    const userSettings = await session.browser.$('button[aria-label="User settings"]');
+    await userSettings.waitForDisplayed({ timeout: timeoutMs });
+    await userSettings.click();
+    const alwaysCompressionSelector =
+      '//section[@aria-label="Media"]//button[normalize-space()="Always"]';
+    const alwaysCompression = await session.browser.$(alwaysCompressionSelector);
+    await alwaysCompression.waitForDisplayed({ timeout: timeoutMs });
+    await alwaysCompression.click();
+    await waitForElementAttribute(
+      session.browser,
+      alwaysCompressionSelector,
+      "aria-pressed",
+      "true",
+      timeoutMs,
+      "image compression Always setting"
+    );
+    await selectRoomByName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForActiveRoomName(session.browser, "QA Seed Room", timeoutMs);
+
+    const baselineMediaRows = await elementCount(session.browser, ".message-media");
+    const pngFilename = `qa-image-compress-${safeTimestamp()}.png`;
+    const jpgFilename = pngFilename.replace(/\.png$/, ".jpg");
+    const fixturePath = join(session.runDir, pngFilename);
+    writePngFixture(fixturePath, 3000, 10);
+    const fileInputSelector = 'input[type="file"][aria-label="Attach file input"]';
+    await setSyntheticFileInput(
+      session.browser,
+      fileInputSelector,
+      fixturePath,
+      pngFilename,
+      "image/png",
+      { base64: readFileSync(fixturePath).toString("base64") }
+    );
+    await waitForDocumentText(
+      session.browser,
+      [pngFilename],
+      timeoutMs,
+      "local GUI image compression staged preview"
+    );
+    const stagedMediaRows = await elementCount(session.browser, ".message-media");
+    if (stagedMediaRows !== baselineMediaRows) {
+      throw new Error(
+        `local GUI image compression sent before Send: baseline=${baselineMediaRows} observed=${stagedMediaRows}`
+      );
+    }
+
+    const sendButton = await session.browser.$('button[aria-label="Send"]');
+    await sendButton.waitForDisplayed({ timeout: timeoutMs });
+    await sendButton.click();
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".message-media",
+      baselineMediaRows,
+      timeoutMs,
+      "local GUI compressed image render"
+    );
+    await waitForCompressedImageMedia(
+      session.browser,
+      {
+        filename: jpgFilename,
+        mimetype: "image/jpeg",
+        dimensions: "2048x7"
+      },
+      timeoutMs
+    );
+    if ((await elementCount(session.browser, 'div[role="dialog"][aria-label="Compress image"]')) > 0) {
+      throw new Error("local GUI Always compression unexpectedly opened the ask dialog");
+    }
+
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_image_compress=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -1360,6 +1462,34 @@ async function waitForDocumentText(browser, expectedTexts, timeout, description)
   throw new Error(`${description} missing expected text: ${missing.join(", ")}`);
 }
 
+async function waitForCompressedImageMedia(browser, expected, timeout) {
+  const startedAt = Date.now();
+  let lastRows = [];
+  while (Date.now() - startedAt < timeout) {
+    lastRows = await browser.execute(() =>
+      Array.from(document.querySelectorAll(".message-media")).map((row) => ({
+        kind: row.getAttribute("data-media-kind"),
+        title: row.querySelector(".message-media-title")?.textContent?.trim() ?? "",
+        meta: row.querySelector(".message-media-meta")?.textContent?.trim() ?? ""
+      }))
+    );
+    const found = lastRows.some(
+      (row) =>
+        row.kind === "Image" &&
+        row.title === expected.filename &&
+        row.meta.includes(expected.mimetype) &&
+        row.meta.includes(expected.dimensions)
+    );
+    if (found) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `compressed image media row missing ${JSON.stringify(expected)}. Last rows: ${JSON.stringify(lastRows)}`
+  );
+}
+
 async function waitForRichFormattedTimeline(browser, expected, expectedWhiteSpace, timeout) {
   const startedAt = Date.now();
   let lastDiagnostics = null;
@@ -1919,6 +2049,55 @@ function xpathLiteral(value) {
     .join(`, "\"'\"", `)})`;
 }
 
+function writePngFixture(path, width, height) {
+  const raw = Buffer.alloc((width * 4 + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * (width * 4 + 1);
+    raw[rowOffset] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const offset = rowOffset + 1 + x * 4;
+      raw[offset] = x % 2 === 0 ? 45 : 255;
+      raw[offset + 1] = y % 2 === 0 ? 111 : 255;
+      raw[offset + 2] = 239;
+      raw[offset + 3] = 255;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  writeFileSync(
+    path,
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk("IHDR", ihdr),
+      pngChunk("IDAT", deflateSync(raw)),
+      pngChunk("IEND", Buffer.alloc(0))
+    ])
+  );
+}
+
+function pngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, "ascii");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), 0);
+  return Buffer.concat([length, typeBuffer, data, crc]);
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc = pngCrc32Table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
 async function setSyntheticFileInput(browser, selector, fixturePath, filename, mimeType, contents) {
   await makeFileInputInteractable(browser, selector);
   const input = await browser.$(selector);
@@ -1944,7 +2123,7 @@ async function fileInputHasFiles(browser, selector) {
 
 async function setSyntheticFileList(browser, selector, filename, mimeType, contents) {
   const result = await browser.execute(
-    (cssSelector, fileName, type, text) => {
+    (cssSelector, fileName, type, payload) => {
       const input = document.querySelector(cssSelector);
       if (!(input instanceof HTMLInputElement)) {
         return { ok: false, reason: "input_missing" };
@@ -1952,8 +2131,12 @@ async function setSyntheticFileList(browser, selector, filename, mimeType, conte
       if (typeof DataTransfer !== "function") {
         return { ok: false, reason: "data_transfer_unavailable" };
       }
+      const filePart =
+        typeof payload === "string"
+          ? payload
+          : Uint8Array.from(atob(payload.base64), (character) => character.charCodeAt(0));
       const transfer = new DataTransfer();
-      transfer.items.add(new File([text], fileName, { type }));
+      transfer.items.add(new File([filePart], fileName, { type }));
       Object.defineProperty(input, "files", {
         configurable: true,
         get() {

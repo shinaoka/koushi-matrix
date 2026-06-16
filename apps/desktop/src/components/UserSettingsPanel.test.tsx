@@ -13,7 +13,15 @@ describe("UserSettingsPanel", () => {
       keyboard: { composer_send_shortcut: "enter" },
       notifications: { desktop_notifications: true, sound: true, badges: true },
       display: { code_block_wrap: true, hide_redacted: false },
-      media: { image_upload_compression: "never" }
+      media: {
+        image_upload_compression: "never",
+        image_upload_compression_policy: {
+          threshold_bytes: 1048576,
+          threshold_long_edge: 2560,
+          target_long_edge: 2048,
+          quality_percent: 82
+        }
+      }
     },
     persistence: { kind: "idle" }
   } as const;
@@ -139,6 +147,11 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Typography");
     expect(markup).toContain("UI font");
     expect(markup).toContain("Emoji font");
+    expect(markup).toContain("Media");
+    expect(markup).toContain("Compress images");
+    expect(markup).toContain("Always");
+    expect(markup).toContain("Ask");
+    expect(markup).toContain("Never");
     expect(markup).toContain("Notifications");
     expect(markup).toContain("Desktop notifications");
     expect(markup).toContain("Sound");
@@ -178,8 +191,7 @@ describe("UserSettingsPanel", () => {
           ...settings,
           values: {
             ...settings.values,
-            display: { code_block_wrap: false, hide_redacted: true },
-            media: { image_upload_compression: "never" }
+            display: { code_block_wrap: false, hide_redacted: true }
           }
         }}
         {...handlers}

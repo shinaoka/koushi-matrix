@@ -1026,6 +1026,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Download, and prints `gui_local_media=ok` and
   `gui_local_media_caption=ok`:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000`
+- Image-compression GUI iteration has a focused virtual-display lane:
+  `--scenario=local-image-compression`. It sets Compress images to Always from
+  the real User Settings panel, returns to the QA Seed Room, attaches an
+  ignored synthetic wide PNG, waits for the Rust-owned timeline media row to
+  show the compressed `.jpg` filename, `image/jpeg`, and selected dimensions,
+  and prints `gui_local_image_compress=ok`:
+  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-image-compression --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-image-compression-fast --timeout-ms=180000`
 - Room-tag GUI iteration has a focused virtual-display lane:
   `--scenario=local-room-tags`. It opens the real room row context menu in the
   Linux Tauri WebView, clicks Add/Remove Favourites, and waits for the row to
@@ -1250,6 +1257,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   upload behavior. If the lane fails, inspect the scenario-specific artifact
   run log; the lane uses synthetic filenames/content only and must not write
   real/private media data.
+- `local-image-compression` uses a binary-safe `DataTransfer` fallback for the
+  synthetic PNG. After changing the image-compression UI or composer upload
+  path, run the lane once without `--skip-build` so the QA-title debug binary
+  includes the current Media section; a stale binary can fail by never finding
+  the Always button. User Settings can unmount the timeline surface in the real
+  WebView, so the lane must reselect the QA Seed Room before attaching media.
 - `local-room-tags` must use the real context menu and wait for section
   movement from Rust-owned `RoomSummary.tags`. Do not mutate React state,
   monkeypatch Tauri IPC, or treat menu click completion as evidence until the

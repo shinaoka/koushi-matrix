@@ -54,6 +54,7 @@ fn app_state_carries_default_non_secret_settings() {
         state.settings.values.media,
         MediaSettings {
             image_upload_compression: ImageUploadCompressionMode::Never,
+            ..MediaSettings::default()
         }
     );
     assert_eq!(state.settings.persistence, SettingsPersistenceState::Idle);
@@ -88,6 +89,7 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         },
         media: MediaSettings {
             image_upload_compression: ImageUploadCompressionMode::Always,
+            ..MediaSettings::default()
         },
     };
 
@@ -166,6 +168,7 @@ fn settings_values_deserialize_legacy_without_media_as_default_never() {
         values.media,
         MediaSettings {
             image_upload_compression: ImageUploadCompressionMode::Never,
+            ..MediaSettings::default()
         }
     );
 }
@@ -284,6 +287,7 @@ fn image_upload_compression_patch_is_rust_owned_and_persisted() {
     let mut state = AppState::default();
     let media_settings = MediaSettings {
         image_upload_compression: ImageUploadCompressionMode::Ask,
+        ..MediaSettings::default()
     };
 
     let effects = reduce(
