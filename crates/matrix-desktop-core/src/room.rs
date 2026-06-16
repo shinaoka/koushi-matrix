@@ -1634,9 +1634,34 @@ fn normalize_user_profiles(
         .map(|profile| UserProfile {
             user_id: profile.user_id.clone(),
             display_name: profile.display_name.clone(),
+            display_label: profile
+                .display_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|display_name| !display_name.is_empty())
+                .unwrap_or(profile.user_id.as_str())
+                .to_owned(),
+            mention_search_terms: user_profile_mention_search_terms(
+                &profile.user_id,
+                profile.display_name.as_deref(),
+            ),
             avatar: avatar_from_mxc_uri(profile.avatar_mxc_uri.as_deref()),
         })
         .collect()
+}
+
+fn user_profile_mention_search_terms(user_id: &str, display_name: Option<&str>) -> Vec<String> {
+    let mut terms = Vec::new();
+    if let Some(display_name) = display_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        terms.push(display_name.to_owned());
+    }
+    if !terms.iter().any(|term| term == user_id) {
+        terms.push(user_id.to_owned());
+    }
+    terms
 }
 
 fn pinned_events_from_ids(event_ids: Vec<String>) -> Vec<PinnedEvent> {
@@ -2188,6 +2213,8 @@ pub mod tests {
             vec![UserProfile {
                 user_id: "@alice:example.test".to_owned(),
                 display_name: Some("Alice".to_owned()),
+                display_label: "Alice".to_owned(),
+                mention_search_terms: vec!["Alice".to_owned(), "@alice:example.test".to_owned(),],
                 avatar: Some(AvatarImage {
                     mxc_uri: "mxc://example.test/alice".to_owned(),
                     thumbnail: AvatarThumbnailState::NotRequested,
@@ -2223,6 +2250,11 @@ pub mod tests {
                 ] if profiles == &vec![UserProfile {
                     user_id: "@alice:example.test".to_owned(),
                     display_name: Some("Alice".to_owned()),
+                    display_label: "Alice".to_owned(),
+                    mention_search_terms: vec![
+                        "Alice".to_owned(),
+                        "@alice:example.test".to_owned(),
+                    ],
                     avatar: None,
                 }]
             ),

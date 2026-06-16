@@ -3319,7 +3319,11 @@ function mentionCandidatesFromSnapshot(snapshot: DesktopSnapshot): MentionCandid
       return {
         key: profile.user_id,
         label,
-        searchText: `${label} ${profile.user_id}`.toLowerCase(),
+        searchText: (
+          profile.mention_search_terms.length
+            ? profile.mention_search_terms.join(" ")
+            : `${label} ${profile.user_id}`
+        ).toLowerCase(),
         target
       };
     })
@@ -3331,7 +3335,7 @@ function mentionCandidatesFromSnapshot(snapshot: DesktopSnapshot): MentionCandid
 }
 
 function mentionLabel(profile: UserProfile): string {
-  return profile.display_name?.trim() || profile.user_id;
+  return profile.display_label.trim() || profile.user_id;
 }
 
 function activeMentionQuery(value: string): { start: number; end: number; query: string } | null {

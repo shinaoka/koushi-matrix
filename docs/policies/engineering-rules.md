@@ -166,6 +166,9 @@ Rules:
    notification text, QA tokens, logs, issue evidence, or normal `Debug` output.
    Rust reducers own alias set/clear/list and display-name resolution; React
    must not maintain an alias cache separate from `AppState.profile`.
+   `UserProfile.display_label` and `UserProfile.mention_search_terms` are the
+   person/mention DTO contract; React may use those projected fields but must
+   not recompute alias precedence from `local_aliases`.
    Read-receipt reader avatars use the same boundary: `AppState.live_signals`
    carries Rust-resolved reader labels, avatar DTOs, read timestamps, capped
    reader ordering, and overflow counts; React must not resolve reader profiles

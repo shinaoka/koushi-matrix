@@ -238,6 +238,8 @@ export interface OwnProfile {
 export interface UserProfile {
   user_id: string;
   display_name: string | null;
+  display_label: string;
+  mention_search_terms: string[];
   avatar: AvatarImage | null;
 }
 

@@ -325,11 +325,15 @@ function timelineMentionTokens(
 ): TimelineMentionToken[] {
   const tokens = new Map<string, string>();
   for (const profile of Object.values(profileUsers)) {
-    const displayName = profile.display_name?.trim();
-    if (displayName) {
-      tokens.set(displayName.startsWith("@") ? displayName : `@${displayName}`, profile.user_id);
+    const terms = profile.mention_search_terms.length
+      ? profile.mention_search_terms
+      : [profile.display_label, profile.user_id];
+    for (const term of terms) {
+      const normalized = term.trim();
+      if (normalized) {
+        tokens.set(normalized.startsWith("@") ? normalized : `@${normalized}`, profile.user_id);
+      }
     }
-    tokens.set(profile.user_id, profile.user_id);
   }
   return Array.from(tokens, ([token, userId]) => ({ token, userId }))
     .filter((mention) => mention.token.length > 1)

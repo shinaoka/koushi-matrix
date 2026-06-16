@@ -517,11 +517,31 @@ pub struct OwnProfile {
     pub avatar: Option<AvatarImage>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UserProfile {
     pub user_id: String,
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub display_label: String,
+    #[serde(default)]
+    pub mention_search_terms: Vec<String>,
     pub avatar: Option<AvatarImage>,
+}
+
+impl fmt::Debug for UserProfile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UserProfile")
+            .field("user_id", &"UserId(..)")
+            .field(
+                "display_name",
+                &self.display_name.as_ref().map(|_| "DisplayName(..)"),
+            )
+            .field("display_label", &"DisplayLabel(..)")
+            .field("mention_search_terms", &self.mention_search_terms.len())
+            .field("has_avatar", &self.avatar.is_some())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -564,8 +584,54 @@ pub fn resolve_user_display_name(
     upstream_display_name: Option<&str>,
     own_user_id: Option<&str>,
 ) -> String {
-    profiles
-        .local_aliases
+    let display_name = upstream_display_name.or_else(|| {
+        profiles
+            .users
+            .get(user_id)
+            .and_then(|profile| profile.display_name.as_deref())
+    });
+    resolve_user_display_name_from_parts(
+        &profiles.local_aliases,
+        profiles.own.display_name.as_deref(),
+        user_id,
+        display_name,
+        own_user_id,
+    )
+}
+
+pub fn refresh_profile_user_display_projection(
+    profiles: &mut ProfileState,
+    own_user_id: Option<&str>,
+) {
+    let local_aliases = &profiles.local_aliases;
+    let own_display_name = profiles.own.display_name.as_deref();
+    for (user_id, profile) in &mut profiles.users {
+        let display_label = resolve_user_display_name_from_parts(
+            local_aliases,
+            own_display_name,
+            user_id,
+            profile.display_name.as_deref(),
+            own_user_id,
+        );
+        profile.mention_search_terms = user_mention_search_terms(
+            display_label.clone(),
+            user_id,
+            profile.display_name.as_deref(),
+            own_display_name,
+            own_user_id,
+        );
+        profile.display_label = display_label;
+    }
+}
+
+fn resolve_user_display_name_from_parts(
+    local_aliases: &BTreeMap<String, String>,
+    own_display_name: Option<&str>,
+    user_id: &str,
+    upstream_display_name: Option<&str>,
+    own_user_id: Option<&str>,
+) -> String {
+    local_aliases
         .get(user_id)
         .filter(|alias| !alias.trim().is_empty())
         .cloned()
@@ -578,21 +644,45 @@ pub fn resolve_user_display_name(
         .or_else(|| {
             own_user_id
                 .filter(|own| *own == user_id)
-                .and_then(|_| profiles.own.display_name.as_deref())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        })
-        .or_else(|| {
-            profiles
-                .users
-                .get(user_id)
-                .and_then(|profile| profile.display_name.as_deref())
+                .and_then(|_| own_display_name)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| user_id.to_owned())
+}
+
+fn user_mention_search_terms(
+    display_label: String,
+    user_id: &str,
+    upstream_display_name: Option<&str>,
+    own_display_name: Option<&str>,
+    own_user_id: Option<&str>,
+) -> Vec<String> {
+    let mut terms = Vec::new();
+    push_unique_search_term(&mut terms, display_label);
+    if let Some(upstream_display_name) = upstream_display_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        push_unique_search_term(&mut terms, upstream_display_name.to_owned());
+    }
+    if own_user_id == Some(user_id) {
+        if let Some(own_display_name) = own_display_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            push_unique_search_term(&mut terms, own_display_name.to_owned());
+        }
+    }
+    push_unique_search_term(&mut terms, user_id.to_owned());
+    terms
+}
+
+fn push_unique_search_term(terms: &mut Vec<String>, term: String) {
+    if !terms.iter().any(|existing| existing == &term) {
+        terms.push(term);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

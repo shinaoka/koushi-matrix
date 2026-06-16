@@ -577,7 +577,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let own_user_id = session_user_id(state).map(str::to_owned);
             state.profile.own = profile;
+            crate::state::refresh_profile_user_display_projection(
+                &mut state.profile,
+                own_user_id.as_deref(),
+            );
             vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
         }
         AppAction::UserProfilesUpdated { profiles } => {
@@ -585,10 +590,15 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let own_user_id = session_user_id(state).map(str::to_owned);
             state.profile.users = profiles
                 .into_iter()
                 .map(|profile| (profile.user_id.clone(), profile))
                 .collect();
+            crate::state::refresh_profile_user_display_projection(
+                &mut state.profile,
+                own_user_id.as_deref(),
+            );
             vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
         }
         AppAction::LocalUserAliasesLoaded { aliases } => {
@@ -596,6 +606,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let own_user_id = session_user_id(state).map(str::to_owned);
             state.profile.local_aliases = aliases
                 .into_iter()
                 .filter_map(|(user_id, alias)| {
@@ -604,6 +615,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 })
                 .collect();
             state.profile.local_alias_update = crate::state::LocalUserAliasUpdateState::Idle;
+            crate::state::refresh_profile_user_display_projection(
+                &mut state.profile,
+                own_user_id.as_deref(),
+            );
             vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
         }
         AppAction::LocalUserAliasUpdateRequested {
@@ -615,6 +630,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let own_user_id = session_user_id(state).map(str::to_owned);
             if let Some(alias) = crate::state::normalize_local_user_alias(alias) {
                 state.profile.local_aliases.insert(user_id, alias);
             } else {
@@ -622,6 +638,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
             state.profile.local_alias_update =
                 crate::state::LocalUserAliasUpdateState::Saving { request_id };
+            crate::state::refresh_profile_user_display_projection(
+                &mut state.profile,
+                own_user_id.as_deref(),
+            );
             vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
         }
         AppAction::LocalUserAliasUpdateSucceeded { request_id } => {
@@ -2917,6 +2937,8 @@ mod tests {
             UserProfile {
                 user_id: "@alice:example.invalid".to_owned(),
                 display_name: Some("Alice".to_owned()),
+                display_label: String::new(),
+                mention_search_terms: Vec::new(),
                 avatar: Some(AvatarImage {
                     mxc_uri: "mxc://example.invalid/alice".to_owned(),
                     thumbnail: AvatarThumbnailState::NotRequested,
@@ -2928,6 +2950,8 @@ mod tests {
             UserProfile {
                 user_id: "@bob:example.invalid".to_owned(),
                 display_name: Some("Bob".to_owned()),
+                display_label: String::new(),
+                mention_search_terms: Vec::new(),
                 avatar: Some(AvatarImage {
                     mxc_uri: "mxc://example.invalid/bob".to_owned(),
                     thumbnail: AvatarThumbnailState::NotRequested,
@@ -2939,6 +2963,8 @@ mod tests {
             UserProfile {
                 user_id: "@carol:example.invalid".to_owned(),
                 display_name: Some("Carol".to_owned()),
+                display_label: String::new(),
+                mention_search_terms: Vec::new(),
                 avatar: None,
             },
         );

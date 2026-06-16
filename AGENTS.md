@@ -363,6 +363,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   set/clear/list, persistence to `app.ruri.local_aliases`, display-name
   resolution, and pending/failure state in Rust; React may render the returned
   labels and dispatch typed commands only.
+- `UserProfile.display_label` and `UserProfile.mention_search_terms` are the
+  Rust-owned person/mention projection. Keep upstream/original names in
+  `display_name` for context, but GUI mention suggestions/highlighting must use
+  the projected label/search fields instead of recomputing alias precedence in
+  React.
 - Local aliases are private "only I see this" data. Do not print alias user ids
   or alias text in normal Debug, QA titles/logs, screenshots, issue comments, or
   docs examples. `ProfileState` Debug should expose only profile/avatar presence

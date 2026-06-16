@@ -67,11 +67,15 @@ fn user_profile_cache_is_replaced_by_rust_snapshot() {
                 UserProfile {
                     user_id: "@bob:localhost".to_owned(),
                     display_name: Some("Bob".to_owned()),
+                    display_label: String::new(),
+                    mention_search_terms: Vec::new(),
                     avatar: Some(avatar("mxc://localhost/bob-avatar")),
                 },
                 UserProfile {
                     user_id: "@alice:localhost".to_owned(),
                     display_name: Some("Alice".to_owned()),
+                    display_label: String::new(),
+                    mention_search_terms: Vec::new(),
                     avatar: None,
                 },
             ],
@@ -93,6 +97,8 @@ fn user_profile_cache_is_replaced_by_rust_snapshot() {
             profiles: vec![UserProfile {
                 user_id: "@carol:localhost".to_owned(),
                 display_name: Some("Carol".to_owned()),
+                display_label: String::new(),
+                mention_search_terms: Vec::new(),
                 avatar: None,
             }],
         },
@@ -317,6 +323,8 @@ fn local_user_aliases_take_precedence_in_display_name_resolution() {
         UserProfile {
             user_id: "@bob:localhost".to_owned(),
             display_name: Some("Bob".to_owned()),
+            display_label: String::new(),
+            mention_search_terms: Vec::new(),
             avatar: None,
         },
     );
@@ -357,6 +365,87 @@ fn local_user_aliases_take_precedence_in_display_name_resolution() {
 }
 
 #[test]
+fn local_user_aliases_project_profile_display_labels_and_mention_search_terms() {
+    let mut state = ready_state();
+
+    reduce(
+        &mut state,
+        AppAction::UserProfilesUpdated {
+            profiles: vec![
+                UserProfile {
+                    user_id: "@bob:localhost".to_owned(),
+                    display_name: Some("Bob Upstream".to_owned()),
+                    display_label: String::new(),
+                    mention_search_terms: Vec::new(),
+                    avatar: None,
+                },
+                UserProfile {
+                    user_id: "@carol:localhost".to_owned(),
+                    display_name: None,
+                    display_label: String::new(),
+                    mention_search_terms: Vec::new(),
+                    avatar: None,
+                },
+            ],
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasesLoaded {
+            aliases: BTreeMap::from([("@bob:localhost".to_owned(), "Bobby Local".to_owned())]),
+        },
+    );
+
+    assert_eq!(
+        state
+            .profile
+            .users
+            .get("@bob:localhost")
+            .map(|profile| profile.display_label.as_str()),
+        Some("Bobby Local")
+    );
+    assert_eq!(
+        state
+            .profile
+            .users
+            .get("@carol:localhost")
+            .map(|profile| profile.display_label.as_str()),
+        Some("@carol:localhost")
+    );
+    assert_eq!(
+        state
+            .profile
+            .users
+            .get("@bob:localhost")
+            .map(|profile| profile.mention_search_terms.clone())
+            .unwrap_or_default(),
+        vec![
+            "Bobby Local".to_owned(),
+            "Bob Upstream".to_owned(),
+            "@bob:localhost".to_owned(),
+        ]
+    );
+
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasUpdateRequested {
+            request_id: 22,
+            user_id: "@bob:localhost".to_owned(),
+            alias: None,
+        },
+    );
+
+    assert_eq!(
+        state
+            .profile
+            .users
+            .get("@bob:localhost")
+            .map(|profile| profile.display_label.as_str()),
+        Some("Bob Upstream")
+    );
+}
+
+#[test]
 fn local_user_aliases_debug_redacts_user_ids_and_aliases() {
     let mut profile = matrix_desktop_state::ProfileState::default();
     profile.own = OwnProfile {
@@ -371,6 +460,8 @@ fn local_user_aliases_debug_redacts_user_ids_and_aliases() {
         UserProfile {
             user_id: "@carol:localhost".to_owned(),
             display_name: Some("Visible Carol".to_owned()),
+            display_label: String::new(),
+            mention_search_terms: Vec::new(),
             avatar: Some(AvatarImage {
                 mxc_uri: "mxc://example.invalid/carol-avatar".to_owned(),
                 thumbnail: AvatarThumbnailState::NotRequested,
@@ -395,6 +486,40 @@ fn local_user_aliases_debug_redacts_user_ids_and_aliases() {
 }
 
 #[test]
+fn user_profile_debug_redacts_person_and_avatar_values() {
+    let profile = UserProfile {
+        user_id: "@carol:localhost".to_owned(),
+        display_name: Some("Visible Carol".to_owned()),
+        display_label: "Private Carol".to_owned(),
+        mention_search_terms: vec![
+            "Private Carol".to_owned(),
+            "Visible Carol".to_owned(),
+            "@carol:localhost".to_owned(),
+        ],
+        avatar: Some(AvatarImage {
+            mxc_uri: "mxc://example.invalid/carol-avatar".to_owned(),
+            thumbnail: AvatarThumbnailState::Ready {
+                source_url: "data:image/png;base64,secret".to_owned(),
+                width: None,
+                height: None,
+                mime_type: Some("image/png".to_owned()),
+            },
+        }),
+    };
+
+    let debug = format!("{profile:?}");
+
+    assert!(debug.contains("UserProfile"));
+    assert!(debug.contains("has_avatar"));
+    assert!(debug.contains("mention_search_terms"));
+    assert!(!debug.contains("@carol:localhost"));
+    assert!(!debug.contains("Visible Carol"));
+    assert!(!debug.contains("Private Carol"));
+    assert!(!debug.contains("mxc://example.invalid"));
+    assert!(!debug.contains("data:image/png"));
+}
+
+#[test]
 fn local_user_aliases_override_read_receipt_reader_labels() {
     let mut state = ready_state();
     state.profile.users.insert(
@@ -402,6 +527,8 @@ fn local_user_aliases_override_read_receipt_reader_labels() {
         UserProfile {
             user_id: "@bob:localhost".to_owned(),
             display_name: Some("Bob".to_owned()),
+            display_label: String::new(),
+            mention_search_terms: Vec::new(),
             avatar: None,
         },
     );
@@ -507,6 +634,8 @@ fn profile_state_clears_with_session_views() {
             profiles: vec![UserProfile {
                 user_id: "@bob:localhost".to_owned(),
                 display_name: Some("Bob".to_owned()),
+                display_label: String::new(),
+                mention_search_terms: Vec::new(),
                 avatar: Some(avatar("mxc://localhost/bob-avatar")),
             }],
         },

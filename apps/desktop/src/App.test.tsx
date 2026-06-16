@@ -190,7 +190,7 @@ describe("ContextualRightPanel", () => {
         item={{
           id: { Event: { event_id: "$event:example.invalid" } },
           sender: "@alice:example.invalid",
-          body: "Hello @Alice and @alice:example.invalid",
+          body: "Hello @Alice Alias",
           timestamp_ms: 1_800_000_000_000,
           in_reply_to_event_id: null,
           thread_root: null,
@@ -211,7 +211,9 @@ describe("ContextualRightPanel", () => {
         mentionProfileUsers={{
           "@alice:example.invalid": {
             user_id: "@alice:example.invalid",
-            display_name: "Alice",
+            display_name: "Alice Upstream",
+            display_label: "Alice Alias",
+            mention_search_terms: ["Alice Alias", "Alice Upstream", "@alice:example.invalid"],
             avatar: null
           }
         }}
@@ -220,7 +222,7 @@ describe("ContextualRightPanel", () => {
 
     expect(markup).toContain('class="message-mention-pill"');
     expect(markup).toContain('data-mention-user-id="@alice:example.invalid"');
-    expect(markup).toContain("@Alice");
+    expect(markup).toContain("@Alice Alias");
   });
 
   test("TimelineItemRow renders thread summary from Rust-owned row data", () => {

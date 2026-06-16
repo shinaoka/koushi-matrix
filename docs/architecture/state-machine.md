@@ -472,6 +472,11 @@ stateDiagram-v2
   Timeline/read-receipt/member/person surfaces must consume the Rust-resolved
   DTO labels; React must not join user ids to `local_aliases` or invent a
   separate alias cache.
+- Per-user profile DTOs carry `display_label` and `mention_search_terms` as
+  Rust-owned projections. `display_name` remains the upstream/original profile
+  name for context; GUI mention autocomplete and mention highlighting consume
+  the projected label/search terms and must not recompute alias precedence in
+  React.
 - `LocalUserAliasUpdateRequested` is accepted only for a Ready session and only
   while `local_alias_update` is idle. It trims non-empty aliases, treats empty
   aliases as clear, records `Saving { request_id }`, and emits
