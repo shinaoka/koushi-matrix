@@ -145,6 +145,7 @@ export interface TimelineMessageSource {
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
+  sender_label?: string | null;
   body: string | null;
   timestamp_ms: number | null;
   in_reply_to_event_id: string | null;
@@ -165,6 +166,7 @@ export interface TimelineItem {
 export interface ThreadSummaryDto {
   reply_count: number;
   latest_sender: string | null;
+  latest_sender_label?: string | null;
   latest_body_preview: string | null;
   latest_timestamp_ms: number | null;
 }
@@ -371,6 +373,7 @@ export interface PinnedEvent {
 export interface ReplyQuote {
   event_id: string;
   sender: string | null;
+  sender_label?: string | null;
   body_preview: string | null;
   state: ReplyQuoteState;
 }

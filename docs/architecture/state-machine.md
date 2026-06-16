@@ -477,6 +477,12 @@ stateDiagram-v2
   name for context; GUI mention autocomplete and mention highlighting consume
   the projected label/search terms and must not recompute alias precedence in
   React.
+- Timeline CoreEvents preserve raw sender MXIDs only as identity fields.
+  `CoreConnection` projects `TimelineItem.sender_label`,
+  `ReplyQuote.sender_label`, and `ThreadSummaryDto.latest_sender_label` from
+  the latest Rust `AppState.profile` before events reach consumers. Timeline
+  GUI surfaces render those label fields; they must not display raw sender ids
+  except as explicit identity/debug/source data.
 - `LocalUserAliasUpdateRequested` is accepted only for a Ready session and only
   while `local_alias_update` is idle. It trims non-empty aliases, treats empty
   aliases as clear, records `Saving { request_id }`, and emits

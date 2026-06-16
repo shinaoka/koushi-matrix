@@ -1110,10 +1110,11 @@ export function TimelineItemRow({
           : null;
   const avatarUrl =
     profile?.avatar?.thumbnail.kind === "ready" ? profile.avatar.thumbnail.source_url : null;
+  const senderDisplayLabel = item.sender_label?.trim() || item.sender || "";
   const threadSummaryText = item.thread_summary
     ? formatThreadSummary(
         item.thread_summary.reply_count,
-        item.thread_summary.latest_sender,
+        item.thread_summary.latest_sender_label?.trim() || item.thread_summary.latest_sender,
         item.thread_summary.latest_body_preview
       )
     : "";
@@ -1125,7 +1126,9 @@ export function TimelineItemRow({
     !isRedacted && item.reply_quote ? (
       <div className="reply-quote" data-reply-state={item.reply_quote.state}>
         <div className="reply-quote-sender" dir="auto">
-          {item.reply_quote.sender ?? t("timeline.replyQuoteUnknownSender")}
+          {item.reply_quote.sender_label?.trim() ||
+            item.reply_quote.sender ||
+            t("timeline.replyQuoteUnknownSender")}
         </div>
         <div className="reply-quote-body" dir="auto">
           {replyQuoteBody(item.reply_quote)}
@@ -1183,7 +1186,7 @@ export function TimelineItemRow({
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
     >
       <div className="avatar" aria-hidden="true">
-        {avatarUrl ? <img src={avatarUrl} /> : senderInitials(item.sender)}
+        {avatarUrl ? <img src={avatarUrl} /> : senderInitials(senderDisplayLabel || item.sender)}
       </div>
       <div className="message-main">
         <div className="message-heading">
@@ -1194,7 +1197,7 @@ export function TimelineItemRow({
               aria-label={presenceLabel(presence)}
             />
           ) : null}
-          <span className="sender" dir="auto">{item.sender ?? ""}</span>
+          <span className="sender" dir="auto">{senderDisplayLabel}</span>
           {item.is_edited && !isRedacted ? (
             <span className="message-edited">{t("timeline.editedMessage")}</span>
           ) : null}

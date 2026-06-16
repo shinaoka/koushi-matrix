@@ -368,6 +368,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `display_name` for context, but GUI mention suggestions/highlighting must use
   the projected label/search fields instead of recomputing alias precedence in
   React.
+- Timeline sender display is Rust-projected. `sender`, reply quote `sender`,
+  and thread-summary `latest_sender` remain raw identity fields; normal
+  TimelineView display must use `sender_label`, `reply_quote.sender_label`, and
+  `thread_summary.latest_sender_label` when present. Do not repair missing
+  labels in React by joining sender ids to `local_aliases`.
 - Local aliases are private "only I see this" data. Do not print alias user ids
   or alias text in normal Debug, QA titles/logs, screenshots, issue comments, or
   docs examples. `ProfileState` Debug should expose only profile/avatar presence

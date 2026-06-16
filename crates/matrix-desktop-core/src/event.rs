@@ -4,10 +4,11 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    ActivityStream, ActivityTab, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
-    IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate,
-    LocalEncryptionHealth, NativeAttentionSummary, PinnedEvent, PresenceKind, ReplyQuote,
-    RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, VerificationFlowState,
+    ActivityStream, ActivityTab, AppState, CrossSigningStatus, DirectoryQuery,
+    DirectoryRoomSummary, IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus,
+    LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionSummary, PinnedEvent, PresenceKind,
+    ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState,
+    VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 
@@ -971,6 +972,8 @@ pub fn message_source_for_timeline_item(item: &TimelineItem) -> Option<TimelineM
 pub struct TimelineItem {
     pub id: TimelineItemId,
     pub sender: Option<String>,
+    #[serde(default)]
+    pub sender_label: Option<String>,
     pub body: Option<String>,
     pub timestamp_ms: Option<u64>,
     pub in_reply_to_event_id: Option<String>,
@@ -1005,7 +1008,11 @@ impl fmt::Debug for TimelineItem {
         formatter
             .debug_struct("TimelineItem")
             .field("id", &self.id)
-            .field("sender", &self.sender)
+            .field("sender", &self.sender.as_ref().map(|_| "UserId(..)"))
+            .field(
+                "sender_label",
+                &self.sender_label.as_ref().map(|_| "SenderLabel(..)"),
+            )
             .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
             .field("timestamp_ms", &self.timestamp_ms)
             .field(
@@ -1107,8 +1114,82 @@ pub struct MediaTransferProgress {
 pub struct ThreadSummaryDto {
     pub reply_count: u32,
     pub latest_sender: Option<String>,
+    #[serde(default)]
+    pub latest_sender_label: Option<String>,
     pub latest_body_preview: Option<String>,
     pub latest_timestamp_ms: Option<u64>,
+}
+
+pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &AppState) {
+    match event {
+        TimelineEvent::InitialItems { items, .. } => {
+            for item in items {
+                project_timeline_item_display_labels(item, state);
+            }
+        }
+        TimelineEvent::ItemsUpdated { diffs, .. } => {
+            for diff in diffs {
+                project_timeline_diff_display_labels(diff, state);
+            }
+        }
+        TimelineEvent::PaginationStateChanged { .. }
+        | TimelineEvent::SendCompleted { .. }
+        | TimelineEvent::MessageSourceLoaded { .. }
+        | TimelineEvent::MessageForwarded { .. }
+        | TimelineEvent::MediaUploadProgress { .. }
+        | TimelineEvent::MediaDownloadCompleted { .. }
+        | TimelineEvent::ResyncRequired { .. } => {}
+    }
+}
+
+pub fn project_timeline_item_display_labels(item: &mut TimelineItem, state: &AppState) {
+    item.sender_label = timeline_sender_label(item.sender.as_deref(), state);
+    if let Some(reply_quote) = item.reply_quote.as_mut() {
+        reply_quote.sender_label = timeline_sender_label(reply_quote.sender.as_deref(), state);
+    }
+    if let Some(thread_summary) = item.thread_summary.as_mut() {
+        thread_summary.latest_sender_label =
+            timeline_sender_label(thread_summary.latest_sender.as_deref(), state);
+    }
+}
+
+fn project_timeline_diff_display_labels(diff: &mut TimelineDiff, state: &AppState) {
+    match diff {
+        TimelineDiff::PushFront { item }
+        | TimelineDiff::PushBack { item }
+        | TimelineDiff::Insert { item, .. }
+        | TimelineDiff::Set { item, .. } => project_timeline_item_display_labels(item, state),
+        TimelineDiff::Reset { items } => {
+            for item in items {
+                project_timeline_item_display_labels(item, state);
+            }
+        }
+        TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {}
+    }
+}
+
+fn timeline_sender_label(sender: Option<&str>, state: &AppState) -> Option<String> {
+    let sender = sender?;
+    Some(resolve_user_display_name(
+        &state.profile,
+        sender,
+        None,
+        timeline_projection_own_user_id(state),
+    ))
+}
+
+fn timeline_projection_own_user_id(state: &AppState) -> Option<&str> {
+    match &state.session {
+        SessionState::Ready(info) => Some(info.user_id.as_str()),
+        SessionState::SignedOut
+        | SessionState::Restoring
+        | SessionState::Authenticating { .. }
+        | SessionState::NeedsRecovery { .. }
+        | SessionState::Recovering { .. }
+        | SessionState::LoggingOut
+        | SessionState::Locked(_)
+        | SessionState::SwitchingAccount { .. } => None,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1234,6 +1315,7 @@ mod tests {
                 event_id: "$event:test".to_owned(),
             },
             sender: Some("@alice:example.invalid".to_owned()),
+            sender_label: None,
             body: Some("hello".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
@@ -1242,6 +1324,7 @@ mod tests {
             thread_summary: Some(ThreadSummaryDto {
                 reply_count: 2,
                 latest_sender: Some("@bob:example.invalid".to_owned()),
+                latest_sender_label: None,
                 latest_body_preview: Some("latest reply".to_owned()),
                 latest_timestamp_ms: Some(1_456),
             }),
@@ -1287,6 +1370,7 @@ mod tests {
             json!({
                 "reply_count": 2,
                 "latest_sender": "@bob:example.invalid",
+                "latest_sender_label": null,
                 "latest_body_preview": "latest reply",
                 "latest_timestamp_ms": 1456
             })
@@ -1300,12 +1384,14 @@ mod tests {
                 event_id: "$reply:test".to_owned(),
             },
             sender: Some("@alice:example.invalid".to_owned()),
+            sender_label: None,
             body: Some("reply body".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: Some("$root:test".to_owned()),
             reply_quote: Some(matrix_desktop_state::ReplyQuote {
                 event_id: "$root:test".to_owned(),
                 sender: Some("@bob:example.invalid".to_owned()),
+                sender_label: None,
                 body_preview: Some("quoted body".to_owned()),
                 state: matrix_desktop_state::ReplyQuoteState::Ready,
             }),
@@ -1329,6 +1415,7 @@ mod tests {
             json!({
                 "event_id": "$root:test",
                 "sender": "@bob:example.invalid",
+                "sender_label": null,
                 "body_preview": "quoted body",
                 "state": "ready"
             })
@@ -1346,6 +1433,7 @@ mod tests {
                 event_id: "$event:test".to_owned(),
             },
             sender: Some("@alice:example.invalid".to_owned()),
+            sender_label: None,
             body: Some("copyable body".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
@@ -1503,6 +1591,7 @@ mod tests {
                 transaction_id: "txn-send-state".to_owned(),
             },
             sender: Some("@alice:example.invalid".to_owned()),
+            sender_label: None,
             body: Some("hello".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
@@ -1543,6 +1632,7 @@ mod tests {
                 event_id: "$media:test".to_owned(),
             },
             sender: Some("@alice:example.invalid".to_owned()),
+            sender_label: None,
             body: Some("synthetic caption".to_owned()),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,

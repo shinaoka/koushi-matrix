@@ -169,6 +169,11 @@ Rules:
    `UserProfile.display_label` and `UserProfile.mention_search_terms` are the
    person/mention DTO contract; React may use those projected fields but must
    not recompute alias precedence from `local_aliases`.
+   Timeline sender surfaces use the same contract:
+   `TimelineItem.sender_label`, `ReplyQuote.sender_label`, and
+   `ThreadSummaryDto.latest_sender_label` are Rust-projected display fields.
+   Raw sender ids stay identity/source data and must not be used as normal
+   timeline display labels when a projected label is present.
    Read-receipt reader avatars use the same boundary: `AppState.live_signals`
    carries Rust-resolved reader labels, avatar DTOs, read timestamps, capped
    reader ordering, and overflow counts; React must not resolve reader profiles

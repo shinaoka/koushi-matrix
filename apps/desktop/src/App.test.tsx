@@ -1086,6 +1086,57 @@ describe("TopBar sync state rendering", () => {
 });
 
 describe("Timeline item row rendering", () => {
+  test("renders sender surfaces from Rust-owned timeline display labels", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={
+          {
+            id: { Event: { event_id: "$reply:example.invalid" } },
+            sender: "@me:example.invalid",
+            sender_label: "Me Alias",
+            body: "Reply body",
+            timestamp_ms: 1_820_000_000_000,
+            in_reply_to_event_id: "$root:example.invalid",
+            reply_quote: {
+              event_id: "$root:example.invalid",
+              sender: "@alice:example.invalid",
+              sender_label: "Alice Alias",
+              body_preview: "Original quoted body",
+              state: "ready"
+            },
+            thread_root: null,
+            thread_summary: {
+              reply_count: 2,
+              latest_sender: "@carol:example.invalid",
+              latest_sender_label: "Carol Alias",
+              latest_body_preview: "latest reply",
+              latest_timestamp_ms: 1_820_000_000_001
+            },
+            can_react: true,
+            is_redacted: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            reactions: []
+          } as TimelineItem
+        }
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Me Alias");
+    expect(markup).toContain("Alice Alias");
+    expect(markup).toContain("Carol Alias");
+    expect(markup).not.toContain("@me:example.invalid");
+    expect(markup).not.toContain("@alice:example.invalid");
+    expect(markup).not.toContain("@carol:example.invalid");
+  });
+
   test("renders reply quote block from Rust-owned timeline item data", () => {
     const markup = renderToStaticMarkup(
       <TimelineItemRow

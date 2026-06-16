@@ -3170,6 +3170,7 @@ fn sdk_item_to_timeline_item_with_send_states(
             TimelineItem {
                 id,
                 sender,
+                sender_label: None,
                 body,
                 timestamp_ms,
                 in_reply_to_event_id,
@@ -3196,6 +3197,7 @@ fn sdk_item_to_timeline_item_with_send_states(
             TimelineItem {
                 id: TimelineItemId::Synthetic { synthetic_id },
                 sender: None,
+                sender_label: None,
                 body: None,
                 timestamp_ms: None,
                 in_reply_to_event_id: None,
@@ -3220,12 +3222,14 @@ fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> T
     let mut dto = ThreadSummaryDto {
         reply_count: summary.num_replies,
         latest_sender: None,
+        latest_sender_label: None,
         latest_body_preview: None,
         latest_timestamp_ms: None,
     };
 
     if let matrix_sdk_ui::timeline::TimelineDetails::Ready(latest_event) = summary.latest_event {
         dto.latest_sender = Some(latest_event.sender.to_string());
+        dto.latest_sender_label = None;
         dto.latest_body_preview = latest_event
             .content
             .as_message()
@@ -3248,6 +3252,7 @@ fn reply_quote_from_details(details: &InReplyToDetails) -> ReplyQuote {
             ReplyQuote {
                 event_id: details.event_id.to_string(),
                 sender: None,
+                sender_label: None,
                 body_preview: None,
                 state: ReplyQuoteState::Missing,
             }
@@ -3264,6 +3269,7 @@ fn reply_quote_from_embedded_event(
         return ReplyQuote {
             event_id: details.event_id.to_string(),
             sender,
+            sender_label: None,
             body_preview: None,
             state: ReplyQuoteState::Redacted,
         };
@@ -3282,6 +3288,7 @@ fn reply_quote_from_embedded_event(
     ReplyQuote {
         event_id: details.event_id.to_string(),
         sender,
+        sender_label: None,
         body_preview,
         state,
     }
@@ -4051,6 +4058,7 @@ mod tests {
                 event_id: event_id.to_owned(),
             },
             sender: Some(sender.to_owned()),
+            sender_label: None,
             body: Some("body".to_owned()),
             timestamp_ms: Some(1),
             in_reply_to_event_id: None,

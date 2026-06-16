@@ -22,7 +22,9 @@ use crate::account::{AccountActorHandle, AccountMessage};
 use crate::command::{
     AccountCommand, AppCommand, CoreCommand, SearchCommand, SearchScope, TimelineCommand,
 };
-use crate::event::{ActivityEvent, AppStateSnapshot, CoreEvent};
+use crate::event::{
+    ActivityEvent, AppStateSnapshot, CoreEvent, project_timeline_event_display_labels,
+};
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
@@ -191,7 +193,7 @@ impl CoreConnection {
     pub async fn recv_event(&mut self) -> Result<CoreEvent, EventStreamLag> {
         loop {
             match self.event_rx.recv().await {
-                Ok(event) => return Ok(event),
+                Ok(event) => return Ok(self.project_event_for_consumer(event)),
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     return Err(EventStreamLag { skipped });
                 }
@@ -202,6 +204,14 @@ impl CoreConnection {
                 }
             }
         }
+    }
+
+    fn project_event_for_consumer(&self, mut event: CoreEvent) -> CoreEvent {
+        if let CoreEvent::Timeline(timeline_event) = &mut event {
+            let snapshot = self.snapshot_rx.borrow().clone();
+            project_timeline_event_display_labels(timeline_event, &snapshot);
+        }
+        event
     }
 
     /// Latest state snapshot (latest-wins watch semantics).
@@ -1171,6 +1181,12 @@ fn default_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::{
+        ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
+    };
+    use matrix_desktop_state::{
+        LocalUserAliasUpdateState, OwnProfile, ProfileState, SessionInfo, UserProfile, reduce,
+    };
 
     #[test]
     fn default_data_dir_requires_home() {
@@ -1181,6 +1197,192 @@ mod tests {
     fn default_data_dir_uses_xdg_like_user_data_path() {
         let dir = default_data_dir_from_home(Some("/tmp/synthetic-home".into())).unwrap();
         assert!(dir.ends_with(".local/share/matrix-desktop"));
+    }
+
+    #[tokio::test]
+    async fn connection_projects_timeline_sender_labels_from_latest_snapshot() {
+        let (command_tx, _command_rx) = mpsc::channel(1);
+        let (event_tx, event_rx) = broadcast::channel(4);
+        let mut state = AppState::default();
+        reduce(
+            &mut state,
+            AppAction::RestoreSessionSucceeded(SessionInfo {
+                homeserver: "https://example.invalid".to_owned(),
+                user_id: "@me:example.invalid".to_owned(),
+                device_id: "DEVICE".to_owned(),
+            }),
+        );
+        state.profile = ProfileState {
+            own: OwnProfile {
+                display_name: Some("Me Upstream".to_owned()),
+                avatar: None,
+            },
+            users: BTreeMap::from([
+                (
+                    "@alice:example.invalid".to_owned(),
+                    UserProfile {
+                        user_id: "@alice:example.invalid".to_owned(),
+                        display_name: Some("Alice Upstream".to_owned()),
+                        display_label: "Alice Alias".to_owned(),
+                        mention_search_terms: vec![],
+                        avatar: None,
+                    },
+                ),
+                (
+                    "@bob:example.invalid".to_owned(),
+                    UserProfile {
+                        user_id: "@bob:example.invalid".to_owned(),
+                        display_name: Some("Bob Upstream".to_owned()),
+                        display_label: "Bob Alias".to_owned(),
+                        mention_search_terms: vec![],
+                        avatar: None,
+                    },
+                ),
+                (
+                    "@carol:example.invalid".to_owned(),
+                    UserProfile {
+                        user_id: "@carol:example.invalid".to_owned(),
+                        display_name: Some("Carol Upstream".to_owned()),
+                        display_label: "Carol Alias".to_owned(),
+                        mention_search_terms: vec![],
+                        avatar: None,
+                    },
+                ),
+            ]),
+            local_aliases: BTreeMap::from([
+                (
+                    "@alice:example.invalid".to_owned(),
+                    "Alice Alias".to_owned(),
+                ),
+                ("@bob:example.invalid".to_owned(), "Bob Alias".to_owned()),
+                (
+                    "@carol:example.invalid".to_owned(),
+                    "Carol Alias".to_owned(),
+                ),
+            ]),
+            local_alias_update: LocalUserAliasUpdateState::Idle,
+            update: Default::default(),
+        };
+        let (_snapshot_tx, snapshot_rx) = watch::channel(state);
+        let mut connection = CoreConnection {
+            connection_id: RuntimeConnectionId(7),
+            command_tx,
+            event_rx,
+            snapshot_rx,
+            next_sequence: AtomicU64::new(1),
+        };
+        let key = TimelineKey {
+            account_key: AccountKey("@me:example.invalid".to_owned()),
+            kind: TimelineKind::Room {
+                room_id: "!room:example.invalid".to_owned(),
+            },
+        };
+
+        let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::InitialItems {
+            request_id: None,
+            key,
+            generation: crate::ids::TimelineGeneration(0),
+            items: vec![TimelineItem {
+                id: TimelineItemId::Event {
+                    event_id: "$event:example.invalid".to_owned(),
+                },
+                sender: Some("@alice:example.invalid".to_owned()),
+                sender_label: None,
+                body: Some("hello".to_owned()),
+                timestamp_ms: Some(1),
+                in_reply_to_event_id: Some("$root:example.invalid".to_owned()),
+                reply_quote: Some(matrix_desktop_state::ReplyQuote {
+                    event_id: "$root:example.invalid".to_owned(),
+                    sender: Some("@bob:example.invalid".to_owned()),
+                    sender_label: None,
+                    body_preview: Some("quoted".to_owned()),
+                    state: matrix_desktop_state::ReplyQuoteState::Ready,
+                }),
+                thread_root: None,
+                thread_summary: Some(ThreadSummaryDto {
+                    reply_count: 1,
+                    latest_sender: Some("@carol:example.invalid".to_owned()),
+                    latest_sender_label: None,
+                    latest_body_preview: Some("latest".to_owned()),
+                    latest_timestamp_ms: Some(2),
+                }),
+                media: None,
+                reactions: Vec::new(),
+                can_react: false,
+                is_redacted: false,
+                can_redact: false,
+                is_edited: false,
+                can_edit: false,
+                actions: Default::default(),
+                send_state: None,
+            }],
+        }));
+
+        match connection.recv_event().await.expect("timeline event") {
+            CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }) => {
+                let item = items.first().expect("projected item");
+                assert_eq!(item.sender.as_deref(), Some("@alice:example.invalid"));
+                assert_eq!(item.sender_label.as_deref(), Some("Alice Alias"));
+                let quote = item.reply_quote.as_ref().expect("reply quote");
+                assert_eq!(quote.sender.as_deref(), Some("@bob:example.invalid"));
+                assert_eq!(quote.sender_label.as_deref(), Some("Bob Alias"));
+                let thread = item.thread_summary.as_ref().expect("thread summary");
+                assert_eq!(
+                    thread.latest_sender.as_deref(),
+                    Some("@carol:example.invalid")
+                );
+                assert_eq!(thread.latest_sender_label.as_deref(), Some("Carol Alias"));
+            }
+            other => panic!("expected projected timeline event, got {other:?}"),
+        }
+
+        let key = TimelineKey {
+            account_key: AccountKey("@me:example.invalid".to_owned()),
+            kind: TimelineKind::Room {
+                room_id: "!room:example.invalid".to_owned(),
+            },
+        };
+        let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key,
+            generation: crate::ids::TimelineGeneration(0),
+            batch_id: crate::ids::TimelineBatchId(1),
+            diffs: vec![TimelineDiff::PushBack {
+                item: TimelineItem {
+                    id: TimelineItemId::Event {
+                        event_id: "$later:example.invalid".to_owned(),
+                    },
+                    sender: Some("@alice:example.invalid".to_owned()),
+                    sender_label: None,
+                    body: Some("later".to_owned()),
+                    timestamp_ms: Some(3),
+                    in_reply_to_event_id: None,
+                    reply_quote: None,
+                    thread_root: None,
+                    thread_summary: None,
+                    media: None,
+                    reactions: Vec::new(),
+                    can_react: false,
+                    is_redacted: false,
+                    can_redact: false,
+                    is_edited: false,
+                    can_edit: false,
+                    actions: Default::default(),
+                    send_state: None,
+                },
+            }],
+        }));
+
+        match connection.recv_event().await.expect("timeline diff event") {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. }) => {
+                let TimelineDiff::PushBack { item } = diffs.first().expect("projected diff item")
+                else {
+                    panic!("expected push-back diff");
+                };
+                assert_eq!(item.sender.as_deref(), Some("@alice:example.invalid"));
+                assert_eq!(item.sender_label.as_deref(), Some("Alice Alias"));
+            }
+            other => panic!("expected projected timeline diff event, got {other:?}"),
+        }
     }
 
     #[test]

@@ -338,6 +338,7 @@ export type PinOperationState =
 export interface ReplyQuote {
   event_id: string;
   sender: string | null;
+  sender_label?: string | null;
   body_preview: string | null;
   state: ReplyQuoteState;
 }
