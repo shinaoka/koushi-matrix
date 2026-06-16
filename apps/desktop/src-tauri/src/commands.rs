@@ -18,7 +18,8 @@ use matrix_desktop_core::{
     ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
     ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
     RoomEvent, SearchCommand, SearchScope, SetAvatarRequest, SyncCommand, TimelineCommand,
-    TimelineKey, TimelineKind, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
+    TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
+    UploadMediaThumbnail,
 };
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
@@ -725,6 +726,50 @@ pub async fn close_focused_context(
     submit_core_command(
         state.inner(),
         CoreCommand::App(AppCommand::CloseFocusedContext { request_id }),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn open_timeline_at_timestamp(
+    room_id: String,
+    timestamp_ms: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_open_timeline_at_timestamp_command(request_id, room_id, timestamp_ms),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn observe_timeline_viewport(
+    room_id: String,
+    first_visible_event_id: Option<String>,
+    last_visible_event_id: Option<String>,
+    at_bottom: bool,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_observe_timeline_viewport_command(
+            request_id,
+            account_key,
+            room_id,
+            first_visible_event_id,
+            last_visible_event_id,
+            at_bottom,
+        ),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -2279,6 +2324,37 @@ pub(crate) fn build_paginate_thread_timeline_backwards_command(
     })
 }
 
+pub(crate) fn build_open_timeline_at_timestamp_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    timestamp_ms: u64,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::OpenTimelineAtTimestamp {
+        request_id,
+        room_id,
+        timestamp_ms,
+    })
+}
+
+pub(crate) fn build_observe_timeline_viewport_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    first_visible_event_id: Option<String>,
+    last_visible_event_id: Option<String>,
+    at_bottom: bool,
+) -> CoreCommand {
+    CoreCommand::Timeline(TimelineCommand::ObserveViewport {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        observation: TimelineViewportObservation {
+            first_visible_event_id,
+            last_visible_event_id,
+            at_bottom,
+        },
+    })
+}
+
 pub(crate) fn build_send_text_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -3317,7 +3393,8 @@ mod tests {
         build_join_directory_room_command, build_leave_room_command,
         build_load_message_source_command, build_load_room_settings_command, build_logout_command,
         build_mark_activity_read_command, build_moderate_room_member_command,
-        build_open_activity_command, build_paginate_activity_command,
+        build_observe_timeline_viewport_command, build_open_activity_command,
+        build_open_timeline_at_timestamp_command, build_paginate_activity_command,
         build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_probe_local_encryption_health_command, build_query_directory_command,
@@ -4156,6 +4233,57 @@ mod tests {
                     }
                 );
                 assert_eq!(event_id, "$fully-read-event");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_observe_timeline_viewport_command(
+            fake_request_id(31),
+            active_account_key.clone(),
+            room_id.clone(),
+            Some("$first-visible".to_owned()),
+            Some("$last-visible".to_owned()),
+            false,
+        ) {
+            CoreCommand::Timeline(TimelineCommand::ObserveViewport {
+                request_id,
+                key,
+                observation,
+            }) => {
+                assert_eq!(request_id, fake_request_id(31));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(
+                    observation.first_visible_event_id.as_deref(),
+                    Some("$first-visible")
+                );
+                assert_eq!(
+                    observation.last_visible_event_id.as_deref(),
+                    Some("$last-visible")
+                );
+                assert!(!observation.at_bottom);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_open_timeline_at_timestamp_command(
+            fake_request_id(32),
+            room_id.clone(),
+            1_718_000_000_000,
+        ) {
+            CoreCommand::App(AppCommand::OpenTimelineAtTimestamp {
+                request_id,
+                room_id: command_room_id,
+                timestamp_ms,
+            }) => {
+                assert_eq!(request_id, fake_request_id(32));
+                assert_eq!(command_room_id, room_id);
+                assert_eq!(timestamp_ms, 1_718_000_000_000);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5551,6 +5679,76 @@ mod tests {
             close_source.contains(snapshot_token),
             "close_focused_context should return the current snapshot"
         );
+    }
+
+    #[test]
+    fn open_timeline_at_timestamp_command_routes_through_app_command() {
+        let command = build_open_timeline_at_timestamp_command(
+            fake_request_id(40),
+            "!room:example.org".to_owned(),
+            1_718_000_000_000,
+        );
+
+        match command {
+            CoreCommand::App(AppCommand::OpenTimelineAtTimestamp {
+                request_id,
+                room_id,
+                timestamp_ms,
+            }) => {
+                assert_eq!(request_id, fake_request_id(40));
+                assert_eq!(room_id, "!room:example.org");
+                assert_eq!(timestamp_ms, 1_718_000_000_000);
+                let debug = format!(
+                    "{:?}",
+                    AppCommand::OpenTimelineAtTimestamp {
+                        request_id,
+                        room_id,
+                        timestamp_ms,
+                    }
+                );
+                assert!(!debug.contains("!room:example.org"), "{debug}");
+                assert!(!debug.contains("1718000000000"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn observe_timeline_viewport_command_routes_viewport_facts_only() {
+        let account_key = AccountKey("@alice:example.org".to_owned());
+        let command = build_observe_timeline_viewport_command(
+            fake_request_id(41),
+            account_key.clone(),
+            "!room:example.org".to_owned(),
+            Some("$first".to_owned()),
+            Some("$last".to_owned()),
+            false,
+        );
+        let debug = format!("{command:?}");
+        assert!(!debug.contains("!room:example.org"), "{debug}");
+        assert!(!debug.contains("$first"), "{debug}");
+        assert!(!debug.contains("$last"), "{debug}");
+
+        match command {
+            CoreCommand::Timeline(TimelineCommand::ObserveViewport {
+                request_id,
+                key,
+                observation,
+            }) => {
+                assert_eq!(request_id, fake_request_id(41));
+                assert_eq!(key.account_key, account_key);
+                assert_eq!(
+                    key.kind,
+                    matrix_desktop_core::TimelineKind::Room {
+                        room_id: "!room:example.org".to_owned()
+                    }
+                );
+                assert_eq!(observation.first_visible_event_id.as_deref(), Some("$first"));
+                assert_eq!(observation.last_visible_event_id.as_deref(), Some("$last"));
+                assert!(!observation.at_bottom);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

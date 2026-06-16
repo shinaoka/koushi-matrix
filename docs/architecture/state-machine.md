@@ -238,6 +238,42 @@ stateDiagram-v2
   messages are ignored. Future richer SDK thread notification counts must enter
   through the same Rust-owned action/state path.
 
+## Timeline Navigation Projection
+
+Timeline navigation aids are Rust-owned actor projections, not React-local
+state machines. A room `TimelineActor` combines projected item order,
+`room.fully_read_event_id()` / `SetFullyRead`, and GUI-reported viewport facts
+to emit `TimelineEvent::NavigationUpdated`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unobserved
+    Unobserved --> Projected: InitialItems + ObserveViewport
+    Projected --> Projected: ItemsUpdated
+    Projected --> Projected: SetFullyRead success
+    Projected --> Projected: ObserveViewport
+    Projected --> Unobserved: Unsubscribe/Resync reset
+```
+
+- `ObserveViewport` accepts only facts: first visible event id, last visible
+  event id, and `at_bottom`. It does not carry unread counts, marker decisions,
+  scroll intent, or Matrix API responses.
+- The actor derives `read_marker_event_id`, `first_unread_event_id`,
+  `unread_event_count`, `unread_position`, `newer_event_count`, and
+  `can_jump_to_bottom` from Rust-owned item order. Local echoes, synthetic
+  rows, hidden rows, and the current user's own events do not create unread
+  counts.
+- `NavigationUpdated` is emitted only when the projection changes. Diff-driven
+  updates are emitted after the corresponding `ItemsUpdated` event so the GUI
+  has the referenced rows before it renders or scrolls to an anchor.
+- Jump-to-date is `AppCommand::OpenTimelineAtTimestamp`. Core resolves
+  `timestamp_to_event` through the active Matrix session and then opens the
+  existing focused-context timeline. React must not call raw Matrix APIs or
+  convert dates to event ids itself.
+- The local core `timeline` QA stage proves this contract with token-only
+  stdout `timeline_nav=ok`. Do not print Matrix room ids, event ids, user ids,
+  message bodies, timestamps, or raw SDK errors for this proof.
+
 ## Timeline Reactions
 
 Reaction annotations are Rust-owned timeline projection data. Grouped reaction

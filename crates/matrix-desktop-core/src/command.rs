@@ -12,6 +12,7 @@ use matrix_desktop_state::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::event::TimelineViewportObservation;
 use crate::ids::{AccountKey, RequestId, TimelineKey};
 
 #[derive(Debug)]
@@ -36,6 +37,7 @@ impl CoreCommand {
                 | AppCommand::OpenThread { request_id, .. }
                 | AppCommand::CloseThread { request_id }
                 | AppCommand::OpenFocusedContext { request_id, .. }
+                | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
                 | AppCommand::UpdateSettings { request_id, .. }
                 | AppCommand::OpenActivity { request_id }
@@ -106,6 +108,7 @@ impl CoreCommand {
                 TimelineCommand::Subscribe { request_id, .. }
                 | TimelineCommand::Unsubscribe { request_id, .. }
                 | TimelineCommand::Paginate { request_id, .. }
+                | TimelineCommand::ObserveViewport { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
                 | TimelineCommand::ForwardMessage { request_id, .. }
@@ -141,6 +144,7 @@ impl CoreCommand {
                 self,
                 Self::Account(command) if command.requires_ready_session()
             )
+            || matches!(self, Self::App(AppCommand::OpenTimelineAtTimestamp { .. }))
     }
 }
 
@@ -174,6 +178,11 @@ pub enum AppCommand {
         request_id: RequestId,
         room_id: String,
         event_id: String,
+    },
+    OpenTimelineAtTimestamp {
+        request_id: RequestId,
+        room_id: String,
+        timestamp_ms: u64,
     },
     CloseFocusedContext {
         request_id: RequestId,
@@ -270,6 +279,12 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("room_id", room_id)
                 .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::OpenTimelineAtTimestamp { request_id, .. } => formatter
+                .debug_struct("OpenTimelineAtTimestamp")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("timestamp_ms", &"Timestamp(..)")
                 .finish(),
             Self::CloseFocusedContext { request_id } => formatter
                 .debug_struct("CloseFocusedContext")
@@ -1157,6 +1172,11 @@ pub enum TimelineCommand {
         direction: crate::event::PaginationDirection,
         event_count: u16,
     },
+    ObserveViewport {
+        request_id: RequestId,
+        key: TimelineKey,
+        observation: TimelineViewportObservation,
+    },
     SendText {
         request_id: RequestId,
         key: TimelineKey,
@@ -1280,6 +1300,14 @@ impl fmt::Debug for TimelineCommand {
                 .field("key", key)
                 .field("direction", direction)
                 .field("event_count", event_count)
+                .finish(),
+            Self::ObserveViewport { request_id, .. } => formatter
+                .debug_struct("ObserveViewport")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("first_visible_event_id", &"EventId(..)")
+                .field("last_visible_event_id", &"EventId(..)")
+                .field("at_bottom", &"ViewportFact(..)")
                 .finish(),
             Self::SendText {
                 request_id,
@@ -1947,6 +1975,38 @@ mod tests {
             assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
             assert!(!debug.contains("$private-event:example.invalid"), "{debug}");
         }
+    }
+
+    #[test]
+    fn open_timeline_at_timestamp_requires_ready_session_and_redacts_debug() {
+        let request_id = fake_rid(28);
+        let command = AppCommand::OpenTimelineAtTimestamp {
+            request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+            timestamp_ms: 1_718_000_000_000,
+        };
+
+        assert_eq!(CoreCommand::App(command).request_id(), request_id);
+        assert!(
+            CoreCommand::App(AppCommand::OpenTimelineAtTimestamp {
+                request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                timestamp_ms: 1_718_000_000_000,
+            })
+            .requires_ready_session()
+        );
+        let debug = format!(
+            "{:?}",
+            AppCommand::OpenTimelineAtTimestamp {
+                request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                timestamp_ms: 1_718_000_000_000,
+            }
+        );
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        assert!(debug.contains("Timestamp(..)"), "{debug}");
+        assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+        assert!(!debug.contains("1718000000000"), "{debug}");
     }
 
     #[test]

@@ -619,6 +619,10 @@ pub enum TimelineEvent {
         direction: PaginationDirection,
         state: PaginationState,
     },
+    NavigationUpdated {
+        key: TimelineKey,
+        snapshot: TimelineNavigationSnapshot,
+    },
     SendCompleted {
         request_id: RequestId,
         key: TimelineKey,
@@ -702,6 +706,11 @@ impl fmt::Debug for TimelineEvent {
                 .field("key", &"TimelineKey(..)")
                 .field("direction", direction)
                 .field("state", state)
+                .finish(),
+            Self::NavigationUpdated { snapshot, .. } => formatter
+                .debug_struct("NavigationUpdated")
+                .field("key", &"TimelineKey(..)")
+                .field("snapshot", snapshot)
                 .finish(),
             Self::SendCompleted {
                 request_id,
@@ -788,6 +797,54 @@ impl fmt::Debug for TimelineDisplayLabelUpdate {
             .field("display_label", &"DisplayLabel(..)")
             .finish()
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineViewportObservation {
+    pub first_visible_event_id: Option<String>,
+    pub last_visible_event_id: Option<String>,
+    pub at_bottom: bool,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineNavigationSnapshot {
+    pub read_marker_event_id: Option<String>,
+    pub first_unread_event_id: Option<String>,
+    pub unread_event_count: u64,
+    pub unread_position: TimelineUnreadPosition,
+    pub newer_event_count: u64,
+    pub can_jump_to_bottom: bool,
+}
+
+impl fmt::Debug for TimelineNavigationSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineNavigationSnapshot")
+            .field(
+                "read_marker_event_id",
+                &self.read_marker_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "first_unread_event_id",
+                &self.first_unread_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field("unread_event_count", &self.unread_event_count)
+            .field("unread_position", &self.unread_position)
+            .field("newer_event_count", &self.newer_event_count)
+            .field("can_jump_to_bottom", &self.can_jump_to_bottom)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimelineUnreadPosition {
+    #[default]
+    None,
+    AboveViewport,
+    InsideViewport,
+    BelowViewport,
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1215,6 +1272,7 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
         | TimelineEvent::MediaUploadProgress { .. }
         | TimelineEvent::MediaDownloadCompleted { .. }
         | TimelineEvent::ResyncRequired { .. }
+        | TimelineEvent::NavigationUpdated { .. }
         | TimelineEvent::DisplayPolicyUpdated { .. }
         | TimelineEvent::DisplayLabelsUpdated { .. } => {}
     }

@@ -974,7 +974,9 @@ export function TimelineView({
                       ? event.MessageForwarded.key
                       : "MessageSourceLoaded" in event
                         ? event.MessageSourceLoaded.key
-                        : event.ResyncRequired.key;
+                        : "NavigationUpdated" in event
+                          ? event.NavigationUpdated.key
+                          : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         return;
       }

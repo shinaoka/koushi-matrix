@@ -43,8 +43,8 @@ use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, Ti
 use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
 };
-use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind};
-use crate::ids::{AccountKey, RequestId, RuntimeConnectionId};
+use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
+use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 use crate::room::{RoomActorHandle, RoomMessage};
 use crate::search::SearchActorHandle;
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
@@ -66,6 +66,11 @@ pub enum AccountMessage {
     SyncCommand(SyncCommand),
     RoomCommand(RoomCommand),
     TimelineCommand(TimelineCommand),
+    OpenTimelineAtTimestamp {
+        request_id: RequestId,
+        room_id: String,
+        timestamp_ms: u64,
+    },
     SearchCommand(SearchCommand),
     VerificationRequestProgress {
         request_id: RequestId,
@@ -237,6 +242,14 @@ impl AccountActor {
                 AccountMessage::TimelineCommand(timeline_command) => {
                     self.route_timeline_command(timeline_command).await;
                 }
+                AccountMessage::OpenTimelineAtTimestamp {
+                    request_id,
+                    room_id,
+                    timestamp_ms,
+                } => {
+                    self.handle_open_timeline_at_timestamp(request_id, room_id, timestamp_ms)
+                        .await;
+                }
                 AccountMessage::SearchCommand(search_command) => {
                     self.route_search_command(search_command).await;
                 }
@@ -325,6 +338,64 @@ impl AccountActor {
                 message: message.to_owned(),
             }])
             .await;
+    }
+
+    async fn handle_open_timeline_at_timestamp(
+        &self,
+        request_id: RequestId,
+        room_id: String,
+        timestamp_ms: u64,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        let Some(account_key) = self.active_account_key() else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        let parsed_room_id = match matrix_sdk::ruma::RoomId::parse(room_id.as_str()) {
+            Ok(room_id) => room_id,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+
+        let request = Self::timeline_event_by_timestamp_request(parsed_room_id, timestamp_ms);
+        let response = match session.client().send(request).await {
+            Ok(response) => response,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+        let event_id = response.event_id.to_string();
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::OpenFocusedContext {
+                room_id: room_id.clone(),
+                event_id: event_id.clone(),
+            }])
+            .await;
+        self.route_timeline_command(TimelineCommand::Subscribe {
+            request_id,
+            key: TimelineKey {
+                account_key,
+                kind: TimelineKind::Focused { room_id, event_id },
+            },
+        })
+        .await;
     }
 
     /// Ordered shutdown of the SearchActor (step 3 of the shutdown sequence,
@@ -2089,6 +2160,18 @@ impl AccountActor {
         self.session
             .as_ref()
             .map(|session| AccountKey(session.info.user_id.clone()))
+    }
+
+    fn timeline_event_by_timestamp_request(
+        room_id: matrix_sdk::ruma::OwnedRoomId,
+        timestamp_ms: u64,
+    ) -> matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1::Request {
+        use matrix_sdk::ruma::{MilliSecondsSinceUnixEpoch, UInt};
+
+        matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1::Request::since(
+            room_id,
+            MilliSecondsSinceUnixEpoch(UInt::new_saturating(timestamp_ms)),
+        )
     }
 
     fn handle_probe_local_encryption_health(&self, request_id: RequestId) {

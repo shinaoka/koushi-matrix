@@ -759,6 +759,8 @@ pub fn run() {
             commands::select_room,
             commands::select_search_result,
             commands::close_focused_context,
+            commands::open_timeline_at_timestamp,
+            commands::observe_timeline_viewport,
             commands::paginate_timeline_backwards,
             commands::paginate_thread_timeline_backwards,
             commands::send_text,
@@ -1194,7 +1196,8 @@ mod tests {
                 TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody, TimelineItem,
                 TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
                 TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageSource,
-                TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
+                TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason,
+                TimelineSendState, TimelineUnreadPosition,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1613,6 +1616,24 @@ mod tests {
             json!("QueueOverflow")
         );
 
+        let navigation_updated =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
+                key: key.clone(),
+                snapshot: TimelineNavigationSnapshot {
+                    read_marker_event_id: Some("$read:example.test".to_owned()),
+                    first_unread_event_id: Some("$unread:example.test".to_owned()),
+                    unread_event_count: 2,
+                    unread_position: TimelineUnreadPosition::BelowViewport,
+                    newer_event_count: 3,
+                    can_jump_to_bottom: true,
+                },
+            }))
+            .expect("serialize navigation update event");
+        assert_eq!(
+            navigation_updated["event"]["NavigationUpdated"]["snapshot"]["unread_position"],
+            json!("belowViewport")
+        );
+
         let display_labels_updated =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated {
                 labels: vec![TimelineDisplayLabelUpdate {
@@ -2018,6 +2039,7 @@ mod tests {
             "timelineMediaUploadProgress": media_upload_progress,
             "timelineMessageForwarded": message_forwarded,
             "timelineMessageSourceLoaded": message_source_loaded,
+            "timelineNavigationUpdated": navigation_updated,
             "timelinePaginationEndReached": serialize_core_event(&CoreEvent::Timeline(
                 TimelineEvent::PaginationStateChanged {
                     request_id: None,

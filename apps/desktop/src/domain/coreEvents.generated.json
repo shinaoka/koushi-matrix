@@ -903,6 +903,29 @@
     },
     "kind": "Timeline"
   },
+  "timelineNavigationUpdated": {
+    "event": {
+      "NavigationUpdated": {
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "snapshot": {
+          "can_jump_to_bottom": true,
+          "first_unread_event_id": "$unread:example.test",
+          "newer_event_count": 3,
+          "read_marker_event_id": "$read:example.test",
+          "unread_event_count": 2,
+          "unread_position": "belowViewport"
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
   "timelineDisplayPolicyUpdated": {
     "kind": "Timeline",
     "event": {

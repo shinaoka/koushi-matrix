@@ -87,8 +87,10 @@ use crate::event::{
     CoreEvent, LiveSignalsEvent, MediaTransferProgress, PaginationDirection, PaginationState,
     ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
     TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
-    TimelineMessageSource, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
-    message_actions_for_timeline_item, message_source_for_timeline_item,
+    TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
+    TimelineSendFailureReason, TimelineSendState, TimelineUnreadPosition,
+    TimelineViewportObservation, message_actions_for_timeline_item,
+    message_source_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -229,6 +231,18 @@ impl TimelineManagerActor {
                         direction,
                         event_count,
                     },
+                )
+                .await;
+            }
+            TimelineCommand::ObserveViewport {
+                request_id,
+                key,
+                observation,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::ObserveViewport { observation },
                 )
                 .await;
             }
@@ -1023,6 +1037,9 @@ enum TimelineActorMessage {
         direction: PaginationDirection,
         event_count: u16,
     },
+    ObserveViewport {
+        observation: TimelineViewportObservation,
+    },
     SendText {
         request_id: RequestId,
         transaction_id: String,
@@ -1165,6 +1182,12 @@ struct TimelineActor {
     /// Rust-owned pane-level thread attention counters. Only thread timelines
     /// update these, and React reads them through `AppState.thread_attention`.
     thread_attention_counts: ThreadAttentionCounters,
+    /// Rust-owned navigation projection source. The webview reports viewport
+    /// facts; item ordering, unread marker semantics, and counts stay here.
+    navigation_items: Vec<TimelineItem>,
+    fully_read_event_id: Option<String>,
+    viewport_observation: TimelineViewportObservation,
+    last_navigation_snapshot: Option<TimelineNavigationSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1198,6 +1221,7 @@ impl TimelineActor {
             .iter()
             .map(|item| sdk_item_to_timeline_item(&key, item, own_user_id.as_deref()))
             .collect();
+        let navigation_items = initial_items.clone();
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
 
@@ -1230,6 +1254,7 @@ impl TimelineActor {
             | TimelineKind::Thread { room_id, .. }
             | TimelineKind::Focused { room_id, .. } => room_id.clone(),
         };
+        let mut initial_fully_read_event_id = None;
         if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             if let Some(room) = session.client().get_room(&room_id) {
                 let sq_tx = actor_tx.clone();
@@ -1254,9 +1279,12 @@ impl TimelineActor {
                 }
                 actions.push(AppAction::FullyReadMarkerUpdated {
                     room_id,
-                    event_id: room
-                        .fully_read_event_id()
-                        .map(|event_id| event_id.to_string()),
+                    event_id: {
+                        initial_fully_read_event_id = room
+                            .fully_read_event_id()
+                            .map(|event_id| event_id.to_string());
+                        initial_fully_read_event_id.clone()
+                    },
                 });
                 let _ = action_tx.try_send(actions);
             }
@@ -1279,6 +1307,10 @@ impl TimelineActor {
             media_sources,
             search_index_tx,
             thread_attention_counts: ThreadAttentionCounters::default(),
+            navigation_items,
+            fully_read_event_id: initial_fully_read_event_id,
+            viewport_observation: TimelineViewportObservation::default(),
+            last_navigation_snapshot: None,
         };
 
         executor::spawn(actor.run());
@@ -1301,6 +1333,10 @@ impl TimelineActor {
             } => {
                 self.handle_paginate(request_id, direction, event_count)
                     .await;
+            }
+            TimelineActorMessage::ObserveViewport { observation } => {
+                self.viewport_observation = observation;
+                self.emit_navigation_if_changed();
             }
             TimelineActorMessage::SendText {
                 request_id,
@@ -2263,6 +2299,7 @@ impl TimelineActor {
             .await
         {
             Ok(_) => {
+                self.fully_read_event_id = Some(event_id.clone());
                 if let Some(room_id) = timeline_room_id(&self.key) {
                     let _ = self
                         .action_tx
@@ -2276,6 +2313,7 @@ impl TimelineActor {
                     key: self.key.clone(),
                     event_id,
                 }));
+                self.emit_navigation_if_changed();
             }
             Err(_) => {
                 self.emit_failure(
@@ -2352,6 +2390,7 @@ impl TimelineActor {
                     rows: activity_rows,
                 }]);
         }
+        apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
 
         let batch_id = self.next_batch_id;
         self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
@@ -2361,6 +2400,24 @@ impl TimelineActor {
             generation: self.generation,
             batch_id,
             diffs: core_diffs,
+        }));
+        self.emit_navigation_if_changed();
+    }
+
+    fn emit_navigation_if_changed(&mut self) {
+        let snapshot = derive_timeline_navigation_snapshot(
+            &self.navigation_items,
+            self.fully_read_event_id.as_deref(),
+            &self.viewport_observation,
+            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+        );
+        if self.last_navigation_snapshot.as_ref() == Some(&snapshot) {
+            return;
+        }
+        self.last_navigation_snapshot = Some(snapshot.clone());
+        self.emit(CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
+            key: self.key.clone(),
+            snapshot,
         }));
     }
 
@@ -3011,6 +3068,153 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
         unread: false,
         highlight: false,
     })
+}
+
+fn derive_timeline_navigation_snapshot(
+    items: &[TimelineItem],
+    fully_read_event_id: Option<&str>,
+    observation: &TimelineViewportObservation,
+    own_user_id: Option<&str>,
+) -> TimelineNavigationSnapshot {
+    let newer_event_count = newer_event_count(items, observation, own_user_id);
+    let mut snapshot = TimelineNavigationSnapshot {
+        read_marker_event_id: fully_read_event_id.map(ToOwned::to_owned),
+        first_unread_event_id: None,
+        unread_event_count: 0,
+        unread_position: TimelineUnreadPosition::None,
+        newer_event_count,
+        can_jump_to_bottom: newer_event_count > 0,
+    };
+
+    let Some(read_marker_event_id) = fully_read_event_id else {
+        return snapshot;
+    };
+    let Some(read_marker_index) = item_index_for_event_id(items, read_marker_event_id) else {
+        snapshot.unread_position = TimelineUnreadPosition::Unknown;
+        return snapshot;
+    };
+
+    let unread_items: Vec<(usize, &TimelineItem)> = items
+        .iter()
+        .enumerate()
+        .skip(read_marker_index.saturating_add(1))
+        .filter(|(_, item)| is_unread_navigation_item(item, own_user_id))
+        .collect();
+
+    snapshot.unread_event_count = unread_items.len() as u64;
+    let Some((first_unread_index, first_unread)) = unread_items.first() else {
+        return snapshot;
+    };
+    snapshot.first_unread_event_id = timeline_item_event_id(first_unread).map(ToOwned::to_owned);
+    snapshot.unread_position = unread_position_for_index(items, *first_unread_index, observation);
+    snapshot
+}
+
+fn newer_event_count(
+    items: &[TimelineItem],
+    observation: &TimelineViewportObservation,
+    own_user_id: Option<&str>,
+) -> u64 {
+    if observation.at_bottom {
+        return 0;
+    }
+    let Some(last_visible_event_id) = observation.last_visible_event_id.as_deref() else {
+        return 0;
+    };
+    let Some(last_visible_index) = item_index_for_event_id(items, last_visible_event_id) else {
+        return 0;
+    };
+    items
+        .iter()
+        .skip(last_visible_index.saturating_add(1))
+        .filter(|item| is_unread_navigation_item(item, own_user_id))
+        .count() as u64
+}
+
+fn unread_position_for_index(
+    items: &[TimelineItem],
+    item_index: usize,
+    observation: &TimelineViewportObservation,
+) -> TimelineUnreadPosition {
+    let Some(first_visible_event_id) = observation.first_visible_event_id.as_deref() else {
+        return TimelineUnreadPosition::Unknown;
+    };
+    let Some(last_visible_event_id) = observation.last_visible_event_id.as_deref() else {
+        return TimelineUnreadPosition::Unknown;
+    };
+    let Some(first_visible_index) = item_index_for_event_id(items, first_visible_event_id) else {
+        return TimelineUnreadPosition::Unknown;
+    };
+    let Some(last_visible_index) = item_index_for_event_id(items, last_visible_event_id) else {
+        return TimelineUnreadPosition::Unknown;
+    };
+
+    if item_index < first_visible_index {
+        TimelineUnreadPosition::AboveViewport
+    } else if item_index > last_visible_index {
+        TimelineUnreadPosition::BelowViewport
+    } else {
+        TimelineUnreadPosition::InsideViewport
+    }
+}
+
+fn apply_timeline_diffs_to_items(items: &mut Vec<TimelineItem>, diffs: &[TimelineDiff]) {
+    for diff in diffs {
+        match diff {
+            TimelineDiff::PushFront { item } => items.insert(0, item.clone()),
+            TimelineDiff::PushBack { item } => items.push(item.clone()),
+            TimelineDiff::Insert { index, item } => {
+                let index = (*index).min(items.len());
+                items.insert(index, item.clone());
+            }
+            TimelineDiff::Set { index, item } => {
+                if let Some(slot) = items.get_mut(*index) {
+                    *slot = item.clone();
+                }
+            }
+            TimelineDiff::Remove { index } => {
+                if *index < items.len() {
+                    items.remove(*index);
+                }
+            }
+            TimelineDiff::Truncate { length } => {
+                items.truncate(*length);
+            }
+            TimelineDiff::Clear => {
+                items.clear();
+            }
+            TimelineDiff::Reset { items: reset_items } => {
+                *items = reset_items.clone();
+            }
+        }
+    }
+}
+
+fn is_unread_navigation_item(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
+    if item.is_hidden || !has_user_visible_content(item) {
+        return false;
+    }
+    if own_user_id.is_some_and(|own| item.sender.as_deref() == Some(own)) {
+        return false;
+    }
+    matches!(item.id, TimelineItemId::Event { .. })
+}
+
+fn has_user_visible_content(item: &TimelineItem) -> bool {
+    item.body.is_some() || item.media.is_some()
+}
+
+fn item_index_for_event_id(items: &[TimelineItem], event_id: &str) -> Option<usize> {
+    items
+        .iter()
+        .position(|item| timeline_item_event_id(item) == Some(event_id))
+}
+
+fn timeline_item_event_id(item: &TimelineItem) -> Option<&str> {
+    match &item.id {
+        TimelineItemId::Event { event_id } => Some(event_id.as_str()),
+        TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+    }
 }
 
 fn live_event_receipts_from_sdk_items<'a>(
@@ -4124,7 +4328,10 @@ mod tests {
         CoreCommand, ImageUploadCompressionPolicy, ImageUploadCompressionState,
         ImageUploadDimensions, ImageUploadVariantInfo, ImageUploadVariantKind, TimelineCommand,
     };
-    use crate::event::{CoreEvent, PaginationDirection, TimelineEvent};
+    use crate::event::{
+        CoreEvent, PaginationDirection, TimelineEvent, TimelineUnreadPosition,
+        TimelineViewportObservation,
+    };
     use crate::failure::{CoreFailure, TimelineFailureKind};
     use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId};
     use crate::runtime::CoreRuntime;
@@ -4138,6 +4345,143 @@ mod tests {
 
     fn room_key() -> TimelineKey {
         TimelineKey::room(AccountKey("@a:test".to_owned()), "!r:test")
+    }
+
+    fn timeline_item(
+        event_id: &str,
+        body: Option<&str>,
+        sender: &str,
+        is_hidden: bool,
+    ) -> TimelineItem {
+        TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: event_id.to_owned(),
+            },
+            sender: Some(sender.to_owned()),
+            sender_label: None,
+            body: body.map(ToOwned::to_owned),
+            timestamp_ms: Some(1),
+            in_reply_to_event_id: None,
+            formatted: None,
+            reply_quote: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            is_hidden,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            actions: TimelineMessageActions::default(),
+            send_state: None,
+        }
+    }
+
+    #[test]
+    fn timeline_navigation_marks_first_unread_inside_viewport() {
+        let items = vec![
+            timeline_item("$read:test", Some("read"), "@alice:test", false),
+            timeline_item("$unread:test", Some("unread"), "@alice:test", false),
+            timeline_item("$newer:test", Some("newer"), "@alice:test", false),
+        ];
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            Some("$read:test"),
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$unread:test".to_owned()),
+                last_visible_event_id: Some("$newer:test".to_owned()),
+                at_bottom: true,
+            },
+            Some("@me:test"),
+        );
+
+        assert_eq!(snapshot.read_marker_event_id.as_deref(), Some("$read:test"));
+        assert_eq!(
+            snapshot.first_unread_event_id.as_deref(),
+            Some("$unread:test")
+        );
+        assert_eq!(snapshot.unread_event_count, 2);
+        assert_eq!(
+            snapshot.unread_position,
+            TimelineUnreadPosition::InsideViewport
+        );
+        assert_eq!(snapshot.newer_event_count, 0);
+    }
+
+    #[test]
+    fn timeline_navigation_reports_unread_below_viewport_and_newer_count() {
+        let items = vec![
+            timeline_item("$read:test", Some("read"), "@alice:test", false),
+            timeline_item("$visible:test", Some("visible"), "@alice:test", false),
+            timeline_item("$unread:test", Some("unread"), "@alice:test", false),
+            timeline_item("$newer:test", Some("newer"), "@alice:test", false),
+        ];
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            Some("$visible:test"),
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$read:test".to_owned()),
+                last_visible_event_id: Some("$visible:test".to_owned()),
+                at_bottom: false,
+            },
+            Some("@me:test"),
+        );
+
+        assert_eq!(
+            snapshot.first_unread_event_id.as_deref(),
+            Some("$unread:test")
+        );
+        assert_eq!(snapshot.unread_event_count, 2);
+        assert_eq!(
+            snapshot.unread_position,
+            TimelineUnreadPosition::BelowViewport
+        );
+        assert_eq!(snapshot.newer_event_count, 2);
+    }
+
+    #[test]
+    fn timeline_navigation_ignores_own_local_and_synthetic_items_for_unread_counts() {
+        let mut own = timeline_item("$own:test", Some("own"), "@me:test", false);
+        own.id = TimelineItemId::Event {
+            event_id: "$own:test".to_owned(),
+        };
+        let mut local = timeline_item("$local:test", Some("local"), "@me:test", false);
+        local.id = TimelineItemId::Transaction {
+            transaction_id: "txn-local".to_owned(),
+        };
+        let mut synthetic = timeline_item("$synthetic:test", Some("divider"), "@me:test", false);
+        synthetic.id = TimelineItemId::Synthetic {
+            synthetic_id: "date-divider".to_owned(),
+        };
+        let items = vec![
+            timeline_item("$read:test", Some("read"), "@alice:test", false),
+            own,
+            local,
+            synthetic,
+            timeline_item("$remote:test", Some("remote"), "@alice:test", false),
+        ];
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            Some("$read:test"),
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$read:test".to_owned()),
+                last_visible_event_id: Some("$remote:test".to_owned()),
+                at_bottom: true,
+            },
+            Some("@me:test"),
+        );
+
+        assert_eq!(
+            snapshot.first_unread_event_id.as_deref(),
+            Some("$remote:test")
+        );
+        assert_eq!(snapshot.unread_event_count, 1);
+        assert_eq!(snapshot.newer_event_count, 0);
     }
 
     #[test]

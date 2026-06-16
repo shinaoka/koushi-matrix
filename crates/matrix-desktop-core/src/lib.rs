@@ -33,8 +33,9 @@ pub use event::{
     LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent, PaginationDirection,
     PaginationState, ReactionGroup, RoomEvent, SearchEvent, SearchResultItem, SyncBackendKind,
     SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
-    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineResyncReason,
-    TimelineSendFailureReason, TimelineSendState,
+    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineNavigationSnapshot,
+    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineUnreadPosition,
+    TimelineViewportObservation,
 };
 pub use failure::{
     CoreFailure, LoginFailureKind, ProfileFailureKind, RecoveryFailureKind, RoomFailureKind,

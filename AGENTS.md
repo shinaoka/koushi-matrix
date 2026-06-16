@@ -64,6 +64,10 @@ All agents implementing cross-platform font/emoji substrate Phase A follow
 before any Phase B font asset or CSS wiring.
 Phase B GUI/browser-headless work for the same issue follows
 [docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md](docs/superpowers/plans/2026-06-15-font-emoji-phase-b-gui.md).
+All agents implementing timeline navigation aids for issue #41 follow
+[docs/superpowers/plans/2026-06-16-timeline-navigation-phase-a.md](docs/superpowers/plans/2026-06-16-timeline-navigation-phase-a.md)
+for Phase A Rust/headless work before any Phase B GUI pills, date picker, or
+scroll wiring.
 
 ## DeepSeek Agent Evaluation Notes
 
@@ -562,6 +566,25 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `apps/desktop/src/domain/coreEvents.ts`,
   `apps/desktop/src/domain/coreEvents.generated.json`, and
   `apps/desktop/src-tauri/src/lib.rs`'s core-event wire contract test in sync.
+
+## Timeline Navigation Phase A Notes
+
+- Timeline navigation semantics stay in Rust. React may report viewport facts
+  through `observe_timeline_viewport` (`first_visible_event_id`,
+  `last_visible_event_id`, `at_bottom`) and may scroll to returned anchors, but
+  it must not compute read-marker placement, first-unread targets, unread
+  counts, or jump-to-bottom counts.
+- `TimelineActor` emits `TimelineEvent::NavigationUpdated` from the current
+  projected item order and fully-read marker. Diff-driven navigation updates
+  must be emitted after `ItemsUpdated` so GUI rows exist before a Phase B scroll
+  action references them.
+- Jump-to-date uses `open_timeline_at_timestamp`, which routes through
+  `AppCommand::OpenTimelineAtTimestamp` and the Matrix `timestamp_to_event`
+  endpoint in Rust before reusing focused context. React must not call raw
+  Matrix APIs for date jumps.
+- The local core timeline proof now includes token-only `timeline_nav=ok`.
+  Keep this private-data-free: no room ids, event ids, user ids, message
+  bodies, timestamps, or raw SDK errors.
 
 ## Live Signals Phase A Notes
 

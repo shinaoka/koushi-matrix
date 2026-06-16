@@ -219,6 +219,22 @@ export interface TimelineDisplayLabelUpdate {
   display_label: string;
 }
 
+export type TimelineUnreadPosition =
+  | "none"
+  | "aboveViewport"
+  | "insideViewport"
+  | "belowViewport"
+  | "unknown";
+
+export interface TimelineNavigationSnapshot {
+  read_marker_event_id: string | null;
+  first_unread_event_id: string | null;
+  unread_event_count: number;
+  unread_position: TimelineUnreadPosition;
+  newer_event_count: number;
+  can_jump_to_bottom: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Timeline events (externally tagged on the wire)
 // ---------------------------------------------------------------------------
@@ -248,6 +264,12 @@ export type TimelineEvent =
         key: TimelineKey;
         direction: PaginationDirection;
         state: PaginationState;
+      };
+    }
+  | {
+      NavigationUpdated: {
+        key: TimelineKey;
+        snapshot: TimelineNavigationSnapshot;
       };
     }
   | {

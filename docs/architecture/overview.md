@@ -585,6 +585,15 @@ Runtime responsibilities:
   known, transaction ID for local echo, and stable synthetic IDs for separators
   or virtual items. A remote echo replaces the local transaction identity through
   an explicit diff/update, not by changing a React key in place.
+- Own timeline-navigation semantics. A subscribed room timeline actor keeps the
+  current projected item order plus the current fully-read marker. React may
+  report viewport facts through `TimelineCommand::ObserveViewport`, but unread
+  position, first-unread event, read-marker anchor, and jump-to-bottom counts
+  are emitted by Rust as `TimelineEvent::NavigationUpdated`.
+- Resolve jump-to-date through Rust. `AppCommand::OpenTimelineAtTimestamp`
+  calls the Matrix `timestamp_to_event` endpoint from the active session and
+  re-enters the existing focused-context path; React must not call raw Matrix
+  endpoints or choose event ids for date jumps.
 
 UI responsibilities:
 
@@ -604,6 +613,10 @@ UI responsibilities:
 - Treat scroll position, measured heights, overscan windows, and virtual-list
   cache as UI state. These values never cross into core and never affect Matrix
   ordering.
+- Report only viewport facts needed by the Rust navigation projection:
+  first visible event id, last visible event id, and whether the view is at the
+  bottom. GUI code may scroll to Rust-provided anchors, but it must not derive
+  unread counts, marker positions, or jump-to-date targets locally.
 
 Headless QA proves the data contract: request correlation, pagination states,
 diff order, generation reset, replacement/redaction/late-decryption handling.

@@ -52,7 +52,7 @@ use matrix_desktop_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
     PaginationDirection, PaginationState, RoomEvent, SearchEvent, SyncBackendKind, SyncEvent,
     TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMessageActions,
-    TimelineSendState,
+    TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
 };
 use matrix_desktop_core::failure::{CoreFailure, RoomFailureKind};
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -402,7 +402,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Directory => &["directory_query=ok", "directory_join=ok"],
         QaStage::RoomManagement => &["room_settings=ok", "moderation=ok", "permission_guard=ok"],
-        QaStage::Timeline => &["timeline=ok", "hide_redacted=ok"],
+        QaStage::Timeline => &["timeline=ok", "timeline_nav=ok", "hide_redacted=ok"],
         QaStage::Activity => &[
             "activity_recent=ok",
             "activity_unread=ok",
@@ -473,6 +473,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "moderation=ok",
         "permission_guard=ok",
         "timeline=ok",
+        "timeline_nav=ok",
         "hide_redacted=ok",
         "activity_recent=ok",
         "activity_unread=ok",
@@ -2006,6 +2007,39 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     )
     .await?;
     println!("b_recv_msgs=ok");
+
+    let nav_marker_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::SetFullyRead {
+            request_id: nav_marker_id,
+            key: key_b.clone(),
+            event_id: event1_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit navigation fully-read marker: {e}"))?;
+    let nav_viewport_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::ObserveViewport {
+            request_id: nav_viewport_id,
+            key: key_b.clone(),
+            observation: TimelineViewportObservation {
+                first_visible_event_id: Some(event1_id.clone()),
+                last_visible_event_id: Some(event1_id.clone()),
+                at_bottom: false,
+            },
+        }))
+        .await
+        .map_err(|e| format!("submit navigation viewport observation: {e}"))?;
+    wait_for_timeline_navigation(
+        &mut conn_b,
+        &key_b,
+        TimelineUnreadPosition::BelowViewport,
+        1,
+        1,
+        "timeline navigation",
+    )
+    .await?;
+    println!("timeline_nav=ok");
 
     // A edits message 1 — assert a Set diff reflecting the edit on original item identity.
     let edit1_id = conn_a.next_request_id();
@@ -7138,6 +7172,39 @@ async fn wait_for_bodies_and_pagination_settle(
     }
 }
 
+async fn wait_for_timeline_navigation(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    expected_position: TimelineUnreadPosition,
+    minimum_unread_count: u64,
+    minimum_newer_count: u64,
+    label: &str,
+) -> Result<(), String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for NavigationUpdated"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
+                key: ref ev_key,
+                snapshot,
+            }) if ev_key == key
+                && snapshot.unread_position == expected_position
+                && snapshot.unread_event_count >= minimum_unread_count
+                && snapshot.newer_event_count >= minimum_newer_count =>
+            {
+                return Ok(());
+            }
+            CoreEvent::OperationFailed { failure, .. } => {
+                return Err(format!("{label}: navigation command failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Wait for the thread reply item by scanning `initial_items` and subsequent
 /// `InitialItems`, `ItemsUpdated`, and `PaginationStateChanged` events for the
 /// reply body. If the reply is not yet visible, this helper drives additional
@@ -8602,6 +8669,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "send_fail=ok",
                 "resend=ok",
@@ -8687,6 +8755,7 @@ mod tests {
                 "moderation=ok",
                 "permission_guard=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "activity_recent=ok",
                 "activity_unread=ok",
@@ -8781,6 +8850,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "mention_send=ok",
                 "markdown_send=ok",
@@ -8817,6 +8887,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "restore_cleanup=ok",
             ]
@@ -8828,6 +8899,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "activity_recent=ok",
                 "activity_unread=ok",
@@ -8874,6 +8946,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "mention_send=ok",
                 "markdown_send=ok",
@@ -8894,6 +8967,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "send_media=ok",
                 "media_caption=ok",
@@ -8909,6 +8983,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "read_receipt=ok",
                 "fully_read=ok",
@@ -8925,6 +9000,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "reply=ok",
                 "reply_quote=ok",
@@ -8945,6 +9021,7 @@ mod tests {
                 "login_sync=ok",
                 "room_space=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "edit_redact_search=ok",
                 "restore_cleanup=ok",
@@ -8990,6 +9067,7 @@ mod tests {
                 "moderation=ok",
                 "permission_guard=ok",
                 "timeline=ok",
+                "timeline_nav=ok",
                 "hide_redacted=ok",
                 "activity_recent=ok",
                 "activity_unread=ok",

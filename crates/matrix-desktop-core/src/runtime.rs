@@ -615,6 +615,31 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::OpenTimelineAtTimestamp {
+                    request_id,
+                    room_id,
+                    timestamp_ms,
+                } => {
+                    let focused_key = self.current_focused_context_timeline_key();
+                    let effects = reduce(&mut self.state, AppAction::CloseFocusedContext);
+                    if let Some(key) = focused_key {
+                        self.send_timeline_command_or_fail(
+                            request_id,
+                            TimelineCommand::Unsubscribe { request_id, key },
+                        )
+                        .await;
+                    }
+                    self.handle_app_effects(request_id, effects).await;
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::OpenTimelineAtTimestamp {
+                            request_id,
+                            room_id,
+                            timestamp_ms,
+                        })
+                        .await;
+                    true
+                }
                 AppCommand::CloseFocusedContext { request_id } => {
                     let focused_key = self.current_focused_context_timeline_key();
                     let effects = reduce(&mut self.state, AppAction::CloseFocusedContext);
