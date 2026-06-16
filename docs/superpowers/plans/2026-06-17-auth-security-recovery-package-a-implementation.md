@@ -316,7 +316,7 @@ pub enum RoomKeyExportState {
     #[default]
     Idle,
     Exporting { request_id: u64 },
-    Exported { request_id: u64, exported_sessions: u64 },
+    Exported { request_id: u64, exported_sessions: Option<u64> },
     Failed { request_id: u64, #[serde(rename = "failureKind")] kind: TrustOperationFailureKind },
 }
 
@@ -889,7 +889,7 @@ In `matrix-desktop-sdk/src/lib.rs`, add:
 
 ```rust
 pub struct RoomKeyExportSummary {
-    pub exported_sessions: u64,
+    pub exported_sessions: Option<u64>,
 }
 
 pub struct RoomKeyImportSummary {
@@ -916,6 +916,10 @@ Do not read file bytes into React or DTO state. Do not implement custom file
 serialization. The file must remain the Matrix key-export format used by
 Element clients, as produced and consumed by the SDK, including the encrypted
 Megolm session data header/footer.
+
+Implementation adjustment: Matrix Rust SDK's public export API returns `()`.
+Do not decrypt/parse the exported Element file to synthesize a count; return
+`exported_sessions: None` and let DTO/React treat the count as unknown.
 
 - [ ] **Step 4: Project actor results**
 
@@ -1227,7 +1231,7 @@ responses that update only secret-free snapshot fields:
 this.snapshot.state.e2ee_trust.key_management.room_key_export = {
   kind: "exported",
   request_id: requestId,
-  exported_sessions: 1,
+  exported_sessions: null,
 };
 ```
 

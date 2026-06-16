@@ -1258,12 +1258,14 @@ stateDiagram-v2
     Changing --> Failed: SecureBackupPassphraseChangeFailed [matching request_id]
 ```
 
-- Room-key export/import state carries only request ids, counts, and coarse
-  `TrustOperationFailureKind`. File paths, passphrases, and file contents are
-  native/Tauri/account-actor boundary values.
+- Room-key export/import state carries only request ids, available counts, and
+  coarse `TrustOperationFailureKind`. `exported_sessions` may be unknown when
+  the public SDK export API does not return a count. File paths, passphrases,
+  and file contents are native/Tauri/account-actor boundary values.
 - Manual room-key file transfer uses the Matrix key-export file format that
   Element clients use. Ruri must not wrap the encrypted Megolm session data in a
-  custom JSON/archive format.
+  custom JSON/archive format, and must not parse/decrypt the export file only
+  to derive UI metadata.
 - Secure-backup setup and passphrase-change state may report recovery-key
   delivery status, but recovery-key material itself never reaches reducer state,
   DTO snapshots, React state, logs, QA tokens, or issue comments.

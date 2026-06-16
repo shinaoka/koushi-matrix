@@ -787,7 +787,7 @@ export interface E2eeKeyManagementState {
 export type RoomKeyExportState =
   | { kind: "idle" }
   | { kind: "exporting"; request_id: number }
-  | { kind: "exported"; request_id: number; exported_sessions: number }
+  | { kind: "exported"; request_id: number; exported_sessions: number | null }
   | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
 
 export type RoomKeyImportState =

@@ -8,18 +8,18 @@
 //! No Matrix semantics live here. No SDK types. No `matrix_desktop_sdk` calls.
 //! (Secret-bearing QA helpers remain behind `#[cfg(any(debug_assertions, test))]`.)
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(any(debug_assertions, test))]
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use matrix_desktop_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
     ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
     ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
-    RoomEvent, SearchCommand, SearchScope, SetAvatarRequest, SyncCommand, TimelineCommand,
-    TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
-    UploadMediaThumbnail,
+    RoomEvent, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchScope,
+    SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
+    TimelineViewportObservation, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
 };
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
@@ -593,6 +593,40 @@ pub async fn enable_key_backup(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(state.inner(), build_enable_key_backup_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn export_room_keys(
+    destination_path: String,
+    passphrase: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_export_room_keys_command(request_id, destination_path, AuthSecret::new(passphrase)),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn import_room_keys(
+    source_path: String,
+    passphrase: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_import_room_keys_command(request_id, source_path, AuthSecret::new(passphrase)),
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -2555,6 +2589,34 @@ pub(crate) fn build_enable_key_backup_command(
     })
 }
 
+pub(crate) fn build_export_room_keys_command(
+    request_id: matrix_desktop_core::RequestId,
+    destination_path: String,
+    passphrase: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ExportRoomKeys {
+        request_id,
+        request: RoomKeyExportRequest {
+            destination_path: PathBuf::from(destination_path),
+            passphrase,
+        },
+    })
+}
+
+pub(crate) fn build_import_room_keys_command(
+    request_id: matrix_desktop_core::RequestId,
+    source_path: String,
+    passphrase: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ImportRoomKeys {
+        request_id,
+        request: RoomKeyImportRequest {
+            source_path: PathBuf::from(source_path),
+            passphrase,
+        },
+    })
+}
+
 pub(crate) fn build_accept_verification_command(
     request_id: matrix_desktop_core::RequestId,
     flow_id: u64,
@@ -3863,8 +3925,9 @@ mod tests {
         build_confirm_sas_verification_command, build_create_room_command,
         build_create_space_command, build_decline_invite_command, build_discover_login_command,
         build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
-        build_forget_room_command, build_forward_message_command, build_invite_user_command,
-        build_join_directory_room_command, build_leave_room_command,
+        build_export_room_keys_command, build_forget_room_command, build_forward_message_command,
+        build_import_room_keys_command, build_invite_user_command, build_join_directory_room_command,
+        build_leave_room_command,
         build_load_message_source_command, build_load_room_settings_command, build_logout_command,
         build_mark_activity_read_command, build_moderate_room_member_command,
         build_observe_timeline_viewport_command, build_open_activity_command,
@@ -4078,6 +4141,44 @@ mod tests {
             }) => {
                 assert_eq!(request_id, fake_request_id(3));
                 assert_eq!(request.secret.expose_secret(), "recovery-123");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_export_room_keys_command(
+            fake_request_id(33),
+            "/tmp/element-compatible-export.txt".to_owned(),
+            AuthSecret::new("room-key-transfer-phrase"),
+        ) {
+            CoreCommand::Account(AccountCommand::ExportRoomKeys {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(33));
+                assert_eq!(
+                    request.destination_path,
+                    std::path::PathBuf::from("/tmp/element-compatible-export.txt")
+                );
+                assert_eq!(request.passphrase.expose_secret(), "room-key-transfer-phrase");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_import_room_keys_command(
+            fake_request_id(34),
+            "/tmp/element-compatible-import.txt".to_owned(),
+            AuthSecret::new("room-key-transfer-phrase"),
+        ) {
+            CoreCommand::Account(AccountCommand::ImportRoomKeys {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(34));
+                assert_eq!(
+                    request.source_path,
+                    std::path::PathBuf::from("/tmp/element-compatible-import.txt")
+                );
+                assert_eq!(request.passphrase.expose_secret(), "room-key-transfer-phrase");
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -6028,6 +6129,16 @@ mod tests {
                 "commands::enable_key_backup",
             ),
             (
+                "pub async fn export_room_keys",
+                "build_export_room_keys_command",
+                "commands::export_room_keys",
+            ),
+            (
+                "pub async fn import_room_keys",
+                "build_import_room_keys_command",
+                "commands::import_room_keys",
+            ),
+            (
                 "pub async fn accept_verification",
                 "build_accept_verification_command",
                 "commands::accept_verification",
@@ -6501,6 +6612,16 @@ mod tests {
                 Some("!room:example.org".to_owned()),
             ),
         );
+        let room_key_export = build_export_room_keys_command(
+            fake_request_id(23),
+            "/tmp/private-room-key-export.txt".to_owned(),
+            AuthSecret::new("room-key-transfer-phrase"),
+        );
+        let room_key_import = build_import_room_keys_command(
+            fake_request_id(24),
+            "/tmp/private-room-key-import.txt".to_owned(),
+            AuthSecret::new("room-key-transfer-phrase"),
+        );
 
         for (command, secret) in [
             (&login, "password-123"),
@@ -6511,6 +6632,10 @@ mod tests {
             (&upload, "secret media bytes"),
             (&download, "$secret-media-event"),
             (&search, "secret search terms"),
+            (&room_key_export, "/tmp/private-room-key-export.txt"),
+            (&room_key_export, "room-key-transfer-phrase"),
+            (&room_key_import, "/tmp/private-room-key-import.txt"),
+            (&room_key_import, "room-key-transfer-phrase"),
         ] {
             let debug = format!("{command:?}");
             assert!(

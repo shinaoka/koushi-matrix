@@ -321,7 +321,7 @@ fn key_management_and_qr_login_are_duplicate_guarded_and_request_correlated() {
         &mut state,
         AppAction::RoomKeyExported {
             request_id: 20,
-            exported_sessions: 3,
+            exported_sessions: Some(3),
         },
     );
     assert_eq!(
@@ -335,7 +335,7 @@ fn key_management_and_qr_login_are_duplicate_guarded_and_request_correlated() {
         state.e2ee_trust.key_management.room_key_export,
         RoomKeyExportState::Exported {
             request_id: 20,
-            exported_sessions: 3,
+            exported_sessions: Some(3),
         }
     );
 

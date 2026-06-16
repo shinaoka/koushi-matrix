@@ -1,6 +1,6 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, CrossSigningStatus, E2eeTrustState, IdentityResetAuthType,
-    IdentityResetState, KeyBackupStatus, SasEmoji, SessionInfo, SessionState,
+    IdentityResetState, KeyBackupStatus, RoomKeyExportState, SasEmoji, SessionInfo, SessionState,
     TrustOperationFailureKind, UiEvent, VerificationCancelReason, VerificationFlowState,
     VerificationTarget, reduce,
 };
@@ -93,6 +93,35 @@ fn restore_key_backup_starts_with_open_joined_room_hydration_total() {
             version: Some("v1".to_owned()),
             restored_rooms: 1,
             total_rooms: Some(2),
+        }
+    );
+}
+
+#[test]
+fn room_key_export_completion_can_leave_session_count_unknown() {
+    let mut state = ready_state();
+
+    reduce(
+        &mut state,
+        AppAction::RoomKeyExportRequested { request_id: 52 },
+    );
+    assert_eq!(
+        state.e2ee_trust.key_management.room_key_export,
+        RoomKeyExportState::Exporting { request_id: 52 }
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomKeyExported {
+            request_id: 52,
+            exported_sessions: None,
+        },
+    );
+    assert_eq!(
+        state.e2ee_trust.key_management.room_key_export,
+        RoomKeyExportState::Exported {
+            request_id: 52,
+            exported_sessions: None,
         }
     );
 }

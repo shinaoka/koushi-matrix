@@ -1652,6 +1652,16 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
             request_id: request_id.sequence,
             version: version.clone(),
         }),
+        AccountCommand::ExportRoomKeys { request_id, .. } => {
+            Some(AppAction::RoomKeyExportRequested {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::ImportRoomKeys { request_id, .. } => {
+            Some(AppAction::RoomKeyImportRequested {
+                request_id: request_id.sequence,
+            })
+        }
         AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
             request_id: request_id.sequence,
         }),

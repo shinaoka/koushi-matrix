@@ -1,7 +1,7 @@
 //! Public command boundary. Every command carries a runtime-scoped
 //! `RequestId`. Secret-bearing payloads redact `Debug`.
 
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, DirectoryQuery, FormattedMessageDraft,
@@ -69,6 +69,8 @@ impl CoreCommand {
                 | AccountCommand::RenameDevice { request_id, .. }
                 | AccountCommand::DeleteDevices { request_id, .. }
                 | AccountCommand::SoftLogoutReauth { request_id, .. }
+                | AccountCommand::ExportRoomKeys { request_id, .. }
+                | AccountCommand::ImportRoomKeys { request_id, .. }
                 | AccountCommand::ProbeLocalEncryptionHealth { request_id }
                 | AccountCommand::ResetLocalData { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
@@ -518,6 +520,38 @@ fn settings_patch_field_names(patch: &SettingsPatch) -> Vec<&'static str> {
     fields
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct RoomKeyExportRequest {
+    pub destination_path: PathBuf,
+    pub passphrase: matrix_desktop_state::AuthSecret,
+}
+
+impl fmt::Debug for RoomKeyExportRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomKeyExportRequest")
+            .field("destination_path", &"DestinationPath(..)")
+            .field("passphrase", &"AuthSecret(..)")
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct RoomKeyImportRequest {
+    pub source_path: PathBuf,
+    pub passphrase: matrix_desktop_state::AuthSecret,
+}
+
+impl fmt::Debug for RoomKeyImportRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomKeyImportRequest")
+            .field("source_path", &"SourcePath(..)")
+            .field("passphrase", &"AuthSecret(..)")
+            .finish()
+    }
+}
+
 // LoginRequest and RecoveryRequest redact their own Debug in
 // matrix-desktop-state (username, password, device name, recovery secret).
 pub enum AccountCommand {
@@ -571,6 +605,14 @@ pub enum AccountCommand {
     SoftLogoutReauth {
         request_id: RequestId,
         password: matrix_desktop_state::AuthSecret,
+    },
+    ExportRoomKeys {
+        request_id: RequestId,
+        request: RoomKeyExportRequest,
+    },
+    ImportRoomKeys {
+        request_id: RequestId,
+        request: RoomKeyImportRequest,
     },
     ProbeLocalEncryptionHealth {
         request_id: RequestId,
@@ -662,6 +704,8 @@ impl AccountCommand {
                 | Self::RenameDevice { .. }
                 | Self::DeleteDevices { .. }
                 | Self::SoftLogoutReauth { .. }
+                | Self::ExportRoomKeys { .. }
+                | Self::ImportRoomKeys { .. }
                 | Self::SetPresence { .. }
                 | Self::SetDisplayName { .. }
                 | Self::SetLocalUserAlias { .. }
@@ -760,6 +804,22 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("SoftLogoutReauth")
                 .field("request_id", request_id)
                 .field("password", &"AuthSecret(..)")
+                .finish(),
+            Self::ExportRoomKeys {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("ExportRoomKeys")
+                .field("request_id", request_id)
+                .field("request", request)
+                .finish(),
+            Self::ImportRoomKeys {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("ImportRoomKeys")
+                .field("request_id", request_id)
+                .field("request", request)
                 .finish(),
             Self::ProbeLocalEncryptionHealth { request_id } => formatter
                 .debug_struct("ProbeLocalEncryptionHealth")

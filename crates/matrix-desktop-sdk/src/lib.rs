@@ -353,6 +353,17 @@ impl fmt::Debug for KeyBackupRestoreSummary {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoomKeyExportSummary {
+    pub exported_sessions: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoomKeyImportSummary {
+    pub imported_count: u64,
+    pub total_count: u64,
+}
+
 #[derive(Clone, Eq, Error, PartialEq)]
 pub enum E2eeTrustError {
     #[error("Matrix encryption is not initialized")]
@@ -590,6 +601,40 @@ pub async fn restore_key_backup(
         version: backup_version,
         restored_rooms,
         total_rooms: Some(total_rooms),
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn export_room_keys_to_file(
+    session: &MatrixClientSession,
+    path: PathBuf,
+    passphrase: &AuthSecret,
+) -> Result<RoomKeyExportSummary, E2eeTrustError> {
+    session
+        .client()
+        .encryption()
+        .export_room_keys(path, passphrase.expose_secret(), |_| true)
+        .await?;
+    Ok(RoomKeyExportSummary {
+        exported_sessions: None,
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn import_room_keys_from_file(
+    session: &MatrixClientSession,
+    path: PathBuf,
+    passphrase: &AuthSecret,
+) -> Result<RoomKeyImportSummary, E2eeTrustError> {
+    let result = session
+        .client()
+        .encryption()
+        .import_room_keys(path, passphrase.expose_secret())
+        .await
+        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
+    Ok(RoomKeyImportSummary {
+        imported_count: result.imported_count as u64,
+        total_count: result.total_count as u64,
     })
 }
 
@@ -884,22 +929,42 @@ pub fn map_backup_state_to_desktop(
 #[cfg(test)]
 mod e2ee_trust_tests {
     use matrix_desktop_state::{
-        CrossSigningStatus, IdentityResetAuthType, KeyBackupStatus, SasEmoji,
+        AuthSecret, CrossSigningStatus, IdentityResetAuthType, KeyBackupStatus, SasEmoji,
     };
     use matrix_sdk::encryption::backups::BackupState;
 
     use super::{
         E2eeTrustError, KeyBackupRestoreScope, KeyBackupRestoreSummary, MatrixCrossSigningStatus,
         MatrixDeviceSessionSummary, MatrixIdentityResetAuthType, MatrixIncomingVerificationRequest,
-        MatrixIncomingVerificationRequestObserver, accept_sas_verification,
-        accept_verification_request, bootstrap_cross_signing, cancel_sas_verification,
-        cancel_verification_request, complete_identity_reset, confirm_sas_verification,
-        cross_signing_status, delete_devices, enable_key_backup, list_devices,
+        MatrixIncomingVerificationRequestObserver, PersistableMatrixSession, RoomKeyExportSummary,
+        RoomKeyImportSummary, accept_sas_verification, accept_verification_request,
+        bootstrap_cross_signing, cancel_sas_verification, cancel_verification_request,
+        complete_identity_reset, confirm_sas_verification, cross_signing_status, delete_devices,
+        enable_key_backup, export_room_keys_to_file, import_room_keys_from_file, list_devices,
         map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
         map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
         mismatch_sas_verification, observe_incoming_verification_requests, rename_device,
-        request_device_verification, reset_identity, restore_key_backup, start_sas_verification,
+        request_device_verification, reset_identity, restore_key_backup, restore_session,
+        start_sas_verification,
     };
+
+    const MATRIX_KEY_EXPORT_HEADER: &str = "-----BEGIN MEGOLM SESSION DATA-----";
+    const MATRIX_KEY_EXPORT_FOOTER: &str = "-----END MEGOLM SESSION DATA-----";
+    const ELEMENT_COMPATIBLE_KEY_EXPORT: &str = "\
+-----BEGIN MEGOLM SESSION DATA-----\n\
+Af7mGhlzQ+eGvHu93u0YXd3D/+vYMs3E7gQqOhuCtkvGAAAAASH7pEdWvFyAP1JUisAcpEo\n\
+Xke2Q7Kr9hVl/SCc6jXBNeJCZcrUbUV4D/tRQIl3E9L4fOk928YI1J+3z96qiH0uE7hpsCI\n\
+CkHKwjPU+0XTzFdIk1X8H7sZ+MD/2Sg/q3y8rtUjz7uEj4GUTnb+9SCOTVmJsRfqgUpM1CU\n\
+bDLytHf1JkohY4tWEgpsCc67xdzgodjr12qYrfg/zNm3LGpxlrffJknw4rk5QFTj4kMbqbD\n\
+ZZgDTni+HxRTDGge2J620lMOiznvXX+H09Rwruqx5aJvvaaKd86jWRpiO2oSFqHn4u5ONl9\n\
+41uzm62Sj0eIm6ZbA9NQs87jQw4LxsejhZVL+NdjIg80zVSBTWhTdo0DTnbFSNP4ReOiz0U\n\
+XosOF8A5T8Vdx2nvA0GXltfcHKVKQYh/LJAkNQ7P9UYL4ae/5TtQZkhB1KxCLTRWqADCl53\n\
+uBMGpG53EMgY6G6K2DEIOkcv7sdXQF5WpemiSWZqJRWj+cjfs9BpCTbkp/rszWFl2TniWpR\n\
+RqIbT2jORlN4rTvdtF0F4z1pqP4qWyR3sLNTkXm9CFRzWADNG0RDZKxbCoo6RPvtaCTfaHo\n\
+SwfvzBS6CjfAG+FOugpV48o7+XetaUUPZ6/tZSPhCdeV8eP9q5r0QwWeXFogzoNzWt4HYx9\n\
+MdXxzD+f0mtg5gzehrrEEARwI2bCvPpHxlt/Na9oW/GBpkjwR1LSKgg4CtpRyWngPjdEKpZ\n\
+GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
+-----END MEGOLM SESSION DATA-----";
 
     #[test]
     fn cross_signing_status_maps_to_private_data_free_desktop_status() {
@@ -993,6 +1058,46 @@ mod e2ee_trust_tests {
     }
 
     #[test]
+    fn room_key_file_transfer_summaries_are_private_data_free() {
+        let export_summary = RoomKeyExportSummary {
+            exported_sessions: None,
+        };
+        let import_summary = RoomKeyImportSummary {
+            imported_count: 1,
+            total_count: 1,
+        };
+
+        assert_eq!(export_summary.exported_sessions, None);
+        assert_eq!(import_summary.imported_count, 1);
+        assert_eq!(import_summary.total_count, 1);
+        assert!(!format!("{export_summary:?}").contains("MEGOLM"));
+        assert!(!format!("{import_summary:?}").contains("MEGOLM"));
+    }
+
+    #[tokio::test]
+    async fn room_key_import_accepts_element_compatible_key_export_envelope() {
+        assert!(ELEMENT_COMPATIBLE_KEY_EXPORT.starts_with(MATRIX_KEY_EXPORT_HEADER));
+        assert!(ELEMENT_COMPATIBLE_KEY_EXPORT.ends_with(MATRIX_KEY_EXPORT_FOOTER));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("element-compatible-room-keys.txt");
+        std::fs::write(&path, ELEMENT_COMPATIBLE_KEY_EXPORT).expect("write fixture");
+        let persistable = PersistableMatrixSession::from_json(
+            r#"{"homeserver":"https://matrix.example.invalid","user_id":"@alice:example.invalid","device_id":"ALICEDEVICE","access_token":"synthetic-access"}"#,
+        )
+        .expect("synthetic session should deserialize");
+        let session = restore_session(&persistable)
+            .await
+            .expect("synthetic session should restore");
+
+        let summary = import_room_keys_from_file(&session, path, &AuthSecret::new("1234"))
+            .await
+            .expect("Matrix/Element key export envelope should import");
+
+        assert_eq!(summary.total_count, 1);
+    }
+
+    #[test]
     fn e2ee_trust_public_async_api_is_exposed() {
         let _ = cross_signing_status;
         let _ = bootstrap_cross_signing;
@@ -1012,6 +1117,8 @@ mod e2ee_trust_tests {
         let _ = list_devices;
         let _ = rename_device;
         let _ = delete_devices;
+        let _ = export_room_keys_to_file;
+        let _ = import_room_keys_from_file;
         let _: Option<MatrixIncomingVerificationRequest> = None;
         let _: Option<MatrixIncomingVerificationRequestObserver> = None;
     }

@@ -212,7 +212,7 @@ pub enum AppAction {
     },
     RoomKeyExported {
         request_id: u64,
-        exported_sessions: u64,
+        exported_sessions: Option<u64>,
     },
     RoomKeyExportFailed {
         request_id: u64,

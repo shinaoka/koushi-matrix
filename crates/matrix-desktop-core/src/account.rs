@@ -40,7 +40,10 @@ use matrix_desktop_state::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
+use crate::command::{
+    AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
+    SyncCommand, TimelineCommand,
+};
 use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
 };
@@ -942,6 +945,18 @@ impl AccountActor {
                 password,
             } => {
                 self.handle_soft_logout_reauth(request_id, password).await;
+            }
+            AccountCommand::ExportRoomKeys {
+                request_id,
+                request,
+            } => {
+                self.handle_export_room_keys(request_id, request).await;
+            }
+            AccountCommand::ImportRoomKeys {
+                request_id,
+                request,
+            } => {
+                self.handle_import_room_keys(request_id, request).await;
             }
             AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
                 self.handle_probe_local_encryption_health(request_id);
@@ -1937,6 +1952,93 @@ impl AccountActor {
         self.reduce(actions);
         for event in events {
             self.emit(event);
+        }
+    }
+
+    async fn handle_export_room_keys(&self, request_id: RequestId, request: RoomKeyExportRequest) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::RoomKeyExportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let RoomKeyExportRequest {
+            destination_path,
+            passphrase,
+        } = request;
+        let result =
+            matrix_desktop_sdk::export_room_keys_to_file(&session, destination_path, &passphrase)
+                .await;
+        drop(passphrase);
+        match result {
+            Ok(summary) => {
+                self.reduce(vec![AppAction::RoomKeyExported {
+                    request_id: request_id.sequence,
+                    exported_sessions: summary.exported_sessions,
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::RoomKeyExportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_import_room_keys(&self, request_id: RequestId, request: RoomKeyImportRequest) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::RoomKeyImportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let RoomKeyImportRequest {
+            source_path,
+            passphrase,
+        } = request;
+        let result =
+            matrix_desktop_sdk::import_room_keys_from_file(&session, source_path, &passphrase)
+                .await;
+        drop(passphrase);
+        match result {
+            Ok(summary) => {
+                self.reduce(vec![AppAction::RoomKeyImported {
+                    request_id: request_id.sequence,
+                    imported_count: summary.imported_count,
+                    total_count: summary.total_count,
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::RoomKeyImportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
         }
     }
 

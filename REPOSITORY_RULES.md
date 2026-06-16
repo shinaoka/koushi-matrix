@@ -148,6 +148,9 @@ conflict is being resolved.
   Ruri-specific JSON, archive, or wrapper file format for room-key transfer.
   Tests for this flow must use synthetic fixtures and assert interoperability
   without logging or snapshotting room-key file contents.
+  If the public SDK export API does not return an exported-session count,
+  reducer/DTO state must represent that count as unknown instead of decrypting,
+  parsing, or re-wrapping the export file only to derive UI metadata.
 - `.local-secrets/` is reserved for local, ignored manual-testing notes or
   scratch files only. It is not an application secret store, must not be
   required for tests or builds, and must not replace OS secret storage.

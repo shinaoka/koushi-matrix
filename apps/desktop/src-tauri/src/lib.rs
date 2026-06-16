@@ -748,6 +748,8 @@ pub fn run() {
             commands::reset_local_data,
             commands::bootstrap_cross_signing,
             commands::enable_key_backup,
+            commands::export_room_keys,
+            commands::import_room_keys,
             commands::accept_verification,
             commands::confirm_sas_verification,
             commands::cancel_verification,

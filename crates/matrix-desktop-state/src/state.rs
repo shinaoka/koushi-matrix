@@ -565,7 +565,7 @@ pub enum RoomKeyExportState {
     },
     Exported {
         request_id: u64,
-        exported_sessions: u64,
+        exported_sessions: Option<u64>,
     },
     Failed {
         request_id: u64,

@@ -1,7 +1,7 @@
 //! Phase 1 contract tests: redaction, unauthenticated rejection, request-id
 //! correlation, snapshot coalescing, queue overflow.
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityRow, ActivityState, AppAction, AppearanceSettings, AuthSecret,
@@ -16,8 +16,8 @@ use matrix_desktop_state::{
 use matrix_sdk::ruma::api::FeatureFlag;
 
 use crate::command::{
-    AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, SyncCommand,
-    TimelineCommand,
+    AccountCommand, AppCommand, CoreCommand, RoomCommand, RoomKeyExportRequest,
+    RoomKeyImportRequest, SearchCommand, SyncCommand, TimelineCommand,
 };
 use crate::event::{CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection};
 use crate::executor;
@@ -394,6 +394,46 @@ fn device_session_commands_are_correlated_ready_gated_and_redacted() {
         assert!(!debug.contains(display_name), "{debug}");
         assert!(!debug.contains(auth_phrase), "{debug}");
         assert!(!debug.contains("DEVICE"), "{debug}");
+    }
+}
+
+#[test]
+fn room_key_file_transfer_commands_are_correlated_ready_gated_and_redacted() {
+    let request_id = fake_request_id();
+    let destination = PathBuf::from("/tmp/private-element-compatible-export.txt");
+    let source = PathBuf::from("/tmp/private-element-compatible-import.txt");
+    let transfer_phrase = "element-compatible-transfer-phrase";
+    let commands = vec![
+        CoreCommand::Account(AccountCommand::ExportRoomKeys {
+            request_id,
+            request: RoomKeyExportRequest {
+                destination_path: destination.clone(),
+                passphrase: AuthSecret::new(transfer_phrase),
+            },
+        }),
+        CoreCommand::Account(AccountCommand::ImportRoomKeys {
+            request_id,
+            request: RoomKeyImportRequest {
+                source_path: source.clone(),
+                passphrase: AuthSecret::new(transfer_phrase),
+            },
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(!debug.contains(transfer_phrase), "{debug}");
+        assert!(
+            !debug.contains(destination.to_string_lossy().as_ref()),
+            "{debug}"
+        );
+        assert!(
+            !debug.contains(source.to_string_lossy().as_ref()),
+            "{debug}"
+        );
+        assert!(debug.contains("AuthSecret(..)"), "{debug}");
     }
 }
 
