@@ -239,6 +239,7 @@ export interface UserProfile {
   user_id: string;
   display_name: string | null;
   display_label: string;
+  original_display_label: string;
   mention_search_terms: string[];
   avatar: AvatarImage | null;
 }
@@ -293,6 +294,7 @@ export interface RoomSummary {
   room_id: string;
   display_name: string;
   display_label: string;
+  original_display_label: string;
   avatar: AvatarImage | null;
   is_dm: boolean;
   dm_user_ids: string[];
@@ -492,6 +494,7 @@ export interface RoomMemberSummary {
   user_id: string;
   display_name: string | null;
   display_label: string;
+  original_display_label: string;
   avatar_url: string | null;
   power_level: number | null;
   role: RoomMemberRole;
@@ -561,6 +564,7 @@ export interface RoomLiveSignals {
 export interface LiveReadReceipt {
   user_id: string;
   display_name: string | null;
+  original_display_label: string;
   avatar: AvatarImage | null;
   timestamp_ms: number | null;
 }

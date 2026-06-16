@@ -1610,7 +1610,8 @@ fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec
             RoomSummary {
                 room_id: room.room_id.clone(),
                 display_name: room.display_name.clone(),
-                display_label,
+                display_label: display_label.clone(),
+                original_display_label: display_label,
                 avatar: avatar_from_mxc_uri(room.avatar_mxc_uri.as_deref()),
                 is_dm: room.is_dm,
                 dm_user_ids: room.dm_user_ids.clone(),
@@ -1641,21 +1642,25 @@ fn normalize_user_profiles(
     snapshot
         .user_profiles
         .iter()
-        .map(|profile| UserProfile {
-            user_id: profile.user_id.clone(),
-            display_name: profile.display_name.clone(),
-            display_label: profile
+        .map(|profile| {
+            let display_label = profile
                 .display_name
                 .as_deref()
                 .map(str::trim)
                 .filter(|display_name| !display_name.is_empty())
                 .unwrap_or(profile.user_id.as_str())
-                .to_owned(),
-            mention_search_terms: user_profile_mention_search_terms(
-                &profile.user_id,
-                profile.display_name.as_deref(),
-            ),
-            avatar: avatar_from_mxc_uri(profile.avatar_mxc_uri.as_deref()),
+                .to_owned();
+            UserProfile {
+                user_id: profile.user_id.clone(),
+                display_name: profile.display_name.clone(),
+                display_label: display_label.clone(),
+                original_display_label: display_label,
+                mention_search_terms: user_profile_mention_search_terms(
+                    &profile.user_id,
+                    profile.display_name.as_deref(),
+                ),
+                avatar: avatar_from_mxc_uri(profile.avatar_mxc_uri.as_deref()),
+            }
         })
         .collect()
 }
@@ -1749,7 +1754,8 @@ fn room_member_summary_from_sdk(member: MatrixRoomMemberSummary) -> RoomMemberSu
     RoomMemberSummary {
         user_id: member.user_id,
         display_name: member.display_name,
-        display_label,
+        display_label: display_label.clone(),
+        original_display_label: display_label,
         avatar_url: member.avatar_url,
         power_level: member.power_level,
         role: room_member_role_from_sdk(member.role),
@@ -2237,6 +2243,7 @@ pub mod tests {
                 user_id: "@alice:example.test".to_owned(),
                 display_name: Some("Alice".to_owned()),
                 display_label: "Alice".to_owned(),
+                original_display_label: "Alice".to_owned(),
                 mention_search_terms: vec!["Alice".to_owned(), "@alice:example.test".to_owned(),],
                 avatar: Some(AvatarImage {
                     mxc_uri: "mxc://example.test/alice".to_owned(),
@@ -2274,6 +2281,7 @@ pub mod tests {
                     user_id: "@alice:example.test".to_owned(),
                     display_name: Some("Alice".to_owned()),
                     display_label: "Alice".to_owned(),
+                    original_display_label: "Alice".to_owned(),
                     mention_search_terms: vec![
                         "Alice".to_owned(),
                         "@alice:example.test".to_owned(),

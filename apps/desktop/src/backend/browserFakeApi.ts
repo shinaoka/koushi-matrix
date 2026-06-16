@@ -575,6 +575,7 @@ class BrowserFakeApi implements DesktopApi {
       {
         user_id: session.user_id,
         display_name: this.snapshot.state.profile.own.display_name,
+        original_display_label: this.snapshot.state.profile.own.display_name?.trim() || session.user_id,
         avatar: this.snapshot.state.profile.own.avatar,
         timestamp_ms: Date.now()
       }
@@ -852,6 +853,7 @@ class BrowserFakeApi implements DesktopApi {
       room_id: roomId,
       display_name: displayName,
       display_label: displayName,
+      original_display_label: displayName,
       avatar: null,
       is_dm: false,
       dm_user_ids: [],
@@ -1088,6 +1090,7 @@ class BrowserFakeApi implements DesktopApi {
       room_id: newRoomId,
       display_name: name,
       display_label: name,
+      original_display_label: name,
       avatar: null,
       is_dm: false,
       dm_user_ids: [],
@@ -1171,6 +1174,7 @@ class BrowserFakeApi implements DesktopApi {
       room_id: roomId,
       display_name: invite.display_name,
       display_label: invite.display_name,
+      original_display_label: invite.display_name,
       avatar: invite.avatar,
       is_dm: invite.is_dm,
       dm_user_ids: [],
@@ -1218,6 +1222,7 @@ class BrowserFakeApi implements DesktopApi {
       room_id: newRoomId,
       display_name: trimmedUserId,
       display_label: trimmedUserId,
+      original_display_label: trimmedUserId,
       avatar: null,
       is_dm: true,
       dm_user_ids: [trimmedUserId],
@@ -1553,16 +1558,20 @@ class BrowserFakeApi implements DesktopApi {
               user_id: "@browser-member:browser.fake",
               display_name: "Browser Member",
               display_label: "Browser Member",
+              original_display_label: "Browser Member",
               avatar: null
             }
           ];
     return members
       .map((profile) => {
         const displayLabel = profile.display_label.trim();
+        const originalDisplayLabel =
+          profile.original_display_label.trim() || profile.display_name?.trim() || profile.user_id;
         return {
           user_id: profile.user_id,
           display_name: profile.display_name,
           display_label: displayLabel || profile.display_name?.trim() || profile.user_id,
+          original_display_label: originalDisplayLabel,
           avatar_url: profile.avatar?.mxc_uri ?? null,
           power_level: 0,
           role: "user" as const
@@ -2346,6 +2355,7 @@ const rooms: RoomSummary[] = [
     room_id: "!room-alpha:example.invalid",
     display_name: "synthetic-room",
     display_label: "synthetic-room",
+    original_display_label: "synthetic-room",
     avatar: null,
     is_dm: false,
     dm_user_ids: [],
@@ -2357,6 +2367,7 @@ const rooms: RoomSummary[] = [
     room_id: "!room-planning:example.invalid",
     display_name: "planning-room",
     display_label: "planning-room",
+    original_display_label: "planning-room",
     avatar: null,
     is_dm: false,
     dm_user_ids: [],
@@ -2368,6 +2379,7 @@ const rooms: RoomSummary[] = [
     room_id: "!room-search:example.invalid",
     display_name: "matrix-sdk-search",
     display_label: "matrix-sdk-search",
+    original_display_label: "matrix-sdk-search",
     avatar: null,
     is_dm: false,
     dm_user_ids: [],
@@ -2379,6 +2391,7 @@ const rooms: RoomSummary[] = [
     room_id: "!dm-member-1:example.invalid",
     display_name: "Member 1",
     display_label: "Member 1",
+    original_display_label: "Member 1",
     avatar: null,
     is_dm: true,
     dm_user_ids: ["@member-1:example.invalid"],
@@ -2390,6 +2403,7 @@ const rooms: RoomSummary[] = [
     room_id: "!dm-member-2:example.invalid",
     display_name: "Member 2",
     display_label: "Member 2",
+    original_display_label: "Member 2",
     avatar: null,
     is_dm: true,
     dm_user_ids: ["@member-2:example.invalid"],

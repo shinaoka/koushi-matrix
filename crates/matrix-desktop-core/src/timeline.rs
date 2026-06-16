@@ -2786,6 +2786,7 @@ impl TimelineActor {
                     receipts: vec![LiveReadReceipt {
                         user_id: user_id.to_string(),
                         display_name: None,
+                        original_display_label: String::new(),
                         avatar: None,
                         timestamp_ms: None,
                     }],
@@ -3049,6 +3050,7 @@ fn live_event_receipts_from_sdk_item(
         .map(|(user_id, receipt)| LiveReadReceipt {
             user_id: user_id.to_string(),
             display_name: None,
+            original_display_label: String::new(),
             avatar: None,
             timestamp_ms: receipt.ts.map(|timestamp| timestamp.0.into()),
         })

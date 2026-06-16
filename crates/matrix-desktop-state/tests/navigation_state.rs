@@ -44,6 +44,7 @@ fn rooms() -> Vec<RoomSummary> {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
             display_label: "Room A".to_owned(),
+            original_display_label: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
             dm_user_ids: Vec::new(),
@@ -57,6 +58,7 @@ fn rooms() -> Vec<RoomSummary> {
             room_id: "dm-a".to_owned(),
             display_name: "Alice".to_owned(),
             display_label: "Alice".to_owned(),
+            original_display_label: "Alice".to_owned(),
             avatar: None,
             is_dm: true,
             dm_user_ids: Vec::new(),
@@ -70,6 +72,7 @@ fn rooms() -> Vec<RoomSummary> {
             room_id: "global-room".to_owned(),
             display_name: "Global Room".to_owned(),
             display_label: "Global Room".to_owned(),
+            original_display_label: "Global Room".to_owned(),
             avatar: None,
             is_dm: false,
             dm_user_ids: Vec::new(),
@@ -88,6 +91,7 @@ fn room_summary_serializes_projected_label_and_dm_identity_contract() {
         room_id: "dm-a".to_owned(),
         display_name: "Alice Upstream".to_owned(),
         display_label: "Alice Upstream".to_owned(),
+        original_display_label: "Alice Upstream".to_owned(),
         avatar: None,
         is_dm: true,
         dm_user_ids: Vec::new(),
@@ -101,6 +105,7 @@ fn room_summary_serializes_projected_label_and_dm_identity_contract() {
     let value = serde_json::to_value(&room).expect("serialize room summary");
 
     assert_eq!(value["display_label"], json!("Alice Upstream"));
+    assert_eq!(value["original_display_label"], json!("Alice Upstream"));
     assert_eq!(value["dm_user_ids"], json!([]));
 }
 
@@ -125,6 +130,7 @@ fn room_list_update_projects_dm_room_display_labels_from_aliases() {
                 room_id: "dm-a".to_owned(),
                 display_name: "Alice Upstream".to_owned(),
                 display_label: "Alice Upstream".to_owned(),
+                original_display_label: "Alice Upstream".to_owned(),
                 avatar: None,
                 is_dm: true,
                 dm_user_ids: vec!["@alice:example.invalid".to_owned()],
@@ -142,8 +148,10 @@ fn room_list_update_projects_dm_room_display_labels_from_aliases() {
 
     assert_eq!(room.display_name, "Alice Upstream");
     assert_eq!(room.display_label, "Alice Local");
+    assert_eq!(room.original_display_label, "Alice Upstream");
     assert_eq!(value["display_name"], json!("Alice Upstream"));
     assert_eq!(value["display_label"], json!("Alice Local"));
+    assert_eq!(value["original_display_label"], json!("Alice Upstream"));
 }
 
 #[test]
@@ -153,6 +161,7 @@ fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate()
         room_id: "dm-a".to_owned(),
         display_name: "Alice Upstream".to_owned(),
         display_label: "Alice Upstream".to_owned(),
+        original_display_label: "Alice Upstream".to_owned(),
         avatar: None,
         is_dm: true,
         dm_user_ids: vec!["@alice:example.invalid".to_owned()],
@@ -289,6 +298,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
                 room_id: "global-room".to_owned(),
                 display_name: "Global Room".to_owned(),
                 display_label: "Global Room".to_owned(),
+                original_display_label: "Global Room".to_owned(),
                 avatar: None,
                 is_dm: false,
                 dm_user_ids: Vec::new(),
@@ -332,6 +342,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 room_id: "room-a".to_owned(),
                 display_name: "Room A".to_owned(),
                 display_label: "Room A".to_owned(),
+                original_display_label: "Room A".to_owned(),
                 avatar: None,
                 is_dm: false,
                 dm_user_ids: Vec::new(),
@@ -345,6 +356,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 room_id: "room-b".to_owned(),
                 display_name: "Room B".to_owned(),
                 display_label: "Room B".to_owned(),
+                original_display_label: "Room B".to_owned(),
                 avatar: None,
                 is_dm: false,
                 dm_user_ids: Vec::new(),
@@ -388,6 +400,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     room_id: "room-a".to_owned(),
                     display_name: "Room A".to_owned(),
                     display_label: "Room A".to_owned(),
+                    original_display_label: "Room A".to_owned(),
                     avatar: None,
                     is_dm: false,
                     dm_user_ids: Vec::new(),
@@ -401,6 +414,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     room_id: "room-b".to_owned(),
                     display_name: "Room B".to_owned(),
                     display_label: "Room B".to_owned(),
+                    original_display_label: "Room B".to_owned(),
                     avatar: None,
                     is_dm: false,
                     dm_user_ids: Vec::new(),
@@ -448,6 +462,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
             display_label: "Room A".to_owned(),
+            original_display_label: "Room A".to_owned(),
             avatar: None,
             is_dm: false,
             dm_user_ids: Vec::new(),
@@ -483,6 +498,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
                 room_id: "room-b".to_owned(),
                 display_name: "Room B".to_owned(),
                 display_label: "Room B".to_owned(),
+                original_display_label: "Room B".to_owned(),
                 avatar: None,
                 is_dm: false,
                 dm_user_ids: Vec::new(),
@@ -687,6 +703,7 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             room_id: "room-a".to_owned(),
             display_name: "Room A".to_owned(),
             display_label: "Room A".to_owned(),
+            original_display_label: "Room A".to_owned(),
             avatar: Some(avatar("mxc://example.invalid/room-a")),
             is_dm: false,
             dm_user_ids: Vec::new(),
@@ -700,6 +717,7 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             room_id: "dm-a".to_owned(),
             display_name: "Alice".to_owned(),
             display_label: "Alice".to_owned(),
+            original_display_label: "Alice".to_owned(),
             avatar: Some(avatar("mxc://example.invalid/dm-a")),
             is_dm: true,
             dm_user_ids: Vec::new(),

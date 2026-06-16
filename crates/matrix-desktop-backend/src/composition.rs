@@ -61,10 +61,12 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
                 }
             }
 
+            let display_name = room.display_name;
             RoomSummary {
                 room_id: room.room_id,
-                display_label: room.display_name.clone(),
-                display_name: room.display_name,
+                display_label: display_name.clone(),
+                display_name: display_name.clone(),
+                original_display_label: display_name,
                 avatar: None,
                 is_dm: room.is_dm,
                 dm_user_ids: Vec::new(),

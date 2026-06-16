@@ -14,6 +14,7 @@ fn ready_state() -> AppState {
             room_id: "!room:localhost".to_owned(),
             display_name: "QA Seed Room".to_owned(),
             display_label: "QA Seed Room".to_owned(),
+            original_display_label: "QA Seed Room".to_owned(),
             avatar: None,
             is_dm: false,
             dm_user_ids: Vec::new(),

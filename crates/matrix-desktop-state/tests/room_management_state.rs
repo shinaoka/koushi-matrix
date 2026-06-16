@@ -42,6 +42,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
                 user_id: "@user-a:example.invalid".to_owned(),
                 display_name: Some("User A".to_owned()),
                 display_label: "User A".to_owned(),
+                original_display_label: "User A".to_owned(),
                 avatar_url: None,
                 power_level: Some(100),
                 role: RoomMemberRole::Administrator,
@@ -50,6 +51,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
                 user_id: "@target:example.invalid".to_owned(),
                 display_name: Some("Target".to_owned()),
                 display_label: "Target".to_owned(),
+                original_display_label: "Target".to_owned(),
                 avatar_url: Some("mxc://example.invalid/target-avatar".to_owned()),
                 power_level: Some(0),
                 role: RoomMemberRole::User,
@@ -74,6 +76,18 @@ fn serialized_member_display_label(state: &AppState, user_id: &str) -> Option<St
         .iter()
         .find(|member| member["user_id"] == user_id)
         .and_then(|member| member["display_label"].as_str())
+        .map(str::to_owned)
+}
+
+fn serialized_member_original_display_label(state: &AppState, user_id: &str) -> Option<String> {
+    let settings = state.room_management.settings.as_ref()?;
+    let value = serde_json::to_value(settings).expect("serialize room settings");
+    value["members"]
+        .as_array()
+        .expect("members array")
+        .iter()
+        .find(|member| member["user_id"] == user_id)
+        .and_then(|member| member["original_display_label"].as_str())
         .map(str::to_owned)
 }
 
@@ -102,6 +116,10 @@ fn room_settings_snapshot_load_projects_member_display_labels_from_aliases() {
     assert_eq!(
         serialized_member_display_label(&state, "@target:example.invalid"),
         Some("Target Local".to_owned())
+    );
+    assert_eq!(
+        serialized_member_original_display_label(&state, "@target:example.invalid"),
+        Some("Target".to_owned())
     );
     assert_eq!(
         state
@@ -137,6 +155,7 @@ fn room_settings_member_display_label_uses_profile_cache_when_room_name_is_blank
                 user_id: "@target:example.invalid".to_owned(),
                 display_name: Some("Profile Cache Name".to_owned()),
                 display_label: String::new(),
+                original_display_label: String::new(),
                 mention_search_terms: Vec::new(),
                 avatar: None,
             }],
@@ -152,6 +171,10 @@ fn room_settings_member_display_label_uses_profile_cache_when_room_name_is_blank
 
     assert_eq!(
         serialized_member_display_label(&state, "@target:example.invalid"),
+        Some("Profile Cache Name".to_owned())
+    );
+    assert_eq!(
+        serialized_member_original_display_label(&state, "@target:example.invalid"),
         Some("Profile Cache Name".to_owned())
     );
     assert_eq!(

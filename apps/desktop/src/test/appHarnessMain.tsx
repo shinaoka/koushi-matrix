@@ -138,6 +138,7 @@ function readySnapshot(
           room_id: ROOM_ID,
           display_name: ROOM_NAME,
           display_label: ROOM_NAME,
+          original_display_label: ROOM_NAME,
           avatar: null,
           is_dm: false,
           dm_user_ids: [],
@@ -459,6 +460,7 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     room_id: newRoomId,
     display_name: "Created Room",
     display_label: "Created Room",
+    original_display_label: "Created Room",
     avatar: null,
     is_dm: false,
     dm_user_ids: [],
@@ -936,6 +938,7 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
               user_id: "@harness-member:example.invalid",
               display_name: "Harness Member",
               display_label: "Harness Member",
+              original_display_label: "Harness Member",
               avatar_url: null,
               power_level: 0,
               role: "user"

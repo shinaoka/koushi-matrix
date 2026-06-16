@@ -699,6 +699,7 @@ mod tests {
                 user_id: "@bob:matrix.org".to_owned(),
                 display_name: Some("Bob".to_owned()),
                 display_label: "Bob".to_owned(),
+                original_display_label: "Bob".to_owned(),
                 mention_search_terms: vec!["Bob".to_owned(), "@bob:matrix.org".to_owned()],
                 avatar: Some(ready_avatar),
             },
@@ -713,6 +714,7 @@ mod tests {
             room_id: "!room:matrix.org".to_owned(),
             display_name: "Room".to_owned(),
             display_label: "Room".to_owned(),
+            original_display_label: "Room".to_owned(),
             avatar: Some(room_avatar),
             is_dm: false,
             dm_user_ids: Vec::new(),
@@ -747,6 +749,10 @@ mod tests {
             json!("ready")
         );
         assert_eq!(
+            value["state"]["profile"]["users"]["@bob:matrix.org"]["original_display_label"],
+            json!("Bob")
+        );
+        assert_eq!(
             value["state"]["spaces"][0]["avatar"],
             json!({
                 "mxc_uri": "mxc://matrix.org/room",
@@ -759,6 +765,10 @@ mod tests {
                 "mxc_uri": "mxc://matrix.org/room",
                 "thumbnail": { "kind": "notRequested" }
             })
+        );
+        assert_eq!(
+            value["state"]["rooms"][0]["original_display_label"],
+            json!("Room")
         );
         assert_eq!(
             value["sidebar"]["account_home"]["highlight_count"],

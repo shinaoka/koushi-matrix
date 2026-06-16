@@ -423,6 +423,7 @@ export interface RoomMemberSummary {
   user_id: string;
   display_name: string | null;
   display_label: string;
+  original_display_label: string;
   avatar_url: string | null;
   power_level: number | null;
   role: RoomMemberRole;
@@ -468,6 +469,7 @@ export type AvatarThumbnailFailureKind = "network" | "forbidden" | "unsupported"
 export interface LiveReadReceipt {
   user_id: string;
   display_name: string | null;
+  original_display_label: string;
   avatar: AvatarImage | null;
   timestamp_ms: number | null;
 }

@@ -166,9 +166,11 @@ Rules:
    notification text, QA tokens, logs, issue evidence, or normal `Debug` output.
    Rust reducers own alias set/clear/list and display-name resolution; React
    must not maintain an alias cache separate from `AppState.profile`.
-   `UserProfile.display_label` and `UserProfile.mention_search_terms` are the
-   person/mention DTO contract; React may use those projected fields but must
-   not recompute alias precedence from `local_aliases`.
+   `UserProfile.display_label`, `UserProfile.original_display_label`, and
+   `UserProfile.mention_search_terms` are the person/mention DTO contract.
+   React may use those projected fields but must not recompute alias
+   precedence from `local_aliases` or derive original names by stripping an
+   alias.
    Timeline sender surfaces use the same contract:
    `TimelineItem.sender_label`, `ReplyQuote.sender_label`, and
    `ThreadSummaryDto.latest_sender_label` are Rust-projected display fields.
@@ -180,11 +182,13 @@ Rules:
    identity fields, but it must not resolve aliases, inspect `local_aliases`,
    or invent fallback labels locally.
    Room title surfaces use `RoomSummary.display_label`, not `display_name`.
-   DM room labels resolve in Rust from `dm_user_ids` through local alias,
-   upstream room name, profile/own-profile, then MXID; non-DM room labels use
-   trimmed upstream room name, then room id. `display_label` is room/user data
-   and is not a place for catalog prose or generic English fallbacks such as
-   `Member`. React must not infer DM targets from room titles.
+   `RoomSummary.original_display_label` is the alias-free context label for
+   tooltips/profile surfaces. DM room labels resolve in Rust from `dm_user_ids`
+   through local alias, upstream room name, profile/own-profile, then MXID;
+   non-DM room labels use trimmed upstream room name, then room id.
+   `display_label`/`original_display_label` are room/user data and are not a
+   place for catalog prose or generic English fallbacks such as `Member`. React
+   must not infer DM targets from room titles.
    Read-receipt reader avatars use the same boundary: `AppState.live_signals`
    carries Rust-resolved reader labels, avatar DTOs, read timestamps, capped
    reader ordering, and overflow counts; React must not resolve reader profiles

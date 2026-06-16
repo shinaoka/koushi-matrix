@@ -4400,8 +4400,11 @@ fn native_attention_room(
     RoomSummary {
         room_id: room_id.to_owned(),
         display_name: display_name.to_owned(),
+        display_label: display_name.to_owned(),
+        original_display_label: display_name.to_owned(),
         avatar: None,
         is_dm,
+        dm_user_ids: Vec::new(),
         tags: RoomTags::default(),
         unread_count,
         notification_count,

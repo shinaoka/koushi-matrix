@@ -1714,6 +1714,7 @@ mod tests {
                 user_id: "@member:example.test".to_owned(),
                 display_name: Some("Synthetic Member".to_owned()),
                 display_label: "Synthetic Member".to_owned(),
+                original_display_label: "Synthetic Member".to_owned(),
                 avatar_url: Some("mxc://example.test/member-avatar".to_owned()),
                 power_level: Some(50),
                 role: RoomMemberRole::Moderator,
@@ -1817,6 +1818,7 @@ mod tests {
                         receipts: vec![LiveReadReceipt {
                             user_id: "@other:example.test".to_owned(),
                             display_name: Some("Other".to_owned()),
+                            original_display_label: String::new(),
                             avatar: None,
                             timestamp_ms: Some(123),
                         }],

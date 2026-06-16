@@ -472,17 +472,20 @@ stateDiagram-v2
   Timeline/read-receipt/member/person surfaces must consume the Rust-resolved
   DTO labels; React must not join user ids to `local_aliases` or invent a
   separate alias cache.
-- Per-user profile DTOs carry `display_label` and `mention_search_terms` as
-  Rust-owned projections. `display_name` remains the upstream/original profile
-  name for context; GUI mention autocomplete and mention highlighting consume
-  the projected label/search terms and must not recompute alias precedence in
-  React.
+- Per-user profile DTOs carry `display_label`, `original_display_label`, and
+  `mention_search_terms` as Rust-owned projections. `display_label` may contain
+  a local alias; `original_display_label` is the alias-free upstream,
+  own-profile, or MXID context value. GUI mention autocomplete, mention
+  highlighting, profile views, and tooltips consume the projected fields and
+  must not recompute alias precedence or strip aliases in React.
 - Room summaries carry `display_label` as the Rust-projected room list/header
-  label. For one-to-one DM rooms, `dm_user_ids` supplies the target identity and
-  the label resolves through the alias/profile precedence above; for non-DM
-  rooms it is trimmed upstream `display_name` with `room_id` as the final
-  fallback. `display_name` remains the upstream/original room name. React must
-  render `display_label` for normal room title surfaces and must not infer DM
+  label and `original_display_label` as the alias-free room/DM context label.
+  For one-to-one DM rooms, `dm_user_ids` supplies the target identity and labels
+  resolve through the alias/profile precedence above; for non-DM rooms they use
+  trimmed upstream `display_name` with `room_id` as the final fallback.
+  `display_name` remains the upstream/original room name. React must render
+  `display_label` for normal room title surfaces, may show
+  `original_display_label` for context affordances, and must not infer DM
   identity from a display name or synthesize generic labels such as `Member`.
 - Timeline CoreEvents preserve raw sender MXIDs only as identity fields.
   `CoreConnection` projects `TimelineItem.sender_label`,

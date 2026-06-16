@@ -2994,6 +2994,7 @@ mod tests {
                         receipts: vec![LiveReadReceipt {
                             user_id: "@bob:example.invalid".to_owned(),
                             display_name: None,
+                            original_display_label: String::new(),
                             avatar: None,
                             timestamp_ms: Some(1_234),
                         }],
@@ -3021,6 +3022,7 @@ mod tests {
                         readers: vec![LiveReadReceipt {
                             user_id: "@bob:example.invalid".to_owned(),
                             display_name: Some("@bob:example.invalid".to_owned()),
+                            original_display_label: "@bob:example.invalid".to_owned(),
                             avatar: None,
                             timestamp_ms: Some(1_234),
                         }],
@@ -3091,6 +3093,7 @@ mod tests {
                 user_id: "@alice:example.invalid".to_owned(),
                 display_name: Some("Alice".to_owned()),
                 display_label: String::new(),
+                original_display_label: String::new(),
                 mention_search_terms: Vec::new(),
                 avatar: Some(AvatarImage {
                     mxc_uri: "mxc://example.invalid/alice".to_owned(),
@@ -3104,6 +3107,7 @@ mod tests {
                 user_id: "@bob:example.invalid".to_owned(),
                 display_name: Some("Bob".to_owned()),
                 display_label: String::new(),
+                original_display_label: String::new(),
                 mention_search_terms: Vec::new(),
                 avatar: Some(AvatarImage {
                     mxc_uri: "mxc://example.invalid/bob".to_owned(),
@@ -3117,6 +3121,7 @@ mod tests {
                 user_id: "@carol:example.invalid".to_owned(),
                 display_name: Some("Carol".to_owned()),
                 display_label: String::new(),
+                original_display_label: String::new(),
                 mention_search_terms: Vec::new(),
                 avatar: None,
             },
@@ -3132,30 +3137,35 @@ mod tests {
                         LiveReadReceipt {
                             user_id: "@alice:example.invalid".to_owned(),
                             display_name: None,
+                            original_display_label: String::new(),
                             avatar: None,
                             timestamp_ms: Some(1_000),
                         },
                         LiveReadReceipt {
                             user_id: "@bob:example.invalid".to_owned(),
                             display_name: None,
+                            original_display_label: String::new(),
                             avatar: None,
                             timestamp_ms: Some(3_000),
                         },
                         LiveReadReceipt {
                             user_id: "@carol:example.invalid".to_owned(),
                             display_name: None,
+                            original_display_label: String::new(),
                             avatar: None,
                             timestamp_ms: Some(2_000),
                         },
                         LiveReadReceipt {
                             user_id: "@dana:example.invalid".to_owned(),
                             display_name: Some("Dana".to_owned()),
+                            original_display_label: String::new(),
                             avatar: None,
                             timestamp_ms: Some(4_000),
                         },
                         LiveReadReceipt {
                             user_id: "@alice:example.invalid".to_owned(),
                             display_name: None,
+                            original_display_label: String::new(),
                             avatar: None,
                             timestamp_ms: Some(5_000),
                         },

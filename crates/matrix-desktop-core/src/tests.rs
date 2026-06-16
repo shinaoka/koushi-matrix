@@ -434,6 +434,7 @@ fn live_signal_events_are_typed_and_debug_redacts_identifiers() {
             receipts: vec![LiveReadReceipt {
                 user_id: "@bob:example.test".to_owned(),
                 display_name: Some("Private Reader".to_owned()),
+                original_display_label: String::new(),
                 avatar: Some(AvatarImage {
                     mxc_uri: "mxc://example.test/private-reader".to_owned(),
                     thumbnail: AvatarThumbnailState::NotRequested,
@@ -944,6 +945,7 @@ fn room_summary(room_id: &str) -> RoomSummary {
         room_id: room_id.to_owned(),
         display_name: "QA Room".to_owned(),
         display_label: "QA Room".to_owned(),
+        original_display_label: "QA Room".to_owned(),
         avatar: None,
         is_dm: false,
         dm_user_ids: Vec::new(),

@@ -375,11 +375,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   set/clear/list, persistence to `app.ruri.local_aliases`, display-name
   resolution, and pending/failure state in Rust; React may render the returned
   labels and dispatch typed commands only.
-- `UserProfile.display_label` and `UserProfile.mention_search_terms` are the
-  Rust-owned person/mention projection. Keep upstream/original names in
-  `display_name` for context, but GUI mention suggestions/highlighting must use
-  the projected label/search fields instead of recomputing alias precedence in
-  React.
+- `UserProfile.display_label`, `UserProfile.original_display_label`, and
+  `UserProfile.mention_search_terms` are the Rust-owned person/mention
+  projection. `display_label` may contain the local alias; `original_display_label`
+  is the alias-free upstream/own-profile/MXID context value. GUI mention
+  suggestions/highlighting and profile/tooltips must use the projected fields
+  instead of recomputing alias precedence or stripping aliases in React.
 - Timeline sender display is Rust-projected. `sender`, reply quote `sender`,
   and thread-summary `latest_sender` remain raw identity fields; normal
   TimelineView display must use `sender_label`, `reply_quote.sender_label`, and
@@ -395,19 +396,26 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `RoomMemberSummary.display_label` is resolved from
   `ProfileState.local_aliases`, nonblank room-scoped upstream `display_name`,
   profile cache / own-profile fallback, and finally MXID when room settings load,
-  room settings update, or profile/alias state changes. `display_name` remains
-  the upstream/original context value. React member lists, sort order, and
-  action labels must consume `display_label` and must not join `settings.members`
-  with `local_aliases` or the global profile cache.
+  room settings update, or profile/alias state changes.
+  `RoomMemberSummary.original_display_label` carries the alias-free context
+  label. `display_name` remains the upstream/original raw value. React member
+  lists, sort order, action labels, and original-name affordances must consume
+  these projected fields and must not join `settings.members` with
+  `local_aliases` or the global profile cache.
 - Room summaries use the same Rust-owned display projection:
   `RoomSummary.display_label` is the sidebar/header/search/forward/space-child
-  display value, while `display_name` remains the upstream/original room name.
+  display value, while `RoomSummary.original_display_label` is the alias-free
+  room/DM context value. `display_name` remains the upstream/original room name.
   For one-to-one DM rooms, `dm_user_ids` carries the target identity and labels
   resolve through local alias, nonblank upstream room name, profile/own-profile,
   then MXID. Non-DM rooms use trimmed upstream `display_name`, then `room_id`.
-  `display_label` is caller-owned room/user data, not i18n catalog prose; do
-  not invent generic English fallbacks such as `Member`, and do not infer the DM
-  target from a room title in React.
+  `display_label`/`original_display_label` are caller-owned room/user data, not
+  i18n catalog prose; do not invent generic English fallbacks such as `Member`,
+  and do not infer the DM target from a room title in React.
+- Read-receipt readers carry both `display_name` (the Rust-projected visible
+  label, despite the legacy field name) and `original_display_label` for
+  alias-free hover/profile context. React must not recover original names by
+  looking up profiles or stripping a local alias.
 - Native attention uses `RoomSummary.display_label` for its safe room label, but
   serialized candidates still must not carry room IDs, sender IDs, event IDs, or
   message bodies. Profile/alias relabeling of an existing candidate is a Rust

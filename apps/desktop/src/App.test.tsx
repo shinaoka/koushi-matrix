@@ -213,6 +213,7 @@ describe("ContextualRightPanel", () => {
             user_id: "@alice:example.invalid",
             display_name: "Alice Upstream",
             display_label: "Alice Alias",
+            original_display_label: "Alice Upstream",
             mention_search_terms: ["Alice Alias", "Alice Upstream", "@alice:example.invalid"],
             avatar: null
           }

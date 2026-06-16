@@ -3143,12 +3143,12 @@ mod tests {
         RoomCommand, SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
     };
     use matrix_desktop_state::{
-        AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent,
-        MentionTarget, SessionInfo, SessionState, VerificationCancelReason,
-    };
-    use matrix_desktop_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, LocaleSettings, SettingsPatch,
         TextDirectionPreference, ThemePreference,
+    };
+    use matrix_desktop_state::{
+        AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent, MentionTarget,
+        SessionInfo, SessionState, VerificationCancelReason,
     };
 
     use super::QaControlCommand;
@@ -3156,22 +3156,25 @@ mod tests {
     use super::{
         build_accept_invite_command, build_accept_verification_command,
         build_bootstrap_cross_signing_command, build_cancel_send_command,
-        build_cancel_verification_command, build_confirm_sas_verification_command,
-        build_create_room_command, build_create_space_command, build_decline_invite_command,
-        build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
-        build_forget_room_command, build_forward_message_command, build_invite_user_command,
+        build_cancel_verification_command, build_close_activity_command,
+        build_confirm_sas_verification_command, build_create_room_command,
+        build_create_space_command, build_decline_invite_command, build_download_media_command,
+        build_edit_message_command, build_enable_key_backup_command, build_forget_room_command,
+        build_forward_message_command, build_invite_user_command,
         build_join_directory_room_command, build_leave_room_command,
         build_load_message_source_command, build_load_room_settings_command, build_logout_command,
-        build_moderate_room_member_command, build_paginate_thread_timeline_backwards_command,
+        build_mark_activity_read_command, build_moderate_room_member_command,
+        build_open_activity_command, build_paginate_activity_command,
+        build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
-        build_probe_local_encryption_health_command,
-        build_query_directory_command, build_redact_message_command, build_redact_reaction_command,
-        build_remove_room_tag_command, build_reset_identity_command, build_reset_local_data_command,
-        build_restart_sync_command, build_retry_send_command, build_select_room_command, build_select_space_command,
+        build_probe_local_encryption_health_command, build_query_directory_command,
+        build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
+        build_reset_identity_command, build_reset_local_data_command, build_restart_sync_command,
+        build_retry_send_command, build_select_room_command, build_select_space_command,
         build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
-        build_send_text_command, build_send_thread_reply_command, build_set_avatar_command,
-        build_set_display_name_command, build_set_fully_read_command, build_set_presence_command,
-        build_set_room_tag_command, build_set_space_child_command,
+        build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
+        build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
+        build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
         build_set_thread_composer_draft_command, build_set_typing_command,
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
         build_submit_identity_reset_password_command, build_submit_login_command,
@@ -3179,12 +3182,9 @@ mod tests {
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
         build_update_room_member_role_command, build_update_room_setting_command,
-        build_update_settings_command,
-        build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
-        qa_recovery_prompt_is_available, qa_window_title_string,
-        resolve_search_scope_from_active_room, build_open_activity_command,
-        build_close_activity_command, build_set_activity_tab_command,
-        build_paginate_activity_command, build_mark_activity_read_command,
+        build_update_settings_command, build_upload_media_command, parse_qa_control_pipe_line,
+        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
+        resolve_search_scope_from_active_room,
     };
     use matrix_desktop_state::{
         PresenceKind, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
@@ -3265,6 +3265,7 @@ mod tests {
                 room_id: "!room1:example.org".to_owned(),
                 display_name: "Room 1".to_owned(),
                 display_label: "Room 1".to_owned(),
+                original_display_label: "Room 1".to_owned(),
                 avatar: None,
                 is_dm: false,
                 dm_user_ids: Vec::new(),
@@ -3278,6 +3279,7 @@ mod tests {
                 room_id: "!room2:example.org".to_owned(),
                 display_name: "Room 2".to_owned(),
                 display_label: "Room 2".to_owned(),
+                original_display_label: "Room 2".to_owned(),
                 avatar: None,
                 is_dm: false,
                 dm_user_ids: Vec::new(),
