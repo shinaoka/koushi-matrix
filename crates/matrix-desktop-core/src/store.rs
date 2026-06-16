@@ -14,17 +14,23 @@
 
 use std::path::PathBuf;
 
+use chacha20poly1305::{
+    ChaCha20Poly1305, Key, KeyInit, Nonce,
+    aead::{Aead, OsRng, rand_core::RngCore},
+};
 use matrix_desktop_key::{CredentialStore, LocalUnlockSecret, SessionKeyId};
 use matrix_desktop_sdk::{
     MatrixClientStoreConfig, MatrixClientStoreKey, MatrixSearchIndexKey,
     MatrixSearchIndexStoreConfig,
 };
-use matrix_desktop_state::LocalEncryptionHealth;
+use matrix_desktop_state::{ComposerDraftStore, LocalEncryptionHealth};
 
 use crate::failure::CoreFailure;
 
 /// Service name used for all keyring entries in this application.
 const CREDENTIAL_STORE_SERVICE_NAME: &str = "matrix-desktop";
+const COMPOSER_DRAFTS_FILE_MAGIC: &[u8] = b"RURI-DRAFTS-V1\0";
+const COMPOSER_DRAFTS_NONCE_LEN: usize = 12;
 
 /// Env var for QA/debug file-based credential store override.
 /// Only honored in debug/test builds; release builds ignore it entirely.
@@ -140,6 +146,43 @@ impl StoreActor {
         })
     }
 
+    pub fn load_composer_drafts(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<ComposerDraftStore, CoreFailure> {
+        let path = self.account_composer_drafts_file(key_id);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ComposerDraftStore::default());
+            }
+            Err(_) => return Err(CoreFailure::StoreUnavailable),
+        };
+        decrypt_composer_drafts_payload(&self.load_unlock_secret(key_id)?, &bytes)
+    }
+
+    pub fn save_composer_drafts(
+        &self,
+        key_id: &SessionKeyId,
+        drafts: &ComposerDraftStore,
+    ) -> Result<(), CoreFailure> {
+        let path = self.account_composer_drafts_file(key_id);
+        let drafts = drafts.bounded_for_persistence();
+        if drafts.is_empty() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => return Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(_) => return Err(CoreFailure::StoreUnavailable),
+            }
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| CoreFailure::StoreUnavailable)?;
+        }
+        let payload =
+            encrypt_composer_drafts_payload(&self.load_or_create_unlock_secret(key_id)?, &drafts)?;
+        std::fs::write(path, payload).map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
     /// Delete the stored unlock secret and the per-account store/cache
     /// directories for an account (shutdown step 7: "clear credentials and
     /// stores"). Called during logout / account removal.
@@ -190,6 +233,12 @@ impl StoreActor {
         }
     }
 
+    fn load_unlock_secret(&self, key_id: &SessionKeyId) -> Result<LocalUnlockSecret, CoreFailure> {
+        self.credential_store
+            .load(key_id)
+            .map_err(|_| CoreFailure::LocalEncryptionUnavailable)
+    }
+
     fn account_root_dir(&self, key_id: &SessionKeyId) -> PathBuf {
         self.data_dir
             .join("accounts")
@@ -207,6 +256,52 @@ impl StoreActor {
     fn account_search_index_dir(&self, key_id: &SessionKeyId) -> PathBuf {
         self.account_root_dir(key_id).join("search-index")
     }
+
+    fn account_composer_drafts_file(&self, key_id: &SessionKeyId) -> PathBuf {
+        self.account_root_dir(key_id)
+            .join("composer-drafts")
+            .join("drafts.v1.enc")
+    }
+}
+
+fn encrypt_composer_drafts_payload(
+    secret: &LocalUnlockSecret,
+    drafts: &ComposerDraftStore,
+) -> Result<Vec<u8>, CoreFailure> {
+    let plaintext = serde_json::to_vec(drafts).map_err(|_| CoreFailure::StoreUnavailable)?;
+    let key = secret.derive_composer_drafts_key();
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
+    let mut nonce_bytes = [0_u8; COMPOSER_DRAFTS_NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_ref())
+        .map_err(|_| CoreFailure::StoreUnavailable)?;
+    let mut payload = Vec::with_capacity(
+        COMPOSER_DRAFTS_FILE_MAGIC.len() + COMPOSER_DRAFTS_NONCE_LEN + ciphertext.len(),
+    );
+    payload.extend_from_slice(COMPOSER_DRAFTS_FILE_MAGIC);
+    payload.extend_from_slice(&nonce_bytes);
+    payload.extend_from_slice(&ciphertext);
+    Ok(payload)
+}
+
+fn decrypt_composer_drafts_payload(
+    secret: &LocalUnlockSecret,
+    payload: &[u8],
+) -> Result<ComposerDraftStore, CoreFailure> {
+    let header_len = COMPOSER_DRAFTS_FILE_MAGIC.len() + COMPOSER_DRAFTS_NONCE_LEN;
+    if payload.len() < header_len || !payload.starts_with(COMPOSER_DRAFTS_FILE_MAGIC) {
+        return Err(CoreFailure::StoreUnavailable);
+    }
+    let nonce_start = COMPOSER_DRAFTS_FILE_MAGIC.len();
+    let nonce_end = nonce_start + COMPOSER_DRAFTS_NONCE_LEN;
+    let nonce = Nonce::from_slice(&payload[nonce_start..nonce_end]);
+    let key = secret.derive_composer_drafts_key();
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
+    let plaintext = cipher
+        .decrypt(nonce, &payload[nonce_end..])
+        .map_err(|_| CoreFailure::StoreUnavailable)?;
+    serde_json::from_slice(&plaintext).map_err(|_| CoreFailure::StoreUnavailable)
 }
 
 /// Derive a filesystem-safe directory name from a `SessionKeyId`.
@@ -689,6 +784,15 @@ mod tests {
         }
     }
 
+    fn file_store_actor(data_dir: &tempfile::TempDir, cred_dir: &tempfile::TempDir) -> StoreActor {
+        StoreActor {
+            credential_store: CredentialStoreBackend::FileDir(FileCredentialStore::new(
+                cred_dir.path(),
+            )),
+            data_dir: data_dir.path().to_path_buf(),
+        }
+    }
+
     #[test]
     fn file_credential_store_round_trip() {
         let dir = tempdir().expect("tempdir");
@@ -718,12 +822,7 @@ mod tests {
         let cred_dir = tempdir().expect("tempdir");
         let key_id = make_key_id();
 
-        let actor = StoreActor {
-            credential_store: CredentialStoreBackend::FileDir(FileCredentialStore::new(
-                cred_dir.path(),
-            )),
-            data_dir: data_dir.path().to_path_buf(),
-        };
+        let actor = file_store_actor(&data_dir, &cred_dir);
 
         let config = actor
             .account_store_config(&key_id)
@@ -743,12 +842,7 @@ mod tests {
         let cred_dir = tempdir().expect("tempdir");
         let key_id = make_key_id();
 
-        let actor = StoreActor {
-            credential_store: CredentialStoreBackend::FileDir(FileCredentialStore::new(
-                cred_dir.path(),
-            )),
-            data_dir: data_dir.path().to_path_buf(),
-        };
+        let actor = file_store_actor(&data_dir, &cred_dir);
 
         // Should not panic even when credentials don't exist.
         actor.delete_account_credentials(&key_id);
@@ -786,6 +880,149 @@ mod tests {
         assert_eq!(
             actor.probe_local_encryption_health(&key_id),
             matrix_desktop_state::LocalEncryptionHealth::LockedOrInaccessible
+        );
+    }
+
+    #[test]
+    fn composer_drafts_are_encrypted_and_reject_corruption() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let plaintext = "secret draft body";
+        let mut drafts = ComposerDraftStore::default();
+        drafts.set_room_draft("!room:test.example.com".to_owned(), plaintext.to_owned());
+
+        actor
+            .save_composer_drafts(&key_id, &drafts)
+            .expect("save encrypted drafts");
+
+        let path = actor.account_composer_drafts_file(&key_id);
+        let bytes = std::fs::read(&path).expect("read encrypted drafts");
+        assert!(
+            !bytes
+                .windows(plaintext.len())
+                .any(|window| window == plaintext.as_bytes())
+        );
+
+        let loaded = actor
+            .load_composer_drafts(&key_id)
+            .expect("load encrypted drafts");
+        assert_eq!(
+            loaded
+                .rooms
+                .get("!room:test.example.com")
+                .map(String::as_str),
+            Some(plaintext)
+        );
+
+        let mut corrupted = bytes;
+        let last = corrupted.last_mut().expect("non-empty encrypted payload");
+        *last ^= 0x01;
+        std::fs::write(&path, corrupted).expect("write corrupted drafts");
+        assert!(matches!(
+            actor.load_composer_drafts(&key_id),
+            Err(CoreFailure::StoreUnavailable)
+        ));
+    }
+
+    #[test]
+    fn loading_composer_drafts_does_not_create_missing_credentials() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let path = actor.account_composer_drafts_file(&key_id);
+        std::fs::create_dir_all(path.parent().expect("draft parent")).expect("create parent");
+        std::fs::write(&path, COMPOSER_DRAFTS_FILE_MAGIC).expect("write draft placeholder");
+
+        assert!(matches!(
+            actor.load_composer_drafts(&key_id),
+            Err(CoreFailure::LocalEncryptionUnavailable)
+        ));
+        let missing = actor.credential_backend().load(&key_id).unwrap_err();
+        assert!(matrix_desktop_key::is_missing_credential_error(&missing));
+    }
+
+    #[test]
+    fn empty_composer_drafts_remove_persisted_file() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let mut drafts = ComposerDraftStore::default();
+        drafts.set_room_draft("!room:test.example.com".to_owned(), "draft".to_owned());
+
+        actor
+            .save_composer_drafts(&key_id, &drafts)
+            .expect("save non-empty drafts");
+        let path = actor.account_composer_drafts_file(&key_id);
+        assert!(path.exists());
+
+        actor
+            .save_composer_drafts(&key_id, &ComposerDraftStore::default())
+            .expect("save empty drafts");
+        assert!(!path.exists());
+        assert!(
+            actor
+                .load_composer_drafts(&key_id)
+                .expect("load removed drafts")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn composer_draft_persistence_applies_entry_and_size_bounds() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let mut drafts = ComposerDraftStore::default();
+        let oversized =
+            "x".repeat(matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES + 64);
+
+        for index in 0..(matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT + 8) {
+            drafts.set_room_draft(format!("!room-{index}:test.example.com"), oversized.clone());
+        }
+        for index in 0..(matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT + 8)
+        {
+            drafts.set_thread_draft(
+                "!thread-room:test.example.com".to_owned(),
+                format!("$root-{index}"),
+                oversized.clone(),
+            );
+        }
+
+        actor
+            .save_composer_drafts(&key_id, &drafts)
+            .expect("save bounded drafts");
+        let loaded = actor
+            .load_composer_drafts(&key_id)
+            .expect("load bounded drafts");
+
+        assert!(
+            loaded.rooms.len()
+                <= matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT
+        );
+        assert!(
+            loaded.rooms.values().all(|draft| draft.len()
+                <= matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES)
+        );
+        let thread_count = loaded
+            .threads
+            .values()
+            .map(std::collections::BTreeMap::len)
+            .sum::<usize>();
+        assert!(
+            thread_count <= matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT
+        );
+        assert!(
+            loaded
+                .threads
+                .values()
+                .flat_map(|room_threads| room_threads.values())
+                .all(|draft| draft.len()
+                    <= matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES)
         );
     }
 }

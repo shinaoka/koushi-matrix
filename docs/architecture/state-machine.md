@@ -206,7 +206,23 @@ stateDiagram-v2
   `RoomListUpdated`, logout, lock, and account switch prune or clear drafts so
   only joined-room account context remains. The draft store is not serialized to
   the frontend snapshot; React receives only the active composer for the
-  selected room.
+  selected room. `AppActor` observes draft-store changes after reducer actions
+  and debounces persistence to an account-scoped encrypted local file. It loads
+  the persisted store once a ready/recovery session is known and dispatches
+  `ComposerDraftsLoaded`; corrupt or unavailable stores do not expose raw
+  errors or plaintext to the webview.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Empty
+    Empty --> Editing: ComposerDraftChanged [non_empty selected room] / store room draft
+    Editing --> Editing: ComposerDraftChanged [non_empty selected room] / replace room draft
+    Editing --> Empty: ComposerDraftChanged [empty selected room] / clear room draft
+    Editing --> Empty: SendTextSubmitted [selected room]
+    Editing --> Empty: RoomListUpdated [room pruned] / retain joined rooms
+    Editing --> Empty: LogoutRequested/SessionCleared
+    Empty --> Editing: ComposerDraftsLoaded [active composer empty and persisted draft exists]
+```
 - The thread pane is either closed, opening a root event, or open with a focused
   thread timeline.
 - Thread subscription success must match the current opening room and root event;
@@ -827,6 +843,10 @@ stateDiagram-v2
   submitted composer kind: plain send, or reply send with the reply target that
   was current at submission time. It also clears the selected room's stored
   draft so switching away and back cannot resurrect a submitted message.
+- `SetComposerDraft` crosses the Tauri boundary as an `AppCommand` and reduces
+  to `ComposerDraftChanged`; React must not keep a cross-room draft map or
+  hydrate composers locally. The only snapshot data React receives is
+  `timeline.composer` for the active room.
 - `SendTextFinished { room_id, transaction_id }` clears only the matching pending
   transaction. It returns the composer to `Plain` only when the matched pending
   send was submitted as a reply and the current reply target still equals the

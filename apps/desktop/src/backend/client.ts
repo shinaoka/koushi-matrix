@@ -321,6 +321,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("mark_activity_read", { target });
   }
 
+  async setComposerDraft(roomId: string, draft: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_composer_draft", { roomId, draft });
+  }
+
   async openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("open_thread", { roomId, rootEventId });
   }

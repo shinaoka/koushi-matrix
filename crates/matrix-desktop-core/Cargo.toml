@@ -20,6 +20,7 @@ matrix-desktop-key = { path = "../matrix-desktop-key" }
 matrix-desktop-search = { path = "../matrix-desktop-search" }
 matrix-desktop-state = { path = "../matrix-desktop-state" }
 base64 = "0.22"
+chacha20poly1305 = "0.10"
 eyeball = "0.8"
 eyeball-im = "0.8"
 futures-util = "0.3"

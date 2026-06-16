@@ -1125,6 +1125,208 @@ async fn app_command_sets_open_thread_composer_draft() {
 }
 
 #[tokio::test]
+async fn app_command_sets_selected_room_composer_draft() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.timeline.room_id.as_deref() == Some("!room:example.test")
+    })
+    .await;
+
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
+        request_id,
+        room_id: "!room:example.test".to_owned(),
+        draft: "room draft".to_owned(),
+    }))
+    .await
+    .expect("set room composer draft command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        state.timeline.composer.draft == "room draft"
+    })
+    .await;
+    assert_eq!(snapshot.timeline.composer.draft, "room draft");
+}
+
+#[tokio::test]
+async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+
+    {
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        let mut conn = runtime.attach();
+        runtime
+            .inject_actions(vec![
+                AppAction::RestoreSessionSucceeded(session_info()),
+                AppAction::RoomListUpdated {
+                    spaces: vec![],
+                    rooms: vec![room_summary("!room:example.test")],
+                },
+                AppAction::SelectRoom {
+                    room_id: "!room:example.test".to_owned(),
+                },
+                AppAction::TimelineSubscribed {
+                    room_id: "!room:example.test".to_owned(),
+                },
+            ])
+            .await;
+        wait_for_state(&mut conn, |state| {
+            matches!(state.session, SessionState::Ready(_))
+                && state.timeline.room_id.as_deref() == Some("!room:example.test")
+        })
+        .await;
+
+        conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
+            request_id: conn.next_request_id(),
+            room_id: "!room:example.test".to_owned(),
+            draft: "survives restart".to_owned(),
+        }))
+        .await
+        .expect("set room composer draft");
+
+        wait_for_state(&mut conn, |state| {
+            state.timeline.composer.draft == "survives restart"
+        })
+        .await;
+        executor::sleep(crate::runtime::COMPOSER_DRAFT_PERSIST_DEBOUNCE * 2).await;
+    }
+
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = restarted.attach();
+    restarted
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+        ])
+        .await;
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        state.timeline.composer.draft == "survives restart"
+    })
+    .await;
+    assert_eq!(snapshot.timeline.composer.draft, "survives restart");
+}
+
+#[tokio::test]
+async fn cleared_composer_drafts_do_not_resurrect_on_restart() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+
+    {
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        let mut conn = runtime.attach();
+        runtime
+            .inject_actions(vec![
+                AppAction::RestoreSessionSucceeded(session_info()),
+                AppAction::RoomListUpdated {
+                    spaces: vec![],
+                    rooms: vec![room_summary("!room:example.test")],
+                },
+                AppAction::SelectRoom {
+                    room_id: "!room:example.test".to_owned(),
+                },
+                AppAction::TimelineSubscribed {
+                    room_id: "!room:example.test".to_owned(),
+                },
+            ])
+            .await;
+        wait_for_state(&mut conn, |state| {
+            matches!(state.session, SessionState::Ready(_))
+                && state.timeline.room_id.as_deref() == Some("!room:example.test")
+        })
+        .await;
+
+        conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
+            request_id: conn.next_request_id(),
+            room_id: "!room:example.test".to_owned(),
+            draft: "deleted before restart".to_owned(),
+        }))
+        .await
+        .expect("set room composer draft");
+        wait_for_state(&mut conn, |state| {
+            state.timeline.composer.draft == "deleted before restart"
+        })
+        .await;
+        executor::sleep(crate::runtime::COMPOSER_DRAFT_PERSIST_DEBOUNCE * 2).await;
+
+        conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
+            request_id: conn.next_request_id(),
+            room_id: "!room:example.test".to_owned(),
+            draft: String::new(),
+        }))
+        .await
+        .expect("clear room composer draft");
+        wait_for_state(&mut conn, |state| state.timeline.composer.draft.is_empty()).await;
+        executor::sleep(crate::runtime::COMPOSER_DRAFT_PERSIST_DEBOUNCE * 2).await;
+    }
+
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = restarted.attach();
+    restarted
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::SelectRoom {
+                room_id: "!room:example.test".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "!room:example.test".to_owned(),
+            },
+        ])
+        .await;
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.timeline.room_id.as_deref() == Some("!room:example.test")
+            && state.timeline.is_subscribed
+    })
+    .await;
+    assert!(snapshot.timeline.composer.draft.is_empty());
+}
+
+#[tokio::test]
 async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();

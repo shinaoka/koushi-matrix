@@ -918,6 +918,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Because the resolver crosses an async IPC boundary, GUI key handlers must not
   call `preventDefault()` for `is_composing` key events; native IME commit owns
   that browser default while Rust still owns the product action (`CommitImeCandidate`).
+- Main and thread composer draft survival is Rust-owned. React reads
+  `snapshot.state.timeline.composer.draft` or the open thread composer, then
+  dispatches `set_composer_draft` / `set_thread_composer_draft`; do not add a
+  React-local per-room/per-thread draft map. The backing store is encrypted,
+  debounced, and account-scoped in `matrix-desktop-core`; it is not serialized as
+  a full draft map to the webview snapshot.
 - The focused local composer QA lane is:
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000`.
   Required private-data-free tokens are `mention_send=ok`,

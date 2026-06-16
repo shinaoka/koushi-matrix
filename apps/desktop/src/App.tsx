@@ -691,7 +691,6 @@ export function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
-  const [composerDraft, setComposerDraft] = useState("");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [stagedAttachment, setStagedAttachment] = useState<File | null>(null);
   const [imageCompressionDialog, setImageCompressionDialog] =
@@ -755,6 +754,7 @@ export function App() {
       titleHint: null,
       qaTitleToken: "unread=0 badge=0 notify=none"
     };
+  const composerDraft = snapshot?.state.timeline.composer.draft ?? "";
 
   function handleShortcutAction(shortcutId: string): boolean {
     switch (shortcutId) {
@@ -1491,7 +1491,7 @@ export function App() {
         return;
       }
       setStagedAttachment(null);
-      setComposerDraft("");
+      setSnapshot(await api.setComposerDraft(roomId, ""));
       setComposerMentions(EMPTY_MENTION_INTENT);
       return;
     }
@@ -1529,13 +1529,20 @@ export function App() {
       setQaSendStatus("failed");
       return;
     }
-    setComposerDraft("");
     setComposerMentions(EMPTY_MENTION_INTENT);
   }
 
-  function updateComposerDraft(value: string) {
-    setComposerDraft(value);
+  async function updateComposerDraft(value: string) {
+    const roomId = snapshot?.state.timeline.room_id;
     setComposerMentions((mentions) => pruneMentionIntentForDraft(mentions, value));
+    if (!roomId) {
+      return;
+    }
+    try {
+      setSnapshot(await api.setComposerDraft(roomId, value));
+    } catch {
+      // Command failures are surfaced through the Rust-owned error/event path.
+    }
   }
 
   async function uploadMediaFile(file: File, caption = ""): Promise<boolean> {
@@ -1937,7 +1944,9 @@ export function App() {
               setStagedAttachment(file);
             }}
             onClearAttachment={() => setStagedAttachment(null)}
-            onComposerDraftChange={updateComposerDraft}
+            onComposerDraftChange={(value) => {
+              void updateComposerDraft(value);
+            }}
             onMentionIntentChange={setComposerMentions}
             onOpenThread={openThread}
             onPaginateBackwards={paginateTimelineBackwards}

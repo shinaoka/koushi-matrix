@@ -423,8 +423,8 @@ function resolveComposerKeyActionFromSettings(
 }
 
 // A reply-mode composer snapshot (composer.mode = Reply) used as the
-// set_composer_reply_target response so the App's local `sendText` dispatch
-// sees reply mode and routes to send_reply.
+// set_composer_reply_target response so the App sees Rust-shaped reply mode and
+// routes to send_reply.
 function replyModeSnapshot(): DesktopSnapshot {
   return readySnapshot({
     composerMode: { Reply: { in_reply_to_event_id: SEED_EVENT_ID } }
@@ -744,6 +744,24 @@ mock.setCommandResponse("accept_invite", () => currentSnapshot);
 mock.setCommandResponse("decline_invite", () => currentSnapshot);
 mock.setCommandResponse("start_direct_message", () => currentSnapshot);
 mock.setCommandResponse("invite_user", () => currentSnapshot);
+mock.setCommandResponse("set_composer_draft", ({ roomId, draft }: { roomId: string; draft: string }) => {
+  if (currentSnapshot.state.timeline.room_id !== roomId) {
+    return currentSnapshot;
+  }
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      timeline: {
+        ...currentSnapshot.state.timeline,
+        composer: {
+          ...currentSnapshot.state.timeline.composer,
+          draft
+        }
+      }
+    }
+  });
+});
 // Clicking reply records set_composer_reply_target AND returns a reply-mode
 // snapshot, so the subsequent composer submit dispatches send_reply.
 mock.setCommandResponse("set_composer_reply_target", () =>

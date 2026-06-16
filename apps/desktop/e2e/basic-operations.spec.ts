@@ -42,6 +42,8 @@
  *      event marks redacted item DTOs hidden.
  *  18. Drive image-compression settings and assert upload_media receives the
  *      Rust-shaped selected image variant contract.
+ *  19. Drive main composer drafts through set_composer_draft and hydrate them
+ *      from Rust-shaped per-room snapshots.
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -1836,7 +1838,115 @@ test("markdown toolbar and slash composer input dispatch Rust-owned send bodies"
       roomId: HARNESS_ROOM_ID,
       body: "/me waves",
       mentions: { targets: [] }
+  });
+});
+
+test("main composer draft is Rust snapshot scoped per room", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const primaryRoomId = "!harness-room:example.invalid";
+    const secondaryRoomId = "!draft-room-b:example.invalid";
+    const draftByRoom: Record<string, string> = {};
+    const base = window.__harness.currentSnapshot();
+    const rooms = [
+      base.state.rooms[0],
+      {
+        room_id: secondaryRoomId,
+        display_name: "Draft Room B",
+        display_label: "Draft Room B",
+        original_display_label: "Draft Room B",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        parent_space_ids: []
+      }
+    ];
+    const roomListItems = rooms.map((room) => ({
+      room_id: room.room_id,
+      display_name: room.display_label,
+      avatar: room.avatar,
+      tags: room.tags,
+      unread_count: room.unread_count,
+      highlight_count: room.highlight_count
+    }));
+    const projectRoom = (roomId: string) => {
+      const current = window.__harness.currentSnapshot();
+      return {
+        ...current,
+        state: {
+          ...current.state,
+          navigation: {
+            ...current.state.navigation,
+            active_room_id: roomId
+          },
+          rooms,
+          timeline: {
+            ...current.state.timeline,
+            room_id: roomId,
+            is_subscribed: true,
+            composer: {
+              pending_transaction_id: null,
+              draft: draftByRoom[roomId] ?? "",
+              mode: "Plain"
+            }
+          },
+          thread: { kind: "closed" },
+          focused_context: { kind: "closed" }
+        },
+        sidebar: {
+          ...current.sidebar,
+          space_rooms: roomListItems
+        },
+        thread: null
+      };
+    };
+
+    window.__harness.setSnapshot(projectRoom(primaryRoomId));
+    window.__harness.setCommandResponse(
+      "set_composer_draft",
+      ({ roomId, draft }: { roomId: string; draft: string }) => {
+        const normalizedRoomId = String(roomId);
+        if (draft.length === 0) {
+          delete draftByRoom[normalizedRoomId];
+        } else {
+          draftByRoom[normalizedRoomId] = draft;
+        }
+        const next = projectRoom(window.__harness.currentSnapshot().state.timeline.room_id ?? primaryRoomId);
+        window.__harness.setSnapshot(next);
+        return next;
+      }
+    );
+    window.__harness.setCommandResponse("select_room", ({ roomId }: { roomId: string }) => {
+      const next = projectRoom(String(roomId));
+      window.__harness.setSnapshot(next);
+      return next;
     });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("Room A draft");
+  await expect(composer).toHaveValue("Room A draft");
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args)
+    )
+    .toEqual({ roomId: HARNESS_ROOM_ID, draft: "Room A draft" });
+
+  await page.getByRole("button", { name: "Draft Room B" }).click();
+  await expect(composer).toHaveValue("");
+  await composer.fill("Room B draft");
+  await expect(composer).toHaveValue("Room B draft");
+
+  await page.getByRole("button", { name: "Harness Room" }).click();
+  await expect(composer).toHaveValue("Room A draft");
+  await page.getByRole("button", { name: "Draft Room B" }).click();
+  await expect(composer).toHaveValue("Room B draft");
 });
 
 test("main composer composing Enter never sends or accepts mention autocomplete", async ({

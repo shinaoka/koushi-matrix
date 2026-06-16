@@ -2038,6 +2038,23 @@ pub async fn cancel_composer_reply(
 }
 
 #[tauri::command]
+pub async fn set_composer_draft(
+    room_id: String,
+    draft: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_composer_draft_command(request_id, room_id, draft),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn set_thread_composer_draft(
     room_id: String,
     root_event_id: String,
@@ -3118,6 +3135,18 @@ pub(crate) fn build_set_thread_composer_draft_command(
     })
 }
 
+pub(crate) fn build_set_composer_draft_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    draft: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::SetComposerDraft {
+        request_id,
+        room_id,
+        draft,
+    })
+}
+
 pub(crate) fn build_send_thread_reply_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -3469,8 +3498,9 @@ mod tests {
         build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
         build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
         build_set_local_user_alias_command, build_set_presence_command, build_set_room_tag_command,
-        build_set_space_child_command, build_set_thread_composer_draft_command,
-        build_set_typing_command, build_start_direct_message_command,
+        build_set_space_child_command, build_set_composer_draft_command,
+        build_set_thread_composer_draft_command, build_set_typing_command,
+        build_start_direct_message_command,
         build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
         build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
@@ -4894,6 +4924,23 @@ mod tests {
                 assert_eq!(command_room_id, room_id);
                 assert_eq!(root_event_id, "$root");
                 assert_eq!(draft, "thread draft");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_set_composer_draft_command(
+            fake_request_id(22),
+            room_id.clone(),
+            "room draft".to_owned(),
+        ) {
+            CoreCommand::App(AppCommand::SetComposerDraft {
+                request_id,
+                room_id: command_room_id,
+                draft,
+            }) => {
+                assert_eq!(request_id, fake_request_id(22));
+                assert_eq!(command_room_id, room_id);
+                assert_eq!(draft, "room draft");
             }
             other => panic!("unexpected command: {other:?}"),
         }

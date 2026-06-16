@@ -33,6 +33,7 @@ impl CoreCommand {
                 AppCommand::Shutdown { request_id }
                 | AppCommand::SetComposerReplyTarget { request_id, .. }
                 | AppCommand::CancelComposerReply { request_id }
+                | AppCommand::SetComposerDraft { request_id, .. }
                 | AppCommand::SetThreadComposerDraft { request_id, .. }
                 | AppCommand::OpenThread { request_id, .. }
                 | AppCommand::CloseThread { request_id }
@@ -160,6 +161,11 @@ pub enum AppCommand {
     CancelComposerReply {
         request_id: RequestId,
     },
+    SetComposerDraft {
+        request_id: RequestId,
+        room_id: String,
+        draft: String,
+    },
     SetThreadComposerDraft {
         request_id: RequestId,
         room_id: String,
@@ -244,6 +250,16 @@ impl fmt::Debug for AppCommand {
             Self::CancelComposerReply { request_id } => formatter
                 .debug_struct("CancelComposerReply")
                 .field("request_id", request_id)
+                .finish(),
+            Self::SetComposerDraft {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("SetComposerDraft")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("draft", &"MessageBody(..)")
                 .finish(),
             Self::SetThreadComposerDraft {
                 request_id,

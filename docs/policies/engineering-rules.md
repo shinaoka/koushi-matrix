@@ -116,6 +116,12 @@ Rules:
    updates, but browser-headless coverage must drive the visible controls and
    assert the `update_settings` payload plus the returned Rust-shaped snapshot
    state; React must not repair switch state locally after dispatch.
+   Unsent composer drafts are not settings. If product behavior persists them
+   across restart, they must be account-scoped encrypted local data owned by
+   `StoreActor`/`AppActor`, derived from a dedicated local-unlock-secret key
+   domain, debounced, size-bounded, and excluded from general settings JSON,
+   logs, QA tokens, and full webview snapshots. React may render only the active
+   composer DTO and dispatch typed draft commands.
 11. E2EE trust diagnostics are kind-only. Verification, cross-signing,
    key-backup, and identity-reset commands/events may expose structured state to
    the UI, but normal `Debug`, QA logs, and window-title tokens must redact

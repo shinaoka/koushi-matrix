@@ -14,11 +14,18 @@ fn namespaced_derivations_are_distinct() {
 
     let sdk_store_key = secret.derive_sdk_store_key();
     let search_key = secret.derive_search_index_key();
+    let composer_drafts_key = secret.derive_composer_drafts_key();
 
     assert_eq!(sdk_store_key.as_bytes().len(), 32);
+    assert_eq!(composer_drafts_key.as_bytes().len(), 32);
     assert_ne!(
         STANDARD.encode(sdk_store_key.as_bytes()),
         search_key.as_str()
+    );
+    assert_ne!(sdk_store_key.as_bytes(), composer_drafts_key.as_bytes());
+    assert_ne!(
+        search_key.as_str(),
+        STANDARD.encode(composer_drafts_key.as_bytes())
     );
 }
 
@@ -27,10 +34,12 @@ fn derived_and_stored_secrets_have_redacted_debug() {
     let secret = secret_from_test_byte(7);
     let sdk_store_key = secret.derive_sdk_store_key();
     let search_key = secret.derive_search_index_key();
+    let composer_drafts_key = secret.derive_composer_drafts_key();
     let stored_secret = secret.to_storage_string();
 
     assert_eq!(format!("{sdk_store_key:?}"), "SdkStoreKey(..)");
     assert_eq!(format!("{search_key:?}"), "SearchIndexKey(..)");
+    assert_eq!(format!("{composer_drafts_key:?}"), "ComposerDraftsKey(..)");
     assert_eq!(format!("{stored_secret:?}"), "StoredLocalUnlockSecret(..)");
     assert!(!format!("{secret:?}").contains(stored_secret.as_str()));
 }

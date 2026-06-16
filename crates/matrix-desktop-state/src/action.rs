@@ -407,6 +407,9 @@ pub enum AppAction {
     TimelineBackPaginationFinished {
         room_id: String,
     },
+    ComposerDraftsLoaded {
+        drafts: crate::state::ComposerDraftStore,
+    },
     ComposerDraftChanged {
         room_id: String,
         draft: String,

@@ -808,6 +808,7 @@ pub fn run() {
             commands::invite_user,
             commands::set_composer_reply_target,
             commands::cancel_composer_reply,
+            commands::set_composer_draft,
             commands::set_thread_composer_draft,
             commands::toggle_reaction,
             commands::send_reaction,

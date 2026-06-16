@@ -19,6 +19,7 @@ pub const LOCAL_UNLOCK_SECRET_LEN: usize = 32;
 
 const SDK_STORE_INFO: &[u8] = b"matrix-desktop:sdk-store";
 const SEARCH_INDEX_INFO: &[u8] = b"matrix-desktop:search-index";
+const COMPOSER_DRAFTS_INFO: &[u8] = b"matrix-desktop:composer-drafts";
 const LAST_SESSION_ACCOUNT_NAME: &str = "matrix-desktop:last-session:v1";
 const SAVED_SESSIONS_ACCOUNT_NAME: &str = "matrix-desktop:saved-sessions:v1";
 
@@ -357,6 +358,22 @@ impl fmt::Debug for SearchIndexKey {
     }
 }
 
+pub struct ComposerDraftsKey {
+    key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
+}
+
+impl ComposerDraftsKey {
+    pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
+        &self.key
+    }
+}
+
+impl fmt::Debug for ComposerDraftsKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ComposerDraftsKey(..)")
+    }
+}
+
 pub struct StoredLocalUnlockSecret {
     value: Zeroizing<String>,
 }
@@ -459,6 +476,14 @@ impl LocalUnlockSecret {
         );
         SearchIndexKey {
             key: Zeroizing::new(STANDARD.encode(&key[..])),
+        }
+    }
+
+    pub fn derive_composer_drafts_key(&self) -> ComposerDraftsKey {
+        ComposerDraftsKey {
+            key: self
+                .derive_key(COMPOSER_DRAFTS_INFO)
+                .expect("32-byte HKDF output length is valid"),
         }
     }
 

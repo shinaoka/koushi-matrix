@@ -8,13 +8,15 @@
 //!   `StateChanged` per processed command batch
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityRow, ActivityState, ActivityStream, ActivityTab, AppAction,
-    AppEffect, AppState, ProfileUpdateRequest, RoomSummary, SearchScope as AppSearchScope,
-    SessionState, ThreadPaneState, UiEvent, reduce,
+    AppEffect, AppState, ComposerDraftStore, ProfileUpdateRequest, RoomSummary,
+    SearchScope as AppSearchScope, SessionState, ThreadPaneState, UiEvent, reduce,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -30,10 +32,11 @@ use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 use crate::settings::SettingsStore;
-use crate::store::StoreActor;
+use crate::store::{StoreActor, session_key_id_from_info};
 
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
 pub const EVENT_QUEUE_CAPACITY: usize = 1024;
+pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommandSubmitError {
@@ -73,15 +76,60 @@ impl CoreRuntime {
 
     /// Start with a custom data directory (used by QA binaries and tests).
     pub fn start_with_data_dir(data_dir: PathBuf) -> Self {
-        Self::start_inner(EVENT_QUEUE_CAPACITY, data_dir)
+        let account_store_actor = StoreActor::new(data_dir.clone());
+        let composer_draft_store_actor = StoreActor::new(data_dir.clone());
+        Self::start_inner(
+            EVENT_QUEUE_CAPACITY,
+            data_dir,
+            account_store_actor,
+            composer_draft_store_actor,
+        )
     }
 
     #[cfg(test)]
     pub(crate) fn start_with_event_capacity(event_capacity: usize) -> Self {
-        Self::start_inner(event_capacity, default_data_dir())
+        let data_dir = default_data_dir();
+        let account_store_actor = StoreActor::new(data_dir.clone());
+        let composer_draft_store_actor = StoreActor::new(data_dir.clone());
+        Self::start_inner(
+            event_capacity,
+            data_dir,
+            account_store_actor,
+            composer_draft_store_actor,
+        )
     }
 
-    fn start_inner(event_capacity: usize, data_dir: PathBuf) -> Self {
+    #[cfg(test)]
+    pub(crate) fn start_with_data_dir_and_file_credentials(
+        data_dir: PathBuf,
+        credential_dir: PathBuf,
+    ) -> Self {
+        let account_store_actor = StoreActor::with_backend(
+            crate::store::CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+                credential_dir.clone(),
+            )),
+            data_dir.clone(),
+        );
+        let composer_draft_store_actor = StoreActor::with_backend(
+            crate::store::CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+                credential_dir,
+            )),
+            data_dir.clone(),
+        );
+        Self::start_inner(
+            EVENT_QUEUE_CAPACITY,
+            data_dir,
+            account_store_actor,
+            composer_draft_store_actor,
+        )
+    }
+
+    fn start_inner(
+        event_capacity: usize,
+        data_dir: PathBuf,
+        store_actor: StoreActor,
+        composer_draft_store_actor: StoreActor,
+    ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
         let (event_tx, _) = broadcast::channel(event_capacity);
         let (action_tx, action_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
@@ -97,9 +145,6 @@ impl CoreRuntime {
         let _ = reduce(&mut initial_state, settings_action);
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_state.clone());
 
-        // Build the store actor (owns the credential store backend).
-        let store_actor = StoreActor::new(data_dir);
-
         // Spawn AccountActor with shared channels.
         let account_actor =
             crate::account::AccountActor::spawn(store_actor, action_tx.clone(), event_tx.clone());
@@ -111,6 +156,9 @@ impl CoreRuntime {
             snapshot_tx,
             state: initial_state,
             settings_store,
+            composer_draft_store_actor,
+            composer_draft_loaded_for: None,
+            pending_composer_draft_persist: None,
             account_actor,
             activity_projection: ActivityProjection::default(),
         };
@@ -245,8 +293,17 @@ struct AppActor {
     snapshot_tx: watch::Sender<AppStateSnapshot>,
     state: AppState,
     settings_store: SettingsStore,
+    composer_draft_store_actor: StoreActor,
+    composer_draft_loaded_for: Option<matrix_desktop_key::SessionKeyId>,
+    pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
+}
+
+struct PendingComposerDraftPersist {
+    key_id: matrix_desktop_key::SessionKeyId,
+    drafts: ComposerDraftStore,
+    deadline: Instant,
 }
 
 #[derive(Default)]
@@ -444,7 +501,16 @@ fn sort_activity_rows(rows: &mut [ActivityRow]) {
 impl AppActor {
     async fn run(mut self) {
         loop {
+            let composer_draft_persist_delay = self.composer_draft_persist_delay();
             tokio::select! {
+                _ = async {
+                    match composer_draft_persist_delay {
+                        Some(delay) => executor::sleep(delay).await,
+                        None => future::pending::<()>().await,
+                    }
+                } => {
+                    self.flush_pending_composer_drafts().await;
+                }
                 command = self.command_rx.recv() => {
                     let Some(command) = command else { break };
                     let mut state_changed = self.handle_command(command).await;
@@ -470,14 +536,16 @@ impl AppActor {
                         // AppActor owns AppCommand effects above; replaying
                         // actor-projection effects here would double-execute
                         // login, restore, sync, or recovery work.
-                        let _post_projection_effects = reduce(&mut self.state, action);
+                        let _post_projection_effects = self.reduce_app_action(action).await;
                         if let Some(activity_update) = self
                             .activity_projection
                             .update_action_for_open_state(&self.state)
                         {
-                            let _activity_effects = reduce(&mut self.state, activity_update);
+                            let _activity_effects =
+                                self.reduce_app_action(activity_update).await;
                         }
                         self.handle_ui_event_effects(&_post_projection_effects);
+                        self.load_composer_drafts_for_current_session().await;
                         state_changed = true;
                     }
                     if state_changed {
@@ -487,7 +555,74 @@ impl AppActor {
             }
         }
         // Shutdown: tell AccountActor to stop.
+        self.flush_pending_composer_drafts().await;
         let _ = self.account_actor.send(AccountMessage::Shutdown).await;
+    }
+
+    async fn reduce_app_action(&mut self, action: AppAction) -> Vec<AppEffect> {
+        let previous_session = composer_draft_session_key(&self.state);
+        let previous_drafts = self.state.composer_drafts.clone();
+        let effects = reduce(&mut self.state, action);
+        if previous_drafts != self.state.composer_drafts {
+            let target_session = composer_draft_session_key(&self.state).or(previous_session);
+            if let Some(key_id) = target_session {
+                self.schedule_composer_draft_persist(key_id, self.state.composer_drafts.clone())
+                    .await;
+            }
+        }
+        effects
+    }
+
+    async fn load_composer_drafts_for_current_session(&mut self) {
+        let Some(key_id) = composer_draft_session_key(&self.state) else {
+            self.composer_draft_loaded_for = None;
+            return;
+        };
+        if self.composer_draft_loaded_for.as_ref() == Some(&key_id) {
+            return;
+        }
+
+        let drafts = self
+            .composer_draft_store_actor
+            .load_composer_drafts(&key_id)
+            .unwrap_or_default();
+        let effects = reduce(&mut self.state, AppAction::ComposerDraftsLoaded { drafts });
+        self.composer_draft_loaded_for = Some(key_id);
+        self.handle_ui_event_effects(&effects);
+    }
+
+    async fn schedule_composer_draft_persist(
+        &mut self,
+        key_id: matrix_desktop_key::SessionKeyId,
+        drafts: ComposerDraftStore,
+    ) {
+        if self
+            .pending_composer_draft_persist
+            .as_ref()
+            .is_some_and(|pending| pending.key_id != key_id)
+        {
+            self.flush_pending_composer_drafts().await;
+        }
+        self.pending_composer_draft_persist = Some(PendingComposerDraftPersist {
+            key_id,
+            drafts,
+            deadline: Instant::now() + COMPOSER_DRAFT_PERSIST_DEBOUNCE,
+        });
+    }
+
+    fn composer_draft_persist_delay(&self) -> Option<Duration> {
+        self.pending_composer_draft_persist
+            .as_ref()
+            .map(|pending| pending.deadline.saturating_duration_since(Instant::now()))
+    }
+
+    async fn flush_pending_composer_drafts(&mut self) {
+        let Some(pending) = self.pending_composer_draft_persist.take() else {
+            return;
+        };
+        let _ = self
+            .composer_draft_store_actor
+            .save_composer_drafts(&pending.key_id, &pending.drafts);
     }
 
     /// Returns whether `AppState` changed.
@@ -512,9 +647,12 @@ impl AppActor {
                     _ => None,
                 };
                 let display_label_user_ids = display_label_user_id.into_iter().collect::<Vec<_>>();
-                let effects = account_command_projected_action(&account_command)
-                    .map(|action| reduce(&mut self.state, action))
-                    .unwrap_or_default();
+                let effects =
+                    if let Some(action) = account_command_projected_action(&account_command) {
+                        self.reduce_app_action(action).await
+                    } else {
+                        Vec::new()
+                    };
                 let projected_state_changed = !effects.is_empty();
                 self.handle_ui_event_effects_with_display_label_users(
                     &effects,
@@ -542,15 +680,30 @@ impl AppActor {
                     room_id,
                     event_id,
                 } => {
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::ComposerReplyTargetSelected { room_id, event_id },
-                    );
+                    let effects = self
+                        .reduce_app_action(AppAction::ComposerReplyTargetSelected {
+                            room_id,
+                            event_id,
+                        })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
                 AppCommand::CancelComposerReply { request_id } => {
-                    let effects = reduce(&mut self.state, AppAction::ComposerReplyCancelled);
+                    let effects = self
+                        .reduce_app_action(AppAction::ComposerReplyCancelled)
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::SetComposerDraft {
+                    request_id,
+                    room_id,
+                    draft,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::ComposerDraftChanged { room_id, draft })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
@@ -560,14 +713,13 @@ impl AppActor {
                     root_event_id,
                     draft,
                 } => {
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::ThreadComposerDraftChanged {
+                    let effects = self
+                        .reduce_app_action(AppAction::ThreadComposerDraftChanged {
                             room_id,
                             root_event_id,
                             draft,
-                        },
-                    );
+                        })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
@@ -578,13 +730,12 @@ impl AppActor {
                 } => {
                     let replaced_thread_key =
                         self.unsubscribe_replaced_thread_timeline(&room_id, &root_event_id);
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::OpenThread {
+                    let effects = self
+                        .reduce_app_action(AppAction::OpenThread {
                             room_id,
                             root_event_id,
-                        },
-                    );
+                        })
+                        .await;
                     if effects_open_thread_timeline(&effects) {
                         if let Some(key) = replaced_thread_key {
                             self.send_timeline_command_or_fail(
@@ -599,7 +750,7 @@ impl AppActor {
                 }
                 AppCommand::CloseThread { request_id } => {
                     let thread_key = self.current_thread_timeline_key();
-                    let effects = reduce(&mut self.state, AppAction::CloseThread);
+                    let effects = self.reduce_app_action(AppAction::CloseThread).await;
                     if let Some(key) = thread_key {
                         self.send_timeline_command_or_fail(
                             request_id,
@@ -617,10 +768,9 @@ impl AppActor {
                 } => {
                     let replaced_focused_key =
                         self.unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::OpenFocusedContext { room_id, event_id },
-                    );
+                    let effects = self
+                        .reduce_app_action(AppAction::OpenFocusedContext { room_id, event_id })
+                        .await;
                     if effects_open_focused_timeline(&effects) {
                         if let Some(key) = replaced_focused_key {
                             self.send_timeline_command_or_fail(
@@ -639,7 +789,7 @@ impl AppActor {
                     timestamp_ms,
                 } => {
                     let focused_key = self.current_focused_context_timeline_key();
-                    let effects = reduce(&mut self.state, AppAction::CloseFocusedContext);
+                    let effects = self.reduce_app_action(AppAction::CloseFocusedContext).await;
                     if let Some(key) = focused_key {
                         self.send_timeline_command_or_fail(
                             request_id,
@@ -652,10 +802,9 @@ impl AppActor {
                         .activity_projection
                         .event_at_or_after(&room_id, timestamp_ms)
                     {
-                        let effects = reduce(
-                            &mut self.state,
-                            AppAction::OpenFocusedContext { room_id, event_id },
-                        );
+                        let effects = self
+                            .reduce_app_action(AppAction::OpenFocusedContext { room_id, event_id })
+                            .await;
                         self.handle_app_effects(request_id, effects).await;
                         return true;
                     }
@@ -671,7 +820,7 @@ impl AppActor {
                 }
                 AppCommand::CloseFocusedContext { request_id } => {
                     let focused_key = self.current_focused_context_timeline_key();
-                    let effects = reduce(&mut self.state, AppAction::CloseFocusedContext);
+                    let effects = self.reduce_app_action(AppAction::CloseFocusedContext).await;
                     if let Some(key) = focused_key {
                         self.send_timeline_command_or_fail(
                             request_id,
@@ -683,36 +832,33 @@ impl AppActor {
                     true
                 }
                 AppCommand::UpdateSettings { request_id, patch } => {
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::SettingsUpdateRequested {
+                    let effects = self
+                        .reduce_app_action(AppAction::SettingsUpdateRequested {
                             request_id: request_id.sequence,
                             patch,
-                        },
-                    );
+                        })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
                 AppCommand::OpenActivity { request_id } => {
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::ActivityOpened {
+                    let effects = self
+                        .reduce_app_action(AppAction::ActivityOpened {
                             request_id: request_id.sequence,
-                        },
-                    );
+                        })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     let (recent, unread, excluded_room_ids) =
                         self.activity_projection.snapshot(&self.state);
-                    let snapshot_effects = reduce(
-                        &mut self.state,
-                        AppAction::ActivitySnapshotLoaded {
+                    let snapshot_effects = self
+                        .reduce_app_action(AppAction::ActivitySnapshotLoaded {
                             request_id: request_id.sequence,
                             active_tab: ActivityTab::Recent,
                             recent: recent.clone(),
                             unread: unread.clone(),
                             excluded_room_ids,
-                        },
-                    );
+                        })
+                        .await;
                     self.handle_app_effects(request_id, snapshot_effects).await;
                     self.emit(CoreEvent::Activity(ActivityEvent::Opened { request_id }));
                     self.emit(CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
@@ -724,13 +870,15 @@ impl AppActor {
                     true
                 }
                 AppCommand::CloseActivity { request_id } => {
-                    let effects = reduce(&mut self.state, AppAction::ActivityClosed);
+                    let effects = self.reduce_app_action(AppAction::ActivityClosed).await;
                     self.handle_app_effects(request_id, effects).await;
                     self.emit(CoreEvent::Activity(ActivityEvent::Closed { request_id }));
                     true
                 }
                 AppCommand::SetActivityTab { request_id, tab } => {
-                    let effects = reduce(&mut self.state, AppAction::ActivityTabSelected { tab });
+                    let effects = self
+                        .reduce_app_action(AppAction::ActivityTabSelected { tab })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     self.emit(CoreEvent::Activity(ActivityEvent::TabSelected {
                         request_id,
@@ -743,14 +891,13 @@ impl AppActor {
                 } => {
                     let (recent, unread, excluded_room_ids) =
                         self.activity_projection.snapshot(&self.state);
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::ActivityRowsUpdated {
+                    let effects = self
+                        .reduce_app_action(AppAction::ActivityRowsUpdated {
                             recent: recent.clone(),
                             unread: unread.clone(),
                             excluded_room_ids,
-                        },
-                    );
+                        })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     self.emit(CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
                         request_id,
@@ -761,35 +908,32 @@ impl AppActor {
                     true
                 }
                 AppCommand::MarkActivityRead { request_id, target } => {
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::ActivityMarkReadRequested {
+                    let effects = self
+                        .reduce_app_action(AppAction::ActivityMarkReadRequested {
                             request_id: request_id.sequence,
                             target: target.clone(),
-                        },
-                    );
+                        })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     let fully_read_updates = self
                         .activity_projection
                         .fully_read_marker_updates(&self.state, &target);
                     let cleared_event_ids =
                         self.activity_projection.mark_read(&self.state, &target);
-                    let success_effects = reduce(
-                        &mut self.state,
-                        AppAction::ActivityMarkReadSucceeded {
+                    let success_effects = self
+                        .reduce_app_action(AppAction::ActivityMarkReadSucceeded {
                             request_id: request_id.sequence,
                             cleared_event_ids: cleared_event_ids.clone(),
-                        },
-                    );
+                        })
+                        .await;
                     self.handle_app_effects(request_id, success_effects).await;
                     for (room_id, event_id) in fully_read_updates {
-                        let marker_effects = reduce(
-                            &mut self.state,
-                            AppAction::FullyReadMarkerUpdated {
+                        let marker_effects = self
+                            .reduce_app_action(AppAction::FullyReadMarkerUpdated {
                                 room_id,
                                 event_id: Some(event_id),
-                            },
-                        );
+                            })
+                            .await;
                         self.handle_app_effects(request_id, marker_effects).await;
                     }
                     self.emit(CoreEvent::Activity(ActivityEvent::MarkedRead {
@@ -799,20 +943,18 @@ impl AppActor {
                     true
                 }
                 AppCommand::RecordLocalEncryptionHealth { request_id, health } => {
-                    let probe_effects = reduce(
-                        &mut self.state,
-                        AppAction::LocalEncryptionProbeRequested {
+                    let probe_effects = self
+                        .reduce_app_action(AppAction::LocalEncryptionProbeRequested {
                             request_id: request_id.sequence,
-                        },
-                    );
+                        })
+                        .await;
                     self.handle_app_effects(request_id, probe_effects).await;
-                    let health_effects = reduce(
-                        &mut self.state,
-                        AppAction::LocalEncryptionHealthChanged {
+                    let health_effects = self
+                        .reduce_app_action(AppAction::LocalEncryptionHealthChanged {
                             request_id: request_id.sequence,
                             health,
-                        },
-                    );
+                        })
+                        .await;
                     self.handle_app_effects(request_id, health_effects).await;
                     true
                 }
@@ -820,10 +962,9 @@ impl AppActor {
                     request_id,
                     attention,
                 } => {
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::NativeAttentionUpdated { attention },
-                    );
+                    let effects = self
+                        .reduce_app_action(AppAction::NativeAttentionUpdated { attention })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
@@ -831,10 +972,9 @@ impl AppActor {
                     request_id,
                     profile,
                 } => {
-                    let effects = reduce(
-                        &mut self.state,
-                        AppAction::JapaneseCatalogProfileChanged { profile },
-                    );
+                    let effects = self
+                        .reduce_app_action(AppAction::JapaneseCatalogProfileChanged { profile })
+                        .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
@@ -873,14 +1013,13 @@ impl AppActor {
                         scope,
                     } => (request_id, query, scope),
                 };
-                let effects = reduce(
-                    &mut self.state,
-                    AppAction::SearchSubmitted {
+                let effects = self
+                    .reduce_app_action(AppAction::SearchSubmitted {
                         request_id: request_id.sequence,
                         query: query.clone(),
                         scope: map_core_search_scope_to_state(scope.clone()),
-                    },
-                );
+                    })
+                    .await;
                 self.handle_app_effects(request_id, effects).await;
                 true
             }
@@ -970,7 +1109,7 @@ impl AppActor {
                         message: "settings could not be saved".to_owned(),
                     },
                 };
-                let _ = reduce(&mut self.state, action);
+                let _ = self.reduce_app_action(action).await;
             } else if let AppEffect::EmitUiEvent(ui_event) = effect {
                 self.handle_ui_event_effect(&ui_event, &[]);
             }
@@ -1158,6 +1297,20 @@ fn unsubscribe_replaced_timeline_key(
     replacement_key: TimelineKey,
 ) -> Option<TimelineKey> {
     current_key.filter(|current_key| current_key != &replacement_key)
+}
+
+fn composer_draft_session_key(state: &AppState) -> Option<matrix_desktop_key::SessionKeyId> {
+    match &state.session {
+        SessionState::NeedsRecovery { info, .. }
+        | SessionState::Recovering { info, .. }
+        | SessionState::Ready(info) => Some(session_key_id_from_info(info)),
+        SessionState::SignedOut
+        | SessionState::Restoring
+        | SessionState::SwitchingAccount { .. }
+        | SessionState::Authenticating { .. }
+        | SessionState::LoggingOut
+        | SessionState::Locked(_) => None,
+    }
 }
 
 fn effects_open_thread_timeline(effects: &[AppEffect]) -> bool {

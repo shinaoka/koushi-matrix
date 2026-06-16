@@ -102,6 +102,7 @@ export interface DesktopApi {
   setActivityTab(tab: ActivityTab): Promise<DesktopSnapshot>;
   paginateActivity(tab: ActivityTab, cursor?: string | null): Promise<DesktopSnapshot>;
   markActivityRead(target: ActivityMarkReadTarget): Promise<DesktopSnapshot>;
+  setComposerDraft(roomId: string, draft: string): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
   setThreadComposerDraft(roomId: string, rootEventId: string, draft: string): Promise<DesktopSnapshot>;
@@ -151,6 +152,7 @@ export function createBrowserFakeApi(options: BrowserFakeApiOptions = {}): Deskt
 class BrowserFakeApi implements DesktopApi {
   private snapshot: DesktopSnapshot;
   private requestSequence = 1_000;
+  private composerDrafts = new Map<string, string>();
 
   constructor(options: BrowserFakeApiOptions) {
     this.snapshot = createInitialSnapshot(initialSession(options));
@@ -446,6 +448,11 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.navigation.active_room_id = roomId;
     this.snapshot.state.timeline.room_id = roomId;
     this.snapshot.state.timeline.is_subscribed = true;
+    this.snapshot.state.timeline.composer = {
+      pending_transaction_id: null,
+      draft: this.composerDrafts.get(roomId) ?? "",
+      mode: "Plain"
+    };
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.state.focused_context = { kind: "closed" };
     this.snapshot.thread = null;
@@ -549,6 +556,7 @@ class BrowserFakeApi implements DesktopApi {
     ];
     this.snapshot.state.timeline.composer.pending_transaction_id = null;
     this.snapshot.state.timeline.composer.draft = "";
+    this.composerDrafts.delete(roomId);
     return this.getSnapshot();
   }
 
@@ -1504,6 +1512,20 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async setComposerDraft(roomId: string, draft: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || this.snapshot.state.timeline.room_id !== roomId) {
+      return this.getSnapshot();
+    }
+
+    if (draft.length === 0) {
+      this.composerDrafts.delete(roomId);
+    } else {
+      this.composerDrafts.set(roomId, draft);
+    }
+    this.snapshot.state.timeline.composer.draft = draft;
+    return this.getSnapshot();
+  }
+
   async setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
@@ -1562,6 +1584,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.timeline.composer.pending_transaction_id = null;
     this.snapshot.state.timeline.composer.draft = "";
     this.snapshot.state.timeline.composer.mode = "Plain";
+    this.composerDrafts.delete(roomId);
     return this.getSnapshot();
   }
 
@@ -1723,6 +1746,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private clearSessionViews() {
+    this.composerDrafts.clear();
     this.snapshot.state.sync = "stopped";
     this.snapshot.state.navigation = {
       active_space_id: null,
@@ -1760,6 +1784,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
+    this.composerDrafts.delete(roomId);
     this.snapshot.state.rooms = this.snapshot.state.rooms.filter((room) => room.room_id !== roomId);
     this.snapshot.state.spaces = this.snapshot.state.spaces.map((space) => ({
       ...space,

@@ -557,6 +557,11 @@ only the active composer into the snapshot; React may render and dispatch typed
 draft changes, but it must not own cross-room or cross-thread draft survival.
 The backing draft store is not sent to the webview because unsent message
 content for non-visible rooms should not be exposed as snapshot data.
+`matrix-desktop-core` persists that store as account-scoped encrypted local data
+derived from the local unlock secret through a dedicated HKDF domain. Persistence
+is debounced and size-bounded; empty stores remove the encrypted draft file.
+Tauri exposes only typed draft commands (`set_composer_draft`,
+`set_thread_composer_draft`) and the active composer snapshot.
 
 Initial channel capacities are named constants, not scattered literals:
 

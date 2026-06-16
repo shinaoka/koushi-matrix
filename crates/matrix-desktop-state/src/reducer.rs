@@ -1921,6 +1921,42 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.timeline.is_paginating_backwards = false;
             vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
         }
+        AppAction::ComposerDraftsLoaded { drafts } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.composer_drafts = drafts;
+            let mut effects = Vec::new();
+            if let Some(room_id) = state.timeline.room_id.clone()
+                && state.timeline.composer.pending_transaction_id.is_none()
+                && state.timeline.composer.draft.is_empty()
+            {
+                let composer = state.composer_drafts.composer_for_room(&room_id);
+                if state.timeline.composer != composer {
+                    state.timeline.composer = composer;
+                    effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
+                }
+            }
+            if let ThreadPaneState::Open {
+                room_id,
+                root_event_id,
+                composer,
+                ..
+            } = &mut state.thread
+                && composer.pending_transaction_id.is_none()
+                && composer.draft.is_empty()
+            {
+                let hydrated = state
+                    .composer_drafts
+                    .composer_for_thread(room_id, root_event_id);
+                if *composer != hydrated {
+                    *composer = hydrated;
+                    effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+                }
+            }
+            effects
+        }
         AppAction::ComposerDraftChanged { room_id, draft } => {
             if !is_session_ready(state)
                 || state.timeline.room_id.as_deref() != Some(room_id.as_str())

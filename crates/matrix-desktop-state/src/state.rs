@@ -2251,6 +2251,10 @@ pub struct ComposerDraftStore {
     pub threads: BTreeMap<String, BTreeMap<String, String>>,
 }
 
+pub const MAX_PERSISTED_COMPOSER_DRAFT_BYTES: usize = 16 * 1024;
+pub const MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT: usize = 128;
+pub const MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT: usize = 256;
+
 impl ComposerDraftStore {
     pub fn is_empty(&self) -> bool {
         self.rooms.is_empty() && self.threads.is_empty()
@@ -2317,6 +2321,52 @@ impl ComposerDraftStore {
         self.threads
             .retain(|room_id, room_threads| room_ids.contains(room_id) && !room_threads.is_empty());
     }
+
+    pub fn bounded_for_persistence(&self) -> Self {
+        let rooms = self
+            .rooms
+            .iter()
+            .take(MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT)
+            .map(|(room_id, draft)| {
+                (
+                    room_id.clone(),
+                    truncate_utf8_bytes(draft, MAX_PERSISTED_COMPOSER_DRAFT_BYTES),
+                )
+            })
+            .collect();
+
+        let mut remaining_threads = MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT;
+        let mut threads = BTreeMap::new();
+        for (room_id, room_threads) in &self.threads {
+            if remaining_threads == 0 {
+                break;
+            }
+            let mut bounded_room_threads = BTreeMap::new();
+            for (root_event_id, draft) in room_threads.iter().take(remaining_threads) {
+                bounded_room_threads.insert(
+                    root_event_id.clone(),
+                    truncate_utf8_bytes(draft, MAX_PERSISTED_COMPOSER_DRAFT_BYTES),
+                );
+            }
+            remaining_threads = remaining_threads.saturating_sub(bounded_room_threads.len());
+            if !bounded_room_threads.is_empty() {
+                threads.insert(room_id.clone(), bounded_room_threads);
+            }
+        }
+
+        Self { rooms, threads }
+    }
+}
+
+fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 impl fmt::Debug for ComposerDraftStore {
