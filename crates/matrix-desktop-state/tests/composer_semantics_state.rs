@@ -91,6 +91,29 @@ fn composer_markdown_send_request_keeps_plain_body_plus_formatted_body() {
 }
 
 #[test]
+fn composer_spoiler_markdown_is_rust_owned_formatted_body() {
+    let draft = build_formatted_message_draft("keep ||secret|| hidden", MentionIntent::default());
+
+    assert_eq!(draft.plain_body, "keep ||secret|| hidden");
+    assert_eq!(
+        draft.formatted_body.as_deref(),
+        Some("keep <span data-mx-spoiler>secret</span> hidden")
+    );
+}
+
+#[test]
+fn composer_me_slash_command_returns_structured_emote_intent() {
+    assert_eq!(
+        resolve_composer_send_intent("/me waves", MentionIntent::default()),
+        ComposerSendIntent::SlashCommand {
+            command: SlashCommandIntent::Me {
+                body: "waves".to_owned()
+            },
+        }
+    );
+}
+
+#[test]
 fn composer_unknown_slash_command_returns_structured_local_failure() {
     assert_eq!(
         resolve_composer_send_intent("/shrug nope", MentionIntent::default()),

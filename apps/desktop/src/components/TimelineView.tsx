@@ -290,6 +290,67 @@ export function renderTimelineMessageText(
   ));
 }
 
+function renderTimelineMessageTextWithSpoilers(
+  text: string,
+  spoilerSpans: TimelineItem["spoiler_spans"] | undefined,
+  query: string,
+  profileUsers: Record<string, UserProfile>,
+  spoilerState: SpoilerRevealState
+): ReactNode {
+  const spans = normalizeSpoilerSpans(spoilerSpans, text.length);
+  if (spans.length === 0) {
+    return renderTimelineMessageText(text, query, profileUsers);
+  }
+
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const [index, span] of spans.entries()) {
+    if (span.start_utf16 > cursor) {
+      const visibleText = text.slice(cursor, span.start_utf16);
+      nodes.push(
+        <Fragment key={`text:${cursor}`}>
+          {renderTimelineMessageText(visibleText, query, profileUsers)}
+        </Fragment>
+      );
+    }
+
+    const spoilerText = text.slice(span.start_utf16, span.end_utf16);
+    nodes.push(
+      renderSpoiler(
+        `plain:${span.start_utf16}:${span.end_utf16}:${index}`,
+        renderTimelineMessageText(spoilerText, query, profileUsers),
+        span.reason,
+        spoilerState
+      )
+    );
+    cursor = span.end_utf16;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(
+      <Fragment key={`text:${cursor}`}>
+        {renderTimelineMessageText(text.slice(cursor), query, profileUsers)}
+      </Fragment>
+    );
+  }
+  return nodes;
+}
+
+function normalizeSpoilerSpans(
+  spoilerSpans: TimelineItem["spoiler_spans"] | undefined,
+  textLength: number
+) {
+  let cursor = 0;
+  return [...(spoilerSpans ?? [])]
+    .sort((a, b) => a.start_utf16 - b.start_utf16 || a.end_utf16 - b.end_utf16)
+    .flatMap((span) => {
+      const start = Math.max(cursor, Math.min(span.start_utf16, textLength));
+      const end = Math.max(start, Math.min(span.end_utf16, textLength));
+      cursor = end;
+      return start < end ? [{ ...span, start_utf16: start, end_utf16: end }] : [];
+    });
+}
+
 function renderTimelineMessageLine(
   line: string,
   query: string,
@@ -391,7 +452,8 @@ function renderFormattedBody(
   formatted: NonNullable<TimelineItem["formatted"]>,
   codeBlockWrap: boolean,
   onCopyText: TimelineRowActionHandlers["onCopyText"],
-  searchQuery: string
+  searchQuery: string,
+  spoilerState: SpoilerRevealState
 ): ReactNode {
   const nodes = parseFormattedHtml(formatted.html);
   const codeBlockIndexRef = { current: 0 };
@@ -401,7 +463,8 @@ function renderFormattedBody(
     codeBlockWrap,
     codeBlockIndexRef,
     onCopyText,
-    searchQuery
+    searchQuery,
+    spoilerState
   );
 }
 
@@ -485,17 +548,20 @@ function renderFormattedNodes(
   codeBlockWrap: boolean,
   codeBlockIndexRef: { current: number },
   onCopyText: TimelineRowActionHandlers["onCopyText"],
-  searchQuery: string
+  searchQuery: string,
+  spoilerState: SpoilerRevealState,
+  keyPrefix = ""
 ): ReactNode {
   return nodes.map((node, index) =>
     renderFormattedNode(
       node,
-      `${index}`,
+      keyPrefix ? `${keyPrefix}.${index}` : `${index}`,
       formatted,
       codeBlockWrap,
       codeBlockIndexRef,
       onCopyText,
-      searchQuery
+      searchQuery,
+      spoilerState
     )
   );
 }
@@ -507,7 +573,8 @@ function renderFormattedNode(
   codeBlockWrap: boolean,
   codeBlockIndexRef: { current: number },
   onCopyText: TimelineRowActionHandlers["onCopyText"],
-  searchQuery: string
+  searchQuery: string,
+  spoilerState: SpoilerRevealState
 ): ReactNode {
   if (node.kind === "text") {
     return <Fragment key={key}>{renderQueryHighlight(node.value, searchQuery)}</Fragment>;
@@ -518,13 +585,52 @@ function renderFormattedNode(
     codeBlockWrap,
     codeBlockIndexRef,
     onCopyText,
-    searchQuery
+    searchQuery,
+    spoilerState,
+    key
   );
   const renderer = formattedTagRenderers[node.tagName as keyof typeof formattedTagRenderers];
   if (!renderer) {
     return <Fragment key={key}>{children}</Fragment>;
   }
-  return renderer(node, key, children, formatted, codeBlockWrap, codeBlockIndexRef, onCopyText);
+  return renderer(
+    node,
+    key,
+    children,
+    formatted,
+    codeBlockWrap,
+    codeBlockIndexRef,
+    onCopyText,
+    spoilerState
+  );
+}
+
+type SpoilerRevealState = {
+  revealed: ReadonlySet<string>;
+  reveal: (spoilerKey: string) => void;
+};
+
+function renderSpoiler(
+  key: string,
+  children: ReactNode,
+  reason: string | null | undefined,
+  spoilerState: SpoilerRevealState
+): ReactNode {
+  const isRevealed = spoilerState.revealed.has(key);
+  const normalizedReason = reason?.trim() || null;
+  return (
+    <button
+      key={key}
+      className="message-spoiler"
+      type="button"
+      data-revealed={isRevealed ? "true" : "false"}
+      data-spoiler-reason={normalizedReason ?? undefined}
+      aria-label={t("timeline.revealSpoiler")}
+      onClick={() => spoilerState.reveal(key)}
+    >
+      {isRevealed ? children : <span aria-hidden="true">{t("timeline.spoiler")}</span>}
+    </button>
+  );
 }
 
 type FormattedTagRenderer = (
@@ -534,7 +640,8 @@ type FormattedTagRenderer = (
   formatted: NonNullable<TimelineItem["formatted"]>,
   codeBlockWrap: boolean,
   codeBlockIndexRef: { current: number },
-  onCopyText: TimelineRowActionHandlers["onCopyText"]
+  onCopyText: TimelineRowActionHandlers["onCopyText"],
+  spoilerState: SpoilerRevealState
 ) => ReactNode;
 
 const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
@@ -787,11 +894,15 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _formatted: NonNullable<TimelineItem["formatted"]>,
     _codeBlockWrap: boolean,
     _codeBlockIndexRef: { current: number },
-    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+    _onCopyText: TimelineRowActionHandlers["onCopyText"],
+    spoilerState: SpoilerRevealState
   ) {
     const className = node.attrs.class?.trim();
     const spoiler = node.attrs["data-mx-spoiler"];
     const color = node.attrs["data-mx-color"];
+    if (spoiler !== undefined) {
+      return renderSpoiler(`formatted:${key}`, children, spoiler, spoilerState);
+    }
     return (
       <span
         key={key}
@@ -1646,11 +1757,15 @@ export function TimelineItemRow({
   const isRedacted = item.is_redacted;
   const sendState = item.send_state ?? null;
   const sendStateKind = sendState?.kind ?? null;
+  const messageKind = item.message_kind ?? "text";
   const [isEditing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(item.body ?? "");
   const [isReactionPickerOpen, setReactionPickerOpen] = useState(false);
   const [isActionMenuOpen, setActionMenuOpen] = useState(false);
   const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
+  const [revealedSpoilers, setRevealedSpoilers] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
   const reactionControlRef = useRef<HTMLDivElement>(null);
   const reactionTriggerRef = useRef<HTMLButtonElement>(null);
   const firstReactionRef = useRef<HTMLButtonElement>(null);
@@ -1726,6 +1841,17 @@ export function TimelineItemRow({
     setActionMenuOpen(false);
     setForwardMenuOpen(false);
     actionMenuTriggerRef.current?.focus();
+  }, []);
+
+  const revealSpoiler = useCallback((spoilerKey: string) => {
+    setRevealedSpoilers((current) => {
+      if (current.has(spoilerKey)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(spoilerKey);
+      return next;
+    });
   }, []);
 
   const openEditForm = useCallback(() => {
@@ -1968,6 +2094,30 @@ export function TimelineItemRow({
   const receiptLabel = t("timeline.readBy", { count: receiptTotalCount });
   const receiptAriaLabel =
     receiptDetails.length > 0 ? `${receiptLabel}: ${receiptDetails.join("; ")}` : receiptLabel;
+  const spoilerState = { revealed: revealedSpoilers, reveal: revealSpoiler };
+  const messageBodyClassName = [
+    "message-body",
+    item.formatted ? "message-formatted-body" : null,
+    messageKind === "emote" ? "message-emote" : null,
+    messageKind === "notice" ? "message-notice" : null
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const messageBodyContent = item.formatted
+    ? renderFormattedBody(item.formatted, codeBlockWrap, onCopyText, searchQuery, spoilerState)
+    : renderTimelineMessageTextWithSpoilers(
+        item.body ?? "",
+        item.spoiler_spans,
+        searchQuery,
+        mentionProfileUsers,
+        spoilerState
+      );
+  const emotePrefix =
+    messageKind === "emote" ? (
+      <span className="message-emote-prefix" dir="auto">
+        * <span className="message-emote-sender">{senderDisplayLabel}</span>
+      </span>
+    ) : null;
   const replyQuoteContent =
     !isRedacted && item.reply_quote ? (
       <div className="reply-quote" data-reply-state={item.reply_quote.state}>
@@ -2010,15 +2160,17 @@ export function TimelineItemRow({
     </form>
   ) : item.formatted ? (
     <div
-      className="message-body message-formatted-body"
+      className={messageBodyClassName}
       dir="auto"
       data-code-block-wrap={codeBlockWrap ? "true" : "false"}
     >
-      {renderFormattedBody(item.formatted, codeBlockWrap, onCopyText, searchQuery)}
+      {emotePrefix}
+      {messageBodyContent}
     </div>
   ) : (
-    <div className="message-body" dir="auto">
-      {renderTimelineMessageText(item.body ?? "", searchQuery, mentionProfileUsers)}
+    <div className={messageBodyClassName} dir="auto">
+      {emotePrefix}
+      {messageBodyContent}
     </div>
   );
   const mediaContent =
@@ -2038,6 +2190,7 @@ export function TimelineItemRow({
       data-event-id={eventId ?? undefined}
       data-redacted={isRedacted || undefined}
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
+      data-message-kind={messageKind}
     >
       <div className="avatar" aria-hidden="true">
         {avatarUrl ? <img src={avatarUrl} /> : senderInitials(senderDisplayLabel || item.sender)}

@@ -447,7 +447,9 @@ export type MessageId =
   | "timeline.cancelEdit"
   | "timeline.redactMessage"
   | "timeline.redactedMessage"
+  | "timeline.revealSpoiler"
   | "timeline.pinMessage"
+  | "timeline.spoiler"
   | "timeline.unpinMessage"
   | "timeline.pinnedMessages"
   | "timeline.pinnedMessage"
@@ -1050,7 +1052,9 @@ const en: Catalog = {
   "timeline.cancelEdit": "Cancel edit",
   "timeline.redactMessage": "Redact message",
   "timeline.redactedMessage": "Message redacted",
+  "timeline.revealSpoiler": "Reveal spoiler",
   "timeline.pinMessage": "Pin message",
+  "timeline.spoiler": "Spoiler",
   "timeline.unpinMessage": "Unpin message",
   "timeline.pinnedMessages": "Pinned messages",
   "timeline.pinnedMessage": "Pinned message",
@@ -1561,7 +1565,9 @@ const ja: Catalog = {
   "timeline.cancelEdit": "編集をキャンセル",
   "timeline.redactMessage": "メッセージを削除",
   "timeline.redactedMessage": "メッセージは削除されました",
+  "timeline.revealSpoiler": "スポイラーを表示",
   "timeline.pinMessage": "メッセージをピン留め",
+  "timeline.spoiler": "スポイラー",
   "timeline.unpinMessage": "メッセージのピン留めを解除",
   "timeline.pinnedMessages": "ピン留めメッセージ",
   "timeline.pinnedMessage": "ピン留めメッセージ",

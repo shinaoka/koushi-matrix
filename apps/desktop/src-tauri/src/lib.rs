@@ -1195,9 +1195,10 @@ mod tests {
                 PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineCodeBlock,
                 TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody, TimelineItem,
                 TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
-                TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageSource,
-                TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason,
-                TimelineSendState, TimelineUnreadPosition,
+                TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
+                TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
+                TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
+                TimelineUnreadPosition,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1225,6 +1226,12 @@ mod tests {
             sender: Some("@u:example.test".to_owned()),
             sender_label: None,
             body: Some("hello".to_owned()),
+            message_kind: TimelineMessageKind::Emote,
+            spoiler_spans: vec![TimelineSpoilerSpan {
+                start_utf16: 0,
+                end_utf16: 5,
+                reason: Some("fixture".to_owned()),
+            }],
             timestamp_ms: Some(123),
             in_reply_to_event_id: None,
             formatted: Some(TimelineFormattedBody {
@@ -1268,6 +1275,8 @@ mod tests {
             sender: Some("@u:example.test".to_owned()),
             sender_label: None,
             body: Some("caption".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(456),
             in_reply_to_event_id: None,
             formatted: None,
@@ -1321,6 +1330,8 @@ mod tests {
             sender: Some("@u:example.test".to_owned()),
             sender_label: None,
             body: Some("queued".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(789),
             in_reply_to_event_id: None,
             formatted: None,
@@ -1347,6 +1358,8 @@ mod tests {
             sender: Some("@u:example.test".to_owned()),
             sender_label: None,
             body: Some("reply body".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(987),
             in_reply_to_event_id: Some("$root1".to_owned()),
             formatted: None,
@@ -1406,6 +1419,14 @@ mod tests {
                 "sender": "@u:example.test",
                 "sender_label": null,
                 "body": "hello",
+                "message_kind": "emote",
+                "spoiler_spans": [
+                    {
+                        "start_utf16": 0,
+                        "end_utf16": 5,
+                        "reason": "fixture"
+                    }
+                ],
                 "timestamp_ms": 123,
                 "in_reply_to_event_id": null,
                 "formatted": {

@@ -224,6 +224,26 @@ export async function sendRoomFormattedMessage(
   );
 }
 
+export async function sendRoomNoticeMessage(homeserver, accessToken, roomId, body, transactionId) {
+  return sendRoomMessageContent(
+    homeserver,
+    accessToken,
+    roomId,
+    { msgtype: "m.notice", body },
+    transactionId
+  );
+}
+
+export async function sendRoomEmoteMessage(homeserver, accessToken, roomId, body, transactionId) {
+  return sendRoomMessageContent(
+    homeserver,
+    accessToken,
+    roomId,
+    { msgtype: "m.emote", body },
+    transactionId
+  );
+}
+
 async function sendRoomMessageContent(homeserver, accessToken, roomId, content, transactionId) {
   const path =
     `${homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}` +

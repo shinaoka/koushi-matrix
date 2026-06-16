@@ -1090,6 +1090,36 @@ impl fmt::Debug for TimelineFormattedBody {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimelineMessageKind {
+    #[default]
+    Text,
+    Emote,
+    Notice,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineSpoilerSpan {
+    /// Start offset in JavaScript string units for the rendered text source.
+    pub start_utf16: usize,
+    /// End offset in JavaScript string units for the rendered text source.
+    pub end_utf16: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl fmt::Debug for TimelineSpoilerSpan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineSpoilerSpan")
+            .field("start_utf16", &self.start_utf16)
+            .field("end_utf16", &self.end_utf16)
+            .field("reason", &self.reason.as_ref().map(|_| "SpoilerReason(..)"))
+            .finish()
+    }
+}
+
 /// Timeline item DTO. Phase 5 concretizes content kinds from the SDK
 /// projection; the identity contract is stable from Phase 1.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -1099,6 +1129,10 @@ pub struct TimelineItem {
     #[serde(default)]
     pub sender_label: Option<String>,
     pub body: Option<String>,
+    #[serde(default)]
+    pub message_kind: TimelineMessageKind,
+    #[serde(default)]
+    pub spoiler_spans: Vec<TimelineSpoilerSpan>,
     pub timestamp_ms: Option<u64>,
     pub in_reply_to_event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1142,6 +1176,8 @@ impl fmt::Debug for TimelineItem {
                 &self.sender_label.as_ref().map(|_| "SenderLabel(..)"),
             )
             .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
+            .field("message_kind", &self.message_kind)
+            .field("spoiler_spans", &self.spoiler_spans.len())
             .field("timestamp_ms", &self.timestamp_ms)
             .field(
                 "in_reply_to_event_id",
@@ -1528,6 +1564,8 @@ mod tests {
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
             body: Some("hello".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
             formatted: None,
@@ -1599,6 +1637,8 @@ mod tests {
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
             body: Some("reply body".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: Some("$root:test".to_owned()),
             formatted: None,
@@ -1650,6 +1690,12 @@ mod tests {
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
             body: Some("plain fallback".to_owned()),
+            message_kind: TimelineMessageKind::Emote,
+            spoiler_spans: vec![TimelineSpoilerSpan {
+                start_utf16: 0,
+                end_utf16: 13,
+                reason: Some("reason".to_owned()),
+            }],
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
             formatted: Some(TimelineFormattedBody {
@@ -1691,11 +1737,23 @@ mod tests {
                 ]
             })
         );
+        assert_eq!(value["message_kind"], json!("emote"));
+        assert_eq!(
+            value["spoiler_spans"],
+            json!([
+                {
+                    "start_utf16": 0,
+                    "end_utf16": 13,
+                    "reason": "reason"
+                }
+            ])
+        );
         let debug = format!("{item:?}");
         assert!(debug.contains("TimelineFormattedBody"));
         assert!(!debug.contains("private html"), "{debug}");
         assert!(!debug.contains("private_code"), "{debug}");
         assert!(!debug.contains("language-rust"), "{debug}");
+        assert!(!debug.contains("reason"), "{debug}");
         assert!(!debug.contains("$formatted:test"), "{debug}");
     }
 
@@ -1708,6 +1766,8 @@ mod tests {
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
             body: Some("copyable body".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
             formatted: None,
@@ -1868,6 +1928,8 @@ mod tests {
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
             body: Some("hello".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
             formatted: None,
@@ -1911,6 +1973,8 @@ mod tests {
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
             body: Some("synthetic caption".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
             in_reply_to_event_id: None,
             formatted: None,
@@ -2141,6 +2205,8 @@ mod tests {
             } else {
                 Some("visible body".to_owned())
             },
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(1),
             in_reply_to_event_id: None,
             formatted: None,

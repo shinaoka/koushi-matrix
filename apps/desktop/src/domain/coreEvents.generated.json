@@ -441,6 +441,14 @@
         "items": [
           {
             "body": "hello",
+            "message_kind": "emote",
+            "spoiler_spans": [
+              {
+                "start_utf16": 0,
+                "end_utf16": 5,
+                "reason": "fixture"
+              }
+            ],
             "id": {
               "Event": {
                 "event_id": "$e1"
@@ -513,6 +521,14 @@
             "PushFront": {
               "item": {
                 "body": "hello",
+                "message_kind": "emote",
+                "spoiler_spans": [
+                  {
+                    "start_utf16": 0,
+                    "end_utf16": 5,
+                    "reason": "fixture"
+                  }
+                ],
                 "id": {
                   "Event": {
                     "event_id": "$e1"
@@ -610,6 +626,8 @@
         "items": [
           {
             "body": "caption",
+            "message_kind": "text",
+            "spoiler_spans": [],
             "id": {
               "Event": {
                 "event_id": "$media1"
@@ -732,6 +750,8 @@
         "items": [
           {
             "body": "reply body",
+            "message_kind": "text",
+            "spoiler_spans": [],
             "can_edit": false,
             "can_react": true,
             "can_redact": true,
@@ -805,6 +825,8 @@
         "items": [
           {
             "body": "queued",
+            "message_kind": "text",
+            "spoiler_spans": [],
             "can_edit": false,
             "can_react": false,
             "can_redact": false,

@@ -153,11 +153,21 @@ export interface TimelineFormattedBody {
   code_blocks: TimelineCodeBlock[];
 }
 
+export type TimelineMessageKind = "text" | "emote" | "notice";
+
+export interface TimelineSpoilerSpan {
+  start_utf16: number;
+  end_utf16: number;
+  reason?: string | null;
+}
+
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
   sender_label?: string | null;
   body: string | null;
+  message_kind?: TimelineMessageKind;
+  spoiler_spans?: TimelineSpoilerSpan[];
   timestamp_ms: number | null;
   in_reply_to_event_id: string | null;
   formatted?: TimelineFormattedBody | null;

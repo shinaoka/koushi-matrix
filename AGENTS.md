@@ -1201,6 +1201,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   snapshot if the room list markup changes. This lane intentionally forces the
   legacy sync backend for deterministic WebDriver smoke; keep using the core
   `invites_dm` QA for SyncService/legacy invite-projection correctness.
+- Message type GUI iteration has a focused virtual-display lane:
+  `--scenario=local-message-types`. It injects `m.emote`, `m.notice`, and
+  formatted spoiler events through the local homeserver helper and verifies the
+  real WebView DOM (`data-message-kind`, collapsed spoiler, reveal). After
+  changing frontend render code, run one non-`--skip-build` lane before reusing
+  `--skip-build`; otherwise the old debug binary can miss new DOM contracts.
 - Reuse the existing Cargo, npm, and GUI target caches during the inner loop;
   do not rebuild the Docker image for every trial.
 - Run Docker only when you need the committed reproducible lane or want to

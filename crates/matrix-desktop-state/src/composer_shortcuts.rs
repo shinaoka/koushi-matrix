@@ -242,6 +242,16 @@ fn format_markdown_subset(body: &str) -> Option<String> {
 
     while index < body.len() {
         let rest = &body[index..];
+        if let Some(after) = rest.strip_prefix("||")
+            && let Some(end) = after.find("||")
+        {
+            html.push_str("<span data-mx-spoiler>");
+            push_escaped_html(&mut html, &after[..end]);
+            html.push_str("</span>");
+            index += 2 + end + 2;
+            changed = true;
+            continue;
+        }
         if let Some(after) = rest.strip_prefix("**")
             && let Some(end) = after.find("**")
         {

@@ -87,8 +87,8 @@ use crate::event::{
     CoreEvent, LiveSignalsEvent, MediaTransferProgress, PaginationDirection, PaginationState,
     ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
     TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
-    TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
-    TimelineSendFailureReason, TimelineSendState, TimelineUnreadPosition,
+    TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
+    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
     TimelineViewportObservation, message_actions_for_timeline_item,
     message_source_for_timeline_item,
 };
@@ -3332,6 +3332,14 @@ fn sdk_item_to_timeline_item_with_send_states(
             let body = message_projection
                 .as_ref()
                 .and_then(|projection| projection.body.clone());
+            let message_kind = message_projection
+                .as_ref()
+                .map(|projection| projection.message_kind)
+                .unwrap_or_default();
+            let spoiler_spans = message_projection
+                .as_ref()
+                .map(|projection| projection.spoiler_spans.clone())
+                .unwrap_or_default();
             let media = message_projection
                 .as_ref()
                 .and_then(|projection| projection.media.clone());
@@ -3402,6 +3410,8 @@ fn sdk_item_to_timeline_item_with_send_states(
                 sender,
                 sender_label: None,
                 body,
+                message_kind,
+                spoiler_spans,
                 timestamp_ms,
                 in_reply_to_event_id,
                 formatted,
@@ -3431,6 +3441,8 @@ fn sdk_item_to_timeline_item_with_send_states(
                 sender: None,
                 sender_label: None,
                 body: None,
+                message_kind: TimelineMessageKind::default(),
+                spoiler_spans: Vec::new(),
                 timestamp_ms: None,
                 in_reply_to_event_id: None,
                 formatted: None,
@@ -3476,6 +3488,8 @@ fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> T
 
 struct MessageProjection {
     body: Option<String>,
+    message_kind: TimelineMessageKind,
+    spoiler_spans: Vec<TimelineSpoilerSpan>,
     media: Option<TimelineMedia>,
     formatted: Option<crate::event::TimelineFormattedBody>,
 }
@@ -3556,52 +3570,137 @@ fn message_projection_from_msgtype(
     fallback_body: &str,
 ) -> MessageProjection {
     match msgtype {
-        MessageType::Audio(content) => MessageProjection {
-            body: content.caption().map(str::to_owned),
-            media: Some(timeline_media_from_audio(content)),
-            formatted: content.formatted_caption().and_then(project_formatted_body),
-        },
-        MessageType::Emote(content) => MessageProjection {
-            body: Some(fallback_body.to_owned()),
-            media: None,
-            formatted: content.formatted.as_ref().and_then(project_formatted_body),
-        },
-        MessageType::File(content) => MessageProjection {
-            body: content.caption().map(str::to_owned),
-            media: Some(timeline_media_from_file(content)),
-            formatted: content.formatted_caption().and_then(project_formatted_body),
-        },
-        MessageType::Image(content) => MessageProjection {
-            body: content.caption().map(str::to_owned),
-            media: Some(timeline_media_from_image(content)),
-            formatted: content.formatted_caption().and_then(project_formatted_body),
-        },
-        MessageType::Notice(content) => MessageProjection {
-            body: Some(fallback_body.to_owned()),
-            media: None,
-            formatted: content.formatted.as_ref().and_then(project_formatted_body),
-        },
-        MessageType::Text(content) => MessageProjection {
-            body: Some(fallback_body.to_owned()),
-            media: None,
-            formatted: content.formatted.as_ref().and_then(project_formatted_body),
-        },
-        MessageType::Video(content) => MessageProjection {
-            body: content.caption().map(str::to_owned),
-            media: Some(timeline_media_from_video(content)),
-            formatted: content.formatted_caption().and_then(project_formatted_body),
-        },
+        MessageType::Audio(content) => message_projection_from_body_and_formatted(
+            content.caption(),
+            content.formatted_caption(),
+            TimelineMessageKind::Text,
+            Some(timeline_media_from_audio(content)),
+        ),
+        MessageType::Emote(content) => message_projection_from_body_and_formatted(
+            Some(fallback_body),
+            content.formatted.as_ref(),
+            TimelineMessageKind::Emote,
+            None,
+        ),
+        MessageType::File(content) => message_projection_from_body_and_formatted(
+            content.caption(),
+            content.formatted_caption(),
+            TimelineMessageKind::Text,
+            Some(timeline_media_from_file(content)),
+        ),
+        MessageType::Image(content) => message_projection_from_body_and_formatted(
+            content.caption(),
+            content.formatted_caption(),
+            TimelineMessageKind::Text,
+            Some(timeline_media_from_image(content)),
+        ),
+        MessageType::Notice(content) => message_projection_from_body_and_formatted(
+            Some(fallback_body),
+            content.formatted.as_ref(),
+            TimelineMessageKind::Notice,
+            None,
+        ),
+        MessageType::Text(content) => message_projection_from_body_and_formatted(
+            Some(fallback_body),
+            content.formatted.as_ref(),
+            TimelineMessageKind::Text,
+            None,
+        ),
+        MessageType::Video(content) => message_projection_from_body_and_formatted(
+            content.caption(),
+            content.formatted_caption(),
+            TimelineMessageKind::Text,
+            Some(timeline_media_from_video(content)),
+        ),
         _ => MessageProjection {
             body: Some(fallback_body.to_owned()),
+            message_kind: TimelineMessageKind::Text,
+            spoiler_spans: Vec::new(),
             media: None,
             formatted: None,
         },
     }
 }
 
-fn project_formatted_body(
-    formatted_body: &FormattedBody,
-) -> Option<crate::event::TimelineFormattedBody> {
+fn message_projection_from_body_and_formatted(
+    body: Option<&str>,
+    formatted_body: Option<&FormattedBody>,
+    message_kind: TimelineMessageKind,
+    media: Option<TimelineMedia>,
+) -> MessageProjection {
+    let formatted = formatted_body.and_then(project_formatted_body);
+    let spoiler_spans = formatted
+        .as_ref()
+        .map(|projection| projection.spoiler_spans.clone())
+        .unwrap_or_default();
+    let formatted = formatted.map(|projection| projection.formatted);
+    let (body, spoiler_spans) = match (body, formatted.is_some()) {
+        (Some(body), false) => {
+            let projection = project_plain_body_with_spoilers(body);
+            (Some(projection.body), projection.spoiler_spans)
+        }
+        (Some(body), true) => (Some(body.to_owned()), spoiler_spans),
+        (None, _) => (None, spoiler_spans),
+    };
+
+    MessageProjection {
+        body,
+        message_kind,
+        spoiler_spans,
+        media,
+        formatted,
+    }
+}
+
+struct PlainBodyProjection {
+    body: String,
+    spoiler_spans: Vec<TimelineSpoilerSpan>,
+}
+
+fn project_plain_body_with_spoilers(body: &str) -> PlainBodyProjection {
+    let mut rendered = String::with_capacity(body.len());
+    let mut spoiler_spans = Vec::new();
+    let mut index = 0;
+
+    while index < body.len() {
+        let rest = &body[index..];
+        if let Some(after) = rest.strip_prefix("||")
+            && let Some(end) = after.find("||")
+        {
+            let start_utf16 = rendered.encode_utf16().count();
+            rendered.push_str(&after[..end]);
+            let end_utf16 = rendered.encode_utf16().count();
+            if start_utf16 < end_utf16 {
+                spoiler_spans.push(TimelineSpoilerSpan {
+                    start_utf16,
+                    end_utf16,
+                    reason: None,
+                });
+            }
+            index += 2 + end + 2;
+            continue;
+        }
+
+        let ch = rest
+            .chars()
+            .next()
+            .expect("rest is non-empty while projecting plain body");
+        rendered.push(ch);
+        index += ch.len_utf8();
+    }
+
+    PlainBodyProjection {
+        body: rendered,
+        spoiler_spans,
+    }
+}
+
+struct FormattedBodyProjection {
+    formatted: crate::event::TimelineFormattedBody,
+    spoiler_spans: Vec<TimelineSpoilerSpan>,
+}
+
+fn project_formatted_body(formatted_body: &FormattedBody) -> Option<FormattedBodyProjection> {
     if !matches!(&formatted_body.format, MessageFormat::Html) {
         return None;
     }
@@ -3621,11 +3720,15 @@ fn project_formatted_body(
     let html = Html::parse(&sanitized_body);
     let plain_text = plain_text_from_html(&html);
     let code_blocks = code_blocks_from_html(&html);
+    let spoiler_spans = spoiler_spans_from_html(&html);
 
-    Some(crate::event::TimelineFormattedBody {
-        html: sanitized_body,
-        plain_text,
-        code_blocks,
+    Some(FormattedBodyProjection {
+        formatted: crate::event::TimelineFormattedBody {
+            html: sanitized_body,
+            plain_text,
+            code_blocks,
+        },
+        spoiler_spans,
     })
 }
 
@@ -3647,6 +3750,50 @@ fn collect_plain_text_from_nodes(
 
         if node.as_element().is_some() {
             collect_plain_text_from_nodes(node.children(), out);
+        }
+    }
+}
+
+fn spoiler_spans_from_html(html: &Html) -> Vec<TimelineSpoilerSpan> {
+    let mut spans = Vec::new();
+    let mut offset_utf16 = 0;
+    collect_spoiler_spans_from_nodes(html.children(), &mut offset_utf16, &mut spans);
+    spans.sort_by_key(|span| (span.start_utf16, span.end_utf16));
+    spans
+}
+
+fn collect_spoiler_spans_from_nodes(
+    nodes: impl Iterator<Item = matrix_sdk::ruma::html::NodeRef>,
+    offset_utf16: &mut usize,
+    spans: &mut Vec<TimelineSpoilerSpan>,
+) {
+    for node in nodes {
+        if let Some(text) = node.as_text() {
+            *offset_utf16 += text.borrow().encode_utf16().count();
+            continue;
+        }
+
+        let spoiler_reason = node.as_element().and_then(|element| {
+            element.attrs.borrow().iter().find_map(|attr| {
+                if attr.name.local.as_ref() != "data-mx-spoiler" {
+                    return None;
+                }
+                let reason = attr.value.trim();
+                Some((!reason.is_empty()).then(|| reason.to_owned()))
+            })
+        });
+
+        let start_utf16 = *offset_utf16;
+        collect_spoiler_spans_from_nodes(node.children(), offset_utf16, spans);
+        if let Some(reason) = spoiler_reason {
+            let end_utf16 = *offset_utf16;
+            if start_utf16 < end_utf16 {
+                spans.push(TimelineSpoilerSpan {
+                    start_utf16,
+                    end_utf16,
+                    reason,
+                });
+            }
         }
     }
 }
@@ -4317,7 +4464,7 @@ mod tests {
         AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState,
     };
     use matrix_sdk::ruma::events::room::message::{
-        EmoteMessageEventContent, MessageType, TextMessageEventContent,
+        EmoteMessageEventContent, MessageType, NoticeMessageEventContent, TextMessageEventContent,
     };
     use matrix_sdk::ruma::{OwnedUserId, uint};
     use matrix_sdk_ui::timeline::{ReactionInfo, ReactionStatus, ReactionsByKeyBySender};
@@ -4360,6 +4507,8 @@ mod tests {
             sender: Some(sender.to_owned()),
             sender_label: None,
             body: body.map(ToOwned::to_owned),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(1),
             in_reply_to_event_id: None,
             formatted: None,
@@ -4628,6 +4777,67 @@ mod tests {
     }
 
     #[test]
+    fn composer_core_builds_spoiler_markdown_as_formatted_body() {
+        let content = build_room_message_content_from_composer_body(
+            "keep ||secret|| hidden",
+            MentionIntent::default(),
+        )
+        .expect("content");
+
+        match &content.msgtype {
+            MessageType::Text(text) => {
+                assert_eq!(text.body, "keep ||secret|| hidden");
+                assert_eq!(
+                    text.formatted
+                        .as_ref()
+                        .map(|formatted| formatted.body.as_str()),
+                    Some("keep <span data-mx-spoiler>secret</span> hidden")
+                );
+            }
+            other => panic!("expected text content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn message_projection_carries_msgtype_and_plain_spoiler_spans() {
+        let projection = message_projection_from_msgtype(
+            &MessageType::Notice(NoticeMessageEventContent::plain("keep ||secret|| hidden")),
+            "keep ||secret|| hidden",
+        );
+
+        assert_eq!(projection.message_kind, TimelineMessageKind::Notice);
+        assert_eq!(projection.body.as_deref(), Some("keep secret hidden"));
+        assert_eq!(
+            projection.spoiler_spans,
+            vec![TimelineSpoilerSpan {
+                start_utf16: 5,
+                end_utf16: 11,
+                reason: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn message_projection_extracts_formatted_spoiler_spans_with_reason() {
+        let msgtype = MessageType::Emote(EmoteMessageEventContent::html(
+            "plain fallback",
+            r#"keep <span data-mx-spoiler="because">secret</span> hidden"#,
+        ));
+
+        let projection = message_projection_from_msgtype(&msgtype, "plain fallback");
+
+        assert_eq!(projection.message_kind, TimelineMessageKind::Emote);
+        assert_eq!(
+            projection.spoiler_spans,
+            vec![TimelineSpoilerSpan {
+                start_utf16: 5,
+                end_utf16: 11,
+                reason: Some("because".to_owned()),
+            }]
+        );
+    }
+
+    #[test]
     fn message_projection_sanitizes_formatted_html_and_extracts_code_blocks() {
         let msgtype = MessageType::Text(TextMessageEventContent::html(
             "plain fallback",
@@ -4715,6 +4925,8 @@ mod tests {
             sender: Some(sender.to_owned()),
             sender_label: None,
             body: Some("body".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
             timestamp_ms: Some(1),
             in_reply_to_event_id: None,
             formatted: None,

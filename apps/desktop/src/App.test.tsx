@@ -424,6 +424,80 @@ describe("ContextualRightPanel", () => {
     expect(markup).not.toContain("plain fallback should not render");
   });
 
+  test("TimelineItemRow renders Rust-owned message kind and spoiler contracts", () => {
+    const baseItem = {
+      id: { Event: { event_id: "$message-types:example.invalid" } },
+      sender: "@alice:example.invalid",
+      sender_label: "Alice Alias",
+      timestamp_ms: 1_800_000_000_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      can_react: true,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: true,
+      reactions: []
+    } satisfies Partial<TimelineItem>;
+    const renderRow = (item: TimelineItem) =>
+      renderToStaticMarkup(
+        <TimelineItemRow
+          item={item}
+          roomId="!room:example.invalid"
+          onReply={() => undefined}
+          onSendReaction={() => undefined}
+          onRedactReaction={() => undefined}
+          onEdit={() => undefined}
+          onRedact={() => undefined}
+        />
+      );
+
+    const emoteMarkup = renderRow({
+      ...baseItem,
+      body: "waves",
+      message_kind: "emote"
+    } as TimelineItem);
+    expect(emoteMarkup).toContain('data-message-kind="emote"');
+    expect(emoteMarkup).toContain('class="message-emote-prefix"');
+    expect(emoteMarkup).toContain("Alice Alias");
+    expect(emoteMarkup).toContain("waves");
+
+    const noticeMarkup = renderRow({
+      ...baseItem,
+      body: "bot notice",
+      message_kind: "notice"
+    } as TimelineItem);
+    expect(noticeMarkup).toContain('data-message-kind="notice"');
+    expect(noticeMarkup).toContain("message-notice");
+
+    const spoilerMarkup = renderRow({
+      ...baseItem,
+      body: "keep secret hidden",
+      spoiler_spans: [{ start_utf16: 5, end_utf16: 11 }],
+      message_kind: "text"
+    } as TimelineItem);
+    expect(spoilerMarkup).toContain('class="message-spoiler"');
+    expect(spoilerMarkup).toContain('data-revealed="false"');
+    expect(spoilerMarkup).toContain(t("timeline.spoiler"));
+    expect(spoilerMarkup).not.toContain("secret");
+
+    const formattedSpoilerMarkup = renderRow({
+      ...baseItem,
+      body: "plain fallback",
+      formatted: {
+        html: 'keep <span data-mx-spoiler="reason">secret</span> hidden',
+        plain_text: "keep secret hidden",
+        code_blocks: []
+      },
+      spoiler_spans: [{ start_utf16: 5, end_utf16: 11, reason: "reason" }],
+      message_kind: "text"
+    } as TimelineItem);
+    expect(formattedSpoilerMarkup).toContain('data-spoiler-reason="reason"');
+    expect(formattedSpoilerMarkup).not.toContain("secret");
+  });
+
   test("TimelineItemRow reflects the Rust-owned code block wrap preference", () => {
     const item = {
       id: { Event: { event_id: "$formatted-nowrap:example.invalid" } },

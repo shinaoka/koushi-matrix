@@ -476,9 +476,18 @@ timeline actor extracts SDK `FormattedBody` from text, notice, emote, and
 caption-capable media message content, accepts only Matrix HTML format, and
 sanitizes it before exposing it through `TimelineItem.formatted`.
 
+- Matrix message type display is Rust-owned. The timeline projection sets
+  `TimelineItem.message_kind` to `text`, `emote`, or `notice`; React may map
+  that value to CSS/markup only and must not infer msgtype from body text.
 - `TimelineItem.formatted` carries a safe render contract: sanitized HTML,
   plain text derived from that sanitized tree, and extracted code-block metadata
   (`language` plus code body).
+- Spoiler semantics are Rust-owned. Plain `||spoiler||` fallback text is
+  normalized to display text plus `TimelineItem.spoiler_spans`; sanitized
+  Matrix HTML `<span data-mx-spoiler>` is preserved as a reveal affordance and
+  also projected to spoiler spans. Span offsets are UTF-16 string offsets over
+  `TimelineItem.body` when formatted content is absent, and over
+  `TimelineItem.formatted.plain_text` when formatted content is present.
 - Unsafe tags, unsafe attributes, unsafe URL schemes, and script/style contents
   are removed in Rust. React must never render server `formatted_body` directly
   or re-run ad hoc sanitization as product logic.
@@ -1478,9 +1487,10 @@ stateDiagram-v2
 - Composer send intent is also Rust-owned. GUI code may pass typed draft,
   mention, and selection facts only; Rust builds the final message content:
   `MentionIntent` becomes Matrix `m.mentions`, supported markdown becomes a
-  plain body plus safe HTML formatted body, `/me` becomes an emote message, and
-  unsupported slash commands fail locally as `UnsupportedSlashCommand` before
-  a submitted composer transaction clears draft state.
+  plain body plus safe HTML formatted body, `||spoiler||` becomes a Matrix
+  spoiler span in `formatted_body`, `/me` becomes an emote message, and
+  unsupported slash commands fail locally as `UnsupportedSlashCommand` before a
+  submitted composer transaction clears draft state.
 - Mention autocomplete candidates are Rust-owned profile/member DTOs. React may
   show the popover, track selected draft pills, and pass a typed
   `MentionIntent`; it must not synthesize Matrix mention content, infer members

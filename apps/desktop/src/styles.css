@@ -2107,6 +2107,46 @@ button {
   gap: 8px;
 }
 
+.message-body.message-emote {
+  color: var(--text);
+  font-style: italic;
+}
+
+.message-body.message-notice {
+  color: var(--text-muted);
+}
+
+.message-emote-prefix {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.message-spoiler {
+  display: inline;
+  min-height: 1.3em;
+  padding: 0 0.35em;
+  border: 0;
+  border-radius: 0.25rem;
+  background: var(--text);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.message-spoiler[data-revealed="false"] {
+  color: transparent;
+  text-shadow: none;
+}
+
+.message-spoiler[data-revealed="false"] span {
+  color: var(--surface);
+}
+
+.message-spoiler[data-revealed="true"] {
+  background: var(--surface-hover);
+  color: inherit;
+}
+
 .message-body.message-formatted-body > p,
 .message-body.message-formatted-body > blockquote,
 .message-body.message-formatted-body > pre,

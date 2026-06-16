@@ -16,8 +16,10 @@ import {
   inviteUser as inviteUserToRoom,
   joinRoom,
   registerUser,
+  sendRoomEmoteMessage,
   sendRoomFormattedMessage,
   sendRoomMessage,
+  sendRoomNoticeMessage,
   setDisplayName,
   startHomeserver,
   stopProcess,
@@ -50,6 +52,7 @@ const checks = [
   "scenario local-activity",
   "scenario local-explore",
   "scenario local-message-actions",
+  "scenario local-message-types",
   "scenario local-composer",
   "scenario local-timeline-navigation",
   "scenario local-rich-formatting",
@@ -243,6 +246,10 @@ async function run() {
   }
   if (guiScenario === "local-message-actions") {
     await runLocalMessageActionsScenario();
+    return;
+  }
+  if (guiScenario === "local-message-types") {
+    await runLocalMessageTypesScenario();
     return;
   }
   if (guiScenario === "local-composer") {
@@ -1109,6 +1116,101 @@ async function runLocalMessageActionsScenario() {
 
     await recordLocalGuiEvidence(session);
     console.log("gui_local_hide_redacted=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalMessageTypesScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await selectRoomByName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForActiveRoomName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForTimelineViewMounted(session.browser, timeoutMs);
+
+    await waitForTimelineViewMounted(session.browser, timeoutMs);
+    const baselineEmotes = await elementCount(session.browser, '.message[data-message-kind="emote"]');
+    const emoteBody = `waves ${safeTimestamp()}`;
+    await sendRoomEmoteMessage(
+      session.credentials.homeserver,
+      session.helperAccessToken,
+      session.seedRoomId,
+      emoteBody,
+      `qa-emote-${safeTimestamp()}`
+    );
+    await waitForElementCountGreaterThan(
+      session.browser,
+      '.message[data-message-kind="emote"]',
+      baselineEmotes,
+      timeoutMs,
+      "local GUI emote render"
+    );
+    await waitForDocumentText(session.browser, [emoteBody], timeoutMs, "local GUI emote text");
+    console.log("gui_local_emote=ok");
+
+    const noticeBody = `QA notice ${safeTimestamp()}`;
+    const baselineNotices = await elementCount(
+      session.browser,
+      '.message[data-message-kind="notice"]'
+    );
+    await sendRoomNoticeMessage(
+      session.credentials.homeserver,
+      session.helperAccessToken,
+      session.seedRoomId,
+      noticeBody,
+      `qa-notice-${safeTimestamp()}`
+    );
+    await waitForElementCountGreaterThan(
+      session.browser,
+      '.message[data-message-kind="notice"]',
+      baselineNotices,
+      timeoutMs,
+      "local GUI notice render"
+    );
+    await waitForDocumentText(session.browser, [noticeBody], timeoutMs, "local GUI notice text");
+    console.log("gui_local_notice=ok");
+
+    const spoilerSecret = `secret-${safeTimestamp()}`;
+    const spoilerBody = `QA spoiler keep ${spoilerSecret} hidden`;
+    const baselineSpoilers = await elementCount(session.browser, ".message-spoiler");
+    await sendRoomFormattedMessage(
+      session.credentials.homeserver,
+      session.helperAccessToken,
+      session.seedRoomId,
+      spoilerBody,
+      `QA spoiler keep <span data-mx-spoiler="reason">${spoilerSecret}</span> hidden`,
+      `qa-spoiler-${safeTimestamp()}`
+    );
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".message-spoiler",
+      baselineSpoilers,
+      timeoutMs,
+      "local GUI spoiler render"
+    );
+    const leakedBeforeReveal = await session.browser.execute(
+      (secret) => (document.body.textContent ?? "").includes(secret),
+      spoilerSecret
+    );
+    if (leakedBeforeReveal) {
+      throw new Error("local GUI spoiler text was visible before reveal");
+    }
+    const spoilerButton = await session.browser.$('.message-spoiler[data-revealed="false"]');
+    await spoilerButton.waitForDisplayed({ timeout: timeoutMs });
+    await spoilerButton.click();
+    await waitForDocumentText(
+      session.browser,
+      [spoilerSecret],
+      timeoutMs,
+      "local GUI spoiler reveal"
+    );
+    console.log("gui_local_spoiler=ok");
+
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_message_types=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -2826,6 +2928,20 @@ async function startLocalGuiScenario() {
           `qa-timeline-nav-seed-${index}-${userSuffix}`
         );
       }
+    }
+
+    if (guiScenario === "local-message-types") {
+      const helperUsername = `qa_message_types_${userSuffix}`;
+      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
+      const helperAccessToken = helperRegistration.access_token;
+      const helperUserId = helperRegistration.user_id;
+      if (!helperAccessToken || !helperUserId) {
+        throw new Error("local GUI message types setup did not return helper credentials");
+      }
+      session.helperAccessToken = helperAccessToken;
+      await inviteUserToRoom(homeserver, accessToken, seedRoomId, helperUserId);
+      await joinRoom(homeserver, helperAccessToken, seedRoomId);
     }
 
     if (guiScenario === "local-rich-formatting") {
