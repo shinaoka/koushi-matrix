@@ -413,10 +413,9 @@ To reduce conflicts on these files:
   reducers change, `docs/policies/engineering-rules.md`, `AGENTS.md`, and the
   relevant dated plan). The review must include the verification output and
   any security/privacy-sensitive surfaces.
-- **Prefer `codex` (DeepSeek V4 Pro) as the auditor.** When scheduling an
-  external review, use `codex` / `claude-deepseek` as the first choice. Other
-  frontier models may be used only when `codex` is unavailable or explicitly
-  declined by the user.
+- **Prefer `codex` as the auditor.** When scheduling an external review, use
+  the `codex` CLI as the first choice. Other frontier models may be used only
+  when `codex` is unavailable or explicitly declined by the user.
 - **Review focus areas.** The auditor must prioritize, in order:
   1. Consistency with repository rules and canon documents.
   2. Consistency with Rust/Tauri best practices and the existing codebase.

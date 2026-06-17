@@ -676,6 +676,7 @@ fn room_space_and_invite_summaries_surface_avatar_mxc() {
                 avatar: Some(avatar("mxc://localhost/invite-avatar")),
                 topic: None,
                 inviter_display_name: Some("Inviter".to_owned()),
+                inviter_user_id: Some("@inviter:localhost".to_owned()),
                 is_dm: false,
             }],
         },
@@ -692,6 +693,127 @@ fn room_space_and_invite_summaries_surface_avatar_mxc() {
     assert_eq!(
         state.invites[0].avatar,
         Some(avatar("mxc://localhost/invite-avatar"))
+    );
+}
+
+#[test]
+fn ignored_users_load_filters_invites_and_presence() {
+    let mut state = ready_state();
+    state.invites = vec![InvitePreview {
+        room_id: "!invite:localhost".to_owned(),
+        display_name: "Invite".to_owned(),
+        avatar: None,
+        topic: None,
+        inviter_display_name: Some("Inviter".to_owned()),
+        inviter_user_id: Some("@ignored:localhost".to_owned()),
+        is_dm: false,
+    }];
+    state.live_signals.presence.insert(
+        "@ignored:localhost".to_owned(),
+        matrix_desktop_state::PresenceKind::Online,
+    );
+    state.room_list.active_filter = matrix_desktop_state::RoomListFilter::Invites;
+
+    let effects = reduce(
+        &mut state,
+        AppAction::IgnoredUsersLoaded {
+            user_ids: ["@ignored:localhost".to_owned()].into_iter().collect(),
+        },
+    );
+
+    assert!(
+        state
+            .profile
+            .ignored_user_ids
+            .contains("@ignored:localhost")
+    );
+    assert!(state.room_list.items.is_empty());
+    assert!(state.live_signals.presence.is_empty());
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged)))
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::RoomListChanged)))
+    );
+}
+
+#[test]
+fn ignored_user_update_request_is_optimistic_and_sets_saving_state() {
+    let mut state = ready_state();
+    let effects = reduce(
+        &mut state,
+        AppAction::IgnoredUserUpdateRequested {
+            request_id: 7,
+            user_id: "@ignored:localhost".to_owned(),
+            ignored: true,
+        },
+    );
+
+    assert!(
+        state
+            .profile
+            .ignored_user_ids
+            .contains("@ignored:localhost")
+    );
+    assert_eq!(
+        state.profile.ignored_user_update,
+        matrix_desktop_state::IgnoredUserUpdateState::Saving { request_id: 7 }
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged)))
+    );
+}
+
+#[test]
+fn ignored_user_update_failed_reverts_optimistic_mutation() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::IgnoredUserUpdateRequested {
+            request_id: 7,
+            user_id: "@ignored:localhost".to_owned(),
+            ignored: true,
+        },
+    );
+    assert!(
+        state
+            .profile
+            .ignored_user_ids
+            .contains("@ignored:localhost")
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::IgnoredUserUpdateFailed {
+            request_id: 7,
+            user_id: "@ignored:localhost".to_owned(),
+            ignored: true,
+            message: "failed".to_owned(),
+        },
+    );
+
+    assert!(
+        !state
+            .profile
+            .ignored_user_ids
+            .contains("@ignored:localhost")
+    );
+    assert!(state.profile.ignored_user_update.is_idle());
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged)))
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ErrorChanged)))
     );
 }
 

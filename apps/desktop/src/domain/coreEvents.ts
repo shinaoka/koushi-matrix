@@ -362,7 +362,8 @@ export type AccountEvent =
   | { RecoveryCompleted: { request_id: RequestId; account_key: string } }
   | { LoggedOut: { request_id: RequestId; account_key: string } }
   | { AccountSwitched: { request_id: RequestId; account_key: string } }
-  | { ProfileUpdated: { request_id: RequestId; account_key: string } };
+  | { ProfileUpdated: { request_id: RequestId; account_key: string } }
+  | { ReportCompleted: { request_id: RequestId; kind: ReportKind } };
 
 export type SyncBackendKind = "SyncService" | "LegacySync";
 
@@ -424,7 +425,10 @@ export type RoomEvent =
     }
   | { MarkedAsRead: { request_id: RequestId; room_id: string } }
   | { MarkedAsUnread: { request_id: RequestId; room_id: string; unread: boolean } }
+  | { ReportCompleted: { request_id: RequestId; kind: ReportKind } }
   | "RoomListUpdated";
+
+export type ReportKind = "event" | "room" | "user";
 
 export type RoomTagKind = "favourite" | "lowPriority";
 
@@ -794,10 +798,19 @@ export type CoreFailure =
   | { SyncFailed: { kind: string } }
   | { RoomOperationFailed: { kind: string } }
   | { TimelineOperationFailed: { kind: TimelineFailureKind } }
+  | { ReportOperationFailed: { kind: ReportFailureKind } }
   | { SearchFailed: { kind: string } }
   | "LocalEncryptionUnavailable"
   | "StoreUnavailable"
   | "ShutdownFailed";
+
+export type ReportFailureKind =
+  | "Forbidden"
+  | "Network"
+  | "InvalidUserId"
+  | "InvalidRoomId"
+  | "InvalidEventId"
+  | "Sdk";
 
 // ---------------------------------------------------------------------------
 // CoreEvent envelope (the `matrix-desktop://event` payload shape produced by

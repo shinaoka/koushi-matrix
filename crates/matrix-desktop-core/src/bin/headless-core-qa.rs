@@ -68,7 +68,7 @@ use matrix_desktop_state::{
     NativeAttentionProjectionInput, NativeAttentionState, NativeAttentionSuppressionReason,
     OperationFailureKind, PresenceKind, RecoveryRequest, ReplyQuoteState, RoomAttentionKind,
     RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
-    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
+    RoomNotificationMode, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
     ScheduledSendCapability, SessionInfo, SessionState, SettingsPatch,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, TimelineMediaGalleryItem,
     TimelineMediaGalleryMedia, TimelineMediaGallerySource, TimelineMediaKind,
@@ -4471,6 +4471,7 @@ async fn wait_for_operation_failed(
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }
                     | AccountEvent::ProfileUpdated { request_id: id, .. }
+                    | AccountEvent::ReportCompleted { request_id: id, .. }
                     | AccountEvent::LoggedOut { request_id: id, .. }
                     | AccountEvent::AccountSwitched { request_id: id, .. } => *id == request_id,
                     AccountEvent::RecoveryRequired { .. } => false,
@@ -4651,6 +4652,8 @@ async fn run_native_attention_stage(conn: &mut CoreConnection) -> Result<(), Str
         rooms: &rooms,
         active_room_id: None,
         muted_room_ids: &[],
+        room_notification_modes: &std::collections::HashMap::new(),
+        ignored_user_ids: &std::collections::BTreeSet::new(),
         window_focused: false,
         observation: NativeAttentionObservationKind::Live,
         previous_candidate: None,
@@ -4682,6 +4685,8 @@ async fn run_native_attention_stage(conn: &mut CoreConnection) -> Result<(), Str
         rooms: &rooms,
         active_room_id: Some("!mention:example.invalid"),
         muted_room_ids: &[],
+        room_notification_modes: &std::collections::HashMap::new(),
+        ignored_user_ids: &std::collections::BTreeSet::new(),
         window_focused: true,
         observation: NativeAttentionObservationKind::Live,
         previous_candidate: None,
@@ -4697,10 +4702,46 @@ async fn run_native_attention_stage(conn: &mut CoreConnection) -> Result<(), Str
     }
     println!("suppress_focus=ok");
 
+    let mut notification_modes = std::collections::HashMap::new();
+    notification_modes.insert(
+        "!message:example.invalid".to_owned(),
+        RoomNotificationMode::Mute,
+    );
+    notification_modes.insert(
+        "!dm:example.invalid".to_owned(),
+        RoomNotificationMode::Mentions,
+    );
+    let with_modes = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &rooms,
+        active_room_id: None,
+        muted_room_ids: &[],
+        room_notification_modes: &notification_modes,
+        ignored_user_ids: &std::collections::BTreeSet::new(),
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities,
+    });
+    if with_modes.summary.unread_count != 1
+        || with_modes.summary.highlight_count != 1
+        || with_modes.summary.badge_count != 1
+        || with_modes
+            .summary
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.kind)
+            != Some(RoomAttentionKind::Mention)
+    {
+        return Err("native attention did not respect per-room notification modes".to_owned());
+    }
+    println!("room_notification_modes=ok");
+
     let clear = native_attention_state_from_rooms(NativeAttentionProjectionInput {
         rooms: &[],
         active_room_id: None,
         muted_room_ids: &[],
+        room_notification_modes: &std::collections::HashMap::new(),
+        ignored_user_ids: &std::collections::BTreeSet::new(),
         window_focused: false,
         observation: NativeAttentionObservationKind::Live,
         previous_candidate: attention.summary.candidate.as_ref(),
@@ -4754,6 +4795,8 @@ fn native_attention_room(
         unread_count,
         notification_count,
         highlight_count,
+        marked_unread: false,
+        last_activity_ms: 0,
         parent_space_ids: Vec::new(),
     }
 }

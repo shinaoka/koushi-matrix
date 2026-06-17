@@ -187,6 +187,8 @@ fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate()
         rooms: &state.rooms,
         active_room_id: None,
         muted_room_ids: &[],
+        room_notification_modes: &std::collections::HashMap::new(),
+        ignored_user_ids: &std::collections::BTreeSet::new(),
         window_focused: false,
         observation: NativeAttentionObservationKind::Live,
         previous_candidate: None,

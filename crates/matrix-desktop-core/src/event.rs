@@ -19,6 +19,14 @@ use crate::ids::{AccountKey, RequestId, TimelineBatchId, TimelineGeneration, Tim
 /// (Async rule 4); timeline data flows as diffs.
 pub type AppStateSnapshot = matrix_desktop_state::AppState;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportKind {
+    Event,
+    Room,
+    User,
+}
+
 #[derive(Clone, Debug)]
 pub enum CoreEvent {
     StateChanged(AppStateSnapshot),
@@ -260,6 +268,10 @@ pub enum AccountEvent {
         request_id: RequestId,
         account_key: AccountKey,
     },
+    ReportCompleted {
+        request_id: RequestId,
+        kind: ReportKind,
+    },
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -480,6 +492,10 @@ pub enum RoomEvent {
         unread: bool,
     },
     RoomListUpdated,
+    ReportCompleted {
+        request_id: RequestId,
+        kind: ReportKind,
+    },
 }
 
 impl fmt::Debug for RoomEvent {
@@ -622,6 +638,11 @@ impl fmt::Debug for RoomEvent {
                 .field("unread", unread)
                 .finish(),
             Self::RoomListUpdated => formatter.write_str("RoomListUpdated"),
+            Self::ReportCompleted { request_id, kind } => formatter
+                .debug_struct("ReportCompleted")
+                .field("request_id", request_id)
+                .field("kind", kind)
+                .finish(),
         }
     }
 }
@@ -1371,13 +1392,15 @@ pub fn project_room_event_display_labels(event: &mut RoomEvent, state: &AppState
         | RoomEvent::RoomMemberModerated { .. }
         | RoomEvent::RoomMemberRoleUpdated { .. }
         | RoomEvent::MarkedAsRead { .. }
-        | RoomEvent::MarkedAsUnread { .. } => {}
+        | RoomEvent::MarkedAsUnread { .. }
+        | RoomEvent::ReportCompleted { .. } => {}
     }
 }
 
 pub fn project_timeline_item_display_labels(item: &mut TimelineItem, state: &AppState) {
     item.sender_label = timeline_sender_label(item.sender.as_deref(), state);
-    item.is_hidden = state.settings.values.display.hide_redacted && item.is_redacted;
+    item.is_hidden = (state.settings.values.display.hide_redacted && item.is_redacted)
+        || matrix_desktop_state::is_ignored_user(&state.profile, item.sender.as_deref());
     if let Some(reply_quote) = item.reply_quote.as_mut() {
         reply_quote.sender_label = timeline_sender_label(reply_quote.sender.as_deref(), state);
     }

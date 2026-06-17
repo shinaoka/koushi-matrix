@@ -14,7 +14,7 @@ use matrix_sdk::ruma::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     future::Future,
     net::IpAddr,
@@ -377,12 +377,24 @@ pub enum E2eeTrustError {
     Sdk(String),
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DeleteDevicesError {
     #[error("interactive authentication required")]
     UiaaChallenge { session: Option<String> },
     #[error("Matrix SDK delete devices failed")]
     Sdk(String),
+}
+
+impl fmt::Debug for DeleteDevicesError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UiaaChallenge { session } => formatter
+                .debug_struct("UiaaChallenge")
+                .field("session", &session.as_ref().map(|_| "SessionId(..)"))
+                .finish(),
+            Self::Sdk(_) => formatter.write_str("Sdk(..)"),
+        }
+    }
 }
 
 impl fmt::Debug for E2eeTrustError {
@@ -843,6 +855,119 @@ pub async fn delete_devices(
 }
 
 fn delete_devices_auth_data(
+    session: &MatrixClientSession,
+    auth: Option<&IdentityResetAuthRequest>,
+    uiaa_session: Option<&str>,
+) -> Option<matrix_sdk::ruma::api::client::uiaa::AuthData> {
+    let IdentityResetAuthRequest::UiaaPassword { password } = auth? else {
+        return None;
+    };
+    let identifier = matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
+        matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(
+            session.info.user_id.clone(),
+        ),
+    );
+    let mut password_auth = matrix_sdk::ruma::api::client::uiaa::Password::new(
+        identifier,
+        password.expose_secret().to_owned(),
+    );
+    password_auth.session = uiaa_session.map(str::to_owned);
+    Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
+        password_auth,
+    ))
+}
+
+#[derive(thiserror::Error)]
+pub enum AccountManagementError {
+    #[error("interactive authentication required")]
+    UiaaChallenge { session: Option<String> },
+    #[error("Matrix SDK account management failed")]
+    Sdk(String),
+}
+
+impl fmt::Debug for AccountManagementError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UiaaChallenge { session } => formatter
+                .debug_struct("UiaaChallenge")
+                .field("session", &session.as_ref().map(|_| "SessionId(..)"))
+                .finish(),
+            Self::Sdk(_) => formatter.write_str("Sdk(..)"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AccountManagementCapabilities {
+    pub change_password: bool,
+}
+
+pub async fn account_management_capabilities(
+    session: &MatrixClientSession,
+) -> AccountManagementCapabilities {
+    let change_password = session
+        .client()
+        .homeserver_capabilities()
+        .can_change_password()
+        .await
+        .ok()
+        .unwrap_or(true);
+    AccountManagementCapabilities { change_password }
+}
+
+pub async fn change_password(
+    session: &MatrixClientSession,
+    new_password: &AuthSecret,
+    auth: Option<&IdentityResetAuthRequest>,
+    uiaa_session: Option<&str>,
+) -> Result<(), AccountManagementError> {
+    let auth_data = account_management_auth_data(session, auth, uiaa_session);
+    match session
+        .client()
+        .account()
+        .change_password(new_password.expose_secret(), auth_data)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            if let Some(uiaa) = error.as_uiaa_response() {
+                Err(AccountManagementError::UiaaChallenge {
+                    session: uiaa.session.clone(),
+                })
+            } else {
+                Err(AccountManagementError::Sdk(error.to_string()))
+            }
+        }
+    }
+}
+
+pub async fn deactivate_account(
+    session: &MatrixClientSession,
+    erase_data: bool,
+    auth: Option<&IdentityResetAuthRequest>,
+    uiaa_session: Option<&str>,
+) -> Result<(), AccountManagementError> {
+    let auth_data = account_management_auth_data(session, auth, uiaa_session);
+    match session
+        .client()
+        .account()
+        .deactivate(None, auth_data, erase_data)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            if let Some(uiaa) = error.as_uiaa_response() {
+                Err(AccountManagementError::UiaaChallenge {
+                    session: uiaa.session.clone(),
+                })
+            } else {
+                Err(AccountManagementError::Sdk(error.to_string()))
+            }
+        }
+    }
+}
+
+fn account_management_auth_data(
     session: &MatrixClientSession,
     auth: Option<&IdentityResetAuthRequest>,
     uiaa_session: Option<&str>,
@@ -1748,9 +1873,6 @@ impl MatrixRoomOperationError {
     }
 
     fn from_sdk_error(error: matrix_sdk::Error) -> Self {
-        if std::env::var_os("MATRIX_DESKTOP_DEBUG_SDK_ERROR").is_some() {
-            eprintln!("raw matrix room operation error: {error:?}");
-        }
         Self::Sdk(matrix_room_operation_failure_kind(&error))
     }
 }
@@ -1917,6 +2039,7 @@ pub struct MatrixInvitePreview {
     pub avatar_mxc_uri: Option<String>,
     pub topic: Option<String>,
     pub inviter_display_name: Option<String>,
+    pub inviter_user_id: Option<String>,
     pub is_dm: bool,
 }
 
@@ -2068,9 +2191,6 @@ impl MatrixProfileError {
     }
 
     fn from_sdk_error(error: matrix_sdk::Error) -> Self {
-        if std::env::var_os("MATRIX_DESKTOP_DEBUG_SDK_ERROR").is_some() {
-            eprintln!("raw matrix profile operation error: {error:?}");
-        }
         Self::Sdk(matrix_profile_failure_kind(&error))
     }
 }
@@ -2080,6 +2200,72 @@ pub enum MatrixProfileFailureKind {
     Forbidden,
     Network,
     InvalidMimeType,
+    Sdk,
+}
+
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum MatrixIgnoredUserListError {
+    #[error("Matrix user id is invalid")]
+    InvalidUserId,
+    #[error("Matrix ignored user list operation failed")]
+    Sdk(MatrixIgnoredUserListFailureKind),
+}
+
+impl MatrixIgnoredUserListError {
+    pub fn failure_kind(&self) -> MatrixIgnoredUserListFailureKind {
+        match self {
+            Self::InvalidUserId => MatrixIgnoredUserListFailureKind::InvalidUserId,
+            Self::Sdk(kind) => *kind,
+        }
+    }
+
+    fn from_sdk_error(error: matrix_sdk::Error) -> Self {
+        Self::Sdk(matrix_ignored_user_list_failure_kind(&error))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixIgnoredUserListFailureKind {
+    Forbidden,
+    Network,
+    InvalidUserId,
+    Sdk,
+}
+
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum MatrixReportError {
+    #[error("Matrix user id is invalid")]
+    InvalidUserId,
+    #[error("Matrix room id is invalid")]
+    InvalidRoomId,
+    #[error("Matrix event id is invalid")]
+    InvalidEventId,
+    #[error("Matrix report operation failed")]
+    Sdk(MatrixReportFailureKind),
+}
+
+impl MatrixReportError {
+    pub fn failure_kind(&self) -> MatrixReportFailureKind {
+        match self {
+            Self::InvalidUserId => MatrixReportFailureKind::InvalidUserId,
+            Self::InvalidRoomId => MatrixReportFailureKind::InvalidRoomId,
+            Self::InvalidEventId => MatrixReportFailureKind::InvalidEventId,
+            Self::Sdk(kind) => *kind,
+        }
+    }
+
+    fn from_sdk_error(error: matrix_sdk::Error) -> Self {
+        Self::Sdk(matrix_report_failure_kind(&error))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixReportFailureKind {
+    Forbidden,
+    Network,
+    InvalidUserId,
+    InvalidRoomId,
+    InvalidEventId,
     Sdk,
 }
 
@@ -2555,6 +2741,106 @@ pub async fn update_local_user_alias(
     set_local_user_aliases(session, aliases).await
 }
 
+pub async fn get_ignored_user_list(
+    session: &MatrixClientSession,
+) -> Result<BTreeSet<String>, MatrixIgnoredUserListError> {
+    let account = session.client().account();
+    let raw = account
+        .account_data::<matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent>()
+        .await
+        .map_err(MatrixIgnoredUserListError::from_sdk_error)?;
+    let Some(raw) = raw else {
+        return Ok(BTreeSet::new());
+    };
+    let content = raw
+        .deserialize()
+        .map_err(|_| MatrixIgnoredUserListError::Sdk(MatrixIgnoredUserListFailureKind::Sdk))?;
+
+    Ok(content
+        .ignored_users
+        .into_keys()
+        .map(|user_id| user_id.to_string())
+        .collect())
+}
+
+pub async fn ignore_user(
+    session: &MatrixClientSession,
+    user_id: &str,
+) -> Result<BTreeSet<String>, MatrixIgnoredUserListError> {
+    let user_id = matrix_sdk::ruma::UserId::parse(user_id)
+        .map_err(|_| MatrixIgnoredUserListError::InvalidUserId)?;
+    session
+        .client()
+        .account()
+        .ignore_user(&user_id)
+        .await
+        .map_err(MatrixIgnoredUserListError::from_sdk_error)?;
+    get_ignored_user_list(session).await
+}
+
+pub async fn unignore_user(
+    session: &MatrixClientSession,
+    user_id: &str,
+) -> Result<BTreeSet<String>, MatrixIgnoredUserListError> {
+    let user_id = matrix_sdk::ruma::UserId::parse(user_id)
+        .map_err(|_| MatrixIgnoredUserListError::InvalidUserId)?;
+    session
+        .client()
+        .account()
+        .unignore_user(&user_id)
+        .await
+        .map_err(MatrixIgnoredUserListError::from_sdk_error)?;
+    get_ignored_user_list(session).await
+}
+
+pub async fn report_content(
+    session: &MatrixClientSession,
+    room_id: &str,
+    event_id: &str,
+    reason: Option<String>,
+) -> Result<(), MatrixReportError> {
+    let room = matrix_room(session, room_id).map_err(|error| match error {
+        MatrixRoomOperationError::InvalidRoomId => MatrixReportError::InvalidRoomId,
+        _ => MatrixReportError::Sdk(MatrixReportFailureKind::Sdk),
+    })?;
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id)
+        .map_err(|_| MatrixReportError::InvalidEventId)?;
+    room.report_content(event_id, reason)
+        .await
+        .map_err(MatrixReportError::from_sdk_error)?;
+    Ok(())
+}
+
+pub async fn report_room(
+    session: &MatrixClientSession,
+    room_id: &str,
+    reason: String,
+) -> Result<(), MatrixReportError> {
+    let room = matrix_room(session, room_id).map_err(|error| match error {
+        MatrixRoomOperationError::InvalidRoomId => MatrixReportError::InvalidRoomId,
+        _ => MatrixReportError::Sdk(MatrixReportFailureKind::Sdk),
+    })?;
+    room.report_room(reason)
+        .await
+        .map_err(MatrixReportError::from_sdk_error)?;
+    Ok(())
+}
+
+pub async fn report_user(
+    session: &MatrixClientSession,
+    user_id: &str,
+    reason: String,
+) -> Result<(), MatrixReportError> {
+    let user_id =
+        matrix_sdk::ruma::UserId::parse(user_id).map_err(|_| MatrixReportError::InvalidUserId)?;
+    let request =
+        matrix_sdk::ruma::api::client::reporting::report_user::v3::Request::new(user_id, reason);
+    session.client().send(request).await.map_err(|error| {
+        MatrixReportError::from_sdk_error(matrix_sdk::Error::Http(Box::new(error)))
+    })?;
+    Ok(())
+}
+
 pub async fn send_text_message(
     session: &MatrixClientSession,
     room_id: &str,
@@ -2982,6 +3268,66 @@ pub async fn mark_room_as_unread(
     room.set_unread_flag(unread)
         .await
         .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+const ROOM_NOTIFICATION_RULE_ID_PREFIX: &str = "org.matrix.desktop.notify.room.";
+
+fn room_notification_rule_id(room_id: &matrix_sdk::ruma::RoomId) -> String {
+    format!("{ROOM_NOTIFICATION_RULE_ID_PREFIX}{room_id}")
+}
+
+/// Sets the per-room notification mode by manipulating Ruri-owned push rules.
+///
+/// - `All`: removes any Ruri-owned override/underride rule for the room.
+/// - `Mentions`: adds an underride rule with empty actions so generic message
+///   rules are suppressed but mention/highlight rules still fire.
+/// - `Mute`: adds an override rule with empty actions so all notifications for
+///   the room are suppressed.
+pub async fn set_room_notification_mode(
+    session: &MatrixClientSession,
+    room_id: &str,
+    mode: matrix_desktop_state::RoomNotificationMode,
+) -> Result<(), MatrixRoomOperationError> {
+    use matrix_sdk::ruma::{
+        RoomId,
+        api::client::push::{delete_pushrule, set_pushrule},
+        push::{
+            EventMatchConditionData, NewConditionalPushRule, NewPushRule, PushCondition, RuleKind,
+        },
+    };
+
+    let room_id = RoomId::parse(room_id).map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
+    let rule_id = room_notification_rule_id(&room_id);
+    let client = session.client();
+
+    // Remove any previous Ruri-owned rule for this room. Missing-rule errors are
+    // ignored so the operation is idempotent.
+    for kind in [RuleKind::Override, RuleKind::Underride] {
+        let delete_request = delete_pushrule::v3::Request::new(kind, rule_id.clone());
+        let _ = client.send(delete_request).await;
+    }
+
+    if mode != matrix_desktop_state::RoomNotificationMode::All {
+        let actions = Vec::new();
+        let conditions = vec![PushCondition::EventMatch(EventMatchConditionData::new(
+            "room_id".to_owned(),
+            room_id.to_string(),
+        ))];
+        let new_rule = NewConditionalPushRule::new(rule_id, conditions, actions);
+        let new_push_rule = match mode {
+            matrix_desktop_state::RoomNotificationMode::Mentions => {
+                NewPushRule::Underride(new_rule)
+            }
+            matrix_desktop_state::RoomNotificationMode::Mute => NewPushRule::Override(new_rule),
+            matrix_desktop_state::RoomNotificationMode::All => unreachable!(),
+        };
+        let set_request = set_pushrule::v3::Request::new(new_push_rule);
+        client.send(set_request).await.map_err(|error| {
+            MatrixRoomOperationError::from_sdk_error(matrix_sdk::Error::Http(Box::new(error)))
+        })?;
+    }
+
+    Ok(())
 }
 
 pub async fn load_pinned_event_ids(
@@ -3831,12 +4177,15 @@ async fn matrix_invite_previews_from_rooms(
             .map(|name| name.to_string())
             .or_else(|| room.name())
             .unwrap_or_else(|| "Invite".to_owned());
-        let inviter_display_name = room
+        let inviter = room
             .invite_details()
             .await
             .ok()
-            .and_then(|details| details.inviter)
+            .and_then(|details| details.inviter);
+        let inviter_display_name = inviter
+            .as_ref()
             .and_then(|inviter| inviter.display_name().map(ToOwned::to_owned));
+        let inviter_user_id = inviter.map(|inviter| inviter.user_id().to_string());
         let is_dm = room.is_direct().await.unwrap_or(false);
 
         invites.push(MatrixInvitePreview {
@@ -3845,6 +4194,7 @@ async fn matrix_invite_previews_from_rooms(
             avatar_mxc_uri: room.avatar_url().map(|uri| uri.to_string()),
             topic: room.topic(),
             inviter_display_name,
+            inviter_user_id,
             is_dm,
         });
     }
@@ -4005,6 +4355,50 @@ fn matrix_profile_failure_kind(error: &matrix_sdk::Error) -> MatrixProfileFailur
         }
         matrix_sdk::Error::Timeout => MatrixProfileFailureKind::Network,
         _ => MatrixProfileFailureKind::Sdk,
+    }
+}
+
+fn matrix_ignored_user_list_failure_kind(
+    error: &matrix_sdk::Error,
+) -> MatrixIgnoredUserListFailureKind {
+    match error {
+        matrix_sdk::Error::Http(error) => {
+            if error
+                .as_client_api_error()
+                .is_some_and(|error| error.status_code.as_u16() == 403)
+                || matches!(
+                    error.client_api_error_kind(),
+                    Some(matrix_sdk::ruma::api::error::ErrorKind::Forbidden)
+                )
+            {
+                MatrixIgnoredUserListFailureKind::Forbidden
+            } else {
+                MatrixIgnoredUserListFailureKind::Sdk
+            }
+        }
+        matrix_sdk::Error::Timeout => MatrixIgnoredUserListFailureKind::Network,
+        _ => MatrixIgnoredUserListFailureKind::Sdk,
+    }
+}
+
+fn matrix_report_failure_kind(error: &matrix_sdk::Error) -> MatrixReportFailureKind {
+    match error {
+        matrix_sdk::Error::Http(error) => {
+            if error
+                .as_client_api_error()
+                .is_some_and(|error| error.status_code.as_u16() == 403)
+                || matches!(
+                    error.client_api_error_kind(),
+                    Some(matrix_sdk::ruma::api::error::ErrorKind::Forbidden)
+                )
+            {
+                MatrixReportFailureKind::Forbidden
+            } else {
+                MatrixReportFailureKind::Sdk
+            }
+        }
+        matrix_sdk::Error::Timeout => MatrixReportFailureKind::Network,
+        _ => MatrixReportFailureKind::Sdk,
     }
 }
 

@@ -72,6 +72,11 @@ pub enum AppAction {
         request_id: u64,
         flow_id: u64,
     },
+    AccountManagementCapabilitiesLoadRequested,
+    AccountManagementCapabilitiesLoaded {
+        change_password: bool,
+    },
+    AccountManagementCapabilitiesLoadFailed,
     SoftLogoutReauthRequested {
         request_id: u64,
     },
@@ -108,6 +113,20 @@ pub enum AppAction {
     LocalUserAliasesLoaded {
         aliases: std::collections::BTreeMap<String, String>,
     },
+    RoomNotificationModeSet {
+        request_id: u64,
+        room_id: String,
+        mode: crate::state::RoomNotificationMode,
+    },
+    RoomNotificationModeCompleted {
+        request_id: u64,
+        room_id: String,
+    },
+    RoomNotificationModeFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
+    },
     LocalUserAliasUpdateRequested {
         request_id: u64,
         user_id: String,
@@ -118,6 +137,23 @@ pub enum AppAction {
     },
     LocalUserAliasUpdateFailed {
         request_id: u64,
+        message: String,
+    },
+    IgnoredUsersLoaded {
+        user_ids: std::collections::BTreeSet<String>,
+    },
+    IgnoredUserUpdateRequested {
+        request_id: u64,
+        user_id: String,
+        ignored: bool,
+    },
+    IgnoredUserUpdateSucceeded {
+        request_id: u64,
+    },
+    IgnoredUserUpdateFailed {
+        request_id: u64,
+        user_id: String,
+        ignored: bool,
         message: String,
     },
     ProfileUpdateRequested {

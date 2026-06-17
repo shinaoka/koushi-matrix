@@ -37,7 +37,9 @@ describe("context menu registry", () => {
       "openRoomInfo",
       "searchInRoom",
       "setRoomFavourite",
-      "setRoomLowPriority"
+      "setRoomLowPriority",
+      "markRoomAsRead",
+      "markRoomAsUnread"
     ]);
     expect(contextMenuItems({ kind: "space" }).map((item) => item.id)).toEqual([
       "selectSpace",

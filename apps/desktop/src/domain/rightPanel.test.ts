@@ -104,7 +104,13 @@ function snapshotForPanelMode(
           appearance: { theme: "system" },
           typography: { font: "system", emoji: "system" },
           keyboard: { composer_send_shortcut: "enter" },
-          notifications: { desktop_notifications: true, sound: true, badges: true },
+          notifications: {
+            desktop_notifications: true,
+            sound: true,
+            badges: true,
+            send_read_receipts: true,
+            send_typing_notifications: true
+          },
           display: { code_block_wrap: true, hide_redacted: false },
           media: {
         image_upload_compression: "never",
@@ -138,6 +144,8 @@ function snapshotForPanelMode(
         users: {},
         local_aliases: {},
         local_alias_update: { kind: "idle" },
+        ignored_user_ids: [],
+        ignored_user_update: { kind: "idle" },
         update: { kind: "idle" }
       },
       sync: "stopped",
@@ -148,8 +156,10 @@ function snapshotForPanelMode(
       invites: [],
       room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
       room_interactions: {},
+      room_notification_settings: {},
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
+      account_management_capabilities: { change_password: { kind: "unknown" } },
       soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       directory: { query: { kind: "closed" }, join: { kind: "idle" } },

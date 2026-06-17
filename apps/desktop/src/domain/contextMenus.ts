@@ -14,6 +14,8 @@ export type ContextMenuActionId =
   | "removeRoomFavourite"
   | "setRoomLowPriority"
   | "removeRoomLowPriority"
+  | "markRoomAsRead"
+  | "markRoomAsUnread"
   | "selectSpace"
   | "openSpaceInfo"
   | "openUserSettings"
@@ -70,7 +72,9 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
           : { id: "setRoomFavourite", labelMessageId: "context.addToFavourites" },
         request.tags?.low_priority
           ? { id: "removeRoomLowPriority", labelMessageId: "context.removeFromLowPriority" }
-          : { id: "setRoomLowPriority", labelMessageId: "context.addToLowPriority" }
+          : { id: "setRoomLowPriority", labelMessageId: "context.addToLowPriority" },
+        { id: "markRoomAsRead", labelMessageId: "room.markAsRead" },
+        { id: "markRoomAsUnread", labelMessageId: "room.markAsUnread" }
       ];
     case "space":
       return [

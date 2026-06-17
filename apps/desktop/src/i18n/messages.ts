@@ -5,6 +5,7 @@ export type MessageId =
   | "action.back"
   | "action.cancel"
   | "action.close"
+  | "action.continue"
   | "action.createRoom"
   | "action.createSpace"
   | "action.forward"
@@ -210,6 +211,9 @@ export type MessageId =
   | "room.noRoomSelected"
   | "room.noSpaces"
   | "room.notifications"
+  | "room.notifyModeAll"
+  | "room.notifyModeMentions"
+  | "room.notifyModeMute"
   | "room.operationFailed"
   | "room.people"
   | "room.rolePermissions"
@@ -241,6 +245,13 @@ export type MessageId =
   | "room.unbanMember"
   | "room.unread"
   | "room.unreadCount"
+  | "roomList.filterRooms"
+  | "roomList.filterUnread"
+  | "roomList.filterPeople"
+  | "roomList.filterFavourites"
+  | "roomList.filterInvites"
+  | "room.markAsRead"
+  | "room.markAsUnread"
   | "search.noExactMatches"
   | "search.matchAttachmentFileName"
   | "search.matchMessage"
@@ -278,6 +289,8 @@ export type MessageId =
   | "settings.notificationBadges"
   | "settings.notificationDesktop"
   | "settings.notificationSound"
+  | "settings.sendReadReceipts"
+  | "settings.sendTypingNotifications"
   | "settings.notifications"
   | "settings.localStore"
   | "settings.localStoreLabel"
@@ -307,6 +320,29 @@ export type MessageId =
   | "settings.searchIndex"
   | "settings.security"
   | "settings.securityPrivacy"
+  | "settings.sessions"
+  | "settings.accountManagement"
+  | "settings.changePassword"
+  | "settings.changePasswordLabel"
+  | "settings.changePasswordConfirm"
+  | "settings.changePasswordMismatch"
+  | "settings.passwordChanged"
+  | "settings.deactivateAccount"
+  | "settings.deactivateAccountErase"
+  | "settings.deactivateAccountConfirm"
+  | "settings.accountDeactivated"
+  | "settings.accountManagementFailed"
+  | "settings.currentSession"
+  | "settings.otherSessions"
+  | "settings.signOut"
+  | "settings.signOutOthers"
+  | "settings.renameDevice"
+  | "settings.deviceVerified"
+  | "settings.deviceUnverified"
+  | "settings.deviceInactive"
+  | "settings.deviceNamePlaceholder"
+  | "settings.sessionsLoading"
+  | "settings.sessionsLoadFailed"
   | "settings.keyManagement"
   | "settings.roomKeyExport"
   | "settings.roomKeyExportDestination"
@@ -575,6 +611,7 @@ export type MessageId =
   | "workspace.activity"
   | "workspace.createSpace"
   | "workspace.explore"
+  | "workspace.filters"
   | "workspace.home"
   | "workspace.invites"
   | "workspace.favourites"
@@ -686,6 +723,7 @@ const en: Catalog = {
   "action.back": "Back",
   "action.cancel": "Cancel",
   "action.close": "Close {title}",
+  "action.continue": "Continue",
   "action.createRoom": "Create room",
   "action.createSpace": "Create space",
   "action.forward": "Forward",
@@ -894,6 +932,9 @@ const en: Catalog = {
   "room.noRoomSelected": "No room selected",
   "room.noSpaces": "No Spaces",
   "room.notifications": "Notifications",
+  "room.notifyModeAll": "All messages",
+  "room.notifyModeMentions": "Mentions only",
+  "room.notifyModeMute": "Mute",
   "room.operationFailed": "Operation failed",
   "room.people": "People",
   "room.roleAdministrator": "Administrator",
@@ -922,6 +963,13 @@ const en: Catalog = {
   "room.unbanMember": "Unban {name}",
   "room.unread": "Unread",
   "room.unreadCount": "{count} unread",
+  "roomList.filterRooms": "Rooms",
+  "roomList.filterUnread": "Unread",
+  "roomList.filterPeople": "People",
+  "roomList.filterFavourites": "Favourites",
+  "roomList.filterInvites": "Invites",
+  "room.markAsRead": "Mark as read",
+  "room.markAsUnread": "Mark as unread",
   "search.noExactMatches": "No exact matches",
   "search.matchAttachmentFileName": "attachment filename",
   "search.matchMessage": "message",
@@ -959,6 +1007,8 @@ const en: Catalog = {
   "settings.notificationBadges": "Badges",
   "settings.notificationDesktop": "Desktop notifications",
   "settings.notificationSound": "Sound",
+  "settings.sendReadReceipts": "Send read receipts",
+  "settings.sendTypingNotifications": "Send typing notifications",
   "settings.notifications": "Notifications",
   "settings.localData": "Local data",
   "settings.localDataResetAvailable": "Recovery or local reset available",
@@ -988,6 +1038,29 @@ const en: Catalog = {
   "settings.searchIndex": "Encrypted local index",
   "settings.security": "Security",
   "settings.securityPrivacy": "Security & Privacy",
+  "settings.sessions": "Sessions",
+  "settings.accountManagement": "Account management",
+  "settings.changePassword": "Change password",
+  "settings.changePasswordLabel": "New password",
+  "settings.changePasswordConfirm": "Confirm new password",
+  "settings.changePasswordMismatch": "Passwords do not match",
+  "settings.passwordChanged": "Password changed",
+  "settings.deactivateAccount": "Deactivate account",
+  "settings.deactivateAccountErase": "Erase all data",
+  "settings.deactivateAccountConfirm": "This cannot be undone. Confirm to proceed.",
+  "settings.accountDeactivated": "Account deactivated",
+  "settings.accountManagementFailed": "Account operation failed",
+  "settings.currentSession": "Current session",
+  "settings.otherSessions": "Other sessions",
+  "settings.signOut": "Sign out",
+  "settings.signOutOthers": "Sign out all other sessions",
+  "settings.renameDevice": "Rename",
+  "settings.deviceVerified": "Verified",
+  "settings.deviceUnverified": "Unverified",
+  "settings.deviceInactive": "Inactive",
+  "settings.deviceNamePlaceholder": "Device name",
+  "settings.sessionsLoading": "Loading sessions…",
+  "settings.sessionsLoadFailed": "Could not load sessions.",
   "settings.keyManagement": "Key management",
   "settings.roomKeyExport": "Room key export",
   "settings.roomKeyExportDestination": "Key export destination",
@@ -1256,6 +1329,7 @@ const en: Catalog = {
   "workspace.activity": "Activity",
   "workspace.createSpace": "Create space",
   "workspace.explore": "Explore",
+  "workspace.filters": "Filters",
   "workspace.home": "Home",
   "workspace.invites": "Invites",
   "workspace.favourites": "Favourites",
@@ -1278,6 +1352,7 @@ const ja: Catalog = {
   "action.back": "戻る",
   "action.cancel": "キャンセル",
   "action.close": "{title}を閉じる",
+  "action.continue": "続行",
   "action.createRoom": "ルームを作成",
   "action.createSpace": "スペースを作成",
   "action.forward": "進む",
@@ -1476,6 +1551,9 @@ const ja: Catalog = {
   "room.noRoomSelected": "ルームが選択されていません",
   "room.noSpaces": "スペースがありません",
   "room.notifications": "通知",
+  "room.notifyModeAll": "すべてのメッセージ",
+  "room.notifyModeMentions": "メンションのみ",
+  "room.notifyModeMute": "ミュート",
   "room.operationFailed": "操作に失敗しました",
   "room.people": "ユーザー",
   "room.roleAdministrator": "管理者",
@@ -1504,6 +1582,13 @@ const ja: Catalog = {
   "room.unbanMember": "{name}のBANを解除",
   "room.unread": "未読",
   "room.unreadCount": "未読 {count} 件",
+  "roomList.filterRooms": "ルーム",
+  "roomList.filterUnread": "未読",
+  "roomList.filterPeople": "ユーザー",
+  "roomList.filterFavourites": "お気に入り",
+  "roomList.filterInvites": "招待",
+  "room.markAsRead": "既読にする",
+  "room.markAsUnread": "未読にする",
   "search.noExactMatches": "完全一致はありません",
   "search.matchAttachmentFileName": "添付ファイル名",
   "search.matchMessage": "メッセージ",
@@ -1540,6 +1625,8 @@ const ja: Catalog = {
   "settings.notificationBadges": "バッジ",
   "settings.notificationDesktop": "デスクトップ通知",
   "settings.notificationSound": "サウンド",
+  "settings.sendReadReceipts": "既読を送信",
+  "settings.sendTypingNotifications": "入力通知を送信",
   "settings.notifications": "通知",
   "settings.localData": "ローカルデータ",
   "settings.localDataResetAvailable": "リカバリーまたはローカルリセットを利用できます",
@@ -1569,6 +1656,29 @@ const ja: Catalog = {
   "settings.searchIndex": "暗号化ローカルインデックス",
   "settings.security": "セキュリティ",
   "settings.securityPrivacy": "セキュリティとプライバシー",
+  "settings.sessions": "セッション",
+  "settings.accountManagement": "アカウント管理",
+  "settings.changePassword": "パスワードを変更",
+  "settings.changePasswordLabel": "新しいパスワード",
+  "settings.changePasswordConfirm": "新しいパスワード（確認）",
+  "settings.changePasswordMismatch": "パスワードが一致しません",
+  "settings.passwordChanged": "パスワードを変更しました",
+  "settings.deactivateAccount": "アカウントを無効化",
+  "settings.deactivateAccountErase": "すべてのデータを消去",
+  "settings.deactivateAccountConfirm": "この操作は元に戻せません。続行するには確認してください。",
+  "settings.accountDeactivated": "アカウントを無効化しました",
+  "settings.accountManagementFailed": "アカウント操作に失敗しました",
+  "settings.currentSession": "現在のセッション",
+  "settings.otherSessions": "その他のセッション",
+  "settings.signOut": "サインアウト",
+  "settings.signOutOthers": "その他のセッションをすべてサインアウト",
+  "settings.renameDevice": "名前を変更",
+  "settings.deviceVerified": "検証済み",
+  "settings.deviceUnverified": "未検証",
+  "settings.deviceInactive": "非アクティブ",
+  "settings.deviceNamePlaceholder": "デバイス名",
+  "settings.sessionsLoading": "セッションを読み込み中…",
+  "settings.sessionsLoadFailed": "セッションを読み込めませんでした。",
   "settings.keyManagement": "鍵管理",
   "settings.roomKeyExport": "ルーム鍵エクスポート",
   "settings.roomKeyExportDestination": "鍵エクスポート先",
@@ -1835,6 +1945,7 @@ const ja: Catalog = {
   "workspace.activity": "アクティビティ",
   "workspace.createSpace": "スペースを作成",
   "workspace.explore": "探索",
+  "workspace.filters": "フィルター",
   "workspace.home": "ホーム",
   "workspace.invites": "招待",
   "workspace.favourites": "お気に入り",

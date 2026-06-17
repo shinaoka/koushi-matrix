@@ -35,6 +35,9 @@ pub enum CoreFailure {
     SearchFailed {
         kind: SearchFailureKind,
     },
+    ReportOperationFailed {
+        kind: ReportFailureKind,
+    },
     LocalEncryptionUnavailable,
     StoreUnavailable,
     ShutdownFailed,
@@ -101,4 +104,14 @@ pub enum SearchFailureKind {
     IndexUnavailable,
     Query,
     Internal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ReportFailureKind {
+    Forbidden,
+    Network,
+    InvalidUserId,
+    InvalidRoomId,
+    InvalidEventId,
+    Sdk,
 }

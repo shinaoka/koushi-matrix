@@ -26,8 +26,9 @@ use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
     ComposerResolverContext, ComposerSurface, DirectoryQuery, FocusedContextState,
     IdentityResetAuthRequest, ImageUploadCompressionMode, LoginRequest, MentionIntent,
-    PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange, RoomTagKind,
-    SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
+    PresenceKind, RecoveryRequest, RoomListFilter, RoomModerationAction, RoomNotificationMode,
+    RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch, StagedUploadCompressionChoice,
+    StagedUploadItem,
     StagedUploadKind, VerificationCancelReason, build_formatted_message_draft,
 };
 use serde::Deserialize;
@@ -540,6 +541,191 @@ pub async fn update_settings(
     submit_core_command(
         state.inner(),
         build_update_settings_command(request_id, patch),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn select_room_list_filter(
+    filter: RoomListFilter,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::App(AppCommand::SelectRoomListFilter { request_id, filter }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn mark_room_as_read(
+    room_id: String,
+    event_id: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::MarkRoomAsRead {
+            request_id,
+            room_id,
+            event_id,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn mark_room_as_unread(
+    room_id: String,
+    unread: bool,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::MarkRoomAsUnread {
+            request_id,
+            room_id,
+            unread,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_room_notification_mode(
+    room_id: String,
+    mode: RoomNotificationMode,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::SetRoomNotificationMode {
+            request_id,
+            room_id,
+            mode,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn query_devices(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Account(AccountCommand::QueryDevices { request_id }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn rename_device(
+    device_ordinal: u64,
+    display_name: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Account(AccountCommand::RenameDevice {
+            request_id,
+            device_ordinal,
+            display_name,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn delete_devices(
+    device_ordinals: Vec<u64>,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Account(AccountCommand::DeleteDevices {
+            request_id,
+            device_ordinals,
+            auth: None,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn load_account_management_capabilities(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn change_password(
+    new_password: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Account(AccountCommand::ChangePassword {
+            request_id,
+            new_password: AuthSecret::new(new_password),
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn deactivate_account(
+    erase_data: bool,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Account(AccountCommand::DeactivateAccount {
+            request_id,
+            erase_data,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn submit_account_management_uia(
+    flow_id: u64,
+    password: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_submit_account_management_uia_command(request_id, flow_id, AuthSecret::new(password)),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -1166,7 +1352,11 @@ pub async fn update_staged_upload_caption(
                 .staged_uploads
                 .iter()
                 .find(|item| item.staged_id == staged_id_for_wait)
-                .map(|item| item.caption.as_ref().map(|caption| caption.plain_body.as_str()))
+                .map(|item| {
+                    item.caption
+                        .as_ref()
+                        .map(|caption| caption.plain_body.as_str())
+                })
                 == Some(expected_caption.as_deref())
         },
         "staged upload caption did not update",
@@ -1192,11 +1382,13 @@ pub async fn update_staged_upload_compression(
     let mut event_conn = state.runtime.attach();
     let request_id = event_conn.next_request_id();
     event_conn
-        .command(CoreCommand::App(AppCommand::UpdateStagedUploadCompression {
-            request_id,
-            staged_id,
-            compression_choice,
-        }))
+        .command(CoreCommand::App(
+            AppCommand::UpdateStagedUploadCompression {
+                request_id,
+                staged_id,
+                compression_choice,
+            },
+        ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
     wait_for_upload_staging_snapshot(
@@ -2753,6 +2945,44 @@ pub(crate) fn build_submit_identity_reset_oauth_command(
     })
 }
 
+pub(crate) fn build_load_account_management_capabilities_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id })
+}
+
+pub(crate) fn build_change_password_command(
+    request_id: matrix_desktop_core::RequestId,
+    new_password: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ChangePassword {
+        request_id,
+        new_password,
+    })
+}
+
+pub(crate) fn build_deactivate_account_command(
+    request_id: matrix_desktop_core::RequestId,
+    erase_data: bool,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::DeactivateAccount {
+        request_id,
+        erase_data,
+    })
+}
+
+pub(crate) fn build_submit_account_management_uia_command(
+    request_id: matrix_desktop_core::RequestId,
+    flow_id: u64,
+    password: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SubmitAccountManagementUia {
+        request_id,
+        flow_id,
+        auth: IdentityResetAuthRequest::UiaaPassword { password },
+    })
+}
+
 pub(crate) fn build_start_sync_command(request_id: matrix_desktop_core::RequestId) -> CoreCommand {
     CoreCommand::Sync(SyncCommand::Start { request_id })
 }
@@ -3995,14 +4225,15 @@ mod tests {
     use super::SearchScopeKind;
     use super::{
         build_accept_invite_command, build_accept_verification_command,
-        build_bootstrap_cross_signing_command, build_cancel_scheduled_send_command,
-        build_cancel_send_command, build_cancel_verification_command,
-        build_change_secure_backup_passphrase_command, build_close_activity_command,
-        build_confirm_sas_verification_command, build_create_room_command, build_create_space_command,
-        build_decline_invite_command, build_discover_login_command, build_download_media_command,
-        build_edit_message_command, build_enable_key_backup_command, build_export_room_keys_command,
-        build_forget_room_command, build_forward_message_command, build_import_room_keys_command,
-        build_invite_user_command, build_join_directory_room_command, build_leave_room_command,
+        build_bootstrap_cross_signing_command, build_bootstrap_secure_backup_command,
+        build_cancel_scheduled_send_command, build_cancel_send_command,
+        build_cancel_verification_command, build_change_secure_backup_passphrase_command,
+        build_close_activity_command, build_confirm_sas_verification_command,
+        build_create_room_command, build_create_space_command, build_decline_invite_command,
+        build_discover_login_command, build_download_media_command, build_edit_message_command,
+        build_enable_key_backup_command, build_export_room_keys_command, build_forget_room_command,
+        build_forward_message_command, build_import_room_keys_command, build_invite_user_command,
+        build_join_directory_room_command, build_leave_room_command,
         build_load_message_source_command, build_load_room_settings_command, build_logout_command,
         build_mark_activity_read_command, build_moderate_room_member_command,
         build_observe_timeline_viewport_command, build_open_activity_command,
@@ -4011,19 +4242,18 @@ mod tests {
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
-        build_reset_identity_command, build_reset_local_data_command, build_restart_sync_command,
-        build_reschedule_scheduled_send_command, build_retry_send_command,
+        build_reschedule_scheduled_send_command, build_reset_identity_command,
+        build_reset_local_data_command, build_restart_sync_command, build_retry_send_command,
         build_schedule_send_command, build_select_room_command, build_select_space_command,
         build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
         build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
-        build_set_avatar_command, build_set_display_name_command, build_set_fully_read_command,
-        build_set_local_user_alias_command, build_set_presence_command, build_set_room_tag_command,
-        build_set_space_child_command, build_set_composer_draft_command,
+        build_set_avatar_command, build_set_composer_draft_command, build_set_display_name_command,
+        build_set_fully_read_command, build_set_local_user_alias_command,
+        build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
         build_set_thread_composer_draft_command, build_set_typing_command,
-        build_start_direct_message_command,
-        build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
-        build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
-        build_bootstrap_secure_backup_command,
+        build_start_direct_message_command, build_submit_identity_reset_oauth_command,
+        build_submit_identity_reset_password_command, build_submit_login_command,
+        build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
         build_update_room_member_role_command, build_update_room_setting_command,
@@ -4239,7 +4469,10 @@ mod tests {
                     request.destination_path,
                     std::path::PathBuf::from("/tmp/element-compatible-export.txt")
                 );
-                assert_eq!(request.passphrase.expose_secret(), "room-key-transfer-phrase");
+                assert_eq!(
+                    request.passphrase.expose_secret(),
+                    "room-key-transfer-phrase"
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -4258,7 +4491,10 @@ mod tests {
                     request.source_path,
                     std::path::PathBuf::from("/tmp/element-compatible-import.txt")
                 );
-                assert_eq!(request.passphrase.expose_secret(), "room-key-transfer-phrase");
+                assert_eq!(
+                    request.passphrase.expose_secret(),
+                    "room-key-transfer-phrase"
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -4457,11 +4693,8 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
-        match build_cancel_scheduled_send_command(
-            fake_request_id(34),
-            "scheduled-1".to_owned(),
-        )
-        .expect("cancel_scheduled_send should build a command")
+        match build_cancel_scheduled_send_command(fake_request_id(34), "scheduled-1".to_owned())
+            .expect("cancel_scheduled_send should build a command")
         {
             CoreCommand::App(AppCommand::CancelScheduledSend {
                 request_id,

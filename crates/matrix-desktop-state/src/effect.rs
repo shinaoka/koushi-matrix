@@ -100,6 +100,7 @@ pub enum UiEvent {
     E2eeKeyManagementChanged,
     DeviceSessionsChanged,
     AccountManagementChanged,
+    AccountManagementCapabilitiesChanged,
     SoftLogoutReauthChanged,
     QrLoginChanged,
     RoomInteractionsChanged,
@@ -109,5 +110,6 @@ pub enum UiEvent {
     LocalEncryptionChanged,
     NativeAttentionChanged,
     CjkTextPolicyChanged,
+    RoomNotificationSettingsChanged,
     ErrorChanged,
 }

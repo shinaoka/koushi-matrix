@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
 import { composeSidebar, roomListSections, visibleRooms } from "./desktopModel";
-import type { RoomSummary, RoomTags, SpaceSummary } from "./types";
+import type { DesktopSnapshot, RoomSummary, RoomTags, SpaceSummary } from "./types";
 
 describe("desktop model", () => {
   test("space rooms exclude DMs while DMs stay global", async () => {
@@ -104,9 +104,13 @@ describe("desktop model", () => {
         low_priority: null
       })
     ];
-    const sidebar = composeSidebar(null, [], rooms);
+    const roomList: DesktopSnapshot["state"]["room_list"] = {
+      active_filter: { kind: "rooms" },
+      sort: { kind: "activity" },
+      items: null
+    };
 
-    const sections = roomListSections(sidebar);
+    const sections = roomListSections(roomList, [], rooms, []);
 
     expect(sections.favourites.map((room) => room.room_id)).toEqual([
       "!fav:example.invalid"
@@ -119,6 +123,65 @@ describe("desktop model", () => {
     ]);
     expect(sections.people.map((room) => room.room_id)).toEqual([
       "!dm-fav:example.invalid"
+    ]);
+  });
+
+  test("room list sections use Rust-projected items order and membership", () => {
+    const rooms: RoomSummary[] = [
+      roomSummary("!plain:example.invalid", "Plain", false),
+      roomSummary("!fav:example.invalid", "Favourite", false, {
+        favourite: { order: "0.10" },
+        low_priority: null
+      }),
+      roomSummary("!dm-fav:example.invalid", "Favourite DM", true, {
+        favourite: { order: "0.05" },
+        low_priority: null
+      })
+    ];
+    const roomList: DesktopSnapshot["state"]["room_list"] = {
+      active_filter: { kind: "rooms" },
+      sort: { kind: "activity" },
+      items: [
+        { room_id: "!dm-fav:example.invalid", kind: "room" },
+        { room_id: "!fav:example.invalid", kind: "room" },
+        { room_id: "!plain:example.invalid", kind: "room" }
+      ]
+    };
+
+    const sections = roomListSections(roomList, [], rooms, []);
+
+    expect(sections.people.map((room) => room.room_id)).toEqual([
+      "!dm-fav:example.invalid"
+    ]);
+    expect(sections.favourites.map((room) => room.room_id)).toEqual([
+      "!fav:example.invalid"
+    ]);
+    expect(sections.rooms.map((room) => room.room_id)).toEqual([
+      "!plain:example.invalid"
+    ]);
+  });
+
+  test("room list sections fall back to sidebar when projection is unavailable", () => {
+    const rooms: RoomSummary[] = [
+      roomSummary("!plain:example.invalid", "Plain", false),
+      roomSummary("!fav:example.invalid", "Favourite", false, {
+        favourite: { order: "0.10" },
+        low_priority: null
+      })
+    ];
+    const roomList: DesktopSnapshot["state"]["room_list"] = {
+      active_filter: { kind: "rooms" },
+      sort: { kind: "activity" },
+      items: null
+    };
+
+    const sections = roomListSections(roomList, [], rooms, []);
+
+    expect(sections.rooms.map((room) => room.room_id)).toEqual([
+      "!plain:example.invalid"
+    ]);
+    expect(sections.favourites.map((room) => room.room_id)).toEqual([
+      "!fav:example.invalid"
     ]);
   });
 

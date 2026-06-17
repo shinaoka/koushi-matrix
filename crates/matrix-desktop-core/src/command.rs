@@ -68,8 +68,11 @@ impl CoreCommand {
                 | AccountCommand::RestoreLastSession { request_id }
                 | AccountCommand::QuerySavedSessions { request_id }
                 | AccountCommand::QueryDevices { request_id }
+                | AccountCommand::LoadAccountManagementCapabilities { request_id }
                 | AccountCommand::RenameDevice { request_id, .. }
                 | AccountCommand::DeleteDevices { request_id, .. }
+                | AccountCommand::ChangePassword { request_id, .. }
+                | AccountCommand::DeactivateAccount { request_id, .. }
                 | AccountCommand::SubmitAccountManagementUia { request_id, .. }
                 | AccountCommand::SoftLogoutReauth { request_id, .. }
                 | AccountCommand::ExportRoomKeys { request_id, .. }
@@ -92,6 +95,9 @@ impl CoreCommand {
                 | AccountCommand::SetDisplayName { request_id, .. }
                 | AccountCommand::SetLocalUserAlias { request_id, .. }
                 | AccountCommand::SetAvatar { request_id, .. }
+                | AccountCommand::IgnoreUser { request_id, .. }
+                | AccountCommand::UnignoreUser { request_id, .. }
+                | AccountCommand::ReportUser { request_id, .. }
                 | AccountCommand::Logout { request_id }
                 | AccountCommand::SwitchAccount { request_id, .. } => *request_id,
             },
@@ -126,7 +132,10 @@ impl CoreCommand {
                 | RoomCommand::SelectSpace { request_id, .. }
                 | RoomCommand::SelectRoom { request_id, .. }
                 | RoomCommand::MarkRoomAsRead { request_id, .. }
-                | RoomCommand::MarkRoomAsUnread { request_id, .. } => *request_id,
+                | RoomCommand::MarkRoomAsUnread { request_id, .. }
+                | RoomCommand::SetRoomNotificationMode { request_id, .. }
+                | RoomCommand::ReportContent { request_id, .. }
+                | RoomCommand::ReportRoom { request_id, .. } => *request_id,
             },
             Self::Timeline(command) => match command {
                 TimelineCommand::Subscribe { request_id, .. }
@@ -649,6 +658,9 @@ pub enum AccountCommand {
     QueryDevices {
         request_id: RequestId,
     },
+    LoadAccountManagementCapabilities {
+        request_id: RequestId,
+    },
     RenameDevice {
         request_id: RequestId,
         device_ordinal: u64,
@@ -658,6 +670,14 @@ pub enum AccountCommand {
         request_id: RequestId,
         device_ordinals: Vec<u64>,
         auth: Option<IdentityResetAuthRequest>,
+    },
+    ChangePassword {
+        request_id: RequestId,
+        new_password: matrix_desktop_state::AuthSecret,
+    },
+    DeactivateAccount {
+        request_id: RequestId,
+        erase_data: bool,
     },
     SubmitAccountManagementUia {
         request_id: RequestId,
@@ -749,6 +769,19 @@ pub enum AccountCommand {
         request_id: RequestId,
         request: SetAvatarRequest,
     },
+    IgnoreUser {
+        request_id: RequestId,
+        user_id: String,
+    },
+    UnignoreUser {
+        request_id: RequestId,
+        user_id: String,
+    },
+    ReportUser {
+        request_id: RequestId,
+        user_id: String,
+        reason: String,
+    },
     Logout {
         request_id: RequestId,
     },
@@ -771,8 +804,11 @@ impl AccountCommand {
                 | Self::ResetIdentity { .. }
                 | Self::SubmitIdentityResetAuth { .. }
                 | Self::QueryDevices { .. }
+                | Self::LoadAccountManagementCapabilities { .. }
                 | Self::RenameDevice { .. }
                 | Self::DeleteDevices { .. }
+                | Self::ChangePassword { .. }
+                | Self::DeactivateAccount { .. }
                 | Self::SubmitAccountManagementUia { .. }
                 | Self::SoftLogoutReauth { .. }
                 | Self::ExportRoomKeys { .. }
@@ -783,6 +819,9 @@ impl AccountCommand {
                 | Self::SetDisplayName { .. }
                 | Self::SetLocalUserAlias { .. }
                 | Self::SetAvatar { .. }
+                | Self::IgnoreUser { .. }
+                | Self::UnignoreUser { .. }
+                | Self::ReportUser { .. }
                 | Self::ProbeLocalEncryptionHealth { .. }
                 | Self::ResetLocalData { .. }
         )
@@ -853,6 +892,10 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("QueryDevices")
                 .field("request_id", request_id)
                 .finish(),
+            Self::LoadAccountManagementCapabilities { request_id } => formatter
+                .debug_struct("LoadAccountManagementCapabilities")
+                .field("request_id", request_id)
+                .finish(),
             Self::RenameDevice {
                 request_id,
                 device_ordinal,
@@ -872,6 +915,19 @@ impl fmt::Debug for AccountCommand {
                 .field("request_id", request_id)
                 .field("device_ordinals", device_ordinals)
                 .field("auth", auth)
+                .finish(),
+            Self::ChangePassword { request_id, .. } => formatter
+                .debug_struct("ChangePassword")
+                .field("request_id", request_id)
+                .field("new_password", &"AuthSecret(..)")
+                .finish(),
+            Self::DeactivateAccount {
+                request_id,
+                erase_data,
+            } => formatter
+                .debug_struct("DeactivateAccount")
+                .field("request_id", request_id)
+                .field("erase_data", erase_data)
                 .finish(),
             Self::SubmitAccountManagementUia {
                 request_id,
@@ -1033,6 +1089,22 @@ impl fmt::Debug for AccountCommand {
                 .field("bytes", &"AvatarBytes(..)")
                 .field("bytes_len", &request.bytes.len())
                 .finish(),
+            Self::IgnoreUser { request_id, .. } => formatter
+                .debug_struct("IgnoreUser")
+                .field("request_id", request_id)
+                .field("user_id", &"UserId(..)")
+                .finish(),
+            Self::UnignoreUser { request_id, .. } => formatter
+                .debug_struct("UnignoreUser")
+                .field("request_id", request_id)
+                .field("user_id", &"UserId(..)")
+                .finish(),
+            Self::ReportUser { request_id, .. } => formatter
+                .debug_struct("ReportUser")
+                .field("request_id", request_id)
+                .field("user_id", &"UserId(..)")
+                .field("reason", &"ReportReason(..)")
+                .finish(),
             Self::Logout { request_id } => formatter
                 .debug_struct("Logout")
                 .field("request_id", request_id)
@@ -1176,6 +1248,22 @@ pub enum RoomCommand {
         request_id: RequestId,
         room_id: String,
         unread: bool,
+    },
+    SetRoomNotificationMode {
+        request_id: RequestId,
+        room_id: String,
+        mode: matrix_desktop_state::RoomNotificationMode,
+    },
+    ReportContent {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+        reason: Option<String>,
+    },
+    ReportRoom {
+        request_id: RequestId,
+        room_id: String,
+        reason: String,
     },
 }
 
@@ -1361,6 +1449,29 @@ impl fmt::Debug for RoomCommand {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("unread", unread)
+                .finish(),
+            Self::SetRoomNotificationMode {
+                request_id,
+                room_id: _,
+                mode,
+            } => formatter
+                .debug_struct("SetRoomNotificationMode")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("mode", mode)
+                .finish(),
+            Self::ReportContent { request_id, .. } => formatter
+                .debug_struct("ReportContent")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .field("reason", &"ReportReason(..)")
+                .finish(),
+            Self::ReportRoom { request_id, .. } => formatter
+                .debug_struct("ReportRoom")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("reason", &"ReportReason(..)")
                 .finish(),
         }
     }
@@ -2204,9 +2315,22 @@ mod tests {
     }
 
     #[test]
+    fn set_room_notification_mode_debug_redacts_room_id() {
+        let command = RoomCommand::SetRoomNotificationMode {
+            request_id: fake_rid(13),
+            room_id: "!room:example.invalid".to_owned(),
+            mode: matrix_desktop_state::RoomNotificationMode::Mute,
+        };
+        let debug = format!("{command:?}");
+        assert!(debug.contains("SetRoomNotificationMode"), "{debug}");
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        assert!(!debug.contains("!room:example.invalid"), "{debug}");
+    }
+
+    #[test]
     fn directory_commands_debug_redacts_query_alias_and_server() {
         let query = RoomCommand::QueryDirectory {
-            request_id: fake_rid(13),
+            request_id: fake_rid(14),
             query: DirectoryQuery {
                 term: Some("private search".to_owned()),
                 server_name: Some("example.invalid".to_owned()),

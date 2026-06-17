@@ -157,7 +157,14 @@ struct PendingVerificationRequest {
 struct PendingUiaOperation {
     operation: AccountManagementOperation,
     raw_device_ids: Vec<String>,
+    new_password: Option<matrix_desktop_state::AuthSecret>,
+    erase_data: bool,
     uiaa_session: Option<String>,
+}
+
+enum AccountManagementUiaError {
+    DeleteDevices(matrix_desktop_sdk::DeleteDevicesError),
+    AccountManagement(matrix_desktop_sdk::AccountManagementError),
 }
 
 struct PendingSasVerification {
@@ -939,6 +946,10 @@ impl AccountActor {
             AccountCommand::QueryDevices { request_id } => {
                 self.handle_query_devices(request_id).await;
             }
+            AccountCommand::LoadAccountManagementCapabilities { request_id } => {
+                self.handle_load_account_management_capabilities(request_id)
+                    .await;
+            }
             AccountCommand::RenameDevice {
                 request_id,
                 device_ordinal,
@@ -954,6 +965,18 @@ impl AccountActor {
             } => {
                 self.handle_delete_devices(request_id, device_ordinals, auth)
                     .await;
+            }
+            AccountCommand::ChangePassword {
+                request_id,
+                new_password,
+            } => {
+                self.handle_change_password(request_id, new_password).await;
+            }
+            AccountCommand::DeactivateAccount {
+                request_id,
+                erase_data,
+            } => {
+                self.handle_deactivate_account(request_id, erase_data).await;
             }
             AccountCommand::SubmitAccountManagementUia {
                 request_id,
@@ -1069,6 +1092,25 @@ impl AccountActor {
                 request,
             } => {
                 self.handle_set_avatar(request_id, request).await;
+            }
+            AccountCommand::IgnoreUser {
+                request_id,
+                user_id,
+            } => {
+                self.handle_ignore_user(request_id, user_id, true).await;
+            }
+            AccountCommand::UnignoreUser {
+                request_id,
+                user_id,
+            } => {
+                self.handle_ignore_user(request_id, user_id, false).await;
+            }
+            AccountCommand::ReportUser {
+                request_id,
+                user_id,
+                reason,
+            } => {
+                self.handle_report_user(request_id, user_id, reason).await;
             }
             AccountCommand::RequestVerification { request_id, target } => {
                 self.handle_request_verification(request_id, target).await;
@@ -1329,6 +1371,113 @@ impl AccountActor {
                     request_id,
                     CoreFailure::ProfileOperationFailed {
                         kind: classify_profile_error(&error),
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_ignore_user(&mut self, request_id: RequestId, user_id: String, ignored: bool) {
+        let Some(session) = &self.session else {
+            self.send_actions(vec![AppAction::IgnoredUserUpdateFailed {
+                request_id: request_id.sequence,
+                user_id: user_id.clone(),
+                ignored,
+                message: "ignored user update failed".to_owned(),
+            }])
+            .await;
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        self.send_actions(vec![AppAction::IgnoredUserUpdateRequested {
+            request_id: request_id.sequence,
+            user_id: user_id.clone(),
+            ignored,
+        }])
+        .await;
+
+        let result = if ignored {
+            matrix_desktop_sdk::ignore_user(session, &user_id).await
+        } else {
+            matrix_desktop_sdk::unignore_user(session, &user_id).await
+        };
+
+        match result {
+            Ok(user_ids) => {
+                self.send_actions(vec![
+                    AppAction::IgnoredUserUpdateSucceeded {
+                        request_id: request_id.sequence,
+                    },
+                    AppAction::IgnoredUsersLoaded {
+                        user_ids: user_ids.clone(),
+                    },
+                ])
+                .await;
+                let _ = self
+                    .timeline_manager
+                    .send(TimelineMessage::IgnoredUsersUpdated { user_ids })
+                    .await;
+            }
+            Err(error) => {
+                // Reconcile with server state so the optimistic reducer update
+                // does not drift after a failure.
+                if let Some(action) = ignored_user_ids_action_from_session(session).await {
+                    if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
+                        let _ = self
+                            .timeline_manager
+                            .send(TimelineMessage::IgnoredUsersUpdated {
+                                user_ids: user_ids.clone(),
+                            })
+                            .await;
+                    }
+                    self.send_actions(vec![
+                        AppAction::IgnoredUserUpdateFailed {
+                            request_id: request_id.sequence,
+                            user_id: user_id.clone(),
+                            ignored,
+                            message: "ignored user update failed".to_owned(),
+                        },
+                        action,
+                    ])
+                    .await;
+                } else {
+                    self.send_actions(vec![AppAction::IgnoredUserUpdateFailed {
+                        request_id: request_id.sequence,
+                        user_id: user_id.clone(),
+                        ignored,
+                        message: "ignored user update failed".to_owned(),
+                    }])
+                    .await;
+                }
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::ReportOperationFailed {
+                        kind: classify_ignored_user_list_error(&error),
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_report_user(&mut self, request_id: RequestId, user_id: String, reason: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match matrix_desktop_sdk::report_user(session, &user_id, reason).await {
+            Ok(()) => {
+                self.emit(CoreEvent::Account(AccountEvent::ReportCompleted {
+                    request_id,
+                    kind: crate::event::ReportKind::User,
+                }));
+            }
+            Err(error) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::ReportOperationFailed {
+                        kind: classify_report_error(&error),
                     },
                 );
             }
@@ -2369,6 +2518,17 @@ impl AccountActor {
         if let Some(alias_action) = local_user_aliases_action_from_session(&session_arc).await {
             actions.push(alias_action);
         }
+        if let Some(action) = ignored_user_ids_action_from_session(&session_arc).await {
+            if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
+                let _ = self
+                    .timeline_manager
+                    .send(TimelineMessage::IgnoredUsersUpdated {
+                        user_ids: user_ids.clone(),
+                    })
+                    .await;
+            }
+            actions.push(action);
+        }
         self.reduce(actions);
 
         // Emit domain event carrying the request_id for command correlation.
@@ -2504,6 +2664,22 @@ impl AccountActor {
         }
     }
 
+    async fn handle_load_account_management_capabilities(&mut self, request_id: RequestId) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::AccountManagementCapabilitiesLoadFailed]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let capabilities = matrix_desktop_sdk::account_management_capabilities(&session).await;
+        self.reduce(vec![AppAction::AccountManagementCapabilitiesLoaded {
+            change_password: capabilities.change_password,
+        }]);
+    }
+
     async fn handle_rename_device(
         &mut self,
         request_id: RequestId,
@@ -2623,6 +2799,8 @@ impl AccountActor {
                     PendingUiaOperation {
                         operation,
                         raw_device_ids,
+                        new_password: None,
+                        erase_data: false,
                         uiaa_session: session,
                     },
                 );
@@ -2646,13 +2824,128 @@ impl AccountActor {
         }
     }
 
+    async fn handle_change_password(
+        &mut self,
+        request_id: RequestId,
+        new_password: matrix_desktop_state::AuthSecret,
+    ) {
+        let operation = AccountManagementOperation::ChangePassword;
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::SessionRequired,
+                );
+                return;
+            }
+        };
+
+        let result = matrix_desktop_sdk::change_password(&session, &new_password, None, None).await;
+        match result {
+            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
+                request_id: request_id.sequence,
+                operation,
+            }]),
+            Err(matrix_desktop_sdk::AccountManagementError::UiaaChallenge { session }) => {
+                let flow_id = request_id.sequence;
+                self.pending_uia_operations.insert(
+                    flow_id,
+                    PendingUiaOperation {
+                        operation,
+                        raw_device_ids: Vec::new(),
+                        new_password: Some(new_password),
+                        erase_data: false,
+                        uiaa_session: session,
+                    },
+                );
+                self.reduce(vec![AppAction::AccountManagementUiaRequired {
+                    request_id: request_id.sequence,
+                    flow_id,
+                    operation,
+                }]);
+            }
+            Err(matrix_desktop_sdk::AccountManagementError::Sdk(_)) => {
+                drop(new_password);
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_deactivate_account(&mut self, request_id: RequestId, erase_data: bool) {
+        let operation = AccountManagementOperation::DeactivateAccount;
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::SessionRequired,
+                );
+                return;
+            }
+        };
+
+        let result = matrix_desktop_sdk::deactivate_account(&session, erase_data, None, None).await;
+        match result {
+            Ok(()) => {
+                self.pending_uia_operations.remove(&request_id.sequence);
+                self.reduce(vec![AppAction::AccountManagementSucceeded {
+                    request_id: request_id.sequence,
+                    operation,
+                }]);
+                // Deactivation ends the account on the server. Perform local
+                // sign-out cleanup without sending a second /logout request.
+                self.perform_logout(request_id, false).await;
+            }
+            Err(matrix_desktop_sdk::AccountManagementError::UiaaChallenge { session }) => {
+                let flow_id = request_id.sequence;
+                self.pending_uia_operations.insert(
+                    flow_id,
+                    PendingUiaOperation {
+                        operation,
+                        raw_device_ids: Vec::new(),
+                        new_password: None,
+                        erase_data,
+                        uiaa_session: session,
+                    },
+                );
+                self.reduce(vec![AppAction::AccountManagementUiaRequired {
+                    request_id: request_id.sequence,
+                    flow_id,
+                    operation,
+                }]);
+            }
+            Err(matrix_desktop_sdk::AccountManagementError::Sdk(_)) => {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
     async fn handle_submit_account_management_uia(
         &mut self,
         request_id: RequestId,
         flow_id: u64,
         auth: matrix_desktop_state::IdentityResetAuthRequest,
     ) {
-        let Some(pending) = self.pending_uia_operations.get(&flow_id) else {
+        let Some(mut pending) = self.pending_uia_operations.remove(&flow_id) else {
             self.emit_failure(
                 request_id,
                 CoreFailure::AccountOperationFailed {
@@ -2662,12 +2955,9 @@ impl AccountActor {
             return;
         };
         let operation = pending.operation;
-        let raw_device_ids = pending.raw_device_ids.clone();
-        let uiaa_session = pending.uiaa_session.clone();
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.pending_uia_operations.remove(&flow_id);
                 self.project_account_management_failure(
                     RequestId {
                         connection_id: request_id.connection_id,
@@ -2681,28 +2971,93 @@ impl AccountActor {
             }
         };
 
-        let result = matrix_desktop_sdk::delete_devices(
-            &session,
-            &raw_device_ids,
-            Some(&auth),
-            uiaa_session.as_deref(),
-        )
-        .await;
+        let result = match operation {
+            AccountManagementOperation::RenameDevice
+            | AccountManagementOperation::ThreePid
+            | AccountManagementOperation::IdentityServer => {
+                // These operations do not use UIA; no pending op should exist.
+                self.emit_failure(
+                    RequestId {
+                        connection_id: request_id.connection_id,
+                        sequence: flow_id,
+                    },
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+            AccountManagementOperation::DeleteDevice
+            | AccountManagementOperation::DeleteOtherDevices => matrix_desktop_sdk::delete_devices(
+                &session,
+                &pending.raw_device_ids,
+                Some(&auth),
+                pending.uiaa_session.as_deref(),
+            )
+            .await
+            .map_err(AccountManagementUiaError::DeleteDevices),
+            AccountManagementOperation::ChangePassword => {
+                let Some(new_password) = pending.new_password.as_ref() else {
+                    self.project_account_management_failure(
+                        RequestId {
+                            connection_id: request_id.connection_id,
+                            sequence: flow_id,
+                        },
+                        operation,
+                        AuthFailureKind::Sdk,
+                        CoreFailure::AccountOperationFailed {
+                            kind: AuthFailureKind::Sdk,
+                        },
+                    );
+                    return;
+                };
+                matrix_desktop_sdk::change_password(
+                    &session,
+                    new_password,
+                    Some(&auth),
+                    pending.uiaa_session.as_deref(),
+                )
+                .await
+                .map_err(AccountManagementUiaError::AccountManagement)
+            }
+            AccountManagementOperation::DeactivateAccount => {
+                matrix_desktop_sdk::deactivate_account(
+                    &session,
+                    pending.erase_data,
+                    Some(&auth),
+                    pending.uiaa_session.as_deref(),
+                )
+                .await
+                .map_err(AccountManagementUiaError::AccountManagement)
+            }
+        };
         drop(auth);
         match result {
             Ok(()) => {
-                self.pending_uia_operations.remove(&flow_id);
+                let was_deactivation = operation == AccountManagementOperation::DeactivateAccount;
                 self.reduce(vec![AppAction::AccountManagementSucceeded {
                     request_id: flow_id,
                     operation,
                 }]);
-            }
-            Err(matrix_desktop_sdk::DeleteDevicesError::UiaaChallenge { session }) => {
-                // The server is still challenging; update the session and
-                // leave state in AwaitingUia so the user can retry.
-                if let Some(pending) = self.pending_uia_operations.get_mut(&flow_id) {
-                    pending.uiaa_session = session;
+                if was_deactivation {
+                    self.perform_logout(
+                        RequestId {
+                            connection_id: request_id.connection_id,
+                            sequence: flow_id,
+                        },
+                        false,
+                    )
+                    .await;
                 }
+            }
+            Err(AccountManagementUiaError::DeleteDevices(
+                matrix_desktop_sdk::DeleteDevicesError::UiaaChallenge { session },
+            ))
+            | Err(AccountManagementUiaError::AccountManagement(
+                matrix_desktop_sdk::AccountManagementError::UiaaChallenge { session },
+            )) => {
+                pending.uiaa_session = session;
+                self.pending_uia_operations.insert(flow_id, pending);
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
@@ -2710,8 +3065,12 @@ impl AccountActor {
                     },
                 );
             }
-            Err(matrix_desktop_sdk::DeleteDevicesError::Sdk(_)) => {
-                self.pending_uia_operations.remove(&flow_id);
+            Err(AccountManagementUiaError::DeleteDevices(
+                matrix_desktop_sdk::DeleteDevicesError::Sdk(_),
+            ))
+            | Err(AccountManagementUiaError::AccountManagement(
+                matrix_desktop_sdk::AccountManagementError::Sdk(_),
+            )) => {
                 self.project_account_management_failure(
                     RequestId {
                         connection_id: request_id.connection_id,
@@ -2808,9 +3167,21 @@ impl AccountActor {
         self.session_key_id = Some(key_id);
         self.spawn_sync_actor(session_arc.clone());
 
-        self.reduce(vec![AppAction::SoftLogoutReauthSucceeded {
+        let mut actions = vec![AppAction::SoftLogoutReauthSucceeded {
             request_id: request_id.sequence,
-        }]);
+        }];
+        if let Some(action) = ignored_user_ids_action_from_session(&session_arc).await {
+            if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
+                let _ = self
+                    .timeline_manager
+                    .send(TimelineMessage::IgnoredUsersUpdated {
+                        user_ids: user_ids.clone(),
+                    })
+                    .await;
+            }
+            actions.push(action);
+        }
+        self.reduce(actions);
 
         self.start_recovery_observer(session_arc.clone());
         self.start_incoming_verification_observer(session_arc);
@@ -2938,6 +3309,17 @@ impl AccountActor {
                 {
                     actions.push(alias_action);
                 }
+                if let Some(action) = ignored_user_ids_action_from_session(&session_arc).await {
+                    if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
+                        let _ = self
+                            .timeline_manager
+                            .send(TimelineMessage::IgnoredUsersUpdated {
+                                user_ids: user_ids.clone(),
+                            })
+                            .await;
+                    }
+                    actions.push(action);
+                }
                 self.reduce(actions);
 
                 self.emit(CoreEvent::Account(match outcome {
@@ -3005,7 +3387,7 @@ impl AccountActor {
         }
     }
 
-    async fn handle_logout(&mut self, request_id: RequestId) {
+    async fn perform_logout(&mut self, request_id: RequestId, server_logout: bool) {
         let session = match self.session.take() {
             Some(s) => s,
             None => {
@@ -3024,8 +3406,10 @@ impl AccountActor {
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
 
-        // Attempt server-side logout (best-effort; local cleanup always happens).
-        let _ = matrix_desktop_sdk::logout(&session).await;
+        if server_logout {
+            // Attempt server-side logout (best-effort; local cleanup always happens).
+            let _ = matrix_desktop_sdk::logout(&session).await;
+        }
 
         // Drop the SDK handle inside the Tokio runtime context (Async rule 11).
         drop(session);
@@ -3043,6 +3427,10 @@ impl AccountActor {
             request_id,
             account_key,
         }));
+    }
+
+    async fn handle_logout(&mut self, request_id: RequestId) {
+        self.perform_logout(request_id, true).await;
     }
 
     // --- helpers ---
@@ -3319,6 +3707,13 @@ async fn local_user_aliases_action_from_session(
         })
 }
 
+async fn ignored_user_ids_action_from_session(session: &MatrixClientSession) -> Option<AppAction> {
+    matrix_desktop_sdk::get_ignored_user_list(session)
+        .await
+        .ok()
+        .map(|user_ids| AppAction::IgnoredUsersLoaded { user_ids })
+}
+
 fn map_matrix_own_profile(profile: matrix_desktop_sdk::MatrixOwnProfile) -> OwnProfile {
     OwnProfile {
         display_name: profile.display_name,
@@ -3337,6 +3732,34 @@ fn classify_profile_error(error: &matrix_desktop_sdk::MatrixProfileError) -> Pro
             ProfileFailureKind::InvalidMimeType
         }
         matrix_desktop_sdk::MatrixProfileFailureKind::Sdk => ProfileFailureKind::Sdk,
+    }
+}
+
+fn classify_ignored_user_list_error(
+    error: &matrix_desktop_sdk::MatrixIgnoredUserListError,
+) -> crate::failure::ReportFailureKind {
+    use crate::failure::ReportFailureKind;
+    use matrix_desktop_sdk::MatrixIgnoredUserListFailureKind;
+    match error.failure_kind() {
+        MatrixIgnoredUserListFailureKind::Forbidden => ReportFailureKind::Forbidden,
+        MatrixIgnoredUserListFailureKind::Network => ReportFailureKind::Network,
+        MatrixIgnoredUserListFailureKind::InvalidUserId => ReportFailureKind::InvalidUserId,
+        MatrixIgnoredUserListFailureKind::Sdk => ReportFailureKind::Sdk,
+    }
+}
+
+fn classify_report_error(
+    error: &matrix_desktop_sdk::MatrixReportError,
+) -> crate::failure::ReportFailureKind {
+    use crate::failure::ReportFailureKind;
+    use matrix_desktop_sdk::MatrixReportFailureKind;
+    match error.failure_kind() {
+        MatrixReportFailureKind::Forbidden => ReportFailureKind::Forbidden,
+        MatrixReportFailureKind::Network => ReportFailureKind::Network,
+        MatrixReportFailureKind::InvalidUserId => ReportFailureKind::InvalidUserId,
+        MatrixReportFailureKind::InvalidRoomId => ReportFailureKind::InvalidRoomId,
+        MatrixReportFailureKind::InvalidEventId => ReportFailureKind::InvalidEventId,
+        MatrixReportFailureKind::Sdk => ReportFailureKind::Sdk,
     }
 }
 

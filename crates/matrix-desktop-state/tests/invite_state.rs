@@ -20,6 +20,7 @@ fn invite_preview(room_id: &str, is_dm: bool) -> InvitePreview {
         avatar: None,
         topic: Some("Project room".to_owned()),
         inviter_display_name: Some("Inviter".to_owned()),
+        inviter_user_id: Some("@inviter:localhost".to_owned()),
         is_dm,
     }
 }

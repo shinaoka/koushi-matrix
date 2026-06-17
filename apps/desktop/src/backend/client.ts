@@ -12,7 +12,9 @@ import type {
   DirectoryQuery,
   MentionIntent,
   PresenceKind,
+  RoomListFilter,
   RoomModerationAction,
+  RoomNotificationMode,
   RoomSettingChange,
   RoomTagKind,
   SavedSessionInfo,
@@ -75,6 +77,57 @@ class TauriDesktopApi implements DesktopApi {
 
   async updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("update_settings", { patch });
+  }
+
+  async selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("select_room_list_filter", { filter });
+  }
+
+  setRoomListProjection(): void {
+    // No-op in Tauri runtime; helper exists only for browser fakes/tests.
+  }
+
+  async markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("mark_room_as_read", { roomId, eventId });
+  }
+
+  async markRoomAsUnread(roomId: string, unread: boolean): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("mark_room_as_unread", { roomId, unread });
+  }
+
+  async setRoomNotificationMode(
+    roomId: string,
+    mode: RoomNotificationMode
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_room_notification_mode", { roomId, mode });
+  }
+
+  async queryDevices(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("query_devices");
+  }
+
+  async renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("rename_device", { deviceOrdinal, displayName });
+  }
+
+  async deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("delete_devices", { deviceOrdinals });
+  }
+
+  async submitAccountManagementUia(flowId: number, password: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("submit_account_management_uia", { flowId, password });
+  }
+
+  async loadAccountManagementCapabilities(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("load_account_management_capabilities");
+  }
+
+  async changePassword(newPassword: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("change_password", { newPassword });
+  }
+
+  async deactivateAccount(eraseData: boolean): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("deactivate_account", { eraseData });
   }
 
   async probeLocalEncryptionHealth(): Promise<DesktopSnapshot> {

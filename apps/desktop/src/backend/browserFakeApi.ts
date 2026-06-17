@@ -10,7 +10,10 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   DirectoryQuery,
+  RoomListFilter,
+  RoomListProjection,
   RoomModerationAction,
+  RoomNotificationMode,
   RoomPermissionFacts,
   RoomSummary,
   RoomSettingChange,
@@ -47,6 +50,17 @@ export interface DesktopApi {
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
   updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
+  selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot>;
+  markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  markRoomAsUnread(roomId: string, unread: boolean): Promise<DesktopSnapshot>;
+  setRoomNotificationMode(roomId: string, mode: RoomNotificationMode): Promise<DesktopSnapshot>;
+  queryDevices(): Promise<DesktopSnapshot>;
+  renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot>;
+  deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot>;
+  submitAccountManagementUia(flowId: number, password: string): Promise<DesktopSnapshot>;
+  loadAccountManagementCapabilities(): Promise<DesktopSnapshot>;
+  changePassword(newPassword: string): Promise<DesktopSnapshot>;
+  deactivateAccount(eraseData: boolean): Promise<DesktopSnapshot>;
   probeLocalEncryptionHealth(): Promise<DesktopSnapshot>;
   resetLocalData(): Promise<DesktopSnapshot>;
   bootstrapCrossSigning(): Promise<DesktopSnapshot>;
@@ -161,6 +175,7 @@ export interface DesktopApi {
     body: string,
     mentions?: MentionIntent
   ): Promise<DesktopSnapshot>;
+  setRoomListProjection(projection: RoomListProjection): void;
 }
 
 export interface BrowserFakeApiOptions {
@@ -319,6 +334,146 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.settings.values.typography
     );
     this.snapshot.state.settings.persistence = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.room_list.active_filter = filter;
+    // Do NOT recompute items. Tests seed room_list.items directly via setRoomListProjection().
+    return this.getSnapshot();
+  }
+
+  async markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    // Do NOT mutate unread counts. Tests seed the expected Rust-shaped snapshot.
+    void roomId;
+    void eventId;
+    return this.getSnapshot();
+  }
+
+  async markRoomAsUnread(roomId: string, unread: boolean): Promise<DesktopSnapshot> {
+    // Do NOT mutate unread counts. Tests seed the expected Rust-shaped snapshot.
+    void roomId;
+    void unread;
+    return this.getSnapshot();
+  }
+
+  async setRoomNotificationMode(
+    roomId: string,
+    mode: RoomNotificationMode
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    const known =
+      this.snapshot.state.rooms.some((room) => room.room_id === roomId) ||
+      this.snapshot.state.invites.some((invite) => invite.room_id === roomId);
+    if (!known) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.room_notification_settings[roomId] = {
+      mode,
+      operation: { kind: "idle" }
+    };
+    return this.getSnapshot();
+  }
+
+  setRoomListProjection(projection: RoomListProjection): void {
+    this.snapshot.state.room_list = projection;
+  }
+
+  async queryDevices(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.device_sessions = {
+      kind: "loaded",
+      devices: [
+        {
+          device_ordinal: 1,
+          display_name: "Current session",
+          current: true,
+          verified: true,
+          inactive: false
+        },
+        {
+          device_ordinal: 2,
+          display_name: "Other session",
+          current: false,
+          verified: false,
+          inactive: true
+        }
+      ]
+    };
+    return this.getSnapshot();
+  }
+
+  async renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot> {
+    if (this.snapshot.state.device_sessions.kind === "loaded") {
+      for (const device of this.snapshot.state.device_sessions.devices) {
+        if (device.device_ordinal === deviceOrdinal) {
+          device.display_name = displayName;
+        }
+      }
+    }
+    return this.getSnapshot();
+  }
+
+  async deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot> {
+    if (this.snapshot.state.device_sessions.kind === "loaded") {
+      this.snapshot.state.device_sessions.devices =
+        this.snapshot.state.device_sessions.devices.filter(
+          (d) => !deviceOrdinals.includes(d.device_ordinal)
+        );
+    }
+    return this.getSnapshot();
+  }
+
+  async submitAccountManagementUia(flowId: number, password: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+    void flowId;
+    void password;
+    this.snapshot.state.account_management = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async loadAccountManagementCapabilities(): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.account_management_capabilities = {
+      change_password: { kind: "enabled" }
+    };
+    return this.getSnapshot();
+  }
+
+  async changePassword(newPassword: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+    void newPassword;
+    this.snapshot.state.account_management = {
+      kind: "succeeded",
+      request_id: this.nextRequestId(),
+      operation: "changePassword"
+    };
+    return this.getSnapshot();
+  }
+
+  async deactivateAccount(eraseData: boolean): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+    void eraseData;
+    this.snapshot.state.account_management = {
+      kind: "succeeded",
+      request_id: this.nextRequestId(),
+      operation: "deactivateAccount"
+    };
     return this.getSnapshot();
   }
 
@@ -2062,6 +2217,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       auth: { kind: "unknown" },
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
+      account_management_capabilities: { change_password: { kind: "unknown" } },
       soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
@@ -2077,7 +2233,8 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       spaces,
       rooms,
       invites: [],
-      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
+      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: null },
+      room_notification_settings: {},
       room_interactions: {},
       directory: defaultDirectoryState(),
       room_management: defaultRoomManagementState(),
@@ -2170,6 +2327,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       auth: { kind: "unknown" },
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
+      account_management_capabilities: { change_password: { kind: "unknown" } },
       soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
@@ -2185,7 +2343,8 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       spaces: [],
       rooms: [],
       invites: [],
-      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
+      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: null },
+      room_notification_settings: {},
       room_interactions: {},
       directory: defaultDirectoryState(),
       room_management: defaultRoomManagementState(),
@@ -2230,7 +2389,13 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       appearance: { theme: "system" },
       typography: { font: "system", emoji: "system" },
       keyboard: { composer_send_shortcut: "enter" },
-      notifications: { desktop_notifications: true, sound: true, badges: true },
+      notifications: {
+        desktop_notifications: true,
+        sound: true,
+        badges: true,
+        send_read_receipts: true,
+        send_typing_notifications: true
+      },
       display: { code_block_wrap: true, hide_redacted: false },
       media: {
         image_upload_compression: "never",
@@ -2410,6 +2575,8 @@ function defaultProfileState(userId: string | null | undefined): DesktopSnapshot
     users: {},
     local_aliases: {},
     local_alias_update: { kind: "idle" },
+    ignored_user_ids: [],
+    ignored_user_update: { kind: "idle" },
     update: { kind: "idle" }
   };
 }
