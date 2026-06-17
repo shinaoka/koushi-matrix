@@ -441,7 +441,6 @@ pub struct SettingsPatch {
     pub notifications: Option<NotificationSettings>,
     pub display: Option<DisplaySettings>,
     pub media: Option<MediaSettings>,
-    #[serde(default)]
     pub room_url_previews: Option<RoomUrlPreviews>,
 }
 

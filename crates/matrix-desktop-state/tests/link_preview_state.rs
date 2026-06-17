@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, DisplaySettings, SettingsPatch, SettingsValues, UiEvent,
-    reduce,
+    AppAction, AppEffect, AppState, DisplaySettings, SettingsPatch, SettingsValues, UiEvent, reduce,
 };
 
 fn ready_state_with_room(room_id: &str) -> AppState {
@@ -39,6 +38,7 @@ fn ready_state_with_room(room_id: &str) -> AppState {
 fn display_settings_default_enables_url_previews() {
     let values = SettingsValues::default();
     assert!(values.display.url_previews_enabled);
+    assert!(values.room_url_previews.is_empty());
 }
 
 #[test]
@@ -60,13 +60,16 @@ fn settings_update_toggles_global_url_previews() {
     );
 
     assert!(!state.settings.values.display.url_previews_enabled);
-    assert!(effects.iter().any(|e| matches!(
-        e,
-        AppEffect::PersistSettings { request_id: 1, .. }
-    )));
-    assert!(effects
-        .iter()
-        .any(|e| matches!(e, AppEffect::EmitUiEvent(UiEvent::SettingsChanged))));
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, AppEffect::PersistSettings { request_id: 1, .. }))
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, AppEffect::EmitUiEvent(UiEvent::SettingsChanged)))
+    );
 }
 
 #[test]
@@ -116,9 +119,11 @@ fn false_override_removes_room_entry() {
         },
     );
 
-    assert!(!state
-        .settings
-        .values
-        .room_url_previews
-        .contains_key("!room:example.invalid"));
+    assert!(
+        !state
+            .settings
+            .values
+            .room_url_previews
+            .contains_key("!room:example.invalid")
+    );
 }

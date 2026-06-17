@@ -156,6 +156,16 @@ fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_o
 }
 
 #[test]
+fn display_settings_deserialize_legacy_without_url_previews_as_default_on() {
+    let display = serde_json::from_str::<DisplaySettings>(
+        r#"{ "code_block_wrap": true, "hide_redacted": false }"#,
+    )
+    .expect("legacy display object should deserialize");
+
+    assert!(display.url_previews_enabled);
+}
+
+#[test]
 fn settings_values_deserialize_legacy_without_media_as_default_never() {
     let values = serde_json::from_str::<SettingsValues>(
         r#"{
