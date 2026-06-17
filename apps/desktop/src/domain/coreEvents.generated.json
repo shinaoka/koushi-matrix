@@ -11,6 +11,18 @@
     },
     "kind": "Account"
   },
+  "accountReportCompleted": {
+    "event": {
+      "ReportCompleted": {
+        "kind": "user",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Account"
+  },
   "accountSavedSessionsListed": {
     "event": {
       "SavedSessionsListed": {
@@ -314,6 +326,18 @@
         },
         "room_id": "!r:example.test",
         "unread": true
+      }
+    },
+    "kind": "Room"
+  },
+  "roomReportCompleted": {
+    "event": {
+      "ReportCompleted": {
+        "kind": "event",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
       }
     },
     "kind": "Room"

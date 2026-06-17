@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
 };
 
@@ -17,6 +17,8 @@ pub struct AppState {
     #[serde(default)]
     pub account_management: AccountManagementState,
     #[serde(default)]
+    pub account_management_capabilities: AccountManagementCapabilities,
+    #[serde(default)]
     pub soft_logout_reauth: SoftLogoutReauthState,
     #[serde(default)]
     pub qr_login: QrLoginState,
@@ -31,6 +33,8 @@ pub struct AppState {
     pub invites: Vec<InvitePreview>,
     #[serde(default)]
     pub room_list: RoomListProjection,
+    #[serde(default)]
+    pub room_notification_settings: HashMap<String, RoomNotificationSettings>,
     pub room_interactions: BTreeMap<String, RoomInteractionState>,
     #[serde(skip)]
     pub composer_drafts: ComposerDraftStore,
@@ -65,6 +69,7 @@ impl Default for AppState {
             auth: AuthDiscoveryState::Unknown,
             device_sessions: DeviceSessionListState::Idle,
             account_management: AccountManagementState::Idle,
+            account_management_capabilities: AccountManagementCapabilities::default(),
             soft_logout_reauth: SoftLogoutReauthState::Idle,
             qr_login: QrLoginState::Idle,
             settings: SettingsState::default(),
@@ -76,6 +81,7 @@ impl Default for AppState {
             rooms: Vec::new(),
             invites: Vec::new(),
             room_list: RoomListProjection::default(),
+            room_notification_settings: HashMap::new(),
             room_interactions: BTreeMap::new(),
             composer_drafts: ComposerDraftStore::default(),
             scheduled_sends: ScheduledSendStore::default(),
@@ -268,6 +274,10 @@ pub struct NotificationSettings {
     pub desktop_notifications: bool,
     pub sound: bool,
     pub badges: bool,
+    #[serde(default = "default_true")]
+    pub send_read_receipts: bool,
+    #[serde(default = "default_true")]
+    pub send_typing_notifications: bool,
 }
 
 impl Default for NotificationSettings {
@@ -276,7 +286,53 @@ impl Default for NotificationSettings {
             desktop_notifications: true,
             sound: true,
             badges: true,
+            send_read_receipts: true,
+            send_typing_notifications: true,
         }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoomNotificationMode {
+    All,
+    Mentions,
+    Mute,
+}
+
+impl Default for RoomNotificationMode {
+    fn default() -> Self {
+        Self::All
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+pub struct RoomNotificationSettings {
+    pub mode: RoomNotificationMode,
+    pub operation: RoomNotificationModeOperation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoomNotificationModeOperation {
+    Idle,
+    Pending {
+        request_id: u64,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        failure_kind: OperationFailureKind,
+    },
+}
+
+impl Default for RoomNotificationModeOperation {
+    fn default() -> Self {
+        Self::Idle
     }
 }
 
@@ -482,6 +538,20 @@ pub enum AccountManagementOperation {
     DeactivateAccount,
     ThreePid,
     IdentityServer,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CapabilityState {
+    #[default]
+    Unknown,
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountManagementCapabilities {
+    pub change_password: CapabilityState,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -842,6 +912,10 @@ pub struct ProfileState {
     pub local_aliases: BTreeMap<String, String>,
     #[serde(default)]
     pub local_alias_update: LocalUserAliasUpdateState,
+    #[serde(default)]
+    pub ignored_user_ids: BTreeSet<String>,
+    #[serde(default)]
+    pub ignored_user_update: IgnoredUserUpdateState,
     pub update: ProfileUpdateState,
 }
 
@@ -854,6 +928,8 @@ impl fmt::Debug for ProfileState {
             .field("user_count", &self.users.len())
             .field("local_alias_count", &self.local_aliases.len())
             .field("local_alias_update", &self.local_alias_update)
+            .field("ignored_user_count", &self.ignored_user_ids.len())
+            .field("ignored_user_update", &self.ignored_user_update)
             .field("update", &self.update)
             .finish()
     }
@@ -918,6 +994,29 @@ impl LocalUserAliasUpdateState {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum IgnoredUserUpdateState {
+    #[default]
+    Idle,
+    Saving {
+        request_id: u64,
+    },
+}
+
+impl IgnoredUserUpdateState {
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
+    pub fn request_id(&self) -> Option<u64> {
+        match self {
+            Self::Idle => None,
+            Self::Saving { request_id } => Some(*request_id),
+        }
+    }
+}
+
 pub fn normalize_local_user_alias(alias: Option<String>) -> Option<String> {
     alias.and_then(|value| {
         let trimmed = value.trim();
@@ -927,6 +1026,13 @@ pub fn normalize_local_user_alias(alias: Option<String>) -> Option<String> {
             Some(trimmed.to_owned())
         }
     })
+}
+
+pub fn is_ignored_user(profile: &ProfileState, user_id: Option<&str>) -> bool {
+    user_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .is_some_and(|id| profile.ignored_user_ids.contains(id))
 }
 
 pub fn resolve_user_display_name(
@@ -1399,6 +1505,8 @@ pub struct InvitePreview {
     pub avatar: Option<AvatarImage>,
     pub topic: Option<String>,
     pub inviter_display_name: Option<String>,
+    #[serde(default)]
+    pub inviter_user_id: Option<String>,
     pub is_dm: bool,
 }
 
@@ -2278,6 +2386,8 @@ pub struct NativeAttentionProjectionInput<'a> {
     pub rooms: &'a [RoomSummary],
     pub active_room_id: Option<&'a str>,
     pub muted_room_ids: &'a [String],
+    pub room_notification_modes: &'a HashMap<String, RoomNotificationMode>,
+    pub ignored_user_ids: &'a BTreeSet<String>,
     pub window_focused: bool,
     pub observation: NativeAttentionObservationKind,
     pub previous_candidate: Option<&'a NativeAttentionCandidate>,
@@ -2302,19 +2412,48 @@ pub fn native_attention_state_from_rooms(
                 .muted_room_ids
                 .iter()
                 .any(|room_id| room_id == &room.room_id)
+            || (room.is_dm
+                && room
+                    .dm_user_ids
+                    .iter()
+                    .any(|user_id| input.ignored_user_ids.contains(user_id)))
         {
             continue;
         }
 
-        unread_count += room.unread_count;
+        let mode = input
+            .room_notification_modes
+            .get(&room.room_id)
+            .copied()
+            .unwrap_or_default();
+        if mode == RoomNotificationMode::Mute {
+            continue;
+        }
+
+        let effective_unread_count = if mode == RoomNotificationMode::Mentions {
+            0
+        } else {
+            room.unread_count
+        };
+        let effective_notification_count = if mode == RoomNotificationMode::Mentions {
+            0
+        } else {
+            room.notification_count
+        };
+
+        unread_count += effective_unread_count;
         highlight_count += room.highlight_count;
+
+        if mode == RoomNotificationMode::Mentions && room.highlight_count == 0 {
+            continue;
+        }
 
         if let Some(summary) = room_attention_summary(
             room.display_label.clone(),
             room.is_dm,
-            room.notification_count,
+            effective_notification_count,
             room.highlight_count,
-            room.unread_count,
+            effective_unread_count,
         ) {
             candidates.push(NativeAttentionCandidateEntry {
                 room_id: &room.room_id,

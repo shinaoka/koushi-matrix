@@ -26,6 +26,7 @@ matrix-sdk-ui = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-ui", de
 mime = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 rpassword = { version = "7", optional = true }
+ruma = "0.16"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

@@ -12,13 +12,15 @@
 use std::collections::BTreeMap;
 
 use matrix_desktop_state::{
-    AccountManagementState, ActivityState, AppError, AppState, AuthDiscoveryState,
+    AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
+    AuthDiscoveryState,
     BasicOperationState, CjkTextPolicyState, ComposerState, DeviceSessionListState, DirectoryState,
     DisplayPlatform, E2eeTrustState, FilesViewState, FocusedContextState, InvitePreview,
     LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities,
     NativeAttentionState, NavigationState, ProfileState, QrLoginState, RecoveryMethod,
-    RoomInteractionState, RoomListProjection, RoomManagementState, RoomSummary, SearchMatchField,
-    SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState, SettingsState,
+    RoomInteractionState, RoomListProjection, RoomManagementState, RoomNotificationSettings,
+    RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+    SessionState, SettingsState,
     SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
     ThreadPaneState, TimelinePaneState, TypographyDisplayProfile,
     native_attention_capabilities_for_platform, resolve_locale_display_profile,
@@ -62,6 +64,7 @@ pub struct FrontendAppState {
     pub auth: AuthDiscoveryState,
     pub device_sessions: DeviceSessionListState,
     pub account_management: AccountManagementState,
+    pub account_management_capabilities: AccountManagementCapabilities,
     pub soft_logout_reauth: SoftLogoutReauthState,
     pub qr_login: QrLoginState,
     pub settings: SettingsState,
@@ -75,6 +78,7 @@ pub struct FrontendAppState {
     pub rooms: Vec<RoomSummary>,
     pub invites: Vec<InvitePreview>,
     pub room_list: RoomListProjection,
+    pub room_notification_settings: std::collections::HashMap<String, RoomNotificationSettings>,
     pub room_interactions: BTreeMap<String, RoomInteractionState>,
     pub directory: DirectoryState,
     pub room_management: RoomManagementState,
@@ -111,6 +115,7 @@ impl From<AppState> for FrontendAppState {
             auth: state.auth,
             device_sessions: state.device_sessions,
             account_management: state.account_management,
+            account_management_capabilities: state.account_management_capabilities,
             soft_logout_reauth: state.soft_logout_reauth,
             qr_login: state.qr_login,
             settings: state.settings,
@@ -124,6 +129,7 @@ impl From<AppState> for FrontendAppState {
             rooms: state.rooms,
             invites: state.invites,
             room_list: state.room_list,
+            room_notification_settings: state.room_notification_settings,
             room_interactions: state.room_interactions,
             directory: state.directory,
             room_management: state.room_management,
@@ -519,6 +525,10 @@ mod tests {
         assert_eq!(value["state"]["room_interactions"], json!({}));
         assert_eq!(value["state"]["device_sessions"]["kind"], json!("idle"));
         assert_eq!(value["state"]["account_management"]["kind"], json!("idle"));
+        assert_eq!(
+            value["state"]["account_management_capabilities"]["change_password"]["kind"],
+            json!("unknown")
+        );
         assert_eq!(value["state"]["soft_logout_reauth"]["kind"], json!("idle"));
         assert_eq!(value["state"]["qr_login"]["kind"], json!("idle"));
         assert_eq!(
@@ -636,9 +646,14 @@ mod tests {
             json!({
                 "desktop_notifications": true,
                 "sound": true,
-                "badges": true
+                "badges": true,
+                "send_read_receipts": true,
+                "send_typing_notifications": true
             })
         );
+        // room_notification_settings must be present (default empty) so the UI
+        // renders per-room notification modes from Rust-owned state.
+        assert_eq!(value["state"]["room_notification_settings"], json!({}));
         assert_eq!(
             value["state"]["settings"]["values"]["media"]["image_upload_compression"],
             json!("never")
@@ -731,6 +746,7 @@ mod tests {
             avatar: None,
             topic: Some("Project topic".to_owned()),
             inviter_display_name: Some("Inviter".to_owned()),
+            inviter_user_id: Some("@inviter:matrix.org".to_owned()),
             is_dm: true,
         });
 
@@ -746,6 +762,7 @@ mod tests {
                     "avatar": null,
                     "topic": "Project topic",
                     "inviter_display_name": "Inviter",
+                    "inviter_user_id": "@inviter:matrix.org",
                     "is_dm": true
                 }
             ])

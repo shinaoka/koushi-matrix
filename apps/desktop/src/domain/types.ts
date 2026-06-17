@@ -18,6 +18,7 @@ export interface AppState {
   auth: AuthDiscoveryState;
   device_sessions: DeviceSessionListState;
   account_management: AccountManagementState;
+  account_management_capabilities: AccountManagementCapabilities;
   soft_logout_reauth: SoftLogoutReauthState;
   qr_login: QrLoginState;
   settings: SettingsState;
@@ -31,6 +32,7 @@ export interface AppState {
   rooms: RoomSummary[];
   invites: InvitePreview[];
   room_list: RoomListProjection;
+  room_notification_settings: Record<string, RoomNotificationSettings>;
   room_interactions: Record<string, RoomInteractionState>;
   directory: DirectoryState;
   room_management: RoomManagementState;
@@ -135,6 +137,8 @@ export interface NotificationSettings {
   desktop_notifications: boolean;
   sound: boolean;
   badges: boolean;
+  send_read_receipts: boolean;
+  send_typing_notifications: boolean;
 }
 
 export interface DisplaySettings {
@@ -281,6 +285,15 @@ export type AccountManagementOperation =
   | "threePid"
   | "identityServer";
 
+export interface AccountManagementCapabilities {
+  change_password: CapabilityState;
+}
+
+export type CapabilityState =
+  | { kind: "unknown" }
+  | { kind: "enabled" }
+  | { kind: "disabled" };
+
 export type QrLoginState =
   | { kind: "idle" }
   | { kind: "checkingCapability"; request_id: number }
@@ -356,6 +369,21 @@ export interface RoomListProjectionItem {
 
 export type RoomListEntryKind = "room" | "invite";
 
+export type RoomNotificationMode =
+  | { kind: "all" }
+  | { kind: "mentions" }
+  | { kind: "mute" };
+
+export type RoomNotificationModeOperation =
+  | { kind: "idle" }
+  | { kind: "pending"; request_id: number }
+  | { kind: "failed"; request_id: number; failureKind: OperationFailureKind };
+
+export interface RoomNotificationSettings {
+  mode: RoomNotificationMode;
+  operation: RoomNotificationModeOperation;
+}
+
 export interface NavigationState {
   active_space_id: string | null;
   active_room_id: string | null;
@@ -366,8 +394,14 @@ export interface ProfileState {
   users: Record<string, UserProfile>;
   local_aliases: Record<string, string>;
   local_alias_update: LocalUserAliasUpdateState;
+  ignored_user_ids: string[];
+  ignored_user_update: IgnoredUserUpdateState;
   update: ProfileUpdateState;
 }
+
+export type IgnoredUserUpdateState =
+  | { kind: "idle" }
+  | { kind: "saving"; request_id: number };
 
 export interface OwnProfile {
   display_name: string | null;
@@ -450,6 +484,7 @@ export interface InvitePreview {
   avatar: AvatarImage | null;
   topic: string | null;
   inviter_display_name: string | null;
+  inviter_user_id: string | null;
   is_dm: boolean;
 }
 

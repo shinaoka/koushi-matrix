@@ -38,6 +38,7 @@
 //! Sync only ever starts on the store-backed session that `AccountActor`
 //! already guarantees. The SyncActor must not create its own client.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -133,6 +134,9 @@ pub struct SyncActor {
     legacy_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
     /// SyncService handle (Some when SyncService backend is running).
     sync_service: Option<Arc<matrix_sdk_ui::sync_service::SyncService>>,
+    /// Handle for the global ignored-user-list account-data handler. Removed on
+    /// stop so repeated start/stop cycles do not install duplicate handlers.
+    ignored_user_list_handler: Option<matrix_sdk::event_handler::EventHandlerHandle>,
 }
 
 impl SyncActor {
@@ -156,6 +160,7 @@ impl SyncActor {
             sync_task: None,
             legacy_stop_tx: None,
             sync_service: None,
+            ignored_user_list_handler: None,
         };
         let task = executor::spawn(actor.run());
         SyncActorHandle { tx, task }
@@ -347,11 +352,18 @@ impl SyncActor {
 
     /// Returns Ok(()) on success, Err(()) when SyncService build fails (caller falls back).
     async fn start_sync_service(&mut self, client: matrix_sdk::Client) -> Result<(), ()> {
-        let service = matrix_sdk_ui::sync_service::SyncService::builder(client)
+        self.register_ignored_user_list_handler(&client);
+
+        let service = matrix_sdk_ui::sync_service::SyncService::builder(client.clone())
             .with_offline_mode()
             .build()
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                if let Some(handle) = self.ignored_user_list_handler.take() {
+                    client.remove_event_handler(handle);
+                }
+                ()
+            })?;
         let service = Arc::new(service);
 
         // Subscribe BEFORE starting so no state changes are missed.
@@ -372,6 +384,8 @@ impl SyncActor {
     }
 
     async fn start_legacy_sync(&mut self, client: matrix_sdk::Client) {
+        self.register_ignored_user_list_handler(&client);
+
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         let event_tx = self.event_tx.clone();
         let action_tx = self.action_tx.clone();
@@ -397,6 +411,9 @@ impl SyncActor {
         if let Some(tx) = self.legacy_stop_tx.take() {
             let _ = tx.send(());
         }
+        if let Some(handle) = self.ignored_user_list_handler.take() {
+            self.session.client().remove_event_handler(handle);
+        }
         // Wait for the background task to complete (bounded to avoid hangs).
         if let Some(task) = self.sync_task.take() {
             let _ = executor::timeout(Duration::from_secs(10), task).await;
@@ -412,6 +429,36 @@ impl SyncActor {
             ActiveBackend::SyncService => SyncBackendKind::SyncService,
             ActiveBackend::LegacySync | ActiveBackend::None => SyncBackendKind::LegacySync,
         }
+    }
+
+    fn register_ignored_user_list_handler(&mut self, client: &matrix_sdk::Client) {
+        use matrix_sdk::ruma::events::{
+            GlobalAccountDataEvent, ignored_user_list::IgnoredUserListEventContent,
+        };
+
+        let action_tx = self.action_tx.clone();
+        let timeline_tx = self.timeline_tx.clone();
+        let handle = client.add_event_handler(
+            move |ev: GlobalAccountDataEvent<IgnoredUserListEventContent>| {
+                let action_tx = action_tx.clone();
+                let timeline_tx = timeline_tx.clone();
+                async move {
+                    let user_ids: BTreeSet<String> = ev
+                        .content
+                        .ignored_users
+                        .keys()
+                        .map(|user_id| user_id.to_string())
+                        .collect();
+                    let _ = action_tx.try_send(vec![AppAction::IgnoredUsersLoaded {
+                        user_ids: user_ids.clone(),
+                    }]);
+                    let _ = timeline_tx.try_send(
+                        crate::timeline::TimelineMessage::IgnoredUsersUpdated { user_ids },
+                    );
+                }
+            },
+        );
+        self.ignored_user_list_handler = Some(handle);
     }
 
     /// QA/debug: one-shot sync, does not affect the continuous sync state machine.

@@ -11,7 +11,13 @@ describe("UserSettingsPanel", () => {
       appearance: { theme: "dark" },
       typography: { font: "system", emoji: "system" },
       keyboard: { composer_send_shortcut: "enter" },
-      notifications: { desktop_notifications: true, sound: true, badges: true },
+      notifications: {
+        desktop_notifications: true,
+        sound: true,
+        badges: true,
+        send_read_receipts: true,
+        send_typing_notifications: true
+      },
       display: { code_block_wrap: true, hide_redacted: false },
       media: {
         image_upload_compression: "never",
@@ -86,6 +92,8 @@ describe("UserSettingsPanel", () => {
     users: {},
     local_aliases: {},
     local_alias_update: { kind: "idle" },
+    ignored_user_ids: [],
+    ignored_user_update: { kind: "idle" },
     update: { kind: "idle" }
   };
   const handlers = {
@@ -112,10 +120,15 @@ describe("UserSettingsPanel", () => {
     onQueryDevices: () => undefined,
     onRenameDevice: () => undefined,
     onDeleteDevices: () => undefined,
+    onLoadAccountManagementCapabilities: () => undefined,
+    onChangePassword: () => undefined,
+    onDeactivateAccount: () => undefined,
     onSubmitAccountManagementUia: () => undefined
   };
   const idleDeviceSessions: import("../domain/types").DeviceSessionListState = { kind: "idle" };
   const idleAccountManagement: import("../domain/types").AccountManagementState = { kind: "idle" };
+  const idleAccountManagementCapabilities: import("../domain/types").AccountManagementCapabilities =
+    { change_password: { kind: "unknown" } };
 
   test("renders account switch entries and keyboard settings access", () => {
     const markup = renderToStaticMarkup(
@@ -130,6 +143,7 @@ describe("UserSettingsPanel", () => {
         platform="linux"
         deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[
           {
             homeserver: "https://matrix.org",
@@ -176,6 +190,8 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Desktop notifications");
     expect(markup).toContain("Sound");
     expect(markup).toContain("Badges");
+    expect(markup).toContain("Send read receipts");
+    expect(markup).toContain("Send typing notifications");
     expect(markup).toContain('role="switch"');
     expect(markup).toContain("Inter");
     expect(markup).toContain("Twemoji COLR");
@@ -207,6 +223,7 @@ describe("UserSettingsPanel", () => {
         platform="linux"
         deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
         profile={profile}
         settings={{
@@ -236,6 +253,7 @@ describe("UserSettingsPanel", () => {
         platform="linux"
         deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[
           {
             homeserver: "https://matrix.org",
@@ -248,6 +266,8 @@ describe("UserSettingsPanel", () => {
           users: {},
           local_aliases: {},
           local_alias_update: { kind: "idle" },
+          ignored_user_ids: [],
+          ignored_user_update: { kind: "idle" },
           update: { kind: "idle" }
         }}
         settings={settings}
@@ -299,6 +319,7 @@ describe("UserSettingsPanel", () => {
         platform="linux"
         deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
         profile={profile}
         settings={settings}
@@ -353,6 +374,7 @@ describe("UserSettingsPanel", () => {
         platform="linux"
         deviceSessions={loadedDeviceSessions}
         accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
         profile={profile}
         settings={settings}
@@ -408,6 +430,7 @@ describe("UserSettingsPanel", () => {
         platform="linux"
         deviceSessions={loadedDeviceSessions}
         accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
         profile={profile}
         settings={settings}
@@ -436,6 +459,156 @@ describe("UserSettingsPanel", () => {
           request_id: 42,
           flow_id: 7,
           operation: "deleteOtherDevices"
+        }}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onSubmitAccountManagementUia={onSubmitAccountManagementUia}
+      />
+    );
+
+    expect(markup).toContain("Password");
+    expect(markup).toContain("Continue");
+  });
+
+  test("renders account management section with change password and deactivate buttons", () => {
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={{
+          change_password: { kind: "enabled" }
+        }}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+
+    expect(markup).toContain("Account management");
+    expect(markup).toContain("Change password");
+    expect(markup).toContain("Deactivate account");
+  });
+
+  test("disables change password button when the server capability is disabled", () => {
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={{
+          change_password: { kind: "disabled" }
+        }}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+
+    expect(markup).toContain('data-testid="change-password-button"');
+    expect(markup).toContain("disabled");
+  });
+
+  test("renders password-changed success state", () => {
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={{
+          kind: "succeeded",
+          request_id: 50,
+          operation: "changePassword"
+        }}
+        accountManagementCapabilities={{
+          change_password: { kind: "enabled" }
+        }}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+
+    expect(markup).toContain("Password changed");
+  });
+
+  test("renders account-deactivated success state", () => {
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={{
+          kind: "succeeded",
+          request_id: 51,
+          operation: "deactivateAccount"
+        }}
+        accountManagementCapabilities={{
+          change_password: { kind: "enabled" }
+        }}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+
+    expect(markup).toContain("Account deactivated");
+  });
+
+  test("renders UIA password prompt for change password awaiting UIA", () => {
+    const onSubmitAccountManagementUia = vi.fn();
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={{
+          kind: "awaitingUia",
+          request_id: 52,
+          flow_id: 8,
+          operation: "changePassword"
+        }}
+        accountManagementCapabilities={{
+          change_password: { kind: "enabled" }
         }}
         savedSessions={[]}
         profile={profile}

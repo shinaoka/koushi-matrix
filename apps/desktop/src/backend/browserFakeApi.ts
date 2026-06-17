@@ -13,6 +13,7 @@ import type {
   RoomListFilter,
   RoomListProjection,
   RoomModerationAction,
+  RoomNotificationMode,
   RoomPermissionFacts,
   RoomSummary,
   RoomSettingChange,
@@ -52,10 +53,14 @@ export interface DesktopApi {
   selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot>;
   markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   markRoomAsUnread(roomId: string, unread: boolean): Promise<DesktopSnapshot>;
+  setRoomNotificationMode(roomId: string, mode: RoomNotificationMode): Promise<DesktopSnapshot>;
   queryDevices(): Promise<DesktopSnapshot>;
   renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot>;
   deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot>;
   submitAccountManagementUia(flowId: number, password: string): Promise<DesktopSnapshot>;
+  loadAccountManagementCapabilities(): Promise<DesktopSnapshot>;
+  changePassword(newPassword: string): Promise<DesktopSnapshot>;
+  deactivateAccount(eraseData: boolean): Promise<DesktopSnapshot>;
   probeLocalEncryptionHealth(): Promise<DesktopSnapshot>;
   resetLocalData(): Promise<DesktopSnapshot>;
   bootstrapCrossSigning(): Promise<DesktopSnapshot>;
@@ -355,6 +360,26 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async setRoomNotificationMode(
+    roomId: string,
+    mode: RoomNotificationMode
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    const known =
+      this.snapshot.state.rooms.some((room) => room.room_id === roomId) ||
+      this.snapshot.state.invites.some((invite) => invite.room_id === roomId);
+    if (!known) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.room_notification_settings[roomId] = {
+      mode,
+      operation: { kind: "idle" }
+    };
+    return this.getSnapshot();
+  }
+
   setRoomListProjection(projection: RoomListProjection): void {
     this.snapshot.state.room_list = projection;
   }
@@ -413,6 +438,42 @@ class BrowserFakeApi implements DesktopApi {
     void flowId;
     void password;
     this.snapshot.state.account_management = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async loadAccountManagementCapabilities(): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.account_management_capabilities = {
+      change_password: { kind: "enabled" }
+    };
+    return this.getSnapshot();
+  }
+
+  async changePassword(newPassword: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+    void newPassword;
+    this.snapshot.state.account_management = {
+      kind: "succeeded",
+      request_id: this.nextRequestId(),
+      operation: "changePassword"
+    };
+    return this.getSnapshot();
+  }
+
+  async deactivateAccount(eraseData: boolean): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+    void eraseData;
+    this.snapshot.state.account_management = {
+      kind: "succeeded",
+      request_id: this.nextRequestId(),
+      operation: "deactivateAccount"
+    };
     return this.getSnapshot();
   }
 
@@ -2156,6 +2217,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       auth: { kind: "unknown" },
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
+      account_management_capabilities: { change_password: { kind: "unknown" } },
       soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
@@ -2172,6 +2234,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       rooms,
       invites: [],
       room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: null },
+      room_notification_settings: {},
       room_interactions: {},
       directory: defaultDirectoryState(),
       room_management: defaultRoomManagementState(),
@@ -2264,6 +2327,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       auth: { kind: "unknown" },
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
+      account_management_capabilities: { change_password: { kind: "unknown" } },
       soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
@@ -2280,6 +2344,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       rooms: [],
       invites: [],
       room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: null },
+      room_notification_settings: {},
       room_interactions: {},
       directory: defaultDirectoryState(),
       room_management: defaultRoomManagementState(),
@@ -2324,7 +2389,13 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       appearance: { theme: "system" },
       typography: { font: "system", emoji: "system" },
       keyboard: { composer_send_shortcut: "enter" },
-      notifications: { desktop_notifications: true, sound: true, badges: true },
+      notifications: {
+        desktop_notifications: true,
+        sound: true,
+        badges: true,
+        send_read_receipts: true,
+        send_typing_notifications: true
+      },
       display: { code_block_wrap: true, hide_redacted: false },
       media: {
         image_upload_compression: "never",
@@ -2504,6 +2575,8 @@ function defaultProfileState(userId: string | null | undefined): DesktopSnapshot
     users: {},
     local_aliases: {},
     local_alias_update: { kind: "idle" },
+    ignored_user_ids: [],
+    ignored_user_update: { kind: "idle" },
     update: { kind: "idle" }
   };
 }

@@ -1274,6 +1274,9 @@ impl AppActor {
                 false
             }
             CoreCommand::Timeline(timeline_command) => {
+                if self.should_suppress_timeline_command_for_privacy(&timeline_command) {
+                    return false;
+                }
                 // Route to AccountActor (which forwards to TimelineManagerActor).
                 let _ = self
                     .account_actor
@@ -1308,6 +1311,26 @@ impl AppActor {
                     }
                 }
             }
+        }
+    }
+
+    fn should_suppress_timeline_command_for_privacy(
+        &self,
+        command: &crate::command::TimelineCommand,
+    ) -> bool {
+        match command {
+            crate::command::TimelineCommand::SendReadReceipt { .. } => {
+                !self.state.settings.values.notifications.send_read_receipts
+            }
+            crate::command::TimelineCommand::SetTyping { .. } => {
+                !self
+                    .state
+                    .settings
+                    .values
+                    .notifications
+                    .send_typing_notifications
+            }
+            _ => false,
         }
     }
 
@@ -1728,6 +1751,9 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: request_id.sequence,
             })
         }
+        AccountCommand::LoadAccountManagementCapabilities { .. } => {
+            Some(AppAction::AccountManagementCapabilitiesLoadRequested)
+        }
         AccountCommand::RenameDevice { request_id, .. } => {
             Some(AppAction::AccountManagementRequested {
                 request_id: request_id.sequence,
@@ -1746,6 +1772,18 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 AccountManagementOperation::DeleteOtherDevices
             },
         }),
+        AccountCommand::ChangePassword { request_id, .. } => {
+            Some(AppAction::AccountManagementRequested {
+                request_id: request_id.sequence,
+                operation: AccountManagementOperation::ChangePassword,
+            })
+        }
+        AccountCommand::DeactivateAccount { request_id, .. } => {
+            Some(AppAction::AccountManagementRequested {
+                request_id: request_id.sequence,
+                operation: AccountManagementOperation::DeactivateAccount,
+            })
+        }
         AccountCommand::SubmitAccountManagementUia {
             request_id: _,
             flow_id,
@@ -1787,6 +1825,23 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 byte_count: request.bytes.len() as u64,
             },
         }),
+        AccountCommand::IgnoreUser {
+            request_id,
+            user_id,
+        } => Some(AppAction::IgnoredUserUpdateRequested {
+            request_id: request_id.sequence,
+            user_id: user_id.clone(),
+            ignored: true,
+        }),
+        AccountCommand::UnignoreUser {
+            request_id,
+            user_id,
+        } => Some(AppAction::IgnoredUserUpdateRequested {
+            request_id: request_id.sequence,
+            user_id: user_id.clone(),
+            ignored: false,
+        }),
+        AccountCommand::ReportUser { .. } => None,
         AccountCommand::LoginPassword { .. }
         | AccountCommand::RestoreSession { .. }
         | AccountCommand::RestoreLastSession { .. }
@@ -1869,6 +1924,8 @@ mod tests {
                 display_name: Some("Me Upstream".to_owned()),
                 avatar: None,
             },
+            ignored_user_ids: BTreeSet::new(),
+            ignored_user_update: matrix_desktop_state::IgnoredUserUpdateState::Idle,
             users: BTreeMap::from([
                 (
                     "@alice:example.invalid".to_owned(),

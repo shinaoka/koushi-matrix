@@ -115,6 +115,9 @@ pub enum TimelineMessage {
     SyncStarted {
         room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     },
+    IgnoredUsersUpdated {
+        user_ids: std::collections::BTreeSet<String>,
+    },
     Shutdown,
 }
 
@@ -151,6 +154,7 @@ pub struct TimelineManagerActor {
     /// so they can push `SearchIndexMessage`s on each diff. `None` when there
     /// is no active search index (pre-session or pre-Phase-6 builds).
     search_index_tx: Option<mpsc::Sender<SearchIndexMessage>>,
+    ignored_user_ids: std::collections::BTreeSet<String>,
 }
 
 impl TimelineManagerActor {
@@ -167,6 +171,7 @@ impl TimelineManagerActor {
             event_tx,
             msg_rx,
             search_index_tx: None,
+            ignored_user_ids: std::collections::BTreeSet::new(),
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -189,6 +194,7 @@ impl TimelineManagerActor {
             event_tx,
             msg_rx,
             search_index_tx: Some(search_index_tx),
+            ignored_user_ids: std::collections::BTreeSet::new(),
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -201,6 +207,9 @@ impl TimelineManagerActor {
                 TimelineMessage::SyncStarted { room_list_service } => {
                     self.room_list_service = room_list_service;
                 }
+                TimelineMessage::IgnoredUsersUpdated { user_ids } => {
+                    self.handle_ignored_users_updated(user_ids).await;
+                }
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
@@ -208,6 +217,15 @@ impl TimelineManagerActor {
         }
         // Drop all timeline handles — this cancels relay tasks and drops SDK handles.
         self.timelines.clear();
+    }
+
+    async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
+        self.ignored_user_ids = user_ids.clone();
+        for handle in self.timelines.values() {
+            let _ = handle
+                .send(TimelineActorMessage::IgnoredUsersUpdated(user_ids.clone()))
+                .await;
+        }
     }
 
     async fn handle_command(&mut self, command: TimelineCommand) {
@@ -711,6 +729,7 @@ impl TimelineManagerActor {
             self.action_tx.clone(),
             self.event_tx.clone(),
             self.search_index_tx.clone(),
+            self.ignored_user_ids.clone(),
         )
         .await;
 
@@ -1122,6 +1141,7 @@ enum TimelineActorMessage {
         is_typing: bool,
     },
     TypingUsersUpdated(Vec<String>),
+    IgnoredUsersUpdated(std::collections::BTreeSet<String>),
     /// Internal: diff batch from the relay task.
     DiffBatch(Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>),
     /// Internal: send completed (from send queue monitor task).
@@ -1192,6 +1212,7 @@ struct TimelineActor {
     fully_read_event_id: Option<String>,
     viewport_observation: TimelineViewportObservation,
     last_navigation_snapshot: Option<TimelineNavigationSnapshot>,
+    ignored_user_ids: std::collections::BTreeSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1211,6 +1232,7 @@ impl TimelineActor {
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
+        ignored_user_ids: std::collections::BTreeSet<String>,
     ) -> TimelineActorHandle {
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
@@ -1224,6 +1246,10 @@ impl TimelineActor {
         let initial_items: Vec<TimelineItem> = initial_sdk_items
             .iter()
             .map(|item| sdk_item_to_timeline_item(&key, item, own_user_id.as_deref()))
+            .map(|mut item| {
+                apply_ignored_sender_suppression(&mut item, &ignored_user_ids);
+                item
+            })
             .collect();
         let navigation_items = initial_items.clone();
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
@@ -1323,6 +1349,7 @@ impl TimelineActor {
             fully_read_event_id: initial_fully_read_event_id,
             viewport_observation: TimelineViewportObservation::default(),
             last_navigation_snapshot: None,
+            ignored_user_ids,
         };
 
         executor::spawn(actor.run());
@@ -1481,6 +1508,9 @@ impl TimelineActor {
             }
             TimelineActorMessage::TypingUsersUpdated(user_ids) => {
                 self.emit_typing_users_action(user_ids);
+            }
+            TimelineActorMessage::IgnoredUsersUpdated(user_ids) => {
+                self.handle_ignored_users_updated(user_ids).await;
             }
             TimelineActorMessage::DiffBatch(diffs) => {
                 self.handle_diff_batch(diffs);
@@ -2375,7 +2405,7 @@ impl TimelineActor {
             }
         }
 
-        let core_diffs: Vec<TimelineDiff> = diffs
+        let mut core_diffs: Vec<TimelineDiff> = diffs
             .into_iter()
             .map(|diff| {
                 sdk_vector_diff_to_timeline_diff(
@@ -2386,6 +2416,9 @@ impl TimelineActor {
                 )
             })
             .collect();
+        for diff in &mut core_diffs {
+            apply_ignored_sender_suppression_to_diff(diff, &self.ignored_user_ids);
+        }
         if let Some(action) = thread_attention_action_from_timeline_diffs(
             &mut self.thread_attention_counts,
             &self.key,
@@ -2403,6 +2436,49 @@ impl TimelineActor {
                 }]);
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
+        self.emit_media_gallery_if_changed();
+
+        let batch_id = self.next_batch_id;
+        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+
+        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: self.key.clone(),
+            generation: self.generation,
+            batch_id,
+            diffs: core_diffs,
+        }));
+        self.emit_navigation_if_changed();
+    }
+
+    async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
+        if self.ignored_user_ids == user_ids {
+            return;
+        }
+        self.ignored_user_ids = user_ids;
+
+        let mut core_diffs = Vec::new();
+        for (index, item) in self.navigation_items.iter_mut().enumerate() {
+            let was_hidden = item.is_hidden;
+            apply_ignored_sender_suppression(item, &self.ignored_user_ids);
+            if item.is_hidden != was_hidden {
+                core_diffs.push(TimelineDiff::Set {
+                    index,
+                    item: item.clone(),
+                });
+            }
+        }
+        if core_diffs.is_empty() {
+            return;
+        }
+
+        let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
+        if !activity_rows.is_empty() {
+            let _ = self
+                .action_tx
+                .try_send(vec![AppAction::ActivityRowsObserved {
+                    rows: activity_rows,
+                }]);
+        }
         self.emit_media_gallery_if_changed();
 
         let batch_id = self.next_batch_id;
@@ -3399,6 +3475,37 @@ fn apply_timeline_diffs_to_items(items: &mut Vec<TimelineItem>, diffs: &[Timelin
                 *items = reset_items.clone();
             }
         }
+    }
+}
+
+fn apply_ignored_sender_suppression(
+    item: &mut TimelineItem,
+    ignored_user_ids: &std::collections::BTreeSet<String>,
+) {
+    let sender_ignored = item
+        .sender
+        .as_deref()
+        .is_some_and(|sender| ignored_user_ids.contains(sender));
+    item.is_hidden = item.is_hidden || sender_ignored;
+}
+
+fn apply_ignored_sender_suppression_to_diff(
+    diff: &mut TimelineDiff,
+    ignored_user_ids: &std::collections::BTreeSet<String>,
+) {
+    match diff {
+        TimelineDiff::PushFront { item }
+        | TimelineDiff::PushBack { item }
+        | TimelineDiff::Insert { item, .. }
+        | TimelineDiff::Set { item, .. } => {
+            apply_ignored_sender_suppression(item, ignored_user_ids);
+        }
+        TimelineDiff::Reset { items } => {
+            for item in items {
+                apply_ignored_sender_suppression(item, ignored_user_ids);
+            }
+        }
+        TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {}
     }
 }
 

@@ -2,20 +2,20 @@ use crate::{
     action::AppAction,
     effect::{AppEffect, UiEvent},
     state::{
-        AccountManagementState, ActivityMarkReadState, ActivityState, ActivityStream, ActivityTab,
-        AppError, AppState, AttachmentScope, BasicOperationRequest, BasicOperationState,
-        ComposerMode, CrossSigningStatus, DeviceSessionListState, DirectoryJoinState,
-        DirectoryQueryState, DirectoryState, E2eeKeyManagementState, E2eeRecoveryState,
-        E2eeTrustState, FilesViewScope, FilesViewState, FocusedContextState, IdentityResetState,
-        KeyBackupStatus, LocalEncryptionState, NavigationState, OperationFailureKind,
-        PendingComposerSendKind, PinOp, PinOperationState, QrLoginState, RoomKeyExportState,
-        RoomKeyImportState, RoomListFilter, RoomManagementOperationKind,
-        RoomManagementOperationState, RoomMemberRole, RoomModerationAction, SasEmoji, SearchState,
-        SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionState,
-        SettingsPersistenceState, SoftLogoutReauthState, StagedUploadCompressionChoice, SyncState,
-        ThreadAttentionState, ThreadPaneState, TimelinePaneState, TrustOperationFailureKind,
-        VerificationCancelReason, VerificationFlowState, VerificationTarget,
-        compute_room_list_projection,
+        AccountManagementCapabilities, AccountManagementState, ActivityMarkReadState,
+        ActivityState, ActivityStream, ActivityTab, AppError, AppState, AttachmentScope,
+        BasicOperationRequest, BasicOperationState, CapabilityState, ComposerMode,
+        CrossSigningStatus, DeviceSessionListState, DirectoryJoinState, DirectoryQueryState,
+        DirectoryState, E2eeKeyManagementState, E2eeRecoveryState, E2eeTrustState, FilesViewScope,
+        FilesViewState, FocusedContextState, IdentityResetState, KeyBackupStatus,
+        LocalEncryptionState, NavigationState, OperationFailureKind, PendingComposerSendKind,
+        PinOp, PinOperationState, QrLoginState, RoomKeyExportState, RoomKeyImportState,
+        RoomListFilter, RoomManagementOperationKind, RoomManagementOperationState, RoomMemberRole,
+        RoomModerationAction, SasEmoji, SearchState, SecureBackupPassphraseChangeState,
+        SecureBackupSetupState, SessionState, SettingsPersistenceState, SoftLogoutReauthState,
+        StagedUploadCompressionChoice, SyncState, ThreadAttentionState, ThreadPaneState,
+        TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
+        VerificationFlowState, VerificationTarget, compute_room_list_projection,
     },
 };
 
@@ -27,6 +27,24 @@ const SETTINGS_PERSIST_FAILED_MESSAGE: &str = "Settings could not be saved";
 const LOCAL_USER_ALIAS_UPDATE_FAILED_MESSAGE: &str = "Local user alias could not be saved";
 const PIN_EVENT_FAILED_MESSAGE: &str = "Pinning the event failed";
 const UNPIN_EVENT_FAILED_MESSAGE: &str = "Unpinning the event failed";
+const IGNORED_USER_UPDATE_FAILED_MESSAGE: &str = "Ignored user list could not be updated";
+
+fn visible_invites_for_ignored_users(
+    invites: &[crate::state::InvitePreview],
+    ignored_user_ids: &std::collections::BTreeSet<String>,
+) -> Vec<crate::state::InvitePreview> {
+    invites
+        .iter()
+        .filter(|invite| {
+            invite
+                .inviter_user_id
+                .as_deref()
+                .map(|id| !ignored_user_ids.contains(id))
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
 
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     match action {
@@ -948,6 +966,28 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             };
             vec![AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged)]
         }
+        AppAction::AccountManagementCapabilitiesLoadRequested => {
+            state.account_management_capabilities = AccountManagementCapabilities::default();
+            vec![AppEffect::EmitUiEvent(
+                UiEvent::AccountManagementCapabilitiesChanged,
+            )]
+        }
+        AppAction::AccountManagementCapabilitiesLoaded { change_password } => {
+            state.account_management_capabilities.change_password = if change_password {
+                CapabilityState::Enabled
+            } else {
+                CapabilityState::Disabled
+            };
+            vec![AppEffect::EmitUiEvent(
+                UiEvent::AccountManagementCapabilitiesChanged,
+            )]
+        }
+        AppAction::AccountManagementCapabilitiesLoadFailed => {
+            state.account_management_capabilities = AccountManagementCapabilities::default();
+            vec![AppEffect::EmitUiEvent(
+                UiEvent::AccountManagementCapabilitiesChanged,
+            )]
+        }
         AppAction::SoftLogoutReauthRequested { request_id } => {
             if !is_session_ready(state)
                 || !matches!(state.soft_logout_reauth, SoftLogoutReauthState::Idle)
@@ -1035,6 +1075,72 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
+        }
+        AppAction::RoomNotificationModeSet {
+            request_id,
+            room_id,
+            mode,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            let known = state.rooms.iter().any(|r| r.room_id == room_id)
+                || state.invites.iter().any(|i| i.room_id == room_id);
+            if !known {
+                return Vec::new();
+            }
+            let entry = state.room_notification_settings.entry(room_id).or_default();
+            entry.mode = mode;
+            entry.operation = crate::state::RoomNotificationModeOperation::Pending { request_id };
+            vec![AppEffect::EmitUiEvent(
+                UiEvent::RoomNotificationSettingsChanged,
+            )]
+        }
+        AppAction::RoomNotificationModeCompleted {
+            request_id,
+            room_id,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if let Some(entry) = state.room_notification_settings.get_mut(&room_id) {
+                if matches!(
+                    entry.operation,
+                    crate::state::RoomNotificationModeOperation::Pending {
+                        request_id: pending_id,
+                    } if pending_id == request_id
+                ) {
+                    entry.operation = crate::state::RoomNotificationModeOperation::Idle;
+                }
+            }
+            vec![AppEffect::EmitUiEvent(
+                UiEvent::RoomNotificationSettingsChanged,
+            )]
+        }
+        AppAction::RoomNotificationModeFailed {
+            request_id,
+            room_id,
+            kind,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if let Some(entry) = state.room_notification_settings.get_mut(&room_id) {
+                if matches!(
+                    entry.operation,
+                    crate::state::RoomNotificationModeOperation::Pending {
+                        request_id: pending_id,
+                    } if pending_id == request_id
+                ) {
+                    entry.operation = crate::state::RoomNotificationModeOperation::Failed {
+                        request_id,
+                        failure_kind: kind,
+                    };
+                }
+            }
+            vec![AppEffect::EmitUiEvent(
+                UiEvent::RoomNotificationSettingsChanged,
+            )]
         }
         AppAction::OwnProfileUpdated { profile } => {
             if !is_session_ready(state) {
@@ -1168,6 +1274,113 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.errors.push(AppError {
                 code: "local_user_alias_update_failed".to_owned(),
                 message: LOCAL_USER_ALIAS_UPDATE_FAILED_MESSAGE.to_owned(),
+                recoverable: true,
+            });
+            vec![
+                AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+                AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+            ]
+        }
+        AppAction::IgnoredUsersLoaded { user_ids } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.profile.ignored_user_ids = user_ids;
+            state.profile.ignored_user_update = crate::state::IgnoredUserUpdateState::Idle;
+
+            let own_user_id = session_user_id(state).map(str::to_owned);
+            let ignored = &state.profile.ignored_user_ids;
+            state
+                .live_signals
+                .presence
+                .retain(|user_id, _| !ignored.contains(user_id));
+
+            let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)];
+
+            if state.room_list.active_filter == RoomListFilter::Invites {
+                let visible_invites = visible_invites_for_ignored_users(&state.invites, ignored);
+                state.room_list = compute_room_list_projection(
+                    RoomListFilter::Invites,
+                    state.room_list.sort,
+                    &state.rooms,
+                    &visible_invites,
+                );
+                effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+            }
+
+            if !state.live_signals.presence.is_empty() || own_user_id.is_some() {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged));
+            }
+
+            effects
+        }
+        AppAction::IgnoredUserUpdateRequested {
+            request_id,
+            user_id,
+            ignored,
+        } => {
+            if !is_session_ready(state) || !state.profile.ignored_user_update.is_idle() {
+                return Vec::new();
+            }
+
+            if ignored {
+                state.profile.ignored_user_ids.insert(user_id.clone());
+            } else {
+                state.profile.ignored_user_ids.remove(&user_id);
+            }
+            state.profile.ignored_user_update =
+                crate::state::IgnoredUserUpdateState::Saving { request_id };
+            state.live_signals.presence.remove(&user_id);
+
+            let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)];
+
+            if state.room_list.active_filter == RoomListFilter::Invites {
+                let visible_invites = visible_invites_for_ignored_users(
+                    &state.invites,
+                    &state.profile.ignored_user_ids,
+                );
+                state.room_list = compute_room_list_projection(
+                    RoomListFilter::Invites,
+                    state.room_list.sort,
+                    &state.rooms,
+                    &visible_invites,
+                );
+                effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+            }
+
+            effects.push(AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged));
+            effects
+        }
+        AppAction::IgnoredUserUpdateSucceeded { request_id } => {
+            if state.profile.ignored_user_update.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+
+            state.profile.ignored_user_update = crate::state::IgnoredUserUpdateState::Idle;
+            vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+        }
+        AppAction::IgnoredUserUpdateFailed {
+            request_id,
+            user_id,
+            ignored,
+            ..
+        } => {
+            if state.profile.ignored_user_update.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+
+            // Revert the optimistic mutation so the UI does not keep filtering
+            // as if the failed operation succeeded.
+            if ignored {
+                state.profile.ignored_user_ids.remove(&user_id);
+            } else {
+                state.profile.ignored_user_ids.insert(user_id);
+            }
+            state.profile.ignored_user_update = crate::state::IgnoredUserUpdateState::Idle;
+            state.errors.push(AppError {
+                code: "ignored_user_update_failed".to_owned(),
+                message: IGNORED_USER_UPDATE_FAILED_MESSAGE.to_owned(),
                 recoverable: true,
             });
             vec![
@@ -2433,11 +2646,15 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             state.invites = invites;
             if state.room_list.active_filter == RoomListFilter::Invites {
+                let visible_invites = visible_invites_for_ignored_users(
+                    &state.invites,
+                    &state.profile.ignored_user_ids,
+                );
                 state.room_list = compute_room_list_projection(
                     RoomListFilter::Invites,
                     state.room_list.sort,
                     &state.rooms,
-                    &state.invites,
+                    &visible_invites,
                 );
             }
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
@@ -3432,6 +3649,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            if state.profile.ignored_user_ids.contains(&user_id) {
+                return Vec::new();
+            }
+
             state.live_signals.presence.insert(user_id, presence);
             vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
         }
@@ -3941,6 +4162,8 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
         state.e2ee_trust.key_management != E2eeKeyManagementState::default();
     let had_device_sessions = state.device_sessions != DeviceSessionListState::Idle;
     let had_account_management = state.account_management != AccountManagementState::Idle;
+    let had_account_management_capabilities =
+        state.account_management_capabilities != AccountManagementCapabilities::default();
     let had_soft_logout_reauth = state.soft_logout_reauth != SoftLogoutReauthState::Idle;
     let had_qr_login = state.qr_login != QrLoginState::Idle;
     let had_live_signals = state.live_signals != Default::default();
@@ -3952,6 +4175,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_local_encryption = state.local_encryption != LocalEncryptionState::Unknown;
     let had_native_attention = state.native_attention != Default::default();
     let had_files_view = state.files_view != FilesViewState::Closed;
+    let had_room_notification_settings = !state.room_notification_settings.is_empty();
 
     state.navigation = NavigationState::default();
     state.spaces.clear();
@@ -3975,11 +4199,13 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.e2ee_trust = E2eeTrustState::default();
     state.device_sessions = DeviceSessionListState::Idle;
     state.account_management = AccountManagementState::Idle;
+    state.account_management_capabilities = AccountManagementCapabilities::default();
     state.soft_logout_reauth = SoftLogoutReauthState::Idle;
     state.qr_login = QrLoginState::Idle;
     state.live_signals = Default::default();
     state.local_encryption = LocalEncryptionState::Unknown;
     state.native_attention = Default::default();
+    state.room_notification_settings.clear();
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
     if let Some(room_id) = previous_room_id {
@@ -4002,6 +4228,11 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_account_management {
         effects.push(AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged));
+    }
+    if had_account_management_capabilities {
+        effects.push(AppEffect::EmitUiEvent(
+            UiEvent::AccountManagementCapabilitiesChanged,
+        ));
     }
     if had_soft_logout_reauth {
         effects.push(AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged));
@@ -4035,6 +4266,11 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_files_view {
         effects.push(AppEffect::EmitUiEvent(UiEvent::FilesViewChanged));
+    }
+    if had_room_notification_settings {
+        effects.push(AppEffect::EmitUiEvent(
+            UiEvent::RoomNotificationSettingsChanged,
+        ));
     }
     effects
 }

@@ -35,6 +35,8 @@ import type {
   E2eeTrustState,
   LocaleDisplayProfile,
   LocaleSettings,
+  RoomNotificationMode,
+  RoomNotificationSettings,
   SettingsPatch,
   StagedUploadCompressionChoice,
   UploadStagingRequestItem
@@ -130,6 +132,8 @@ function readySnapshot(
         users: {},
         local_aliases: {},
         local_alias_update: { kind: "idle" },
+        ignored_user_ids: [],
+        ignored_user_update: { kind: "idle" },
         update: { kind: "idle" }
       },
       sync: "running",
@@ -158,9 +162,11 @@ function readySnapshot(
         sort: { kind: "activity" },
         items: null
       },
+      room_notification_settings: {},
       room_interactions: {},
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
+      account_management_capabilities: { change_password: { kind: "unknown" } },
       soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       directory: { query: { kind: "closed" }, join: { kind: "idle" } },
@@ -225,7 +231,13 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       appearance: { theme: "system" },
       typography: { font: "system", emoji: "system" },
       keyboard: { composer_send_shortcut: "enter" },
-      notifications: { desktop_notifications: true, sound: true, badges: true },
+      notifications: {
+        desktop_notifications: true,
+        sound: true,
+        badges: true,
+        send_read_receipts: true,
+        send_typing_notifications: true
+      },
       display: { code_block_wrap: true, hide_redacted: false },
       media: {
         image_upload_compression: "never",
@@ -593,6 +605,28 @@ mock.setCommandResponse(
 );
 mock.setCommandResponse("mark_room_as_read", () => currentSnapshot);
 mock.setCommandResponse("mark_room_as_unread", () => currentSnapshot);
+mock.setCommandResponse(
+  "set_room_notification_mode",
+  ({ roomId, mode }: { roomId: string; mode: RoomNotificationMode }) => {
+    const known =
+      currentSnapshot.state.rooms.some((room) => room.room_id === roomId) ||
+      currentSnapshot.state.invites.some((invite) => invite.room_id === roomId);
+    if (!known) {
+      return currentSnapshot;
+    }
+    const next: Record<string, RoomNotificationSettings> = {
+      ...currentSnapshot.state.room_notification_settings,
+      [roomId]: { mode, operation: { kind: "idle" } }
+    };
+    return setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        room_notification_settings: next
+      }
+    });
+  }
+);
 mock.setCommandResponse("query_devices", () =>
   setCurrentSnapshot({
     ...currentSnapshot,
@@ -671,6 +705,51 @@ mock.setCommandResponse(
       state: {
         ...currentSnapshot.state,
         account_management: { kind: "idle" }
+      }
+    });
+  }
+);
+mock.setCommandResponse("load_account_management_capabilities", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      account_management_capabilities: {
+        change_password: { kind: "enabled" }
+      }
+    }
+  })
+);
+mock.setCommandResponse(
+  "change_password",
+  ({ newPassword }: { newPassword: string }) => {
+    void newPassword;
+    return setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        account_management: {
+          kind: "succeeded",
+          request_id: 1,
+          operation: "changePassword"
+        }
+      }
+    });
+  }
+);
+mock.setCommandResponse(
+  "deactivate_account",
+  ({ eraseData }: { eraseData: boolean }) => {
+    void eraseData;
+    return setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        account_management: {
+          kind: "succeeded",
+          request_id: 2,
+          operation: "deactivateAccount"
+        }
       }
     });
   }

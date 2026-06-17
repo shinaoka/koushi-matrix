@@ -66,14 +66,14 @@ use matrix_desktop_sdk::{
 use matrix_desktop_state::{
     AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, DirectoryQuery,
     DirectoryRoomSummary, InvitePreview, OperationFailureKind, PinnedEvent, RoomHistoryVisibility,
-    RoomJoinRule, RoomMemberRole, RoomMemberSummary, RoomModerationAction, RoomPermissionFacts,
-    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SpaceSummary, UserProfile,
+    RoomJoinRule, RoomMemberRole, RoomMemberSummary, RoomModerationAction, RoomNotificationMode,
+    RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo,
+    RoomTagKind, RoomTags, SpaceSummary, UserProfile,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::RoomCommand;
-use crate::event::{CoreEvent, RoomEvent};
+use crate::event::{CoreEvent, ReportKind, RoomEvent};
 use crate::executor;
 use crate::failure::{CoreFailure, RoomFailureKind};
 use crate::ids::RequestId;
@@ -466,6 +466,30 @@ impl RoomActor {
             } => {
                 self.handle_mark_room_as_unread(request_id, room_id, unread)
                     .await;
+            }
+            RoomCommand::SetRoomNotificationMode {
+                request_id,
+                room_id,
+                mode,
+            } => {
+                self.handle_set_room_notification_mode(request_id, room_id, mode)
+                    .await;
+            }
+            RoomCommand::ReportContent {
+                request_id,
+                room_id,
+                event_id,
+                reason,
+            } => {
+                self.handle_report_content(request_id, room_id, event_id, reason)
+                    .await;
+            }
+            RoomCommand::ReportRoom {
+                request_id,
+                room_id,
+                reason,
+            } => {
+                self.handle_report_room(request_id, room_id, reason).await;
             }
         }
     }
@@ -1444,6 +1468,99 @@ impl RoomActor {
         }
     }
 
+    async fn handle_set_room_notification_mode(
+        &self,
+        request_id: RequestId,
+        room_id: String,
+        mode: RoomNotificationMode,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        if !self.ensure_known_room_for_message_interaction(request_id, &room_id) {
+            return;
+        }
+
+        self.reduce(vec![AppAction::RoomNotificationModeSet {
+            request_id: request_id.sequence,
+            room_id: room_id.clone(),
+            mode,
+        }]);
+        match matrix_desktop_sdk::set_room_notification_mode(session, &room_id, mode).await {
+            Ok(()) => {
+                self.reduce(vec![AppAction::RoomNotificationModeCompleted {
+                    request_id: request_id.sequence,
+                    room_id,
+                }]);
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.reduce(vec![AppAction::RoomNotificationModeFailed {
+                    request_id: request_id.sequence,
+                    room_id,
+                    kind: operation_failure_kind(kind),
+                }]);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_report_content(
+        &self,
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+        reason: Option<String>,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match matrix_desktop_sdk::report_content(session, &room_id, &event_id, reason).await {
+            Ok(()) => {
+                self.emit(CoreEvent::Room(RoomEvent::ReportCompleted {
+                    request_id,
+                    kind: ReportKind::Event,
+                }));
+            }
+            Err(error) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::ReportOperationFailed {
+                        kind: classify_report_error(&error),
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_report_room(&self, request_id: RequestId, room_id: String, reason: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match matrix_desktop_sdk::report_room(session, &room_id, reason).await {
+            Ok(()) => {
+                self.emit(CoreEvent::Room(RoomEvent::ReportCompleted {
+                    request_id,
+                    kind: ReportKind::Room,
+                }));
+            }
+            Err(error) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::ReportOperationFailed {
+                        kind: classify_report_error(&error),
+                    },
+                );
+            }
+        }
+    }
+
     fn clear_known_rooms(&self) {
         if let Ok(mut known_room_ids) = self.known_room_ids.write() {
             known_room_ids.clear();
@@ -1814,6 +1931,7 @@ fn normalize_invites(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> V
             avatar: avatar_from_mxc_uri(invite.avatar_mxc_uri.as_deref()),
             topic: invite.topic.clone(),
             inviter_display_name: invite.inviter_display_name.clone(),
+            inviter_user_id: invite.inviter_user_id.clone(),
             is_dm: invite.is_dm,
         })
         .collect()
@@ -2019,6 +2137,21 @@ pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailu
             | MatrixRoomOperationFailureKind::Store
             | MatrixRoomOperationFailureKind::WrongRoomState => RoomFailureKind::Sdk,
         },
+    }
+}
+
+fn classify_report_error(
+    error: &matrix_desktop_sdk::MatrixReportError,
+) -> crate::failure::ReportFailureKind {
+    use crate::failure::ReportFailureKind;
+    use matrix_desktop_sdk::MatrixReportFailureKind;
+    match error.failure_kind() {
+        MatrixReportFailureKind::Forbidden => ReportFailureKind::Forbidden,
+        MatrixReportFailureKind::Network => ReportFailureKind::Network,
+        MatrixReportFailureKind::InvalidUserId => ReportFailureKind::InvalidUserId,
+        MatrixReportFailureKind::InvalidRoomId => ReportFailureKind::InvalidRoomId,
+        MatrixReportFailureKind::InvalidEventId => ReportFailureKind::InvalidEventId,
+        MatrixReportFailureKind::Sdk => ReportFailureKind::Sdk,
     }
 }
 
@@ -2306,6 +2439,7 @@ pub mod tests {
                 avatar_mxc_uri: None,
                 topic: Some("Project topic".to_owned()),
                 inviter_display_name: Some("Inviter".to_owned()),
+                inviter_user_id: Some("@inviter:example.test".to_owned()),
                 is_dm: true,
             }],
             ..MatrixRoomListSnapshot::default()
@@ -2329,6 +2463,7 @@ pub mod tests {
                 avatar_mxc_uri: Some("mxc://example.test/invite-avatar".to_owned()),
                 topic: None,
                 inviter_display_name: None,
+                inviter_user_id: None,
                 is_dm: false,
             }],
             ..MatrixRoomListSnapshot::default()

@@ -747,9 +747,13 @@ pub fn run() {
             commands::select_room_list_filter,
             commands::mark_room_as_read,
             commands::mark_room_as_unread,
+            commands::set_room_notification_mode,
             commands::query_devices,
+            commands::load_account_management_capabilities,
             commands::rename_device,
             commands::delete_devices,
+            commands::change_password,
+            commands::deactivate_account,
             commands::submit_account_management_uia,
             commands::probe_local_encryption_health,
             commands::reset_local_data,
@@ -1722,6 +1726,13 @@ mod tests {
             }))
             .expect("serialize profile update event");
 
+        let account_report_completed =
+            serialize_core_event(&CoreEvent::Account(AccountEvent::ReportCompleted {
+                request_id,
+                kind: matrix_desktop_core::event::ReportKind::User,
+            }))
+            .expect("serialize account report completed event");
+
         // OperationFailed: unit failures are strings
         let failed = serialize_core_event(&CoreEvent::OperationFailed {
             request_id,
@@ -1784,6 +1795,12 @@ mod tests {
                 unread: true,
             }))
             .expect("serialize room marked as unread");
+        let room_report_completed =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::ReportCompleted {
+                request_id,
+                kind: matrix_desktop_core::event::ReportKind::Event,
+            }))
+            .expect("serialize room report completed event");
         let sync_mode_changed = serialize_core_event(&CoreEvent::Sync(SyncEvent::ModeChanged {
             mode: SyncMode::Simplified,
         }))
@@ -2102,6 +2119,7 @@ mod tests {
             "cjkTextPolicyJapaneseCatalogProfileChanged": cjk_text_policy,
             "e2eeTrustIdentityResetChanged": e2ee_identity_reset,
             "accountProfileUpdated": profile_updated,
+            "accountReportCompleted": account_report_completed,
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
             "localEncryptionHealthChanged": local_encryption,
@@ -2118,6 +2136,7 @@ mod tests {
             "roomLeft": room_left,
             "roomMarkedAsRead": room_marked_as_read,
             "roomMarkedAsUnread": room_marked_as_unread,
+            "roomReportCompleted": room_report_completed,
             "roomMemberModerated": room_member_moderated,
             "roomMemberRoleUpdated": room_member_role_updated,
             "roomSettingUpdated": room_setting_updated,
