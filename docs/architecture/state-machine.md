@@ -563,6 +563,66 @@ stateDiagram-v2
   `send_media=ok media_caption=ok image_compress=ok upload_staging=ok
   media_gallery=ok recv_media=ok`. Its output must remain private-data-free.
 
+## Files View (Attachment Browser)
+
+The files view is a Rust-owned attachment browser. `AppState.files_view` is the
+reducer state machine; React may render the snapshot and dispatch typed open,
+close, refresh, and selection commands, but it must not build attachment queries,
+parse media event content, or maintain local browser state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Loading: FilesViewOpened [Ready session] / resolve scope
+    Loading --> Open: FilesViewQuerySucceeded [matching request_id]
+    Loading --> Failed: FilesViewQueryFailed [matching request_id]
+    Open --> Loading: FilesViewQueryRequested [Ready session] / refresh
+    Failed --> Loading: FilesViewQueryRequested [Ready session] / retry
+    Open --> Open: FilesViewSelectionChanged
+    Closed --> Closed: FilesViewClosed
+    Loading --> Closed: FilesViewClosed
+    Open --> Closed: FilesViewClosed
+    Failed --> Closed: FilesViewClosed
+    Loading --> Closed: LogoutRequested/SessionLocked/SwitchAccountRequested/SessionCleared
+    Open --> Closed: LogoutRequested/SessionLocked/SwitchAccountRequested/SessionCleared
+    Failed --> Closed: LogoutRequested/SessionLocked/SwitchAccountRequested/SessionCleared
+```
+
+- `FilesViewState` is one of `Closed`, `Loading { request_id, scope, filter, sort }`,
+  `Open { request_id, scope, filter, sort, items, selected_event_id }`, or
+  `Failed { request_id, scope, filter, sort, message }`. `selected_event_id`
+  identifies the currently selected attachment result by Matrix event id.
+- `FilesViewOpened { request_id, scope, filter, sort }` is accepted only for a
+  Ready session. It resolves the requested `FilesViewScope` into an
+  `AttachmentScope` and enters `Loading`.
+- `FilesViewQueryRequested { request_id, scope, filter, sort }` is accepted only
+  for a Ready session. It allows refreshing or retrying an existing view and
+  re-enters `Loading`.
+- `FilesViewQuerySucceeded { request_id, items }` and
+  `FilesViewQueryFailed { request_id, message }` settle only the matching
+  in-flight `request_id` while the state is `Loading`. Stale successes, stale
+  failures, duplicate completions, and completions when no query is in flight
+  are ignored.
+- `FilesViewSelectionChanged { event_id }` updates `selected_event_id` only when
+  the view is `Open`. Equal updates are a no-op. Selection changes when the view
+  is `Closed`, `Loading`, or `Failed` are ignored.
+- `FilesViewClosed` resets any non-`Closed` state to `Closed`. Closing an already
+  closed view is a no-op.
+- Logout, lock, account switch, and session clearing reset `files_view` to
+  `Closed` and emit `FilesViewChanged` when it was not already closed.
+- Scope resolution is reducer-owned. `FilesViewScope::Room { room_id }` maps
+  directly to `AttachmentScope::Room`. `FilesViewScope::Space { space_id }`
+  resolves to `AttachmentScope::Space` by looking up the current space's
+  `child_room_ids` in `AppState.spaces`; an unknown space resolves with an empty
+  child list. `FilesViewScope::Account` maps to `AttachmentScope::Account`.
+- Attachment results are Rust-projected `AttachmentResult` DTOs. Each result
+  carries the event id, sender, timestamp, kind, filename, mimetype, size, and
+  safe source/thumbnail MXC metadata. React must not re-derive attachment
+  presence or metadata from timeline DOM or Matrix event content.
+- Filenames are visible/private UI content. Debug output, logs, QA tokens, and
+  snapshots must redact filenames and MXC URIs; the reducer `Debug` impl already
+  hides them.
+
 ## Timeline Formatted Message Projection
 
 Received Matrix `formatted_body` is a Rust-owned security projection. The
