@@ -1843,6 +1843,7 @@ fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec
                 marked_unread: room.marked_unread,
                 last_activity_ms: room.last_activity_ms,
                 parent_space_ids: room.parent_space_ids.clone(),
+                is_encrypted: false,
             }
         })
         .collect()

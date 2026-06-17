@@ -4798,6 +4798,7 @@ fn native_attention_room(
         marked_unread: false,
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
+        is_encrypted: false,
     }
 }
 
@@ -8088,6 +8089,7 @@ async fn run_hide_redacted_stage(
             display: Some(DisplaySettings {
                 code_block_wrap: true,
                 hide_redacted: true,
+                url_previews_enabled: true,
             }),
             ..SettingsPatch::default()
         },
@@ -8138,6 +8140,7 @@ fn assert_hide_redacted_projection() -> Result<(), String> {
     state.settings.values.display = DisplaySettings {
         code_block_wrap: true,
         hide_redacted: true,
+        url_previews_enabled: true,
     };
     let key = TimelineKey::room(
         AccountKey("@projection:example.invalid".to_owned()),

@@ -823,6 +823,7 @@ mod tests {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![],
+            is_encrypted: false,
         });
 
         let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))

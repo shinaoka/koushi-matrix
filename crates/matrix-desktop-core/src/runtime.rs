@@ -2270,6 +2270,7 @@ mod tests {
                         display: Some(DisplaySettings {
                             code_block_wrap: true,
                             hide_redacted: true,
+                            url_previews_enabled: true,
                         }),
                         ..SettingsPatch::default()
                     },

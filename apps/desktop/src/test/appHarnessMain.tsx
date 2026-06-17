@@ -153,7 +153,8 @@ function readySnapshot(
           unread_count: 0,
           notification_count: 0,
           highlight_count: 0,
-          parent_space_ids: []
+          parent_space_ids: [],
+          is_encrypted: false
         }
       ],
       invites: [],
@@ -239,7 +240,7 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
         send_read_receipts: true,
         send_typing_notifications: true
       },
-      display: { code_block_wrap: true, hide_redacted: false },
+      display: { code_block_wrap: true, hide_redacted: false, url_previews_enabled: true },
       media: {
         image_upload_compression: "never",
         image_upload_compression_policy: {
@@ -248,7 +249,8 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
           target_long_edge: 2048,
           quality_percent: 82
         }
-      }
+      },
+      room_url_previews: {}
     },
     persistence: { kind: "idle" }
   };
@@ -325,6 +327,17 @@ function applySettingsPatch(
   values: DesktopSnapshot["state"]["settings"]["values"],
   patch: SettingsPatch
 ): DesktopSnapshot["state"]["settings"]["values"] {
+  const roomUrlPreviews = { ...values.room_url_previews };
+  if (patch.room_url_previews) {
+    for (const [roomId, enabled] of Object.entries(patch.room_url_previews)) {
+      if (enabled) {
+        roomUrlPreviews[roomId] = enabled;
+      } else {
+        delete roomUrlPreviews[roomId];
+      }
+    }
+  }
+
   return {
     locale: patch.locale ?? values.locale,
     appearance: patch.appearance ?? values.appearance,
@@ -332,7 +345,8 @@ function applySettingsPatch(
     keyboard: patch.keyboard ?? values.keyboard,
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
-    media: patch.media ?? values.media
+    media: patch.media ?? values.media,
+    room_url_previews: roomUrlPreviews
   };
 }
 
@@ -521,7 +535,8 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     unread_count: 0,
     notification_count: 0,
     highlight_count: 0,
-    parent_space_ids: []
+    parent_space_ids: [],
+    is_encrypted: false
   });
   snapshot.state.navigation.active_room_id = newRoomId;
   snapshot.state.timeline.room_id = newRoomId;

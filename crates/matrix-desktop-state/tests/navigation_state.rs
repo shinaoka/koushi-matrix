@@ -55,6 +55,7 @@ fn rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            is_encrypted: false,
         },
         RoomSummary {
             room_id: "dm-a".to_owned(),
@@ -71,6 +72,7 @@ fn rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            is_encrypted: false,
         },
         RoomSummary {
             room_id: "global-room".to_owned(),
@@ -87,6 +89,7 @@ fn rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![],
+            is_encrypted: false,
         },
     ]
 }
@@ -108,6 +111,7 @@ fn room_summary_serializes_projected_label_and_dm_identity_contract() {
         marked_unread: false,
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
+        is_encrypted: false,
     };
 
     let value = serde_json::to_value(&room).expect("serialize room summary");
@@ -149,6 +153,7 @@ fn room_list_update_projects_dm_room_display_labels_from_aliases() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
+                is_encrypted: false,
             }],
         },
     );
@@ -182,6 +187,7 @@ fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate()
         marked_unread: false,
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
+        is_encrypted: false,
     }];
     state.native_attention = native_attention_state_from_rooms(NativeAttentionProjectionInput {
         rooms: &state.rooms,
@@ -327,6 +333,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                is_encrypted: false,
             }],
         },
     );
@@ -373,6 +380,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
+                is_encrypted: false,
             },
             RoomSummary {
                 room_id: "room-b".to_owned(),
@@ -389,6 +397,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
+                is_encrypted: false,
             },
         ],
         navigation: matrix_desktop_state::NavigationState {
@@ -439,6 +448,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     marked_unread: false,
                     last_activity_ms: 0,
                     parent_space_ids: Vec::new(),
+                    is_encrypted: false,
                 },
                 RoomSummary {
                     room_id: "room-b".to_owned(),
@@ -455,6 +465,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     marked_unread: false,
                     last_activity_ms: 0,
                     parent_space_ids: vec!["space-a".to_owned()],
+                    is_encrypted: false,
                 },
             ],
         },
@@ -505,6 +516,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            is_encrypted: false,
         }],
         navigation: matrix_desktop_state::NavigationState {
             active_space_id: Some("space-a".to_owned()),
@@ -547,6 +559,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
+                is_encrypted: false,
             }],
         },
     );
@@ -758,6 +771,7 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            is_encrypted: false,
         },
         RoomSummary {
             room_id: "dm-a".to_owned(),
@@ -774,6 +788,7 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            is_encrypted: false,
         },
     ];
 

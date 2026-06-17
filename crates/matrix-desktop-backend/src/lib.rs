@@ -833,6 +833,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
+            is_encrypted: false,
         },
         RoomSummary {
             room_id: "!room-planning:example.invalid".to_owned(),
@@ -849,6 +850,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
+            is_encrypted: false,
         },
         RoomSummary {
             room_id: "!room-search:example.invalid".to_owned(),
@@ -865,6 +867,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["!space-beta:example.invalid".to_owned()],
+            is_encrypted: false,
         },
         RoomSummary {
             room_id: "!dm-member-1:example.invalid".to_owned(),
@@ -881,6 +884,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: Vec::new(),
+            is_encrypted: false,
         },
         RoomSummary {
             room_id: "!dm-member-2:example.invalid".to_owned(),
@@ -897,6 +901,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: Vec::new(),
+            is_encrypted: false,
         },
     ]
 }

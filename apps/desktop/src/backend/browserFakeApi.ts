@@ -1449,7 +1449,8 @@ class BrowserFakeApi implements DesktopApi {
       dm_user_ids: [],
       tags: emptyRoomTags(),
       unread_count: 0,
-      parent_space_ids: []
+      parent_space_ids: [],
+      is_encrypted: false
     };
 
     this.snapshot.state.rooms = [...this.snapshot.state.rooms, joinedRoom];
@@ -1686,7 +1687,8 @@ class BrowserFakeApi implements DesktopApi {
       dm_user_ids: [],
       tags: emptyRoomTags(),
       unread_count: 0,
-      parent_space_ids: []
+      parent_space_ids: [],
+      is_encrypted: false
     };
     this.snapshot.state.rooms = [...this.snapshot.state.rooms, newRoom];
     this.snapshot.sidebar = composeSidebar(
@@ -1770,7 +1772,8 @@ class BrowserFakeApi implements DesktopApi {
       dm_user_ids: [],
       tags: emptyRoomTags(),
       unread_count: 0,
-      parent_space_ids: []
+      parent_space_ids: [],
+      is_encrypted: false
     };
     this.snapshot.state.invites = this.snapshot.state.invites.filter(
       (candidate) => candidate.room_id !== roomId
@@ -1818,7 +1821,8 @@ class BrowserFakeApi implements DesktopApi {
       dm_user_ids: [trimmedUserId],
       tags: emptyRoomTags(),
       unread_count: 0,
-      parent_space_ids: []
+      parent_space_ids: [],
+      is_encrypted: false
     };
     this.snapshot.state.rooms = [...this.snapshot.state.rooms, newRoom];
     this.snapshot.sidebar = composeSidebar(
@@ -2559,7 +2563,7 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
         send_read_receipts: true,
         send_typing_notifications: true
       },
-      display: { code_block_wrap: true, hide_redacted: false },
+      display: { code_block_wrap: true, hide_redacted: false, url_previews_enabled: true },
       media: {
         image_upload_compression: "never",
         image_upload_compression_policy: {
@@ -2568,7 +2572,8 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
           target_long_edge: 2048,
           quality_percent: 82
         }
-      }
+      },
+      room_url_previews: {}
     },
     persistence: { kind: "idle" }
   };
@@ -2861,6 +2866,17 @@ function applySettingsPatch(
   values: DesktopSnapshot["state"]["settings"]["values"],
   patch: SettingsPatch
 ): DesktopSnapshot["state"]["settings"]["values"] {
+  const roomUrlPreviews = { ...values.room_url_previews };
+  if (patch.room_url_previews) {
+    for (const [roomId, enabled] of Object.entries(patch.room_url_previews)) {
+      if (enabled) {
+        roomUrlPreviews[roomId] = enabled;
+      } else {
+        delete roomUrlPreviews[roomId];
+      }
+    }
+  }
+
   return {
     locale: patch.locale ?? values.locale,
     appearance: patch.appearance ?? values.appearance,
@@ -2868,7 +2884,8 @@ function applySettingsPatch(
     keyboard: patch.keyboard ?? values.keyboard,
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
-    media: patch.media ?? values.media
+    media: patch.media ?? values.media,
+    room_url_previews: roomUrlPreviews
   };
 }
 
@@ -3126,7 +3143,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 8,
-    parent_space_ids: ["!space-alpha:example.invalid"]
+    parent_space_ids: ["!space-alpha:example.invalid"],
+    is_encrypted: false
   },
   {
     room_id: "!room-planning:example.invalid",
@@ -3138,7 +3156,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 2,
-    parent_space_ids: ["!space-alpha:example.invalid"]
+    parent_space_ids: ["!space-alpha:example.invalid"],
+    is_encrypted: false
   },
   {
     room_id: "!room-search:example.invalid",
@@ -3150,7 +3169,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 1,
-    parent_space_ids: ["!space-beta:example.invalid"]
+    parent_space_ids: ["!space-beta:example.invalid"],
+    is_encrypted: false
   },
   {
     room_id: "!dm-member-1:example.invalid",
@@ -3162,7 +3182,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: ["@member-1:example.invalid"],
     tags: emptyRoomTags(),
     unread_count: 1,
-    parent_space_ids: []
+    parent_space_ids: [],
+    is_encrypted: false
   },
   {
     room_id: "!dm-member-2:example.invalid",
@@ -3174,7 +3195,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: ["@member-2:example.invalid"],
     tags: emptyRoomTags(),
     unread_count: 0,
-    parent_space_ids: []
+    parent_space_ids: [],
+    is_encrypted: false
   }
 ];
 

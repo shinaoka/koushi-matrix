@@ -165,7 +165,7 @@ function defaultSnapshotResponse() {
             send_read_receipts: true,
             send_typing_notifications: true
           },
-          display: { code_block_wrap: true, hide_redacted: false },
+          display: { code_block_wrap: true, hide_redacted: false, url_previews_enabled: true },
           media: {
         image_upload_compression: "never",
         image_upload_compression_policy: {
@@ -174,7 +174,8 @@ function defaultSnapshotResponse() {
           target_long_edge: 2048,
           quality_percent: 82
         }
-      }
+      },
+          room_url_previews: {}
         },
         persistence: { kind: "idle" }
       },

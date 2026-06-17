@@ -47,7 +47,8 @@ fn app_state_carries_default_non_secret_settings() {
         state.settings.values.display,
         DisplaySettings {
             code_block_wrap: true,
-            hide_redacted: false
+            hide_redacted: false,
+            url_previews_enabled: true,
         }
     );
     assert_eq!(
@@ -88,11 +89,13 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         display: DisplaySettings {
             code_block_wrap: false,
             hide_redacted: true,
+            url_previews_enabled: true,
         },
         media: MediaSettings {
             image_upload_compression: ImageUploadCompressionMode::Always,
             ..MediaSettings::default()
         },
+        room_url_previews: Default::default(),
     };
 
     let effects = reduce(
@@ -146,7 +149,8 @@ fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_o
         values.display,
         DisplaySettings {
             code_block_wrap: false,
-            hide_redacted: false
+            hide_redacted: false,
+            url_previews_enabled: true,
         }
     );
 }
@@ -220,6 +224,7 @@ fn code_block_wrap_patch_is_rust_owned_and_persisted() {
     let display_settings = DisplaySettings {
         code_block_wrap: false,
         hide_redacted: false,
+        url_previews_enabled: true,
     };
 
     let effects = reduce(
@@ -256,6 +261,7 @@ fn hide_redacted_patch_is_rust_owned_and_persisted() {
     let display_settings = DisplaySettings {
         code_block_wrap: true,
         hide_redacted: true,
+        url_previews_enabled: true,
     };
 
     let effects = reduce(

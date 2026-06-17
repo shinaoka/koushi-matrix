@@ -124,6 +124,8 @@ impl Default for SettingsState {
     }
 }
 
+pub type RoomUrlPreviews = BTreeMap<String, bool>;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SettingsValues {
     pub locale: LocaleSettings,
@@ -136,6 +138,8 @@ pub struct SettingsValues {
     pub display: DisplaySettings,
     #[serde(default)]
     pub media: MediaSettings,
+    #[serde(default)]
+    pub room_url_previews: RoomUrlPreviews,
 }
 
 impl SettingsValues {
@@ -161,6 +165,15 @@ impl SettingsValues {
         if let Some(media) = patch.media {
             self.media = media;
         }
+        if let Some(room_url_previews) = patch.room_url_previews {
+            for (room_id, enabled) in room_url_previews {
+                if enabled {
+                    self.room_url_previews.insert(room_id, enabled);
+                } else {
+                    self.room_url_previews.remove(&room_id);
+                }
+            }
+        }
     }
 }
 
@@ -174,6 +187,7 @@ impl Default for SettingsValues {
             notifications: NotificationSettings::default(),
             display: DisplaySettings::default(),
             media: MediaSettings::default(),
+            room_url_previews: RoomUrlPreviews::new(),
         }
     }
 }
@@ -344,6 +358,8 @@ pub struct DisplaySettings {
     pub code_block_wrap: bool,
     #[serde(default)]
     pub hide_redacted: bool,
+    #[serde(default = "default_url_previews_enabled")]
+    pub url_previews_enabled: bool,
 }
 
 impl Default for DisplaySettings {
@@ -351,11 +367,16 @@ impl Default for DisplaySettings {
         Self {
             code_block_wrap: true,
             hide_redacted: false,
+            url_previews_enabled: true,
         }
     }
 }
 
 fn default_code_block_wrap() -> bool {
+    true
+}
+
+fn default_url_previews_enabled() -> bool {
     true
 }
 
@@ -420,6 +441,8 @@ pub struct SettingsPatch {
     pub notifications: Option<NotificationSettings>,
     pub display: Option<DisplaySettings>,
     pub media: Option<MediaSettings>,
+    #[serde(default)]
+    pub room_url_previews: Option<RoomUrlPreviews>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1435,6 +1458,8 @@ pub struct RoomSummary {
     #[serde(default)]
     pub last_activity_ms: u64,
     pub parent_space_ids: Vec<String>,
+    #[serde(default)]
+    pub is_encrypted: bool,
 }
 
 impl fmt::Debug for RoomSummary {
@@ -1455,6 +1480,7 @@ impl fmt::Debug for RoomSummary {
             .field("marked_unread", &self.marked_unread)
             .field("last_activity_ms", &self.last_activity_ms)
             .field("parent_space_ids", &self.parent_space_ids.len())
+            .field("is_encrypted", &self.is_encrypted)
             .finish()
     }
 }

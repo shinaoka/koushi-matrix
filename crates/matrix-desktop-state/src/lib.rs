@@ -53,7 +53,7 @@ pub use state::{
     RoomManagementOperationState, RoomManagementState, RoomMemberRole, RoomMemberSummary,
     RoomModerationAction, RoomNotificationMode, RoomNotificationModeOperation,
     RoomNotificationSettings, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
-    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
+    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, RoomUrlPreviews, SasEmoji, ScheduledSendCapability,
     ScheduledSendHandle, ScheduledSendItem, ScheduledSendStore, SearchMatchField, SearchMatchKind,
     SearchResult, SearchScope, SearchState, SecureBackupPassphraseChangeState,
     SecureBackupSetupState, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,

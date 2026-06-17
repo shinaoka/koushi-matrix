@@ -66,6 +66,7 @@ export interface SettingsValues {
   notifications: NotificationSettings;
   display: DisplaySettings;
   media: MediaSettings;
+  room_url_previews: Record<string, boolean>;
 }
 
 export interface SettingsPatch {
@@ -76,6 +77,7 @@ export interface SettingsPatch {
   notifications?: NotificationSettings;
   display?: DisplaySettings;
   media?: MediaSettings;
+  room_url_previews?: Record<string, boolean>;
 }
 
 export interface LocaleSettings {
@@ -145,6 +147,7 @@ export interface NotificationSettings {
 export interface DisplaySettings {
   code_block_wrap: boolean;
   hide_redacted: boolean;
+  url_previews_enabled: boolean;
 }
 
 export interface MediaSettings {
@@ -477,6 +480,7 @@ export interface RoomSummary {
   notification_count?: number;
   highlight_count?: number;
   parent_space_ids: string[];
+  is_encrypted: boolean;
 }
 
 export interface InvitePreview {

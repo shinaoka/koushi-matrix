@@ -4610,6 +4610,7 @@ mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                is_encrypted: false,
             },
             RoomSummary {
                 room_id: "!room2:example.org".to_owned(),
@@ -4626,6 +4627,7 @@ mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                is_encrypted: false,
             },
         ];
 

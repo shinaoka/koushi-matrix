@@ -19,6 +19,7 @@ describe("SpaceInfoPanel", () => {
             dm_user_ids: [],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: ["!space-work:example.invalid"],
+            is_encrypted: false,
             unread_count: 8
           },
           {
@@ -31,6 +32,7 @@ describe("SpaceInfoPanel", () => {
             dm_user_ids: [],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: ["!space-work:example.invalid"],
+            is_encrypted: false,
             unread_count: 2
           },
           {
@@ -43,6 +45,7 @@ describe("SpaceInfoPanel", () => {
             dm_user_ids: ["@alice:example.invalid"],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: ["!space-work:example.invalid"],
+            is_encrypted: false,
             unread_count: 4
           }
         ]}
@@ -91,6 +94,7 @@ describe("SpaceInfoPanel", () => {
             dm_user_ids: [],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: [],
+            is_encrypted: false,
             unread_count: 8
           },
           {
@@ -103,6 +107,7 @@ describe("SpaceInfoPanel", () => {
             dm_user_ids: ["@alice:example.invalid"],
             tags: { favourite: null, low_priority: null },
             parent_space_ids: [],
+            is_encrypted: false,
             unread_count: 4
           }
         ]}

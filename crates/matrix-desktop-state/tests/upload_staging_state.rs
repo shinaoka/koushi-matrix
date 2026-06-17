@@ -30,6 +30,7 @@ fn room(room_id: &str) -> RoomSummary {
         marked_unread: false,
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
+        is_encrypted: false,
     }
 }
 
