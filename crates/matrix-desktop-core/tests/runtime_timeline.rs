@@ -1,7 +1,5 @@
 //! Runtime timeline / composer integration tests.
 
-use std::sync::Mutex;
-
 use matrix_desktop_core::command::{AppCommand, CoreCommand};
 use matrix_desktop_core::executor;
 use matrix_desktop_core::runtime::{COMPOSER_DRAFT_PERSIST_DEBOUNCE, CoreRuntime};
@@ -9,10 +7,6 @@ use matrix_desktop_state::{AppAction, ComposerMode, SessionState, ThreadPaneStat
 
 mod support;
 use support::*;
-
-/// Serialises the two restart persistence tests so they can safely change the
-/// process-wide file-credential-store env var without racing each other.
-static FILE_CRED_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
 async fn app_command_sets_and_clears_reply_target() {
@@ -184,18 +178,14 @@ async fn app_command_sets_selected_room_composer_draft() {
 
 #[tokio::test]
 async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
-    let _env_guard = FILE_CRED_ENV_LOCK.lock().expect("env lock");
     let data_dir = tempfile::tempdir().expect("data dir");
     let credential_dir = tempfile::tempdir().expect("credential dir");
-    unsafe {
-        std::env::set_var(
-            "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR",
-            credential_dir.path(),
-        );
-    }
 
     {
-        let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
         let mut conn = runtime.attach();
         runtime
             .inject_actions(vec![
@@ -233,7 +223,10 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
         executor::sleep(COMPOSER_DRAFT_PERSIST_DEBOUNCE * 2).await;
     }
 
-    let restarted = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
     let mut conn = restarted.attach();
     restarted
         .inject_actions(vec![
@@ -256,25 +249,18 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
     })
     .await;
     assert_eq!(snapshot.timeline.composer.draft, "survives restart");
-    unsafe {
-        std::env::remove_var("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR");
-    }
 }
 
 #[tokio::test]
 async fn cleared_composer_drafts_do_not_resurrect_on_restart() {
-    let _env_guard = FILE_CRED_ENV_LOCK.lock().expect("env lock");
     let data_dir = tempfile::tempdir().expect("data dir");
     let credential_dir = tempfile::tempdir().expect("credential dir");
-    unsafe {
-        std::env::set_var(
-            "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR",
-            credential_dir.path(),
-        );
-    }
 
     {
-        let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
         let mut conn = runtime.attach();
         runtime
             .inject_actions(vec![
@@ -321,7 +307,10 @@ async fn cleared_composer_drafts_do_not_resurrect_on_restart() {
         executor::sleep(COMPOSER_DRAFT_PERSIST_DEBOUNCE * 2).await;
     }
 
-    let restarted = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
     let mut conn = restarted.attach();
     restarted
         .inject_actions(vec![
@@ -346,9 +335,6 @@ async fn cleared_composer_drafts_do_not_resurrect_on_restart() {
     })
     .await;
     assert!(snapshot.timeline.composer.draft.is_empty());
-    unsafe {
-        std::env::remove_var("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR");
-    }
 }
 
 #[tokio::test]

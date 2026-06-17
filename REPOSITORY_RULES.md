@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-06-17.
+Last amended: 2026-06-18.
 
 ## Read Order And Authority
 
@@ -401,6 +401,34 @@ To reduce conflicts on these files:
   directories speed up rebuilds and must be preserved.
 - **Verify cleanup.** After removing a worktree, confirm `git worktree list` and
   disk usage look reasonable. Large leftover artifacts are a hygiene defect.
+
+## Review And Audit
+
+- **Non-frontier models must receive frontier-model review for substantial work.**
+  When a cheaper or non-frontier agent (e.g., a fast implementation subagent)
+  completes a significant change — especially after parallel implementation,
+  AgentSwarm work, or changes to shared hot files — a frontier model must
+  review the diff against the canon (`REPOSITORY_RULES.md`,
+  `docs/architecture/overview.md`, `docs/architecture/state-machine.md` when
+  reducers change, `docs/policies/engineering-rules.md`, `AGENTS.md`, and the
+  relevant dated plan). The review must include the verification output and
+  any security/privacy-sensitive surfaces.
+- **Review findings are implementation tasks, not optional suggestions.** The
+  implementing agent or the main agent must address blocking issues and
+  re-run the relevant gates before landing the change on `main`.
+- **Frontier-model-authored implementation is exempt from mandatory external
+  review**, but the author should still run the full gate set and perform a
+  self-audit before claiming completion. If the frontier model is uncertain
+  about a cross-boundary decision, it must escalate to the user or pause for
+  review before proceeding.
+- **Audit scope is proportional to risk.** A narrow module-local patch may
+  need only a quick diff check; a parallel Phase A integration that touches
+  shared enums, reducers, command/event variants, Tauri DTOs, TypeScript wire,
+  and generated contracts needs a thorough cross-boundary audit.
+- **Keep review prompts scoped and private-data-free.** Review prompts must
+  include only synthetic fixture data; real account credentials, room IDs,
+  event IDs, message bodies, raw SDK errors, and local paths must never be
+  sent to an external review model.
 
 ## Documentation And Work Records
 

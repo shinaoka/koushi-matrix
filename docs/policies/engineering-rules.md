@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-06-17.
+Last amended: 2026-06-18.
 
 ## Secrets and Private Data
 
@@ -504,3 +504,8 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    `node_modules/`) must be cleaned up at the same time. Shared build
    directories such as a shared `CARGO_TARGET_DIR` must not be deleted. See
    `REPOSITORY_RULES.md` `Worktree And Build Artifact Cleanup`.
+9. Non-frontier-agent implementation requires frontier-model review at the end
+   of substantial work, particularly after AgentSwarm or parallel Phase A
+   changes. The review checks the diff against the canon and verification
+   output, and its findings must be addressed before landing on `main`. See
+   `REPOSITORY_RULES.md` `Review And Audit`.

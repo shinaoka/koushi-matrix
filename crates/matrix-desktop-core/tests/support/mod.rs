@@ -11,7 +11,8 @@ use matrix_desktop_core::executor;
 use matrix_desktop_core::ids::{RequestId, RuntimeConnectionId};
 use matrix_desktop_core::runtime::{CoreConnection, CoreRuntime};
 use matrix_desktop_state::{
-    AppearanceSettings, RoomSummary, RoomTags, SessionInfo, SettingsPatch, ThemePreference,
+    ActivityRow, AppearanceSettings, RoomSummary, RoomTags, SessionInfo, SettingsPatch,
+    ThemePreference,
 };
 
 pub const PASSWORD: &str = "p4ssw0rd-very-secret";
@@ -78,12 +79,8 @@ pub fn unread_room_summary(room_id: &str, unread_count: u64) -> RoomSummary {
     }
 }
 
-pub fn activity_row(
-    room_id: &str,
-    event_id: &str,
-    timestamp_ms: u64,
-) -> matrix_desktop_state::ActivityRow {
-    matrix_desktop_state::ActivityRow {
+pub fn activity_row(room_id: &str, event_id: &str, timestamp_ms: u64) -> ActivityRow {
+    ActivityRow {
         room_id: room_id.to_owned(),
         event_id: event_id.to_owned(),
         room_label: String::new(),
