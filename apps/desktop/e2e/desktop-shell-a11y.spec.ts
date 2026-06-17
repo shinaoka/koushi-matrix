@@ -26,7 +26,7 @@ test("the three-pane shell exposes landmarks and reachable keyboard focus stops"
   await expect(page.getByRole("complementary", { name: "Context panel" })).toBeVisible();
 
   const labels: string[] = [];
-  for (let index = 0; index < 40; index += 1) {
+  for (let index = 0; index < 50; index += 1) {
     await page.keyboard.press("Tab");
     labels.push(await focusedLabel(page));
   }

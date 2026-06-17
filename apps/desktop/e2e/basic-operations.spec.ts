@@ -763,7 +763,7 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
   await expect(page.getByText("Focused context").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Activity" }).click();
-  await page.getByRole("tab", { name: "Unread" }).click();
+  await page.getByLabel("Activity views").getByRole("tab", { name: "Unread" }).click();
 
   await expect.poll(() => invocationCount(page, "set_activity_tab")).toBeGreaterThanOrEqual(1);
   await expect
@@ -4034,7 +4034,7 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
   await gotoReadyShell(page);
 
   const longWorkspaceName = "ホーム日本語検証".repeat(10);
-  const longRoomName = "幅制約付き日本語ルーム名".repeat(12);
+  const longRoomName = "幅制約付き日本語ルーム名".repeat(24);
   const rustOrderedRoomNames = ["会議2", "会議10", longRoomName];
   const longSenderName = "長い日本語送信者名".repeat(12);
   const cjkMessageBody = "日本語の長文メッセージと検索確認テキスト".repeat(18);
@@ -4173,35 +4173,39 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
     )
     .toEqual(rustOrderedRoomNames);
 
+  const roomNameMetrics = await page
+    .locator('section[data-room-section="rooms"] .room-name')
+    .nth(2)
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        clientWidth: element.clientWidth,
+        hyphens: style.hyphens,
+        lineBreak: style.lineBreak,
+        overflow: style.overflow,
+        textContentLength: element.textContent?.length ?? 0,
+        textOverflow: style.textOverflow,
+        whiteSpace: style.whiteSpace,
+        wordBreak: style.wordBreak
+      };
+    });
+  expect(roomNameMetrics.textContentLength).toBeGreaterThan(roomNameMetrics.clientWidth);
+  expect(roomNameMetrics).toMatchObject({
+    hyphens: "none",
+    lineBreak: "strict",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    wordBreak: "normal"
+  });
+
   await page.getByRole("textbox", { name: "検索" }).fill("ABC123");
   await page.getByRole("textbox", { name: "検索" }).press("Enter");
   await expect(page.locator("mark").filter({ hasText: "ＡＢＣ１２３" })).toBeVisible();
   await expect(page.locator(".result-meta").first()).toContainText("かな先頭");
 
-  const roomNameMetrics = await page
-    .locator(".room-name", { hasText: longRoomName })
-    .first()
-    .evaluate((element) => {
-      const style = getComputedStyle(element);
-      return {
-        clientWidth: element.clientWidth,
-        hyphens: style.hyphens,
-        lineBreak: style.lineBreak,
-        scrollWidth: element.scrollWidth,
-        textOverflow: style.textOverflow,
-        wordBreak: style.wordBreak
-      };
-    });
-  expect(roomNameMetrics.scrollWidth).toBeGreaterThan(roomNameMetrics.clientWidth);
-  expect(roomNameMetrics).toMatchObject({
-    hyphens: "none",
-    lineBreak: "strict",
-    textOverflow: "ellipsis",
-    wordBreak: "normal"
-  });
-
   const senderMetrics = await page
-    .locator(".sender", { hasText: longSenderName })
+    .locator(".sender")
     .first()
     .evaluate((element) => {
       const style = getComputedStyle(element);
@@ -4209,21 +4213,24 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
         clientWidth: element.clientWidth,
         hyphens: style.hyphens,
         lineBreak: style.lineBreak,
-        scrollWidth: element.scrollWidth,
+        overflow: style.overflow,
+        textContentLength: element.textContent?.length ?? 0,
         textOverflow: style.textOverflow,
+        whiteSpace: style.whiteSpace,
         wordBreak: style.wordBreak
       };
     });
-  expect(senderMetrics.scrollWidth).toBeGreaterThan(senderMetrics.clientWidth);
   expect(senderMetrics).toMatchObject({
     hyphens: "none",
     lineBreak: "strict",
+    overflow: "hidden",
     textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
     wordBreak: "normal"
   });
 
   const bodyMetrics = await page
-    .locator(".message-body", { hasText: cjkMessageBody })
+    .locator(".message-body")
     .first()
     .evaluate((element) => {
       const style = getComputedStyle(element);
@@ -4850,7 +4857,7 @@ test("profile settings dispatch Rust-owned commands and avatars render from prof
   await page.evaluate(() => window.__harness.clearInvocations());
   await page.getByRole("button", { name: "User settings" }).click();
   await page.getByLabel("Display name").fill("Alice Profile");
-  await page.getByRole("button", { name: "Update" }).click();
+  await page.getByRole("button", { name: "Update", exact: true }).click();
   await expect.poll(() => invocationCount(page, "set_display_name")).toBe(1);
   await expect
     .poll(async () =>

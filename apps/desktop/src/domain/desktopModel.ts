@@ -174,7 +174,7 @@ export function textRangeUtf16(haystack: string, needle: string) {
 function roomListItem(room: RoomSummary): RoomListItem {
   return {
     room_id: room.room_id,
-    display_name: room.display_label,
+    display_name: room.display_label ?? room.display_name,
     avatar: room.avatar,
     tags: room.tags,
     unread_count: room.unread_count,

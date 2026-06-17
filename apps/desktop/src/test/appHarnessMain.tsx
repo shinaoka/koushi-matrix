@@ -156,11 +156,7 @@ function readySnapshot(
       room_list: {
         active_filter: { kind: "rooms" },
         sort: { kind: "activity" },
-        items: [
-          { room_id: "!room-alpha:example.invalid", kind: "room" },
-          { room_id: "!room-beta:example.invalid", kind: "room" },
-          { room_id: "!dm-alpha:example.invalid", kind: "room" }
-        ]
+        items: null
       },
       room_interactions: {},
       device_sessions: { kind: "idle" },
