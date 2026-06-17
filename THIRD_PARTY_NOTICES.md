@@ -21,6 +21,15 @@ Notes:
 
 ## Current Entries
 
+Project: matrix-rust-sdk
+Repository: https://github.com/matrix-org/matrix-rust-sdk
+Upstream commit: `f13238024a83d5d6fd03540e023aed1e54fc7393` (vendored submodule)
+Source path: `crates/` in the upstream repository
+Local path: `vendor/matrix-rust-sdk`
+License: Apache-2.0
+Copyright: Copyright The Matrix.org Foundation C.I.C.
+Notes: Vendored, statically linked into desktop release binaries. Fork changes are documented in `docs/upstream/matrix-rust-sdk-feedback.md`; modified source files carry inline `// Matrix desktop fork patch surface:` markers where applicable. The upstream Apache-2.0 license text is included at `vendor/matrix-rust-sdk/LICENSE` and reproduced in release artifacts via `LICENSE-APACHE`.
+
 Project: Inter via Fontsource
 Repository: https://github.com/fontsource/font-files
 Upstream commit: package `@fontsource/inter@5.2.8`
