@@ -4,6 +4,14 @@ Desktop Matrix client prototype built toward Tauri, React, and matrix-rust-sdk.
 
 Current status: pre-login desktop shell. The repository has pure Rust state/search/key crates, a no-network fake backend, a Tauri v2 + React app shell, and a static Slack-like reference shell.
 
+## License
+
+This project is licensed under the [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE) dual license.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you, as defined in the Apache-2.0 license, shall be licensed as above, without any additional terms or conditions.
+
+Third-party attributions are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Prerequisites
 
 Initialize the vendored Matrix SDK submodule before running Cargo commands:
