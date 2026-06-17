@@ -144,33 +144,45 @@ scroll wiring.
 
 ## Codex Diff Review Recipe
 
-The preferred external auditor is `codex` (DeepSeek V4 Pro via the local
-`claude-deepseek` alias). For substantial changes authored by non-frontier
-agents, run a diff review with the command below.
+The preferred external auditor is OpenAI `codex` (the `codex` CLI, not the
+local `claude-deepseek` DeepSeek alias). For substantial changes authored by
+non-frontier agents, run a diff review with the command below.
 
-Generate the diff for the review range:
+Generate the diff and pipe it to `codex review -`:
 
 ```bash
 cd /home/shinaoka/projects/Matrix/matrix-desktop
-git diff <base>..<head> > /tmp/review.diff
+git diff <base-commit-sha>..HEAD > /tmp/review.diff
+codex review - < /tmp/review.diff
 ```
 
-Run the review in the background because full diff reviews routinely take
-more than a minute and can exceed the foreground tool timeout:
+Codex's Linux sandbox may fail to run `git diff` itself, so generate the diff
+in the parent shell and feed it through stdin. Use `-` as the prompt argument
+to read from stdin.
+
+Add custom instructions by including them in the prompt before the diff. Write
+the prompt to a file and concatenate:
 
 ```bash
-timeout 600s bash -ic 'claude-deepseek --model "deepseek-v4-pro[1m]" --max-budget-usd 2 -p --no-session-persistence --tools ""' < /tmp/review.diff > /tmp/review-output.txt 2>&1
-echo "exit code: $?" >> /tmp/review-output.txt
+cat > /tmp/review-prompt.txt <<'EOF'
+Review this diff against REPOSITORY_RULES.md, docs/architecture/overview.md,
+docs/architecture/state-machine.md (if reducers changed),
+docs/policies/engineering-rules.md, AGENTS.md, and the relevant dated plan.
+Prioritize, in order: repository-rule consistency, Rust/Tauri best practices,
+security/privacy risks, then contract correctness.
+Propose canon amendments when a finding is caused by a rule gap.
+Keep the review private-data-free.
+EOF
+cat /tmp/review-prompt.txt /tmp/review.diff | codex review -
 ```
 
-For long-running reviews, run it as a background task and inspect the output
-when notified:
+Run long reviews in the background:
 
 ```bash
-# started as a background Bash task; check with TaskOutput <task-id>
+cat /tmp/review-prompt.txt /tmp/review.diff | codex review - > /tmp/codex-review.txt 2>&1
 ```
 
-Prompt contents to prepend or include in the review input:
+Prompt contents to include:
 
 - Ask for consistency with `REPOSITORY_RULES.md`,
   `docs/architecture/overview.md`, `docs/architecture/state-machine.md` when
@@ -181,6 +193,7 @@ Prompt contents to prepend or include in the review input:
   correctness.
 - Ask the auditor to propose canon amendments when a finding is caused by a
   rule gap rather than only patching the immediate code.
+- Remind the auditor to keep the review private-data-free.
 
 Important review-scope notes:
 

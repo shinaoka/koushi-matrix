@@ -40,6 +40,11 @@ test-hooks = []
 qa-bin = []
 
 [dev-dependencies]
+# Self-reference so integration tests under tests/ automatically enable the
+# test-hooks feature (needed for CoreRuntime::inject_actions and test-only
+# constructors). Unit tests in src/ already have cfg(test), so this is a
+# no-op for them.
+matrix-desktop-core = { path = ".", features = ["test-hooks"] }
 matrix-sdk-base = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-base" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "sync", "time", "macros"] }

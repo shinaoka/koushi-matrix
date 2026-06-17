@@ -2078,6 +2078,7 @@ dependencies = [
  "eyeball-im",
  "futures-util",
  "keyring",
+ "matrix-desktop-core",
  "matrix-desktop-key",
  "matrix-desktop-sdk",
  "matrix-desktop-search",
