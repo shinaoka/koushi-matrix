@@ -1,7 +1,7 @@
 //! Public command boundary. Every command carries a runtime-scoped
 //! `RequestId`. Secret-bearing payloads redact `Debug`.
 
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
@@ -60,9 +60,20 @@ impl CoreCommand {
             ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
+                | AccountCommand::DiscoverLogin { request_id, .. }
+                | AccountCommand::StartOidcLogin { request_id, .. }
+                | AccountCommand::CompleteOidcLogin { request_id, .. }
                 | AccountCommand::RestoreSession { request_id, .. }
                 | AccountCommand::RestoreLastSession { request_id }
                 | AccountCommand::QuerySavedSessions { request_id }
+                | AccountCommand::QueryDevices { request_id }
+                | AccountCommand::RenameDevice { request_id, .. }
+                | AccountCommand::DeleteDevices { request_id, .. }
+                | AccountCommand::SoftLogoutReauth { request_id, .. }
+                | AccountCommand::ExportRoomKeys { request_id, .. }
+                | AccountCommand::ImportRoomKeys { request_id, .. }
+                | AccountCommand::BootstrapSecureBackup { request_id, .. }
+                | AccountCommand::ChangeSecureBackupPassphrase { request_id, .. }
                 | AccountCommand::ProbeLocalEncryptionHealth { request_id }
                 | AccountCommand::ResetLocalData { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
@@ -513,9 +524,94 @@ fn settings_patch_field_names(patch: &SettingsPatch) -> Vec<&'static str> {
     fields
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct RoomKeyExportRequest {
+    pub destination_path: PathBuf,
+    pub passphrase: matrix_desktop_state::AuthSecret,
+}
+
+impl fmt::Debug for RoomKeyExportRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomKeyExportRequest")
+            .field("destination_path", &"DestinationPath(..)")
+            .field("passphrase", &"AuthSecret(..)")
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct RoomKeyImportRequest {
+    pub source_path: PathBuf,
+    pub passphrase: matrix_desktop_state::AuthSecret,
+}
+
+impl fmt::Debug for RoomKeyImportRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomKeyImportRequest")
+            .field("source_path", &"SourcePath(..)")
+            .field("passphrase", &"AuthSecret(..)")
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct SecureBackupSetupRequest {
+    pub passphrase: Option<matrix_desktop_state::AuthSecret>,
+    pub recovery_key_destination_path: Option<PathBuf>,
+}
+
+impl fmt::Debug for SecureBackupSetupRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecureBackupSetupRequest")
+            .field("has_passphrase", &self.passphrase.is_some())
+            .field(
+                "has_recovery_key_destination_path",
+                &self.recovery_key_destination_path.is_some(),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct SecureBackupPassphraseChangeRequest {
+    pub old_secret: matrix_desktop_state::AuthSecret,
+    pub new_passphrase: matrix_desktop_state::AuthSecret,
+    pub recovery_key_destination_path: Option<PathBuf>,
+}
+
+impl fmt::Debug for SecureBackupPassphraseChangeRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecureBackupPassphraseChangeRequest")
+            .field(
+                "has_recovery_key_destination_path",
+                &self.recovery_key_destination_path.is_some(),
+            )
+            .field("old_secret", &"AuthSecret(..)")
+            .field("new_passphrase", &"AuthSecret(..)")
+            .finish()
+    }
+}
+
 // LoginRequest and RecoveryRequest redact their own Debug in
 // matrix-desktop-state (username, password, device name, recovery secret).
 pub enum AccountCommand {
+    DiscoverLogin {
+        request_id: RequestId,
+        homeserver: String,
+    },
+    StartOidcLogin {
+        request_id: RequestId,
+        homeserver: String,
+    },
+    CompleteOidcLogin {
+        request_id: RequestId,
+        homeserver: String,
+        callback_url: String,
+    },
     LoginPassword {
         request_id: RequestId,
         request: LoginRequest,
@@ -536,6 +632,39 @@ pub enum AccountCommand {
     /// secrets). Answered by `AccountEvent::SavedSessionsListed`.
     QuerySavedSessions {
         request_id: RequestId,
+    },
+    QueryDevices {
+        request_id: RequestId,
+    },
+    RenameDevice {
+        request_id: RequestId,
+        device_ordinal: u64,
+        display_name: String,
+    },
+    DeleteDevices {
+        request_id: RequestId,
+        device_ordinals: Vec<u64>,
+        auth: Option<IdentityResetAuthRequest>,
+    },
+    SoftLogoutReauth {
+        request_id: RequestId,
+        password: matrix_desktop_state::AuthSecret,
+    },
+    ExportRoomKeys {
+        request_id: RequestId,
+        request: RoomKeyExportRequest,
+    },
+    ImportRoomKeys {
+        request_id: RequestId,
+        request: RoomKeyImportRequest,
+    },
+    BootstrapSecureBackup {
+        request_id: RequestId,
+        request: SecureBackupSetupRequest,
+    },
+    ChangeSecureBackupPassphrase {
+        request_id: RequestId,
+        request: SecureBackupPassphraseChangeRequest,
     },
     ProbeLocalEncryptionHealth {
         request_id: RequestId,
@@ -623,6 +752,14 @@ impl AccountCommand {
                 | Self::EnableKeyBackup { .. }
                 | Self::ResetIdentity { .. }
                 | Self::SubmitIdentityResetAuth { .. }
+                | Self::QueryDevices { .. }
+                | Self::RenameDevice { .. }
+                | Self::DeleteDevices { .. }
+                | Self::SoftLogoutReauth { .. }
+                | Self::ExportRoomKeys { .. }
+                | Self::ImportRoomKeys { .. }
+                | Self::BootstrapSecureBackup { .. }
+                | Self::ChangeSecureBackupPassphrase { .. }
                 | Self::SetPresence { .. }
                 | Self::SetDisplayName { .. }
                 | Self::SetLocalUserAlias { .. }
@@ -653,6 +790,22 @@ impl fmt::Debug for SetAvatarRequest {
 impl fmt::Debug for AccountCommand {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DiscoverLogin { request_id, .. } => formatter
+                .debug_struct("DiscoverLogin")
+                .field("request_id", request_id)
+                .field("homeserver", &"Homeserver(..)")
+                .finish(),
+            Self::StartOidcLogin { request_id, .. } => formatter
+                .debug_struct("StartOidcLogin")
+                .field("request_id", request_id)
+                .field("homeserver", &"Homeserver(..)")
+                .finish(),
+            Self::CompleteOidcLogin { request_id, .. } => formatter
+                .debug_struct("CompleteOidcLogin")
+                .field("request_id", request_id)
+                .field("homeserver", &"Homeserver(..)")
+                .field("callback_url", &"CallbackUrl(..)")
+                .finish(),
             Self::LoginPassword {
                 request_id,
                 request,
@@ -676,6 +829,67 @@ impl fmt::Debug for AccountCommand {
             Self::QuerySavedSessions { request_id } => formatter
                 .debug_struct("QuerySavedSessions")
                 .field("request_id", request_id)
+                .finish(),
+            Self::QueryDevices { request_id } => formatter
+                .debug_struct("QueryDevices")
+                .field("request_id", request_id)
+                .finish(),
+            Self::RenameDevice {
+                request_id,
+                device_ordinal,
+                ..
+            } => formatter
+                .debug_struct("RenameDevice")
+                .field("request_id", request_id)
+                .field("device_ordinal", device_ordinal)
+                .field("display_name", &"DeviceDisplayName(..)")
+                .finish(),
+            Self::DeleteDevices {
+                request_id,
+                device_ordinals,
+                auth,
+            } => formatter
+                .debug_struct("DeleteDevices")
+                .field("request_id", request_id)
+                .field("device_ordinals", device_ordinals)
+                .field("auth", auth)
+                .finish(),
+            Self::SoftLogoutReauth { request_id, .. } => formatter
+                .debug_struct("SoftLogoutReauth")
+                .field("request_id", request_id)
+                .field("password", &"AuthSecret(..)")
+                .finish(),
+            Self::ExportRoomKeys {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("ExportRoomKeys")
+                .field("request_id", request_id)
+                .field("request", request)
+                .finish(),
+            Self::ImportRoomKeys {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("ImportRoomKeys")
+                .field("request_id", request_id)
+                .field("request", request)
+                .finish(),
+            Self::BootstrapSecureBackup {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("BootstrapSecureBackup")
+                .field("request_id", request_id)
+                .field("request", request)
+                .finish(),
+            Self::ChangeSecureBackupPassphrase {
+                request_id,
+                request,
+            } => formatter
+                .debug_struct("ChangeSecureBackupPassphrase")
+                .field("request_id", request_id)
+                .field("request", request)
                 .finish(),
             Self::ProbeLocalEncryptionHealth { request_id } => formatter
                 .debug_struct("ProbeLocalEncryptionHealth")

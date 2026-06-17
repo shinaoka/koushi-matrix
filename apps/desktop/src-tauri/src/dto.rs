@@ -12,11 +12,12 @@
 use std::collections::BTreeMap;
 
 use matrix_desktop_state::{
-    ActivityState, AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
-    ComposerState, DirectoryState, DisplayPlatform, E2eeTrustState, FocusedContextState,
+    AccountManagementState, ActivityState, AppError, AppState, AuthDiscoveryState,
+    BasicOperationState, CjkTextPolicyState, ComposerState, DeviceSessionListState,
+    DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState, FocusedContextState,
     InvitePreview, LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile,
-    FilesViewState, NativeAttentionCapabilities, NativeAttentionState, NavigationState,
-    ProfileState, RecoveryMethod, RoomInteractionState, RoomManagementState, RoomSummary,
+    NativeAttentionCapabilities, NativeAttentionState, NavigationState, ProfileState,
+    QrLoginState, RecoveryMethod, RoomInteractionState, RoomManagementState, RoomSummary,
     SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState,
     SettingsState, SidebarModel, SpaceSummary, SyncState, ThreadAttentionState, ThreadPaneState,
     TimelinePaneState, TypographyDisplayProfile, native_attention_capabilities_for_platform,
@@ -58,6 +59,9 @@ impl From<AppState> for FrontendDesktopSnapshot {
 pub struct FrontendAppState {
     pub session: FrontendSessionState,
     pub auth: AuthDiscoveryState,
+    pub device_sessions: DeviceSessionListState,
+    pub account_management: AccountManagementState,
+    pub qr_login: QrLoginState,
     pub settings: SettingsState,
     pub locale_profile: LocaleDisplayProfile,
     pub typography_profile: TypographyDisplayProfile,
@@ -101,6 +105,9 @@ impl From<AppState> for FrontendAppState {
         Self {
             session: state.session.into(),
             auth: state.auth,
+            device_sessions: state.device_sessions,
+            account_management: state.account_management,
+            qr_login: state.qr_login,
             settings: state.settings,
             locale_profile,
             typography_profile,
@@ -503,6 +510,9 @@ mod tests {
         // Core Batch A skeletons must be present in the real Tauri DTO, not
         // only in browser fakes.
         assert_eq!(value["state"]["room_interactions"], json!({}));
+        assert_eq!(value["state"]["device_sessions"]["kind"], json!("idle"));
+        assert_eq!(value["state"]["account_management"]["kind"], json!("idle"));
+        assert_eq!(value["state"]["qr_login"]["kind"], json!("idle"));
         assert_eq!(
             value["state"]["directory"]["query"]["kind"],
             json!("closed")
@@ -551,6 +561,22 @@ mod tests {
         );
         assert_eq!(
             value["state"]["e2ee_trust"]["identity_reset"]["kind"],
+            json!("idle")
+        );
+        assert_eq!(
+            value["state"]["e2ee_trust"]["key_management"]["room_key_export"]["kind"],
+            json!("idle")
+        );
+        assert_eq!(
+            value["state"]["e2ee_trust"]["key_management"]["room_key_import"]["kind"],
+            json!("idle")
+        );
+        assert_eq!(
+            value["state"]["e2ee_trust"]["key_management"]["secure_backup_setup"]["kind"],
+            json!("idle")
+        );
+        assert_eq!(
+            value["state"]["e2ee_trust"]["key_management"]["passphrase_change"]["kind"],
             json!("idle")
         );
         assert_eq!(value["state"]["local_encryption"]["kind"], json!("unknown"));

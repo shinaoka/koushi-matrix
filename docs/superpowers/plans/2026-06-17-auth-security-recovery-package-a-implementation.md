@@ -316,7 +316,7 @@ pub enum RoomKeyExportState {
     #[default]
     Idle,
     Exporting { request_id: u64 },
-    Exported { request_id: u64, exported_sessions: u64 },
+    Exported { request_id: u64, exported_sessions: Option<u64> },
     Failed { request_id: u64, #[serde(rename = "failureKind")] kind: TrustOperationFailureKind },
 }
 
@@ -789,7 +789,7 @@ device_session_ordinals: BTreeMap<u64, String>,
 
 Clear it on logout, account switch, and actor shutdown.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -889,7 +889,7 @@ In `matrix-desktop-sdk/src/lib.rs`, add:
 
 ```rust
 pub struct RoomKeyExportSummary {
-    pub exported_sessions: u64,
+    pub exported_sessions: Option<u64>,
 }
 
 pub struct RoomKeyImportSummary {
@@ -916,6 +916,10 @@ Do not read file bytes into React or DTO state. Do not implement custom file
 serialization. The file must remain the Matrix key-export format used by
 Element clients, as produced and consumed by the SDK, including the encrypted
 Megolm session data header/footer.
+
+Implementation adjustment: Matrix Rust SDK's public export API returns `()`.
+Do not decrypt/parse the exported Element file to synthesize a count; return
+`exported_sessions: None` and let DTO/React treat the count as unknown.
 
 - [ ] **Step 4: Project actor results**
 
@@ -1001,7 +1005,7 @@ Expected: commit succeeds and #46 has a Phase A1 comment.
 - Modify docs: `AGENTS.md`
 - Modify docs: `docs/policies/engineering-rules.md`
 
-- [ ] **Step 1: Add failing reducer test**
+- [x] **Step 1: Add failing reducer test**
 
 Add:
 
@@ -1035,7 +1039,7 @@ cargo test -p matrix-desktop-state --test e2ee_trust_state secure_backup_setup_r
 
 Expected: FAIL until secure-backup setup actions exist.
 
-- [ ] **Step 2: Add command request structs**
+- [x] **Step 2: Add command request structs**
 
 In `command.rs`, add:
 
@@ -1066,7 +1070,7 @@ BootstrapSecureBackup { request_id: RequestId, request: SecureBackupSetupRequest
 ChangeSecureBackupPassphrase { request_id: RequestId, request: SecureBackupPassphraseChangeRequest },
 ```
 
-- [ ] **Step 3: Add SDK functions**
+- [x] **Step 3: Add SDK functions**
 
 In `matrix-desktop-sdk/src/lib.rs`, add:
 
@@ -1114,7 +1118,7 @@ write_recovery_key_if_requested(recovery_key, recovery_key_destination_path)?;
 native path and drops the string immediately after writing. It returns only
 `recovery_key_written`.
 
-- [ ] **Step 4: Document secret-delivery divergence from Element X**
+- [x] **Step 4: Document secret-delivery divergence from Element X**
 
 In `AGENTS.md` and `docs/policies/engineering-rules.md`, add:
 
@@ -1126,7 +1130,7 @@ In `AGENTS.md` and `docs/policies/engineering-rules.md`, add:
   coarse status.
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -1139,7 +1143,7 @@ npm --prefix apps/desktop run qa:secret-scan
 
 Expected: all commands PASS.
 
-- [ ] **Step 6: Commit and update #46**
+- [x] **Step 6: Commit and update #46**
 
 Run:
 
@@ -1151,7 +1155,7 @@ gh issue comment 46 --body 'Phase A2 progress: secure-backup setup and passphras
 
 Expected: commit succeeds and #46 has a Phase A2 comment.
 
-## Task 6: #37/#38/#47 GUI Command Surface
+## Task 6: #46/#37/#38/#47 GUI Command Surface
 
 **Files:**
 - Modify: `apps/desktop/src/backend/client.ts`
@@ -1165,7 +1169,7 @@ Expected: commit succeeds and #46 has a Phase A2 comment.
 - Modify: `apps/desktop/src/components/UserSettingsPanel.tsx`
 - Test: `apps/desktop/src/components/UserSettingsPanel.test.tsx`
 
-- [ ] **Step 1: Add failing client tests**
+- [x] **Step 1: Add failing client tests**
 
 In `apps/desktop/src/backend/client.test.ts`, add tests:
 
@@ -1199,7 +1203,7 @@ npm --prefix apps/desktop run test -- src/backend/client.test.ts
 
 Expected: FAIL until client methods exist.
 
-- [ ] **Step 2: Add frontend API methods**
+- [x] **Step 2: Add frontend API methods**
 
 In `client.ts`, add:
 
@@ -1218,7 +1222,7 @@ changeSecureBackupPassphrase(oldSecret: string, newPassphrase: string, recoveryK
 }
 ```
 
-- [ ] **Step 3: Update browser fake and harness**
+- [x] **Step 3: Update browser fake and harness**
 
 In `browserFakeApi.ts` and `appHarnessMain.tsx`, implement fake command
 responses that update only secret-free snapshot fields:
@@ -1227,20 +1231,20 @@ responses that update only secret-free snapshot fields:
 this.snapshot.state.e2ee_trust.key_management.room_key_export = {
   kind: "exported",
   request_id: requestId,
-  exported_sessions: 1,
+  exported_sessions: null,
 };
 ```
 
 Do not store passphrase, file path, recovery key, or fixture contents.
 
-- [ ] **Step 4: Add minimal UserSettingsPanel controls**
+- [x] **Step 4: Add minimal UserSettingsPanel controls**
 
 In `UserSettingsPanel.tsx`, add Security actions for export/import/setup.
 Controls can use synthetic path text fields in browser-headless tests; native
 file dialogs are a separate Tauri UX improvement. The state shown to users must
 come from `snapshot.state.e2ee_trust.key_management`.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -1251,7 +1255,7 @@ npm --prefix apps/desktop run test -- src/backend/client.test.ts src/backend/bro
 
 Expected: all commands PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -1270,7 +1274,7 @@ Expected: commit succeeds.
 - Modify: `docs/qa/headless-basic-operations.md`
 - Modify: `AGENTS.md`
 
-- [ ] **Step 1: Add browser-headless GUI-operation test**
+- [x] **Step 1: Add browser-headless GUI-operation test**
 
 In `apps/desktop/e2e/basic-operations.spec.ts`, add:
 
@@ -1298,7 +1302,7 @@ npm --prefix apps/desktop run test:ui-headless -- e2e/basic-operations.spec.ts -
 
 Expected: FAIL until UI selectors and fake runtime are wired.
 
-- [ ] **Step 2: Add Linux GUI scenario tokens**
+- [x] **Step 2: Add Linux GUI scenario tokens**
 
 In `scripts/desktop-linux-gui-qa.mjs`, add a `local-e2ee-key-management`
 scenario that drives Security settings and asserts these tokens:
@@ -1312,7 +1316,7 @@ gui_secure_backup_setup=ok
 The scenario must not print paths, passphrases, recovery keys, Matrix IDs,
 device IDs, room IDs, event IDs, or message contents.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run:
 
@@ -1334,7 +1338,7 @@ npm --prefix apps/desktop run qa:linux-gui -- \
 
 Expected: browser-headless passes; Linux scenario emits all three tokens.
 
-- [ ] **Step 4: Commit and close #46 if complete**
+- [x] **Step 4: Commit and close #46 if complete**
 
 Run:
 

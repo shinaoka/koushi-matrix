@@ -1196,6 +1196,170 @@ stateDiagram-v2
 - Headless core QA covers this with the `directory` scenario and private-data-
   free tokens `directory_query=ok` and `directory_join=ok`.
 
+## Package A Auth And Security
+
+OIDC/MAS, device sessions, shared UIA, key-management, account management, and
+QR login are Rust-owned state machines. Their reducer state contains only
+request ids, coarse failure kinds, capability facts, counts, and operation
+status. Tokens, passphrases, recovery keys, device ids, IP addresses, exported
+room-key file contents, account-management secrets, and rendezvous secrets are
+command-boundary values only.
+
+Auth discovery and login-method projection:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+    Unknown --> Discovering: LoginDiscoveryRequested
+    Ready --> Discovering: LoginDiscoveryRequested
+    Failed --> Discovering: LoginDiscoveryRequested
+    Discovering --> Ready: LoginDiscoverySucceeded
+    Discovering --> Failed: LoginDiscoveryFailed
+```
+
+- `LoginDiscoverySucceeded` stores login flow kinds, delegated OIDC
+  compatibility, optional display labels, and delegated registration/account
+  management links. It does not carry access tokens, refresh tokens, or OAuth
+  authorization artifacts.
+- `LoginDiscoveryFailed` stores only `AuthFailureKind`; raw discovery responses,
+  homeserver error bodies, and SDK errors do not enter snapshots.
+- Discovery completion actions are accepted only while the reducer is still
+  `Discovering` the same homeserver. Late completions from older discovery
+  requests are ignored.
+
+Device sessions:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Loading: DeviceSessionsLoadRequested [Ready]
+    Loaded --> Loading: DeviceSessionsLoadRequested [Ready]
+    Failed --> Loading: DeviceSessionsLoadRequested [Ready]
+    Loading --> Loaded: DeviceSessionsLoaded [matching request_id]
+    Loading --> Failed: DeviceSessionsLoadFailed [matching request_id]
+```
+
+- Device summaries use app-owned ordinals and coarse current/verified/inactive
+  facts. Raw device ids and IP addresses are command-boundary values until a
+  later explicitly reviewed DTO admits a redacted display form.
+- `AccountCommand::QueryDevices` calls the SDK-owned device-list API in
+  `AccountActor`, stores the ordinal-to-raw-device-id map actor-private, and
+  projects only `DeviceSessionSummary` DTOs through `DeviceSessionsLoaded`.
+- `AccountCommand::RenameDevice` and `AccountCommand::DeleteDevices` accept
+  app-owned ordinals only. The actor resolves those ordinals to raw SDK device
+  ids immediately before calling the SDK and clears the private map on logout,
+  account switch, local reset, and actor shutdown.
+
+Shared UIA and account management:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Working: AccountManagementRequested [Ready]
+    Succeeded --> Working: AccountManagementRequested [Ready]
+    Failed --> Working: AccountManagementRequested [Ready]
+    Working --> AwaitingUia: AccountManagementUiaRequired [matching request_id]
+    Working --> Succeeded: AccountManagementSucceeded [matching request_id]
+    AwaitingUia --> Succeeded: AccountManagementSucceeded [matching request_id]
+    Working --> Failed: AccountManagementFailed [matching request_id]
+    AwaitingUia --> Failed: AccountManagementFailed [matching request_id]
+```
+
+- UIA continuation state carries only a local `flow_id`, request id, operation
+  enum, and coarse failure kind. Passwords, auth sessions, and identity-server
+  secrets remain in the account actor or native adapter.
+- Device rename/delete completion uses `AccountManagementSucceeded` /
+  `AccountManagementFailed`; reducer state does not include raw device ids,
+  device IPs, auth passwords, or SDK errors.
+
+E2EE key management:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Exporting: RoomKeyExportRequested [Ready]
+    Exported --> Exporting: RoomKeyExportRequested [Ready]
+    Failed --> Exporting: RoomKeyExportRequested [Ready]
+    Exporting --> Exported: RoomKeyExported [matching request_id]
+    Exporting --> Failed: RoomKeyExportFailed [matching request_id]
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Importing: RoomKeyImportRequested [Ready]
+    Imported --> Importing: RoomKeyImportRequested [Ready]
+    Failed --> Importing: RoomKeyImportRequested [Ready]
+    Importing --> Imported: RoomKeyImported [matching request_id]
+    Importing --> Failed: RoomKeyImportFailed [matching request_id]
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> SettingUp: SecureBackupSetupRequested [Ready]
+    Enabled --> SettingUp: SecureBackupSetupRequested [Ready]
+    Failed --> SettingUp: SecureBackupSetupRequested [Ready]
+    SettingUp --> RecoveryKeyReady: SecureBackupRecoveryKeyReady [matching request_id]
+    RecoveryKeyReady --> RecoveryKeyReady: SecureBackupRecoveryKeyReady [matching request_id]
+    SettingUp --> Enabled: SecureBackupSetupEnabled [matching request_id]
+    RecoveryKeyReady --> Enabled: SecureBackupSetupEnabled [matching request_id]
+    SettingUp --> Failed: SecureBackupSetupFailed [matching request_id]
+    RecoveryKeyReady --> Failed: SecureBackupSetupFailed [matching request_id]
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Changing: SecureBackupPassphraseChangeRequested [Ready]
+    Changed --> Changing: SecureBackupPassphraseChangeRequested [Ready]
+    Failed --> Changing: SecureBackupPassphraseChangeRequested [Ready]
+    Changing --> Changed: SecureBackupPassphraseChanged [matching request_id]
+    Changing --> Failed: SecureBackupPassphraseChangeFailed [matching request_id]
+```
+
+- Room-key export/import state carries only request ids, available counts, and
+  coarse `TrustOperationFailureKind`. `exported_sessions` may be unknown when
+  the public SDK export API does not return a count. File paths, passphrases,
+  and file contents are native/Tauri/account-actor boundary values.
+- Manual room-key file transfer uses the Matrix key-export file format that
+  Element clients use. Ruri must not wrap the encrypted Megolm session data in a
+  custom JSON/archive format, and must not parse/decrypt the export file only
+  to derive UI metadata.
+- Secure-backup setup and passphrase-change state may report recovery-key
+  delivery status, but recovery-key material itself never reaches reducer state,
+  DTO snapshots, React state, logs, QA tokens, or issue comments.
+
+QR login:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> CheckingCapability: QrLoginCapabilityCheckRequested
+    Unavailable --> CheckingCapability: QrLoginCapabilityCheckRequested
+    Failed --> CheckingCapability: QrLoginCapabilityCheckRequested
+    Verified --> CheckingCapability: QrLoginCapabilityCheckRequested
+    CheckingCapability --> Unavailable: QrLoginUnavailable [matching request_id]
+    Idle --> Displaying: QrLoginDisplayRequested
+    CheckingCapability --> Displaying: QrLoginDisplayRequested
+    Unavailable --> Displaying: QrLoginDisplayRequested
+    Failed --> Displaying: QrLoginDisplayRequested
+    Verified --> Displaying: QrLoginDisplayRequested
+    Displaying --> Scanning: QrLoginScanStarted [matching request_id]
+    Displaying --> Verified: QrLoginVerified [matching request_id]
+    Scanning --> Verified: QrLoginVerified [matching request_id]
+    CheckingCapability --> Failed: QrLoginFailed [matching request_id]
+    Displaying --> Failed: QrLoginFailed [matching request_id]
+    Scanning --> Failed: QrLoginFailed [matching request_id]
+```
+
+- QR login state contains no rendezvous secret, QR payload, scanned code, or
+  device id. Those values stay in the auth actor/native adapter until a later
+  typed non-secret capability DTO is approved.
+- Logout, account switch, lock, or session clear resets Package A session-bound
+  submachines and emits the matching UI events only when non-default state was
+  present.
+
 ## E2EE Trust, Verification, And Key Backup
 
 Account-level E2EE trust UX is Rust-owned state in `AppState.e2ee_trust`.

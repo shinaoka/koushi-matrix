@@ -8,18 +8,19 @@
 //! No Matrix semantics live here. No SDK types. No `matrix_desktop_sdk` calls.
 //! (Secret-bearing QA helpers remain behind `#[cfg(any(debug_assertions, test))]`.)
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(any(debug_assertions, test))]
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use matrix_desktop_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
     ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
     ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
-    RoomEvent, SearchCommand, SearchScope, SetAvatarRequest, SyncCommand, TimelineCommand,
-    TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
-    UploadMediaThumbnail,
+    RoomEvent, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchScope,
+    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
+    TimelineCommand, TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind,
+    UploadMediaRequest, UploadMediaThumbnail,
 };
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
@@ -163,16 +164,13 @@ pub async fn discover_login_methods(
     homeserver: String,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    // KNOWN DEFERRED SHIM (tracked, not endorsed): login-flow discovery is
-    // currently implicit in LoginPassword, so this command returns the snapshot
-    // without driving the `auth` LoginDiscovery state machine. Per
-    // REPOSITORY_RULES "State-Machine Discipline" this should become a real core
-    // command that transitions auth `unknown -> discovering -> ready/failed` from
-    // an SDK homeserver/login-flow query (the `LoginDiscovery` reducer state
-    // already exists). It is intentionally left for a focused auth-discovery
-    // change rather than deleted, because removing it would drop the homeserver
-    // login-method UX (e.g. SSO discovery). Do not extend this shim.
-    let _ = homeserver;
+    let mut event_conn = state.inner().runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_discover_login_command(request_id, homeserver))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_auth_changed(&mut event_conn, LOGIN_EVENT_TIMEOUT).await?;
     current_snapshot(state.inner()).await
 }
 
@@ -263,6 +261,32 @@ async fn wait_for_logged_in_ready(
             }
             Ok(_) => {}
             Err(_) => return Err("login event stream lagged".to_owned()),
+        }
+    }
+}
+
+async fn wait_for_auth_changed(
+    event_conn: &mut CoreConnection,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "login discovery did not complete".to_owned())?;
+        match event {
+            Ok(CoreEvent::StateChanged(snapshot))
+                if matches!(
+                    snapshot.auth,
+                    matrix_desktop_state::AuthDiscoveryState::Ready { .. }
+                        | matrix_desktop_state::AuthDiscoveryState::Failed { .. }
+                ) =>
+            {
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(_) => return Err("login discovery event stream lagged".to_owned()),
         }
     }
 }
@@ -570,6 +594,84 @@ pub async fn enable_key_backup(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(state.inner(), build_enable_key_backup_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn bootstrap_secure_backup(
+    passphrase: Option<String>,
+    recovery_key_destination_path: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_bootstrap_secure_backup_command(
+            request_id,
+            passphrase.map(AuthSecret::new),
+            recovery_key_destination_path,
+        ),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn change_secure_backup_passphrase(
+    old_secret: String,
+    new_passphrase: String,
+    recovery_key_destination_path: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_change_secure_backup_passphrase_command(
+            request_id,
+            AuthSecret::new(old_secret),
+            AuthSecret::new(new_passphrase),
+            recovery_key_destination_path,
+        ),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn export_room_keys(
+    destination_path: String,
+    passphrase: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_export_room_keys_command(request_id, destination_path, AuthSecret::new(passphrase)),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn import_room_keys(
+    source_path: String,
+    passphrase: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_import_room_keys_command(request_id, source_path, AuthSecret::new(passphrase)),
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -2419,6 +2521,16 @@ pub(crate) fn build_submit_login_command(
     })
 }
 
+pub(crate) fn build_discover_login_command(
+    request_id: matrix_desktop_core::RequestId,
+    homeserver: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::DiscoverLogin {
+        request_id,
+        homeserver,
+    })
+}
+
 pub(crate) fn build_switch_account_command(
     request_id: matrix_desktop_core::RequestId,
     user_id: String,
@@ -2519,6 +2631,64 @@ pub(crate) fn build_enable_key_backup_command(
     CoreCommand::Account(AccountCommand::EnableKeyBackup {
         request_id,
         passphrase: None,
+    })
+}
+
+pub(crate) fn build_bootstrap_secure_backup_command(
+    request_id: matrix_desktop_core::RequestId,
+    passphrase: Option<AuthSecret>,
+    recovery_key_destination_path: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::BootstrapSecureBackup {
+        request_id,
+        request: SecureBackupSetupRequest {
+            passphrase,
+            recovery_key_destination_path: recovery_key_destination_path.map(PathBuf::from),
+        },
+    })
+}
+
+pub(crate) fn build_change_secure_backup_passphrase_command(
+    request_id: matrix_desktop_core::RequestId,
+    old_secret: AuthSecret,
+    new_passphrase: AuthSecret,
+    recovery_key_destination_path: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ChangeSecureBackupPassphrase {
+        request_id,
+        request: SecureBackupPassphraseChangeRequest {
+            old_secret,
+            new_passphrase,
+            recovery_key_destination_path: recovery_key_destination_path.map(PathBuf::from),
+        },
+    })
+}
+
+pub(crate) fn build_export_room_keys_command(
+    request_id: matrix_desktop_core::RequestId,
+    destination_path: String,
+    passphrase: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ExportRoomKeys {
+        request_id,
+        request: RoomKeyExportRequest {
+            destination_path: PathBuf::from(destination_path),
+            passphrase,
+        },
+    })
+}
+
+pub(crate) fn build_import_room_keys_command(
+    request_id: matrix_desktop_core::RequestId,
+    source_path: String,
+    passphrase: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ImportRoomKeys {
+        request_id,
+        request: RoomKeyImportRequest {
+            source_path: PathBuf::from(source_path),
+            passphrase,
+        },
     })
 }
 
@@ -3826,12 +3996,13 @@ mod tests {
     use super::{
         build_accept_invite_command, build_accept_verification_command,
         build_bootstrap_cross_signing_command, build_cancel_scheduled_send_command,
-        build_cancel_send_command, build_cancel_verification_command, build_close_activity_command,
-        build_confirm_sas_verification_command, build_create_room_command,
-        build_create_space_command, build_decline_invite_command, build_download_media_command,
-        build_edit_message_command, build_enable_key_backup_command, build_forget_room_command,
-        build_forward_message_command, build_invite_user_command,
-        build_join_directory_room_command, build_leave_room_command,
+        build_cancel_send_command, build_cancel_verification_command,
+        build_change_secure_backup_passphrase_command, build_close_activity_command,
+        build_confirm_sas_verification_command, build_create_room_command, build_create_space_command,
+        build_decline_invite_command, build_discover_login_command, build_download_media_command,
+        build_edit_message_command, build_enable_key_backup_command, build_export_room_keys_command,
+        build_forget_room_command, build_forward_message_command, build_import_room_keys_command,
+        build_invite_user_command, build_join_directory_room_command, build_leave_room_command,
         build_load_message_source_command, build_load_room_settings_command, build_logout_command,
         build_mark_activity_read_command, build_moderate_room_member_command,
         build_observe_timeline_viewport_command, build_open_activity_command,
@@ -3852,6 +4023,7 @@ mod tests {
         build_start_direct_message_command,
         build_submit_identity_reset_oauth_command, build_submit_identity_reset_password_command,
         build_submit_login_command, build_submit_recovery_command, build_submit_search_command,
+        build_bootstrap_secure_backup_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
         build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
         build_update_room_member_role_command, build_update_room_setting_command,
@@ -4010,6 +4182,20 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_discover_login_command(
+            fake_request_id(101),
+            "https://matrix.example.org".to_owned(),
+        ) {
+            CoreCommand::Account(AccountCommand::DiscoverLogin {
+                request_id,
+                homeserver,
+            }) => {
+                assert_eq!(request_id, fake_request_id(101));
+                assert_eq!(homeserver, "https://matrix.example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_switch_account_command(fake_request_id(2), "@bob:example.org".to_owned()) {
             CoreCommand::Account(AccountCommand::SwitchAccount {
                 request_id,
@@ -4031,6 +4217,91 @@ mod tests {
             }) => {
                 assert_eq!(request_id, fake_request_id(3));
                 assert_eq!(request.secret.expose_secret(), "recovery-123");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_export_room_keys_command(
+            fake_request_id(33),
+            "/tmp/element-compatible-export.txt".to_owned(),
+            AuthSecret::new("room-key-transfer-phrase"),
+        ) {
+            CoreCommand::Account(AccountCommand::ExportRoomKeys {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(33));
+                assert_eq!(
+                    request.destination_path,
+                    std::path::PathBuf::from("/tmp/element-compatible-export.txt")
+                );
+                assert_eq!(request.passphrase.expose_secret(), "room-key-transfer-phrase");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_import_room_keys_command(
+            fake_request_id(34),
+            "/tmp/element-compatible-import.txt".to_owned(),
+            AuthSecret::new("room-key-transfer-phrase"),
+        ) {
+            CoreCommand::Account(AccountCommand::ImportRoomKeys {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(34));
+                assert_eq!(
+                    request.source_path,
+                    std::path::PathBuf::from("/tmp/element-compatible-import.txt")
+                );
+                assert_eq!(request.passphrase.expose_secret(), "room-key-transfer-phrase");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_bootstrap_secure_backup_command(
+            fake_request_id(35),
+            Some(AuthSecret::new("backup-setup-phrase")),
+            Some("/tmp/recovery-artifact.txt".to_owned()),
+        ) {
+            CoreCommand::Account(AccountCommand::BootstrapSecureBackup {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(35));
+                assert_eq!(
+                    request
+                        .passphrase
+                        .as_ref()
+                        .expect("passphrase")
+                        .expose_secret(),
+                    "backup-setup-phrase"
+                );
+                assert_eq!(
+                    request.recovery_key_destination_path,
+                    Some(std::path::PathBuf::from("/tmp/recovery-artifact.txt"))
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_change_secure_backup_passphrase_command(
+            fake_request_id(36),
+            AuthSecret::new("old-backup-phrase"),
+            AuthSecret::new("new-backup-phrase"),
+            Some("/tmp/recovery-artifact.txt".to_owned()),
+        ) {
+            CoreCommand::Account(AccountCommand::ChangeSecureBackupPassphrase {
+                request_id,
+                request,
+            }) => {
+                assert_eq!(request_id, fake_request_id(36));
+                assert_eq!(request.old_secret.expose_secret(), "old-backup-phrase");
+                assert_eq!(request.new_passphrase.expose_secret(), "new-backup-phrase");
+                assert_eq!(
+                    request.recovery_key_destination_path,
+                    Some(std::path::PathBuf::from("/tmp/recovery-artifact.txt"))
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5981,6 +6252,26 @@ mod tests {
                 "commands::enable_key_backup",
             ),
             (
+                "pub async fn export_room_keys",
+                "build_export_room_keys_command",
+                "commands::export_room_keys",
+            ),
+            (
+                "pub async fn import_room_keys",
+                "build_import_room_keys_command",
+                "commands::import_room_keys",
+            ),
+            (
+                "pub async fn bootstrap_secure_backup",
+                "build_bootstrap_secure_backup_command",
+                "commands::bootstrap_secure_backup",
+            ),
+            (
+                "pub async fn change_secure_backup_passphrase",
+                "build_change_secure_backup_passphrase_command",
+                "commands::change_secure_backup_passphrase",
+            ),
+            (
                 "pub async fn accept_verification",
                 "build_accept_verification_command",
                 "commands::accept_verification",
@@ -6454,6 +6745,27 @@ mod tests {
                 Some("!room:example.org".to_owned()),
             ),
         );
+        let room_key_export = build_export_room_keys_command(
+            fake_request_id(23),
+            "/tmp/private-room-key-export.txt".to_owned(),
+            AuthSecret::new("room-key-transfer-phrase"),
+        );
+        let room_key_import = build_import_room_keys_command(
+            fake_request_id(24),
+            "/tmp/private-room-key-import.txt".to_owned(),
+            AuthSecret::new("room-key-transfer-phrase"),
+        );
+        let secure_backup_setup = build_bootstrap_secure_backup_command(
+            fake_request_id(25),
+            Some(AuthSecret::new("backup-setup-phrase")),
+            Some("/tmp/private-recovery-artifact.txt".to_owned()),
+        );
+        let secure_backup_change = build_change_secure_backup_passphrase_command(
+            fake_request_id(26),
+            AuthSecret::new("old-backup-phrase"),
+            AuthSecret::new("new-backup-phrase"),
+            Some("/tmp/private-recovery-artifact.txt".to_owned()),
+        );
 
         for (command, secret) in [
             (&login, "password-123"),
@@ -6464,6 +6776,15 @@ mod tests {
             (&upload, "secret media bytes"),
             (&download, "$secret-media-event"),
             (&search, "secret search terms"),
+            (&room_key_export, "/tmp/private-room-key-export.txt"),
+            (&room_key_export, "room-key-transfer-phrase"),
+            (&room_key_import, "/tmp/private-room-key-import.txt"),
+            (&room_key_import, "room-key-transfer-phrase"),
+            (&secure_backup_setup, "backup-setup-phrase"),
+            (&secure_backup_setup, "/tmp/private-recovery-artifact.txt"),
+            (&secure_backup_change, "old-backup-phrase"),
+            (&secure_backup_change, "new-backup-phrase"),
+            (&secure_backup_change, "/tmp/private-recovery-artifact.txt"),
         ] {
             let debug = format!("{command:?}");
             assert!(

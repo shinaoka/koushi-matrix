@@ -1,9 +1,10 @@
 use futures_util::{Stream, StreamExt};
 pub use matrix_desktop_state::E2eeRecoveryState;
 use matrix_desktop_state::{
-    AuthSecret, CrossSigningStatus, IdentityResetAuthRequest, IdentityResetAuthType,
-    KeyBackupStatus, LoginFlow, LoginFlowKind, LoginRequest, RecoveryRequest, RoomAttentionSummary,
-    SasEmoji, SessionInfo, VerificationTarget, room_attention_summary,
+    AuthSecret, CrossSigningStatus, DelegatedAuthLinks, IdentityResetAuthRequest,
+    IdentityResetAuthType, KeyBackupStatus, LoginFlow, LoginFlowKind, LoginRequest,
+    RecoveryRequest, RoomAttentionSummary, SasEmoji, SessionInfo, VerificationTarget,
+    room_attention_summary,
 };
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::room::ParentSpace;
@@ -35,6 +36,55 @@ pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.ruri.local_aliases";
 pub struct LoginDiscovery {
     pub homeserver: String,
     pub flows: Vec<LoginFlow>,
+    pub delegated: DelegatedAuthLinks,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixLoginDiscovery {
+    pub homeserver: String,
+    pub flows: Vec<MatrixLoginFlow>,
+    pub delegated: DelegatedAuthLinks,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixLoginFlow {
+    pub kind: MatrixLoginFlowKind,
+    pub delegated_oidc_compatibility: bool,
+    pub display_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MatrixLoginFlowKind {
+    Password,
+    Sso,
+    Oidc,
+    Token,
+    Unknown(String),
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct MatrixDeviceSessionSummary {
+    pub raw_device_id: String,
+    pub display_name: Option<String>,
+    pub current: bool,
+    pub verified: bool,
+    pub inactive: bool,
+}
+
+impl fmt::Debug for MatrixDeviceSessionSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixDeviceSessionSummary")
+            .field("raw_device_id", &"DeviceId(..)")
+            .field(
+                "display_name",
+                &self.display_name.as_ref().map(|_| "DeviceDisplayName(..)"),
+            )
+            .field("current", &self.current)
+            .field("verified", &self.verified)
+            .field("inactive", &self.inactive)
+            .finish()
+    }
 }
 
 pub type E2eeRecoveryStateStream = Pin<Box<dyn Stream<Item = E2eeRecoveryState> + Send>>;
@@ -303,6 +353,22 @@ impl fmt::Debug for KeyBackupRestoreSummary {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoomKeyExportSummary {
+    pub exported_sessions: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoomKeyImportSummary {
+    pub imported_count: u64,
+    pub total_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecureBackupSetupSummary {
+    pub recovery_key_written: bool,
+}
+
 #[derive(Clone, Eq, Error, PartialEq)]
 pub enum E2eeTrustError {
     #[error("Matrix encryption is not initialized")]
@@ -543,6 +609,97 @@ pub async fn restore_key_backup(
     })
 }
 
+#[cfg(not(target_family = "wasm"))]
+pub async fn export_room_keys_to_file(
+    session: &MatrixClientSession,
+    path: PathBuf,
+    passphrase: &AuthSecret,
+) -> Result<RoomKeyExportSummary, E2eeTrustError> {
+    session
+        .client()
+        .encryption()
+        .export_room_keys(path, passphrase.expose_secret(), |_| true)
+        .await?;
+    Ok(RoomKeyExportSummary {
+        exported_sessions: None,
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn import_room_keys_from_file(
+    session: &MatrixClientSession,
+    path: PathBuf,
+    passphrase: &AuthSecret,
+) -> Result<RoomKeyImportSummary, E2eeTrustError> {
+    let result = session
+        .client()
+        .encryption()
+        .import_room_keys(path, passphrase.expose_secret())
+        .await
+        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
+    Ok(RoomKeyImportSummary {
+        imported_count: result.imported_count as u64,
+        total_count: result.total_count as u64,
+    })
+}
+
+pub async fn bootstrap_secure_backup(
+    session: &MatrixClientSession,
+    passphrase: Option<&AuthSecret>,
+    recovery_key_destination_path: Option<PathBuf>,
+) -> Result<SecureBackupSetupSummary, E2eeTrustError> {
+    let recovery = session.client().encryption().recovery();
+    let recovery_key = match passphrase {
+        Some(passphrase) => {
+            recovery
+                .enable()
+                .wait_for_backups_to_upload()
+                .with_passphrase(passphrase.expose_secret())
+                .await?
+        }
+        None => recovery.enable().wait_for_backups_to_upload().await?,
+    };
+    let recovery_key_written =
+        write_recovery_key_if_requested(recovery_key, recovery_key_destination_path)?;
+    Ok(SecureBackupSetupSummary {
+        recovery_key_written,
+    })
+}
+
+pub async fn change_secure_backup_passphrase(
+    session: &MatrixClientSession,
+    old_secret: &AuthSecret,
+    new_passphrase: &AuthSecret,
+    recovery_key_destination_path: Option<PathBuf>,
+) -> Result<SecureBackupSetupSummary, E2eeTrustError> {
+    let recovery_key = session
+        .client()
+        .encryption()
+        .recovery()
+        .recover_and_reset(old_secret.expose_secret())
+        .with_passphrase(new_passphrase.expose_secret())
+        .await?;
+    let recovery_key_written =
+        write_recovery_key_if_requested(recovery_key, recovery_key_destination_path)?;
+    Ok(SecureBackupSetupSummary {
+        recovery_key_written,
+    })
+}
+
+fn write_recovery_key_if_requested(
+    recovery_key: String,
+    destination_path: Option<PathBuf>,
+) -> Result<bool, E2eeTrustError> {
+    let recovery_key = Zeroizing::new(recovery_key);
+    let Some(destination_path) = destination_path else {
+        return Ok(false);
+    };
+    std::fs::write(destination_path, recovery_key.as_bytes()).map_err(|_| {
+        E2eeTrustError::Sdk("secure backup recovery key delivery failed".to_owned())
+    })?;
+    Ok(true)
+}
+
 pub async fn reset_identity(
     session: &MatrixClientSession,
 ) -> Result<IdentityResetOutcome, E2eeTrustError> {
@@ -571,6 +728,80 @@ pub async fn complete_identity_reset(
     request: &IdentityResetAuthRequest,
 ) -> Result<(), E2eeTrustError> {
     handle.reset(session, request).await
+}
+
+pub async fn list_devices(
+    session: &MatrixClientSession,
+) -> Result<Vec<MatrixDeviceSessionSummary>, E2eeTrustError> {
+    let response = session
+        .client()
+        .devices()
+        .await
+        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
+    Ok(response
+        .devices
+        .into_iter()
+        .map(|device| MatrixDeviceSessionSummary {
+            current: device.device_id.as_str() == session.info.device_id,
+            raw_device_id: device.device_id.to_string(),
+            display_name: device.display_name,
+            verified: false,
+            inactive: false,
+        })
+        .collect())
+}
+
+pub async fn rename_device(
+    session: &MatrixClientSession,
+    raw_device_id: &str,
+    display_name: &str,
+) -> Result<(), E2eeTrustError> {
+    let device_id = matrix_sdk::ruma::OwnedDeviceId::from(raw_device_id);
+    session
+        .client()
+        .rename_device(&device_id, display_name)
+        .await
+        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
+    Ok(())
+}
+
+pub async fn delete_devices(
+    session: &MatrixClientSession,
+    raw_device_ids: &[String],
+    auth: Option<&IdentityResetAuthRequest>,
+) -> Result<(), E2eeTrustError> {
+    let device_ids = raw_device_ids
+        .iter()
+        .map(|id| matrix_sdk::ruma::OwnedDeviceId::from(id.as_str()))
+        .collect::<Vec<_>>();
+    let auth_data = delete_devices_auth_data(session, auth);
+    session
+        .client()
+        .delete_devices(&device_ids, auth_data)
+        .await
+        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
+    Ok(())
+}
+
+fn delete_devices_auth_data(
+    session: &MatrixClientSession,
+    auth: Option<&IdentityResetAuthRequest>,
+) -> Option<matrix_sdk::ruma::api::client::uiaa::AuthData> {
+    let IdentityResetAuthRequest::UiaaPassword { password } = auth? else {
+        return None;
+    };
+    let identifier = matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
+        matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(
+            session.info.user_id.clone(),
+        ),
+    );
+    let password_auth = matrix_sdk::ruma::api::client::uiaa::Password::new(
+        identifier,
+        password.expose_secret().to_owned(),
+    );
+    Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
+        password_auth,
+    ))
 }
 
 pub async fn request_device_verification(
@@ -760,22 +991,43 @@ pub fn map_backup_state_to_desktop(
 #[cfg(test)]
 mod e2ee_trust_tests {
     use matrix_desktop_state::{
-        CrossSigningStatus, IdentityResetAuthType, KeyBackupStatus, SasEmoji,
+        AuthSecret, CrossSigningStatus, IdentityResetAuthType, KeyBackupStatus, SasEmoji,
     };
     use matrix_sdk::encryption::backups::BackupState;
 
     use super::{
         E2eeTrustError, KeyBackupRestoreScope, KeyBackupRestoreSummary, MatrixCrossSigningStatus,
-        MatrixIdentityResetAuthType, MatrixIncomingVerificationRequest,
-        MatrixIncomingVerificationRequestObserver, accept_sas_verification,
-        accept_verification_request, bootstrap_cross_signing, cancel_sas_verification,
-        cancel_verification_request, complete_identity_reset, confirm_sas_verification,
-        cross_signing_status, enable_key_backup, map_backup_state_to_desktop,
-        map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
-        map_sdk_sas_emojis_to_desktop, mismatch_sas_verification,
-        observe_incoming_verification_requests, request_device_verification, reset_identity,
-        restore_key_backup, start_sas_verification,
+        MatrixDeviceSessionSummary, MatrixIdentityResetAuthType, MatrixIncomingVerificationRequest,
+        MatrixIncomingVerificationRequestObserver, PersistableMatrixSession, RoomKeyExportSummary,
+        RoomKeyImportSummary, SecureBackupSetupSummary, accept_sas_verification,
+        accept_verification_request, bootstrap_cross_signing, bootstrap_secure_backup,
+        cancel_sas_verification, cancel_verification_request, change_secure_backup_passphrase,
+        complete_identity_reset, confirm_sas_verification, cross_signing_status, delete_devices,
+        enable_key_backup, export_room_keys_to_file, import_room_keys_from_file, list_devices,
+        map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
+        map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
+        mismatch_sas_verification, observe_incoming_verification_requests, rename_device,
+        request_device_verification, reset_identity, restore_key_backup, restore_session,
+        start_sas_verification, write_recovery_key_if_requested,
     };
+
+    const MATRIX_KEY_EXPORT_HEADER: &str = "-----BEGIN MEGOLM SESSION DATA-----";
+    const MATRIX_KEY_EXPORT_FOOTER: &str = "-----END MEGOLM SESSION DATA-----";
+    const ELEMENT_COMPATIBLE_KEY_EXPORT: &str = "\
+-----BEGIN MEGOLM SESSION DATA-----\n\
+Af7mGhlzQ+eGvHu93u0YXd3D/+vYMs3E7gQqOhuCtkvGAAAAASH7pEdWvFyAP1JUisAcpEo\n\
+Xke2Q7Kr9hVl/SCc6jXBNeJCZcrUbUV4D/tRQIl3E9L4fOk928YI1J+3z96qiH0uE7hpsCI\n\
+CkHKwjPU+0XTzFdIk1X8H7sZ+MD/2Sg/q3y8rtUjz7uEj4GUTnb+9SCOTVmJsRfqgUpM1CU\n\
+bDLytHf1JkohY4tWEgpsCc67xdzgodjr12qYrfg/zNm3LGpxlrffJknw4rk5QFTj4kMbqbD\n\
+ZZgDTni+HxRTDGge2J620lMOiznvXX+H09Rwruqx5aJvvaaKd86jWRpiO2oSFqHn4u5ONl9\n\
+41uzm62Sj0eIm6ZbA9NQs87jQw4LxsejhZVL+NdjIg80zVSBTWhTdo0DTnbFSNP4ReOiz0U\n\
+XosOF8A5T8Vdx2nvA0GXltfcHKVKQYh/LJAkNQ7P9UYL4ae/5TtQZkhB1KxCLTRWqADCl53\n\
+uBMGpG53EMgY6G6K2DEIOkcv7sdXQF5WpemiSWZqJRWj+cjfs9BpCTbkp/rszWFl2TniWpR\n\
+RqIbT2jORlN4rTvdtF0F4z1pqP4qWyR3sLNTkXm9CFRzWADNG0RDZKxbCoo6RPvtaCTfaHo\n\
+SwfvzBS6CjfAG+FOugpV48o7+XetaUUPZ6/tZSPhCdeV8eP9q5r0QwWeXFogzoNzWt4HYx9\n\
+MdXxzD+f0mtg5gzehrrEEARwI2bCvPpHxlt/Na9oW/GBpkjwR1LSKgg4CtpRyWngPjdEKpZ\n\
+GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
+-----END MEGOLM SESSION DATA-----";
 
     #[test]
     fn cross_signing_status_maps_to_private_data_free_desktop_status() {
@@ -850,6 +1102,92 @@ mod e2ee_trust_tests {
     }
 
     #[test]
+    fn device_session_summary_is_private_data_free() {
+        let summary = MatrixDeviceSessionSummary {
+            raw_device_id: "DEVICEID".to_owned(),
+            display_name: Some("Alice private laptop".to_owned()),
+            current: true,
+            verified: false,
+            inactive: false,
+        };
+
+        assert_eq!(summary.raw_device_id, "DEVICEID");
+        let debug = format!("{summary:?}");
+        assert!(!debug.contains("DEVICEID"), "{debug}");
+        assert!(!debug.contains("Alice private laptop"), "{debug}");
+        assert!(debug.contains("current"));
+        assert!(debug.contains("verified"));
+        assert!(debug.contains("inactive"));
+    }
+
+    #[test]
+    fn room_key_file_transfer_summaries_are_private_data_free() {
+        let export_summary = RoomKeyExportSummary {
+            exported_sessions: None,
+        };
+        let import_summary = RoomKeyImportSummary {
+            imported_count: 1,
+            total_count: 1,
+        };
+
+        assert_eq!(export_summary.exported_sessions, None);
+        assert_eq!(import_summary.imported_count, 1);
+        assert_eq!(import_summary.total_count, 1);
+        assert!(!format!("{export_summary:?}").contains("MEGOLM"));
+        assert!(!format!("{import_summary:?}").contains("MEGOLM"));
+    }
+
+    #[test]
+    fn secure_backup_setup_summary_is_private_data_free() {
+        let summary = SecureBackupSetupSummary {
+            recovery_key_written: true,
+        };
+
+        let debug = format!("{summary:?}");
+        assert!(debug.contains("recovery_key_written"));
+        assert!(!debug.contains("RecoveryKey("));
+    }
+
+    #[test]
+    fn recovery_key_delivery_writes_native_artifact_without_debugging_material() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("recovery-artifact.txt");
+        let artifact_payload = String::from("fixture-artifact-material");
+
+        let written = write_recovery_key_if_requested(artifact_payload.clone(), Some(path.clone()))
+            .expect("artifact write should succeed");
+
+        assert!(written);
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read artifact"),
+            artifact_payload
+        );
+    }
+
+    #[tokio::test]
+    async fn room_key_import_accepts_element_compatible_key_export_envelope() {
+        assert!(ELEMENT_COMPATIBLE_KEY_EXPORT.starts_with(MATRIX_KEY_EXPORT_HEADER));
+        assert!(ELEMENT_COMPATIBLE_KEY_EXPORT.ends_with(MATRIX_KEY_EXPORT_FOOTER));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("element-compatible-room-keys.txt");
+        std::fs::write(&path, ELEMENT_COMPATIBLE_KEY_EXPORT).expect("write fixture");
+        let persistable = PersistableMatrixSession::from_json(
+            r#"{"homeserver":"https://matrix.example.invalid","user_id":"@alice:example.invalid","device_id":"ALICEDEVICE","access_token":"synthetic-access"}"#,
+        )
+        .expect("synthetic session should deserialize");
+        let session = restore_session(&persistable)
+            .await
+            .expect("synthetic session should restore");
+
+        let summary = import_room_keys_from_file(&session, path, &AuthSecret::new("1234"))
+            .await
+            .expect("Matrix/Element key export envelope should import");
+
+        assert_eq!(summary.total_count, 1);
+    }
+
+    #[test]
     fn e2ee_trust_public_async_api_is_exposed() {
         let _ = cross_signing_status;
         let _ = bootstrap_cross_signing;
@@ -866,6 +1204,13 @@ mod e2ee_trust_tests {
         let _ = cancel_verification_request;
         let _ = cancel_sas_verification;
         let _ = observe_incoming_verification_requests;
+        let _ = list_devices;
+        let _ = rename_device;
+        let _ = delete_devices;
+        let _ = export_room_keys_to_file;
+        let _ = import_room_keys_from_file;
+        let _ = bootstrap_secure_backup;
+        let _ = change_secure_backup_passphrase;
         let _: Option<MatrixIncomingVerificationRequest> = None;
         let _: Option<MatrixIncomingVerificationRequestObserver> = None;
     }
@@ -1782,6 +2127,8 @@ struct RawLoginFlow {
     flow_type: String,
     #[serde(default, rename = "org.matrix.msc3824.delegated_oidc_compatibility")]
     delegated_oidc_compatibility: bool,
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1809,6 +2156,7 @@ pub fn discover_login_flows(homeserver: &str) -> Result<LoginDiscovery, LoginDis
     Ok(LoginDiscovery {
         homeserver: homeserver.normalized(),
         flows,
+        delegated: DelegatedAuthLinks::default(),
     })
 }
 
@@ -3594,6 +3942,12 @@ pub fn parse_login_discovery_http_response(
 pub fn parse_login_discovery(
     value: &serde_json::Value,
 ) -> Result<Vec<LoginFlow>, LoginDiscoveryError> {
+    Ok(map_login_flows_to_desktop(parse_matrix_login_flows(value)?))
+}
+
+pub fn parse_matrix_login_flows(
+    value: &serde_json::Value,
+) -> Result<Vec<MatrixLoginFlow>, LoginDiscoveryError> {
     if !value.get("flows").is_some_and(serde_json::Value::is_array) {
         return Err(LoginDiscoveryError::MissingFlows);
     }
@@ -3604,19 +3958,38 @@ pub fn parse_login_discovery(
     Ok(response
         .flows
         .into_iter()
-        .map(|flow| LoginFlow {
+        .map(|flow| MatrixLoginFlow {
             kind: parse_flow_kind(flow.flow_type),
             delegated_oidc_compatibility: flow.delegated_oidc_compatibility,
+            display_name: flow.display_name,
         })
         .collect())
 }
 
-fn parse_flow_kind(flow_type: String) -> LoginFlowKind {
+pub fn map_login_flows_to_desktop(flows: Vec<MatrixLoginFlow>) -> Vec<LoginFlow> {
+    flows
+        .into_iter()
+        .map(|flow| LoginFlow {
+            kind: match flow.kind {
+                MatrixLoginFlowKind::Password => LoginFlowKind::Password,
+                MatrixLoginFlowKind::Sso => LoginFlowKind::Sso,
+                MatrixLoginFlowKind::Oidc => LoginFlowKind::Oidc,
+                MatrixLoginFlowKind::Token => LoginFlowKind::Token,
+                MatrixLoginFlowKind::Unknown(value) => LoginFlowKind::Unknown(value),
+            },
+            delegated_oidc_compatibility: flow.delegated_oidc_compatibility,
+            display_name: flow.display_name,
+        })
+        .collect()
+}
+
+fn parse_flow_kind(flow_type: String) -> MatrixLoginFlowKind {
     match flow_type.as_str() {
-        "m.login.password" => LoginFlowKind::Password,
-        "m.login.sso" => LoginFlowKind::Sso,
-        "m.login.token" => LoginFlowKind::Token,
-        _ => LoginFlowKind::Unknown(flow_type),
+        "m.login.password" => MatrixLoginFlowKind::Password,
+        "m.login.sso" => MatrixLoginFlowKind::Sso,
+        "m.login.oidc" | "m.login.oauth2" => MatrixLoginFlowKind::Oidc,
+        "m.login.token" => MatrixLoginFlowKind::Token,
+        _ => MatrixLoginFlowKind::Unknown(flow_type),
     }
 }
 

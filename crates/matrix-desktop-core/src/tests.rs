@@ -1,7 +1,7 @@
 //! Phase 1 contract tests: redaction, unauthenticated rejection, request-id
 //! correlation, snapshot coalescing, queue overflow.
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityRow, ActivityState, AppAction, AppearanceSettings, AuthSecret,
@@ -16,8 +16,9 @@ use matrix_desktop_state::{
 use matrix_sdk::ruma::api::FeatureFlag;
 
 use crate::command::{
-    AccountCommand, AppCommand, CoreCommand, RoomCommand, SearchCommand, SyncCommand,
-    TimelineCommand,
+    AccountCommand, AppCommand, CoreCommand, RoomCommand, RoomKeyExportRequest,
+    RoomKeyImportRequest, SearchCommand, SecureBackupPassphraseChangeRequest,
+    SecureBackupSetupRequest, SyncCommand, TimelineCommand,
 };
 use crate::event::{CoreEvent, E2eeTrustEvent, LiveSignalsEvent, PaginationDirection};
 use crate::executor;
@@ -172,6 +173,43 @@ fn secret_bearing_commands_redact_debug() {
     assert!(format!("{send:?}").contains("txn-1"));
 }
 
+#[test]
+fn auth_discovery_and_oidc_commands_redact_debug_and_do_not_require_ready_session() {
+    let request_id = fake_request_id();
+    let homeserver = "https://example.test".to_owned();
+    let callback_url = "matrix-desktop://auth/callback?code=secret-code".to_owned();
+    let commands = [
+        CoreCommand::Account(AccountCommand::DiscoverLogin {
+            request_id,
+            homeserver: homeserver.clone(),
+        }),
+        CoreCommand::Account(AccountCommand::StartOidcLogin {
+            request_id,
+            homeserver: homeserver.clone(),
+        }),
+        CoreCommand::Account(AccountCommand::CompleteOidcLogin {
+            request_id,
+            homeserver: homeserver.clone(),
+            callback_url: callback_url.clone(),
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(!command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(debug.contains("request_id"));
+        assert!(
+            !debug.contains(&homeserver),
+            "Debug leaked homeserver: {debug}"
+        );
+        assert!(
+            !debug.contains(&callback_url),
+            "Debug leaked callback URL: {debug}"
+        );
+    }
+}
+
 fn future_epoch_ms(offset: Duration) -> u64 {
     std::time::SystemTime::now()
         .checked_add(offset)
@@ -322,6 +360,124 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
         assert!(!debug.contains("@bob:example.test"));
         assert!(!debug.contains("BOBDEVICE"));
         assert!(!debug.contains("backup-version-1"));
+    }
+}
+
+#[test]
+fn device_session_commands_are_correlated_ready_gated_and_redacted() {
+    let request_id = fake_request_id();
+    let display_name = "Alice private laptop";
+    let auth_phrase = "device-delete-auth-text";
+    let commands = vec![
+        CoreCommand::Account(AccountCommand::QueryDevices { request_id }),
+        CoreCommand::Account(AccountCommand::RenameDevice {
+            request_id,
+            device_ordinal: 7,
+            display_name: display_name.to_owned(),
+        }),
+        CoreCommand::Account(AccountCommand::DeleteDevices {
+            request_id,
+            device_ordinals: vec![7, 8],
+            auth: Some(IdentityResetAuthRequest::UiaaPassword {
+                password: AuthSecret::new(auth_phrase),
+            }),
+        }),
+        CoreCommand::Account(AccountCommand::SoftLogoutReauth {
+            request_id,
+            password: AuthSecret::new(auth_phrase),
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(!debug.contains(display_name), "{debug}");
+        assert!(!debug.contains(auth_phrase), "{debug}");
+        assert!(!debug.contains("DEVICE"), "{debug}");
+    }
+}
+
+#[test]
+fn room_key_file_transfer_commands_are_correlated_ready_gated_and_redacted() {
+    let request_id = fake_request_id();
+    let destination = PathBuf::from("/tmp/private-element-compatible-export.txt");
+    let source = PathBuf::from("/tmp/private-element-compatible-import.txt");
+    let transfer_phrase = "element-compatible-transfer-phrase";
+    let commands = vec![
+        CoreCommand::Account(AccountCommand::ExportRoomKeys {
+            request_id,
+            request: RoomKeyExportRequest {
+                destination_path: destination.clone(),
+                passphrase: AuthSecret::new(transfer_phrase),
+            },
+        }),
+        CoreCommand::Account(AccountCommand::ImportRoomKeys {
+            request_id,
+            request: RoomKeyImportRequest {
+                source_path: source.clone(),
+                passphrase: AuthSecret::new(transfer_phrase),
+            },
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(!debug.contains(transfer_phrase), "{debug}");
+        assert!(
+            !debug.contains(destination.to_string_lossy().as_ref()),
+            "{debug}"
+        );
+        assert!(
+            !debug.contains(source.to_string_lossy().as_ref()),
+            "{debug}"
+        );
+        assert!(debug.contains("AuthSecret(..)"), "{debug}");
+    }
+}
+
+#[test]
+fn secure_backup_commands_are_correlated_ready_gated_and_redacted() {
+    let request_id = fake_request_id();
+    let setup_phrase = "secure-backup-setup-phrase";
+    let old_phrase = "secure-backup-old-phrase";
+    let new_phrase = "secure-backup-new-phrase";
+    let destination = PathBuf::from("/tmp/private-recovery-artifact.txt");
+    let commands = vec![
+        CoreCommand::Account(AccountCommand::BootstrapSecureBackup {
+            request_id,
+            request: SecureBackupSetupRequest {
+                passphrase: Some(AuthSecret::new(setup_phrase)),
+                recovery_key_destination_path: Some(destination.clone()),
+            },
+        }),
+        CoreCommand::Account(AccountCommand::ChangeSecureBackupPassphrase {
+            request_id,
+            request: SecureBackupPassphraseChangeRequest {
+                old_secret: AuthSecret::new(old_phrase),
+                new_passphrase: AuthSecret::new(new_phrase),
+                recovery_key_destination_path: Some(destination.clone()),
+            },
+        }),
+    ];
+
+    for command in commands {
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(!debug.contains(setup_phrase), "{debug}");
+        assert!(!debug.contains(old_phrase), "{debug}");
+        assert!(!debug.contains(new_phrase), "{debug}");
+        assert!(
+            !debug.contains(destination.to_string_lossy().as_ref()),
+            "{debug}"
+        );
+        assert!(
+            debug.contains("has_recovery_key_destination_path"),
+            "{debug}"
+        );
     }
 }
 

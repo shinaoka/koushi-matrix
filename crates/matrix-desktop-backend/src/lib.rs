@@ -5,9 +5,9 @@ use matrix_desktop_search::SensitiveString;
 use matrix_desktop_search::{SearchDocumentStore, SearchEdit, SearchableEvent};
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AttachmentFilter, AttachmentResult, AttachmentScope,
-    AttachmentSort, LoginFlow, LoginRequest, RecoveryMethod, RecoveryRequest, RoomSummary,
-    RoomTags, SearchResult, SearchScope, SessionInfo, SidebarModel, SpaceSummary, ThreadPaneState,
-    TrustOperationFailureKind, compose_sidebar, reduce,
+    AttachmentSort, AuthFailureKind, DelegatedAuthLinks, LoginFlow, LoginRequest, RecoveryMethod,
+    RecoveryRequest, RoomSummary, RoomTags, SearchResult, SearchScope, SessionInfo, SidebarModel,
+    SpaceSummary, ThreadPaneState, TrustOperationFailureKind, compose_sidebar, reduce,
 };
 use serde::{Deserialize, Serialize};
 
@@ -459,6 +459,7 @@ impl FakeDesktopBackend {
                 vec![AppAction::LoginDiscoverySucceeded {
                     homeserver: homeserver.to_owned(),
                     flows: fixture_login_flows(),
+                    delegated: DelegatedAuthLinks::default(),
                 }]
             }
             LoginDiscoveryMode::Http => {
@@ -466,10 +467,11 @@ impl FakeDesktopBackend {
                     Ok(discovery) => vec![AppAction::LoginDiscoverySucceeded {
                         homeserver: discovery.homeserver,
                         flows: discovery.flows,
+                        delegated: discovery.delegated,
                     }],
                     Err(error) => vec![AppAction::LoginDiscoveryFailed {
                         homeserver: homeserver.to_owned(),
-                        message: error.to_string(),
+                        kind: login_discovery_failure_kind(&error),
                     }],
                 }
             }
@@ -1059,6 +1061,25 @@ fn fixture_login_flows() -> Vec<LoginFlow> {
 
     matrix_desktop_sdk::parse_login_discovery(&response)
         .expect("synthetic login discovery fixture should parse")
+}
+
+fn login_discovery_failure_kind(
+    error: &matrix_desktop_sdk::LoginDiscoveryError,
+) -> AuthFailureKind {
+    match error {
+        matrix_desktop_sdk::LoginDiscoveryError::RequestFailed(_) => AuthFailureKind::Network,
+        matrix_desktop_sdk::LoginDiscoveryError::HttpStatus { status: 403, .. } => {
+            AuthFailureKind::Forbidden
+        }
+        matrix_desktop_sdk::LoginDiscoveryError::HttpStatus { .. }
+        | matrix_desktop_sdk::LoginDiscoveryError::MissingFlows
+        | matrix_desktop_sdk::LoginDiscoveryError::InvalidResponse(_) => AuthFailureKind::Sdk,
+        matrix_desktop_sdk::LoginDiscoveryError::InvalidHomeserver(_)
+        | matrix_desktop_sdk::LoginDiscoveryError::UnsupportedHomeserverScheme
+        | matrix_desktop_sdk::LoginDiscoveryError::InsecureHomeserverScheme => {
+            AuthFailureKind::Unsupported
+        }
+    }
 }
 
 fn default_recovery_methods() -> Vec<RecoveryMethod> {

@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-06-16.
+Last amended: 2026-06-17.
 
 ## Secrets and Private Data
 
@@ -141,6 +141,11 @@ Rules:
    when that is the implemented scope; it must not imply exhaustive backup-wide
    restore. `KeyBackupRestoreSummary.scope` stays `JoinedRooms` for the MVP
    path unless a later upstream/public API decision explicitly broadens it.
+   Secure-backup recovery keys may be produced by the SDK, but the product must
+   not place the key in reducer state, Tauri DTO snapshots, React state, logs,
+   QA tokens, screenshots, or issue comments. Desktop recovery-key delivery
+   writes through a Rust/Tauri native artifact path and reports only a boolean
+   or coarse status.
 12. Credential-store health diagnostics are kind-only. Public state may report
    only `unknown`, `healthy`, `unavailable`, `locked_or_inaccessible`,
    `missing_credential`, or `reset_required`, with optional private-data-free

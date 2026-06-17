@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use matrix_desktop_state::AuthFailureKind;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CoreFailure {
     SessionRequired,
@@ -26,6 +28,9 @@ pub enum CoreFailure {
     },
     ProfileOperationFailed {
         kind: ProfileFailureKind,
+    },
+    AccountOperationFailed {
+        kind: AuthFailureKind,
     },
     SearchFailed {
         kind: SearchFailureKind,

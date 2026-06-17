@@ -16,6 +16,9 @@ export interface SavedSessionInfo {
 export interface AppState {
   session: SessionState;
   auth: AuthDiscoveryState;
+  device_sessions: DeviceSessionListState;
+  account_management: AccountManagementState;
+  qr_login: QrLoginState;
   settings: SettingsState;
   locale_profile: LocaleDisplayProfile;
   typography_profile: TypographyDisplayProfile;
@@ -213,13 +216,76 @@ export type ResolveComposerKeyAction = (
 export type AuthDiscoveryState =
   | { kind: "unknown" }
   | { kind: "discovering"; homeserver: string }
-  | { kind: "ready"; homeserver: string; flows: LoginFlow[] }
-  | { kind: "failed"; homeserver: string; message: string };
+  | { kind: "ready"; homeserver: string; flows: LoginFlow[]; delegated: DelegatedAuthLinks }
+  | { kind: "failed"; homeserver: string; failureKind: AuthFailureKind };
+
+export interface DelegatedAuthLinks {
+  registration_url: string | null;
+  account_management_url: string | null;
+}
 
 export interface LoginFlow {
-  kind: "password" | "sso" | "token" | { unknown: string };
+  kind: "password" | "sso" | "oidc" | "token" | { unknown: string };
   delegated_oidc_compatibility: boolean;
+  display_name: string | null;
 }
+
+export type AuthFailureKind =
+  | "network"
+  | "unsupported"
+  | "cancelled"
+  | "forbidden"
+  | "timeout"
+  | "sdk";
+
+export type DeviceSessionListState =
+  | { kind: "idle" }
+  | { kind: "loading"; request_id: number }
+  | { kind: "loaded"; devices: DeviceSessionSummary[] }
+  | { kind: "failed"; request_id: number; failureKind: AuthFailureKind };
+
+export interface DeviceSessionSummary {
+  device_ordinal: number;
+  display_name: string | null;
+  current: boolean;
+  verified: boolean;
+  inactive: boolean;
+}
+
+export type AccountManagementState =
+  | { kind: "idle" }
+  | { kind: "working"; request_id: number; operation: AccountManagementOperation }
+  | {
+      kind: "awaitingUia";
+      request_id: number;
+      flow_id: number;
+      operation: AccountManagementOperation;
+    }
+  | { kind: "succeeded"; request_id: number; operation: AccountManagementOperation }
+  | {
+      kind: "failed";
+      request_id: number;
+      operation: AccountManagementOperation;
+      failureKind: AuthFailureKind;
+    };
+
+export type AccountManagementOperation =
+  | "renameDevice"
+  | "deleteDevice"
+  | "deleteOtherDevices"
+  | "changePassword"
+  | "deactivateAccount"
+  | "threePid"
+  | "identityServer";
+
+export type QrLoginState =
+  | { kind: "idle" }
+  | { kind: "checkingCapability"; request_id: number }
+  | { kind: "unavailable" }
+  | { kind: "displaying"; request_id: number }
+  | { kind: "scanning"; request_id: number }
+  | { kind: "verified"; request_id: number }
+  | { kind: "failed"; request_id: number; failureKind: AuthFailureKind };
 
 export type RecoveryMethod = "recoveryKey" | "securityPhrase";
 
@@ -708,8 +774,43 @@ export interface E2eeTrustState {
   cross_signing: CrossSigningStatus;
   key_backup: KeyBackupStatus;
   identity_reset: IdentityResetState;
+  key_management: E2eeKeyManagementState;
   devices: DeviceTrustSummary[];
 }
+
+export interface E2eeKeyManagementState {
+  room_key_export: RoomKeyExportState;
+  room_key_import: RoomKeyImportState;
+  secure_backup_setup: SecureBackupSetupState;
+  passphrase_change: SecureBackupPassphraseChangeState;
+}
+
+export type RoomKeyExportState =
+  | { kind: "idle" }
+  | { kind: "exporting"; request_id: number }
+  | { kind: "exported"; request_id: number; exported_sessions: number | null }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export type RoomKeyImportState =
+  | { kind: "idle" }
+  | { kind: "importing"; request_id: number }
+  | { kind: "imported"; request_id: number; imported_count: number; total_count: number }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export type SecureBackupSetupState =
+  | { kind: "idle" }
+  | { kind: "settingUp"; request_id: number }
+  | { kind: "recoveryKeyReady"; request_id: number; delivery: RecoveryKeyDeliveryState }
+  | { kind: "enabled"; request_id: number }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
+
+export type RecoveryKeyDeliveryState = { kind: "notWritten" } | { kind: "written" };
+
+export type SecureBackupPassphraseChangeState =
+  | { kind: "idle" }
+  | { kind: "changing"; request_id: number }
+  | { kind: "changed"; request_id: number; delivery: RecoveryKeyDeliveryState }
+  | { kind: "failed"; request_id: number; failureKind: TrustOperationFailureKind };
 
 export type VerificationFlowState =
   | { kind: "idle" }

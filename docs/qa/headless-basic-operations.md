@@ -311,6 +311,20 @@ Focused E2EE trust GUI proof:
 cd apps/desktop && npx playwright test e2e/basic-operations.spec.ts -g "E2EE trust controls"
 ```
 
+Focused E2EE key-management GUI proof:
+
+```bash
+npm --prefix apps/desktop run test:ui-headless -- e2e/basic-operations.spec.ts --grep "security settings drive Rust-owned room-key transfer"
+```
+
+This browser-headless proof drives the real User settings key-management forms
+over mocked Tauri IPC. It asserts typed `export_room_keys`, `import_room_keys`,
+`bootstrap_secure_backup`, and `change_secure_backup_passphrase` dispatch,
+Rust-shaped key-management snapshot updates, and recorded IPC redaction for
+file paths, passphrases, and recovery secrets. React must not parse room-key
+files, synthesize the Matrix/Element key-export envelope, keep passphrases in
+state, or display recovery-key material.
+
 Focused scheduled-send GUI proof:
 
 ```bash
@@ -465,6 +479,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting -
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-alias --server=conduit --artifact-dir=artifacts/linux-gui-local-alias --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-cjk --server=conduit --artifact-dir=artifacts/linux-gui-local-cjk --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --artifact-dir=artifacts/linux-gui-local-settings --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-e2ee-key-management --server=conduit --artifact-dir=artifacts/linux-gui-local-e2ee-key-management --timeout-ms=180000
 ```
 
 `local-login` proves the Linux client can boot against a disposable local
@@ -604,6 +619,17 @@ Rust-owned settings snapshot (`aria-pressed="true"`), for `data-theme="dark"` to
 be applied from that snapshot, and for the trust section's localized labels to
 appear without seeding React-only state.
 
+`local-e2ee-key-management` opens the real Settings UI, exports room keys
+through the Rust/SDK path to a synthetic Matrix/Element-compatible key-export
+file, imports that same file, and starts secure-backup setup with one-shot
+recovery-key artifact delivery. It prints only `gui_room_key_export=ok`,
+`gui_room_key_import=ok`, and `gui_secure_backup_setup=ok`; it must not print
+file paths, passphrases, recovery keys, Matrix IDs, device IDs, room IDs, event
+IDs, message contents, or raw SDK errors. If secure-backup setup moves the
+session to `needsRecovery`, the Rust-owned recovery panel in the QA title is
+valid GUI evidence for setup completion; the Settings panel may no longer own
+the right panel.
+
 For fast iteration, build the debug app once and reuse it with `--skip-build`
 (optionally `--app-binary=PATH`):
 
@@ -646,4 +672,7 @@ gui_local_message_forward=ok
 gui_local_hide_redacted=ok
 gui_local_settings=ok
 gui_local_trust_settings=ok
+gui_room_key_export=ok
+gui_room_key_import=ok
+gui_secure_backup_setup=ok
 ```

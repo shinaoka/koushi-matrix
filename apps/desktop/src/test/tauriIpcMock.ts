@@ -123,8 +123,14 @@ function sanitiseArgs(args: Record<string, any>): Record<string, any> {
   const REDACTED = "[REDACTED]";
   const SECRET_KEYS = new Set([
     "password",
+    "passphrase",
+    "oldSecret",
+    "newPassphrase",
     "secret",
     "recovery_secret",
+    "destinationPath",
+    "sourcePath",
+    "recoveryKeyDestinationPath",
     "access_token",
     "store_key",
     "search_index_key"
@@ -194,6 +200,9 @@ function defaultSnapshotResponse() {
       rooms: [],
       invites: [],
       room_interactions: {},
+      device_sessions: { kind: "idle" },
+      account_management: { kind: "idle" },
+      qr_login: { kind: "idle" },
       directory: { query: { kind: "closed" }, join: { kind: "idle" } },
       room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
       activity: { kind: "closed" },
@@ -220,6 +229,12 @@ function defaultSnapshotResponse() {
         cross_signing: { kind: "unknown" },
         key_backup: { kind: "unknown" },
         identity_reset: { kind: "idle" },
+        key_management: {
+          room_key_export: { kind: "idle" },
+          room_key_import: { kind: "idle" },
+          secure_backup_setup: { kind: "idle" },
+          passphrase_change: { kind: "idle" }
+        },
         devices: []
       },
       local_encryption: { kind: "unknown" },

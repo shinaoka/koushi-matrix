@@ -130,12 +130,14 @@ import type {
   ActivityState,
   ActivityStream,
   ActivityTab,
+  AuthFailureKind,
   ComposerMode,
   DesktopSnapshot,
   DirectoryRoomSummary,
   ImageUploadCompressionMode,
   ImageUploadCompressionPolicy,
   LocaleDisplayProfile,
+  LoginFlow,
   MentionIntent,
   MentionTarget,
   OperationFailureKind,
@@ -1342,6 +1344,35 @@ export function App() {
     setSnapshot(await api.enableKeyBackup());
   }
 
+  async function exportRoomKeys(destinationPath: string, passphrase: string) {
+    setSnapshot(await api.exportRoomKeys(destinationPath, passphrase));
+  }
+
+  async function importRoomKeys(sourcePath: string, passphrase: string) {
+    setSnapshot(await api.importRoomKeys(sourcePath, passphrase));
+  }
+
+  async function bootstrapSecureBackup(
+    passphrase: string | null,
+    recoveryKeyDestinationPath: string | null
+  ) {
+    setSnapshot(await api.bootstrapSecureBackup(passphrase, recoveryKeyDestinationPath));
+  }
+
+  async function changeSecureBackupPassphrase(
+    oldSecret: string,
+    newPassphrase: string,
+    recoveryKeyDestinationPath: string | null
+  ) {
+    setSnapshot(
+      await api.changeSecureBackupPassphrase(
+        oldSecret,
+        newPassphrase,
+        recoveryKeyDestinationPath
+      )
+    );
+  }
+
   async function probeLocalEncryptionHealth() {
     setSnapshot(await api.probeLocalEncryptionHealth());
   }
@@ -2261,6 +2292,26 @@ export function App() {
           onConfirmSasVerification={(flowId) => {
             void confirmSasVerification(flowId);
           }}
+          onExportRoomKeys={(destinationPath, passphrase) => {
+            void exportRoomKeys(destinationPath, passphrase);
+          }}
+          onImportRoomKeys={(sourcePath, passphrase) => {
+            void importRoomKeys(sourcePath, passphrase);
+          }}
+          onBootstrapSecureBackup={(passphrase, recoveryKeyDestinationPath) => {
+            void bootstrapSecureBackup(passphrase, recoveryKeyDestinationPath);
+          }}
+          onChangeSecureBackupPassphrase={(
+            oldSecret,
+            newPassphrase,
+            recoveryKeyDestinationPath
+          ) => {
+            void changeSecureBackupPassphrase(
+              oldSecret,
+              newPassphrase,
+              recoveryKeyDestinationPath
+            );
+          }}
           onEnableKeyBackup={() => {
             void enableKeyBackup();
           }}
@@ -2762,16 +2813,50 @@ function authDiscoveryLabel(auth: DesktopSnapshot["state"]["auth"]) {
     case "discovering":
       return t("auth.checking");
     case "ready": {
-      const labels = auth.flows.map((flow) =>
-        typeof flow.kind === "string" ? flow.kind : "unknown"
-      );
+      const labels = auth.flows.map(authFlowLabel);
       return labels.length ? labels.join(" / ") : t("auth.noLoginMethods");
     }
     case "failed":
-      return auth.message;
+      return authFailureLabel(auth.failureKind);
     case "unknown":
     default:
       return t("auth.notChecked");
+  }
+}
+
+function authFlowLabel(flow: LoginFlow): string {
+  if (flow.display_name) {
+    return flow.display_name;
+  }
+
+  switch (flow.kind) {
+    case "password":
+      return t("auth.flowPassword");
+    case "sso":
+      return t("auth.flowSso");
+    case "oidc":
+      return t("auth.flowOidc");
+    case "token":
+      return t("auth.flowToken");
+    default:
+      return t("auth.flowUnknown");
+  }
+}
+
+function authFailureLabel(kind: AuthFailureKind): string {
+  switch (kind) {
+    case "network":
+      return t("auth.failureNetwork");
+    case "unsupported":
+      return t("auth.failureUnsupported");
+    case "cancelled":
+      return t("auth.notChecked");
+    case "forbidden":
+      return t("auth.failureForbidden");
+    case "timeout":
+      return t("auth.failureTimeout");
+    case "sdk":
+      return t("auth.failureSdk");
   }
 }
 
@@ -5096,6 +5181,10 @@ export function ContextualRightPanel({
   onBootstrapCrossSigning,
   onCancelVerification,
   onConfirmSasVerification,
+  onExportRoomKeys,
+  onImportRoomKeys,
+  onBootstrapSecureBackup,
+  onChangeSecureBackupPassphrase,
   onEnableKeyBackup,
   onResetIdentity,
   onResolveComposerKeyAction = ignoreComposerKeyAction,
@@ -5148,6 +5237,17 @@ export function ContextualRightPanel({
   onBootstrapCrossSigning: () => void;
   onCancelVerification: (flowId: number) => void;
   onConfirmSasVerification: (flowId: number) => void;
+  onExportRoomKeys: (destinationPath: string, passphrase: string) => void;
+  onImportRoomKeys: (sourcePath: string, passphrase: string) => void;
+  onBootstrapSecureBackup: (
+    passphrase: string | null,
+    recoveryKeyDestinationPath: string | null
+  ) => void;
+  onChangeSecureBackupPassphrase: (
+    oldSecret: string,
+    newPassphrase: string,
+    recoveryKeyDestinationPath: string | null
+  ) => void;
   onEnableKeyBackup: () => void;
   onResetIdentity: () => void;
   onResolveComposerKeyAction?: ResolveComposerKeyAction;
@@ -5209,6 +5309,10 @@ export function ContextualRightPanel({
           onBootstrapCrossSigning={onBootstrapCrossSigning}
           onCancelVerification={onCancelVerification}
           onConfirmSasVerification={onConfirmSasVerification}
+          onExportRoomKeys={onExportRoomKeys}
+          onImportRoomKeys={onImportRoomKeys}
+          onBootstrapSecureBackup={onBootstrapSecureBackup}
+          onChangeSecureBackupPassphrase={onChangeSecureBackupPassphrase}
           onEnableKeyBackup={onEnableKeyBackup}
           onOpenRecovery={onOpenRecovery}
           onOpenKeyboardSettings={onOpenKeyboardSettings}

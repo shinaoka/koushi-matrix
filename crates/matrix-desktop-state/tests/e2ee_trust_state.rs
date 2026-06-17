@@ -1,6 +1,7 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, CrossSigningStatus, E2eeTrustState, IdentityResetAuthType,
-    IdentityResetState, KeyBackupStatus, SasEmoji, SessionInfo, SessionState,
+    IdentityResetState, KeyBackupStatus, RecoveryKeyDeliveryState, RoomKeyExportState, SasEmoji,
+    SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo, SessionState,
     TrustOperationFailureKind, UiEvent, VerificationCancelReason, VerificationFlowState,
     VerificationTarget, reduce,
 };
@@ -95,6 +96,102 @@ fn restore_key_backup_starts_with_open_joined_room_hydration_total() {
             total_rooms: Some(2),
         }
     );
+}
+
+#[test]
+fn room_key_export_completion_can_leave_session_count_unknown() {
+    let mut state = ready_state();
+
+    reduce(
+        &mut state,
+        AppAction::RoomKeyExportRequested { request_id: 52 },
+    );
+    assert_eq!(
+        state.e2ee_trust.key_management.room_key_export,
+        RoomKeyExportState::Exporting { request_id: 52 }
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomKeyExported {
+            request_id: 52,
+            exported_sessions: None,
+        },
+    );
+    assert_eq!(
+        state.e2ee_trust.key_management.room_key_export,
+        RoomKeyExportState::Exported {
+            request_id: 52,
+            exported_sessions: None,
+        }
+    );
+}
+
+#[test]
+fn secure_backup_setup_recovery_key_ready_has_no_key_material() {
+    let mut state = ready_state();
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::SecureBackupSetupRequested { request_id: 33 },
+        ),
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged),
+        ]
+    );
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::SecureBackupRecoveryKeyReady {
+                request_id: 33,
+                delivery: RecoveryKeyDeliveryState::Written,
+            },
+        ),
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+            AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged),
+        ]
+    );
+    assert_eq!(
+        state.e2ee_trust.key_management.secure_backup_setup,
+        SecureBackupSetupState::RecoveryKeyReady {
+            request_id: 33,
+            delivery: RecoveryKeyDeliveryState::Written,
+        }
+    );
+    let debug = format!("{:?}", state.e2ee_trust.key_management.secure_backup_setup);
+    assert!(debug.contains("Written"));
+    assert!(!debug.contains("RecoveryKey("));
+}
+
+#[test]
+fn secure_backup_passphrase_change_reports_delivery_without_key_material() {
+    let mut state = ready_state();
+
+    reduce(
+        &mut state,
+        AppAction::SecureBackupPassphraseChangeRequested { request_id: 34 },
+    );
+    reduce(
+        &mut state,
+        AppAction::SecureBackupPassphraseChanged {
+            request_id: 34,
+            delivery: RecoveryKeyDeliveryState::NotWritten,
+        },
+    );
+
+    assert_eq!(
+        state.e2ee_trust.key_management.passphrase_change,
+        SecureBackupPassphraseChangeState::Changed {
+            request_id: 34,
+            delivery: RecoveryKeyDeliveryState::NotWritten,
+        }
+    );
+    let debug = format!("{:?}", state.e2ee_trust.key_management.passphrase_change);
+    assert!(debug.contains("NotWritten"));
+    assert!(!debug.contains("RecoveryKey("));
 }
 
 #[test]

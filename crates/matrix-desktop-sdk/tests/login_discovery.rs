@@ -28,6 +28,21 @@ fn parses_password_sso_and_token_flows() {
 }
 
 #[test]
+fn oidc_login_flow_maps_to_desktop_oidc_without_tokens() {
+    let flows = vec![matrix_desktop_sdk::MatrixLoginFlow {
+        kind: matrix_desktop_sdk::MatrixLoginFlowKind::Oidc,
+        delegated_oidc_compatibility: true,
+        display_name: Some("Provider".to_owned()),
+    }];
+
+    let mapped = matrix_desktop_sdk::map_login_flows_to_desktop(flows);
+
+    assert_eq!(mapped[0].kind, matrix_desktop_state::LoginFlowKind::Oidc);
+    assert!(mapped[0].delegated_oidc_compatibility);
+    assert_eq!(mapped[0].display_name.as_deref(), Some("Provider"));
+}
+
+#[test]
 fn keeps_unknown_flow_type_without_failing() {
     let response = serde_json::json!({
         "flows": [

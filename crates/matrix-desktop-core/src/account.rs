@@ -26,21 +26,25 @@
 //!   stop timeline subscriptions → stop search → stop sync → drop SDK handles.
 //! SDK handles dropped inside the Tokio runtime context.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use futures_util::StreamExt;
 use matrix_desktop_key::{SessionKeyId, StoredMatrixSession};
 use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
-    AppAction, AvatarImage, AvatarThumbnailState, CrossSigningStatus, E2eeRecoveryState,
-    IdentityResetAuthType, IdentityResetState, LoginRequest, OwnProfile, PresenceKind,
+    AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage, AvatarThumbnailState,
+    CrossSigningStatus, DeviceSessionSummary, E2eeRecoveryState, IdentityResetAuthType,
+    IdentityResetState, LoginRequest, OwnProfile, PresenceKind, RecoveryKeyDeliveryState,
     RecoveryMethod, RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle,
     ScheduledSendItem, SessionInfo, TrustOperationFailureKind, VerificationCancelReason,
     VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::command::{AccountCommand, RoomCommand, SearchCommand, SyncCommand, TimelineCommand};
+use crate::command::{
+    AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
+    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, TimelineCommand,
+};
 use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
 };
@@ -192,6 +196,9 @@ pub struct AccountActor {
     recovery_observer: Option<RecoveryStateObservation>,
     /// Pending SDK identity reset continuation, held only inside AccountActor.
     identity_reset_handle: Option<matrix_desktop_sdk::MatrixIdentityResetHandle>,
+    /// Actor-private mapping from app-owned device ordinal to raw Matrix
+    /// device id. Raw ids never enter reducer state or snapshots.
+    device_session_ordinals: BTreeMap<u64, String>,
     /// Pending SDK verification request continuation, held only inside
     /// AccountActor and never projected into AppState.
     verification_request: Option<PendingVerificationRequest>,
@@ -236,6 +243,7 @@ impl AccountActor {
             search_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
+            device_session_ordinals: BTreeMap::new(),
             verification_request: None,
             sas_verification: None,
             verification_request_observer: None,
@@ -349,6 +357,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.device_session_ordinals.clear();
         // Drop the session handle inside the runtime context
         // (overview.md Async rule 11 — deadpool-runtime panic prevention).
         drop(self.session.take());
@@ -876,6 +885,26 @@ impl AccountActor {
 
     async fn handle_command(&mut self, command: AccountCommand) {
         match command {
+            AccountCommand::DiscoverLogin {
+                request_id,
+                homeserver,
+            } => {
+                self.handle_discover_login(request_id, homeserver).await;
+            }
+            AccountCommand::StartOidcLogin {
+                request_id,
+                homeserver,
+            } => {
+                self.handle_start_oidc_login(request_id, homeserver).await;
+            }
+            AccountCommand::CompleteOidcLogin {
+                request_id,
+                homeserver,
+                callback_url,
+            } => {
+                self.handle_complete_oidc_login(request_id, homeserver, callback_url)
+                    .await;
+            }
             AccountCommand::LoginPassword {
                 request_id,
                 request,
@@ -893,6 +922,57 @@ impl AccountActor {
             }
             AccountCommand::QuerySavedSessions { request_id } => {
                 self.handle_query_saved_sessions(request_id);
+            }
+            AccountCommand::QueryDevices { request_id } => {
+                self.handle_query_devices(request_id).await;
+            }
+            AccountCommand::RenameDevice {
+                request_id,
+                device_ordinal,
+                display_name,
+            } => {
+                self.handle_rename_device(request_id, device_ordinal, display_name)
+                    .await;
+            }
+            AccountCommand::DeleteDevices {
+                request_id,
+                device_ordinals,
+                auth,
+            } => {
+                self.handle_delete_devices(request_id, device_ordinals, auth)
+                    .await;
+            }
+            AccountCommand::SoftLogoutReauth {
+                request_id,
+                password,
+            } => {
+                self.handle_soft_logout_reauth(request_id, password).await;
+            }
+            AccountCommand::ExportRoomKeys {
+                request_id,
+                request,
+            } => {
+                self.handle_export_room_keys(request_id, request).await;
+            }
+            AccountCommand::ImportRoomKeys {
+                request_id,
+                request,
+            } => {
+                self.handle_import_room_keys(request_id, request).await;
+            }
+            AccountCommand::BootstrapSecureBackup {
+                request_id,
+                request,
+            } => {
+                self.handle_bootstrap_secure_backup(request_id, request)
+                    .await;
+            }
+            AccountCommand::ChangeSecureBackupPassphrase {
+                request_id,
+                request,
+            } => {
+                self.handle_change_secure_backup_passphrase(request_id, request)
+                    .await;
             }
             AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
                 self.handle_probe_local_encryption_health(request_id);
@@ -1891,6 +1971,211 @@ impl AccountActor {
         }
     }
 
+    async fn handle_export_room_keys(&self, request_id: RequestId, request: RoomKeyExportRequest) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::RoomKeyExportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let RoomKeyExportRequest {
+            destination_path,
+            passphrase,
+        } = request;
+        let result =
+            matrix_desktop_sdk::export_room_keys_to_file(&session, destination_path, &passphrase)
+                .await;
+        drop(passphrase);
+        match result {
+            Ok(summary) => {
+                self.reduce(vec![AppAction::RoomKeyExported {
+                    request_id: request_id.sequence,
+                    exported_sessions: summary.exported_sessions,
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::RoomKeyExportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_import_room_keys(&self, request_id: RequestId, request: RoomKeyImportRequest) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::RoomKeyImportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let RoomKeyImportRequest {
+            source_path,
+            passphrase,
+        } = request;
+        let result =
+            matrix_desktop_sdk::import_room_keys_from_file(&session, source_path, &passphrase)
+                .await;
+        drop(passphrase);
+        match result {
+            Ok(summary) => {
+                self.reduce(vec![AppAction::RoomKeyImported {
+                    request_id: request_id.sequence,
+                    imported_count: summary.imported_count,
+                    total_count: summary.total_count,
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::RoomKeyImportFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_bootstrap_secure_backup(
+        &self,
+        request_id: RequestId,
+        request: SecureBackupSetupRequest,
+    ) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::SecureBackupSetupFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let SecureBackupSetupRequest {
+            passphrase,
+            recovery_key_destination_path,
+        } = request;
+        let result = matrix_desktop_sdk::bootstrap_secure_backup(
+            &session,
+            passphrase.as_ref(),
+            recovery_key_destination_path,
+        )
+        .await;
+        drop(passphrase);
+        match result {
+            Ok(summary) => {
+                let delivery = if summary.recovery_key_written {
+                    RecoveryKeyDeliveryState::Written
+                } else {
+                    RecoveryKeyDeliveryState::NotWritten
+                };
+                self.reduce(vec![
+                    AppAction::SecureBackupRecoveryKeyReady {
+                        request_id: request_id.sequence,
+                        delivery,
+                    },
+                    AppAction::SecureBackupSetupEnabled {
+                        request_id: request_id.sequence,
+                    },
+                ]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::SecureBackupSetupFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_change_secure_backup_passphrase(
+        &self,
+        request_id: RequestId,
+        request: SecureBackupPassphraseChangeRequest,
+    ) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::SecureBackupPassphraseChangeFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        let SecureBackupPassphraseChangeRequest {
+            old_secret,
+            new_passphrase,
+            recovery_key_destination_path,
+        } = request;
+        let result = matrix_desktop_sdk::change_secure_backup_passphrase(
+            &session,
+            &old_secret,
+            &new_passphrase,
+            recovery_key_destination_path,
+        )
+        .await;
+        drop(old_secret);
+        drop(new_passphrase);
+        match result {
+            Ok(summary) => {
+                let delivery = if summary.recovery_key_written {
+                    RecoveryKeyDeliveryState::Written
+                } else {
+                    RecoveryKeyDeliveryState::NotWritten
+                };
+                self.reduce(vec![AppAction::SecureBackupPassphraseChanged {
+                    request_id: request_id.sequence,
+                    delivery,
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::SecureBackupPassphraseChangeFailed {
+                    request_id: request_id.sequence,
+                    kind: TrustOperationFailureKind::Sdk,
+                }]);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
     async fn handle_reset_identity(&mut self, request_id: RequestId) {
         let session = match &self.session {
             Some(session) => session.clone(),
@@ -1935,6 +2220,55 @@ impl AccountActor {
                 }
             }
         }
+    }
+
+    async fn handle_discover_login(&mut self, _request_id: RequestId, homeserver: String) {
+        let requested_homeserver = homeserver.clone();
+        let discovery_result = tokio::task::spawn_blocking(move || {
+            matrix_desktop_sdk::discover_login_flows(&homeserver)
+        })
+        .await;
+
+        match discovery_result {
+            Ok(Ok(discovery)) => {
+                self.reduce(vec![AppAction::LoginDiscoverySucceeded {
+                    homeserver: requested_homeserver,
+                    flows: discovery.flows,
+                    delegated: discovery.delegated,
+                }]);
+            }
+            Ok(Err(error)) => {
+                self.reduce(vec![AppAction::LoginDiscoveryFailed {
+                    homeserver: requested_homeserver,
+                    kind: login_discovery_failure_kind(&error),
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::LoginDiscoveryFailed {
+                    homeserver: requested_homeserver,
+                    kind: AuthFailureKind::Sdk,
+                }]);
+            }
+        }
+    }
+
+    async fn handle_start_oidc_login(&mut self, _request_id: RequestId, homeserver: String) {
+        self.reduce(vec![AppAction::LoginDiscoveryFailed {
+            homeserver,
+            kind: AuthFailureKind::Unsupported,
+        }]);
+    }
+
+    async fn handle_complete_oidc_login(
+        &mut self,
+        _request_id: RequestId,
+        homeserver: String,
+        _callback_url: String,
+    ) {
+        self.reduce(vec![AppAction::LoginDiscoveryFailed {
+            homeserver,
+            kind: AuthFailureKind::Unsupported,
+        }]);
     }
 
     async fn handle_login_password(&mut self, request_id: RequestId, request: LoginRequest) {
@@ -1995,6 +2329,7 @@ impl AccountActor {
         drop(login_session);
 
         let session_arc = Arc::new(store_backed);
+        self.device_session_ordinals.clear();
         self.session = Some(session_arc.clone());
         self.session_key_id = Some(key_id);
 
@@ -2100,6 +2435,190 @@ impl AccountActor {
         }
     }
 
+    async fn handle_query_devices(&mut self, request_id: RequestId) {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.reduce(vec![AppAction::DeviceSessionsLoadFailed {
+                    request_id: request_id.sequence,
+                    kind: AuthFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            }
+        };
+
+        match matrix_desktop_sdk::list_devices(&session).await {
+            Ok(devices) => {
+                let mut ordinal_map = BTreeMap::new();
+                let summaries = devices
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, device)| {
+                        let ordinal = index as u64 + 1;
+                        ordinal_map.insert(ordinal, device.raw_device_id);
+                        DeviceSessionSummary {
+                            device_ordinal: ordinal,
+                            display_name: device.display_name,
+                            current: device.current,
+                            verified: device.verified,
+                            inactive: device.inactive,
+                        }
+                    })
+                    .collect();
+                self.device_session_ordinals = ordinal_map;
+                self.reduce(vec![AppAction::DeviceSessionsLoaded {
+                    request_id: request_id.sequence,
+                    devices: summaries,
+                }]);
+            }
+            Err(_) => {
+                self.reduce(vec![AppAction::DeviceSessionsLoadFailed {
+                    request_id: request_id.sequence,
+                    kind: AuthFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+            }
+        }
+    }
+
+    async fn handle_rename_device(
+        &mut self,
+        request_id: RequestId,
+        device_ordinal: u64,
+        display_name: String,
+    ) {
+        let operation = AccountManagementOperation::RenameDevice;
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::SessionRequired,
+                );
+                return;
+            }
+        };
+        let Some(raw_device_id) = self.device_session_ordinals.get(&device_ordinal).cloned() else {
+            self.project_account_management_failure(
+                request_id,
+                operation,
+                AuthFailureKind::Sdk,
+                CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Sdk,
+                },
+            );
+            return;
+        };
+
+        let result =
+            matrix_desktop_sdk::rename_device(&session, &raw_device_id, &display_name).await;
+        drop(display_name);
+        match result {
+            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
+                request_id: request_id.sequence,
+                operation,
+            }]),
+            Err(_) => self.project_account_management_failure(
+                request_id,
+                operation,
+                AuthFailureKind::Sdk,
+                CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Sdk,
+                },
+            ),
+        }
+    }
+
+    async fn handle_delete_devices(
+        &mut self,
+        request_id: RequestId,
+        device_ordinals: Vec<u64>,
+        auth: Option<matrix_desktop_state::IdentityResetAuthRequest>,
+    ) {
+        let operation = if device_ordinals.len() == 1 {
+            AccountManagementOperation::DeleteDevice
+        } else {
+            AccountManagementOperation::DeleteOtherDevices
+        };
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::SessionRequired,
+                );
+                return;
+            }
+        };
+        let mut raw_device_ids = Vec::with_capacity(device_ordinals.len());
+        for ordinal in device_ordinals {
+            let Some(raw_device_id) = self.device_session_ordinals.get(&ordinal) else {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+                return;
+            };
+            raw_device_ids.push(raw_device_id.clone());
+        }
+
+        let result =
+            matrix_desktop_sdk::delete_devices(&session, &raw_device_ids, auth.as_ref()).await;
+        drop(auth);
+        match result {
+            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
+                request_id: request_id.sequence,
+                operation,
+            }]),
+            Err(_) => self.project_account_management_failure(
+                request_id,
+                operation,
+                AuthFailureKind::Sdk,
+                CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Sdk,
+                },
+            ),
+        }
+    }
+
+    async fn handle_soft_logout_reauth(
+        &self,
+        request_id: RequestId,
+        password: matrix_desktop_state::AuthSecret,
+    ) {
+        drop(password);
+        self.emit_failure(
+            request_id,
+            CoreFailure::AccountOperationFailed {
+                kind: AuthFailureKind::Unsupported,
+            },
+        );
+    }
+
+    fn project_account_management_failure(
+        &self,
+        request_id: RequestId,
+        operation: AccountManagementOperation,
+        kind: AuthFailureKind,
+        failure: CoreFailure,
+    ) {
+        self.reduce(vec![AppAction::AccountManagementFailed {
+            request_id: request_id.sequence,
+            operation,
+            kind,
+        }]);
+        self.emit_failure(request_id, failure);
+    }
+
     async fn handle_switch_account(&mut self, request_id: RequestId, account_key: AccountKey) {
         // Ordered shutdown of the current account runtime WITHOUT clearing
         // credentials or stores.
@@ -2110,6 +2629,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.device_session_ordinals.clear();
         // Drop the SDK handle inside the runtime context (Async rule 11).
         drop(self.session.take());
         self.session_key_id = None;
@@ -2189,6 +2709,7 @@ impl AccountActor {
                 let account_key = account_key_from_info(&info);
 
                 let session_arc = Arc::new(session);
+                self.device_session_ordinals.clear();
                 self.session = Some(session_arc.clone());
                 self.session_key_id = Some(key_id);
 
@@ -2286,6 +2807,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.device_session_ordinals.clear();
 
         // Attempt server-side logout (best-effort; local cleanup always happens).
         let _ = matrix_desktop_sdk::logout(&session).await;
@@ -2479,6 +3001,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.device_session_ordinals.clear();
 
         drop(self.session.take());
         self.clear_account_persistence(&key_id);
@@ -2910,6 +3433,25 @@ fn classify_login_error(error: &matrix_desktop_sdk::PasswordLoginError) -> Login
     }
 }
 
+fn login_discovery_failure_kind(
+    error: &matrix_desktop_sdk::LoginDiscoveryError,
+) -> AuthFailureKind {
+    match error {
+        matrix_desktop_sdk::LoginDiscoveryError::RequestFailed(_) => AuthFailureKind::Network,
+        matrix_desktop_sdk::LoginDiscoveryError::HttpStatus { status: 403, .. } => {
+            AuthFailureKind::Forbidden
+        }
+        matrix_desktop_sdk::LoginDiscoveryError::HttpStatus { .. }
+        | matrix_desktop_sdk::LoginDiscoveryError::MissingFlows
+        | matrix_desktop_sdk::LoginDiscoveryError::InvalidResponse(_) => AuthFailureKind::Sdk,
+        matrix_desktop_sdk::LoginDiscoveryError::InvalidHomeserver(_)
+        | matrix_desktop_sdk::LoginDiscoveryError::UnsupportedHomeserverScheme
+        | matrix_desktop_sdk::LoginDiscoveryError::InsecureHomeserverScheme => {
+            AuthFailureKind::Unsupported
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures_util::stream;
@@ -3258,6 +3800,7 @@ mod tests {
             search_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
+            device_session_ordinals: BTreeMap::new(),
             verification_request: None,
             sas_verification: None,
             verification_request_observer: None,

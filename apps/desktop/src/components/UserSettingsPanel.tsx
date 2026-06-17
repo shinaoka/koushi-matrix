@@ -3,6 +3,7 @@ import {
   Bell,
   Code2,
   Check,
+  Download,
   EyeOff,
   Image,
   KeyRound,
@@ -14,6 +15,7 @@ import {
   ShieldQuestion,
   ShieldX,
   SlidersHorizontal,
+  Upload,
   UserRound,
   X
 } from "lucide-react";
@@ -33,10 +35,15 @@ import type {
   LocalEncryptionState,
   MediaSettings,
   NotificationSettings,
+  RecoveryKeyDeliveryState,
   SavedSessionInfo,
   SettingsPatch,
   SettingsState,
   ProfileState,
+  RoomKeyExportState,
+  RoomKeyImportState,
+  SecureBackupPassphraseChangeState,
+  SecureBackupSetupState,
   ThemePreference,
   TrustOperationFailureKind,
   VerificationFlowState
@@ -56,6 +63,10 @@ export function UserSettingsPanel({
   onSetAvatar,
   onBootstrapCrossSigning,
   onEnableKeyBackup,
+  onExportRoomKeys,
+  onImportRoomKeys,
+  onBootstrapSecureBackup,
+  onChangeSecureBackupPassphrase,
   onAcceptVerification,
   onConfirmSasVerification,
   onCancelVerification,
@@ -80,6 +91,17 @@ export function UserSettingsPanel({
   onSetAvatar: (file: File) => void;
   onBootstrapCrossSigning: () => void;
   onEnableKeyBackup: () => void;
+  onExportRoomKeys: (destinationPath: string, passphrase: string) => void;
+  onImportRoomKeys: (sourcePath: string, passphrase: string) => void;
+  onBootstrapSecureBackup: (
+    passphrase: string | null,
+    recoveryKeyDestinationPath: string | null
+  ) => void;
+  onChangeSecureBackupPassphrase: (
+    oldSecret: string,
+    newPassphrase: string,
+    recoveryKeyDestinationPath: string | null
+  ) => void;
   onAcceptVerification: (flowId: number) => void;
   onConfirmSasVerification: (flowId: number) => void;
   onCancelVerification: (flowId: number) => void;
@@ -393,8 +415,13 @@ export function UserSettingsPanel({
       <section className="settings-section" aria-label={t("settings.security")}>
         <h3>{t("settings.security")}</h3>
         <SecuritySection
+          keyManagement={e2eeTrust.key_management}
           localEncryption={localEncryption}
           platform={platform}
+          onBootstrapSecureBackup={onBootstrapSecureBackup}
+          onChangeSecureBackupPassphrase={onChangeSecureBackupPassphrase}
+          onExportRoomKeys={onExportRoomKeys}
+          onImportRoomKeys={onImportRoomKeys}
           onOpenRecovery={onOpenRecovery}
           onProbeLocalEncryption={onProbeLocalEncryption}
           onResetLocalData={onResetLocalData}
@@ -448,23 +475,102 @@ export function UserSettingsPanel({
 }
 
 function SecuritySection({
+  keyManagement,
   localEncryption,
   platform,
+  onExportRoomKeys,
+  onImportRoomKeys,
+  onBootstrapSecureBackup,
+  onChangeSecureBackupPassphrase,
   onOpenRecovery,
   onProbeLocalEncryption,
   onResetLocalData
 }: {
+  keyManagement: E2eeTrustState["key_management"];
   localEncryption: LocalEncryptionState;
   platform: DisplayPlatform;
+  onExportRoomKeys: (destinationPath: string, passphrase: string) => void;
+  onImportRoomKeys: (sourcePath: string, passphrase: string) => void;
+  onBootstrapSecureBackup: (
+    passphrase: string | null,
+    recoveryKeyDestinationPath: string | null
+  ) => void;
+  onChangeSecureBackupPassphrase: (
+    oldSecret: string,
+    newPassphrase: string,
+    recoveryKeyDestinationPath: string | null
+  ) => void;
   onOpenRecovery: () => void;
   onProbeLocalEncryption: () => void;
   onResetLocalData: () => void;
 }) {
   const status = localEncryptionStatus(localEncryption);
+  const exportDestinationRef = useRef<HTMLInputElement>(null);
+  const exportPassphraseRef = useRef<HTMLInputElement>(null);
+  const importSourceRef = useRef<HTMLInputElement>(null);
+  const importPassphraseRef = useRef<HTMLInputElement>(null);
+  const secureBackupPassphraseRef = useRef<HTMLInputElement>(null);
+  const secureBackupRecoveryPathRef = useRef<HTMLInputElement>(null);
+  const oldSecureBackupSecretRef = useRef<HTMLInputElement>(null);
+  const newSecureBackupPassphraseRef = useRef<HTMLInputElement>(null);
+  const passphraseChangeRecoveryPathRef = useRef<HTMLInputElement>(null);
   const canReset =
     localEncryption.kind === "missingCredential" ||
     localEncryption.kind === "resetRequired" ||
     localEncryption.kind === "resetting";
+
+  function submitRoomKeyExport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const destinationPath = exportDestinationRef.current?.value.trim() ?? "";
+    const passphrase = exportPassphraseRef.current?.value ?? "";
+    if (!destinationPath || !passphrase) {
+      return;
+    }
+    onExportRoomKeys(destinationPath, passphrase);
+    if (exportPassphraseRef.current) {
+      exportPassphraseRef.current.value = "";
+    }
+  }
+
+  function submitRoomKeyImport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const sourcePath = importSourceRef.current?.value.trim() ?? "";
+    const passphrase = importPassphraseRef.current?.value ?? "";
+    if (!sourcePath || !passphrase) {
+      return;
+    }
+    onImportRoomKeys(sourcePath, passphrase);
+    if (importPassphraseRef.current) {
+      importPassphraseRef.current.value = "";
+    }
+  }
+
+  function submitSecureBackupSetup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const passphrase = secureBackupPassphraseRef.current?.value ?? "";
+    const recoveryPath = secureBackupRecoveryPathRef.current?.value.trim() ?? "";
+    onBootstrapSecureBackup(passphrase.length > 0 ? passphrase : null, recoveryPath || null);
+    if (secureBackupPassphraseRef.current) {
+      secureBackupPassphraseRef.current.value = "";
+    }
+  }
+
+  function submitSecureBackupPassphraseChange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const oldSecret = oldSecureBackupSecretRef.current?.value ?? "";
+    const newPassphrase = newSecureBackupPassphraseRef.current?.value ?? "";
+    const recoveryPath = passphraseChangeRecoveryPathRef.current?.value.trim() ?? "";
+    if (!oldSecret || !newPassphrase) {
+      return;
+    }
+    onChangeSecureBackupPassphrase(oldSecret, newPassphrase, recoveryPath || null);
+    if (oldSecureBackupSecretRef.current) {
+      oldSecureBackupSecretRef.current.value = "";
+    }
+    if (newSecureBackupPassphraseRef.current) {
+      newSecureBackupPassphraseRef.current.value = "";
+    }
+  }
 
   return (
     <>
@@ -515,7 +621,148 @@ function SecuritySection({
           />
         ) : null}
       </div>
+      <section className="settings-section" aria-label={t("settings.keyManagement")}>
+        <h4 className="settings-subheading">{t("settings.keyManagement")}</h4>
+        <div className="settings-control-stack">
+          <form
+            aria-label={t("settings.roomKeyExport")}
+            className="profile-settings-form"
+            onSubmit={submitRoomKeyExport}
+          >
+            <KeyManagementStatus
+              label={t("settings.roomKeyExport")}
+              value={roomKeyExportStatusLabel(keyManagement.room_key_export)}
+              testId="room-key-export-state"
+            />
+            <label className="profile-settings-field">
+              <span>{t("settings.roomKeyExportDestination")}</span>
+              <input ref={exportDestinationRef} autoComplete="off" type="text" />
+            </label>
+            <label className="profile-settings-field">
+              <span>{t("settings.roomKeyPassphrase")}</span>
+              <input ref={exportPassphraseRef} autoComplete="new-password" type="password" />
+            </label>
+            <div className="profile-settings-actions">
+              <button className="trust-action-button primary" type="submit">
+                <Download size={14} />
+                <span>{t("settings.exportRoomKeys")}</span>
+              </button>
+            </div>
+          </form>
+
+          <form
+            aria-label={t("settings.roomKeyImport")}
+            className="profile-settings-form"
+            onSubmit={submitRoomKeyImport}
+          >
+            <KeyManagementStatus
+              label={t("settings.roomKeyImport")}
+              value={roomKeyImportStatusLabel(keyManagement.room_key_import)}
+              testId="room-key-import-state"
+            />
+            <label className="profile-settings-field">
+              <span>{t("settings.roomKeyImportSource")}</span>
+              <input ref={importSourceRef} autoComplete="off" type="text" />
+            </label>
+            <label className="profile-settings-field">
+              <span>{t("settings.roomKeyPassphrase")}</span>
+              <input ref={importPassphraseRef} autoComplete="new-password" type="password" />
+            </label>
+            <div className="profile-settings-actions">
+              <button className="trust-action-button primary" type="submit">
+                <Upload size={14} />
+                <span>{t("settings.importRoomKeys")}</span>
+              </button>
+            </div>
+          </form>
+
+          <form
+            aria-label={t("settings.secureBackup")}
+            className="profile-settings-form"
+            onSubmit={submitSecureBackupSetup}
+          >
+            <KeyManagementStatus
+              label={t("settings.secureBackup")}
+              value={secureBackupSetupStatusLabel(keyManagement.secure_backup_setup)}
+              testId="secure-backup-state"
+            />
+            <label className="profile-settings-field">
+              <span>{t("settings.secureBackupPassphrase")}</span>
+              <input
+                ref={secureBackupPassphraseRef}
+                autoComplete="new-password"
+                type="password"
+              />
+            </label>
+            <label className="profile-settings-field">
+              <span>{t("settings.recoveryKeyDestination")}</span>
+              <input ref={secureBackupRecoveryPathRef} autoComplete="off" type="text" />
+            </label>
+            <div className="profile-settings-actions">
+              <button className="trust-action-button primary" type="submit">
+                <KeyRound size={14} />
+                <span>{t("settings.setupSecureBackup")}</span>
+              </button>
+            </div>
+          </form>
+
+          <form
+            aria-label={t("settings.changeSecureBackupPassphrase")}
+            className="profile-settings-form"
+            onSubmit={submitSecureBackupPassphraseChange}
+          >
+            <KeyManagementStatus
+              label={t("settings.changeSecureBackupPassphrase")}
+              value={secureBackupPassphraseChangeStatusLabel(keyManagement.passphrase_change)}
+              testId="secure-backup-passphrase-change-state"
+            />
+            <label className="profile-settings-field">
+              <span>{t("settings.oldSecureBackupSecret")}</span>
+              <input
+                ref={oldSecureBackupSecretRef}
+                autoComplete="current-password"
+                type="password"
+              />
+            </label>
+            <label className="profile-settings-field">
+              <span>{t("settings.newSecureBackupPassphrase")}</span>
+              <input
+                ref={newSecureBackupPassphraseRef}
+                autoComplete="new-password"
+                type="password"
+              />
+            </label>
+            <label className="profile-settings-field">
+              <span>{t("settings.recoveryKeyDestination")}</span>
+              <input ref={passphraseChangeRecoveryPathRef} autoComplete="off" type="text" />
+            </label>
+            <div className="profile-settings-actions">
+              <button className="trust-action-button primary" type="submit">
+                <RefreshCcw size={14} />
+                <span>{t("settings.updateSecureBackupPassphrase")}</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
     </>
+  );
+}
+
+function KeyManagementStatus({
+  label,
+  value,
+  testId
+}: {
+  label: string;
+  value: string;
+  testId: string;
+}) {
+  return (
+    <div className="settings-detail-row">
+      <span>{label}</span>
+      <small data-testid={testId}>{value}</small>
+    </div>
   );
 }
 
@@ -775,6 +1022,86 @@ function localEncryptionStatus(state: LocalEncryptionState): {
         tone: "neutral",
         icon: <ShieldQuestion size={16} />
       };
+  }
+}
+
+function roomKeyExportStatusLabel(status: RoomKeyExportState): string {
+  switch (status.kind) {
+    case "idle":
+      return t("settings.roomKeyExportIdle");
+    case "exporting":
+      return t("settings.roomKeyExporting");
+    case "exported":
+      return status.exported_sessions === null
+        ? t("settings.roomKeyExportedUnknown")
+        : t("settings.roomKeyExportedCount", { count: status.exported_sessions });
+    case "failed":
+      return t("settings.roomKeyExportFailed", {
+        reason: failureKindLabel(status.failureKind)
+      });
+  }
+}
+
+function roomKeyImportStatusLabel(status: RoomKeyImportState): string {
+  switch (status.kind) {
+    case "idle":
+      return t("settings.roomKeyImportIdle");
+    case "importing":
+      return t("settings.roomKeyImporting");
+    case "imported":
+      return t("settings.roomKeyImportedCount", {
+        imported: status.imported_count,
+        total: status.total_count
+      });
+    case "failed":
+      return t("settings.roomKeyImportFailed", {
+        reason: failureKindLabel(status.failureKind)
+      });
+  }
+}
+
+function secureBackupSetupStatusLabel(status: SecureBackupSetupState): string {
+  switch (status.kind) {
+    case "idle":
+      return t("settings.secureBackupIdle");
+    case "settingUp":
+      return t("settings.secureBackupSettingUp");
+    case "recoveryKeyReady":
+      return recoveryKeyDeliveryLabel(status.delivery);
+    case "enabled":
+      return t("settings.secureBackupEnabled");
+    case "failed":
+      return t("settings.secureBackupFailed", {
+        reason: failureKindLabel(status.failureKind)
+      });
+  }
+}
+
+function secureBackupPassphraseChangeStatusLabel(
+  status: SecureBackupPassphraseChangeState
+): string {
+  switch (status.kind) {
+    case "idle":
+      return t("settings.passphraseChangeIdle");
+    case "changing":
+      return t("settings.passphraseChangeChanging");
+    case "changed":
+      return status.delivery.kind === "written"
+        ? t("settings.passphraseChangeRecoveryKeySaved")
+        : t("settings.passphraseChangeChanged");
+    case "failed":
+      return t("settings.passphraseChangeFailed", {
+        reason: failureKindLabel(status.failureKind)
+      });
+  }
+}
+
+function recoveryKeyDeliveryLabel(delivery: RecoveryKeyDeliveryState): string {
+  switch (delivery.kind) {
+    case "written":
+      return t("settings.recoveryKeySaved");
+    case "notWritten":
+      return t("settings.recoveryKeyReady");
   }
 }
 

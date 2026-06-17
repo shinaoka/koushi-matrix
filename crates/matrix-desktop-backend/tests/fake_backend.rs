@@ -5,9 +5,9 @@ use matrix_desktop_backend::{
 };
 use matrix_desktop_search::SearchCandidate;
 use matrix_desktop_state::{
-    AppAction, AppEffect, AuthDiscoveryState, AuthSecret, E2eeRecoveryState, LoginFlowKind,
-    LoginRequest, RecoveryMethod, RecoveryRequest, SearchMatchField, SearchScope, SearchState,
-    SessionState, SyncState, ThreadPaneState, compose_sidebar,
+    AppAction, AppEffect, AuthDiscoveryState, AuthFailureKind, AuthSecret, E2eeRecoveryState,
+    LoginFlowKind, LoginRequest, RecoveryMethod, RecoveryRequest, SearchMatchField, SearchScope,
+    SearchState, SessionState, SyncState, ThreadPaneState, compose_sidebar,
 };
 use std::{
     io::{Read, Write},
@@ -195,7 +195,10 @@ fn fake_backend_discovers_password_and_sso_login_methods() {
         homeserver: "https://matrix.example.org".to_owned(),
     });
 
-    let AuthDiscoveryState::Ready { homeserver, flows } = &backend.snapshot().state.auth else {
+    let AuthDiscoveryState::Ready {
+        homeserver, flows, ..
+    } = &backend.snapshot().state.auth
+    else {
         panic!("expected discovered login flows");
     };
 
@@ -231,6 +234,7 @@ fn http_backend_discovers_login_methods_from_homeserver() {
     let AuthDiscoveryState::Ready {
         homeserver: discovered_homeserver,
         flows,
+        ..
     } = &backend.snapshot().state.auth
     else {
         panic!("expected discovered login flows");
@@ -259,15 +263,14 @@ fn http_backend_records_login_discovery_failure() {
 
     let AuthDiscoveryState::Failed {
         homeserver: failed_homeserver,
-        message,
+        kind,
     } = &backend.snapshot().state.auth
     else {
         panic!("expected login discovery failure");
     };
 
     assert_eq!(failed_homeserver, &homeserver);
-    assert!(message.contains("HTTP 404"));
-    assert!(message.contains("OAuth 2.0 authentication is in use"));
+    assert_eq!(*kind, AuthFailureKind::Sdk);
 }
 
 #[test]

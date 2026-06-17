@@ -14,10 +14,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use matrix_desktop_state::{
-    ActivityMarkReadTarget, ActivityRow, ActivityState, ActivityStream, ActivityTab, AppAction,
-    AppEffect, AppState, ComposerDraftStore, MentionIntent, ProfileUpdateRequest, RoomSummary,
-    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
-    SessionState, ThreadPaneState, UiEvent, reduce,
+    AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityState, ActivityStream,
+    ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore, MentionIntent,
+    ProfileUpdateRequest, RoomSummary, ScheduledSendCapability, ScheduledSendHandle,
+    ScheduledSendItem, SearchScope as AppSearchScope, SessionState, ThreadPaneState, UiEvent,
+    reduce,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -1632,6 +1633,13 @@ fn map_core_search_scope_to_state(scope: SearchScope) -> AppSearchScope {
 
 fn account_command_projected_action(command: &AccountCommand) -> Option<AppAction> {
     match command {
+        AccountCommand::DiscoverLogin { homeserver, .. }
+        | AccountCommand::StartOidcLogin { homeserver, .. }
+        | AccountCommand::CompleteOidcLogin { homeserver, .. } => {
+            Some(AppAction::LoginDiscoveryRequested {
+                homeserver: homeserver.clone(),
+            })
+        }
         AccountCommand::RequestVerification { request_id, target } => {
             Some(AppAction::VerificationRequested {
                 request_id: request_id.sequence,
@@ -1672,6 +1680,26 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
             request_id: request_id.sequence,
             version: version.clone(),
         }),
+        AccountCommand::ExportRoomKeys { request_id, .. } => {
+            Some(AppAction::RoomKeyExportRequested {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::ImportRoomKeys { request_id, .. } => {
+            Some(AppAction::RoomKeyImportRequested {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::BootstrapSecureBackup { request_id, .. } => {
+            Some(AppAction::SecureBackupSetupRequested {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::ChangeSecureBackupPassphrase { request_id, .. } => {
+            Some(AppAction::SecureBackupPassphraseChangeRequested {
+                request_id: request_id.sequence,
+            })
+        }
         AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
             request_id: request_id.sequence,
         }),
@@ -1688,6 +1716,29 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: *flow_id,
             })
         }
+        AccountCommand::QueryDevices { request_id } => {
+            Some(AppAction::DeviceSessionsLoadRequested {
+                request_id: request_id.sequence,
+            })
+        }
+        AccountCommand::RenameDevice { request_id, .. } => {
+            Some(AppAction::AccountManagementRequested {
+                request_id: request_id.sequence,
+                operation: AccountManagementOperation::RenameDevice,
+            })
+        }
+        AccountCommand::DeleteDevices {
+            request_id,
+            device_ordinals,
+            ..
+        } => Some(AppAction::AccountManagementRequested {
+            request_id: request_id.sequence,
+            operation: if device_ordinals.len() == 1 {
+                AccountManagementOperation::DeleteDevice
+            } else {
+                AccountManagementOperation::DeleteOtherDevices
+            },
+        }),
         AccountCommand::SetDisplayName {
             request_id,
             display_name,
@@ -1721,6 +1772,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         | AccountCommand::RestoreLastSession { .. }
         | AccountCommand::QuerySavedSessions { .. }
         | AccountCommand::SubmitRecovery { .. }
+        | AccountCommand::SoftLogoutReauth { .. }
         | AccountCommand::SetPresence { .. }
         | AccountCommand::Logout { .. }
         | AccountCommand::SwitchAccount { .. } => None,
@@ -2326,6 +2378,25 @@ mod tests {
             }),
             Some(AppAction::ResetIdentityAuthSubmitted {
                 request_id: flow_id
+            })
+        );
+    }
+
+    #[test]
+    fn oidc_completion_projects_auth_discovery_before_actor_placeholder() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 8,
+        };
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::CompleteOidcLogin {
+                request_id,
+                homeserver: "https://matrix.example.org".to_owned(),
+                callback_url: "matrix-desktop://auth/callback?code=secret".to_owned(),
+            }),
+            Some(AppAction::LoginDiscoveryRequested {
+                homeserver: "https://matrix.example.org".to_owned(),
             })
         );
     }

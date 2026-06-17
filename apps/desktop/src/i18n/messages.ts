@@ -37,6 +37,16 @@ export type MessageId =
   | "auth.encryptionRecovery"
   | "app.about"
   | "app.title"
+  | "auth.failureForbidden"
+  | "auth.failureNetwork"
+  | "auth.failureSdk"
+  | "auth.failureTimeout"
+  | "auth.failureUnsupported"
+  | "auth.flowOidc"
+  | "auth.flowPassword"
+  | "auth.flowSso"
+  | "auth.flowToken"
+  | "auth.flowUnknown"
   | "auth.matrixAccount"
   | "auth.matrixDesktop"
   | "auth.noLoginMethods"
@@ -297,6 +307,42 @@ export type MessageId =
   | "settings.searchIndex"
   | "settings.security"
   | "settings.securityPrivacy"
+  | "settings.keyManagement"
+  | "settings.roomKeyExport"
+  | "settings.roomKeyExportDestination"
+  | "settings.roomKeyExportIdle"
+  | "settings.roomKeyExporting"
+  | "settings.roomKeyExportedUnknown"
+  | "settings.roomKeyExportedCount"
+  | "settings.roomKeyExportFailed"
+  | "settings.exportRoomKeys"
+  | "settings.roomKeyImport"
+  | "settings.roomKeyImportSource"
+  | "settings.roomKeyImportIdle"
+  | "settings.roomKeyImporting"
+  | "settings.roomKeyImportedCount"
+  | "settings.roomKeyImportFailed"
+  | "settings.importRoomKeys"
+  | "settings.roomKeyPassphrase"
+  | "settings.secureBackup"
+  | "settings.secureBackupPassphrase"
+  | "settings.recoveryKeyDestination"
+  | "settings.setupSecureBackup"
+  | "settings.secureBackupIdle"
+  | "settings.secureBackupSettingUp"
+  | "settings.secureBackupEnabled"
+  | "settings.secureBackupFailed"
+  | "settings.recoveryKeyReady"
+  | "settings.recoveryKeySaved"
+  | "settings.changeSecureBackupPassphrase"
+  | "settings.oldSecureBackupSecret"
+  | "settings.newSecureBackupPassphrase"
+  | "settings.updateSecureBackupPassphrase"
+  | "settings.passphraseChangeIdle"
+  | "settings.passphraseChangeChanging"
+  | "settings.passphraseChangeChanged"
+  | "settings.passphraseChangeRecoveryKeySaved"
+  | "settings.passphraseChangeFailed"
   | "settings.resetLocalData"
   | "settings.session"
   | "settings.sessionSecretLabel"
@@ -672,6 +718,16 @@ const en: Catalog = {
   "auth.encryptionRecovery": "Encryption Recovery",
   "app.about": "About Ruri",
   "app.title": "Ruri",
+  "auth.failureForbidden": "Login methods are not available for this account",
+  "auth.failureNetwork": "Could not reach the homeserver",
+  "auth.failureSdk": "Could not check login methods",
+  "auth.failureTimeout": "Login method check timed out",
+  "auth.failureUnsupported": "Unsupported homeserver",
+  "auth.flowOidc": "OIDC",
+  "auth.flowPassword": "Password",
+  "auth.flowSso": "Single sign-on",
+  "auth.flowToken": "Token",
+  "auth.flowUnknown": "Unknown method",
   "auth.matrixAccount": "Matrix account",
   "auth.matrixDesktop": "Ruri",
   "auth.noLoginMethods": "No login methods",
@@ -932,6 +988,42 @@ const en: Catalog = {
   "settings.searchIndex": "Encrypted local index",
   "settings.security": "Security",
   "settings.securityPrivacy": "Security & Privacy",
+  "settings.keyManagement": "Key management",
+  "settings.roomKeyExport": "Room key export",
+  "settings.roomKeyExportDestination": "Key export destination",
+  "settings.roomKeyExportIdle": "Not exported",
+  "settings.roomKeyExporting": "Exporting",
+  "settings.roomKeyExportedUnknown": "Exported",
+  "settings.roomKeyExportedCount": "{count} sessions exported",
+  "settings.roomKeyExportFailed": "Export failed: {reason}",
+  "settings.exportRoomKeys": "Export room keys",
+  "settings.roomKeyImport": "Room key import",
+  "settings.roomKeyImportSource": "Key import source",
+  "settings.roomKeyImportIdle": "Not imported",
+  "settings.roomKeyImporting": "Importing",
+  "settings.roomKeyImportedCount": "{imported} of {total} imported",
+  "settings.roomKeyImportFailed": "Import failed: {reason}",
+  "settings.importRoomKeys": "Import room keys",
+  "settings.roomKeyPassphrase": "Room key passphrase",
+  "settings.secureBackup": "Secure backup",
+  "settings.secureBackupPassphrase": "Secure backup passphrase",
+  "settings.recoveryKeyDestination": "Recovery key destination",
+  "settings.setupSecureBackup": "Set up secure backup",
+  "settings.secureBackupIdle": "Not set up",
+  "settings.secureBackupSettingUp": "Setting up",
+  "settings.secureBackupEnabled": "Enabled",
+  "settings.secureBackupFailed": "Setup failed: {reason}",
+  "settings.recoveryKeyReady": "Recovery key ready",
+  "settings.recoveryKeySaved": "Recovery key saved",
+  "settings.changeSecureBackupPassphrase": "Change secure backup passphrase",
+  "settings.oldSecureBackupSecret": "Current recovery secret",
+  "settings.newSecureBackupPassphrase": "New secure backup passphrase",
+  "settings.updateSecureBackupPassphrase": "Update secure backup passphrase",
+  "settings.passphraseChangeIdle": "No passphrase change",
+  "settings.passphraseChangeChanging": "Changing",
+  "settings.passphraseChangeChanged": "Changed",
+  "settings.passphraseChangeRecoveryKeySaved": "Changed; recovery key saved",
+  "settings.passphraseChangeFailed": "Change failed: {reason}",
   "settings.resetLocalData": "Reset local data",
   "settings.session": "Session",
   "settings.sessionSecretLabel": "Session secret",
@@ -1477,6 +1569,42 @@ const ja: Catalog = {
   "settings.searchIndex": "暗号化ローカルインデックス",
   "settings.security": "セキュリティ",
   "settings.securityPrivacy": "セキュリティとプライバシー",
+  "settings.keyManagement": "鍵管理",
+  "settings.roomKeyExport": "ルーム鍵エクスポート",
+  "settings.roomKeyExportDestination": "鍵エクスポート先",
+  "settings.roomKeyExportIdle": "未エクスポート",
+  "settings.roomKeyExporting": "エクスポート中",
+  "settings.roomKeyExportedUnknown": "エクスポート済み",
+  "settings.roomKeyExportedCount": "{count} セッションをエクスポート済み",
+  "settings.roomKeyExportFailed": "エクスポート失敗: {reason}",
+  "settings.exportRoomKeys": "ルーム鍵をエクスポート",
+  "settings.roomKeyImport": "ルーム鍵インポート",
+  "settings.roomKeyImportSource": "鍵インポート元",
+  "settings.roomKeyImportIdle": "未インポート",
+  "settings.roomKeyImporting": "インポート中",
+  "settings.roomKeyImportedCount": "{imported}/{total} をインポート済み",
+  "settings.roomKeyImportFailed": "インポート失敗: {reason}",
+  "settings.importRoomKeys": "ルーム鍵をインポート",
+  "settings.roomKeyPassphrase": "ルーム鍵パスフレーズ",
+  "settings.secureBackup": "セキュアバックアップ",
+  "settings.secureBackupPassphrase": "セキュアバックアップのパスフレーズ",
+  "settings.recoveryKeyDestination": "リカバリーキー保存先",
+  "settings.setupSecureBackup": "セキュアバックアップをセットアップ",
+  "settings.secureBackupIdle": "未セットアップ",
+  "settings.secureBackupSettingUp": "セットアップ中",
+  "settings.secureBackupEnabled": "有効",
+  "settings.secureBackupFailed": "セットアップ失敗: {reason}",
+  "settings.recoveryKeyReady": "リカバリーキー準備済み",
+  "settings.recoveryKeySaved": "リカバリーキー保存済み",
+  "settings.changeSecureBackupPassphrase": "セキュアバックアップのパスフレーズを変更",
+  "settings.oldSecureBackupSecret": "現在のリカバリーシークレット",
+  "settings.newSecureBackupPassphrase": "新しいセキュアバックアップのパスフレーズ",
+  "settings.updateSecureBackupPassphrase": "セキュアバックアップのパスフレーズを更新",
+  "settings.passphraseChangeIdle": "パスフレーズ変更なし",
+  "settings.passphraseChangeChanging": "変更中",
+  "settings.passphraseChangeChanged": "変更済み",
+  "settings.passphraseChangeRecoveryKeySaved": "変更済み、リカバリーキー保存済み",
+  "settings.passphraseChangeFailed": "変更失敗: {reason}",
   "settings.resetLocalData": "ローカルデータをリセット",
   "settings.session": "セッション",
   "settings.sessionSecretLabel": "セッションシークレット",

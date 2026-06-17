@@ -161,6 +161,16 @@ describe("i18n message catalog", () => {
 });
 
 const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
+  "auth.failureForbidden",
+  "auth.failureNetwork",
+  "auth.failureSdk",
+  "auth.failureTimeout",
+  "auth.failureUnsupported",
+  "auth.flowOidc",
+  "auth.flowPassword",
+  "auth.flowSso",
+  "auth.flowToken",
+  "auth.flowUnknown",
   "settings.fontInter",
   "settings.twemojiColr",
   "timeline.mediaUploadProgress"

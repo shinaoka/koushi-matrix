@@ -153,6 +153,9 @@ function readySnapshot(
       ],
       invites: [],
       room_interactions: {},
+      device_sessions: { kind: "idle" },
+      account_management: { kind: "idle" },
+      qr_login: { kind: "idle" },
       directory: { query: { kind: "closed" }, join: { kind: "idle" } },
       room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
       activity: { kind: "closed" },
@@ -237,7 +240,17 @@ function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
     cross_signing: { kind: "unknown" },
     key_backup: { kind: "unknown" },
     identity_reset: { kind: "idle" },
+    key_management: defaultE2eeKeyManagementState(),
     devices: []
+  };
+}
+
+function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["e2ee_trust"]["key_management"] {
+  return {
+    room_key_export: { kind: "idle" },
+    room_key_import: { kind: "idle" },
+    secure_backup_setup: { kind: "idle" },
+    passphrase_change: { kind: "idle" }
   };
 }
 
@@ -451,6 +464,7 @@ function e2eeTrustFixture(): E2eeTrustState {
     cross_signing: { kind: "missing" },
     key_backup: { kind: "disabled" },
     identity_reset: { kind: "idle" },
+    key_management: defaultE2eeKeyManagementState(),
     devices: [
       {
         user_id: USER_ID,
@@ -599,6 +613,91 @@ mock.setCommandResponse("enable_key_backup", () =>
       }
     }
   })
+);
+mock.setCommandResponse("export_room_keys", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        key_management: {
+          ...currentSnapshot.state.e2ee_trust.key_management,
+          room_key_export: {
+            kind: "exported",
+            request_id: 9_200,
+            exported_sessions: null
+          }
+        }
+      }
+    }
+  })
+);
+mock.setCommandResponse("import_room_keys", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      e2ee_trust: {
+        ...currentSnapshot.state.e2ee_trust,
+        key_management: {
+          ...currentSnapshot.state.e2ee_trust.key_management,
+          room_key_import: {
+            kind: "imported",
+            request_id: 9_201,
+            imported_count: 1,
+            total_count: 1
+          }
+        }
+      }
+    }
+  })
+);
+mock.setCommandResponse(
+  "bootstrap_secure_backup",
+  ({ recoveryKeyDestinationPath }: { recoveryKeyDestinationPath?: string | null }) =>
+    setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        e2ee_trust: {
+          ...currentSnapshot.state.e2ee_trust,
+          key_management: {
+            ...currentSnapshot.state.e2ee_trust.key_management,
+            secure_backup_setup: {
+              kind: "recoveryKeyReady",
+              request_id: 9_202,
+              delivery: recoveryKeyDestinationPath?.trim()
+                ? { kind: "written" }
+                : { kind: "notWritten" }
+            }
+          }
+        }
+      }
+    })
+);
+mock.setCommandResponse(
+  "change_secure_backup_passphrase",
+  ({ recoveryKeyDestinationPath }: { recoveryKeyDestinationPath?: string | null }) =>
+    setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        e2ee_trust: {
+          ...currentSnapshot.state.e2ee_trust,
+          key_management: {
+            ...currentSnapshot.state.e2ee_trust.key_management,
+            passphrase_change: {
+              kind: "changed",
+              request_id: 9_203,
+              delivery: recoveryKeyDestinationPath?.trim()
+                ? { kind: "written" }
+                : { kind: "notWritten" }
+            }
+          }
+        }
+      }
+    })
 );
 mock.setCommandResponse("accept_verification", ({ flowId }: { flowId: number }) => {
   const verification = currentSnapshot.state.e2ee_trust.verification;
