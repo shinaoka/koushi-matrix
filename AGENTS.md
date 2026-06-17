@@ -142,6 +142,60 @@ scroll wiring.
   only the process group for that trial. Do not kill unrelated existing Claude
   sessions.
 
+## Codex Diff Review Recipe
+
+The preferred external auditor is `codex` (DeepSeek V4 Pro via the local
+`claude-deepseek` alias). For substantial changes authored by non-frontier
+agents, run a diff review with the command below.
+
+Generate the diff for the review range:
+
+```bash
+cd /home/shinaoka/projects/Matrix/matrix-desktop
+git diff <base>..<head> > /tmp/review.diff
+```
+
+Run the review in the background because full diff reviews routinely take
+more than a minute and can exceed the foreground tool timeout:
+
+```bash
+timeout 600s bash -ic 'claude-deepseek --model "deepseek-v4-pro[1m]" --max-budget-usd 2 -p --no-session-persistence --tools ""' < /tmp/review.diff > /tmp/review-output.txt 2>&1
+echo "exit code: $?" >> /tmp/review-output.txt
+```
+
+For long-running reviews, run it as a background task and inspect the output
+when notified:
+
+```bash
+# started as a background Bash task; check with TaskOutput <task-id>
+```
+
+Prompt contents to prepend or include in the review input:
+
+- Ask for consistency with `REPOSITORY_RULES.md`,
+  `docs/architecture/overview.md`, `docs/architecture/state-machine.md` when
+  reducers change, `docs/policies/engineering-rules.md`, `AGENTS.md`, and the
+  relevant dated implementation plan.
+- Ask the auditor to prioritize, in order: repository-rule consistency,
+  Rust/Tauri best practices, security/privacy risks, then contract
+  correctness.
+- Ask the auditor to propose canon amendments when a finding is caused by a
+  rule gap rather than only patching the immediate code.
+
+Important review-scope notes:
+
+- Include `Cargo.toml` and `src/lib.rs` in the review input when the change
+  adds feature gates, changes module visibility, or exposes test-only APIs.
+  A diff that omits these files may produce false-positive reports about
+  missing feature declarations or visibility issues.
+- Include untracked new files explicitly; `git diff` alone is empty for them.
+- Keep prompts private-data-free: use only synthetic fixture data, never real
+  account credentials, room/event IDs, message bodies, raw SDK errors, or
+  local paths.
+
+External review findings are suggestions to verify, not automatic orders. The
+main agent decides whether to adopt, escalate, or defer each proposal.
+
 ## Cost-Controlled Agent Delegation
 
 - Use cheaper implementation agents only for bounded, low-ambiguity work:
