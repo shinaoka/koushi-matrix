@@ -4592,6 +4592,152 @@ kbd {
   opacity: 0.72;
 }
 
+.files-view-panel,
+.threads-list-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.files-view-toolbar {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.files-view-kind-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.files-view-kind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.files-view-kind-chip input {
+  margin: 0;
+}
+
+.files-view-query-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.files-view-query-input,
+.files-view-sort-select {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.files-view-list,
+.threads-list {
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.files-view-row,
+.threads-list-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.files-view-row-icon,
+.threads-list-row-icon {
+  color: var(--text-muted);
+  display: inline-flex;
+}
+
+.files-view-row-main,
+.threads-list-row-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.files-view-row-name,
+.threads-list-row-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.files-view-row-meta,
+.threads-list-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.threads-list-row-button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.files-view-empty,
+.threads-list-empty {
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.files-view-error,
+.threads-list-error {
+  color: var(--error);
+}
+
+.threads-list-load-more {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 16px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
 @media (max-width: 1180px) {
   .app-grid,
   .app-grid.thread-closed {

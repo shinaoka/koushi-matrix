@@ -20,6 +20,7 @@ pub mod search;
 pub mod settings;
 pub mod store;
 pub mod sync;
+pub mod threads_list;
 pub mod timeline;
 
 pub use command::{

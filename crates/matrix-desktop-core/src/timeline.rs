@@ -77,9 +77,9 @@ use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
 use matrix_sdk::ruma::html::{Html, SanitizerConfig};
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
 use matrix_sdk_ui::timeline::{
-    EmbeddedEvent, EventSendState as SdkEventSendState, InReplyToDetails, ReactionStatus,
-    ReactionsByKeyBySender, Timeline, TimelineDetails, TimelineEventItemId, TimelineFocus,
-    TimelineItem as SdkTimelineItem, TimelineItemKind,
+    EmbeddedEvent, EventSendState as SdkEventSendState, EventTimelineItem, InReplyToDetails,
+    ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineDetails, TimelineEventItemId,
+    TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemKind,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -2664,10 +2664,9 @@ impl TimelineActor {
                         .media
                         .as_ref()
                         .map(|media| media.filename.clone()),
-                    projection
-                        .media
-                        .as_ref()
-                        .and_then(Self::attachment_document_from_timeline_media),
+                    projection.media.as_ref().and_then(|media| {
+                        Self::attachment_document_from_timeline_media(media, event_item, message)
+                    }),
                     edit_event_id,
                 )
             } else {
@@ -2716,6 +2715,8 @@ impl TimelineActor {
 
     fn attachment_document_from_timeline_media(
         media: &TimelineMedia,
+        event_item: &EventTimelineItem,
+        message: &matrix_sdk_ui::timeline::Message,
     ) -> Option<AttachmentDocument> {
         let kind = match media.kind {
             crate::event::TimelineMediaKind::Image => AttachmentKind::Image,
@@ -2731,6 +2732,8 @@ impl TimelineActor {
             crate::event::TimelineMediaKind::File => "m.file",
         };
 
+        let thread_root = event_item.content().thread_root().map(|id| id.to_string());
+
         Some(AttachmentDocument {
             kind,
             msgtype: msgtype.to_owned(),
@@ -2742,6 +2745,12 @@ impl TimelineActor {
                 .as_ref()
                 .map(|thumbnail| thumbnail.source.mxc_uri.clone()),
             filename: SensitiveString::new(media.filename.clone()),
+            thread_root,
+            encrypted: media.source.encrypted,
+            encryption_version: media.source.encryption_version.clone(),
+            width: media.width.and_then(|w| u32::try_from(w).ok()),
+            height: media.height.and_then(|h| u32::try_from(h).ok()),
+            is_edited: message.is_edited(),
         })
     }
 
@@ -2784,6 +2793,12 @@ impl TimelineActor {
             source_mxc: source.mxc_uri,
             thumbnail_mxc,
             filename: SensitiveString::new(content.body.clone()),
+            thread_root: None,
+            encrypted: source.encrypted,
+            encryption_version: source.encryption_version,
+            width: None,
+            height: None,
+            is_edited: false,
         }
     }
 

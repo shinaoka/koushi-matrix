@@ -18,29 +18,39 @@ import type {
 
 export function RoomInfoPanel({
   currentUserId = null,
+  ignoredUserIds = [],
   room,
   roomManagement,
   roomNotificationSettings,
   spaces,
   onInvitePeople,
+  onIgnoreUser,
+  onUnignoreUser,
+  onReportUser,
   onModerateMember,
+  onOpenFiles,
   onSetLocalUserAlias,
   onSetRoomNotificationMode,
   onUpdateMemberRole,
   onUpdateRoomSetting
 }: {
   currentUserId?: string | null;
+  ignoredUserIds?: string[];
   room: RoomSummary | null;
   roomManagement?: RoomManagementState;
   roomNotificationSettings: RoomNotificationSettings | undefined;
   spaces: SpaceSummary[];
   onInvitePeople?: () => void;
+  onIgnoreUser?: (userId: string) => void;
+  onUnignoreUser?: (userId: string) => void;
+  onReportUser?: (userId: string) => void;
   onModerateMember?: (
     roomId: string,
     targetUserId: string,
     action: RoomModerationAction,
     reason: string | null
   ) => void;
+  onOpenFiles?: () => void;
   onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
   onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
@@ -465,6 +475,36 @@ export function RoomInfoPanel({
                       onModerateMember?.(room.room_id, profile.user_id, "unban", null)
                     }
                   />
+                  {ignoredUserIds.includes(profile.user_id) ? (
+                    <button
+                      className="profile-settings-action room-member-action"
+                      type="button"
+                      aria-label={t("context.unignoreUser")}
+                      disabled={!onUnignoreUser}
+                      onClick={() => onUnignoreUser?.(profile.user_id)}
+                    >
+                      {t("context.unignoreUser")}
+                    </button>
+                  ) : (
+                    <button
+                      className="profile-settings-action room-member-action"
+                      type="button"
+                      aria-label={t("context.ignoreUser")}
+                      disabled={!onIgnoreUser}
+                      onClick={() => onIgnoreUser?.(profile.user_id)}
+                    >
+                      {t("context.ignoreUser")}
+                    </button>
+                  )}
+                  <button
+                    className="profile-settings-action room-member-action"
+                    type="button"
+                    aria-label={t("context.reportUser")}
+                    disabled={!onReportUser}
+                    onClick={() => onReportUser?.(profile.user_id)}
+                  >
+                    {t("context.reportUser")}
+                  </button>
                 </span>
               </li>
             ))}
@@ -506,7 +546,7 @@ export function RoomInfoPanel({
         entries={[
           { icon: <Users size={16} />, label: t("room.invitePeople"), onClick: onInvitePeople },
           { icon: <Users size={16} />, label: t("room.people") },
-          { icon: <FileText size={16} />, label: t("room.files") },
+          { icon: <FileText size={16} />, label: t("room.files"), onClick: onOpenFiles },
           { icon: <Bell size={16} />, label: t("room.notifications") },
           { icon: <Settings size={16} />, label: t("room.roomSettings") }
         ]}

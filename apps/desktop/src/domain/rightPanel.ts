@@ -10,7 +10,9 @@ export type RightPanelMode =
   | "keyboardSettings"
   | "userSettings"
   | "roomInfo"
-  | "spaceInfo";
+  | "spaceInfo"
+  | "files"
+  | "threads";
 
 export type RightPanelContextMenuTarget =
   | { kind: "message"; roomId: string; eventId: string }
@@ -91,6 +93,14 @@ export function effectiveRightPanelModeForSnapshot(
   // Thread open/closed is Rust-owned product state: read it from state.thread,
   // not the legacy top-level `thread` placeholder (always null in production).
   if (requestedMode === "thread" && snapshot.state.thread.kind === "closed") {
+    return "closed";
+  }
+
+  if (requestedMode === "files" && snapshot.state.files_view.kind === "closed") {
+    return "closed";
+  }
+
+  if (requestedMode === "threads" && snapshot.state.threads_list.kind === "closed") {
     return "closed";
   }
 

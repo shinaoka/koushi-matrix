@@ -40,6 +40,7 @@ export interface AppState {
   timeline: TimelinePaneState;
   thread: ThreadPaneState;
   thread_attention: ThreadAttentionState;
+  threads_list: ThreadsListState;
   focused_context: FocusedContextState;
   search: SearchState;
   files_view: FilesViewState;
@@ -1081,6 +1082,38 @@ export type ThreadAttentionState =
       live_event_marker_count: number;
     };
 
+export interface ThreadsListItem {
+  root_event_id: string;
+  root_sender: string;
+  root_sender_label: string | null;
+  root_body_preview: string | null;
+  root_timestamp_ms: number | null;
+  latest_event_id: string | null;
+  latest_sender: string | null;
+  latest_sender_label: string | null;
+  latest_body_preview: string | null;
+  latest_timestamp_ms: number | null;
+  reply_count: number;
+}
+
+export type ThreadsListState =
+  | { kind: "closed" }
+  | { kind: "loading"; room_id: string; request_id: number }
+  | {
+      kind: "open";
+      room_id: string;
+      request_id: number;
+      items: ThreadsListItem[];
+      is_paginating: boolean;
+      end_reached: boolean;
+    }
+  | {
+      kind: "failed";
+      room_id: string;
+      request_id: number;
+      failure_kind: OperationFailureKind;
+    };
+
 export type FocusedContextState =
   | { kind: "closed" }
   | { kind: "opening"; room_id: string; event_id: string }
@@ -1151,6 +1184,12 @@ export interface AttachmentResult {
   size: number | null;
   source_mxc: string;
   thumbnail_mxc: string | null;
+  thread_root: string | null;
+  encrypted: boolean;
+  encryption_version: string | null;
+  width: number | null;
+  height: number | null;
+  is_edited: boolean;
 }
 
 export type FilesViewScope =

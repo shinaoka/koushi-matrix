@@ -14,6 +14,7 @@ export type MessageId =
   | "action.restartSync"
   | "action.recover"
   | "action.recovering"
+  | "action.report"
   | "action.send"
   | "action.sending"
   | "activity.highlightBadge"
@@ -92,6 +93,7 @@ export type MessageId =
   | "context.editMessage"
   | "context.addToFavourites"
   | "context.addToLowPriority"
+  | "context.ignoreUser"
   | "context.openKeyboardSettings"
   | "context.openRoomInfo"
   | "context.openSpaceInfo"
@@ -101,9 +103,13 @@ export type MessageId =
   | "context.removeFromFavourites"
   | "context.removeFromLowPriority"
   | "context.searchInRoom"
+  | "context.reportContent"
+  | "context.reportRoom"
+  | "context.reportUser"
   | "context.selectRoom"
   | "context.selectSpace"
   | "context.switchAccount"
+  | "context.unignoreUser"
   | "dialog.cancel"
   | "dialog.cancelCreate"
   | "dialog.createRoomTitle"
@@ -115,8 +121,27 @@ export type MessageId =
   | "dialog.roomName"
   | "dialog.spaceName"
   | "dialog.startDm"
+  | "dialog.reportReasonLabel"
+  | "dialog.reportReasonPlaceholder"
+  | "dialog.reportReasonTitle"
   | "dialog.submitCreateRoom"
   | "dialog.submitCreateSpace"
+  | "files.empty"
+  | "files.error"
+  | "files.filterKinds"
+  | "files.filterPlaceholder"
+  | "files.kind.audio"
+  | "files.kind.file"
+  | "files.kind.image"
+  | "files.kind.sticker"
+  | "files.kind.video"
+  | "files.loading"
+  | "files.sort.filename"
+  | "files.sort.newestFirst"
+  | "files.sort.oldestFirst"
+  | "files.sort.sender"
+  | "files.sortLabel"
+  | "files.title"
   | "directory.failureForbidden"
   | "directory.failureInvalid"
   | "directory.failureNetwork"
@@ -625,7 +650,13 @@ export type MessageId =
   | "workspace.spaceInfoSettings"
   | "workspace.threads"
   | "workspace.userSettings"
-  | "workspace.workspaces";
+  | "workspace.workspaces"
+  | "threads.empty"
+  | "threads.error"
+  | "threads.loading"
+  | "threads.open"
+  | "threads.replyCount"
+  | "threads.title";
 
 type MessageValues = Record<string, string | number>;
 type Catalog = Record<MessageId, string>;
@@ -732,6 +763,7 @@ const en: Catalog = {
   "action.restartSync": "Restart sync",
   "action.recover": "Recover",
   "action.recovering": "Recovering",
+  "action.report": "Report",
   "action.send": "Send",
   "action.sending": "Sending",
   "activity.highlightBadge": "Mention",
@@ -810,6 +842,7 @@ const en: Catalog = {
   "context.editMessage": "Edit",
   "context.addToFavourites": "Add to Favourites",
   "context.addToLowPriority": "Move to Low priority",
+  "context.ignoreUser": "Ignore",
   "context.openKeyboardSettings": "Keyboard shortcuts",
   "context.openRoomInfo": "Room info",
   "context.openSpaceInfo": "Space info",
@@ -822,6 +855,10 @@ const en: Catalog = {
   "context.selectRoom": "Open",
   "context.selectSpace": "Open Space",
   "context.switchAccount": "Switch account",
+  "context.reportContent": "Report content",
+  "context.reportRoom": "Report room",
+  "context.reportUser": "Report user",
+  "context.unignoreUser": "Unignore",
   "dialog.cancel": "Cancel",
   "dialog.cancelCreate": "Cancel create",
   "dialog.createRoomTitle": "Create room",
@@ -833,8 +870,27 @@ const en: Catalog = {
   "dialog.roomName": "Room name",
   "dialog.spaceName": "Space name",
   "dialog.startDm": "Start DM",
+  "dialog.reportReasonLabel": "Reason",
+  "dialog.reportReasonPlaceholder": "Why are you reporting this?",
+  "dialog.reportReasonTitle": "Report",
   "dialog.submitCreateRoom": "Submit create room",
   "dialog.submitCreateSpace": "Submit create space",
+  "files.empty": "No files",
+  "files.error": "Could not load files",
+  "files.filterKinds": "File kinds",
+  "files.filterPlaceholder": "Filter by filename",
+  "files.kind.audio": "Audio",
+  "files.kind.file": "File",
+  "files.kind.image": "Image",
+  "files.kind.sticker": "Sticker",
+  "files.kind.video": "Video",
+  "files.loading": "Loading files…",
+  "files.sort.filename": "Filename",
+  "files.sort.newestFirst": "Newest first",
+  "files.sort.oldestFirst": "Oldest first",
+  "files.sort.sender": "Sender",
+  "files.sortLabel": "Sort by",
+  "files.title": "Files",
   "directory.failureForbidden": "Forbidden",
   "directory.failureInvalid": "Invalid",
   "directory.failureNetwork": "Network",
@@ -1343,7 +1399,13 @@ const en: Catalog = {
   "workspace.spaceInfoSettings": "Space info and settings",
   "workspace.threads": "Threads",
   "workspace.userSettings": "User settings",
-  "workspace.workspaces": "Workspaces"
+  "workspace.workspaces": "Workspaces",
+  "threads.empty": "No threads",
+  "threads.error": "Could not load threads",
+  "threads.loading": "Loading threads…",
+  "threads.open": "Open thread",
+  "threads.replyCount": "{count} replies",
+  "threads.title": "Threads"
 };
 
 const ja: Catalog = {
@@ -1361,6 +1423,7 @@ const ja: Catalog = {
   "action.restartSync": "同期を再開",
   "action.recover": "復旧",
   "action.recovering": "復旧中",
+  "action.report": "報告",
   "action.send": "送信",
   "action.sending": "送信中",
   "activity.highlightBadge": "メンション",
@@ -1429,6 +1492,7 @@ const ja: Catalog = {
   "context.editMessage": "編集",
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",
+  "context.ignoreUser": "無視",
   "context.openKeyboardSettings": "キーボードショートカット",
   "context.openRoomInfo": "ルーム情報",
   "context.openSpaceInfo": "スペース情報",
@@ -1441,6 +1505,10 @@ const ja: Catalog = {
   "context.selectRoom": "開く",
   "context.selectSpace": "スペースを開く",
   "context.switchAccount": "アカウントを切り替え",
+  "context.reportContent": "コンテンツを報告",
+  "context.reportRoom": "ルームを報告",
+  "context.reportUser": "ユーザーを報告",
+  "context.unignoreUser": "無視解除",
   "dialog.cancel": "キャンセル",
   "dialog.cancelCreate": "作成をキャンセル",
   "dialog.createRoomTitle": "ルームを作成",
@@ -1452,8 +1520,27 @@ const ja: Catalog = {
   "dialog.roomName": "ルーム名",
   "dialog.spaceName": "スペース名",
   "dialog.startDm": "DMを開始",
+  "dialog.reportReasonLabel": "理由",
+  "dialog.reportReasonPlaceholder": "報告理由を入力してください",
+  "dialog.reportReasonTitle": "報告",
   "dialog.submitCreateRoom": "ルーム作成を実行",
   "dialog.submitCreateSpace": "スペース作成を実行",
+  "files.empty": "ファイルがありません",
+  "files.error": "ファイルを読み込めませんでした",
+  "files.filterKinds": "ファイルの種類",
+  "files.filterPlaceholder": "ファイル名で絞り込み",
+  "files.kind.audio": "音声",
+  "files.kind.file": "ファイル",
+  "files.kind.image": "画像",
+  "files.kind.sticker": "ステッカー",
+  "files.kind.video": "動画",
+  "files.loading": "ファイルを読み込み中…",
+  "files.sort.filename": "ファイル名",
+  "files.sort.newestFirst": "新しい順",
+  "files.sort.oldestFirst": "古い順",
+  "files.sort.sender": "送信者",
+  "files.sortLabel": "並び順",
+  "files.title": "ファイル",
   "directory.failureForbidden": "禁止",
   "directory.failureInvalid": "不正",
   "directory.failureNetwork": "ネットワーク",
@@ -1959,7 +2046,13 @@ const ja: Catalog = {
   "workspace.spaceInfoSettings": "スペース情報と設定",
   "workspace.threads": "スレッド",
   "workspace.userSettings": "ユーザー設定",
-  "workspace.workspaces": "ワークスペース"
+  "workspace.workspaces": "ワークスペース",
+  "threads.empty": "スレッドがありません",
+  "threads.error": "スレッドを読み込めませんでした",
+  "threads.loading": "スレッドを読み込み中…",
+  "threads.open": "スレッドを開く",
+  "threads.replyCount": "{count}件の返信",
+  "threads.title": "スレッド"
 };
 
 const pseudo: Catalog = Object.fromEntries(

@@ -191,6 +191,7 @@ function snapshotForPanelMode(
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       files_view: { kind: "closed" },
+      threads_list: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" },
       live_signals: { rooms: {}, presence: {} },

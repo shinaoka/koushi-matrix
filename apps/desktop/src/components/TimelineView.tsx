@@ -46,6 +46,7 @@ import {
   Fragment,
   type FormEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -55,6 +56,10 @@ import {
 } from "react";
 
 import { t } from "../i18n/messages";
+import {
+  contextMenuItems,
+  type ContextMenuItem
+} from "../domain/contextMenus";
 
 import type {
   CoreEventPayload,
@@ -1056,6 +1061,9 @@ export function TimelineView({
   pinnedEventIds = [],
   forwardDestinations = [],
   onSetLocalUserAlias,
+  onOpenContextMenu,
+  currentUserId,
+  ignoredUserIds = [],
   suppressPaginationUi = false,
   codeBlockWrap = true,
   searchQuery = ""
@@ -1071,6 +1079,16 @@ export function TimelineView({
   pinnedEventIds?: readonly string[];
   forwardDestinations?: readonly TimelineForwardDestination[];
   onSetLocalUserAlias?: TimelineRowActionHandlers["onSetLocalUserAlias"];
+  onOpenContextMenu?: (
+    event: MouseEvent<HTMLElement>,
+    target: {
+      kind: "message";
+      message: { sender: string; room_id: string; event_id: string; body: string };
+    },
+    items: ContextMenuItem[]
+  ) => void;
+  currentUserId?: string;
+  ignoredUserIds?: string[];
   suppressPaginationUi?: boolean;
   codeBlockWrap?: boolean;
   searchQuery?: string;
@@ -1627,6 +1645,9 @@ export function TimelineView({
               onCancelSend={onCancelSend}
               presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
               profile={item.sender ? profileUsers[item.sender] : undefined}
+              currentUserId={currentUserId}
+              ignoredUserIds={ignoredUserIds}
+              onOpenContextMenu={onOpenContextMenu}
               mentionProfileUsers={profileUsers}
               receipts={eventId ? roomSignals?.receipts_by_event[eventId]?.readers ?? [] : []}
               receiptTotalCount={
@@ -1719,7 +1740,10 @@ export function TimelineItemRow({
   mentionProfileUsers = {},
   receipts = [],
   receiptTotalCount = receipts.length,
-  receiptOverflowCount = 0
+  receiptOverflowCount = 0,
+  currentUserId,
+  ignoredUserIds = [],
+  onOpenContextMenu
 }: {
   item: TimelineItem;
   roomId: string;
@@ -1750,6 +1774,16 @@ export function TimelineItemRow({
   receipts?: LiveReadReceipt[];
   receiptTotalCount?: number;
   receiptOverflowCount?: number;
+  currentUserId?: string;
+  ignoredUserIds?: string[];
+  onOpenContextMenu?: (
+    event: MouseEvent<HTMLElement>,
+    target: {
+      kind: "message";
+      message: { sender: string; room_id: string; event_id: string; body: string };
+    },
+    items: ContextMenuItem[]
+  ) => void;
 }) {
   const domId = timelineItemDomId(item.id);
   const transactionId = "Transaction" in item.id ? item.id.Transaction.transaction_id : null;
@@ -2182,6 +2216,31 @@ export function TimelineItemRow({
         onDownload={submitDownloadMedia}
       />
     ) : null;
+  function handleContextMenu(event: MouseEvent<HTMLElement>) {
+    if (!onOpenContextMenu || !eventId || !item.sender) {
+      return;
+    }
+    const items = contextMenuItems({
+      kind: "message",
+      canManage: currentUserId === item.sender,
+      hasThread: item.thread_summary != null,
+      senderUserId: item.sender,
+      currentUserId: currentUserId ?? "",
+      roomId,
+      eventId,
+      isIgnored: ignoredUserIds.includes(item.sender)
+    });
+    if (items.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    onOpenContextMenu(event, {
+      kind: "message",
+      message: { sender: item.sender, room_id: roomId, event_id: eventId, body: item.body ?? "" }
+    }, items);
+  }
+
   return (
     <article
       className="message"
@@ -2191,6 +2250,7 @@ export function TimelineItemRow({
       data-redacted={isRedacted || undefined}
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
       data-message-kind={messageKind}
+      onContextMenu={handleContextMenu}
     >
       <div className="avatar" aria-hidden="true">
         {avatarUrl ? <img src={avatarUrl} /> : senderInitials(senderDisplayLabel || item.sender)}

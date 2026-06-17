@@ -44,16 +44,22 @@ fn sort() -> AttachmentSort {
 
 fn attachment(event_id: &str) -> AttachmentResult {
     AttachmentResult {
-        room_id: "!room:example.invalid".to_owned(),
         event_id: event_id.to_owned(),
-        sender: "@user-a:example.invalid".to_owned(),
-        timestamp_ms: 1_700_000_000_000,
-        kind: AttachmentKind::File,
         filename: "quarterly_report.pdf".to_owned(),
+        kind: AttachmentKind::File,
         mimetype: Some("application/pdf".to_owned()),
+        room_id: "!room:example.invalid".to_owned(),
+        sender: "@user-a:example.invalid".to_owned(),
         size: Some(12_345),
         source_mxc: "mxc://example.invalid/synthetic-source".to_owned(),
         thumbnail_mxc: None,
+        timestamp_ms: 1_700_000_000_000,
+        thread_root: Some("$root:example.invalid".to_owned()),
+        encrypted: false,
+        encryption_version: None,
+        width: None,
+        height: None,
+        is_edited: false,
     }
 }
 

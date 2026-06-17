@@ -239,6 +239,7 @@ function defaultSnapshotResponse() {
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },
+      threads_list: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       files_view: { kind: "closed" },

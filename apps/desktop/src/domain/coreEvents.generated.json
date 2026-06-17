@@ -500,12 +500,31 @@
             "size": 1234,
             "source_mxc": "mxc://example.invalid/abc",
             "thumbnail_mxc": "mxc://example.invalid/abc-thumb",
-            "timestamp_ms": 1
+            "timestamp_ms": 1,
+            "thread_root": null,
+            "encrypted": false,
+            "encryption_version": null,
+            "width": null,
+            "height": null,
+            "is_edited": false
           }
         ]
       }
     },
     "kind": "Search"
+  },
+  "threadsListOpened": {
+    "event": {
+      "kind": "opened",
+      "request_id": {
+        "connection_id": 3,
+        "sequence": 7
+      },
+      "room_id": "!room:example.test",
+      "items": [],
+      "end_reached": false
+    },
+    "kind": "ThreadsList"
   },
   "syncModeChanged": {
     "event": {

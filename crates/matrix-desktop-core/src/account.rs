@@ -34,16 +34,17 @@ use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
     AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage, AvatarThumbnailState,
     CrossSigningStatus, DeviceSessionSummary, E2eeRecoveryState, IdentityResetAuthType,
-    IdentityResetState, LoginRequest, OwnProfile, PresenceKind, RecoveryKeyDeliveryState,
-    RecoveryMethod, RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SessionInfo, TrustOperationFailureKind, VerificationCancelReason,
-    VerificationFlowState, VerificationTarget,
+    IdentityResetState, LoginRequest, OperationFailureKind, OwnProfile, PresenceKind,
+    RecoveryKeyDeliveryState, RecoveryMethod, RecoveryRequest, ScheduledSendCapability,
+    ScheduledSendHandle, ScheduledSendItem, SessionInfo, TrustOperationFailureKind,
+    VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
-    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, TimelineCommand,
+    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, ThreadsListCommand,
+    TimelineCommand,
 };
 use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
@@ -97,6 +98,7 @@ pub enum AccountMessage {
         timestamp_ms: u64,
     },
     SearchCommand(SearchCommand),
+    ThreadsListCommand(ThreadsListCommand),
     VerificationRequestProgress {
         request_id: RequestId,
         target: VerificationTarget,
@@ -205,6 +207,9 @@ pub struct AccountActor {
     /// exists. Created at the same time as SyncActor; stopped in the ordered
     /// shutdown between timelines and sync (canon Async rule 12 step 3).
     search_actor: Option<SearchActorHandle>,
+    /// ThreadsListActor handle. Present only while the threads list view is
+    /// open. Dropping the handle cancels the actor and its SDK subscriptions.
+    threads_list_actor: Option<crate::threads_list::ThreadsListActorHandle>,
     /// Recovery-state observer task for the active store-backed session.
     recovery_observer: Option<RecoveryStateObservation>,
     /// Pending SDK identity reset continuation, held only inside AccountActor.
@@ -259,6 +264,7 @@ impl AccountActor {
             room_actor,
             timeline_manager,
             search_actor: None,
+            threads_list_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
             device_session_ordinals: BTreeMap::new(),
@@ -343,6 +349,9 @@ impl AccountActor {
                 AccountMessage::SearchCommand(search_command) => {
                     self.route_search_command(search_command).await;
                 }
+                AccountMessage::ThreadsListCommand(threads_list_command) => {
+                    self.route_threads_list_command(threads_list_command).await;
+                }
                 AccountMessage::VerificationRequestProgress {
                     request_id,
                     target,
@@ -371,6 +380,7 @@ impl AccountActor {
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
         self.stop_timeline_actor().await;
+        self.stop_threads_list_actor().await;
         self.stop_search_actor().await;
         self.stop_room_actor().await;
         self.stop_sync_actor().await;
@@ -419,6 +429,57 @@ impl AccountActor {
                 self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
                     .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
+            }
+        }
+    }
+
+    /// Route a ThreadsListCommand to the ThreadsListActor. Spawns the actor
+    /// on `Open` when a session is present; drops it on `Close`.
+    async fn route_threads_list_command(&mut self, command: ThreadsListCommand) {
+        match command {
+            ThreadsListCommand::Open {
+                request_id,
+                room_id,
+            } => {
+                let Some(session) = self.session.clone() else {
+                    self.emit_threads_list_failed(request_id, room_id).await;
+                    self.emit_failure(request_id, CoreFailure::SessionRequired);
+                    return;
+                };
+                if self
+                    .threads_list_actor
+                    .as_ref()
+                    .map(|handle| handle.room_id() != room_id)
+                    .unwrap_or(false)
+                {
+                    self.threads_list_actor = None;
+                }
+                if self.threads_list_actor.is_none() {
+                    self.threads_list_actor = Some(crate::threads_list::ThreadsListActor::spawn(
+                        session,
+                        self.action_tx.clone(),
+                        self.event_tx.clone(),
+                        room_id.clone(),
+                    ));
+                }
+                if let Some(handle) = &self.threads_list_actor {
+                    let _ = handle.open(request_id, room_id).await;
+                }
+            }
+            ThreadsListCommand::Close { request_id } => {
+                if let Some(handle) = self.threads_list_actor.take() {
+                    let _ = handle.close(request_id).await;
+                }
+            }
+            ThreadsListCommand::Paginate {
+                request_id,
+                room_id,
+            } => {
+                if let Some(handle) = &self.threads_list_actor {
+                    if handle.room_id() == room_id {
+                        let _ = handle.paginate(request_id).await;
+                    }
+                }
             }
         }
     }
@@ -630,6 +691,17 @@ impl AccountActor {
             .await;
     }
 
+    async fn emit_threads_list_failed(&self, request_id: RequestId, room_id: String) {
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::ThreadsListFailed {
+                request_id: request_id.sequence,
+                room_id,
+                failure_kind: OperationFailureKind::Network,
+            }])
+            .await;
+    }
+
     async fn handle_open_timeline_at_timestamp(
         &self,
         request_id: RequestId,
@@ -694,6 +766,12 @@ impl AccountActor {
         if let Some(handle) = self.search_actor.take() {
             handle.shutdown().await;
         }
+    }
+
+    /// Ordered shutdown of the ThreadsListActor. Dropping the handle cancels
+    /// the actor and its SDK subscriptions.
+    async fn stop_threads_list_actor(&mut self) {
+        let _ = self.threads_list_actor.take();
     }
 
     /// Ordered shutdown of the TimelineManagerActor (step 2 of the shutdown
@@ -4437,6 +4515,7 @@ mod tests {
             room_actor,
             timeline_manager,
             search_actor: None,
+            threads_list_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
             device_session_ordinals: BTreeMap::new(),

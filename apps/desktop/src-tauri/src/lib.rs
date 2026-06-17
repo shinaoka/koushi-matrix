@@ -624,6 +624,7 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
             serde_json::json!({ "kind": "NativeAttention", "event": e })
         }
         CoreEvent::CjkTextPolicy(e) => serde_json::json!({ "kind": "CjkTextPolicy", "event": e }),
+        CoreEvent::ThreadsList(e) => serde_json::json!({ "kind": "ThreadsList", "event": e }),
         CoreEvent::OperationFailed {
             request_id,
             failure,
@@ -800,6 +801,11 @@ pub fn run() {
             commands::set_presence,
             commands::set_display_name,
             commands::set_local_user_alias,
+            commands::ignore_user,
+            commands::unignore_user,
+            commands::report_user,
+            commands::report_content,
+            commands::report_room,
             commands::set_avatar,
             commands::leave_room,
             commands::forget_room,
@@ -816,6 +822,11 @@ pub fn run() {
             commands::set_activity_tab,
             commands::paginate_activity,
             commands::mark_activity_read,
+            commands::open_files_view,
+            commands::close_files_view,
+            commands::open_threads_list,
+            commands::close_threads_list,
+            commands::paginate_threads_list,
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
@@ -1216,8 +1227,8 @@ mod tests {
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LiveSignalsEvent,
                 LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent,
                 PaginationDirection, PaginationState, ReactionGroup, RoomEvent, SearchEvent,
-                SyncEvent, TimelineCodeBlock, TimelineDisplayLabelUpdate, TimelineEvent,
-                TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
+                SyncEvent, ThreadsListEvent, TimelineCodeBlock, TimelineDisplayLabelUpdate,
+                TimelineEvent, TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
                 TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
                 TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
                 TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason,
@@ -2093,6 +2104,12 @@ mod tests {
                     size: Some(1234),
                     source_mxc: "mxc://example.invalid/abc".to_owned(),
                     thumbnail_mxc: Some("mxc://example.invalid/abc-thumb".to_owned()),
+                    thread_root: None,
+                    encrypted: false,
+                    encryption_version: None,
+                    width: None,
+                    height: None,
+                    is_edited: false,
                 }],
             }))
             .expect("serialize search attachments results event");
@@ -2166,6 +2183,15 @@ mod tests {
             "timelineReplyQuoteInitialItems": reply_quote_initial,
             "timelineResyncRequired": resync,
             "timelineSendStateInitialItems": send_state_initial,
+            "threadsListOpened": serialize_core_event(&CoreEvent::ThreadsList(
+                ThreadsListEvent::Opened {
+                    request_id,
+                    room_id: "!room:example.test".to_owned(),
+                    items: vec![],
+                    end_reached: false,
+                },
+            ))
+            .expect("serialize threads list opened"),
         });
         let checked_in_contract: serde_json::Value =
             serde_json::from_str(include_str!("../../src/domain/coreEvents.generated.json"))

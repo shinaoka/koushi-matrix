@@ -749,6 +749,10 @@ describe("ContextualRightPanel", () => {
         snapshot={snapshot}
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -823,6 +827,10 @@ describe("ContextualRightPanel", () => {
         }
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -890,6 +898,10 @@ describe("ContextualRightPanel", () => {
         }
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -971,6 +983,10 @@ describe("ContextualRightPanel", () => {
         }
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -1021,6 +1037,10 @@ describe("ContextualRightPanel", () => {
         snapshot={snapshot}
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -1071,6 +1091,10 @@ describe("ContextualRightPanel", () => {
         snapshot={snapshot}
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -1131,6 +1155,10 @@ describe("ContextualRightPanel", () => {
         snapshot={snapshot}
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}

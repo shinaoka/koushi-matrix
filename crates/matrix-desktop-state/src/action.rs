@@ -742,6 +742,39 @@ pub enum AppAction {
     FilesViewSelectionChanged {
         event_id: Option<String>,
     },
+    OpenThreadsList {
+        request_id: u64,
+        room_id: String,
+    },
+    ThreadsListOpened {
+        request_id: u64,
+        room_id: String,
+        items: Vec<crate::state::ThreadsListItem>,
+        end_reached: bool,
+    },
+    ThreadsListUpdated {
+        request_id: u64,
+        room_id: String,
+        items: Vec<crate::state::ThreadsListItem>,
+        is_paginating: bool,
+        end_reached: bool,
+    },
+    ThreadsListPaginationCompleted {
+        request_id: u64,
+        room_id: String,
+        items: Vec<crate::state::ThreadsListItem>,
+        end_reached: bool,
+    },
+    ThreadsListFailed {
+        request_id: u64,
+        room_id: String,
+        failure_kind: crate::OperationFailureKind,
+    },
+    PaginateThreadsList {
+        request_id: u64,
+        room_id: String,
+    },
+    CloseThreadsList,
     ClearError {
         code: String,
     },

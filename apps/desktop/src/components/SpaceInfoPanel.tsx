@@ -1,4 +1,4 @@
-import { Bell, ChevronRight, Home, MailPlus, Settings, SlidersHorizontal } from "lucide-react";
+import { Bell, ChevronRight, FileText, Home, MailPlus, Settings, SlidersHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { t } from "../i18n/messages";
@@ -8,12 +8,14 @@ export function SpaceInfoPanel({
   fallbackName,
   rooms,
   space,
-  onInvitePeople
+  onInvitePeople,
+  onOpenFiles
 }: {
   fallbackName: string;
   rooms: RoomSummary[];
   space: SpaceSummary | null;
   onInvitePeople?: () => void;
+  onOpenFiles?: () => void;
 }) {
   const childRooms = space
     ? space.child_room_ids
@@ -64,7 +66,8 @@ export function SpaceInfoPanel({
           { icon: <SlidersHorizontal size={16} />, label: t("space.preferences") },
           { icon: <Settings size={16} />, label: t("space.spaceSettings") },
           { icon: <MailPlus size={16} />, label: t("space.invite"), onClick: onInvitePeople },
-          { icon: <Bell size={16} />, label: t("room.notifications") }
+          { icon: <Bell size={16} />, label: t("room.notifications") },
+          { icon: <FileText size={16} />, label: t("room.files"), onClick: onOpenFiles }
         ]}
       />
     </section>

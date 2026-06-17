@@ -6,9 +6,10 @@ use std::fmt;
 use matrix_desktop_state::{
     ActivityStream, ActivityTab, AppState, AttachmentResult, CrossSigningStatus, DirectoryQuery,
     DirectoryRoomSummary, IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus,
-    LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionSummary, PinnedEvent, PresenceKind,
-    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
-    SessionState, SyncMode, VerificationFlowState, resolve_user_display_name,
+    LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionSummary, OperationFailureKind,
+    PinnedEvent, PresenceKind, ProfileState, ReplyQuote, RoomModerationAction,
+    RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode, ThreadsListItem,
+    VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +42,7 @@ pub enum CoreEvent {
     LocalEncryption(LocalEncryptionEvent),
     NativeAttention(NativeAttentionEvent),
     CjkTextPolicy(CjkTextPolicyEvent),
+    ThreadsList(ThreadsListEvent),
     OperationFailed {
         request_id: RequestId,
         failure: CoreFailure,
@@ -147,6 +149,35 @@ impl fmt::Debug for NativeAttentionEvent {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CjkTextPolicyEvent {
     JapaneseCatalogProfileChanged { profile: JapaneseCatalogProfile },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ThreadsListEvent {
+    Opened {
+        request_id: RequestId,
+        room_id: String,
+        items: Vec<ThreadsListItem>,
+        end_reached: bool,
+    },
+    Updated {
+        request_id: RequestId,
+        room_id: String,
+        items: Vec<ThreadsListItem>,
+        is_paginating: bool,
+        end_reached: bool,
+    },
+    PaginationCompleted {
+        request_id: RequestId,
+        room_id: String,
+        items: Vec<ThreadsListItem>,
+        end_reached: bool,
+    },
+    Failed {
+        request_id: RequestId,
+        room_id: String,
+        failure_kind: OperationFailureKind,
+    },
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

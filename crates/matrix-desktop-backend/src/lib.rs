@@ -411,7 +411,10 @@ impl FakeDesktopBackend {
             | AppEffect::PersistSession(_)
             | AppEffect::PersistSettings { .. }
             | AppEffect::StopSync
-            | AppEffect::EmitUiEvent(_) => Vec::new(),
+            | AppEffect::EmitUiEvent(_)
+            | AppEffect::SubscribeThreadsList { .. }
+            | AppEffect::PaginateThreadsList { .. }
+            | AppEffect::UnsubscribeThreadsList => Vec::new(),
             AppEffect::RequestVerification { request_id, .. }
             | AppEffect::AcceptVerification { request_id }
             | AppEffect::ConfirmSasVerification { request_id } => {

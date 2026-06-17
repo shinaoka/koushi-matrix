@@ -23,13 +23,13 @@ use matrix_desktop_core::{
     UploadMediaRequest, UploadMediaThumbnail,
 };
 use matrix_desktop_state::{
-    ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
-    ComposerResolverContext, ComposerSurface, DirectoryQuery, FocusedContextState,
-    IdentityResetAuthRequest, ImageUploadCompressionMode, LoginRequest, MentionIntent,
-    PresenceKind, RecoveryRequest, RoomListFilter, RoomModerationAction, RoomNotificationMode,
-    RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch, StagedUploadCompressionChoice,
-    StagedUploadItem,
-    StagedUploadKind, VerificationCancelReason, build_formatted_message_draft,
+    ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
+    ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
+    DirectoryQuery, FilesViewScope, FocusedContextState, IdentityResetAuthRequest,
+    ImageUploadCompressionMode, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest,
+    RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange, RoomTagKind,
+    SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    VerificationCancelReason, build_formatted_message_draft,
 };
 use serde::Deserialize;
 #[cfg(any(debug_assertions, test))]
@@ -1845,6 +1845,90 @@ pub async fn set_local_user_alias(
 }
 
 #[tauri::command]
+pub async fn ignore_user(
+    user_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_ignore_user_command(request_id, user_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn unignore_user(
+    user_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_unignore_user_command(request_id, user_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn report_user(
+    user_id: String,
+    reason: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_report_user_command(request_id, user_id, optional_non_blank(reason)),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn report_content(
+    room_id: String,
+    event_id: String,
+    reason: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_report_content_command(request_id, room_id, event_id, optional_non_blank(reason)),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn report_room(
+    room_id: String,
+    reason: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_report_room_command(request_id, room_id, optional_non_blank(reason)),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn set_avatar(
     mime_type: String,
     bytes: Vec<u8>,
@@ -2166,6 +2250,86 @@ pub async fn mark_activity_read(
     submit_core_command(
         state.inner(),
         build_mark_activity_read_command(request_id, target),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn open_files_view(
+    scope: FilesViewScope,
+    filter: AttachmentFilter,
+    sort: AttachmentSort,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_open_files_view_command(request_id, scope, filter, sort),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn close_files_view(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_close_files_view_command(request_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn open_threads_list(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_open_threads_list_command(request_id, room_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn close_threads_list(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_close_threads_list_command(request_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn paginate_threads_list(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_paginate_threads_list_command(request_id, room_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -2808,6 +2972,46 @@ pub(crate) fn build_mark_activity_read_command(
     target: ActivityMarkReadTarget,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::MarkActivityRead { request_id, target })
+}
+
+pub(crate) fn build_open_files_view_command(
+    request_id: matrix_desktop_core::RequestId,
+    scope: FilesViewScope,
+    filter: AttachmentFilter,
+    sort: AttachmentSort,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::OpenFilesView {
+        request_id,
+        scope,
+        filter,
+        sort,
+    })
+}
+
+pub(crate) fn build_close_files_view_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::CloseFilesView { request_id })
+}
+
+pub(crate) fn build_open_threads_list_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::OpenThreadsList { request_id, room_id })
+}
+
+pub(crate) fn build_close_threads_list_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::CloseThreadsList { request_id })
+}
+
+pub(crate) fn build_paginate_threads_list_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::PaginateThreadsList { request_id, room_id })
 }
 
 pub(crate) fn build_bootstrap_cross_signing_command(
@@ -3587,6 +3791,58 @@ pub(crate) fn build_set_local_user_alias_command(
     })
 }
 
+pub(crate) fn build_ignore_user_command(
+    request_id: matrix_desktop_core::RequestId,
+    user_id: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::IgnoreUser { request_id, user_id })
+}
+
+pub(crate) fn build_unignore_user_command(
+    request_id: matrix_desktop_core::RequestId,
+    user_id: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::UnignoreUser { request_id, user_id })
+}
+
+pub(crate) fn build_report_user_command(
+    request_id: matrix_desktop_core::RequestId,
+    user_id: String,
+    reason: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ReportUser {
+        request_id,
+        user_id,
+        reason: reason.unwrap_or_default(),
+    })
+}
+
+pub(crate) fn build_report_content_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    event_id: String,
+    reason: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::ReportContent {
+        request_id,
+        room_id,
+        event_id,
+        reason,
+    })
+}
+
+pub(crate) fn build_report_room_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    reason: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::ReportRoom {
+        request_id,
+        room_id,
+        reason: reason.unwrap_or_default(),
+    })
+}
+
 pub(crate) fn build_set_avatar_command(
     request_id: matrix_desktop_core::RequestId,
     mime_type: String,
@@ -4237,11 +4493,13 @@ mod tests {
         build_load_message_source_command, build_load_room_settings_command, build_logout_command,
         build_mark_activity_read_command, build_moderate_room_member_command,
         build_observe_timeline_viewport_command, build_open_activity_command,
+        build_open_files_view_command, build_close_files_view_command,
         build_open_timeline_at_timestamp_command, build_paginate_activity_command,
         build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
+        build_report_content_command, build_report_room_command, build_report_user_command,
         build_reschedule_scheduled_send_command, build_reset_identity_command,
         build_reset_local_data_command, build_restart_sync_command, build_retry_send_command,
         build_schedule_send_command, build_select_room_command, build_select_space_command,
@@ -4250,6 +4508,7 @@ mod tests {
         build_set_avatar_command, build_set_composer_draft_command, build_set_display_name_command,
         build_set_fully_read_command, build_set_local_user_alias_command,
         build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
+        build_ignore_user_command, build_unignore_user_command,
         build_set_thread_composer_draft_command, build_set_typing_command,
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
         build_submit_identity_reset_password_command, build_submit_login_command,
@@ -5397,6 +5656,116 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_ignore_user_command(fake_request_id(60), "@ignored:example.invalid".to_owned()) {
+            CoreCommand::Account(AccountCommand::IgnoreUser { request_id, user_id }) => {
+                assert_eq!(request_id, fake_request_id(60));
+                assert_eq!(user_id, "@ignored:example.invalid");
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Account(AccountCommand::IgnoreUser { request_id, user_id })
+                );
+                assert!(!debug.contains("@ignored:example.invalid"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_unignore_user_command(fake_request_id(61), "@ignored:example.invalid".to_owned()) {
+            CoreCommand::Account(AccountCommand::UnignoreUser { request_id, user_id }) => {
+                assert_eq!(request_id, fake_request_id(61));
+                assert_eq!(user_id, "@ignored:example.invalid");
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Account(AccountCommand::UnignoreUser { request_id, user_id })
+                );
+                assert!(!debug.contains("@ignored:example.invalid"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_report_user_command(
+            fake_request_id(62),
+            "@reported:example.invalid".to_owned(),
+            Some("spam".to_owned()),
+        ) {
+            CoreCommand::Account(AccountCommand::ReportUser {
+                request_id,
+                user_id,
+                reason,
+            }) => {
+                assert_eq!(request_id, fake_request_id(62));
+                assert_eq!(user_id, "@reported:example.invalid");
+                assert_eq!(reason, "spam");
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Account(AccountCommand::ReportUser {
+                        request_id,
+                        user_id,
+                        reason: reason.clone(),
+                    })
+                );
+                assert!(!debug.contains("@reported:example.invalid"), "{debug}");
+                assert!(!debug.contains("spam"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_report_content_command(
+            fake_request_id(63),
+            room_id.clone(),
+            "$reported-event".to_owned(),
+            Some("abuse".to_owned()),
+        ) {
+            CoreCommand::Room(RoomCommand::ReportContent {
+                request_id,
+                room_id: route_room_id,
+                event_id,
+                reason,
+            }) => {
+                assert_eq!(request_id, fake_request_id(63));
+                assert_eq!(route_room_id, room_id);
+                assert_eq!(event_id, "$reported-event");
+                assert_eq!(reason.as_deref(), Some("abuse"));
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Room(RoomCommand::ReportContent {
+                        request_id,
+                        room_id: route_room_id.clone(),
+                        event_id: event_id.clone(),
+                        reason: reason.clone(),
+                    })
+                );
+                assert!(!debug.contains("$reported-event"), "{debug}");
+                assert!(!debug.contains("abuse"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_report_room_command(
+            fake_request_id(64),
+            room_id.clone(),
+            Some("spam room".to_owned()),
+        ) {
+            CoreCommand::Room(RoomCommand::ReportRoom {
+                request_id,
+                room_id: route_room_id,
+                reason,
+            }) => {
+                assert_eq!(request_id, fake_request_id(64));
+                assert_eq!(route_room_id, room_id);
+                assert_eq!(reason, "spam room");
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Room(RoomCommand::ReportRoom {
+                        request_id,
+                        room_id: route_room_id.clone(),
+                        reason: reason.clone(),
+                    })
+                );
+                assert!(!debug.contains("spam room"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_set_avatar_command(
             fake_request_id(33),
             "image/png".to_owned(),
@@ -5922,6 +6291,40 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        let files_scope = matrix_desktop_state::FilesViewScope::Room {
+            room_id: "!room:example.org".to_owned(),
+        };
+        let files_filter = matrix_desktop_state::AttachmentFilter {
+            kinds: vec![matrix_desktop_state::AttachmentKind::Image],
+            filename_query: Some("cat".to_owned()),
+        };
+        match build_open_files_view_command(
+            fake_request_id(65),
+            files_scope.clone(),
+            files_filter.clone(),
+            matrix_desktop_state::AttachmentSort::Filename,
+        ) {
+            CoreCommand::App(AppCommand::OpenFilesView {
+                request_id,
+                scope,
+                filter,
+                sort,
+            }) => {
+                assert_eq!(request_id, fake_request_id(65));
+                assert_eq!(scope, files_scope);
+                assert_eq!(filter, files_filter);
+                assert!(matches!(sort, matrix_desktop_state::AttachmentSort::Filename));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_close_files_view_command(fake_request_id(66)) {
+            CoreCommand::App(AppCommand::CloseFilesView { request_id }) => {
+                assert_eq!(request_id, fake_request_id(66));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_update_room_member_role_command(
             fake_request_id(37),
             "!room:example.org".to_owned(),
@@ -6209,6 +6612,16 @@ mod tests {
                 "pub async fn mark_activity_read",
                 "build_mark_activity_read_command",
                 "commands::mark_activity_read",
+            ),
+            (
+                "pub async fn open_files_view",
+                "build_open_files_view_command",
+                "commands::open_files_view",
+            ),
+            (
+                "pub async fn close_files_view",
+                "build_close_files_view_command",
+                "commands::close_files_view",
             ),
         ] {
             assert!(

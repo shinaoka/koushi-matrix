@@ -33,7 +33,10 @@ import type {
   SpaceSummary,
   StagedUploadCompressionChoice,
   TimelineMessage,
-  UploadStagingRequestItem
+  UploadStagingRequestItem,
+  AttachmentFilter,
+  AttachmentSort,
+  FilesViewScope
 } from "../domain/types";
 
 export interface DesktopApi {
@@ -119,6 +122,11 @@ export interface DesktopApi {
   setPresence(presence: PresenceKind): Promise<DesktopSnapshot>;
   setDisplayName(displayName: string | null): Promise<DesktopSnapshot>;
   setLocalUserAlias(userId: string, alias: string | null): Promise<DesktopSnapshot>;
+  ignoreUser(userId: string): Promise<DesktopSnapshot>;
+  unignoreUser(userId: string): Promise<DesktopSnapshot>;
+  reportUser(userId: string, reason: string): Promise<DesktopSnapshot>;
+  reportContent(roomId: string, eventId: string, reason: string): Promise<DesktopSnapshot>;
+  reportRoom(roomId: string, reason: string): Promise<DesktopSnapshot>;
   setAvatar(mimeType: string, bytes: number[]): Promise<DesktopSnapshot>;
   editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
   redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
@@ -142,6 +150,11 @@ export interface DesktopApi {
   setComposerDraft(roomId: string, draft: string): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
+  openThreadsList(roomId: string): Promise<DesktopSnapshot>;
+  closeThreadsList(): Promise<DesktopSnapshot>;
+  paginateThreadsList(roomId: string): Promise<DesktopSnapshot>;
+  openFilesView(scope: FilesViewScope, filter: AttachmentFilter, sort: AttachmentSort): Promise<DesktopSnapshot>;
+  closeFilesView(): Promise<DesktopSnapshot>;
   setThreadComposerDraft(roomId: string, rootEventId: string, draft: string): Promise<DesktopSnapshot>;
   sendThreadReply(roomId: string, rootEventId: string, body: string): Promise<DesktopSnapshot>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
@@ -1056,6 +1069,72 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async ignoreUser(userId: string): Promise<DesktopSnapshot> {
+    if (!this.isReady() || !userId.trim()) {
+      return this.getSnapshot();
+    }
+    const normalizedUserId = userId.trim();
+    const requestId = this.nextRequestId();
+    this.snapshot.state.profile.ignored_user_update = {
+      kind: "saving",
+      request_id: requestId
+    };
+    await Promise.resolve();
+    if (!this.snapshot.state.profile.ignored_user_ids.includes(normalizedUserId)) {
+      this.snapshot.state.profile.ignored_user_ids = [
+        ...this.snapshot.state.profile.ignored_user_ids,
+        normalizedUserId
+      ];
+    }
+    this.snapshot.state.profile.ignored_user_update = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async unignoreUser(userId: string): Promise<DesktopSnapshot> {
+    if (!this.isReady() || !userId.trim()) {
+      return this.getSnapshot();
+    }
+    const normalizedUserId = userId.trim();
+    const requestId = this.nextRequestId();
+    this.snapshot.state.profile.ignored_user_update = {
+      kind: "saving",
+      request_id: requestId
+    };
+    await Promise.resolve();
+    this.snapshot.state.profile.ignored_user_ids =
+      this.snapshot.state.profile.ignored_user_ids.filter((id) => id !== normalizedUserId);
+    this.snapshot.state.profile.ignored_user_update = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async reportUser(userId: string, reason: string): Promise<DesktopSnapshot> {
+    if (!this.isReady() || !userId.trim()) {
+      return this.getSnapshot();
+    }
+    void reason;
+    return this.getSnapshot();
+  }
+
+  async reportContent(
+    roomId: string,
+    eventId: string,
+    reason: string
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim() || !eventId.trim()) {
+      return this.getSnapshot();
+    }
+    void reason;
+    return this.getSnapshot();
+  }
+
+  async reportRoom(roomId: string, reason: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim()) {
+      return this.getSnapshot();
+    }
+    void reason;
+    return this.getSnapshot();
+  }
+
   async setAvatar(mimeType: string, bytes: number[]): Promise<DesktopSnapshot> {
     if (!this.isReady() || bytes.length === 0) {
       return this.getSnapshot();
@@ -1152,6 +1231,88 @@ class BrowserFakeApi implements DesktopApi {
 
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.thread = null;
+    return this.getSnapshot();
+  }
+
+  async openThreadsList(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    if (!this.snapshot.state.rooms.some((room) => room.room_id === roomId)) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.threads_list = {
+      kind: "open",
+      room_id: roomId,
+      request_id: 0,
+      items: [],
+      is_paginating: false,
+      end_reached: false,
+    };
+    return this.getSnapshot();
+  }
+
+  async closeThreadsList(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.threads_list = { kind: "closed" };
+    return this.getSnapshot();
+  }
+
+  async openFilesView(
+    scope: FilesViewScope,
+    filter: AttachmentFilter,
+    sort: AttachmentSort
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.files_view = {
+      kind: "open",
+      request_id: 0,
+      scope: this.resolveFilesViewScope(scope),
+      filter,
+      sort,
+      items: [],
+      selected_event_id: null
+    };
+    return this.getSnapshot();
+  }
+
+  async closeFilesView(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.files_view = { kind: "closed" };
+    return this.getSnapshot();
+  }
+
+  private resolveFilesViewScope(scope: FilesViewScope) {
+    if (scope.kind === "space") {
+      const space = this.snapshot.state.spaces.find((s) => s.space_id === scope.space_id);
+      return {
+        kind: "space" as const,
+        space_id: scope.space_id,
+        child_room_ids: space?.child_room_ids ?? []
+      };
+    }
+    return scope;
+  }
+
+  async paginateThreadsList(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    const list = this.snapshot.state.threads_list;
+    if (
+      list.kind === "open" &&
+      list.room_id === roomId &&
+      !list.is_paginating &&
+      !list.end_reached
+    ) {
+      list.is_paginating = true;
+    }
     return this.getSnapshot();
   }
 
@@ -2275,6 +2436,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       files_view: { kind: "closed" },
+      threads_list: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" },
       live_signals: defaultLiveSignalsState(),
@@ -2365,6 +2527,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },
+      threads_list: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       files_view: { kind: "closed" },

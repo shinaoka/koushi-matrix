@@ -1662,15 +1662,12 @@ test("notification attention snapshot drives room, space, thread, and click rout
     "data-mention-count",
     "1"
   );
-  await expect(page.getByRole("button", { name: "Threads" })).toHaveAttribute("data-count", "2");
-  await expect(page.getByRole("button", { name: "Threads" })).toHaveAttribute(
-    "data-mention-count",
-    "1"
-  );
-  await expect(page.getByRole("button", { name: "Threads" })).toHaveAttribute(
-    "data-live-count",
-    "3"
-  );
+  const sidebarThreadsButton = page
+    .getByRole("complementary", { name: "Rooms" })
+    .getByRole("button", { name: "Threads" });
+  await expect(sidebarThreadsButton).toHaveAttribute("data-count", "2");
+  await expect(sidebarThreadsButton).toHaveAttribute("data-mention-count", "1");
+  await expect(sidebarThreadsButton).toHaveAttribute("data-live-count", "3");
   await expect(page).toHaveTitle("matrix-desktop · 4 unread");
 
   await attentionRoom.click();
@@ -4161,10 +4158,14 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
     .toBe("ja");
   await expect(page.getByRole("button", { name: "ルームを作成", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "ユーザー設定", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "スレッド", exact: true })).toBeVisible();
+  await expect(
+    page.locator(".channel-actions").getByRole("button", { name: "スレッド", exact: true })
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "送信", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create room", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Threads", exact: true })).toHaveCount(0);
+  await expect(
+    page.locator(".channel-actions").getByRole("button", { name: "Threads", exact: true })
+  ).toHaveCount(0);
   await expect
     .poll(async () =>
       page
@@ -5448,4 +5449,415 @@ test("privacy toggles dispatch Rust-owned update_settings patches for read recei
       }
     });
   await expect(typing).toHaveAttribute("aria-checked", "false");
+});
+
+
+test("message context menu ignores and unignores a user via typed commands", async ({ page }) => {
+  await gotoReadyShell(page);
+  const targetUserId = "@other-user:example.invalid";
+  const targetEventId = "$ignore-target:example.invalid";
+
+  await seedTimelineItems(
+    page,
+    [
+      {
+        id: { Event: { event_id: targetEventId } },
+        sender: targetUserId,
+        body: "Ignore context menu target",
+        timestamp_ms: 1_800_000_004_000,
+        in_reply_to_event_id: null,
+        thread_root: null,
+        thread_summary: null,
+        reactions: [],
+        can_react: true,
+        is_redacted: false,
+        is_hidden: false,
+        can_redact: false,
+        is_edited: false,
+        can_edit: false
+      }
+    ],
+    71
+  );
+
+  await page.evaluate((userId) => {
+    window.__harness.setCommandResponse("ignore_user", ({ userId: incomingUserId }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          profile: {
+            ...snapshot.state.profile,
+            ignored_user_ids: [...snapshot.state.profile.ignored_user_ids, String(incomingUserId)]
+          }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("unignore_user", ({ userId: incomingUserId }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          profile: {
+            ...snapshot.state.profile,
+            ignored_user_ids: snapshot.state.profile.ignored_user_ids.filter(
+              (id) => id !== String(incomingUserId)
+            )
+          }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.clearInvocations();
+  }, targetUserId);
+
+  const row = page.locator(".message").filter({ hasText: "Ignore context menu target" });
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Ignore" }).click();
+
+  await expect.poll(() => invocationCount(page, "ignore_user")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("ignore_user")[0]?.args))
+    .toEqual({ userId: targetUserId });
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.currentSnapshot().state.profile.ignored_user_ids)
+    )
+    .toContain(targetUserId);
+
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Unignore" }).click();
+
+  await expect.poll(() => invocationCount(page, "unignore_user")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("unignore_user")[0]?.args))
+    .toEqual({ userId: targetUserId });
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.currentSnapshot().state.profile.ignored_user_ids)
+    )
+    .not.toContain(targetUserId);
+});
+
+test("message context menu reports content with a reason", async ({ page }) => {
+  await gotoReadyShell(page);
+  const targetUserId = "@reported-user:example.invalid";
+  const targetEventId = "$report-content-target:example.invalid";
+
+  await seedTimelineItems(
+    page,
+    [
+      {
+        id: { Event: { event_id: targetEventId } },
+        sender: targetUserId,
+        body: "Report content target",
+        timestamp_ms: 1_800_000_005_000,
+        in_reply_to_event_id: null,
+        thread_root: null,
+        thread_summary: null,
+        reactions: [],
+        can_react: true,
+        is_redacted: false,
+        is_hidden: false,
+        can_redact: false,
+        is_edited: false,
+        can_edit: false
+      }
+    ],
+    72
+  );
+
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("report_content", () => window.__harness.currentSnapshot());
+    window.__harness.clearInvocations();
+  });
+
+  const row = page.locator(".message").filter({ hasText: "Report content target" });
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Report content" }).click();
+
+  const reasonInput = page.getByRole("textbox", { name: "Reason" });
+  await expect(reasonInput).toBeVisible();
+  await reasonInput.fill("Spam content");
+  await page.getByRole("button", { name: "Report", exact: true }).click();
+
+  await expect.poll(() => invocationCount(page, "report_content")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("report_content")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      eventId: targetEventId,
+      reason: "Spam content"
+    });
+});
+
+test("room context menu reports room with a reason", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("report_room", () => window.__harness.currentSnapshot());
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "Harness Room" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Report room" }).click();
+
+  const reasonInput = page.getByRole("textbox", { name: "Reason" });
+  await expect(reasonInput).toBeVisible();
+  await reasonInput.fill("Toxic room");
+  await page.getByRole("button", { name: "Report", exact: true }).click();
+
+  await expect.poll(() => invocationCount(page, "report_room")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("report_room")[0]?.args))
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      reason: "Toxic room"
+    });
+});
+
+test("room member panel ignores, unignores, and reports a user", async ({ page }) => {
+  await gotoReadyShell(page);
+  const targetUserId = "@target-member:example.invalid";
+
+  await page.evaluate(
+    ({ roomId, targetUserId: userId }) => {
+      window.__harness.setCommandResponse("load_room_settings", ({ roomId: incomingRoomId }) => {
+        const current = window.__harness.currentSnapshot();
+        const next = {
+          ...current,
+          state: {
+            ...current.state,
+            room_management: {
+              selected_room_id: String(incomingRoomId),
+              settings: {
+                room_id: String(incomingRoomId),
+                name: "Harness Room",
+                topic: null,
+                avatar_url: null,
+                join_rule: "invite",
+                history_visibility: "shared",
+                permissions: {
+                  can_edit_settings: true,
+                  can_edit_roles: true,
+                  can_kick: true,
+                  can_ban: false,
+                  can_unban: false
+                },
+                members: [
+                  {
+                    user_id: userId,
+                    display_name: "Target Member",
+                    display_label: "Target Member",
+                    original_display_label: "Target Member",
+                    avatar_url: null,
+                    power_level: 0,
+                    role: "user"
+                  }
+                ]
+              },
+              operation: { kind: "idle" }
+            }
+          }
+        };
+        window.__harness.setSnapshot(next);
+        return next;
+      });
+      window.__harness.setCommandResponse("ignore_user", ({ userId: incomingUserId }) => {
+        const current = window.__harness.currentSnapshot();
+        const next = {
+          ...current,
+          state: {
+            ...current.state,
+            profile: {
+              ...current.state.profile,
+              ignored_user_ids: [...current.state.profile.ignored_user_ids, String(incomingUserId)]
+            }
+          }
+        };
+        window.__harness.setSnapshot(next);
+        return next;
+      });
+      window.__harness.setCommandResponse("unignore_user", ({ userId: incomingUserId }) => {
+        const current = window.__harness.currentSnapshot();
+        const next = {
+          ...current,
+          state: {
+            ...current.state,
+            profile: {
+              ...current.state.profile,
+              ignored_user_ids: current.state.profile.ignored_user_ids.filter(
+                (id) => id !== String(incomingUserId)
+              )
+            }
+          }
+        };
+        window.__harness.setSnapshot(next);
+        return next;
+      });
+      window.__harness.setCommandResponse("report_user", () => window.__harness.currentSnapshot());
+      window.__harness.clearInvocations();
+    },
+    { roomId: HARNESS_ROOM_ID, targetUserId }
+  );
+
+  await page.getByRole("button", { name: "Room info" }).click();
+  const targetMemberRow = page.locator(".room-member-row").filter({ hasText: "Target Member" });
+  await expect(targetMemberRow).toBeVisible();
+
+  await targetMemberRow.getByRole("button", { name: "Ignore" }).click();
+  await expect.poll(() => invocationCount(page, "ignore_user")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("ignore_user")[0]?.args))
+    .toEqual({ userId: targetUserId });
+  await expect(targetMemberRow.getByRole("button", { name: "Unignore" })).toBeVisible();
+
+  await targetMemberRow.getByRole("button", { name: "Unignore" }).click();
+  await expect.poll(() => invocationCount(page, "unignore_user")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("unignore_user")[0]?.args))
+    .toEqual({ userId: targetUserId });
+  await expect(targetMemberRow.getByRole("button", { name: "Ignore" })).toBeVisible();
+
+  await targetMemberRow.getByRole("button", { name: "Report user" }).click();
+  const reasonInput = page.getByRole("textbox", { name: "Reason" });
+  await expect(reasonInput).toBeVisible();
+  await reasonInput.fill("Harassment");
+  await page.getByRole("button", { name: "Report", exact: true }).click();
+
+  await expect.poll(() => invocationCount(page, "report_user")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("report_user")[0]?.args))
+    .toEqual({
+      userId: targetUserId,
+      reason: "Harassment"
+    });
+});
+
+test("room info Files entry opens the file browser with room scope", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setCommandResponse("open_files_view", () => ({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        files_view: {
+          kind: "open",
+          request_id: 1,
+          scope: { kind: "room", room_id: "!harness-room:example.invalid" },
+          filter: { kinds: ["image", "video", "audio", "file"], filename_query: null },
+          sort: "newestFirst",
+          items: [
+            {
+              room_id: "!harness-room:example.invalid",
+              event_id: "$file-event:example.invalid",
+              sender: "@file-sender:example.invalid",
+              timestamp_ms: 1_800_000_000_000,
+              kind: "file",
+              filename: "quarterly_report.pdf",
+              mimetype: "application/pdf",
+              size: 12_345,
+              source_mxc: "mxc://example.invalid/source",
+              thumbnail_mxc: null,
+              thread_root: null,
+              encrypted: false,
+              encryption_version: null,
+              width: null,
+              height: null,
+              is_edited: false
+            }
+          ],
+          selected_event_id: null
+        }
+      }
+    }));
+  });
+
+  await page.getByRole("button", { name: t("room.roomInfo") }).click();
+  await page.getByRole("button", { name: t("room.files") }).click();
+
+  await expect.poll(() => invocationCount(page, "open_files_view")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("open_files_view")[0]?.args))
+    .toEqual({
+      scope: { kind: "room", room_id: "!harness-room:example.invalid" },
+      filter: { kinds: ["image", "video", "audio", "file"], filename_query: null },
+      sort: "newestFirst"
+    });
+
+  await expect(page.getByText(t("files.title"), { exact: true })).toBeVisible();
+  await expect(page.getByText("quarterly_report.pdf")).toBeVisible();
+});
+
+test("timeline header Threads button opens the threads list and row opens a thread", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page
+    .locator(".channel-actions")
+    .getByRole("button", { name: t("threads.title") })
+    .click();
+
+  await expect.poll(() => invocationCount(page, "open_threads_list")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("open_threads_list")[0]?.args)
+    )
+    .toEqual({ roomId: "!harness-room:example.invalid" });
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        threads_list: {
+          kind: "open",
+          room_id: "!harness-room:example.invalid",
+          request_id: 1,
+          items: [
+            {
+              root_event_id: "$thread-root:example.invalid",
+              root_sender: "@thread-root-sender:example.invalid",
+              root_sender_label: null,
+              root_body_preview: "Thread root preview",
+              root_timestamp_ms: 1_800_000_000_000,
+              latest_event_id: "$thread-latest:example.invalid",
+              latest_sender: "@thread-latest-sender:example.invalid",
+              latest_sender_label: null,
+              latest_body_preview: "Latest reply preview",
+              latest_timestamp_ms: 1_800_000_000_100,
+              reply_count: 3
+            }
+          ],
+          is_paginating: false,
+          end_reached: true
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  const contextPanel = page.locator('aside[aria-label="Context panel"]');
+  await expect(contextPanel.getByText(t("threads.title"), { exact: true })).toBeVisible();
+  await expect(contextPanel.getByText("Thread root preview")).toBeVisible();
+
+  await page.getByRole("button", { name: /3 replies/ }).click({ force: true });
+
+  await expect.poll(() => invocationCount(page, "open_thread")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("open_thread")[0]?.args))
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      rootEventId: "$thread-root:example.invalid"
+    });
 });

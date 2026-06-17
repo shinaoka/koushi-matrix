@@ -279,6 +279,7 @@ impl CoreConnection {
             | CoreEvent::LocalEncryption(_)
             | CoreEvent::NativeAttention(_)
             | CoreEvent::CjkTextPolicy(_)
+            | CoreEvent::ThreadsList(_)
             | CoreEvent::OperationFailed { .. } => {}
         }
         event
@@ -1213,6 +1214,59 @@ impl AppActor {
                     }));
                     true
                 }
+                AppCommand::OpenFilesView {
+                    request_id,
+                    scope,
+                    filter,
+                    sort,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::FilesViewOpened {
+                            request_id: request_id.sequence,
+                            scope,
+                            filter,
+                            sort,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::CloseFilesView { request_id } => {
+                    let effects = self.reduce_app_action(AppAction::FilesViewClosed).await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::OpenThreadsList {
+                    request_id,
+                    room_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::OpenThreadsList {
+                            request_id: request_id.sequence,
+                            room_id,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::CloseThreadsList { request_id } => {
+                    let effects = self.reduce_app_action(AppAction::CloseThreadsList).await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::PaginateThreadsList {
+                    request_id,
+                    room_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::PaginateThreadsList {
+                            request_id: request_id.sequence,
+                            room_id,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
                 AppCommand::RecordLocalEncryptionHealth { request_id, health } => {
                     let probe_effects = self
                         .reduce_app_action(AppAction::LocalEncryptionProbeRequested {
@@ -1419,6 +1473,47 @@ impl AppActor {
                             filter,
                             sort,
                         },
+                    ))
+                    .await;
+            } else if let AppEffect::SubscribeThreadsList {
+                request_id: effect_request_id,
+                room_id,
+            } = effect
+            {
+                if effect_request_id != request_id.sequence {
+                    continue;
+                }
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::ThreadsListCommand(
+                        crate::command::ThreadsListCommand::Open {
+                            request_id,
+                            room_id,
+                        },
+                    ))
+                    .await;
+            } else if let AppEffect::PaginateThreadsList {
+                request_id: effect_request_id,
+                room_id,
+            } = effect
+            {
+                if effect_request_id != request_id.sequence {
+                    continue;
+                }
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::ThreadsListCommand(
+                        crate::command::ThreadsListCommand::Paginate {
+                            request_id,
+                            room_id,
+                        },
+                    ))
+                    .await;
+            } else if let AppEffect::UnsubscribeThreadsList = effect {
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::ThreadsListCommand(
+                        crate::command::ThreadsListCommand::Close { request_id },
                     ))
                     .await;
             } else if let AppEffect::PersistSettings {
