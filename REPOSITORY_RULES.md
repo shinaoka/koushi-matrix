@@ -413,6 +413,22 @@ To reduce conflicts on these files:
   reducers change, `docs/policies/engineering-rules.md`, `AGENTS.md`, and the
   relevant dated plan). The review must include the verification output and
   any security/privacy-sensitive surfaces.
+- **Prefer `codex` (DeepSeek V4 Pro) as the auditor.** When scheduling an
+  external review, use `codex` / `claude-deepseek` as the first choice. Other
+  frontier models may be used only when `codex` is unavailable or explicitly
+  declined by the user.
+- **Review focus areas.** The auditor must prioritize, in order:
+  1. Consistency with repository rules and canon documents.
+  2. Consistency with Rust/Tauri best practices and the existing codebase.
+  3. Security and privacy risks, including secret leakage, unsafe code,
+     untrusted input handling, and cross-boundary data exposure.
+  4. Correctness of state-machine, command/event, and DTO contracts.
+- **Rule gaps found during audit must be reported as rule-update proposals.**
+  If the auditor discovers a problem that is caused or enabled by a gap,
+  ambiguity, or missing rule in the canon, the review must propose an
+  amendment to `REPOSITORY_RULES.md` or `docs/policies/engineering-rules.md`
+  rather than only patching the immediate code. The main agent decides
+  whether to adopt the proposal, escalate to the user, or defer it.
 - **Review findings are implementation tasks, not optional suggestions.** The
   implementing agent or the main agent must address blocking issues and
   re-run the relevant gates before landing the change on `main`.

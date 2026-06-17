@@ -507,5 +507,8 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
 9. Non-frontier-agent implementation requires frontier-model review at the end
    of substantial work, particularly after AgentSwarm or parallel Phase A
    changes. The review checks the diff against the canon and verification
-   output, and its findings must be addressed before landing on `main`. See
-   `REPOSITORY_RULES.md` `Review And Audit`.
+   output, and its findings must be addressed before landing on `main`. The
+   auditor must prioritize repository-rule consistency, Rust/Tauri best
+   practices, and security/privacy risks, and must propose canon amendments
+   when a finding is caused by a rule gap. See `REPOSITORY_RULES.md`
+   `Review And Audit`.
