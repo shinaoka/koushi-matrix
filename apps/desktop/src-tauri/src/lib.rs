@@ -1200,9 +1200,9 @@ mod tests {
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LiveSignalsEvent,
                 LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent,
-                PaginationDirection, PaginationState, ReactionGroup, RoomEvent, TimelineCodeBlock,
-                TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody, TimelineItem,
-                TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
+                PaginationDirection, PaginationState, ReactionGroup, RoomEvent, SearchEvent,
+                TimelineCodeBlock, TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody,
+                TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
                 TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
                 TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
                 TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
@@ -1212,9 +1212,9 @@ mod tests {
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
-            ActivityRow, ActivityStream, ActivityTab, DirectoryQuery, DirectoryRoomSummary,
-            IdentityResetAuthType, IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts,
-            LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
+            ActivityRow, ActivityStream, ActivityTab, AttachmentKind, AttachmentResult, DirectoryQuery,
+            DirectoryRoomSummary, IdentityResetAuthType, IdentityResetState, JapaneseCatalogProfile,
+            LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
             NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
             PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
             RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
@@ -2034,6 +2034,41 @@ mod tests {
             json!("japaneseCatalogProfileChanged")
         );
 
+        let search_attachments_results = serialize_core_event(&CoreEvent::Search(
+            SearchEvent::AttachmentsResults {
+                request_id,
+                results: vec![AttachmentResult {
+                    room_id: "!r:example.test".to_owned(),
+                    event_id: "$f1".to_owned(),
+                    sender: "@u:example.test".to_owned(),
+                    timestamp_ms: 1,
+                    kind: AttachmentKind::Image,
+                    filename: "photo.png".to_owned(),
+                    mimetype: Some("image/png".to_owned()),
+                    size: Some(1234),
+                    source_mxc: "mxc://example.invalid/abc".to_owned(),
+                    thumbnail_mxc: Some("mxc://example.invalid/abc-thumb".to_owned()),
+                }],
+            },
+        ))
+        .expect("serialize search attachments results event");
+        assert_eq!(
+            search_attachments_results["event"]["AttachmentsResults"]["results"][0]["kind"],
+            json!("image")
+        );
+
+        let search_attachments_failed = serialize_core_event(&CoreEvent::Search(
+            SearchEvent::AttachmentsFailed {
+                request_id,
+                message: "index unavailable".to_owned(),
+            },
+        ))
+        .expect("serialize search attachments failed event");
+        assert_eq!(
+            search_attachments_failed["event"]["AttachmentsFailed"]["message"],
+            json!("index unavailable")
+        );
+
         let actual_contract = json!({
             "activityOpened": activity_opened,
             "activityMarkedRead": activity_marked_read,
@@ -2048,6 +2083,8 @@ mod tests {
             "liveSignalsRoomSignalsUpdated": live_signals,
             "nativeAttentionSummaryUpdated": native_attention,
             "operationFailedSessionNotFound": failed,
+            "searchAttachmentsFailed": search_attachments_failed,
+            "searchAttachmentsResults": search_attachments_results,
             "roomDirectoryQueryCompleted": directory_query_completed,
             "roomDirectMessageStarted": room_direct_message_started,
             "roomInviteAccepted": room_invite_accepted,

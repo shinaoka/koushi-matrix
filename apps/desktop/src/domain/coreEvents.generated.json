@@ -215,6 +215,43 @@
       "sequence": 7
     }
   },
+  "searchAttachmentsFailed": {
+    "event": {
+      "AttachmentsFailed": {
+        "message": "index unavailable",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Search"
+  },
+  "searchAttachmentsResults": {
+    "event": {
+      "AttachmentsResults": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "results": [
+          {
+            "event_id": "$f1",
+            "filename": "photo.png",
+            "kind": "image",
+            "mimetype": "image/png",
+            "room_id": "!r:example.test",
+            "sender": "@u:example.test",
+            "size": 1234,
+            "source_mxc": "mxc://example.invalid/abc",
+            "thumbnail_mxc": "mxc://example.invalid/abc-thumb",
+            "timestamp_ms": 1
+          }
+        ]
+      }
+    },
+    "kind": "Search"
+  },
   "roomDirectoryQueryCompleted": {
     "event": {
       "DirectoryQueryCompleted": {
