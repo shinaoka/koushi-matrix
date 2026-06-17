@@ -82,6 +82,8 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
             desktop_notifications: false,
             sound: false,
             badges: true,
+            send_read_receipts: true,
+            send_typing_notifications: true,
         },
         display: DisplaySettings {
             code_block_wrap: false,
@@ -180,6 +182,8 @@ fn notification_settings_patch_is_rust_owned_and_persisted() {
         desktop_notifications: false,
         sound: false,
         badges: false,
+        send_read_receipts: false,
+        send_typing_notifications: false,
     };
 
     let effects = reduce(

@@ -1,7 +1,7 @@
 # Headless Core Runtime Design Review
 
 Date: 2026-06-12
-Reviewer: Claude (deepseek-v4-pro)
+Reviewer: Claude
 Scope: design review of `docs/superpowers/specs/2026-06-12-headless-core-runtime-design.md`
         against current implementation, `docs/architecture/overview.md`, and
         vendored matrix-rust-sdk

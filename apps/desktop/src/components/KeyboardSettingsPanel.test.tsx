@@ -14,7 +14,13 @@ describe("KeyboardSettingsPanel", () => {
             appearance: { theme: "system" },
             typography: { font: "system", emoji: "system" },
             keyboard: { composer_send_shortcut: "enter" },
-            notifications: { desktop_notifications: true, sound: true, badges: true },
+            notifications: {
+              desktop_notifications: true,
+              sound: true,
+              badges: true,
+              send_read_receipts: true,
+              send_typing_notifications: true
+            },
             display: { code_block_wrap: true, hide_redacted: false },
             media: {
         image_upload_compression: "never",
@@ -51,7 +57,13 @@ describe("KeyboardSettingsPanel", () => {
             appearance: { theme: "system" },
             typography: { font: "system", emoji: "system" },
             keyboard: { composer_send_shortcut: "modEnter" },
-            notifications: { desktop_notifications: true, sound: true, badges: true },
+            notifications: {
+              desktop_notifications: true,
+              sound: true,
+              badges: true,
+              send_read_receipts: true,
+              send_typing_notifications: true
+            },
             display: { code_block_wrap: true, hide_redacted: false },
             media: {
         image_upload_compression: "never",

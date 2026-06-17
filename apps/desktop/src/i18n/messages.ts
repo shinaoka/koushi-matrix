@@ -211,6 +211,9 @@ export type MessageId =
   | "room.noRoomSelected"
   | "room.noSpaces"
   | "room.notifications"
+  | "room.notifyModeAll"
+  | "room.notifyModeMentions"
+  | "room.notifyModeMute"
   | "room.operationFailed"
   | "room.people"
   | "room.rolePermissions"
@@ -286,6 +289,8 @@ export type MessageId =
   | "settings.notificationBadges"
   | "settings.notificationDesktop"
   | "settings.notificationSound"
+  | "settings.sendReadReceipts"
+  | "settings.sendTypingNotifications"
   | "settings.notifications"
   | "settings.localStore"
   | "settings.localStoreLabel"
@@ -316,6 +321,17 @@ export type MessageId =
   | "settings.security"
   | "settings.securityPrivacy"
   | "settings.sessions"
+  | "settings.accountManagement"
+  | "settings.changePassword"
+  | "settings.changePasswordLabel"
+  | "settings.changePasswordConfirm"
+  | "settings.changePasswordMismatch"
+  | "settings.passwordChanged"
+  | "settings.deactivateAccount"
+  | "settings.deactivateAccountErase"
+  | "settings.deactivateAccountConfirm"
+  | "settings.accountDeactivated"
+  | "settings.accountManagementFailed"
   | "settings.currentSession"
   | "settings.otherSessions"
   | "settings.signOut"
@@ -916,6 +932,9 @@ const en: Catalog = {
   "room.noRoomSelected": "No room selected",
   "room.noSpaces": "No Spaces",
   "room.notifications": "Notifications",
+  "room.notifyModeAll": "All messages",
+  "room.notifyModeMentions": "Mentions only",
+  "room.notifyModeMute": "Mute",
   "room.operationFailed": "Operation failed",
   "room.people": "People",
   "room.roleAdministrator": "Administrator",
@@ -988,6 +1007,8 @@ const en: Catalog = {
   "settings.notificationBadges": "Badges",
   "settings.notificationDesktop": "Desktop notifications",
   "settings.notificationSound": "Sound",
+  "settings.sendReadReceipts": "Send read receipts",
+  "settings.sendTypingNotifications": "Send typing notifications",
   "settings.notifications": "Notifications",
   "settings.localData": "Local data",
   "settings.localDataResetAvailable": "Recovery or local reset available",
@@ -1018,6 +1039,17 @@ const en: Catalog = {
   "settings.security": "Security",
   "settings.securityPrivacy": "Security & Privacy",
   "settings.sessions": "Sessions",
+  "settings.accountManagement": "Account management",
+  "settings.changePassword": "Change password",
+  "settings.changePasswordLabel": "New password",
+  "settings.changePasswordConfirm": "Confirm new password",
+  "settings.changePasswordMismatch": "Passwords do not match",
+  "settings.passwordChanged": "Password changed",
+  "settings.deactivateAccount": "Deactivate account",
+  "settings.deactivateAccountErase": "Erase all data",
+  "settings.deactivateAccountConfirm": "This cannot be undone. Confirm to proceed.",
+  "settings.accountDeactivated": "Account deactivated",
+  "settings.accountManagementFailed": "Account operation failed",
   "settings.currentSession": "Current session",
   "settings.otherSessions": "Other sessions",
   "settings.signOut": "Sign out",
@@ -1519,6 +1551,9 @@ const ja: Catalog = {
   "room.noRoomSelected": "ルームが選択されていません",
   "room.noSpaces": "スペースがありません",
   "room.notifications": "通知",
+  "room.notifyModeAll": "すべてのメッセージ",
+  "room.notifyModeMentions": "メンションのみ",
+  "room.notifyModeMute": "ミュート",
   "room.operationFailed": "操作に失敗しました",
   "room.people": "ユーザー",
   "room.roleAdministrator": "管理者",
@@ -1590,6 +1625,8 @@ const ja: Catalog = {
   "settings.notificationBadges": "バッジ",
   "settings.notificationDesktop": "デスクトップ通知",
   "settings.notificationSound": "サウンド",
+  "settings.sendReadReceipts": "既読を送信",
+  "settings.sendTypingNotifications": "入力通知を送信",
   "settings.notifications": "通知",
   "settings.localData": "ローカルデータ",
   "settings.localDataResetAvailable": "リカバリーまたはローカルリセットを利用できます",
@@ -1620,6 +1657,17 @@ const ja: Catalog = {
   "settings.security": "セキュリティ",
   "settings.securityPrivacy": "セキュリティとプライバシー",
   "settings.sessions": "セッション",
+  "settings.accountManagement": "アカウント管理",
+  "settings.changePassword": "パスワードを変更",
+  "settings.changePasswordLabel": "新しいパスワード",
+  "settings.changePasswordConfirm": "新しいパスワード（確認）",
+  "settings.changePasswordMismatch": "パスワードが一致しません",
+  "settings.passwordChanged": "パスワードを変更しました",
+  "settings.deactivateAccount": "アカウントを無効化",
+  "settings.deactivateAccountErase": "すべてのデータを消去",
+  "settings.deactivateAccountConfirm": "この操作は元に戻せません。続行するには確認してください。",
+  "settings.accountDeactivated": "アカウントを無効化しました",
+  "settings.accountManagementFailed": "アカウント操作に失敗しました",
   "settings.currentSession": "現在のセッション",
   "settings.otherSessions": "その他のセッション",
   "settings.signOut": "サインアウト",

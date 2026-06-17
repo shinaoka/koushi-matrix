@@ -14,6 +14,7 @@ import type {
   PresenceKind,
   RoomListFilter,
   RoomModerationAction,
+  RoomNotificationMode,
   RoomSettingChange,
   RoomTagKind,
   SavedSessionInfo,
@@ -94,6 +95,13 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("mark_room_as_unread", { roomId, unread });
   }
 
+  async setRoomNotificationMode(
+    roomId: string,
+    mode: RoomNotificationMode
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_room_notification_mode", { roomId, mode });
+  }
+
   async queryDevices(): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("query_devices");
   }
@@ -108,6 +116,18 @@ class TauriDesktopApi implements DesktopApi {
 
   async submitAccountManagementUia(flowId: number, password: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("submit_account_management_uia", { flowId, password });
+  }
+
+  async loadAccountManagementCapabilities(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("load_account_management_capabilities");
+  }
+
+  async changePassword(newPassword: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("change_password", { newPassword });
+  }
+
+  async deactivateAccount(eraseData: boolean): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("deactivate_account", { eraseData });
   }
 
   async probeLocalEncryptionHealth(): Promise<DesktopSnapshot> {

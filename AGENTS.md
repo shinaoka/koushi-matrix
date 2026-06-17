@@ -69,84 +69,11 @@ All agents implementing timeline navigation aids for issue #41 follow
 for Phase A Rust/headless work before any Phase B GUI pills, date picker, or
 scroll wiring.
 
-## DeepSeek Agent Evaluation Notes
-
-- This local environment defines `claude-deepseek` as an interactive bash
-  alias, not as a non-interactive `PATH` executable. Invoke it through
-  `bash -ic 'claude-deepseek ...'`; do not call `claude` directly when the
-  task is explicitly evaluating DeepSeek.
-- The alias currently sets DeepSeek V4 Pro as the main Claude Code model and
-  `CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash` for implementation
-  subagents. Main GPT agents still own umbrella coordination, canon docs,
-  final review decisions, commits, pushes, and issue closure.
-- For bounded one-shot reviews, prefer stdin with print mode, for example:
-  `printf '%s\n' "$PROMPT" | timeout 600s bash -ic 'claude-deepseek -p --no-session-persistence --max-budget-usd 2 --tools ""'`.
-  Passing the prompt as a trailing argv can be swallowed by `--tools ""`; stdin
-  avoided that failure in this environment.
-- `claude-deepseek --help` does not expose a `--fast` flag in this environment.
-  Choose speed/cost by explicitly setting `--model deepseek-v4-flash` for
-  implementation probes and `--model "deepseek-v4-pro[1m]"` for review probes.
-- Do not use very short timeouts for real reviews. A simple smoke prompt
-  returned in about four seconds, while a diff review took over a minute. Use a
-  5-10 minute timeout for implementation/review evaluation unless the user asks
-  for a hard shorter limit.
-- Set a realistic review budget. `$0.50` handled a small #65 diff review after
-  waiting, but `$2+` is a better default for full diff reviews. Keep prompts
-  scoped and private-data-free.
-- DeepSeek V4 Pro should not be treated as a trusted implementation owner for
-  privacy-sensitive, cross-boundary changes without main-agent integration
-  review. In the #68/#63 trials it was useful for scoped audit/review prompts,
-  while direct implementation either produced no useful edit or timed out.
-  Prefer read-only analysis or final diff review unless the task is small and
-  mechanically specified.
-- In the #63 local-alias Phase A trial, a full uncommitted diff review through
-  DeepSeek V4 Pro produced no output after several minutes and was terminated by
-  its process group. For broad privacy/cross-boundary reviews, either shrink the
-  prompt to one subsystem or use the main agent's review as authoritative.
-- In the #63 timeline-relabel implementation trial, DeepSeek V4 Pro produced a
-  partial diff after several minutes but no final status: it added part of the
-  Rust event DTO/helper and TS tests, then stalled before TS implementation,
-  `TimelineView` keyless handling, contract fixture updates, docs, or full
-  verification. Treat this mode as useful for a rough first draft only; the main
-  agent must review for missing cross-boundary surfaces and finish or replace
-  the implementation.
-- In the #63 room-member display-label scoped diff review, DeepSeek V4 Pro again
-  produced no review output after more than six minutes and was terminated. Even
-  scoped cross-boundary reviews can be too slow in this setup; prefer much
-  smaller file-local prompts, or treat main-agent review and local gates as
-  authoritative when the DeepSeek review is silent.
-- In the #69 formatted-message Phase A scoped diff review, DeepSeek V4 Pro again
-  produced no output after more than six minutes despite an explicit
-  `--model "deepseek-v4-pro[1m]"`, `$5` budget, stdin prompt, and no tools. The
-  trial was terminated by process group. For similar Phase A reviews, shrink the
-  review to one file or one invariant, or use `deepseek-v4-flash` only as a
-  cheap implementation probe; do not block commits indefinitely on a silent Pro
-  review when local gates and main-agent review are available.
-- In the #35 hide-redacted trial, `claude-deepseek` was not on the
-  non-interactive shell PATH but did start through `bash -ic`. A
-  `deepseek-v4-flash` prompt with `--max-budget-usd 2` exited immediately with
-  "Exceeded USD budget (2)" before returning useful output. For future trials,
-  invoke it through an interactive shell, set a larger budget, keep prompts
-  file-local, and do not count a budget-exceeded run as review evidence.
-- When reviewing uncommitted work, include untracked new files explicitly.
-  `git diff -- path/to/new-file` is empty for untracked files, and the
-  reviewer may correctly report that the core file is missing from the review.
-- Review prompts must ask DeepSeek to check consistency with the rule canon:
-  `REPOSITORY_RULES.md`, `docs/architecture/overview.md`,
-  `docs/architecture/state-machine.md` when reducers change,
-  `docs/policies/engineering-rules.md`, `AGENTS.md`, and the relevant dated
-  implementation plan. External review findings are suggestions to verify, not
-  automatic orders.
-- If a `claude-deepseek` process appears hung, inspect process groups first
-  (`ps -eo pid,ppid,pgid,stat,etime,cmd | rg 'claude|deepseek'`) and terminate
-  only the process group for that trial. Do not kill unrelated existing Claude
-  sessions.
-
 ## Codex Diff Review Recipe
 
-The preferred external auditor is OpenAI `codex` (the `codex` CLI, not the
-local `claude-deepseek` DeepSeek alias). For substantial changes authored by
-non-frontier agents, run a diff review with the command below.
+The preferred external auditor is OpenAI `codex` (the `codex` CLI). For
+substantial changes authored by non-frontier agents, run a diff review with the
+command below.
 
 Generate the diff and pipe it to `codex review -`:
 

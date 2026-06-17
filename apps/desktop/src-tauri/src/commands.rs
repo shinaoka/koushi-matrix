@@ -26,8 +26,9 @@ use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
     ComposerResolverContext, ComposerSurface, DirectoryQuery, FocusedContextState,
     IdentityResetAuthRequest, ImageUploadCompressionMode, LoginRequest, MentionIntent,
-    PresenceKind, RecoveryRequest, RoomListFilter, RoomModerationAction, RoomSettingChange,
-    RoomTagKind, SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
+    PresenceKind, RecoveryRequest, RoomListFilter, RoomModerationAction, RoomNotificationMode,
+    RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch, StagedUploadCompressionChoice,
+    StagedUploadItem,
     StagedUploadKind, VerificationCancelReason, build_formatted_message_draft,
 };
 use serde::Deserialize;
@@ -599,6 +600,25 @@ pub async fn mark_room_as_unread(
 }
 
 #[tauri::command]
+pub async fn set_room_notification_mode(
+    room_id: String,
+    mode: RoomNotificationMode,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::SetRoomNotificationMode {
+            request_id,
+            room_id,
+            mode,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn query_devices(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -642,6 +662,53 @@ pub async fn delete_devices(
             request_id,
             device_ordinals,
             auth: None,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn load_account_management_capabilities(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn change_password(
+    new_password: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Account(AccountCommand::ChangePassword {
+            request_id,
+            new_password: AuthSecret::new(new_password),
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn deactivate_account(
+    erase_data: bool,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Account(AccountCommand::DeactivateAccount {
+            request_id,
+            erase_data,
         }),
     )
     .await?;
@@ -2875,6 +2942,32 @@ pub(crate) fn build_submit_identity_reset_oauth_command(
         request_id,
         flow_id,
         request: IdentityResetAuthRequest::OAuthApproved,
+    })
+}
+
+pub(crate) fn build_load_account_management_capabilities_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id })
+}
+
+pub(crate) fn build_change_password_command(
+    request_id: matrix_desktop_core::RequestId,
+    new_password: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ChangePassword {
+        request_id,
+        new_password,
+    })
+}
+
+pub(crate) fn build_deactivate_account_command(
+    request_id: matrix_desktop_core::RequestId,
+    erase_data: bool,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::DeactivateAccount {
+        request_id,
+        erase_data,
     })
 }
 

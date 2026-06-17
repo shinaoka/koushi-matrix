@@ -145,6 +145,7 @@ import type {
   RoomListFilter,
   RoomListItem,
   RoomModerationAction,
+  RoomNotificationMode,
   RoomSettingChange,
   RoomTags,
   SavedSessionInfo,
@@ -1337,12 +1338,28 @@ export function App() {
     setSnapshot(await api.submitAccountManagementUia(flowId, password));
   }
 
+  async function loadAccountManagementCapabilities() {
+    setSnapshot(await api.loadAccountManagementCapabilities());
+  }
+
+  async function changePassword(newPassword: string) {
+    setSnapshot(await api.changePassword(newPassword));
+  }
+
+  async function deactivateAccount(eraseData: boolean) {
+    setSnapshot(await api.deactivateAccount(eraseData));
+  }
+
   async function setDisplayName(displayName: string | null) {
     setSnapshot(await api.setDisplayName(displayName));
   }
 
   async function setLocalUserAlias(userId: string, alias: string | null) {
     setSnapshot(await api.setLocalUserAlias(userId, alias));
+  }
+
+  async function setRoomNotificationMode(roomId: string, mode: RoomNotificationMode) {
+    setSnapshot(await api.setRoomNotificationMode(roomId, mode));
   }
 
   async function setAvatar(file: File) {
@@ -2291,6 +2308,9 @@ export function App() {
           onSetLocalUserAlias={(userId, alias) => {
             void setLocalUserAlias(userId, alias);
           }}
+          onSetRoomNotificationMode={(roomId, mode) => {
+            void setRoomNotificationMode(roomId, mode);
+          }}
           onUpdateMemberRole={(roomId, targetUserId, powerLevel) => {
             void updateRoomMemberRole(roomId, targetUserId, powerLevel);
           }}
@@ -2371,6 +2391,15 @@ export function App() {
           }}
           onDeleteDevices={(deviceOrdinals) => {
             void deleteDevices(deviceOrdinals);
+          }}
+          onLoadAccountManagementCapabilities={() => {
+            void loadAccountManagementCapabilities();
+          }}
+          onChangePassword={(newPassword) => {
+            void changePassword(newPassword);
+          }}
+          onDeactivateAccount={(eraseData) => {
+            void deactivateAccount(eraseData);
           }}
           onSubmitAccountManagementUia={(flowId, password) => {
             void submitAccountManagementUia(flowId, password);
@@ -5261,6 +5290,7 @@ export function ContextualRightPanel({
   onInviteUser = () => undefined,
   onModerateMember = () => undefined,
   onSetLocalUserAlias = () => undefined,
+  onSetRoomNotificationMode = () => undefined,
   onUpdateMemberRole = () => undefined,
   onRecoverySecretPresenceChange,
   onReply,
@@ -5287,6 +5317,9 @@ export function ContextualRightPanel({
   onQueryDevices = () => undefined,
   onRenameDevice = () => undefined,
   onDeleteDevices = () => undefined,
+  onLoadAccountManagementCapabilities = () => undefined,
+  onChangePassword = () => undefined,
+  onDeactivateAccount = () => undefined,
   onSubmitAccountManagementUia = () => undefined,
   onThreadComposerDraftChange,
   onThreadReplySend
@@ -5317,6 +5350,7 @@ export function ContextualRightPanel({
     reason: string | null
   ) => void;
   onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
+  onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
   onUpdateMemberRole?: (
     roomId: string,
     targetUserId: string,
@@ -5353,6 +5387,9 @@ export function ContextualRightPanel({
   onQueryDevices?: () => void;
   onRenameDevice?: (deviceOrdinal: number, displayName: string) => void;
   onDeleteDevices?: (deviceOrdinals: number[]) => void;
+  onLoadAccountManagementCapabilities?: () => void;
+  onChangePassword?: (newPassword: string) => void;
+  onDeactivateAccount?: (eraseData: boolean) => void;
   onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
@@ -5425,9 +5462,15 @@ export function ContextualRightPanel({
           onSwitchAccount={onSwitchAccount}
           deviceSessions={snapshot.state.device_sessions}
           accountManagement={snapshot.state.account_management}
+          accountManagementCapabilities={snapshot.state.account_management_capabilities}
           onQueryDevices={onQueryDevices ?? (() => undefined)}
           onRenameDevice={onRenameDevice ?? (() => undefined)}
           onDeleteDevices={onDeleteDevices ?? (() => undefined)}
+          onLoadAccountManagementCapabilities={
+            onLoadAccountManagementCapabilities ?? (() => undefined)
+          }
+          onChangePassword={onChangePassword ?? (() => undefined)}
+          onDeactivateAccount={onDeactivateAccount ?? (() => undefined)}
           onSubmitAccountManagementUia={onSubmitAccountManagementUia ?? (() => undefined)}
         />
       </aside>
@@ -5442,6 +5485,9 @@ export function ContextualRightPanel({
           currentUserId={snapshot.state.session.user_id ?? null}
           room={activeRoom}
           roomManagement={snapshot.state.room_management}
+          roomNotificationSettings={
+            activeRoom ? snapshot.state.room_notification_settings[activeRoom.room_id] : undefined
+          }
           spaces={snapshot.state.spaces}
           onInvitePeople={
             activeRoom
@@ -5454,6 +5500,7 @@ export function ContextualRightPanel({
           }
           onModerateMember={onModerateMember}
           onSetLocalUserAlias={onSetLocalUserAlias}
+          onSetRoomNotificationMode={onSetRoomNotificationMode}
           onUpdateMemberRole={onUpdateMemberRole}
           onUpdateRoomSetting={onUpdateRoomSetting}
         />

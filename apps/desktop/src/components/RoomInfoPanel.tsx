@@ -9,6 +9,8 @@ import type {
   RoomMemberRole,
   RoomMemberSummary,
   RoomModerationAction,
+  RoomNotificationMode,
+  RoomNotificationSettings,
   RoomSettingChange,
   RoomSummary,
   SpaceSummary
@@ -18,16 +20,19 @@ export function RoomInfoPanel({
   currentUserId = null,
   room,
   roomManagement,
+  roomNotificationSettings,
   spaces,
   onInvitePeople,
   onModerateMember,
   onSetLocalUserAlias,
+  onSetRoomNotificationMode,
   onUpdateMemberRole,
   onUpdateRoomSetting
 }: {
   currentUserId?: string | null;
   room: RoomSummary | null;
   roomManagement?: RoomManagementState;
+  roomNotificationSettings: RoomNotificationSettings | undefined;
   spaces: SpaceSummary[];
   onInvitePeople?: () => void;
   onModerateMember?: (
@@ -37,6 +42,7 @@ export function RoomInfoPanel({
     reason: string | null
   ) => void;
   onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
+  onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onUpdateMemberRole?: (roomId: string, targetUserId: string, powerLevel: number) => void;
 }) {
@@ -143,6 +149,32 @@ export function RoomInfoPanel({
           <DetailRow label={t("room.timeline")} value={t("room.subscribed")} />
           <DetailRow label={t("room.searchIndex")} value={t("room.exactVerifiedResults")} />
           <DetailRow label={t("room.dmList")} value={room.is_dm ? t("room.globalDmList") : t("room.roomScoped")} />
+        </div>
+      </section>
+
+      <section className="settings-section" aria-label={t("room.notifications")}>
+        <h3>{t("room.notifications")}</h3>
+        <div className="settings-detail-list">
+          <label className="settings-select-row" htmlFor={`room-notification-${roomId}`}>
+            <span>{t("room.notifications")}</span>
+            <select
+              id={`room-notification-${roomId}`}
+              value={roomNotificationSettings?.mode.kind ?? "all"}
+              onChange={(event) =>
+                onSetRoomNotificationMode?.(roomId, {
+                  kind: event.target.value as RoomNotificationMode["kind"]
+                })
+              }
+              disabled={
+                !onSetRoomNotificationMode ||
+                roomNotificationSettings?.operation.kind === "pending"
+              }
+            >
+              <option value="all">{t("room.notifyModeAll")}</option>
+              <option value="mentions">{t("room.notifyModeMentions")}</option>
+              <option value="mute">{t("room.notifyModeMute")}</option>
+            </select>
+          </label>
         </div>
       </section>
 

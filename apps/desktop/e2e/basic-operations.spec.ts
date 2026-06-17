@@ -4557,7 +4557,9 @@ test("notification settings dispatch Rust-owned update_settings patches", async 
         notifications: {
           desktop_notifications: false,
           sound: true,
-          badges: true
+          badges: true,
+          send_read_receipts: true,
+          send_typing_notifications: true
         }
       }
     });
@@ -4578,7 +4580,9 @@ test("notification settings dispatch Rust-owned update_settings patches", async 
         notifications: {
           desktop_notifications: false,
           sound: false,
-          badges: true
+          badges: true,
+          send_read_receipts: true,
+          send_typing_notifications: true
         }
       }
     });
@@ -5363,4 +5367,85 @@ test("room list filter and mark unread dispatch Rust-owned commands", async ({ p
       page.evaluate(() => window.__harness.invocationsOf("mark_room_as_unread")[0]?.args)
     )
     .toEqual({ roomId: "!room-alpha:example.invalid", unread: true });
+});
+
+
+test("per-room notification mode dispatches set_room_notification_mode from room info", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page.getByRole("button", { name: "Room info" }).click();
+
+  const notificationSelect = page.getByRole("combobox", { name: "Notifications" });
+  await expect(notificationSelect).toBeVisible();
+  await expect(notificationSelect).toHaveValue("all");
+  await notificationSelect.selectOption("mute");
+
+  await expect.poll(() => invocationCount(page, "set_room_notification_mode")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_room_notification_mode")[0]?.args)
+    )
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      mode: { kind: "mute" }
+    });
+  await expect(notificationSelect).toHaveValue("mute");
+});
+
+test("privacy toggles dispatch Rust-owned update_settings patches for read receipts and typing", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page.getByRole("button", { name: "User settings" }).click();
+  await expect(page.getByRole("heading", { name: "Notifications" })).toBeVisible();
+
+  const readReceipts = page.getByRole("switch", { name: "Send read receipts" });
+  await expect(readReceipts).toHaveAttribute("aria-checked", "true");
+  await readReceipts.click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        notifications: {
+          desktop_notifications: true,
+          sound: true,
+          badges: true,
+          send_read_receipts: false,
+          send_typing_notifications: true
+        }
+      }
+    });
+  await expect(readReceipts).toHaveAttribute("aria-checked", "false");
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  const typing = page.getByRole("switch", { name: "Send typing notifications" });
+  await expect(typing).toHaveAttribute("aria-checked", "true");
+  await typing.click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        notifications: {
+          desktop_notifications: true,
+          sound: true,
+          badges: true,
+          send_read_receipts: false,
+          send_typing_notifications: false
+        }
+      }
+    });
+  await expect(typing).toHaveAttribute("aria-checked", "false");
 });

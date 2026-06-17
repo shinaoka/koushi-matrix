@@ -3212,6 +3212,7 @@ dependencies = [
  "matrix-sdk-ui",
  "mime",
  "reqwest",
+ "ruma",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
