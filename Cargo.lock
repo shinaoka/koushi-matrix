@@ -2086,6 +2086,7 @@ dependencies = [
  "matrix-sdk",
  "matrix-sdk-base",
  "matrix-sdk-ui",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

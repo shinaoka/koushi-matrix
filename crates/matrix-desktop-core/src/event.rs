@@ -1382,7 +1382,7 @@ pub struct LinkPreviewImage {
     pub thumbnail: AvatarThumbnailState,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LinkPreview {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1393,6 +1393,16 @@ pub struct LinkPreview {
     pub image: Option<LinkPreviewImage>,
     #[serde(default)]
     pub state: LinkPreviewState,
+}
+
+impl fmt::Debug for LinkPreview {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinkPreview")
+            .field("state", &self.state)
+            .field("has_image", &self.image.is_some())
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
