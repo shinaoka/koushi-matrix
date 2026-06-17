@@ -13,6 +13,7 @@ pub mod event;
 pub mod executor;
 pub mod failure;
 pub mod ids;
+pub(crate) mod link_preview;
 pub mod room;
 pub mod runtime;
 pub(crate) mod scheduled_send;
