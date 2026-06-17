@@ -1,12 +1,16 @@
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
+use std::hash::{DefaultHasher, Hasher};
+use std::path::Path;
 use std::sync::OnceLock;
 
-use regex::Regex;
-
+use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_state::AvatarThumbnailState;
+use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
+use matrix_sdk::ruma::MxcUri;
+use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
+use regex::Regex;
+use tokio::fs;
 
 use crate::event::{LinkPreview, LinkPreviewImage, LinkPreviewState};
 use crate::event::{TimelineFormattedBody, TimelineMediaSource};
@@ -29,6 +33,34 @@ pub struct LinkPreviewContext {
     pub room_enabled: Option<bool>,
     pub hidden_event_ids: BTreeSet<String>,
     pub cache: HashMap<String, LinkPreview>,
+    pub room_overrides: BTreeMap<String, bool>,
+}
+
+impl LinkPreviewContext {
+    /// Build a context from application settings. Per-room overrides are kept
+    /// in `room_overrides`; `room_enabled` is left `None` and resolved per-room
+    /// via `for_room`.
+    pub fn from_settings(values: &matrix_desktop_state::SettingsValues) -> Self {
+        Self {
+            global_enabled: values.display.url_previews_enabled,
+            room_enabled: None,
+            hidden_event_ids: BTreeSet::new(),
+            cache: HashMap::new(),
+            room_overrides: values.room_url_previews.clone(),
+        }
+    }
+
+    /// Produce a room-scoped view of this context, resolving the room override
+    /// into `room_enabled`.
+    pub fn for_room(&self, room_id: &str) -> Self {
+        Self {
+            global_enabled: self.global_enabled,
+            room_enabled: self.room_overrides.get(room_id).copied(),
+            hidden_event_ids: self.hidden_event_ids.clone(),
+            cache: self.cache.clone(),
+            room_overrides: self.room_overrides.clone(),
+        }
+    }
 }
 
 impl fmt::Debug for LinkPreviewContext {
@@ -37,6 +69,7 @@ impl fmt::Debug for LinkPreviewContext {
             .debug_struct("LinkPreviewContext")
             .field("global_enabled", &self.global_enabled)
             .field("room_enabled", &self.room_enabled)
+            .field("room_override_count", &self.room_overrides.len())
             .field("hidden_event_ids_count", &self.hidden_event_ids.len())
             .field("cache_entry_count", &self.cache.len())
             .finish()
@@ -126,6 +159,7 @@ pub fn link_previews_for_message(
     )
 }
 
+#[allow(dead_code)]
 pub fn effective_room_url_previews_enabled(
     room_id: &str,
     is_encrypted: bool,
@@ -142,6 +176,7 @@ pub fn effective_room_url_previews_enabled(
     }
 }
 
+#[allow(dead_code)]
 pub fn link_preview_image_from_mxc(mxc_uri: String) -> LinkPreviewImage {
     LinkPreviewImage {
         source: TimelineMediaSource {
@@ -153,6 +188,111 @@ pub fn link_preview_image_from_mxc(mxc_uri: String) -> LinkPreviewImage {
         height: None,
         thumbnail: AvatarThumbnailState::NotRequested,
     }
+}
+
+/// Fetch link preview metadata for `url` from the homeserver's URL preview
+/// endpoint. Image thumbnails are downloaded and cached under `data_dir` when
+/// available.
+pub async fn fetch_link_preview(
+    session: &MatrixClientSession,
+    url: &str,
+    data_dir: Option<&Path>,
+) -> Result<LinkPreview, ()> {
+    let client = session.client();
+    let mut preview_url = client.homeserver();
+    preview_url.set_path("/_matrix/media/v3/preview_url");
+    preview_url.set_query(None);
+    preview_url.query_pairs_mut().append_pair("url", url);
+
+    let mut request = client.http_client().get(preview_url);
+    if let Some(token) = client.access_token() {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+
+    let response = request.send().await.map_err(|_| ())?;
+    let bytes = response.bytes().await.map_err(|_| ())?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+
+    let title = json
+        .get("og:title")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let description = json
+        .get("og:description")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let image_width = json.get("og:image:width").and_then(|v| v.as_u64());
+    let image_height = json.get("og:image:height").and_then(|v| v.as_u64());
+
+    let mut image = None;
+    if let Some(image_url) = json.get("og:image").and_then(|v| v.as_str()) {
+        let mxc = <&MxcUri>::from(image_url);
+        if mxc.is_valid() {
+            let uri = mxc.to_owned();
+            let thumbnail = download_preview_image(session, &uri, url, data_dir)
+                .await
+                .ok();
+            if let Some(thumbnail) = thumbnail {
+                image = Some(LinkPreviewImage {
+                    source: TimelineMediaSource {
+                        mxc_uri: uri.to_string(),
+                        encrypted: false,
+                        encryption_version: None,
+                    },
+                    width: image_width,
+                    height: image_height,
+                    thumbnail,
+                });
+            }
+        }
+    }
+
+    Ok(LinkPreview {
+        url: url.to_owned(),
+        title,
+        description,
+        image,
+        state: LinkPreviewState::Ready,
+    })
+}
+
+async fn download_preview_image(
+    session: &MatrixClientSession,
+    uri: &matrix_sdk::ruma::OwnedMxcUri,
+    url: &str,
+    data_dir: Option<&Path>,
+) -> Result<AvatarThumbnailState, ()> {
+    let client = session.client();
+    let bytes = client
+        .media()
+        .get_media_content(
+            &MediaRequestParameters {
+                source: SdkMediaSource::Plain(uri.clone()),
+                format: MediaFormat::File,
+            },
+            true,
+        )
+        .await
+        .map_err(|_| ())?;
+
+    let Some(dir) = data_dir else {
+        return Ok(AvatarThumbnailState::NotRequested);
+    };
+
+    let mut hasher = DefaultHasher::new();
+    hasher.write(url.as_bytes());
+    let hash = hasher.finish();
+    let thumb_dir = dir.join("link_preview_thumbnails");
+    fs::create_dir_all(&thumb_dir).await.map_err(|_| ())?;
+    let path = thumb_dir.join(format!("{hash:x}.bin"));
+    fs::write(&path, &bytes).await.map_err(|_| ())?;
+
+    Ok(AvatarThumbnailState::Ready {
+        source_url: format!("file://{}", path.display()),
+        width: None,
+        height: None,
+        mime_type: None,
+    })
 }
 
 #[cfg(test)]
@@ -217,6 +357,7 @@ mod tests {
             room_enabled: None,
             hidden_event_ids: BTreeSet::new(),
             cache: HashMap::new(),
+            room_overrides: BTreeMap::new(),
         };
         let previews =
             link_previews_for_message(Some("https://example.com"), None, "$event", true, &context);
@@ -230,6 +371,7 @@ mod tests {
             room_enabled: Some(true),
             hidden_event_ids: BTreeSet::new(),
             cache: HashMap::new(),
+            room_overrides: BTreeMap::new(),
         };
         let previews =
             link_previews_for_message(Some("https://example.com"), None, "$event", true, &context);
@@ -252,6 +394,7 @@ mod tests {
             room_enabled: Some(false),
             hidden_event_ids: BTreeSet::new(),
             cache: HashMap::new(),
+            room_overrides: BTreeMap::new(),
         };
         let previews =
             link_previews_for_message(Some("https://example.com"), None, "$event", true, &context);
@@ -267,6 +410,7 @@ mod tests {
             room_enabled: None,
             hidden_event_ids: hidden,
             cache: HashMap::new(),
+            room_overrides: BTreeMap::new(),
         };
         let previews =
             link_previews_for_message(Some("https://example.com"), None, "$event", false, &context);
@@ -283,6 +427,7 @@ mod tests {
             room_enabled: None,
             hidden_event_ids: hidden,
             cache: HashMap::new(),
+            room_overrides: BTreeMap::new(),
         };
         assert_eq!(
             link_previews_for_message(Some("https://example.com"), None, "$alpha", false, &context),
@@ -314,6 +459,7 @@ mod tests {
             room_enabled: None,
             hidden_event_ids: BTreeSet::new(),
             cache,
+            room_overrides: BTreeMap::new(),
         };
         let previews =
             link_previews_for_message(Some("https://example.com"), None, "$event", false, &context);
@@ -412,10 +558,12 @@ mod tests {
             room_enabled: Some(false),
             hidden_event_ids: hidden,
             cache,
+            room_overrides: BTreeMap::new(),
         };
         let debug = format!("{:?}", context);
         assert!(debug.contains("global_enabled"));
         assert!(debug.contains("room_enabled"));
+        assert!(debug.contains("room_override_count"));
         assert!(debug.contains("hidden_event_ids_count"));
         assert!(debug.contains("cache_entry_count"));
         assert!(!debug.contains("https://example.com"));

@@ -87,17 +87,18 @@ use crate::command::{
     MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 use crate::event::{
-    CoreEvent, LiveSignalsEvent, MediaTransferProgress, PaginationDirection, PaginationState,
-    ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
-    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
-    TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
-    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
-    TimelineViewportObservation, message_actions_for_timeline_item,
+    CoreEvent, LinkPreviewState, LiveSignalsEvent, MediaTransferProgress, PaginationDirection,
+    PaginationState, ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
+    TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+    TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot,
+    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
+    TimelineUnreadPosition, TimelineViewportObservation, message_actions_for_timeline_item,
     message_source_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind};
+use crate::link_preview::LinkPreviewContext;
 use crate::search::SearchIndexMessage;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
@@ -155,12 +156,17 @@ pub struct TimelineManagerActor {
     /// is no active search index (pre-session or pre-Phase-6 builds).
     search_index_tx: Option<mpsc::Sender<SearchIndexMessage>>,
     ignored_user_ids: std::collections::BTreeSet<String>,
+    /// Application data directory for cached preview images.
+    data_dir: Option<std::path::PathBuf>,
+    /// URL preview policy broadcast from AppState.
+    link_preview_policy: LinkPreviewContext,
 }
 
 impl TimelineManagerActor {
     pub fn spawn(
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
+        data_dir: Option<std::path::PathBuf>,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let actor = TimelineManagerActor {
@@ -172,6 +178,8 @@ impl TimelineManagerActor {
             msg_rx,
             search_index_tx: None,
             ignored_user_ids: std::collections::BTreeSet::new(),
+            data_dir,
+            link_preview_policy: LinkPreviewContext::default(),
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -184,6 +192,8 @@ impl TimelineManagerActor {
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         search_index_tx: mpsc::Sender<SearchIndexMessage>,
+        data_dir: Option<std::path::PathBuf>,
+        link_preview_policy: LinkPreviewContext,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let actor = TimelineManagerActor {
@@ -195,6 +205,8 @@ impl TimelineManagerActor {
             msg_rx,
             search_index_tx: Some(search_index_tx),
             ignored_user_ids: std::collections::BTreeSet::new(),
+            data_dir,
+            link_preview_policy,
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -549,10 +561,49 @@ impl TimelineManagerActor {
                 )
                 .await;
             }
-            TimelineCommand::LoadLinkPreviews { .. }
-            | TimelineCommand::HideLinkPreview { .. }
-            | TimelineCommand::BroadcastLinkPreviewPolicy { .. } => {
-                // Placeholder: full wiring in Task 7.
+            TimelineCommand::LoadLinkPreviews {
+                request_id,
+                key,
+                event_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::LoadLinkPreviews {
+                        request_id,
+                        event_id,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::HideLinkPreview {
+                request_id,
+                key,
+                event_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::HideLinkPreview {
+                        request_id,
+                        event_id,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::BroadcastLinkPreviewPolicy {
+                global_enabled,
+                room_overrides,
+            } => {
+                self.link_preview_policy.global_enabled = global_enabled;
+                self.link_preview_policy.room_overrides = room_overrides;
+                for (key, handle) in &self.timelines {
+                    let _ = handle
+                        .send(TimelineActorMessage::LinkPreviewPolicyChanged {
+                            policy: self.link_preview_policy.for_room(key.room_id()),
+                        })
+                        .await;
+                }
             }
         }
     }
@@ -735,6 +786,8 @@ impl TimelineManagerActor {
             self.event_tx.clone(),
             self.search_index_tx.clone(),
             self.ignored_user_ids.clone(),
+            self.data_dir.clone(),
+            self.link_preview_policy.for_room(key.room_id()),
         )
         .await;
 
@@ -1147,6 +1200,17 @@ enum TimelineActorMessage {
     },
     TypingUsersUpdated(Vec<String>),
     IgnoredUsersUpdated(std::collections::BTreeSet<String>),
+    LoadLinkPreviews {
+        request_id: RequestId,
+        event_id: String,
+    },
+    HideLinkPreview {
+        request_id: RequestId,
+        event_id: String,
+    },
+    LinkPreviewPolicyChanged {
+        policy: LinkPreviewContext,
+    },
     /// Internal: diff batch from the relay task.
     DiffBatch(Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>),
     /// Internal: send completed (from send queue monitor task).
@@ -1218,6 +1282,10 @@ struct TimelineActor {
     viewport_observation: TimelineViewportObservation,
     last_navigation_snapshot: Option<TimelineNavigationSnapshot>,
     ignored_user_ids: std::collections::BTreeSet<String>,
+    /// URL preview policy for this timeline.
+    link_preview_policy: LinkPreviewContext,
+    /// Application data directory for cached preview images.
+    data_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1238,10 +1306,13 @@ impl TimelineActor {
         event_tx: broadcast::Sender<CoreEvent>,
         search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
         ignored_user_ids: std::collections::BTreeSet<String>,
+        data_dir: Option<std::path::PathBuf>,
+        link_preview_policy: LinkPreviewContext,
     ) -> TimelineActorHandle {
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
+        let room_id = key.room_id().to_owned();
 
         let mut media_sources = HashMap::new();
         for item in &initial_sdk_items {
@@ -1256,6 +1327,10 @@ impl TimelineActor {
                 item
             })
             .collect();
+        let mut initial_items = initial_items;
+        for item in &mut initial_items {
+            apply_link_previews_to_item(&mut *item, &room_id, &link_preview_policy, &session).await;
+        }
         let navigation_items = initial_items.clone();
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
         let initial_media_gallery_items =
@@ -1355,6 +1430,8 @@ impl TimelineActor {
             viewport_observation: TimelineViewportObservation::default(),
             last_navigation_snapshot: None,
             ignored_user_ids,
+            link_preview_policy,
+            data_dir,
         };
 
         executor::spawn(actor.run());
@@ -1517,8 +1594,23 @@ impl TimelineActor {
             TimelineActorMessage::IgnoredUsersUpdated(user_ids) => {
                 self.handle_ignored_users_updated(user_ids).await;
             }
+            TimelineActorMessage::LoadLinkPreviews {
+                request_id,
+                event_id,
+            } => {
+                self.handle_load_link_previews(request_id, event_id).await;
+            }
+            TimelineActorMessage::HideLinkPreview {
+                request_id,
+                event_id,
+            } => {
+                self.handle_hide_link_preview(request_id, event_id).await;
+            }
+            TimelineActorMessage::LinkPreviewPolicyChanged { policy } => {
+                self.handle_link_preview_policy_changed(policy).await;
+            }
             TimelineActorMessage::DiffBatch(diffs) => {
-                self.handle_diff_batch(diffs);
+                self.handle_diff_batch(diffs).await;
             }
             TimelineActorMessage::SendQueueUpdate(update) => {
                 self.handle_send_queue_update(update);
@@ -2393,7 +2485,10 @@ impl TimelineActor {
         }
     }
 
-    fn handle_diff_batch(&mut self, diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>) {
+    async fn handle_diff_batch(
+        &mut self,
+        diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
+    ) {
         if diffs.is_empty() {
             return;
         }
@@ -2423,6 +2518,35 @@ impl TimelineActor {
             .collect();
         for diff in &mut core_diffs {
             apply_ignored_sender_suppression_to_diff(diff, &self.ignored_user_ids);
+        }
+        let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
+        for diff in &mut core_diffs {
+            match diff {
+                TimelineDiff::Reset { items } => {
+                    for item in items {
+                        apply_link_previews_to_item(
+                            item,
+                            self.key.room_id(),
+                            &link_preview_context,
+                            &self.session,
+                        )
+                        .await;
+                    }
+                }
+                TimelineDiff::PushFront { item }
+                | TimelineDiff::PushBack { item }
+                | TimelineDiff::Insert { item, .. }
+                | TimelineDiff::Set { item, .. } => {
+                    apply_link_previews_to_item(
+                        item,
+                        self.key.room_id(),
+                        &link_preview_context,
+                        &self.session,
+                    )
+                    .await;
+                }
+                _ => {}
+            }
         }
         if let Some(action) = thread_attention_action_from_timeline_diffs(
             &mut self.thread_attention_counts,
@@ -2496,6 +2620,124 @@ impl TimelineActor {
             diffs: core_diffs,
         }));
         self.emit_navigation_if_changed();
+    }
+
+    async fn handle_load_link_previews(&mut self, _request_id: RequestId, event_id: String) {
+        let Some(index) = self.navigation_items.iter().position(
+            |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == &event_id),
+        ) else {
+            return;
+        };
+
+        let Some(previews) = self.navigation_items[index].link_previews.clone() else {
+            return;
+        };
+
+        let mut updated = Vec::new();
+        for mut preview in previews {
+            if preview.state != LinkPreviewState::Pending {
+                updated.push(preview);
+                continue;
+            }
+
+            preview.state = LinkPreviewState::Loading;
+            match crate::link_preview::fetch_link_preview(
+                &self.session,
+                &preview.url,
+                self.data_dir.as_deref(),
+            )
+            .await
+            {
+                Ok(fetched) => {
+                    self.link_preview_policy
+                        .cache
+                        .insert(fetched.url.clone(), fetched.clone());
+                    updated.push(fetched);
+                }
+                Err(_) => {
+                    preview.state = LinkPreviewState::Failed;
+                    updated.push(preview);
+                }
+            }
+        }
+
+        self.navigation_items[index].link_previews = Some(updated);
+        let core_diffs = vec![TimelineDiff::Set {
+            index,
+            item: self.navigation_items[index].clone(),
+        }];
+
+        let batch_id = self.next_batch_id;
+        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: self.key.clone(),
+            generation: self.generation,
+            batch_id,
+            diffs: core_diffs,
+        }));
+    }
+
+    async fn handle_hide_link_preview(&mut self, _request_id: RequestId, event_id: String) {
+        let mut context = self.link_preview_policy.for_room(self.key.room_id());
+        if !context.hidden_event_ids.insert(event_id.clone()) {
+            return;
+        }
+        self.link_preview_policy.hidden_event_ids = context.hidden_event_ids.clone();
+
+        let mut core_diffs = Vec::new();
+        for (index, item) in self.navigation_items.iter_mut().enumerate() {
+            if matches!(&item.id, TimelineItemId::Event { event_id: id } if id == &event_id) {
+                apply_link_previews_to_item(item, self.key.room_id(), &context, &self.session)
+                    .await;
+                core_diffs.push(TimelineDiff::Set {
+                    index,
+                    item: item.clone(),
+                });
+            }
+        }
+
+        if core_diffs.is_empty() {
+            return;
+        }
+
+        let batch_id = self.next_batch_id;
+        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: self.key.clone(),
+            generation: self.generation,
+            batch_id,
+            diffs: core_diffs,
+        }));
+    }
+
+    async fn handle_link_preview_policy_changed(&mut self, policy: LinkPreviewContext) {
+        self.link_preview_policy = policy;
+        let context = self.link_preview_policy.for_room(self.key.room_id());
+
+        let mut core_diffs = Vec::new();
+        for (index, item) in self.navigation_items.iter_mut().enumerate() {
+            let old = item.link_previews.clone();
+            apply_link_previews_to_item(item, self.key.room_id(), &context, &self.session).await;
+            if item.link_previews != old {
+                core_diffs.push(TimelineDiff::Set {
+                    index,
+                    item: item.clone(),
+                });
+            }
+        }
+
+        if core_diffs.is_empty() {
+            return;
+        }
+
+        let batch_id = self.next_batch_id;
+        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: self.key.clone(),
+            generation: self.generation,
+            batch_id,
+            diffs: core_diffs,
+        }));
     }
 
     fn emit_media_gallery_if_changed(&mut self) {
@@ -2996,6 +3238,7 @@ impl TimelineActor {
         // 4. Emit a fresh InitialItems with the new generation from the current
         //    SDK timeline snapshot.
         let (current_items, _) = self.timeline.subscribe().await;
+        let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
         let items: Vec<TimelineItem> = current_items
             .iter()
             .map(|item| {
@@ -3006,7 +3249,21 @@ impl TimelineActor {
                     &self.send_statuses,
                 )
             })
+            .map(|mut item| {
+                apply_ignored_sender_suppression(&mut item, &self.ignored_user_ids);
+                item
+            })
             .collect();
+        let mut items = items;
+        for item in &mut items {
+            apply_link_previews_to_item(
+                &mut *item,
+                self.key.room_id(),
+                &link_preview_context,
+                &self.session,
+            )
+            .await;
+        }
 
         self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: None,
@@ -3527,6 +3784,36 @@ fn apply_ignored_sender_suppression_to_diff(
         }
         TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {}
     }
+}
+
+async fn apply_link_previews_to_item(
+    item: &mut TimelineItem,
+    room_id: &str,
+    context: &LinkPreviewContext,
+    session: &Arc<MatrixClientSession>,
+) {
+    let TimelineItemId::Event { event_id } = &item.id else {
+        return;
+    };
+
+    let is_encrypted = match matrix_sdk::ruma::RoomId::parse(room_id) {
+        Ok(room_id) => match session.client().get_room(&room_id) {
+            Some(room) => match room.latest_encryption_state().await {
+                Ok(state) => state.is_encrypted(),
+                Err(_) => false,
+            },
+            None => false,
+        },
+        Err(_) => false,
+    };
+
+    item.link_previews = crate::link_preview::link_previews_for_message(
+        item.body.as_deref(),
+        item.formatted.as_ref(),
+        event_id,
+        is_encrypted,
+        context,
+    );
 }
 
 fn is_unread_navigation_item(item: &TimelineItem, own_user_id: Option<&str>) -> bool {

@@ -149,8 +149,12 @@ impl CoreRuntime {
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_state.clone());
 
         // Spawn AccountActor with shared channels.
-        let account_actor =
-            crate::account::AccountActor::spawn(store_actor, action_tx.clone(), event_tx.clone());
+        let account_actor = crate::account::AccountActor::spawn(
+            store_actor,
+            action_tx.clone(),
+            event_tx.clone(),
+            crate::link_preview::LinkPreviewContext::from_settings(&initial_state.settings.values),
+        );
 
         let actor = AppActor {
             command_rx,
@@ -589,7 +593,7 @@ impl AppActor {
                             let _activity_effects =
                                 self.reduce_app_action(activity_update).await;
                         }
-                        self.handle_ui_event_effects(&_post_projection_effects);
+                        self.handle_ui_event_effects(&_post_projection_effects).await;
                         self.load_composer_drafts_for_current_session().await;
                         state_changed = true;
                     }
@@ -633,7 +637,7 @@ impl AppActor {
             .unwrap_or_default();
         let effects = reduce(&mut self.state, AppAction::ComposerDraftsLoaded { drafts });
         self.composer_draft_loaded_for = Some(key_id);
-        self.handle_ui_event_effects(&effects);
+        self.handle_ui_event_effects(&effects).await;
     }
 
     async fn schedule_composer_draft_persist(
@@ -695,7 +699,7 @@ impl AppActor {
                 scheduled_id: item.scheduled_id.clone(),
             })
             .await;
-        self.handle_ui_event_effects(&effects);
+        self.handle_ui_event_effects(&effects).await;
 
         let Some(account_key) = self.current_account_key() else {
             return !effects.is_empty();
@@ -756,7 +760,8 @@ impl AppActor {
                 self.handle_ui_event_effects_with_display_label_users(
                     &effects,
                     &display_label_user_ids,
-                );
+                )
+                .await;
                 let should_route =
                     !matches!(&account_command, AccountCommand::ResetLocalData { .. })
                         || projected_state_changed;
@@ -1535,34 +1540,54 @@ impl AppActor {
                 };
                 let _ = self.reduce_app_action(action).await;
             } else if let AppEffect::EmitUiEvent(ui_event) = effect {
-                self.handle_ui_event_effect(&ui_event, &[]);
+                self.handle_ui_event_effect(&ui_event, &[]).await;
             }
         }
     }
 
-    fn handle_ui_event_effects(&self, effects: &[AppEffect]) {
-        self.handle_ui_event_effects_with_display_label_users(effects, &[]);
+    async fn handle_ui_event_effects(&self, effects: &[AppEffect]) {
+        self.handle_ui_event_effects_with_display_label_users(effects, &[])
+            .await;
     }
 
-    fn handle_ui_event_effects_with_display_label_users(
+    async fn handle_ui_event_effects_with_display_label_users(
         &self,
         effects: &[AppEffect],
         additional_user_ids: &[&str],
     ) {
         for effect in effects {
             if let AppEffect::EmitUiEvent(ui_event) = effect {
-                self.handle_ui_event_effect(ui_event, additional_user_ids);
+                self.handle_ui_event_effect(ui_event, additional_user_ids)
+                    .await;
             }
         }
     }
 
-    fn handle_ui_event_effect(&self, ui_event: &UiEvent, additional_user_ids: &[&str]) {
+    async fn handle_ui_event_effect(&self, ui_event: &UiEvent, additional_user_ids: &[&str]) {
         if *ui_event == UiEvent::ProfileChanged {
             self.emit_timeline_display_label_updates(additional_user_ids);
         }
         if *ui_event == UiEvent::SettingsChanged {
             self.emit_timeline_display_policy_update();
+            self.broadcast_link_preview_policy().await;
         }
+    }
+
+    async fn broadcast_link_preview_policy(&self) {
+        if self.current_account_key().is_none() {
+            return;
+        }
+        self.send_timeline_command_or_fail(
+            RequestId {
+                connection_id: INTERNAL_RUNTIME_CONNECTION_ID,
+                sequence: 0,
+            },
+            TimelineCommand::BroadcastLinkPreviewPolicy {
+                global_enabled: self.state.settings.values.display.url_previews_enabled,
+                room_overrides: self.state.settings.values.room_url_previews.clone(),
+            },
+        )
+        .await;
     }
 
     fn emit_timeline_display_label_updates(&self, additional_user_ids: &[&str]) {

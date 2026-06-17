@@ -51,6 +51,7 @@ use crate::event::{
 };
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
+use crate::link_preview::LinkPreviewContext;
 use crate::room::{RoomActorHandle, RoomMessage};
 use crate::search::SearchActorHandle;
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
@@ -203,6 +204,11 @@ pub struct AccountActor {
     /// TimelineManagerActor handle (Phase 5). Spawned once at actor creation;
     /// session reference is updated when a store-backed session is established.
     timeline_manager: TimelineManagerHandle,
+    /// Application data directory for cached preview images.
+    data_dir: std::path::PathBuf,
+    /// Latest link-preview policy snapshot from AppState, kept current so a
+    /// newly-created session-scoped timeline manager starts with the right policy.
+    link_preview_policy: LinkPreviewContext,
     /// SearchActor handle (Phase 6). Present only when a store-backed session
     /// exists. Created at the same time as SyncActor; stopped in the ordered
     /// shutdown between timelines and sync (canon Async rule 12 step 3).
@@ -243,15 +249,20 @@ impl AccountActor {
         store_actor: StoreActor,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
+        initial_link_preview_policy: LinkPreviewContext,
     ) -> AccountActorHandle {
         let (tx, command_rx) = mpsc::channel(64);
+        let data_dir = store_actor.data_dir().to_path_buf();
         // Spawn RoomActor once at AccountActor creation. It starts with no
         // session and waits for RoomMessage::SyncStarted.
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
         // Spawn TimelineManagerActor. It starts with no session; the session
         // is injected when a store-backed session is established.
-        let timeline_manager =
-            crate::timeline::TimelineManagerActor::spawn(action_tx.clone(), event_tx.clone());
+        let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
+            action_tx.clone(),
+            event_tx.clone(),
+            Some(data_dir.clone()),
+        );
         let actor = AccountActor {
             session: None,
             session_key_id: None,
@@ -263,6 +274,8 @@ impl AccountActor {
             sync_actor: None,
             room_actor,
             timeline_manager,
+            data_dir,
+            link_preview_policy: initial_link_preview_policy,
             search_actor: None,
             threads_list_actor: None,
             recovery_observer: None,
@@ -403,7 +416,15 @@ impl AccountActor {
     /// Route a TimelineCommand to the TimelineManagerActor.
     /// Session guard is enforced by AppActor before routing; AccountActor
     /// passes through directly to avoid double-gating.
-    async fn route_timeline_command(&self, command: TimelineCommand) {
+    async fn route_timeline_command(&mut self, command: TimelineCommand) {
+        if let TimelineCommand::BroadcastLinkPreviewPolicy {
+            global_enabled,
+            room_overrides,
+        } = &command
+        {
+            self.link_preview_policy.global_enabled = *global_enabled;
+            self.link_preview_policy.room_overrides = room_overrides.clone();
+        }
         let _ = self
             .timeline_manager
             .send(TimelineMessage::Command(command))
@@ -703,7 +724,7 @@ impl AccountActor {
     }
 
     async fn handle_open_timeline_at_timestamp(
-        &self,
+        &mut self,
         request_id: RequestId,
         room_id: String,
         timestamp_ms: u64,
@@ -846,6 +867,8 @@ impl AccountActor {
             self.action_tx.clone(),
             self.event_tx.clone(),
             search_index_tx,
+            Some(self.data_dir.clone()),
+            self.link_preview_policy.clone(),
         );
 
         let handle = crate::sync::SyncActor::spawn(
@@ -4202,7 +4225,7 @@ mod tests {
 
         let (action_tx, mut action_rx) = mpsc::channel(16);
         let (event_tx, mut event_rx) = broadcast::channel(16);
-        let handle = AccountActor::spawn(store, action_tx, event_tx);
+        let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
 
         let request_id = RequestId {
             connection_id: crate::ids::RuntimeConnectionId(1),
@@ -4262,7 +4285,7 @@ mod tests {
         );
         let (action_tx, action_rx) = mpsc::channel(16);
         let (event_tx, event_rx) = broadcast::channel(16);
-        let handle = AccountActor::spawn(store, action_tx, event_tx);
+        let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
         (handle, action_rx, event_rx)
     }
 
@@ -4500,9 +4523,13 @@ mod tests {
         let (action_tx, mut action_rx) = mpsc::channel(16);
         let (event_tx, _) = broadcast::channel(16);
         let (self_tx, command_rx) = mpsc::channel(16);
+        let data_dir_path = store.data_dir().to_path_buf();
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
-        let timeline_manager =
-            crate::timeline::TimelineManagerActor::spawn(action_tx.clone(), event_tx.clone());
+        let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
+            action_tx.clone(),
+            event_tx.clone(),
+            Some(data_dir_path.clone()),
+        );
         let mut actor = AccountActor {
             session: None,
             session_key_id: Some(key_id.clone()),
@@ -4514,6 +4541,8 @@ mod tests {
             sync_actor: None,
             room_actor,
             timeline_manager,
+            data_dir: data_dir_path,
+            link_preview_policy: LinkPreviewContext::default(),
             search_actor: None,
             threads_list_actor: None,
             recovery_observer: None,
