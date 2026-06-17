@@ -1,9 +1,11 @@
+use matrix_desktop_state::state::compute_room_list_projection;
 use matrix_desktop_state::{
     AccountManagementOperation, AccountManagementState, AppAction, AppEffect, AppState,
     AuthDiscoveryState, AuthFailureKind, DelegatedAuthLinks, DeviceSessionListState,
-    DeviceSessionSummary, E2eeKeyManagementState, LoginFlow, LoginFlowKind, QrLoginState,
-    RecoveryKeyDeliveryState, RoomKeyExportState, RoomKeyImportState,
-    SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo, SessionState,
+    DeviceSessionSummary, E2eeKeyManagementState, LoginFlow, LoginFlowKind, OperationFailureKind,
+    QrLoginState, RecoveryKeyDeliveryState, RoomKeyExportState, RoomKeyImportState,
+    RoomListEntryKind, RoomListFilter, RoomListProjectionItem, RoomSummary,
+    SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo, SessionState, SyncMode,
     TrustOperationFailureKind, UiEvent, reduce,
 };
 
@@ -371,4 +373,280 @@ fn key_management_and_qr_login_are_duplicate_guarded_and_request_correlated() {
         state.qr_login,
         QrLoginState::CheckingCapability { request_id: 40 }
     );
+}
+
+fn ready_state_with_rooms(rooms: Vec<RoomSummary>) -> AppState {
+    AppState {
+        session: SessionState::Ready(session_info()),
+        sync_mode: SyncMode::Simplified,
+        rooms,
+        ..AppState::default()
+    }
+}
+
+fn room_summary(
+    room_id: &str,
+    is_dm: bool,
+    unread_count: u64,
+    notification_count: u64,
+    marked_unread: bool,
+) -> RoomSummary {
+    RoomSummary {
+        room_id: room_id.to_owned(),
+        display_name: room_id.to_owned(),
+        display_label: room_id.to_owned(),
+        original_display_label: room_id.to_owned(),
+        avatar: None,
+        is_dm,
+        dm_user_ids: Vec::new(),
+        tags: Default::default(),
+        unread_count,
+        notification_count,
+        highlight_count: 0,
+        marked_unread,
+        last_activity_ms: 0,
+        parent_space_ids: Vec::new(),
+    }
+}
+
+#[test]
+fn room_list_filter_selection_is_session_ready_guarded_and_recomputes_projection() {
+    let rooms = vec![
+        room_summary("!room1:example.invalid", false, 5, 0, false),
+        room_summary("!dm1:example.invalid", true, 0, 0, false),
+    ];
+
+    let mut state = AppState::default();
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::People,
+        },
+    );
+    assert!(effects.is_empty());
+    assert_eq!(state.room_list.active_filter, RoomListFilter::Rooms);
+
+    state = ready_state_with_rooms(rooms);
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::People,
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+    assert_eq!(state.room_list.active_filter, RoomListFilter::People);
+    assert_eq!(
+        state.room_list.items,
+        vec![RoomListProjectionItem {
+            room_id: "!dm1:example.invalid".to_owned(),
+            kind: RoomListEntryKind::Room,
+        }]
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::People,
+        },
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn room_list_filter_applied_updates_projection_when_changed() {
+    let rooms = vec![room_summary("!room1:example.invalid", false, 0, 0, false)];
+    let mut state = ready_state_with_rooms(rooms);
+
+    let projection = state.room_list.clone();
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListFilterApplied {
+            projection: projection.clone(),
+        },
+    );
+    assert!(effects.is_empty());
+
+    let mut updated_projection = projection.clone();
+    updated_projection.active_filter = RoomListFilter::Unread;
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListFilterApplied {
+            projection: updated_projection,
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+    assert_eq!(state.room_list.active_filter, RoomListFilter::Unread);
+}
+
+#[test]
+fn mark_as_read_clears_unread_state_and_recomputes_room_list_projection() {
+    let rooms = vec![room_summary("!room1:example.invalid", false, 3, 1, true)];
+    let mut state = ready_state_with_rooms(rooms);
+    state.room_list.active_filter = RoomListFilter::Unread;
+    state.room_list = compute_room_list_projection(
+        RoomListFilter::Unread,
+        state.room_list.sort,
+        &state.rooms,
+        &state.invites,
+    );
+    assert_eq!(state.room_list.items.len(), 1);
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadRequested {
+            request_id: 1,
+            room_id: "!room1:example.invalid".to_owned(),
+            event_id: "$event1".to_owned(),
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id: 1,
+            room_id: "!room1:example.invalid".to_owned(),
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+
+    let room = state
+        .rooms
+        .iter()
+        .find(|r| r.room_id == "!room1:example.invalid")
+        .unwrap();
+    assert!(!room.marked_unread);
+    assert_eq!(room.unread_count, 0);
+    assert_eq!(room.notification_count, 0);
+    assert!(state.room_list.items.is_empty());
+}
+
+#[test]
+fn mark_as_read_failure_emits_error_event() {
+    let rooms = vec![room_summary("!room1:example.invalid", false, 3, 0, false)];
+    let mut state = ready_state_with_rooms(rooms);
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadFailed {
+            request_id: 1,
+            room_id: "!room1:example.invalid".to_owned(),
+            kind: OperationFailureKind::Sdk,
+        },
+    );
+    assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]);
+}
+
+#[test]
+fn mark_as_unread_sets_unread_flag_and_recomputes_room_list_projection() {
+    let rooms = vec![room_summary("!room1:example.invalid", false, 0, 0, false)];
+    let mut state = ready_state_with_rooms(rooms);
+    state.room_list.active_filter = RoomListFilter::Unread;
+    state.room_list = compute_room_list_projection(
+        RoomListFilter::Unread,
+        state.room_list.sort,
+        &state.rooms,
+        &state.invites,
+    );
+    assert!(state.room_list.items.is_empty());
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMarkedAsUnreadRequested {
+            request_id: 1,
+            room_id: "!room1:example.invalid".to_owned(),
+            unread: true,
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMarkedAsUnreadSucceeded {
+            request_id: 1,
+            room_id: "!room1:example.invalid".to_owned(),
+            unread: true,
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+
+    let room = state
+        .rooms
+        .iter()
+        .find(|r| r.room_id == "!room1:example.invalid")
+        .unwrap();
+    assert!(room.marked_unread);
+    assert_eq!(room.unread_count, 1);
+    assert_eq!(state.room_list.items.len(), 1);
+}
+
+#[test]
+fn mark_as_unread_clear_resets_unread_state() {
+    let rooms = vec![room_summary("!room1:example.invalid", false, 5, 0, true)];
+    let mut state = ready_state_with_rooms(rooms);
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMarkedAsUnreadSucceeded {
+            request_id: 1,
+            room_id: "!room1:example.invalid".to_owned(),
+            unread: false,
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+
+    let room = state
+        .rooms
+        .iter()
+        .find(|r| r.room_id == "!room1:example.invalid")
+        .unwrap();
+    assert!(!room.marked_unread);
+    assert_eq!(room.unread_count, 0);
+}
+
+#[test]
+fn mark_read_and_unread_requests_are_ignored_for_unknown_rooms() {
+    let rooms = vec![room_summary("!room1:example.invalid", false, 0, 0, false)];
+    let mut state = ready_state_with_rooms(rooms);
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadRequested {
+            request_id: 1,
+            room_id: "!unknown:example.invalid".to_owned(),
+            event_id: "$event".to_owned(),
+        },
+    );
+    assert!(effects.is_empty());
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMarkedAsUnreadRequested {
+            request_id: 2,
+            room_id: "!unknown:example.invalid".to_owned(),
+            unread: true,
+        },
+    );
+    assert!(effects.is_empty());
 }
