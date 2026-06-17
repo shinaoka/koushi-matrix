@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "matrix-desktop",
+  "productName": "Ruri",
   "version": "0.1.0",
-  "identifier": "org.example.matrix-desktop",
+  "identifier": "chat.ruri.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "matrix-desktop",
+        "title": "Ruri",
         "width": 1280,
         "height": 820,
         "minWidth": 760,
@@ -26,14 +26,14 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg", "msi", "nsis"],
-    "publisher": "matrix-desktop contributors",
+    "publisher": "Ruri contributors",
     "homepage": "https://github.com/matrix-org/matrix-rust-sdk",
     "icon": [],
-    "copyright": "Copyright 2026 matrix-desktop contributors",
+    "copyright": "Copyright 2026 Ruri contributors",
     "license": "MIT",
     "category": "SocialNetworking",
-    "shortDescription": "A Tauri Matrix desktop client.",
-    "longDescription": "matrix-desktop is a Tauri Matrix desktop client used to validate Matrix Rust SDK desktop integration, encrypted local stores, search, and Element-like desktop workflows.",
+    "shortDescription": "Ruri — a Matrix desktop client.",
+    "longDescription": "Ruri is a Matrix desktop client used to validate Matrix Rust SDK desktop integration, encrypted local stores, search, and Element-like desktop workflows.",
     "macOS": {
       "minimumSystemVersion": "12.0",
       "hardenedRuntime": true,

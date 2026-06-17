@@ -1,7 +1,8 @@
 {
-  "name": "matrix-desktop-app",
+  "name": "ruri-desktop-app",
   "version": "0.1.0",
   "private": true,
+  "description": "Ruri — a desktop Matrix client.",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",

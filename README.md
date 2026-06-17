@@ -1,6 +1,9 @@
-# matrix-desktop
+# Ruri (瑠璃)
 
 Desktop Matrix client prototype built toward Tauri, React, and matrix-rust-sdk.
+
+Ruri (瑠璃, deep azure / lapis-lazuli blue) is the shipped product name for
+this desktop Matrix client. The repository codename remains `matrix-desktop`.
 
 Current status: pre-login desktop shell. The repository has pure Rust state/search/key crates, a no-network fake backend, a Tauri v2 + React app shell, and a static Slack-like reference shell.
 
