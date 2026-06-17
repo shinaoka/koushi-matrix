@@ -4,9 +4,10 @@ use matrix_desktop_key::SessionKeyId;
 use matrix_desktop_search::SensitiveString;
 use matrix_desktop_search::{SearchDocumentStore, SearchEdit, SearchableEvent};
 use matrix_desktop_state::{
-    AppAction, AppEffect, AppState, LoginFlow, LoginRequest, RecoveryMethod, RecoveryRequest,
-    RoomSummary, RoomTags, SearchResult, SearchScope, SessionInfo, SidebarModel, SpaceSummary,
-    ThreadPaneState, TrustOperationFailureKind, compose_sidebar, reduce,
+    AppAction, AppEffect, AppState, AttachmentFilter, AttachmentResult, AttachmentScope,
+    AttachmentSort, LoginFlow, LoginRequest, RecoveryMethod, RecoveryRequest, RoomSummary,
+    RoomTags, SearchResult, SearchScope, SessionInfo, SidebarModel, SpaceSummary, ThreadPaneState,
+    TrustOperationFailureKind, compose_sidebar, reduce,
 };
 use serde::{Deserialize, Serialize};
 
@@ -264,6 +265,7 @@ impl FakeDesktopBackend {
             timestamp_ms: message.timestamp_ms + 1,
             body: Some(SensitiveString::new(body)),
             attachment_filename: None,
+            attachment: None,
         });
     }
 
@@ -295,6 +297,7 @@ impl FakeDesktopBackend {
                     .attachment_filename
                     .clone()
                     .map(SensitiveString::new),
+                attachment: None,
             });
             if !self
                 .search_candidates
@@ -376,6 +379,15 @@ impl FakeDesktopBackend {
             } => vec![AppAction::SearchSucceeded {
                 request_id: *request_id,
                 results: self.search(query, scope),
+            }],
+            AppEffect::SearchAttachments {
+                request_id,
+                scope,
+                filter,
+                sort,
+            } => vec![AppAction::FilesViewQuerySucceeded {
+                request_id: *request_id,
+                items: self.search_attachments(scope, filter, sort),
             }],
             AppEffect::SendText {
                 room_id,
@@ -600,6 +612,15 @@ impl FakeDesktopBackend {
         self.search_candidates(query, scope, &self.search_candidates)
     }
 
+    fn search_attachments(
+        &self,
+        scope: &AttachmentScope,
+        filter: &AttachmentFilter,
+        sort: &AttachmentSort,
+    ) -> Vec<AttachmentResult> {
+        self.search_store.attachments(scope, filter, *sort)
+    }
+
     fn search_candidates(
         &self,
         query: &str,
@@ -688,6 +709,7 @@ impl FakeDesktopBackend {
             timestamp_ms,
             body: Some(SensitiveString::new(body)),
             attachment_filename: None,
+            attachment: None,
         });
         self.search_candidates.push(SearchCandidate {
             room_id: room_id.to_owned(),
@@ -993,6 +1015,7 @@ fn fixture_search_store(
         timestamp_ms: 1_807_001_200_000,
         body: Some(SensitiveString::new("Final synthetic checklist")),
         attachment_filename: None,
+        attachment: None,
     });
 
     for message in messages {
@@ -1011,6 +1034,7 @@ fn fixture_search_store(
                 .attachment_filename
                 .as_ref()
                 .map(|filename| SensitiveString::new(filename.clone())),
+            attachment: None,
         });
         candidates.push(SearchCandidate {
             room_id: message.room_id.clone(),

@@ -1,16 +1,17 @@
 use std::fmt;
 
 use crate::state::{
-    ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab, BasicOperationRequest,
-    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState,
-    IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate,
-    LocalEncryptionHealth, LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile,
-    PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryMethod, RoomModerationAction,
-    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
-    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
-    StagedUploadCompressionChoice, StagedUploadItem, TimelineMediaGalleryItem,
-    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
+    ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab, AttachmentFilter,
+    AttachmentResult, AttachmentScope, AttachmentSort, BasicOperationRequest, CrossSigningStatus,
+    DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope, IdentityResetAuthType,
+    JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate, LocalEncryptionHealth,
+    LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind,
+    ProfileUpdateRequest, RecoveryMethod, RoomModerationAction, RoomSettingChange,
+    RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
+    SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
+    StagedUploadItem, TimelineMediaGalleryItem, TrustOperationFailureKind, UserProfile,
+    VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -530,6 +531,30 @@ pub enum AppAction {
         request_id: u64,
         message: String,
     },
+    FilesViewOpened {
+        request_id: u64,
+        scope: FilesViewScope,
+        filter: AttachmentFilter,
+        sort: AttachmentSort,
+    },
+    FilesViewClosed,
+    FilesViewQueryRequested {
+        request_id: u64,
+        scope: AttachmentScope,
+        filter: AttachmentFilter,
+        sort: AttachmentSort,
+    },
+    FilesViewQuerySucceeded {
+        request_id: u64,
+        items: Vec<AttachmentResult>,
+    },
+    FilesViewQueryFailed {
+        request_id: u64,
+        message: String,
+    },
+    FilesViewSelectionChanged {
+        event_id: Option<String>,
+    },
     ClearError {
         code: String,
     },
@@ -790,6 +815,48 @@ impl fmt::Debug for AppAction {
                 .field("request_id", request_id)
                 .field("target", target)
                 .field("kind", kind)
+                .finish(),
+            Self::FilesViewOpened {
+                request_id,
+                scope,
+                filter,
+                sort,
+            } => formatter
+                .debug_struct("FilesViewOpened")
+                .field("request_id", request_id)
+                .field("scope", scope)
+                .field("filter", filter)
+                .field("sort", sort)
+                .finish(),
+            Self::FilesViewClosed => formatter.write_str("FilesViewClosed"),
+            Self::FilesViewQueryRequested {
+                request_id,
+                scope,
+                filter,
+                sort,
+            } => formatter
+                .debug_struct("FilesViewQueryRequested")
+                .field("request_id", request_id)
+                .field("scope", scope)
+                .field("filter", filter)
+                .field("sort", sort)
+                .finish(),
+            Self::FilesViewQuerySucceeded { request_id, items } => formatter
+                .debug_struct("FilesViewQuerySucceeded")
+                .field("request_id", request_id)
+                .field("items", &format_args!("{} item(s)", items.len()))
+                .finish(),
+            Self::FilesViewQueryFailed {
+                request_id,
+                message,
+            } => formatter
+                .debug_struct("FilesViewQueryFailed")
+                .field("request_id", request_id)
+                .field("message", message)
+                .finish(),
+            Self::FilesViewSelectionChanged { event_id } => formatter
+                .debug_struct("FilesViewSelectionChanged")
+                .field("event_id", &event_id.as_ref().map(|_| "EventId(..)"))
                 .finish(),
             _ => formatter.write_str("AppAction(..)"),
         }

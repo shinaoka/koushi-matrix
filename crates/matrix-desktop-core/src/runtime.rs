@@ -1276,22 +1276,29 @@ impl AppActor {
                 false
             }
             CoreCommand::Search(search_command) => {
-                let (request_id, query, scope) = match search_command {
+                match search_command {
                     SearchCommand::Query {
                         request_id,
                         query,
                         scope,
-                    } => (request_id, query, scope),
-                };
-                let effects = self
-                    .reduce_app_action(AppAction::SearchSubmitted {
-                        request_id: request_id.sequence,
-                        query: query.clone(),
-                        scope: map_core_search_scope_to_state(scope.clone()),
-                    })
-                    .await;
-                self.handle_app_effects(request_id, effects).await;
-                true
+                    } => {
+                        let effects = self
+                            .reduce_app_action(AppAction::SearchSubmitted {
+                                request_id: request_id.sequence,
+                                query: query.clone(),
+                                scope: map_core_search_scope_to_state(scope.clone()),
+                            })
+                            .await;
+                        self.handle_app_effects(request_id, effects).await;
+                        true
+                    }
+                    SearchCommand::Attachments { .. } => {
+                        // Attachments are driven by `AppAction::FilesViewOpened` in
+                        // Phase A; a direct `CoreCommand::Search(Attachments)` is not
+                        // wired to the reducer.
+                        false
+                    }
+                }
             }
         }
     }
@@ -1359,6 +1366,27 @@ impl AppActor {
                             request_id,
                             query,
                             scope: map_state_search_scope_to_core(scope),
+                        },
+                    ))
+                    .await;
+            } else if let AppEffect::SearchAttachments {
+                request_id: effect_request_id,
+                scope,
+                filter,
+                sort,
+            } = effect
+            {
+                if effect_request_id != request_id.sequence {
+                    continue;
+                }
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::SearchCommand(
+                        SearchCommand::Attachments {
+                            request_id,
+                            scope,
+                            filter,
+                            sort,
                         },
                     ))
                     .await;

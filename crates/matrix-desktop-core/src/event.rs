@@ -4,7 +4,7 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    ActivityStream, ActivityTab, AppState, CrossSigningStatus, DirectoryQuery,
+    ActivityStream, ActivityTab, AppState, AttachmentResult, CrossSigningStatus, DirectoryQuery,
     DirectoryRoomSummary, IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus,
     LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionSummary, PinnedEvent, PresenceKind,
     ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
@@ -1467,6 +1467,14 @@ pub enum SearchEvent {
     Results {
         request_id: RequestId,
         results: Vec<SearchResultItem>,
+    },
+    AttachmentsResults {
+        request_id: RequestId,
+        results: Vec<AttachmentResult>,
+    },
+    AttachmentsFailed {
+        request_id: RequestId,
+        message: String,
     },
     /// The encrypted search index applied a document mutation for this event.
     /// Carries only app-owned visible-state identifiers (room/event ids) so

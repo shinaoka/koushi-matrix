@@ -211,6 +211,7 @@ function defaultSnapshotResponse() {
       thread_attention: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
+      files_view: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" },
       live_signals: { rooms: {}, presence: {} },
