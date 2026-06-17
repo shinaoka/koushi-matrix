@@ -8,7 +8,7 @@ use matrix_desktop_state::{
     DirectoryRoomSummary, IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus,
     LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionSummary, PinnedEvent, PresenceKind,
     ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
-    SessionState, VerificationFlowState, resolve_user_display_name,
+    SessionState, SyncMode, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 
@@ -365,6 +365,9 @@ pub enum SyncEvent {
     Stopped {
         request_id: Option<RequestId>,
     },
+    ModeChanged {
+        mode: SyncMode,
+    },
 }
 
 /// Selected sync backend, emitted so QA can assert server capability
@@ -466,6 +469,15 @@ pub enum RoomEvent {
         room_id: String,
         target_user_id: String,
         power_level: i64,
+    },
+    MarkedAsRead {
+        request_id: RequestId,
+        room_id: String,
+    },
+    MarkedAsUnread {
+        request_id: RequestId,
+        room_id: String,
+        unread: bool,
     },
     RoomListUpdated,
 }
@@ -593,6 +605,21 @@ impl fmt::Debug for RoomEvent {
                 .field("room_id", &"RoomId(..)")
                 .field("target_user_id", &"UserId(..)")
                 .field("power_level", power_level)
+                .finish(),
+            Self::MarkedAsRead { request_id, .. } => formatter
+                .debug_struct("MarkedAsRead")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::MarkedAsUnread {
+                request_id,
+                room_id,
+                unread,
+            } => formatter
+                .debug_struct("MarkedAsUnread")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("unread", unread)
                 .finish(),
             Self::RoomListUpdated => formatter.write_str("RoomListUpdated"),
         }
@@ -1342,7 +1369,9 @@ pub fn project_room_event_display_labels(event: &mut RoomEvent, state: &AppState
         | RoomEvent::UnpinEventCompleted { .. }
         | RoomEvent::DirectoryQueryCompleted { .. }
         | RoomEvent::RoomMemberModerated { .. }
-        | RoomEvent::RoomMemberRoleUpdated { .. } => {}
+        | RoomEvent::RoomMemberRoleUpdated { .. }
+        | RoomEvent::MarkedAsRead { .. }
+        | RoomEvent::MarkedAsUnread { .. } => {}
     }
 }
 

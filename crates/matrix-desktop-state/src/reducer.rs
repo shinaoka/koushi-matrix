@@ -9,12 +9,12 @@ use crate::{
         E2eeTrustState, FilesViewScope, FilesViewState, FocusedContextState, IdentityResetState,
         KeyBackupStatus, LocalEncryptionState, NavigationState, OperationFailureKind,
         PendingComposerSendKind, PinOp, PinOperationState, QrLoginState, RoomKeyExportState,
-        RoomKeyImportState, RoomManagementOperationKind, RoomManagementOperationState,
-        RoomMemberRole, RoomModerationAction, SasEmoji, SearchState,
+        RoomKeyImportState, RoomListFilter, RoomManagementOperationKind,
+        RoomManagementOperationState, RoomMemberRole, RoomModerationAction, SasEmoji, SearchState,
         SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionState,
         SettingsPersistenceState, StagedUploadCompressionChoice, SyncState, ThreadAttentionState,
         ThreadPaneState, TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
-        VerificationFlowState, VerificationTarget,
+        VerificationFlowState, VerificationTarget, compute_room_list_projection,
     },
 };
 
@@ -1307,6 +1307,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             state.sync = SyncState::Stopped;
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
+        AppAction::SyncModeChanged { mode } => {
+            if state.sync_mode == mode {
+                return Vec::new();
+            }
+
+            state.sync_mode = mode;
+            vec![AppEffect::EmitUiEvent(UiEvent::SyncModeChanged)]
+        }
         AppAction::RoomListUpdated { spaces, rooms } => {
             if !is_session_ready(state) {
                 return Vec::new();
@@ -1326,6 +1334,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             let had_active_room_before_update = state.navigation.active_room_id.is_some();
             state.spaces = spaces;
             state.rooms = rooms;
+            state.room_list = compute_room_list_projection(
+                state.room_list.active_filter,
+                state.room_list.sort,
+                &state.rooms,
+                &state.invites,
+            );
             state.composer_drafts.retain_rooms(&retained_room_ids);
             state.scheduled_sends.retain_rooms(&retained_room_ids);
             state.upload_staging.retain_rooms(&retained_room_ids);
@@ -1411,6 +1425,27 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
 
             effects
+        }
+        AppAction::RoomListFilterSelected { filter } => {
+            if !is_session_ready(state) || state.room_list.active_filter == filter {
+                return Vec::new();
+            }
+
+            state.room_list = compute_room_list_projection(
+                filter,
+                state.room_list.sort,
+                &state.rooms,
+                &state.invites,
+            );
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::RoomListFilterApplied { projection } => {
+            if !is_session_ready(state) || state.room_list == projection {
+                return Vec::new();
+            }
+
+            state.room_list = projection;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
         AppAction::RoomTagsUpdated { room_id, tags } => {
             if !is_session_ready(state) {
@@ -1654,6 +1689,104 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged),
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
+        }
+        AppAction::RoomMarkedAsReadRequested {
+            request_id,
+            room_id,
+            event_id: _,
+        } => {
+            if !is_session_ready(state) || !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+
+            let _ = request_id;
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id,
+            room_id,
+        } => {
+            if !is_session_ready(state) || !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+
+            let _ = request_id;
+            if let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) {
+                room.marked_unread = false;
+                room.unread_count = 0;
+                room.notification_count = 0;
+                room.highlight_count = 0;
+                state.room_list = compute_room_list_projection(
+                    state.room_list.active_filter,
+                    state.room_list.sort,
+                    &state.rooms,
+                    &state.invites,
+                );
+            }
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::RoomMarkedAsReadFailed {
+            request_id,
+            room_id,
+            kind: _,
+        } => {
+            if !is_session_ready(state) || !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+
+            let _ = request_id;
+            vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+        }
+        AppAction::RoomMarkedAsUnreadRequested {
+            request_id,
+            room_id,
+            unread,
+        } => {
+            if !is_session_ready(state) || !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+
+            let _ = (request_id, unread);
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::RoomMarkedAsUnreadSucceeded {
+            request_id,
+            room_id,
+            unread,
+        } => {
+            if !is_session_ready(state) || !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+
+            let _ = request_id;
+            if let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) {
+                room.marked_unread = unread;
+                if unread && room.unread_count == 0 {
+                    room.unread_count = 1;
+                }
+                if !unread {
+                    room.unread_count = 0;
+                }
+                state.room_list = compute_room_list_projection(
+                    state.room_list.active_filter,
+                    state.room_list.sort,
+                    &state.rooms,
+                    &state.invites,
+                );
+            }
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::RoomMarkedAsUnreadFailed {
+            request_id,
+            room_id,
+            kind: _,
+        } => {
+            if !is_session_ready(state) || !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+
+            let _ = request_id;
+            vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
         }
         AppAction::DirectoryQueryRequested { request_id, query } => {
             if !is_session_ready(state) {
@@ -2247,6 +2380,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
 
             state.invites = invites;
+            if state.room_list.active_filter == RoomListFilter::Invites {
+                state.room_list = compute_room_list_projection(
+                    RoomListFilter::Invites,
+                    state.room_list.sort,
+                    &state.rooms,
+                    &state.invites,
+                );
+            }
             vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
         }
         AppAction::SelectSpace { space_id } => {

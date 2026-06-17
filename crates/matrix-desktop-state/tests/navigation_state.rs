@@ -52,6 +52,8 @@ fn rooms() -> Vec<RoomSummary> {
             unread_count: 5,
             notification_count: 5,
             highlight_count: 1,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         },
         RoomSummary {
@@ -66,6 +68,8 @@ fn rooms() -> Vec<RoomSummary> {
             unread_count: 3,
             notification_count: 3,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         },
         RoomSummary {
@@ -80,6 +84,8 @@ fn rooms() -> Vec<RoomSummary> {
             unread_count: 2,
             notification_count: 2,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec![],
         },
     ]
@@ -99,6 +105,8 @@ fn room_summary_serializes_projected_label_and_dm_identity_contract() {
         unread_count: 3,
         notification_count: 3,
         highlight_count: 0,
+        marked_unread: false,
+        last_activity_ms: 0,
         parent_space_ids: Vec::new(),
     };
 
@@ -138,6 +146,8 @@ fn room_list_update_projects_dm_room_display_labels_from_aliases() {
                 unread_count: 3,
                 notification_count: 3,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
             }],
         },
@@ -169,6 +179,8 @@ fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate()
         unread_count: 3,
         notification_count: 3,
         highlight_count: 0,
+        marked_unread: false,
+        last_activity_ms: 0,
         parent_space_ids: Vec::new(),
     }];
     state.native_attention = native_attention_state_from_rooms(NativeAttentionProjectionInput {
@@ -310,6 +322,8 @@ fn room_list_update_clears_missing_active_space_and_room() {
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec![],
             }],
         },
@@ -354,6 +368,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 unread_count: 5,
                 notification_count: 5,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
             },
             RoomSummary {
@@ -368,6 +384,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 unread_count: 2,
                 notification_count: 2,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
             },
         ],
@@ -416,6 +434,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     unread_count: 5,
                     notification_count: 5,
                     highlight_count: 0,
+                    marked_unread: false,
+                    last_activity_ms: 0,
                     parent_space_ids: Vec::new(),
                 },
                 RoomSummary {
@@ -430,6 +450,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     unread_count: 2,
                     notification_count: 2,
                     highlight_count: 0,
+                    marked_unread: false,
+                    last_activity_ms: 0,
                     parent_space_ids: vec!["space-a".to_owned()],
                 },
             ],
@@ -478,6 +500,8 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             unread_count: 5,
             notification_count: 5,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         }],
         navigation: matrix_desktop_state::NavigationState {
@@ -518,6 +542,8 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
                 unread_count: 2,
                 notification_count: 2,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
             }],
         },
@@ -727,6 +753,8 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             unread_count: 5,
             notification_count: 5,
             highlight_count: 1,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         },
         RoomSummary {
@@ -741,6 +769,8 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             unread_count: 3,
             notification_count: 3,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
         },
     ];

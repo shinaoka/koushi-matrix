@@ -22,6 +22,8 @@ fn ready_state() -> AppState {
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: Vec::new(),
         }],
         ..AppState::default()

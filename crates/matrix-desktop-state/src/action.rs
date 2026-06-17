@@ -7,12 +7,13 @@ use crate::state::{
     DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope, IdentityResetAuthType,
     JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate, LocalEncryptionHealth,
     LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind,
-    ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod, RoomModerationAction,
-    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
-    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
-    StagedUploadCompressionChoice, StagedUploadItem, TimelineMediaGalleryItem,
-    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
+    ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter,
+    RoomListProjection, RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, RoomSummary,
+    RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability, ScheduledSendHandle,
+    ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues,
+    SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem, SyncMode,
+    TimelineMediaGalleryItem, TrustOperationFailureKind, UserProfile, VerificationCancelReason,
+    VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -293,9 +294,18 @@ pub enum AppAction {
     },
     SyncRecovered,
     SyncStopped,
+    SyncModeChanged {
+        mode: SyncMode,
+    },
     RoomListUpdated {
         spaces: Vec<SpaceSummary>,
         rooms: Vec<RoomSummary>,
+    },
+    RoomListFilterSelected {
+        filter: RoomListFilter,
+    },
+    RoomListFilterApplied {
+        projection: RoomListProjection,
     },
     RoomTagsUpdated {
         room_id: String,
@@ -338,6 +348,35 @@ pub enum AppAction {
         room_id: String,
     },
     UnpinEventFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
+    },
+    RoomMarkedAsReadRequested {
+        request_id: u64,
+        room_id: String,
+        event_id: String,
+    },
+    RoomMarkedAsReadSucceeded {
+        request_id: u64,
+        room_id: String,
+    },
+    RoomMarkedAsReadFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
+    },
+    RoomMarkedAsUnreadRequested {
+        request_id: u64,
+        room_id: String,
+        unread: bool,
+    },
+    RoomMarkedAsUnreadSucceeded {
+        request_id: u64,
+        room_id: String,
+        unread: bool,
+    },
+    RoomMarkedAsUnreadFailed {
         request_id: u64,
         room_id: String,
         kind: OperationFailureKind,

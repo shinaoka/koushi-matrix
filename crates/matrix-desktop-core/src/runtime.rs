@@ -1249,6 +1249,13 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::SelectRoomListFilter { request_id, filter } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::RoomListFilterSelected { filter })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
             },
             CoreCommand::Sync(sync_command) => {
                 // Route to AccountActor (which forwards to SyncActor).

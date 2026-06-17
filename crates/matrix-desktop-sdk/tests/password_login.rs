@@ -35,6 +35,8 @@ fn room_list_smoke_report_counts_without_private_names() {
                 unread_count: 2,
                 notification_count: 2,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
             },
             MatrixRoomListRoom {
@@ -47,6 +49,8 @@ fn room_list_smoke_report_counts_without_private_names() {
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
             },
         ],
@@ -81,6 +85,8 @@ fn real_account_qa_report_counts_without_private_timeline_data() {
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: Vec::new(),
         }],
         ..MatrixRoomListSnapshot::default()
@@ -121,6 +127,8 @@ fn restored_real_account_qa_report_records_restore_without_private_data() {
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: Vec::new(),
         }],
         ..MatrixRoomListSnapshot::default()
@@ -160,6 +168,8 @@ fn real_account_qa_report_records_search_without_private_candidate_ids() {
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: Vec::new(),
         }],
         ..MatrixRoomListSnapshot::default()

@@ -7,8 +7,8 @@ use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
     DirectoryQuery, FormattedMessageDraft, IdentityResetAuthRequest, ImageUploadCompressionMode,
     JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest, MentionIntent,
-    NativeAttentionState, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
-    RoomTagKind, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
+    NativeAttentionState, PresenceKind, RecoveryRequest, RoomListFilter, RoomModerationAction,
+    RoomSettingChange, RoomTagKind, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
     VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
@@ -56,7 +56,8 @@ impl CoreCommand {
                 | AppCommand::MarkActivityRead { request_id, .. }
                 | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
                 | AppCommand::UpdateNativeAttentionState { request_id, .. }
-                | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. },
+                | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. }
+                | AppCommand::SelectRoomListFilter { request_id, .. },
             ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
@@ -122,7 +123,9 @@ impl CoreCommand {
                 | RoomCommand::ModerateRoomMember { request_id, .. }
                 | RoomCommand::UpdateRoomMemberRole { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
-                | RoomCommand::SelectRoom { request_id, .. } => *request_id,
+                | RoomCommand::SelectRoom { request_id, .. }
+                | RoomCommand::MarkRoomAsRead { request_id, .. }
+                | RoomCommand::MarkRoomAsUnread { request_id, .. } => *request_id,
             },
             Self::Timeline(command) => match command {
                 TimelineCommand::Subscribe { request_id, .. }
@@ -293,6 +296,10 @@ pub enum AppCommand {
     UpdateJapaneseCatalogProfile {
         request_id: RequestId,
         profile: JapaneseCatalogProfile,
+    },
+    SelectRoomListFilter {
+        request_id: RequestId,
+        filter: RoomListFilter,
     },
 }
 
@@ -496,6 +503,11 @@ impl fmt::Debug for AppCommand {
                 .field("catalog_locale", &profile.catalog_locale)
                 .field("complete", &profile.complete)
                 .field("missing_count", &profile.missing_message_ids.len())
+                .finish(),
+            Self::SelectRoomListFilter { request_id, filter } => formatter
+                .debug_struct("SelectRoomListFilter")
+                .field("request_id", request_id)
+                .field("filter", filter)
                 .finish(),
         }
     }
@@ -1138,6 +1150,16 @@ pub enum RoomCommand {
         request_id: RequestId,
         room_id: String,
     },
+    MarkRoomAsRead {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    },
+    MarkRoomAsUnread {
+        request_id: RequestId,
+        room_id: String,
+        unread: bool,
+    },
 }
 
 impl fmt::Debug for RoomCommand {
@@ -1302,6 +1324,26 @@ impl fmt::Debug for RoomCommand {
                 .debug_struct("SelectRoom")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::MarkRoomAsRead {
+                request_id,
+                room_id: _,
+                ..
+            } => formatter
+                .debug_struct("MarkRoomAsRead")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::MarkRoomAsUnread {
+                request_id,
+                room_id: _,
+                unread,
+            } => formatter
+                .debug_struct("MarkRoomAsUnread")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("unread", unread)
                 .finish(),
         }
     }

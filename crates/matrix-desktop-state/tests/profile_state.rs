@@ -661,6 +661,8 @@ fn room_space_and_invite_summaries_surface_avatar_mxc() {
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec!["!space:localhost".to_owned()],
             }],
         },

@@ -42,7 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use matrix_desktop_sdk::MatrixClientSession;
-use matrix_desktop_state::AppAction;
+use matrix_desktop_state::{AppAction, SyncMode};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::SyncCommand;
@@ -228,6 +228,9 @@ impl SyncActor {
                     SyncTaskOutcome::Stopped => unreachable!(),
                 };
                 self.lifecycle = SyncLifecycle::Failed;
+                let mode = sync_mode_from_backend(self.current_backend_kind(), true);
+                self.reduce(vec![AppAction::SyncModeChanged { mode }]);
+                self.emit(CoreEvent::Sync(SyncEvent::ModeChanged { mode }));
                 self.emit(CoreEvent::Sync(SyncEvent::Failed));
                 self.reduce(vec![AppAction::SyncFailed {
                     reason: sync_failure_kind_label(kind).to_owned(),
@@ -260,16 +263,21 @@ impl SyncActor {
         // Idempotent: if already running, re-emit Started so QA can assert backend.
         if self.lifecycle == SyncLifecycle::Running {
             let backend = self.current_backend_kind();
+            let mode = sync_mode_from_backend(backend, false);
+            self.reduce(vec![AppAction::SyncModeChanged { mode }]);
             self.emit(CoreEvent::Sync(SyncEvent::Started {
                 request_id: Some(request_id),
                 backend,
             }));
+            self.emit(CoreEvent::Sync(SyncEvent::ModeChanged { mode }));
             return;
         }
 
         // Probe MSC4186 capability (Async rule 9).
         let client = self.session.client();
         let backend_kind = probe_backend(&client).await;
+        let mode = sync_mode_from_backend(backend_kind, false);
+        self.reduce(vec![AppAction::SyncModeChanged { mode }]);
 
         // Emit Started with the selected backend BEFORE the task starts running,
         // so QA can assert the backend kind on the same event.
@@ -277,6 +285,7 @@ impl SyncActor {
             request_id: Some(request_id),
             backend: backend_kind,
         }));
+        self.emit(CoreEvent::Sync(SyncEvent::ModeChanged { mode }));
 
         // Launch the appropriate background sync task.
         match backend_kind {
@@ -285,9 +294,23 @@ impl SyncActor {
                     Ok(()) => {}
                     Err(()) => {
                         // SyncService build failed; fall back to legacy.
+                        let transition_mode = SyncMode::Transitioning;
+                        self.reduce(vec![AppAction::SyncModeChanged {
+                            mode: transition_mode,
+                        }]);
+                        self.emit(CoreEvent::Sync(SyncEvent::ModeChanged {
+                            mode: transition_mode,
+                        }));
                         let client2 = self.session.client();
                         self.active_backend = ActiveBackend::LegacySync;
                         self.start_legacy_sync(client2).await;
+                        let fallback_mode = SyncMode::Legacy;
+                        self.reduce(vec![AppAction::SyncModeChanged {
+                            mode: fallback_mode,
+                        }]);
+                        self.emit(CoreEvent::Sync(SyncEvent::ModeChanged {
+                            mode: fallback_mode,
+                        }));
                     }
                 }
             }
@@ -546,6 +569,18 @@ async fn run_legacy_sync_loop(
 /// Debug/test builds honor `MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND=legacy`
 /// (skip the probe, select `LegacySync`); release builds compile the check
 /// out entirely and always probe.
+fn sync_mode_from_backend(backend: SyncBackendKind, failed: bool) -> SyncMode {
+    if failed {
+        return SyncMode::Failed {
+            kind: matrix_desktop_state::SyncModeFailureKind::Network,
+        };
+    }
+    match backend {
+        SyncBackendKind::SyncService => SyncMode::Simplified,
+        SyncBackendKind::LegacySync => SyncMode::Legacy,
+    }
+}
+
 pub(crate) async fn probe_backend(client: &matrix_sdk::Client) -> SyncBackendKind {
     #[cfg(any(debug_assertions, test))]
     if forced_legacy_backend() {
