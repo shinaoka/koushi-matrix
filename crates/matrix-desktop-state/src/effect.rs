@@ -1,7 +1,8 @@
 use crate::{
     action::{LoginRequest, RecoveryRequest},
     state::{
-        SearchScope, SessionInfo, SettingsValues, VerificationCancelReason, VerificationTarget,
+        AttachmentFilter, AttachmentScope, AttachmentSort, SearchScope, SessionInfo,
+        SettingsValues, VerificationCancelReason, VerificationTarget,
     },
 };
 
@@ -73,6 +74,12 @@ pub enum AppEffect {
         query: String,
         scope: SearchScope,
     },
+    SearchAttachments {
+        request_id: u64,
+        scope: AttachmentScope,
+        filter: AttachmentFilter,
+        sort: AttachmentSort,
+    },
     EmitUiEvent(UiEvent),
 }
 
@@ -86,6 +93,7 @@ pub enum UiEvent {
     TimelineChanged { room_id: String },
     ThreadChanged,
     SearchChanged,
+    FilesViewChanged,
     LiveSignalsChanged,
     E2eeTrustChanged,
     RoomInteractionsChanged,

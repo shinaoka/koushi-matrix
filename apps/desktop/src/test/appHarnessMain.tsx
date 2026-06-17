@@ -174,6 +174,7 @@ function readySnapshot(
       thread_attention: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
+      files_view: { kind: "closed" },
       errors: [],
       basic_operation: basicOperation,
       live_signals: defaultLiveSignalsState(),

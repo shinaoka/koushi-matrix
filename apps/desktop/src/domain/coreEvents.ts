@@ -25,6 +25,8 @@
  *     — "Public Runtime API" (CoreEvent enum, TimelineEvent, etc.)
  */
 
+import type { AttachmentResult } from "./types";
+
 // ---------------------------------------------------------------------------
 // Identity types
 // ---------------------------------------------------------------------------
@@ -578,6 +580,8 @@ export interface SearchResultItem {
 
 export type SearchEvent = {
   Results: { request_id: RequestId; results: SearchResultItem[] };
+  AttachmentsResults: { request_id: RequestId; results: AttachmentResult[] };
+  AttachmentsFailed: { request_id: RequestId; message: string };
 };
 
 // ---------------------------------------------------------------------------

@@ -4,11 +4,12 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    ActivityMarkReadTarget, ActivityTab, DirectoryQuery, FormattedMessageDraft,
-    IdentityResetAuthRequest, ImageUploadCompressionMode, JapaneseCatalogProfile,
-    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionState, PresenceKind,
-    RecoveryRequest, RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
-    StagedUploadCompressionChoice, StagedUploadItem, VerificationCancelReason, VerificationTarget,
+    ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
+    DirectoryQuery, FormattedMessageDraft, IdentityResetAuthRequest, ImageUploadCompressionMode,
+    JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest, MentionIntent,
+    NativeAttentionState, PresenceKind, RecoveryRequest, RoomModerationAction, RoomSettingChange,
+    RoomTagKind, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
+    VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +136,8 @@ impl CoreCommand {
                 | TimelineCommand::ToggleReaction { request_id, .. } => *request_id,
             },
             Self::Search(command) => match command {
-                SearchCommand::Query { request_id, .. } => *request_id,
+                SearchCommand::Query { request_id, .. }
+                | SearchCommand::Attachments { request_id, .. } => *request_id,
             },
         }
     }
@@ -1602,6 +1604,12 @@ pub enum SearchCommand {
         query: String,
         scope: SearchScope,
     },
+    Attachments {
+        request_id: RequestId,
+        scope: AttachmentScope,
+        filter: AttachmentFilter,
+        sort: AttachmentSort,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1621,6 +1629,18 @@ impl fmt::Debug for SearchCommand {
                 .field("request_id", request_id)
                 .field("query", &"SearchQuery(..)")
                 .field("scope", scope)
+                .finish(),
+            Self::Attachments {
+                request_id,
+                scope,
+                filter,
+                sort,
+            } => formatter
+                .debug_struct("Attachments")
+                .field("request_id", request_id)
+                .field("scope", scope)
+                .field("filter", filter)
+                .field("sort", sort)
                 .finish(),
         }
     }

@@ -34,6 +34,7 @@ export interface AppState {
   thread_attention: ThreadAttentionState;
   focused_context: FocusedContextState;
   search: SearchState;
+  files_view: FilesViewState;
   errors: AppError[];
   basic_operation: BasicOperationState;
   live_signals: LiveSignalsState;
@@ -941,6 +942,69 @@ export interface SearchResult {
   highlights: TextRange[];
   match_kind: "exact";
 }
+
+export type AttachmentKind = "image" | "video" | "audio" | "file" | "sticker";
+
+export type AttachmentScope =
+  | { kind: "room"; room_id: string }
+  | { kind: "space"; space_id: string; child_room_ids: string[] }
+  | { kind: "account" };
+
+export interface AttachmentFilter {
+  kinds: AttachmentKind[];
+  filename_query: string | null;
+}
+
+export type AttachmentSort =
+  | "newestFirst"
+  | "oldestFirst"
+  | "sender"
+  | "filename";
+
+export interface AttachmentResult {
+  room_id: string;
+  event_id: string;
+  sender: string;
+  timestamp_ms: number;
+  kind: AttachmentKind;
+  filename: string;
+  mimetype: string | null;
+  size: number | null;
+  source_mxc: string;
+  thumbnail_mxc: string | null;
+}
+
+export type FilesViewScope =
+  | { kind: "room"; room_id: string }
+  | { kind: "space"; space_id: string }
+  | { kind: "account" };
+
+export type FilesViewState =
+  | { kind: "closed" }
+  | {
+      kind: "loading";
+      request_id: number;
+      scope: AttachmentScope;
+      filter: AttachmentFilter;
+      sort: AttachmentSort;
+    }
+  | {
+      kind: "open";
+      request_id: number;
+      scope: AttachmentScope;
+      filter: AttachmentFilter;
+      sort: AttachmentSort;
+      items: AttachmentResult[];
+      selected_event_id: string | null;
+    }
+  | {
+      kind: "failed";
+      request_id: number;
+      scope: AttachmentScope;
+      filter: AttachmentFilter;
+      sort: AttachmentSort;
+      message: string;
+    };
 
 export interface TextRange {
   start_utf16: number;

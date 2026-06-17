@@ -1,6 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use matrix_desktop_state::{SearchResult, normalize_cjk_search_text};
+use matrix_desktop_state::{
+    AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope, AttachmentSort,
+    SearchResult, normalize_cjk_search_text,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::SensitiveString;
@@ -17,6 +20,35 @@ pub fn cjk_search_query_variants(query: &str) -> Vec<String> {
         variants.push(normalized);
     }
     variants
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AttachmentDocument {
+    pub kind: AttachmentKind,
+    pub msgtype: String,
+    pub mimetype: Option<String>,
+    pub size: Option<u64>,
+    pub source_mxc: String,
+    pub thumbnail_mxc: Option<String>,
+    pub filename: SensitiveString,
+}
+
+impl std::fmt::Debug for AttachmentDocument {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AttachmentDocument")
+            .field("kind", &self.kind)
+            .field("msgtype", &self.msgtype)
+            .field("mimetype", &self.mimetype)
+            .field("size", &self.size)
+            .field("source_mxc", &"MxcUri(..)")
+            .field(
+                "thumbnail_mxc",
+                &self.thumbnail_mxc.as_ref().map(|_| "MxcUri(..)"),
+            )
+            .field("filename", &"AttachmentFilename(..)")
+            .finish()
+    }
 }
 
 #[derive(Default)]
@@ -123,13 +155,99 @@ impl SearchDocumentStore {
             if let Some(attachment_filename) = &edit.attachment_filename {
                 event.attachment_filename = Some(attachment_filename.clone());
             }
+
+            if let Some(attachment) = &edit.attachment {
+                event.attachment = Some(attachment.clone());
+            }
         }
 
         Some(event)
     }
+
+    pub fn attachments(
+        &self,
+        scope: &AttachmentScope,
+        filter: &AttachmentFilter,
+        sort: AttachmentSort,
+    ) -> Vec<AttachmentResult> {
+        let allowed_rooms: Option<HashSet<&str>> = match scope {
+            AttachmentScope::Account => None,
+            AttachmentScope::Room { room_id } => Some(std::iter::once(room_id.as_str()).collect()),
+            AttachmentScope::Space { child_room_ids, .. } => Some(
+                child_room_ids
+                    .iter()
+                    .map(|room_id| room_id.as_str())
+                    .collect(),
+            ),
+        };
+
+        let query_variants = filter
+            .filename_query
+            .as_ref()
+            .map(|query| crate::cjk_search_query_variants(query));
+
+        let mut results: Vec<AttachmentResult> = self
+            .documents
+            .values()
+            .filter(|event| {
+                if let Some(rooms) = &allowed_rooms {
+                    return rooms.contains(event.room_id.as_str());
+                }
+                true
+            })
+            .filter_map(|event| self.resolved_event(&event.event_id))
+            .filter_map(|event| {
+                let attachment = event.attachment.as_ref()?;
+
+                if !filter.kinds.is_empty() && !filter.kinds.contains(&attachment.kind) {
+                    return None;
+                }
+
+                if let Some(variants) = &query_variants {
+                    let filename_lower = attachment.filename.as_str().to_lowercase();
+                    if !variants
+                        .iter()
+                        .any(|variant| filename_lower.contains(&variant.to_lowercase()))
+                    {
+                        return None;
+                    }
+                }
+
+                Some(AttachmentResult {
+                    room_id: event.room_id.clone(),
+                    event_id: event.event_id.clone(),
+                    sender: event.sender.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    kind: attachment.kind.clone(),
+                    filename: attachment.filename.as_str().to_owned(),
+                    mimetype: attachment.mimetype.clone(),
+                    size: attachment.size,
+                    source_mxc: attachment.source_mxc.clone(),
+                    thumbnail_mxc: attachment.thumbnail_mxc.clone(),
+                })
+            })
+            .collect();
+
+        match sort {
+            AttachmentSort::NewestFirst => {
+                results.sort_by(|left, right| right.timestamp_ms.cmp(&left.timestamp_ms));
+            }
+            AttachmentSort::OldestFirst => {
+                results.sort_by(|left, right| left.timestamp_ms.cmp(&right.timestamp_ms));
+            }
+            AttachmentSort::Sender => {
+                results.sort_by(|left, right| left.sender.cmp(&right.sender));
+            }
+            AttachmentSort::Filename => {
+                results.sort_by(|left, right| left.filename.cmp(&right.filename));
+            }
+        }
+
+        results
+    }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchableEvent {
     pub room_id: String,
     pub event_id: String,
@@ -137,6 +255,28 @@ pub struct SearchableEvent {
     pub timestamp_ms: u64,
     pub body: Option<SensitiveString>,
     pub attachment_filename: Option<SensitiveString>,
+    pub attachment: Option<AttachmentDocument>,
+}
+
+impl std::fmt::Debug for SearchableEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SearchableEvent")
+            .field("room_id", &"RoomId(..)")
+            .field("event_id", &"EventId(..)")
+            .field("sender", &"UserId(..)")
+            .field("timestamp_ms", &self.timestamp_ms)
+            .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
+            .field(
+                "attachment_filename",
+                &self
+                    .attachment_filename
+                    .as_ref()
+                    .map(|_| "AttachmentFilename(..)"),
+            )
+            .field("attachment", &self.attachment)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -146,7 +286,7 @@ pub struct SearchCandidate {
     pub score_millis: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchEdit {
     pub edit_event_id: String,
     pub target_event_id: String,
@@ -154,6 +294,28 @@ pub struct SearchEdit {
     pub timestamp_ms: u64,
     pub body: Option<SensitiveString>,
     pub attachment_filename: Option<SensitiveString>,
+    pub attachment: Option<AttachmentDocument>,
+}
+
+impl std::fmt::Debug for SearchEdit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SearchEdit")
+            .field("edit_event_id", &"EventId(..)")
+            .field("target_event_id", &"EventId(..)")
+            .field("sender", &"UserId(..)")
+            .field("timestamp_ms", &self.timestamp_ms)
+            .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
+            .field(
+                "attachment_filename",
+                &self
+                    .attachment_filename
+                    .as_ref()
+                    .map(|_| "AttachmentFilename(..)"),
+            )
+            .field("attachment", &self.attachment)
+            .finish()
+    }
 }
 
 fn latest_edit(edits: Vec<SearchEdit>) -> Option<SearchEdit> {

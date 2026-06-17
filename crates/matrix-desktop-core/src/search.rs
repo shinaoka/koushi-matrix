@@ -48,10 +48,10 @@ use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_search::{
-    SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
-    cjk_search_query_variants,
+    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent,
+    SensitiveString, cjk_search_query_variants,
 };
-use matrix_desktop_state::AppAction;
+use matrix_desktop_state::{AppAction, AttachmentFilter, AttachmentScope, AttachmentSort};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::{SearchCommand, SearchScope};
@@ -86,6 +86,7 @@ pub enum SearchIndexMessage {
         timestamp_ms: u64,
         body: Option<String>,
         attachment_filename: Option<String>,
+        attachment: Option<AttachmentDocument>,
     },
     /// A message was edited. Update the document store.
     Edit {
@@ -95,6 +96,7 @@ pub enum SearchIndexMessage {
         timestamp_ms: u64,
         body: Option<String>,
         attachment_filename: Option<String>,
+        attachment: Option<AttachmentDocument>,
     },
     /// A message was redacted. Remove it from the document store.
     Redact { event_id: String },
@@ -113,6 +115,7 @@ impl std::fmt::Debug for SearchIndexMessage {
                 .field("room_id", room_id)
                 .field("event_id", event_id)
                 .field("body", &"MessageBody(..)")
+                .field("attachment", &"Attachment(..)")
                 .finish(),
             Self::Edit {
                 edit_event_id,
@@ -123,6 +126,7 @@ impl std::fmt::Debug for SearchIndexMessage {
                 .field("edit_event_id", edit_event_id)
                 .field("target_event_id", target_event_id)
                 .field("body", &"MessageBody(..)")
+                .field("attachment", &"Attachment(..)")
                 .finish(),
             Self::Redact { event_id } => f
                 .debug_struct("SearchIndexMessage::Redact")
@@ -144,6 +148,13 @@ enum SearchActorMessage {
         query: String,
         scope: SearchScope,
     },
+    /// A `SearchCommand::Attachments` from the command boundary.
+    Attachments {
+        request_id: RequestId,
+        scope: AttachmentScope,
+        filter: AttachmentFilter,
+        sort: AttachmentSort,
+    },
     Shutdown,
 }
 
@@ -158,6 +169,18 @@ impl std::fmt::Debug for SearchActorMessage {
                 .field("request_id", request_id)
                 .field("query", &"SearchQuery(..)")
                 .field("scope", scope)
+                .finish(),
+            Self::Attachments {
+                request_id,
+                scope,
+                filter,
+                sort,
+            } => f
+                .debug_struct("SearchActorMessage::Attachments")
+                .field("request_id", request_id)
+                .field("scope", scope)
+                .field("filter", filter)
+                .field("sort", sort)
                 .finish(),
             Self::Shutdown => write!(f, "SearchActorMessage::Shutdown"),
         }
@@ -183,6 +206,17 @@ impl SearchActorHandle {
                 request_id,
                 query,
                 scope,
+            },
+            SearchCommand::Attachments {
+                request_id,
+                scope,
+                filter,
+                sort,
+            } => SearchActorMessage::Attachments {
+                request_id,
+                scope,
+                filter,
+                sort,
             },
         };
         self.tx.send(msg).await.is_ok()
@@ -251,6 +285,9 @@ impl SearchActor {
                         SearchActorMessage::Shutdown => break,
                         SearchActorMessage::Query { request_id, query, scope } => {
                             self.handle_query(request_id, &query, scope).await;
+                        }
+                        SearchActorMessage::Attachments { request_id, scope, filter, sort } => {
+                            self.handle_attachments(request_id, scope, filter, sort).await;
                         }
                     }
                 }
@@ -363,6 +400,31 @@ impl SearchActor {
         }));
     }
 
+    async fn handle_attachments(
+        &self,
+        request_id: RequestId,
+        scope: AttachmentScope,
+        filter: AttachmentFilter,
+        sort: AttachmentSort,
+    ) {
+        let results = self
+            .document_store
+            .attachments(&scope, &filter, sort.clone());
+
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::FilesViewQuerySucceeded {
+                request_id: request_id.sequence,
+                items: results.clone(),
+            }])
+            .await;
+
+        self.emit(CoreEvent::Search(SearchEvent::AttachmentsResults {
+            request_id,
+            results,
+        }));
+    }
+
     async fn emit_search_succeeded(
         &self,
         request_id: RequestId,
@@ -396,6 +458,7 @@ impl SearchActor {
                 timestamp_ms,
                 body,
                 attachment_filename,
+                attachment,
             } => {
                 // Capture the visible-state identifiers before the payload is
                 // consumed by the document store, so `IndexUpdated` can wake
@@ -409,6 +472,7 @@ impl SearchActor {
                     timestamp_ms,
                     body: body.map(SensitiveString::new),
                     attachment_filename: attachment_filename.map(SensitiveString::new),
+                    attachment,
                 };
                 self.document_store.upsert_message(event);
                 self.indexed_rooms
@@ -425,6 +489,7 @@ impl SearchActor {
                 timestamp_ms,
                 body,
                 attachment_filename,
+                attachment,
             } => {
                 // The Edit payload only names the target event id; resolve its
                 // room id from the indexed-document map so `IndexUpdated` stays
@@ -439,6 +504,7 @@ impl SearchActor {
                     timestamp_ms,
                     body: body.map(SensitiveString::new),
                     attachment_filename: attachment_filename.map(SensitiveString::new),
+                    attachment,
                 };
                 self.document_store.upsert_edit(edit);
                 if let Some(room_id) = edited_room_id {
@@ -486,6 +552,7 @@ mod tests {
             timestamp_ms: 1000,
             body: Some(SensitiveString::new(body.to_owned())),
             attachment_filename: None,
+            attachment: None,
         }
     }
 
@@ -505,6 +572,7 @@ mod tests {
             timestamp_ms: 2000,
             body: Some(SensitiveString::new(new_body.to_owned())),
             attachment_filename: None,
+            attachment: None,
         }
     }
 
@@ -706,6 +774,7 @@ mod tests {
             timestamp_ms: 1000,
             body: Some("very-private-message-body".to_owned()),
             attachment_filename: None,
+            attachment: None,
         };
         let debug = format!("{msg:?}");
         assert!(
@@ -723,6 +792,7 @@ mod tests {
             timestamp_ms: 2000,
             body: Some("private-edited-content".to_owned()),
             attachment_filename: None,
+            attachment: None,
         };
         let debug = format!("{msg:?}");
         assert!(

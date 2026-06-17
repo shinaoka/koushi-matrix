@@ -3,10 +3,11 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         ActivityMarkReadState, ActivityState, ActivityStream, ActivityTab, AppError, AppState,
-        BasicOperationRequest, BasicOperationState, ComposerMode, CrossSigningStatus,
-        DirectoryJoinState, DirectoryQueryState, DirectoryState, E2eeRecoveryState, E2eeTrustState,
-        FocusedContextState, IdentityResetState, KeyBackupStatus, LocalEncryptionState,
-        NavigationState, OperationFailureKind, PendingComposerSendKind, PinOp, PinOperationState,
+        AttachmentScope, BasicOperationRequest, BasicOperationState, ComposerMode,
+        CrossSigningStatus, DirectoryJoinState, DirectoryQueryState, DirectoryState,
+        E2eeRecoveryState, E2eeTrustState, FilesViewScope, FilesViewState, FocusedContextState,
+        IdentityResetState, KeyBackupStatus, LocalEncryptionState, NavigationState,
+        OperationFailureKind, PendingComposerSendKind, PinOp, PinOperationState,
         RoomManagementOperationKind, RoomManagementOperationState, RoomMemberRole,
         RoomModerationAction, SasEmoji, SearchState, SessionState, SettingsPersistenceState,
         StagedUploadCompressionChoice, SyncState, ThreadAttentionState, ThreadPaneState,
@@ -2562,6 +2563,141 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             };
             vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
         }
+        AppAction::FilesViewOpened {
+            request_id,
+            scope,
+            filter,
+            sort,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let scope = resolve_files_view_scope(state, scope);
+            state.files_view = FilesViewState::Loading {
+                request_id,
+                scope: scope.clone(),
+                filter: filter.clone(),
+                sort,
+            };
+            vec![
+                AppEffect::SearchAttachments {
+                    request_id,
+                    scope,
+                    filter,
+                    sort,
+                },
+                AppEffect::EmitUiEvent(UiEvent::FilesViewChanged),
+            ]
+        }
+        AppAction::FilesViewClosed => {
+            if state.files_view == FilesViewState::Closed {
+                return Vec::new();
+            }
+
+            state.files_view = FilesViewState::Closed;
+            vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+        }
+        AppAction::FilesViewQueryRequested {
+            request_id,
+            scope,
+            filter,
+            sort,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            state.files_view = FilesViewState::Loading {
+                request_id,
+                scope: scope.clone(),
+                filter: filter.clone(),
+                sort,
+            };
+            vec![
+                AppEffect::SearchAttachments {
+                    request_id,
+                    scope,
+                    filter,
+                    sort,
+                },
+                AppEffect::EmitUiEvent(UiEvent::FilesViewChanged),
+            ]
+        }
+        AppAction::FilesViewQuerySucceeded { request_id, items } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let (current_request_id, scope, filter, sort) = match &state.files_view {
+                FilesViewState::Loading {
+                    request_id,
+                    scope,
+                    filter,
+                    sort,
+                } => (*request_id, scope.clone(), filter.clone(), *sort),
+                _ => return Vec::new(),
+            };
+
+            if current_request_id != request_id {
+                return Vec::new();
+            }
+
+            state.files_view = FilesViewState::Open {
+                request_id,
+                scope,
+                filter,
+                sort,
+                items,
+                selected_event_id: None,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+        }
+        AppAction::FilesViewQueryFailed {
+            request_id,
+            message,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let (current_request_id, scope, filter, sort) = match &state.files_view {
+                FilesViewState::Loading {
+                    request_id,
+                    scope,
+                    filter,
+                    sort,
+                } => (*request_id, scope.clone(), filter.clone(), *sort),
+                _ => return Vec::new(),
+            };
+
+            if current_request_id != request_id {
+                return Vec::new();
+            }
+
+            state.files_view = FilesViewState::Failed {
+                request_id,
+                scope,
+                filter,
+                sort,
+                message,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+        }
+        AppAction::FilesViewSelectionChanged { event_id } => {
+            if let FilesViewState::Open {
+                selected_event_id, ..
+            } = &mut state.files_view
+            {
+                if *selected_event_id == event_id {
+                    return Vec::new();
+                }
+                *selected_event_id = event_id;
+                vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+            } else {
+                Vec::new()
+            }
+        }
         AppAction::ClearError { code } => {
             state.errors.retain(|error| error.code != code);
             vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
@@ -2726,6 +2862,25 @@ fn is_session_ready(state: &AppState) -> bool {
             | SessionState::NeedsRecovery { .. }
             | SessionState::Recovering { .. }
     )
+}
+
+fn resolve_files_view_scope(state: &AppState, scope: FilesViewScope) -> AttachmentScope {
+    match scope {
+        FilesViewScope::Room { room_id } => AttachmentScope::Room { room_id },
+        FilesViewScope::Space { space_id } => {
+            let child_room_ids = state
+                .spaces
+                .iter()
+                .find(|space| space.space_id == space_id)
+                .map(|space| space.child_room_ids.clone())
+                .unwrap_or_default();
+            AttachmentScope::Space {
+                space_id,
+                child_room_ids,
+            }
+        }
+        FilesViewScope::Account => AttachmentScope::Account,
+    }
 }
 
 fn session_user_id(state: &AppState) -> Option<&str> {
@@ -3160,6 +3315,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_room_management = state.room_management != Default::default();
     let had_local_encryption = state.local_encryption != LocalEncryptionState::Unknown;
     let had_native_attention = state.native_attention != Default::default();
+    let had_files_view = state.files_view != FilesViewState::Closed;
 
     state.navigation = NavigationState::default();
     state.spaces.clear();
@@ -3179,6 +3335,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.thread_attention = ThreadAttentionState::Closed;
     state.focused_context = FocusedContextState::Closed;
     state.search = SearchState::Closed;
+    state.files_view = FilesViewState::Closed;
     state.e2ee_trust = E2eeTrustState::default();
     state.live_signals = Default::default();
     state.local_encryption = LocalEncryptionState::Unknown;
@@ -3220,6 +3377,9 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_native_attention {
         effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
+    }
+    if had_files_view {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::FilesViewChanged));
     }
     effects
 }

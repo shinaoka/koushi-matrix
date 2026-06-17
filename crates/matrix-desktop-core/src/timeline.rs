@@ -51,12 +51,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
+use matrix_desktop_search::{AttachmentDocument, SensitiveString};
 use matrix_desktop_state::{
-    ActivityRow, AppAction, ComposerSendIntent, FormattedMessageDraft, LiveEventReceipts,
-    LiveReadReceipt, MentionIntent, ReplyQuote, ReplyQuoteState, SlashCommandIntent,
-    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
-    TimelineMediaGalleryThumbnail, TimelineMediaKind as GalleryTimelineMediaKind,
-    resolve_composer_send_intent,
+    ActivityRow, AppAction, AttachmentKind, ComposerSendIntent, FormattedMessageDraft,
+    LiveEventReceipts, LiveReadReceipt, MentionIntent, ReplyQuote, ReplyQuoteState,
+    SlashCommandIntent, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
+    TimelineMediaGallerySource, TimelineMediaGalleryThumbnail,
+    TimelineMediaKind as GalleryTimelineMediaKind, resolve_composer_send_intent,
 };
 use matrix_sdk::attachment::{
     AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbnail,
@@ -2553,36 +2554,53 @@ impl TimelineActor {
             return;
         }
 
-        let Some(message) = event_item.content().as_message() else {
-            return;
-        };
-        let projection = message_projection_from_msgtype(message.msgtype(), message.body());
-        let attachment_filename = projection
-            .media
-            .as_ref()
-            .map(|media| media.filename.clone());
-        let body = projection.body;
+        let (body, attachment_filename, attachment, edit_event_id) =
+            if let Some(sticker) = event_item.content().as_sticker() {
+                (
+                    None,
+                    Some(sticker.content().body.clone()),
+                    Some(Self::attachment_document_from_sticker(sticker)),
+                    None,
+                )
+            } else if let Some(message) = event_item.content().as_message() {
+                let projection = message_projection_from_msgtype(message.msgtype(), message.body());
+
+                // Detect edits: when is_edited() is true, the SDK ngram index will
+                // index the edit event under the edit event_id (not the original).
+                // We must register an alias so verify_candidate can resolve it back.
+                // Extract the edit event_id from latest_edit_json if available.
+                let edit_event_id = if message.is_edited() {
+                    event_item
+                        .latest_edit_json()
+                        .and_then(|raw| {
+                            raw.get_field::<matrix_sdk::ruma::OwnedEventId>("event_id")
+                                .ok()
+                                .flatten()
+                        })
+                        .map(|id| id.to_string())
+                } else {
+                    None
+                };
+
+                (
+                    projection.body,
+                    projection
+                        .media
+                        .as_ref()
+                        .map(|media| media.filename.clone()),
+                    projection
+                        .media
+                        .as_ref()
+                        .and_then(Self::attachment_document_from_timeline_media),
+                    edit_event_id,
+                )
+            } else {
+                return;
+            };
 
         if body.is_none() && attachment_filename.is_none() {
             return;
         }
-
-        // Detect edits: when is_edited() is true, the SDK ngram index will
-        // index the edit event under the edit event_id (not the original).
-        // We must register an alias so verify_candidate can resolve it back.
-        // Extract the edit event_id from latest_edit_json if available.
-        let edit_event_id: Option<String> = if message.is_edited() {
-            event_item
-                .latest_edit_json()
-                .and_then(|raw| {
-                    raw.get_field::<matrix_sdk::ruma::OwnedEventId>("event_id")
-                        .ok()
-                        .flatten()
-                })
-                .map(|id| id.to_string())
-        } else {
-            None
-        };
 
         if let Some(edit_event_id) = edit_event_id {
             // Edited message: Upsert original with new canonical body, AND
@@ -2595,6 +2613,7 @@ impl TimelineActor {
                 timestamp_ms,
                 body: body.clone(),
                 attachment_filename: attachment_filename.clone(),
+                attachment: attachment.clone(),
             });
             let _ = tx.try_send(SearchIndexMessage::Edit {
                 edit_event_id,
@@ -2603,6 +2622,7 @@ impl TimelineActor {
                 timestamp_ms,
                 body,
                 attachment_filename,
+                attachment,
             });
         } else {
             // New (unedited) message: Upsert into document store.
@@ -2613,7 +2633,81 @@ impl TimelineActor {
                 timestamp_ms,
                 body,
                 attachment_filename,
+                attachment,
             });
+        }
+    }
+
+    fn attachment_document_from_timeline_media(
+        media: &TimelineMedia,
+    ) -> Option<AttachmentDocument> {
+        let kind = match media.kind {
+            crate::event::TimelineMediaKind::Image => AttachmentKind::Image,
+            crate::event::TimelineMediaKind::Video => AttachmentKind::Video,
+            crate::event::TimelineMediaKind::Audio => AttachmentKind::Audio,
+            crate::event::TimelineMediaKind::File => AttachmentKind::File,
+        };
+
+        let msgtype = match media.kind {
+            crate::event::TimelineMediaKind::Image => "m.image",
+            crate::event::TimelineMediaKind::Video => "m.video",
+            crate::event::TimelineMediaKind::Audio => "m.audio",
+            crate::event::TimelineMediaKind::File => "m.file",
+        };
+
+        Some(AttachmentDocument {
+            kind,
+            msgtype: msgtype.to_owned(),
+            mimetype: media.mimetype.clone(),
+            size: media.size,
+            source_mxc: media.source.mxc_uri.clone(),
+            thumbnail_mxc: media
+                .thumbnail
+                .as_ref()
+                .map(|thumbnail| thumbnail.source.mxc_uri.clone()),
+            filename: SensitiveString::new(media.filename.clone()),
+        })
+    }
+
+    fn attachment_document_from_sticker(
+        sticker: &matrix_sdk_ui::timeline::Sticker,
+    ) -> AttachmentDocument {
+        use matrix_sdk::ruma::events::sticker::{StickerEventContent, StickerMediaSource};
+
+        let content: &StickerEventContent = sticker.content();
+        let info = &content.info;
+
+        let source = match &content.source {
+            StickerMediaSource::Plain(uri) => TimelineMediaSource {
+                mxc_uri: uri.to_string(),
+                encrypted: false,
+                encryption_version: None,
+            },
+            StickerMediaSource::Encrypted(file) => TimelineMediaSource {
+                mxc_uri: file.url.to_string(),
+                encrypted: true,
+                encryption_version: Some(file.info.version().to_owned()),
+            },
+            _ => TimelineMediaSource {
+                mxc_uri: String::new(),
+                encrypted: false,
+                encryption_version: None,
+            },
+        };
+
+        let thumbnail_mxc = info
+            .thumbnail_source
+            .as_ref()
+            .map(|thumbnail_source| timeline_media_source_from_sdk(thumbnail_source).mxc_uri);
+
+        AttachmentDocument {
+            kind: AttachmentKind::Sticker,
+            msgtype: "m.sticker".to_owned(),
+            mimetype: info.mimetype.clone(),
+            size: uint_to_u64(info.size.as_ref()),
+            source_mxc: source.mxc_uri,
+            thumbnail_mxc,
+            filename: SensitiveString::new(content.body.clone()),
         }
     }
 
