@@ -195,10 +195,12 @@ function defaultSnapshotResponse() {
         update: { kind: "idle" }
       },
       sync: "stopped",
+      sync_mode: { kind: "unsupported" },
       navigation: { active_space_id: null, active_room_id: null },
       spaces: [],
       rooms: [],
       invites: [],
+      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
       room_interactions: {},
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },

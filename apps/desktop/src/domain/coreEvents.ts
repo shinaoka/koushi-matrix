@@ -25,7 +25,7 @@
  *     — "Public Runtime API" (CoreEvent enum, TimelineEvent, etc.)
  */
 
-import type { AttachmentResult } from "./types";
+import type { AttachmentResult, SyncMode } from "./types";
 
 // ---------------------------------------------------------------------------
 // Identity types
@@ -371,7 +371,8 @@ export type SyncEvent =
   | "Running"
   | "Reconnecting"
   | "Failed"
-  | { Stopped: { request_id: RequestId | null } };
+  | { Stopped: { request_id: RequestId | null } }
+  | { ModeChanged: { mode: SyncMode } };
 
 export type RoomEvent =
   | { RoomCreated: { request_id: RequestId; room_id: string } }
@@ -421,6 +422,8 @@ export type RoomEvent =
         power_level: number;
       };
     }
+  | { MarkedAsRead: { request_id: RequestId; room_id: string } }
+  | { MarkedAsUnread: { request_id: RequestId; room_id: string; unread: boolean } }
   | "RoomListUpdated";
 
 export type RoomTagKind = "favourite" | "lowPriority";

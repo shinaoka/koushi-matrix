@@ -1205,12 +1205,12 @@ mod tests {
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LiveSignalsEvent,
                 LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent,
                 PaginationDirection, PaginationState, ReactionGroup, RoomEvent, SearchEvent,
-                TimelineCodeBlock, TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody,
-                TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
-                TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
-                TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
-                TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-                TimelineUnreadPosition,
+                SyncEvent, TimelineCodeBlock, TimelineDisplayLabelUpdate, TimelineEvent,
+                TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
+                TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+                TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
+                TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason,
+                TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -1222,7 +1222,7 @@ mod tests {
             NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
             PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
             RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
-            RoomTagKind, SasEmoji, VerificationFlowState, VerificationTarget,
+            RoomTagKind, SasEmoji, SyncMode, VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -1764,6 +1764,22 @@ mod tests {
             tag: RoomTagKind::LowPriority,
         }))
         .expect("serialize room tag removed");
+        let room_marked_as_read = serialize_core_event(&CoreEvent::Room(RoomEvent::MarkedAsRead {
+            request_id,
+            room_id: "!r:example.test".to_owned(),
+        }))
+        .expect("serialize room marked as read");
+        let room_marked_as_unread =
+            serialize_core_event(&CoreEvent::Room(RoomEvent::MarkedAsUnread {
+                request_id,
+                room_id: "!r:example.test".to_owned(),
+                unread: true,
+            }))
+            .expect("serialize room marked as unread");
+        let sync_mode_changed = serialize_core_event(&CoreEvent::Sync(SyncEvent::ModeChanged {
+            mode: SyncMode::Simplified,
+        }))
+        .expect("serialize sync mode changed");
         let directory_query_completed =
             serialize_core_event(&CoreEvent::Room(RoomEvent::DirectoryQueryCompleted {
                 request_id,
@@ -2094,12 +2110,15 @@ mod tests {
             "roomInviteAccepted": room_invite_accepted,
             "roomInviteDeclined": room_invite_declined,
             "roomLeft": room_left,
+            "roomMarkedAsRead": room_marked_as_read,
+            "roomMarkedAsUnread": room_marked_as_unread,
             "roomMemberModerated": room_member_moderated,
             "roomMemberRoleUpdated": room_member_role_updated,
             "roomSettingUpdated": room_setting_updated,
             "roomSettingsLoaded": room_settings_loaded,
             "roomTagRemoved": room_tag_removed,
             "roomTagSet": room_tag_set,
+            "syncModeChanged": sync_mode_changed,
             "timelineDisplayLabelsUpdated": display_labels_updated,
             "timelineDisplayPolicyUpdated": display_policy_updated,
             "timelineInitialItems": initial,

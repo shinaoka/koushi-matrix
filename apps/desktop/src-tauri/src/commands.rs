@@ -4118,6 +4118,8 @@ mod tests {
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec![],
             },
             RoomSummary {
@@ -4132,6 +4134,8 @@ mod tests {
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec![],
             },
         ];

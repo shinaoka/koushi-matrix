@@ -133,6 +133,7 @@ function readySnapshot(
         update: { kind: "idle" }
       },
       sync: "running",
+      sync_mode: { kind: "unsupported" },
       navigation: { active_space_id: null, active_room_id: ROOM_ID },
       spaces,
       rooms: [
@@ -152,6 +153,7 @@ function readySnapshot(
         }
       ],
       invites: [],
+      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
       room_interactions: {},
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },

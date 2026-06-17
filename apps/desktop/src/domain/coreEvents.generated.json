@@ -1,7 +1,40 @@
 {
-  "activityOpened": {
+  "accountProfileUpdated": {
     "event": {
-      "Opened": {
+      "ProfileUpdated": {
+        "account_key": "@u:example.test",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Account"
+  },
+  "accountSavedSessionsListed": {
+    "event": {
+      "SavedSessionsListed": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "sessions": [
+          {
+            "device_id": "DEV",
+            "homeserver": "https://example.test",
+            "user_id": "@u:example.test"
+          }
+        ]
+      }
+    },
+    "kind": "Account"
+  },
+  "activityMarkedRead": {
+    "event": {
+      "MarkedRead": {
+        "cleared_event_ids": [
+          "$activity-unread:example.test"
+        ],
         "request_id": {
           "connection_id": 3,
           "sequence": 7
@@ -10,12 +43,9 @@
     },
     "kind": "Activity"
   },
-  "activityMarkedRead": {
+  "activityOpened": {
     "event": {
-      "MarkedRead": {
-        "cleared_event_ids": [
-          "$activity-unread:example.test"
-        ],
+      "Opened": {
         "request_id": {
           "connection_id": 3,
           "sequence": 7
@@ -66,36 +96,6 @@
     },
     "kind": "Activity"
   },
-  "accountProfileUpdated": {
-    "event": {
-      "ProfileUpdated": {
-        "account_key": "@u:example.test",
-        "request_id": {
-          "connection_id": 3,
-          "sequence": 7
-        }
-      }
-    },
-    "kind": "Account"
-  },
-  "accountSavedSessionsListed": {
-    "event": {
-      "SavedSessionsListed": {
-        "request_id": {
-          "connection_id": 3,
-          "sequence": 7
-        },
-        "sessions": [
-          {
-            "device_id": "DEV",
-            "homeserver": "https://example.test",
-            "user_id": "@u:example.test"
-          }
-        ]
-      }
-    },
-    "kind": "Account"
-  },
   "cjkTextPolicyJapaneseCatalogProfileChanged": {
     "event": {
       "kind": "japaneseCatalogProfileChanged",
@@ -142,13 +142,6 @@
     },
     "kind": "E2eeTrust"
   },
-  "localEncryptionHealthChanged": {
-    "event": {
-      "health": "healthy",
-      "kind": "healthChanged"
-    },
-    "kind": "LocalEncryption"
-  },
   "liveSignalsPresenceSet": {
     "event": {
       "kind": "presenceSet",
@@ -187,6 +180,13 @@
     },
     "kind": "LiveSignals"
   },
+  "localEncryptionHealthChanged": {
+    "event": {
+      "health": "healthy",
+      "kind": "healthChanged"
+    },
+    "kind": "LocalEncryption"
+  },
   "nativeAttentionSummaryUpdated": {
     "event": {
       "kind": "summaryUpdated",
@@ -215,42 +215,17 @@
       "sequence": 7
     }
   },
-  "searchAttachmentsFailed": {
+  "roomDirectMessageStarted": {
     "event": {
-      "AttachmentsFailed": {
-        "message": "index unavailable",
-        "request_id": {
-          "connection_id": 3,
-          "sequence": 7
-        }
-      }
-    },
-    "kind": "Search"
-  },
-  "searchAttachmentsResults": {
-    "event": {
-      "AttachmentsResults": {
+      "DirectMessageStarted": {
         "request_id": {
           "connection_id": 3,
           "sequence": 7
         },
-        "results": [
-          {
-            "event_id": "$f1",
-            "filename": "photo.png",
-            "kind": "image",
-            "mimetype": "image/png",
-            "room_id": "!r:example.test",
-            "sender": "@u:example.test",
-            "size": 1234,
-            "source_mxc": "mxc://example.invalid/abc",
-            "thumbnail_mxc": "mxc://example.invalid/abc-thumb",
-            "timestamp_ms": 1
-          }
-        ]
+        "room_id": "!dm:example.test"
       }
     },
-    "kind": "Search"
+    "kind": "Room"
   },
   "roomDirectoryQueryCompleted": {
     "event": {
@@ -278,18 +253,6 @@
             "world_readable": true
           }
         ]
-      }
-    },
-    "kind": "Room"
-  },
-  "roomDirectMessageStarted": {
-    "event": {
-      "DirectMessageStarted": {
-        "request_id": {
-          "connection_id": 3,
-          "sequence": 7
-        },
-        "room_id": "!dm:example.test"
       }
     },
     "kind": "Room"
@@ -326,6 +289,31 @@
           "sequence": 7
         },
         "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Room"
+  },
+  "roomMarkedAsRead": {
+    "event": {
+      "MarkedAsRead": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Room"
+  },
+  "roomMarkedAsUnread": {
+    "event": {
+      "MarkedAsUnread": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "room_id": "!r:example.test",
+        "unread": true
       }
     },
     "kind": "Room"
@@ -458,6 +446,53 @@
     },
     "kind": "Room"
   },
+  "searchAttachmentsFailed": {
+    "event": {
+      "AttachmentsFailed": {
+        "message": "index unavailable",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Search"
+  },
+  "searchAttachmentsResults": {
+    "event": {
+      "AttachmentsResults": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "results": [
+          {
+            "event_id": "$f1",
+            "filename": "photo.png",
+            "kind": "image",
+            "mimetype": "image/png",
+            "room_id": "!r:example.test",
+            "sender": "@u:example.test",
+            "size": 1234,
+            "source_mxc": "mxc://example.invalid/abc",
+            "thumbnail_mxc": "mxc://example.invalid/abc-thumb",
+            "timestamp_ms": 1
+          }
+        ]
+      }
+    },
+    "kind": "Search"
+  },
+  "syncModeChanged": {
+    "event": {
+      "ModeChanged": {
+        "mode": {
+          "kind": "simplified"
+        }
+      }
+    },
+    "kind": "Sync"
+  },
   "timelineDisplayLabelsUpdated": {
     "event": {
       "DisplayLabelsUpdated": {
@@ -471,44 +506,51 @@
     },
     "kind": "Timeline"
   },
+  "timelineDisplayPolicyUpdated": {
+    "event": {
+      "DisplayPolicyUpdated": {
+        "hide_redacted": true
+      }
+    },
+    "kind": "Timeline"
+  },
   "timelineInitialItems": {
     "event": {
       "InitialItems": {
         "generation": 1,
         "items": [
           {
+            "actions": {
+              "can_copy": true,
+              "can_forward": true,
+              "can_permalink": true,
+              "can_view_source": true,
+              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
+            },
             "body": "hello",
-            "message_kind": "emote",
-            "spoiler_spans": [
-              {
-                "start_utf16": 0,
-                "end_utf16": 5,
-                "reason": "fixture"
-              }
-            ],
+            "can_edit": true,
+            "can_react": true,
+            "can_redact": true,
+            "formatted": {
+              "code_blocks": [
+                {
+                  "body": "fn main() {}",
+                  "language": "rust"
+                }
+              ],
+              "html": "<strong>hello</strong><pre><code class=\"language-rust\">fn main() {}</code></pre>",
+              "plain_text": "hellofn main() {}"
+            },
             "id": {
               "Event": {
                 "event_id": "$e1"
               }
             },
             "in_reply_to_event_id": null,
-            "formatted": {
-              "html": "<strong>hello</strong><pre><code class=\"language-rust\">fn main() {}</code></pre>",
-              "plain_text": "hellofn main() {}",
-              "code_blocks": [
-                {
-                  "language": "rust",
-                  "body": "fn main() {}"
-                }
-              ]
-            },
-            "thread_root": null,
-            "thread_summary": null,
-            "can_react": true,
-            "is_redacted": false,
-            "can_redact": true,
             "is_edited": true,
-            "can_edit": true,
+            "is_hidden": false,
+            "is_redacted": false,
+            "message_kind": "emote",
             "reactions": [
               {
                 "count": 2,
@@ -522,15 +564,16 @@
             ],
             "sender": "@u:example.test",
             "sender_label": null,
-            "timestamp_ms": 123,
-            "actions": {
-              "can_copy": true,
-              "can_forward": true,
-              "can_permalink": true,
-              "can_view_source": true,
-              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
-            },
-            "is_hidden": false
+            "spoiler_spans": [
+              {
+                "end_utf16": 5,
+                "reason": "fixture",
+                "start_utf16": 0
+              }
+            ],
+            "thread_root": null,
+            "thread_summary": null,
+            "timestamp_ms": 123
           }
         ],
         "key": {
@@ -557,38 +600,37 @@
           {
             "PushFront": {
               "item": {
+                "actions": {
+                  "can_copy": true,
+                  "can_forward": true,
+                  "can_permalink": true,
+                  "can_view_source": true,
+                  "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
+                },
                 "body": "hello",
-                "message_kind": "emote",
-                "spoiler_spans": [
-                  {
-                    "start_utf16": 0,
-                    "end_utf16": 5,
-                    "reason": "fixture"
-                  }
-                ],
+                "can_edit": true,
+                "can_react": true,
+                "can_redact": true,
+                "formatted": {
+                  "code_blocks": [
+                    {
+                      "body": "fn main() {}",
+                      "language": "rust"
+                    }
+                  ],
+                  "html": "<strong>hello</strong><pre><code class=\"language-rust\">fn main() {}</code></pre>",
+                  "plain_text": "hellofn main() {}"
+                },
                 "id": {
                   "Event": {
                     "event_id": "$e1"
                   }
                 },
                 "in_reply_to_event_id": null,
-                "formatted": {
-                  "html": "<strong>hello</strong><pre><code class=\"language-rust\">fn main() {}</code></pre>",
-                  "plain_text": "hellofn main() {}",
-                  "code_blocks": [
-                    {
-                      "language": "rust",
-                      "body": "fn main() {}"
-                    }
-                  ]
-                },
-                "thread_root": null,
-                "thread_summary": null,
-                "can_react": true,
-                "is_redacted": false,
-                "can_redact": true,
                 "is_edited": true,
-                "can_edit": true,
+                "is_hidden": false,
+                "is_redacted": false,
+                "message_kind": "emote",
                 "reactions": [
                   {
                     "count": 2,
@@ -602,15 +644,16 @@
                 ],
                 "sender": "@u:example.test",
                 "sender_label": null,
-                "timestamp_ms": 123,
-                "actions": {
-                  "can_copy": true,
-                  "can_forward": true,
-                  "can_permalink": true,
-                  "can_view_source": true,
-                  "permalink": "https://matrix.to/#/!r%3Aexample.test/%24e1"
-                },
-                "is_hidden": false
+                "spoiler_spans": [
+                  {
+                    "end_utf16": 5,
+                    "reason": "fixture",
+                    "start_utf16": 0
+                  }
+                ],
+                "thread_root": null,
+                "thread_summary": null,
+                "timestamp_ms": 123
               }
             }
           },
@@ -662,17 +705,26 @@
         "generation": 2,
         "items": [
           {
+            "actions": {
+              "can_copy": true,
+              "can_forward": true,
+              "can_permalink": true,
+              "can_view_source": true,
+              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24media1"
+            },
             "body": "caption",
-            "message_kind": "text",
-            "spoiler_spans": [],
+            "can_edit": false,
+            "can_react": true,
+            "can_redact": true,
             "id": {
               "Event": {
                 "event_id": "$media1"
               }
             },
             "in_reply_to_event_id": null,
-            "thread_root": null,
-            "thread_summary": null,
+            "is_edited": false,
+            "is_hidden": false,
+            "is_redacted": false,
             "media": {
               "filename": "fixture.png",
               "height": 2,
@@ -697,23 +749,14 @@
               },
               "width": 2
             },
-            "can_react": true,
-            "is_redacted": false,
-            "can_redact": true,
-            "is_edited": false,
-            "can_edit": false,
+            "message_kind": "text",
             "reactions": [],
             "sender": "@u:example.test",
             "sender_label": null,
-            "timestamp_ms": 456,
-            "actions": {
-              "can_copy": true,
-              "can_forward": true,
-              "can_permalink": true,
-              "can_view_source": true,
-              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24media1"
-            },
-            "is_hidden": false
+            "spoiler_spans": [],
+            "thread_root": null,
+            "thread_summary": null,
+            "timestamp_ms": 456
           }
         ],
         "key": {
@@ -758,154 +801,6 @@
           "mxc_uri": "mxc://example.test/media"
         },
         "transaction_id": "txn-media"
-      }
-    },
-    "kind": "Timeline"
-  },
-  "timelinePaginationEndReached": {
-    "event": {
-      "PaginationStateChanged": {
-        "direction": "Backward",
-        "key": {
-          "account_key": "@u:example.test",
-          "kind": {
-            "Room": {
-              "room_id": "!r:example.test"
-            }
-          }
-        },
-        "request_id": null,
-        "state": "EndReached"
-      }
-    },
-    "kind": "Timeline"
-  },
-  "timelineReplyQuoteInitialItems": {
-    "event": {
-      "InitialItems": {
-        "generation": 4,
-        "items": [
-          {
-            "body": "reply body",
-            "message_kind": "text",
-            "spoiler_spans": [],
-            "can_edit": false,
-            "can_react": true,
-            "can_redact": true,
-            "id": {
-              "Event": {
-                "event_id": "$reply1"
-              }
-            },
-            "in_reply_to_event_id": "$root1",
-            "is_edited": false,
-            "is_redacted": false,
-            "reactions": [],
-            "reply_quote": {
-              "body_preview": "quoted preview",
-              "event_id": "$root1",
-              "sender": "@other:example.test",
-              "sender_label": null,
-              "state": "ready"
-            },
-            "sender": "@u:example.test",
-            "sender_label": null,
-            "thread_root": null,
-            "thread_summary": null,
-            "timestamp_ms": 987,
-            "actions": {
-              "can_copy": true,
-              "can_forward": true,
-              "can_permalink": true,
-              "can_view_source": true,
-              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24reply1"
-            },
-            "is_hidden": false
-          }
-        ],
-        "key": {
-          "account_key": "@u:example.test",
-          "kind": {
-            "Room": {
-              "room_id": "!r:example.test"
-            }
-          }
-        },
-        "request_id": {
-          "connection_id": 3,
-          "sequence": 7
-        }
-      }
-    },
-    "kind": "Timeline"
-  },
-  "timelineResyncRequired": {
-    "event": {
-      "ResyncRequired": {
-        "key": {
-          "account_key": "@u:example.test",
-          "kind": {
-            "Room": {
-              "room_id": "!r:example.test"
-            }
-          }
-        },
-        "reason": "QueueOverflow"
-      }
-    },
-    "kind": "Timeline"
-  },
-  "timelineSendStateInitialItems": {
-    "event": {
-      "InitialItems": {
-        "generation": 3,
-        "items": [
-          {
-            "body": "queued",
-            "message_kind": "text",
-            "spoiler_spans": [],
-            "can_edit": false,
-            "can_react": false,
-            "can_redact": false,
-            "id": {
-              "Transaction": {
-                "transaction_id": "txn-not-sent"
-              }
-            },
-            "in_reply_to_event_id": null,
-            "is_edited": false,
-            "is_redacted": false,
-            "reactions": [],
-            "send_state": {
-              "kind": "notSent",
-              "reason": "recoverable"
-            },
-            "sender": "@u:example.test",
-            "sender_label": null,
-            "thread_root": null,
-            "thread_summary": null,
-            "timestamp_ms": 789,
-            "actions": {
-              "can_copy": false,
-              "can_forward": false,
-              "can_permalink": false,
-              "can_view_source": false
-            },
-            "is_hidden": false
-          }
-        ],
-        "key": {
-          "account_key": "@u:example.test",
-          "kind": {
-            "Room": {
-              "room_id": "!r:example.test"
-            }
-          }
-        },
-        "request_id": {
-          "connection_id": 3,
-          "sequence": 7
-        }
       }
     },
     "kind": "Timeline"
@@ -985,12 +880,152 @@
     },
     "kind": "Timeline"
   },
-  "timelineDisplayPolicyUpdated": {
-    "kind": "Timeline",
+  "timelinePaginationEndReached": {
     "event": {
-      "DisplayPolicyUpdated": {
-        "hide_redacted": true
+      "PaginationStateChanged": {
+        "direction": "Backward",
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": null,
+        "state": "EndReached"
       }
-    }
+    },
+    "kind": "Timeline"
+  },
+  "timelineReplyQuoteInitialItems": {
+    "event": {
+      "InitialItems": {
+        "generation": 4,
+        "items": [
+          {
+            "actions": {
+              "can_copy": true,
+              "can_forward": true,
+              "can_permalink": true,
+              "can_view_source": true,
+              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24reply1"
+            },
+            "body": "reply body",
+            "can_edit": false,
+            "can_react": true,
+            "can_redact": true,
+            "id": {
+              "Event": {
+                "event_id": "$reply1"
+              }
+            },
+            "in_reply_to_event_id": "$root1",
+            "is_edited": false,
+            "is_hidden": false,
+            "is_redacted": false,
+            "message_kind": "text",
+            "reactions": [],
+            "reply_quote": {
+              "body_preview": "quoted preview",
+              "event_id": "$root1",
+              "sender": "@other:example.test",
+              "sender_label": null,
+              "state": "ready"
+            },
+            "sender": "@u:example.test",
+            "sender_label": null,
+            "spoiler_spans": [],
+            "thread_root": null,
+            "thread_summary": null,
+            "timestamp_ms": 987
+          }
+        ],
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineResyncRequired": {
+    "event": {
+      "ResyncRequired": {
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "reason": "QueueOverflow"
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineSendStateInitialItems": {
+    "event": {
+      "InitialItems": {
+        "generation": 3,
+        "items": [
+          {
+            "actions": {
+              "can_copy": false,
+              "can_forward": false,
+              "can_permalink": false,
+              "can_view_source": false
+            },
+            "body": "queued",
+            "can_edit": false,
+            "can_react": false,
+            "can_redact": false,
+            "id": {
+              "Transaction": {
+                "transaction_id": "txn-not-sent"
+              }
+            },
+            "in_reply_to_event_id": null,
+            "is_edited": false,
+            "is_hidden": false,
+            "is_redacted": false,
+            "message_kind": "text",
+            "reactions": [],
+            "send_state": {
+              "kind": "notSent",
+              "reason": "recoverable"
+            },
+            "sender": "@u:example.test",
+            "sender_label": null,
+            "spoiler_spans": [],
+            "thread_root": null,
+            "thread_summary": null,
+            "timestamp_ms": 789
+          }
+        ],
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Timeline"
   }
 }
