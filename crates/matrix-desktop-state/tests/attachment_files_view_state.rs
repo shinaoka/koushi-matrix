@@ -133,7 +133,10 @@ fn files_view_query_succeeded_transitions_to_open_with_results() {
             selected_event_id: None,
         }
     );
-    assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+    );
 }
 
 #[test]
@@ -167,7 +170,10 @@ fn files_view_query_failed_transitions_to_failed() {
             message: "attachment index unavailable".to_owned(),
         }
     );
-    assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+    );
 }
 
 #[test]
@@ -186,7 +192,10 @@ fn files_view_closed_resets_to_closed() {
     let effects = reduce(&mut state, AppAction::FilesViewClosed);
 
     assert_eq!(state.files_view, FilesViewState::Closed);
-    assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+    );
 }
 
 #[test]
@@ -397,7 +406,10 @@ fn selection_changes_update_selected_attachment_id() {
             selected_event_id: Some("$event-a:example.invalid".to_owned()),
         }
     );
-    assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+    );
 
     let effects = reduce(
         &mut state,
@@ -415,7 +427,10 @@ fn selection_changes_update_selected_attachment_id() {
             selected_event_id: None,
         }
     );
-    assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)]
+    );
 }
 
 #[test]
@@ -470,4 +485,35 @@ fn files_view_actions_require_ready_session() {
         Vec::<AppEffect>::new()
     );
     assert_eq!(state.files_view, FilesViewState::Closed);
+}
+
+
+#[test]
+fn logout_clears_files_view_and_emits_ui_event() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::FilesViewOpened {
+            request_id: 20,
+            scope: room_scope(),
+            filter: filter(),
+            sort: sort(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::FilesViewQuerySucceeded {
+            request_id: 20,
+            items: vec![attachment("$event-a:example.invalid")],
+        },
+    );
+
+    let effects = reduce(&mut state, AppAction::LogoutRequested);
+
+    assert_eq!(state.files_view, FilesViewState::Closed);
+    assert!(
+        effects.contains(&AppEffect::EmitUiEvent(UiEvent::FilesViewChanged)),
+        "expected FilesViewChanged after logout, got {:?}",
+        effects
+    );
 }
