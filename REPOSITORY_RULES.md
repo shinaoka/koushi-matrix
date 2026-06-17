@@ -380,6 +380,28 @@ To reduce conflicts on these files:
   a feature branch directly to `main` while another parallel feature is still
   open.
 
+### Worktree And Build Artifact Cleanup
+
+- **Remove temporary worktrees as soon as they are no longer needed.** A feature
+  branch that has been merged into `main` or into an integration branch should
+  not keep a worktree alive. Use `git worktree remove --force <path>` when the
+  worktree contains submodules.
+- **Delete worktree-local build intermediates before or during worktree removal.**
+  Worktrees often accumulate large per-worktree artifacts:
+  - Rust build artifacts under the worktree's `target/` directory when
+    `CARGO_TARGET_DIR` is not shared or when the worktree overrides it.
+  - Vite/Tauri dev caches under `apps/desktop/node_modules/.vite/`.
+  - Per-worktree `node_modules/` when the worktree does not share the main
+    workspace's dependency tree.
+  These must be cleaned up because they can consume many gigabytes and are not
+  needed after the branch is merged.
+- **Do not delete shared build directories.** When `CARGO_TARGET_DIR` points to a
+  shared location (e.g., the main workspace `target/`), confirm that the
+  directory is shared across worktrees before deleting it. Shared target
+  directories speed up rebuilds and must be preserved.
+- **Verify cleanup.** After removing a worktree, confirm `git worktree list` and
+  disk usage look reasonable. Large leftover artifacts are a hygiene defect.
+
 ## Documentation And Work Records
 
 - Dated implementation plans are subordinate to the normative docs. When an

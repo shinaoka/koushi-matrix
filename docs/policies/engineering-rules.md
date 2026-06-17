@@ -499,3 +499,8 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    artifacts, and issue comments are integrated by the main agent. Monolithic
    inline test files must not accumulate new feature tests; use per-feature
    `crates/<crate>/tests/<feature>.rs` files instead.
+8. Temporary worktrees must be removed promptly and their per-worktree build
+   artifacts (unshared `target/`, `node_modules/.vite/`, per-worktree
+   `node_modules/`) must be cleaned up at the same time. Shared build
+   directories such as a shared `CARGO_TARGET_DIR` must not be deleted. See
+   `REPOSITORY_RULES.md` `Worktree And Build Artifact Cleanup`.
