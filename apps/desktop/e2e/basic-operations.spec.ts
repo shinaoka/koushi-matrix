@@ -46,6 +46,8 @@
  *      from Rust-shaped per-room snapshots.
  *  20. Drive scheduled-send composer/list controls through Rust-owned snapshot
  *      state and typed schedule/cancel/reschedule commands.
+ *  21. Drive Security key-management controls through Rust-owned room-key and
+ *      secure-backup commands, with secret/path redaction in recorded IPC.
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -5042,6 +5044,110 @@ test("E2EE trust controls dispatch Rust-owned commands and render snapshot updat
       page.evaluate(() => window.__harness.currentSnapshot().state.e2ee_trust.identity_reset.kind)
     )
     .toBe("idle");
+});
+
+test("security settings drive Rust-owned room-key transfer and secure backup state", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setSnapshot(window.__harness.e2eeTrustSnapshot());
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "User settings" }).click();
+  await expect(page.getByRole("heading", { name: "Key management" })).toBeVisible();
+
+  const exportForm = page.getByRole("form", { name: "Room key export", exact: true });
+  await exportForm.getByLabel("Key export destination").fill("/tmp/ruri-export.txt");
+  await exportForm.getByLabel("Room key passphrase").fill("synthetic-export-passphrase");
+  await exportForm.getByRole("button", { name: "Export room keys" }).click();
+  await expect.poll(() => invocationCount(page, "export_room_keys")).toBe(1);
+  await expect(page.getByTestId("room-key-export-state")).toHaveText("Exported");
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("export_room_keys")[0]?.args)
+    )
+    .toEqual({
+      destinationPath: "[REDACTED]",
+      passphrase: "[REDACTED]"
+    });
+
+  const importForm = page.getByRole("form", { name: "Room key import", exact: true });
+  await importForm.getByLabel("Key import source").fill("/tmp/element-compatible-keys.txt");
+  await importForm.getByLabel("Room key passphrase").fill("synthetic-import-passphrase");
+  await importForm.getByRole("button", { name: "Import room keys" }).click();
+  await expect.poll(() => invocationCount(page, "import_room_keys")).toBe(1);
+  await expect(page.getByTestId("room-key-import-state")).toHaveText("1 of 1 imported");
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("import_room_keys")[0]?.args)
+    )
+    .toEqual({
+      sourcePath: "[REDACTED]",
+      passphrase: "[REDACTED]"
+    });
+
+  const secureBackupForm = page.getByRole("form", { name: "Secure backup", exact: true });
+  await secureBackupForm
+    .getByLabel("Secure backup passphrase", { exact: true })
+    .fill("synthetic-secure-backup-passphrase");
+  await secureBackupForm.getByLabel("Recovery key destination").fill("/tmp/recovery-key.txt");
+  await secureBackupForm.getByRole("button", { name: "Set up secure backup" }).click();
+  await expect.poll(() => invocationCount(page, "bootstrap_secure_backup")).toBe(1);
+  await expect(page.getByTestId("secure-backup-state")).toHaveText("Recovery key saved");
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("bootstrap_secure_backup")[0]?.args)
+    )
+    .toEqual({
+      passphrase: "[REDACTED]",
+      recoveryKeyDestinationPath: "[REDACTED]"
+    });
+
+  const passphraseChangeForm = page.getByRole("form", {
+    name: "Change secure backup passphrase",
+    exact: true
+  });
+  await passphraseChangeForm
+    .getByLabel("Current recovery secret")
+    .fill("synthetic-current-recovery-secret");
+  await passphraseChangeForm
+    .getByLabel("New secure backup passphrase")
+    .fill("synthetic-new-secure-backup-passphrase");
+  await passphraseChangeForm
+    .getByLabel("Recovery key destination")
+    .fill("/tmp/changed-recovery-key.txt");
+  await passphraseChangeForm
+    .getByRole("button", { name: "Update secure backup passphrase" })
+    .click();
+  await expect.poll(() => invocationCount(page, "change_secure_backup_passphrase")).toBe(1);
+  await expect(page.getByTestId("secure-backup-passphrase-change-state")).toHaveText(
+    "Changed; recovery key saved"
+  );
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("change_secure_backup_passphrase")[0]?.args
+      )
+    )
+    .toEqual({
+      oldSecret: "[REDACTED]",
+      newPassphrase: "[REDACTED]",
+      recoveryKeyDestinationPath: "[REDACTED]"
+    });
+
+  const serializedPrivateState = await page.evaluate(() =>
+    JSON.stringify(window.__harness.currentSnapshot().state.e2ee_trust.key_management)
+  );
+  expect(serializedPrivateState).not.toContain("synthetic-");
+  expect(serializedPrivateState).not.toContain("/tmp/");
+
+  const recordedIpc = await page.evaluate(() => JSON.stringify(window.__harness.invocations()));
+  expect(recordedIpc).not.toContain("synthetic-");
+  expect(recordedIpc).not.toContain("/tmp/");
+  expect(recordedIpc).toContain("[REDACTED]");
 });
 
 test("edit composer respects the Rust-owned composer shortcut resolver", async ({

@@ -624,7 +624,11 @@ function SecuritySection({
       <section className="settings-section" aria-label={t("settings.keyManagement")}>
         <h4 className="settings-subheading">{t("settings.keyManagement")}</h4>
         <div className="settings-control-stack">
-          <form className="profile-settings-form" onSubmit={submitRoomKeyExport}>
+          <form
+            aria-label={t("settings.roomKeyExport")}
+            className="profile-settings-form"
+            onSubmit={submitRoomKeyExport}
+          >
             <KeyManagementStatus
               label={t("settings.roomKeyExport")}
               value={roomKeyExportStatusLabel(keyManagement.room_key_export)}
@@ -646,7 +650,11 @@ function SecuritySection({
             </div>
           </form>
 
-          <form className="profile-settings-form" onSubmit={submitRoomKeyImport}>
+          <form
+            aria-label={t("settings.roomKeyImport")}
+            className="profile-settings-form"
+            onSubmit={submitRoomKeyImport}
+          >
             <KeyManagementStatus
               label={t("settings.roomKeyImport")}
               value={roomKeyImportStatusLabel(keyManagement.room_key_import)}
@@ -668,7 +676,11 @@ function SecuritySection({
             </div>
           </form>
 
-          <form className="profile-settings-form" onSubmit={submitSecureBackupSetup}>
+          <form
+            aria-label={t("settings.secureBackup")}
+            className="profile-settings-form"
+            onSubmit={submitSecureBackupSetup}
+          >
             <KeyManagementStatus
               label={t("settings.secureBackup")}
               value={secureBackupSetupStatusLabel(keyManagement.secure_backup_setup)}
@@ -695,6 +707,7 @@ function SecuritySection({
           </form>
 
           <form
+            aria-label={t("settings.changeSecureBackupPassphrase")}
             className="profile-settings-form"
             onSubmit={submitSecureBackupPassphraseChange}
           >

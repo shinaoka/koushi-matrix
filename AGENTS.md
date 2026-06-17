@@ -1435,6 +1435,17 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Timeline mention pills are display-only rendering over Rust-owned timeline
   body text plus `ProfileState.users`; they must not become a React-owned
   source of mention semantics.
+- `local-e2ee-key-management` proves #46 Phase B with the real Tauri WebView:
+  export a synthetic Matrix/Element-compatible room-key file through the SDK
+  path, import that same file, and set up secure backup with recovery-key
+  artifact delivery. The lane must print only `gui_room_key_export=ok`,
+  `gui_room_key_import=ok`, and `gui_secure_backup_setup=ok`; do not print the
+  key-file path, passphrases, recovery key, Matrix IDs, device IDs, room IDs,
+  event IDs, message contents, or raw SDK errors. After secure-backup setup, the
+  SDK recovery observer can move the session to `needsRecovery`; the right
+  panel is then forced to Recovery by Rust-owned session state, so the lane
+  accepts either the Settings secure-backup status or QA title
+  `panel=recovery session=needsRecovery` as setup evidence.
 
 ## macOS GUI Smoke Failures
 

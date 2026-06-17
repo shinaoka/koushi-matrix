@@ -60,7 +60,9 @@ const checks = [
   "scenario local-alias",
   "scenario local-cjk",
   "scenario local-settings",
+  "scenario local-e2ee-key-management",
   "verify local-settings trust section",
+  "verify local-e2ee-key-management tokens",
   "verify Xvfb virtual display",
   "verify tauri-driver and WebKitWebDriver",
   "verify debug Tauri build",
@@ -279,6 +281,10 @@ async function run() {
   }
   if (guiScenario === "local-settings") {
     await runLocalSettingsScenario();
+    return;
+  }
+  if (guiScenario === "local-e2ee-key-management") {
+    await runLocalE2eeKeyManagementScenario();
     return;
   }
   throw new Error(`unsupported --scenario: ${guiScenario}`);
@@ -1763,6 +1769,108 @@ async function runLocalSettingsScenario() {
   }
 }
 
+async function runLocalE2eeKeyManagementScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    await ensureUserSettingsKeyManagementOpen(session.browser, timeoutMs);
+
+    const keyFilePath = join(session.runDir, "room-keys.txt");
+    const recoveryKeyPath = join(session.runDir, "secure-backup-recovery.txt");
+    const keyFilePassphrase = `matrix-desktop-key-transfer-${safeTimestamp()}`;
+    const secureBackupPassphrase = `matrix-desktop-secure-backup-${safeTimestamp()}`;
+
+    await setKeyManagementFormInput(
+      session.browser,
+      "Room key export",
+      "Key export destination",
+      keyFilePath
+    );
+    await setKeyManagementFormInput(
+      session.browser,
+      "Room key export",
+      "Room key passphrase",
+      keyFilePassphrase
+    );
+    await clickKeyManagementFormButton(
+      session.browser,
+      "Room key export",
+      "Export room keys",
+      timeoutMs
+    );
+    await waitForKeyManagementStatus(
+      session.browser,
+      "room-key-export-state",
+      ["Exported", "sessions exported"],
+      timeoutMs,
+      "local GUI room-key export"
+    );
+    await waitForFileExists(keyFilePath, timeoutMs, "local GUI room-key export artifact");
+    console.log("gui_room_key_export=ok");
+
+    await setKeyManagementFormInput(
+      session.browser,
+      "Room key import",
+      "Key import source",
+      keyFilePath
+    );
+    await setKeyManagementFormInput(
+      session.browser,
+      "Room key import",
+      "Room key passphrase",
+      keyFilePassphrase
+    );
+    await clickKeyManagementFormButton(
+      session.browser,
+      "Room key import",
+      "Import room keys",
+      timeoutMs
+    );
+    await waitForKeyManagementStatus(
+      session.browser,
+      "room-key-import-state",
+      ["imported"],
+      timeoutMs,
+      "local GUI room-key import"
+    );
+    console.log("gui_room_key_import=ok");
+
+    await setKeyManagementFormInput(
+      session.browser,
+      "Secure backup",
+      "Secure backup passphrase",
+      secureBackupPassphrase
+    );
+    await setKeyManagementFormInput(
+      session.browser,
+      "Secure backup",
+      "Recovery key destination",
+      recoveryKeyPath
+    );
+    await waitForKeyManagementStatus(
+      session.browser,
+      "secure-backup-state",
+      ["Not set up"],
+      timeoutMs,
+      "local GUI secure-backup initial status"
+    );
+    await clickKeyManagementFormButton(
+      session.browser,
+      "Secure backup",
+      "Set up secure backup",
+      timeoutMs
+    );
+    await waitForFileExists(recoveryKeyPath, timeoutMs, "local GUI secure-backup artifact");
+    await waitForSecureBackupSetupEvidence(session.browser, timeoutMs);
+    console.log("gui_secure_backup_setup=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
 async function waitForQaTitle(browser, predicate, timeout, description) {
   const startedAt = Date.now();
   let lastTitle = "";
@@ -1879,6 +1987,133 @@ async function waitForDocumentText(browser, expectedTexts, timeout, description)
     await sleep(250);
   }
   throw new Error(`${description} missing expected text: ${missing.join(", ")}`);
+}
+
+async function ensureUserSettingsKeyManagementOpen(browser, timeout) {
+  const expectedTexts = ["Key management", "Room key export", "Room key import", "Secure backup"];
+  if (await documentContainsAll(browser, expectedTexts)) {
+    return;
+  }
+  const userSettings = await browser.$('button[aria-label="User settings"]');
+  await userSettings.waitForDisplayed({ timeout });
+  await userSettings.click();
+  try {
+    await waitForDocumentText(
+      browser,
+      expectedTexts,
+      timeout,
+      "local GUI key-management settings"
+    );
+  } catch (error) {
+    const diagnostics = await safeUserSettingsDiagnostics(browser);
+    throw new Error(`${error.message}. Diagnostics: ${JSON.stringify(diagnostics)}`);
+  }
+}
+
+async function documentContainsAll(browser, expectedTexts) {
+  return browser.execute((texts) => {
+    const bodyText = document.body.textContent ?? "";
+    return texts.every((text) => bodyText.includes(text));
+  }, expectedTexts);
+}
+
+async function safeUserSettingsDiagnostics(browser) {
+  return browser.execute(() => {
+    const userSettings = document.querySelector('button[aria-label="User settings"]');
+    const active = document.activeElement;
+    return {
+      title: document.title,
+      bodyChildCount: document.body.childElementCount,
+      bodyTextLength: document.body.textContent?.length ?? 0,
+      hasAuthScreen: document.querySelector('[data-testid="auth-screen"]') !== null,
+      hasMain: document.querySelector('main[aria-label="Conversation timeline"]') !== null,
+      hasUserSettingsButton: userSettings !== null,
+      hasKeyManagementHeading: Array.from(document.querySelectorAll("h3,h4")).some(
+        (element) => (element.textContent ?? "").includes("Key management")
+      ),
+      keyManagementForms: document.querySelectorAll(
+        'form[aria-label="Room key export"],form[aria-label="Room key import"],form[aria-label="Secure backup"]'
+      ).length,
+      settingsSections: document.querySelectorAll(".settings-section").length,
+      activeElement:
+        active?.getAttribute("aria-label") ??
+        active?.getAttribute("data-testid") ??
+        active?.tagName ??
+        null
+    };
+  });
+}
+
+async function setKeyManagementFormInput(browser, formLabel, fieldLabel, value) {
+  const selector = keyManagementFormInputXpath(formLabel, fieldLabel);
+  const input = await browser.$(selector);
+  await input.waitForDisplayed({ timeout: timeoutMs });
+  await input.setValue(value);
+}
+
+async function clickKeyManagementFormButton(browser, formLabel, buttonLabel, timeout) {
+  const selector = `//form[@aria-label=${xpathLiteral(
+    formLabel
+  )}]//button[normalize-space()=${xpathLiteral(buttonLabel)}]`;
+  const button = await browser.$(selector);
+  await button.waitForDisplayed({ timeout });
+  await button.click();
+}
+
+async function waitForKeyManagementStatus(browser, testId, expectedTexts, timeout, description) {
+  const startedAt = Date.now();
+  let lastText = "";
+  while (Date.now() - startedAt < timeout) {
+    lastText = await browser.execute((id) => {
+      const element = document.querySelector(`[data-testid="${id}"]`);
+      return (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+    }, testId);
+    if (expectedTexts.some((expectedText) => lastText.includes(expectedText))) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} did not reach expected status. Last text: ${lastText}`);
+}
+
+async function waitForSecureBackupSetupEvidence(browser, timeout) {
+  const startedAt = Date.now();
+  let last = { title: "", statusText: "" };
+  while (Date.now() - startedAt < timeout) {
+    last = await browser.execute(() => {
+      const statusElement = document.querySelector('[data-testid="secure-backup-state"]');
+      return {
+        title: document.title,
+        statusText: (statusElement?.textContent ?? "").replace(/\s+/g, " ").trim()
+      };
+    });
+    if (["Recovery key saved", "Enabled"].some((text) => last.statusText.includes(text))) {
+      return;
+    }
+    const status = parseQaTitle(last.title);
+    if (
+      status.errors === 0 &&
+      status.panel === "recovery" &&
+      (status.session === "needsRecovery" || status.session === "recovering")
+    ) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `local GUI secure-backup setup did not reach status or recovery panel. Last status=${last.statusText} title=${last.title}`
+  );
+}
+
+async function waitForFileExists(path, timeout, description) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    if (existsSync(path)) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} was not produced`);
 }
 
 async function getRoomEvent(homeserver, accessToken, roomId, eventId) {
@@ -2797,6 +3032,10 @@ async function waitForInputValue(browser, label, expectedValue, timeout, descrip
 
 function roomButtonXpath(sectionId, roomName) {
   return `//section[@data-room-section=${xpathLiteral(sectionId)}]//button[@data-testid="room-item"][.//span[normalize-space()=${xpathLiteral(roomName)}]]`;
+}
+
+function keyManagementFormInputXpath(formLabel, fieldLabel) {
+  return `//form[@aria-label=${xpathLiteral(formLabel)}]//label[.//span[normalize-space()=${xpathLiteral(fieldLabel)}]]//input`;
 }
 
 function xpathLiteral(value) {

@@ -1274,7 +1274,7 @@ Expected: commit succeeds.
 - Modify: `docs/qa/headless-basic-operations.md`
 - Modify: `AGENTS.md`
 
-- [ ] **Step 1: Add browser-headless GUI-operation test**
+- [x] **Step 1: Add browser-headless GUI-operation test**
 
 In `apps/desktop/e2e/basic-operations.spec.ts`, add:
 
@@ -1302,7 +1302,7 @@ npm --prefix apps/desktop run test:ui-headless -- e2e/basic-operations.spec.ts -
 
 Expected: FAIL until UI selectors and fake runtime are wired.
 
-- [ ] **Step 2: Add Linux GUI scenario tokens**
+- [x] **Step 2: Add Linux GUI scenario tokens**
 
 In `scripts/desktop-linux-gui-qa.mjs`, add a `local-e2ee-key-management`
 scenario that drives Security settings and asserts these tokens:
@@ -1316,7 +1316,7 @@ gui_secure_backup_setup=ok
 The scenario must not print paths, passphrases, recovery keys, Matrix IDs,
 device IDs, room IDs, event IDs, or message contents.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run:
 
@@ -1338,7 +1338,7 @@ npm --prefix apps/desktop run qa:linux-gui -- \
 
 Expected: browser-headless passes; Linux scenario emits all three tokens.
 
-- [ ] **Step 4: Commit and close #46 if complete**
+- [x] **Step 4: Commit and close #46 if complete**
 
 Run:
 
