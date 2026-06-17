@@ -492,3 +492,10 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    operational setup/failure notes in `AGENTS.md`; and QA scenario contracts in
    `docs/qa/`. Closing an issue without syncing the learned rule is a process
    defect.
+7. Concurrent Phase A work must follow the merge-conflict-avoidance rules in
+   `REPOSITORY_RULES.md` (`Concurrent Work And Merge-Conflict Avoidance`).
+   Subagents receive explicit allow/deny file lists; shared enums, reducers,
+   command/event variants, Tauri DTOs, TypeScript wire, generated contract
+   artifacts, and issue comments are integrated by the main agent. Monolithic
+   inline test files must not accumulate new feature tests; use per-feature
+   `crates/<crate>/tests/<feature>.rs` files instead.

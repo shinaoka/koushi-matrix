@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-06-14.
+Last amended: 2026-06-17.
 
 ## Read Order And Authority
 
@@ -302,6 +302,83 @@ conflict is being resolved.
   names, sender/member names, message bodies, thread labels, and snippets, but
   must not rewrite text, recompute sort keys, normalize queries, or repair
   highlights locally.
+
+## Concurrent Work And Merge-Conflict Avoidance
+
+Wave 2 (#38 device/session manager and #39 sliding-sync/room-list filters)
+confirmed that parallel Phase A work collides on shared surfaces when agents
+treat them as free-form append targets. The following rules reduce those
+conflicts without weakening the serialization points that keep the stack
+consistent.
+
+### Test Placement
+
+- **Integration-style or projection tests belong under `tests/` per feature.**
+  Tests that exercise reducer/command/event/runtime projection, DTO snapshots,
+  or state-machine transitions are integration-style. Put them in
+  `crates/<crate>/tests/<feature>.rs`, not inside a monolithic
+  `#[cfg(test)] mod tests` block in a source file.
+- **Pure unit tests may stay inline.** Small tests for a single pure helper,
+  parser, or private algorithm may remain in the source file under
+  `#[cfg(test)] mod tests`. When a unit test file grows beyond one screen or
+  begins to assert cross-module projection, move it to `tests/`.
+- **Do not add new tests to existing monolithic test files such as
+  `crates/matrix-desktop-core/src/tests.rs`.** Add a new `tests/<feature>.rs`
+  file instead. Existing monolithic files may be split opportunistically when
+  they are touched for a new feature.
+- **Test fixtures and fakes belong near their consumer.** A fake used by a
+  single feature's tests lives in that feature's test module. Shared fakes live
+  in `src/test_support.rs` or `tests/support/` and must be append-friendly.
+
+### Shared Hot Files
+
+The main agent owns integration of the following shared surfaces. Subagents may
+read them but must not append to them without main-agent coordination:
+
+- `crates/matrix-desktop-state/src/{state.rs,action.rs,reducer.rs}`
+- `crates/matrix-desktop-core/src/{command.rs,event.rs,runtime.rs}`
+- `apps/desktop/src-tauri/src/{dto.rs,commands.rs}`
+- `apps/desktop/src/{App.tsx,components/TimelineView.tsx,i18n/messages.ts,styles.css}`
+- `apps/desktop/src/domain/{types.ts,coreEvents.ts,coreEvents.generated.json}`
+- Browser-headless GUI-operation specs and Tauri IPC mocks
+
+To reduce conflicts on these files:
+
+- **Group related fields into nested structs/DTOs.** Instead of adding several
+  top-level fields to `AppState` for one feature, add one nested struct
+  (e.g., `AppState.account_management`, `AppState.room_list`). This confines
+  most feature-specific diffs to the nested type and its mirror on the
+  TypeScript side.
+- **Avoid central re-export lists that every feature edits.** When a crate's
+  `lib.rs` becomes a long list of per-feature re-exports, prefer re-exporting
+  the feature module namespace (`pub mod account_management;`) or a
+  feature-grouped prelude. Each feature then edits its own module's public API
+  rather than a shared list.
+- **Keep generated contract artifacts append-friendly.** Additions to
+  `coreEvents.generated.json` go at the end of the relevant array/object
+  without renumbering or reformatting unrelated entries. Do not regenerate the
+  artifact with unrelated formatting churn in the same change.
+
+### Parallel Implementation Protocol
+
+- **Serialize shared surface design before parallelizing implementation.** The
+  main agent must decide module boundaries, enum variants, nested DTO shapes,
+  and test file names before subagents begin coding. Subagents receive a bounded
+  file allow-list and a shared-file deny-list in their prompt.
+- **Do not parallelize two agents on the same hot file.** Cap concurrent
+  subagents to disjoint territories (typically 2-3). If two features both need
+  to change the same hot file, either split the work sequentially or have the
+  main agent pre-apply the shared scaffold and let subagents fill module-local
+  bodies.
+- **Subagent output is a draft to integrate, not merged evidence.** Cheap
+  implementation agents may write module-local code, tests, and docs. The main
+  agent still integrates shared enums, reducers, command/event variants, Tauri
+  DTOs, TypeScript wire, generated contract artifacts, and issue comments.
+- **Merge integration branches before landing on `main`.** When multiple feature
+  branches run in parallel, create a short-lived integration worktree, resolve
+  conflicts and run the full gate there, then fast-forward `main`. Do not push
+  a feature branch directly to `main` while another parallel feature is still
+  open.
 
 ## Documentation And Work Records
 
