@@ -47,6 +47,10 @@ export interface DesktopApi {
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
   updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
+  queryDevices(): Promise<DesktopSnapshot>;
+  renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot>;
+  deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot>;
+  submitAccountManagementUia(flowId: number, password: string): Promise<DesktopSnapshot>;
   probeLocalEncryptionHealth(): Promise<DesktopSnapshot>;
   resetLocalData(): Promise<DesktopSnapshot>;
   bootstrapCrossSigning(): Promise<DesktopSnapshot>;
@@ -319,6 +323,63 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.settings.values.typography
     );
     this.snapshot.state.settings.persistence = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async queryDevices(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.device_sessions = {
+      kind: "loaded",
+      devices: [
+        {
+          device_ordinal: 1,
+          display_name: "Current session",
+          current: true,
+          verified: true,
+          inactive: false
+        },
+        {
+          device_ordinal: 2,
+          display_name: "Other session",
+          current: false,
+          verified: false,
+          inactive: true
+        }
+      ]
+    };
+    return this.getSnapshot();
+  }
+
+  async renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot> {
+    if (this.snapshot.state.device_sessions.kind === "loaded") {
+      for (const device of this.snapshot.state.device_sessions.devices) {
+        if (device.device_ordinal === deviceOrdinal) {
+          device.display_name = displayName;
+        }
+      }
+    }
+    return this.getSnapshot();
+  }
+
+  async deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot> {
+    if (this.snapshot.state.device_sessions.kind === "loaded") {
+      this.snapshot.state.device_sessions.devices =
+        this.snapshot.state.device_sessions.devices.filter(
+          (d) => !deviceOrdinals.includes(d.device_ordinal)
+        );
+    }
+    return this.getSnapshot();
+  }
+
+  async submitAccountManagementUia(flowId: number, password: string): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+    void flowId;
+    void password;
+    this.snapshot.state.account_management = { kind: "idle" };
     return this.getSnapshot();
   }
 

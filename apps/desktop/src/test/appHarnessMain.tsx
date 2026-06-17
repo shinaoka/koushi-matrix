@@ -573,6 +573,88 @@ mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch })
     }
   });
 });
+mock.setCommandResponse("query_devices", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      device_sessions: {
+        kind: "loaded",
+        devices: [
+          {
+            device_ordinal: 1,
+            display_name: "Current session",
+            current: true,
+            verified: true,
+            inactive: false
+          },
+          {
+            device_ordinal: 2,
+            display_name: "Other session",
+            current: false,
+            verified: false,
+            inactive: true
+          }
+        ]
+      }
+    }
+  })
+);
+mock.setCommandResponse(
+  "rename_device",
+  ({ deviceOrdinal, displayName }: { deviceOrdinal: number; displayName: string }) => {
+    if (currentSnapshot.state.device_sessions.kind !== "loaded") {
+      return currentSnapshot;
+    }
+    return setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        device_sessions: {
+          ...currentSnapshot.state.device_sessions,
+          devices: currentSnapshot.state.device_sessions.devices.map((device) =>
+            device.device_ordinal === deviceOrdinal
+              ? { ...device, display_name: displayName }
+              : device
+          )
+        }
+      }
+    });
+  }
+);
+mock.setCommandResponse(
+  "delete_devices",
+  ({ deviceOrdinals }: { deviceOrdinals: number[] }) => {
+    if (currentSnapshot.state.device_sessions.kind !== "loaded") {
+      return currentSnapshot;
+    }
+    return setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        device_sessions: {
+          ...currentSnapshot.state.device_sessions,
+          devices: currentSnapshot.state.device_sessions.devices.filter(
+            (device) => !deviceOrdinals.includes(device.device_ordinal)
+          )
+        }
+      }
+    });
+  }
+);
+mock.setCommandResponse(
+  "submit_account_management_uia",
+  ({ flowId }: { flowId: number; password: string }) => {
+    void flowId;
+    return setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        account_management: { kind: "idle" }
+      }
+    });
+  }
+);
 mock.setCommandResponse("probe_local_encryption_health", () =>
   setCurrentSnapshot({
     ...currentSnapshot,

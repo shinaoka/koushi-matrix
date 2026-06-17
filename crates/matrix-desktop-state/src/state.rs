@@ -1253,7 +1253,7 @@ pub enum SyncModeFailureKind {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RoomListFilter {
     #[default]
     Rooms,
@@ -1264,7 +1264,7 @@ pub enum RoomListFilter {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RoomListSort {
     #[default]
     Activity,

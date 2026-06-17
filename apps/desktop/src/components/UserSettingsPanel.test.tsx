@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { UserSettingsPanel } from "./UserSettingsPanel";
 import type { E2eeTrustState, ProfileState } from "../domain/types";
@@ -108,8 +108,14 @@ describe("UserSettingsPanel", () => {
     onBootstrapSecureBackup: () => undefined,
     onChangeSecureBackupPassphrase: () => undefined,
     onSwitchAccount: () => undefined,
-    onUpdateSettings: () => undefined
+    onUpdateSettings: () => undefined,
+    onQueryDevices: () => undefined,
+    onRenameDevice: () => undefined,
+    onDeleteDevices: () => undefined,
+    onSubmitAccountManagementUia: () => undefined
   };
+  const idleDeviceSessions: import("../domain/types").DeviceSessionListState = { kind: "idle" };
+  const idleAccountManagement: import("../domain/types").AccountManagementState = { kind: "idle" };
 
   test("renders account switch entries and keyboard settings access", () => {
     const markup = renderToStaticMarkup(
@@ -122,6 +128,8 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={e2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
         savedSessions={[
           {
             homeserver: "https://matrix.org",
@@ -197,6 +205,8 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
         savedSessions={[]}
         profile={profile}
         settings={{
@@ -224,6 +234,8 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "unknown" }}
         platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
         savedSessions={[
           {
             homeserver: "https://matrix.org",
@@ -285,6 +297,8 @@ describe("UserSettingsPanel", () => {
         }}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
         savedSessions={[]}
         profile={profile}
         settings={settings}
@@ -304,5 +318,134 @@ describe("UserSettingsPanel", () => {
     expect(markup).not.toContain("private-room-key-passphrase");
     expect(markup).not.toContain("private-secure-backup-passphrase");
     expect(markup).not.toContain("/tmp/");
+  });
+
+  test("renders loaded device sessions and dispatches rename", () => {
+    const onRenameDevice = vi.fn();
+    const loadedDeviceSessions: import("../domain/types").DeviceSessionListState = {
+      kind: "loaded",
+      devices: [
+        {
+          device_ordinal: 1,
+          display_name: "Current Browser",
+          current: true,
+          verified: true,
+          inactive: false
+        },
+        {
+          device_ordinal: 2,
+          display_name: "Other Phone",
+          current: false,
+          verified: false,
+          inactive: true
+        }
+      ]
+    };
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={loadedDeviceSessions}
+        accountManagement={idleAccountManagement}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onRenameDevice={onRenameDevice}
+      />
+    );
+
+    expect(markup).toContain("Sessions");
+    expect(markup).toContain("Current Browser");
+    expect(markup).toContain("Other Phone");
+    expect(markup).toContain("Current session");
+    expect(markup).toContain("Other sessions");
+    expect(markup).toContain("Sign out all other sessions");
+  });
+
+  test("computes non-current ordinals for sign out all other sessions", () => {
+    const loadedDeviceSessions: import("../domain/types").DeviceSessionListState = {
+      kind: "loaded",
+      devices: [
+        {
+          device_ordinal: 1,
+          display_name: "Current Browser",
+          current: true,
+          verified: true,
+          inactive: false
+        },
+        {
+          device_ordinal: 2,
+          display_name: "Other Phone",
+          current: false,
+          verified: false,
+          inactive: true
+        },
+        {
+          device_ordinal: 3,
+          display_name: "Other Tablet",
+          current: false,
+          verified: true,
+          inactive: false
+        }
+      ]
+    };
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={loadedDeviceSessions}
+        accountManagement={idleAccountManagement}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+
+    expect(markup).toContain("Sign out all other sessions");
+  });
+
+  test("renders UIA password prompt when account management awaits UIA", () => {
+    const onSubmitAccountManagementUia = vi.fn();
+    const markup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={{
+          kind: "awaitingUia",
+          request_id: 42,
+          flow_id: 7,
+          operation: "deleteOtherDevices"
+        }}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onSubmitAccountManagementUia={onSubmitAccountManagementUia}
+      />
+    );
+
+    expect(markup).toContain("Password");
+    expect(markup).toContain("Continue");
   });
 });

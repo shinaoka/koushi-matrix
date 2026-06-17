@@ -1320,6 +1320,22 @@ export function App() {
     setSnapshot(await api.updateSettings(patch));
   }
 
+  async function queryDevices() {
+    setSnapshot(await api.queryDevices());
+  }
+
+  async function renameDevice(deviceOrdinal: number, displayName: string) {
+    setSnapshot(await api.renameDevice(deviceOrdinal, displayName));
+  }
+
+  async function deleteDevices(deviceOrdinals: number[]) {
+    setSnapshot(await api.deleteDevices(deviceOrdinals));
+  }
+
+  async function submitAccountManagementUia(flowId: number, password: string) {
+    setSnapshot(await api.submitAccountManagementUia(flowId, password));
+  }
+
   async function setDisplayName(displayName: string | null) {
     setSnapshot(await api.setDisplayName(displayName));
   }
@@ -2332,6 +2348,18 @@ export function App() {
           }}
           onUpdateSettings={(patch) => {
             void updateSettings(patch);
+          }}
+          onQueryDevices={() => {
+            void queryDevices();
+          }}
+          onRenameDevice={(deviceOrdinal, displayName) => {
+            void renameDevice(deviceOrdinal, displayName);
+          }}
+          onDeleteDevices={(deviceOrdinals) => {
+            void deleteDevices(deviceOrdinals);
+          }}
+          onSubmitAccountManagementUia={(flowId, password) => {
+            void submitAccountManagementUia(flowId, password);
           }}
           onUpdateRoomSetting={(roomId, change) => {
             void updateRoomSetting(roomId, change);
@@ -5194,6 +5222,10 @@ export function ContextualRightPanel({
   onSubmitIdentityResetPassword,
   onUpdateSettings = () => undefined,
   onUpdateRoomSetting = () => undefined,
+  onQueryDevices = () => undefined,
+  onRenameDevice = () => undefined,
+  onDeleteDevices = () => undefined,
+  onSubmitAccountManagementUia = () => undefined,
   onThreadComposerDraftChange,
   onThreadReplySend
 }: {
@@ -5256,6 +5288,10 @@ export function ContextualRightPanel({
   onSubmitIdentityResetOAuth: (flowId: number) => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onUpdateSettings?: (patch: SettingsPatch) => void;
+  onQueryDevices?: () => void;
+  onRenameDevice?: (deviceOrdinal: number, displayName: string) => void;
+  onDeleteDevices?: (deviceOrdinals: number[]) => void;
+  onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
   onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
@@ -5325,6 +5361,12 @@ export function ContextualRightPanel({
           onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
           onUpdateSettings={onUpdateSettings}
           onSwitchAccount={onSwitchAccount}
+          deviceSessions={snapshot.state.device_sessions}
+          accountManagement={snapshot.state.account_management}
+          onQueryDevices={onQueryDevices ?? (() => undefined)}
+          onRenameDevice={onRenameDevice ?? (() => undefined)}
+          onDeleteDevices={onDeleteDevices ?? (() => undefined)}
+          onSubmitAccountManagementUia={onSubmitAccountManagementUia ?? (() => undefined)}
         />
       </aside>
     );

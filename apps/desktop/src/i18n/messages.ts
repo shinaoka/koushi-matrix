@@ -5,6 +5,7 @@ export type MessageId =
   | "action.back"
   | "action.cancel"
   | "action.close"
+  | "action.continue"
   | "action.createRoom"
   | "action.createSpace"
   | "action.forward"
@@ -307,6 +308,18 @@ export type MessageId =
   | "settings.searchIndex"
   | "settings.security"
   | "settings.securityPrivacy"
+  | "settings.sessions"
+  | "settings.currentSession"
+  | "settings.otherSessions"
+  | "settings.signOut"
+  | "settings.signOutOthers"
+  | "settings.renameDevice"
+  | "settings.deviceVerified"
+  | "settings.deviceUnverified"
+  | "settings.deviceInactive"
+  | "settings.deviceNamePlaceholder"
+  | "settings.sessionsLoading"
+  | "settings.sessionsLoadFailed"
   | "settings.keyManagement"
   | "settings.roomKeyExport"
   | "settings.roomKeyExportDestination"
@@ -686,6 +699,7 @@ const en: Catalog = {
   "action.back": "Back",
   "action.cancel": "Cancel",
   "action.close": "Close {title}",
+  "action.continue": "Continue",
   "action.createRoom": "Create room",
   "action.createSpace": "Create space",
   "action.forward": "Forward",
@@ -988,6 +1002,18 @@ const en: Catalog = {
   "settings.searchIndex": "Encrypted local index",
   "settings.security": "Security",
   "settings.securityPrivacy": "Security & Privacy",
+  "settings.sessions": "Sessions",
+  "settings.currentSession": "Current session",
+  "settings.otherSessions": "Other sessions",
+  "settings.signOut": "Sign out",
+  "settings.signOutOthers": "Sign out all other sessions",
+  "settings.renameDevice": "Rename",
+  "settings.deviceVerified": "Verified",
+  "settings.deviceUnverified": "Unverified",
+  "settings.deviceInactive": "Inactive",
+  "settings.deviceNamePlaceholder": "Device name",
+  "settings.sessionsLoading": "Loading sessions…",
+  "settings.sessionsLoadFailed": "Could not load sessions.",
   "settings.keyManagement": "Key management",
   "settings.roomKeyExport": "Room key export",
   "settings.roomKeyExportDestination": "Key export destination",
@@ -1278,6 +1304,7 @@ const ja: Catalog = {
   "action.back": "戻る",
   "action.cancel": "キャンセル",
   "action.close": "{title}を閉じる",
+  "action.continue": "続行",
   "action.createRoom": "ルームを作成",
   "action.createSpace": "スペースを作成",
   "action.forward": "進む",
@@ -1569,6 +1596,18 @@ const ja: Catalog = {
   "settings.searchIndex": "暗号化ローカルインデックス",
   "settings.security": "セキュリティ",
   "settings.securityPrivacy": "セキュリティとプライバシー",
+  "settings.sessions": "セッション",
+  "settings.currentSession": "現在のセッション",
+  "settings.otherSessions": "その他のセッション",
+  "settings.signOut": "サインアウト",
+  "settings.signOutOthers": "その他のセッションをすべてサインアウト",
+  "settings.renameDevice": "名前を変更",
+  "settings.deviceVerified": "検証済み",
+  "settings.deviceUnverified": "未検証",
+  "settings.deviceInactive": "非アクティブ",
+  "settings.deviceNamePlaceholder": "デバイス名",
+  "settings.sessionsLoading": "セッションを読み込み中…",
+  "settings.sessionsLoadFailed": "セッションを読み込めませんでした。",
   "settings.keyManagement": "鍵管理",
   "settings.roomKeyExport": "ルーム鍵エクスポート",
   "settings.roomKeyExportDestination": "鍵エクスポート先",

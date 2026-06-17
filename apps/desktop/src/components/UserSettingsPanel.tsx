@@ -4,6 +4,7 @@ import {
   Code2,
   Check,
   Download,
+  Edit3,
   EyeOff,
   Image,
   KeyRound,
@@ -15,6 +16,7 @@ import {
   ShieldQuestion,
   ShieldX,
   SlidersHorizontal,
+  Smartphone,
   Upload,
   UserRound,
   X
@@ -22,7 +24,10 @@ import {
 
 import { t } from "../i18n/messages";
 import type {
+  AccountManagementState,
   CrossSigningStatus,
+  DeviceSessionListState,
+  DeviceSessionSummary,
   DeviceTrustLevel,
   DisplaySettings,
   E2eeTrustState,
@@ -57,6 +62,8 @@ export function UserSettingsPanel({
   e2eeTrust,
   localEncryption,
   platform,
+  deviceSessions,
+  accountManagement,
   onOpenKeyboardSettings,
   onUpdateSettings,
   onSetDisplayName,
@@ -76,7 +83,11 @@ export function UserSettingsPanel({
   onProbeLocalEncryption,
   onResetLocalData,
   onOpenRecovery,
-  onSwitchAccount
+  onSwitchAccount,
+  onQueryDevices,
+  onRenameDevice,
+  onDeleteDevices,
+  onSubmitAccountManagementUia
 }: {
   currentSession: SavedSessionInfo | null;
   savedSessions: SavedSessionInfo[];
@@ -85,6 +96,8 @@ export function UserSettingsPanel({
   e2eeTrust: E2eeTrustState;
   localEncryption: LocalEncryptionState;
   platform: DisplayPlatform;
+  deviceSessions: DeviceSessionListState;
+  accountManagement: AccountManagementState;
   onOpenKeyboardSettings: () => void;
   onUpdateSettings: (patch: SettingsPatch) => void;
   onSetDisplayName: (displayName: string | null) => void;
@@ -112,7 +125,16 @@ export function UserSettingsPanel({
   onResetLocalData: () => void;
   onOpenRecovery: () => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
+  onQueryDevices: () => void;
+  onRenameDevice: (deviceOrdinal: number, displayName: string) => void;
+  onDeleteDevices: (deviceOrdinals: number[]) => void;
+  onSubmitAccountManagementUia: (flowId: number, password: string) => void;
 }) {
+  useEffect(() => {
+    if (deviceSessions.kind === "idle" && currentSession) {
+      onQueryDevices();
+    }
+  }, [deviceSessions.kind, currentSession, onQueryDevices]);
   const selectedTheme = settings.values.appearance.theme;
   const selectedFont = settings.values.typography.font;
   const selectedEmoji = settings.values.typography.emoji;
@@ -173,6 +195,14 @@ export function UserSettingsPanel({
               <ShieldCheck size={16} />
             </span>
             <span>{t("settings.securityPrivacy")}</span>
+          </span>
+        </button>
+        <button className="settings-list-item" type="button">
+          <span className="settings-list-label">
+            <span className="settings-list-icon" aria-hidden="true">
+              <Smartphone size={16} />
+            </span>
+            <span>{t("settings.sessions")}</span>
           </span>
         </button>
         <button className="settings-list-item" type="button" onClick={onOpenKeyboardSettings}>
@@ -427,6 +457,15 @@ export function UserSettingsPanel({
           onResetLocalData={onResetLocalData}
         />
       </section>
+
+      <SessionsSection
+        deviceSessions={deviceSessions}
+        accountManagement={accountManagement}
+        onQueryDevices={onQueryDevices}
+        onRenameDevice={onRenameDevice}
+        onDeleteDevices={onDeleteDevices}
+        onSubmitAccountManagementUia={onSubmitAccountManagementUia}
+      />
 
       <TrustSection
         trust={e2eeTrust}
@@ -746,6 +785,238 @@ function SecuritySection({
         </div>
       </section>
     </>
+  );
+}
+
+function SessionsSection({
+  deviceSessions,
+  accountManagement,
+  onQueryDevices,
+  onRenameDevice,
+  onDeleteDevices,
+  onSubmitAccountManagementUia
+}: {
+  deviceSessions: DeviceSessionListState;
+  accountManagement: AccountManagementState;
+  onQueryDevices: () => void;
+  onRenameDevice: (deviceOrdinal: number, displayName: string) => void;
+  onDeleteDevices: (deviceOrdinals: number[]) => void;
+  onSubmitAccountManagementUia: (flowId: number, password: string) => void;
+}) {
+  const [renamingOrdinal, setRenamingOrdinal] = useState<number | null>(null);
+
+  const currentDevice =
+    deviceSessions.kind === "loaded"
+      ? deviceSessions.devices.find((device) => device.current)
+      : undefined;
+  const otherDevices =
+    deviceSessions.kind === "loaded"
+      ? deviceSessions.devices.filter((device) => !device.current)
+      : [];
+  const otherOrdinals = otherDevices.map((device) => device.device_ordinal);
+
+  return (
+    <section className="settings-section" aria-label={t("settings.sessions")}>
+      <div className="settings-section-heading">
+        <h3>{t("settings.sessions")}</h3>
+      </div>
+
+      {accountManagement.kind === "awaitingUia" ? (
+        <AccountManagementUiaForm
+          flowId={accountManagement.flow_id}
+          onSubmit={onSubmitAccountManagementUia}
+        />
+      ) : null}
+
+      {deviceSessions.kind === "idle" || deviceSessions.kind === "loading" ? (
+        <p className="settings-status-text">{t("settings.sessionsLoading")}</p>
+      ) : null}
+
+      {deviceSessions.kind === "failed" ? (
+        <>
+          <p className="settings-status-text">{t("settings.sessionsLoadFailed")}</p>
+          <button className="trust-action-button secondary" type="button" onClick={onQueryDevices}>
+            <RefreshCcw size={14} />
+            <span>{t("action.restartSync")}</span>
+          </button>
+        </>
+      ) : null}
+
+      <div className="sessions-list">
+        {currentDevice ? (
+          <div className="session-row session-row-current">
+            <div className="session-main">
+              <strong>{currentDevice.display_name ?? t("settings.deviceNamePlaceholder")}</strong>
+              <span className="session-meta">{t("settings.currentSession")}</span>
+            </div>
+            <div className="session-badges">
+              {currentDevice.verified ? (
+                <span className="session-badge verified">{t("settings.deviceVerified")}</span>
+              ) : (
+                <span className="session-badge unverified">{t("settings.deviceUnverified")}</span>
+              )}
+              {currentDevice.inactive ? (
+                <span className="session-badge inactive">{t("settings.deviceInactive")}</span>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {otherDevices.length > 0 ? (
+          <>
+            <h4 className="settings-subheading">{t("settings.otherSessions")}</h4>
+            {otherDevices.map((device) => (
+              <SessionRow
+                key={device.device_ordinal}
+                device={device}
+                renaming={renamingOrdinal === device.device_ordinal}
+                onStartRename={() => setRenamingOrdinal(device.device_ordinal)}
+                onCancelRename={() => setRenamingOrdinal(null)}
+                onRename={(displayName) => {
+                  setRenamingOrdinal(null);
+                  onRenameDevice(device.device_ordinal, displayName);
+                }}
+                onSignOut={() => onDeleteDevices([device.device_ordinal])}
+              />
+            ))}
+            <div className="session-actions">
+              <button
+                className="trust-action-button danger"
+                type="button"
+                onClick={() => onDeleteDevices(otherOrdinals)}
+              >
+                <X size={14} />
+                <span>{t("settings.signOutOthers")}</span>
+              </button>
+            </div>
+          </>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function SessionRow({
+  device,
+  renaming,
+  onStartRename,
+  onCancelRename,
+  onRename,
+  onSignOut
+}: {
+  device: DeviceSessionSummary;
+  renaming: boolean;
+  onStartRename: () => void;
+  onCancelRename: () => void;
+  onRename: (displayName: string) => void;
+  onSignOut: () => void;
+}) {
+  const [draft, setDraft] = useState(device.display_name ?? "");
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = draft.trim();
+    onRename(trimmed.length > 0 ? trimmed : device.display_name ?? "");
+  }
+
+  if (renaming) {
+    return (
+      <form className="session-row session-row-renaming" onSubmit={submit}>
+        <label className="session-rename-field">
+          <span className="sr-only">{t("settings.deviceNamePlaceholder")}</span>
+          <input
+            type="text"
+            value={draft}
+            placeholder={t("settings.deviceNamePlaceholder")}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+          />
+        </label>
+        <div className="session-actions">
+          <button className="trust-action-button primary" type="submit">
+            <Check size={14} />
+            <span>{t("settings.renameDevice")}</span>
+          </button>
+          <button
+            className="trust-action-button secondary"
+            type="button"
+            onClick={onCancelRename}
+          >
+            <X size={14} />
+            <span>{t("action.cancel")}</span>
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  return (
+    <div className="session-row">
+      <div className="session-main">
+        <strong>{device.display_name ?? t("settings.deviceNamePlaceholder")}</strong>
+      </div>
+      <div className="session-badges">
+        {device.verified ? (
+          <span className="session-badge verified">{t("settings.deviceVerified")}</span>
+        ) : (
+          <span className="session-badge unverified">{t("settings.deviceUnverified")}</span>
+        )}
+        {device.inactive ? (
+          <span className="session-badge inactive">{t("settings.deviceInactive")}</span>
+        ) : null}
+      </div>
+      <div className="session-actions">
+        <button className="trust-action-button secondary" type="button" onClick={onStartRename}>
+          <Edit3 size={14} />
+          <span>{t("settings.renameDevice")}</span>
+        </button>
+        <button className="trust-action-button danger" type="button" onClick={onSignOut}>
+          <X size={14} />
+          <span>{t("settings.signOut")}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AccountManagementUiaForm({
+  flowId,
+  onSubmit
+}: {
+  flowId: number;
+  onSubmit: (flowId: number, password: string) => void;
+}) {
+  const passwordInput = useRef<HTMLInputElement>(null);
+  const [passwordFilled, setPasswordFilled] = useState(false);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const password = passwordInput.current?.value ?? "";
+    if (!password) {
+      return;
+    }
+    onSubmit(flowId, password);
+    if (passwordInput.current) {
+      passwordInput.current.value = "";
+    }
+    setPasswordFilled(false);
+  }
+
+  return (
+    <form className="trust-auth-row" onSubmit={submit}>
+      <label className="trust-password-field">
+        <span>{t("auth.password")}</span>
+        <input
+          autoComplete="current-password"
+          ref={passwordInput}
+          type="password"
+          onInput={(event) => setPasswordFilled(event.currentTarget.value.length > 0)}
+        />
+      </label>
+      <button className="trust-action-button primary" type="submit" disabled={!passwordFilled}>
+        <Check size={14} />
+        <span>{t("action.continue")}</span>
+      </button>
+    </form>
   );
 }
 

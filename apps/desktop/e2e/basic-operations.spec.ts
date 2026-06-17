@@ -5199,3 +5199,72 @@ test("edit composer respects the Rust-owned composer shortcut resolver", async (
       body: editedBody
     });
 });
+
+test("device session manager renames and signs out from Rust-owned snapshot", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        device_sessions: {
+          kind: "loaded",
+          devices: [
+            {
+              device_ordinal: 1,
+              display_name: "Current session",
+              current: true,
+              verified: true,
+              inactive: false
+            },
+            {
+              device_ordinal: 2,
+              display_name: "Other session",
+              current: false,
+              verified: false,
+              inactive: true
+            }
+          ]
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "User settings", exact: true }).click();
+  await page.getByRole("button", { name: "Sessions", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Sessions", exact: true })).toBeVisible();
+
+  const secondSessionRow = page.locator(".session-row").filter({
+    hasText: "Other session"
+  });
+  await expect(secondSessionRow).toBeVisible();
+  await secondSessionRow.getByRole("button", { name: "Rename", exact: true }).click();
+
+  const renameField = page.getByRole("textbox", { name: "Device name", exact: true });
+  await expect(renameField).toBeVisible();
+  await renameField.fill("Renamed other session");
+  await page.getByRole("button", { name: "Rename", exact: true }).click();
+
+  await expect.poll(() => invocationCount(page, "rename_device")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("rename_device")[0]?.args))
+    .toEqual({
+      deviceOrdinal: 2,
+      displayName: "Renamed other session"
+    });
+
+  const signedOutRow = page.locator(".session-row").filter({ hasText: "Other session" });
+  await signedOutRow.getByRole("button", { name: "Sign out", exact: true }).click();
+
+  await expect.poll(() => invocationCount(page, "delete_devices")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("delete_devices")[0]?.args)
+    )
+    .toEqual({
+      deviceOrdinals: [2]
+    });
+});
