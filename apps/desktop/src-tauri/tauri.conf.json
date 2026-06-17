@@ -30,7 +30,7 @@
     "homepage": "https://github.com/matrix-org/matrix-rust-sdk",
     "icon": [],
     "copyright": "Copyright 2026 matrix-desktop contributors",
-    "license": "MIT",
+    "license": "MIT OR Apache-2.0",
     "category": "SocialNetworking",
     "shortDescription": "A Tauri Matrix desktop client.",
     "longDescription": "matrix-desktop is a Tauri Matrix desktop client used to validate Matrix Rust SDK desktop integration, encrypted local stores, search, and Element-like desktop workflows.",
