@@ -35,6 +35,8 @@ export type MessageId =
   | "auth.continue"
   | "auth.deviceName"
   | "auth.encryptionRecovery"
+  | "app.about"
+  | "app.title"
   | "auth.matrixAccount"
   | "auth.matrixDesktop"
   | "auth.noLoginMethods"
@@ -75,6 +77,7 @@ export type MessageId =
   | "upload.dialogTitle"
   | "upload.original"
   | "upload.sizeChoice"
+  | "window.title"
   | "context.editMessage"
   | "context.addToFavourites"
   | "context.addToLowPriority"
@@ -667,8 +670,10 @@ const en: Catalog = {
   "auth.continue": "Continue",
   "auth.deviceName": "Device name",
   "auth.encryptionRecovery": "Encryption Recovery",
+  "app.about": "About Ruri",
+  "app.title": "Ruri",
   "auth.matrixAccount": "Matrix account",
-  "auth.matrixDesktop": "Matrix Desktop",
+  "auth.matrixDesktop": "Ruri",
   "auth.noLoginMethods": "No login methods",
   "auth.notChecked": "Not checked",
   "auth.password": "Password",
@@ -707,6 +712,7 @@ const en: Catalog = {
   "upload.dialogTitle": "Upload attachments",
   "upload.original": "Original",
   "upload.sizeChoice": "Upload size",
+  "window.title": "Ruri",
   "context.editMessage": "Edit",
   "context.addToFavourites": "Add to Favourites",
   "context.addToLowPriority": "Move to Low priority",
@@ -1210,7 +1216,10 @@ const ja: Catalog = {
   "auth.continue": "続行",
   "auth.deviceName": "デバイス名",
   "auth.encryptionRecovery": "暗号化リカバリ",
+  "app.about": "Ruri（瑠璃）について",
+  "app.title": "Ruri（瑠璃）",
   "auth.matrixAccount": "Matrixアカウント",
+  "auth.matrixDesktop": "Ruri（瑠璃）",
   "auth.noLoginMethods": "ログイン方法がありません",
   "auth.notChecked": "未確認",
   "auth.password": "パスワード",
@@ -1249,6 +1258,7 @@ const ja: Catalog = {
   "upload.dialogTitle": "添付をアップロード",
   "upload.original": "オリジナル",
   "upload.sizeChoice": "アップロードサイズ",
+  "window.title": "Ruri（瑠璃）",
   "context.editMessage": "編集",
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",

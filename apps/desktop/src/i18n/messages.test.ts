@@ -161,7 +161,6 @@ describe("i18n message catalog", () => {
 });
 
 const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
-  "auth.matrixDesktop",
   "settings.fontInter",
   "settings.twemojiColr",
   "timeline.mediaUploadProgress"
