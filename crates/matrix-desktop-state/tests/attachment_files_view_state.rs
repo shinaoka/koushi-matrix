@@ -487,7 +487,6 @@ fn files_view_actions_require_ready_session() {
     assert_eq!(state.files_view, FilesViewState::Closed);
 }
 
-
 #[test]
 fn logout_clears_files_view_and_emits_ui_event() {
     let mut state = ready_state();
