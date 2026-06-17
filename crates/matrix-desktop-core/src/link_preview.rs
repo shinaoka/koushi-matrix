@@ -61,6 +61,13 @@ impl LinkPreviewContext {
             room_overrides: self.room_overrides.clone(),
         }
     }
+
+    /// Update only the policy fields that can change from a settings broadcast,
+    /// preserving cached previews and the hidden-event set.
+    pub fn apply_policy_delta(&mut self, global_enabled: bool, room_enabled: Option<bool>) {
+        self.global_enabled = global_enabled;
+        self.room_enabled = room_enabled;
+    }
 }
 
 impl fmt::Debug for LinkPreviewContext {
@@ -298,14 +305,6 @@ async fn download_preview_image(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn fmt_body(text: &str) -> TimelineFormattedBody {
-        TimelineFormattedBody {
-            html: text.to_owned(),
-            plain_text: text.to_owned(),
-            code_blocks: Vec::new(),
-        }
-    }
 
     fn fmt_body_with_html(html: &str, plain: &str) -> TimelineFormattedBody {
         TimelineFormattedBody {
@@ -568,5 +567,36 @@ mod tests {
         assert!(debug.contains("cache_entry_count"));
         assert!(!debug.contains("https://example.com"));
         assert!(!debug.contains("$event"));
+    }
+
+    #[test]
+    fn apply_policy_delta_preserves_hidden_event_ids_and_cache() {
+        let mut hidden = BTreeSet::new();
+        hidden.insert("$event".to_owned());
+
+        let ready = LinkPreview {
+            url: "https://example.com".to_owned(),
+            title: Some("Example".to_owned()),
+            description: Some("Description".to_owned()),
+            image: None,
+            state: LinkPreviewState::Ready,
+        };
+        let mut cache = HashMap::new();
+        cache.insert(ready.url.clone(), ready.clone());
+
+        let mut context = LinkPreviewContext {
+            global_enabled: true,
+            room_enabled: None,
+            hidden_event_ids: hidden.clone(),
+            cache: cache.clone(),
+            room_overrides: BTreeMap::new(),
+        };
+
+        context.apply_policy_delta(false, Some(true));
+
+        assert!(!context.global_enabled);
+        assert_eq!(context.room_enabled, Some(true));
+        assert_eq!(context.hidden_event_ids, hidden);
+        assert_eq!(context.cache, cache);
     }
 }

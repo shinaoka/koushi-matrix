@@ -598,9 +598,15 @@ impl TimelineManagerActor {
                 self.link_preview_policy.global_enabled = global_enabled;
                 self.link_preview_policy.room_overrides = room_overrides;
                 for (key, handle) in &self.timelines {
+                    let room_enabled = self
+                        .link_preview_policy
+                        .room_overrides
+                        .get(key.room_id())
+                        .copied();
                     let _ = handle
                         .send(TimelineActorMessage::LinkPreviewPolicyChanged {
-                            policy: self.link_preview_policy.for_room(key.room_id()),
+                            global_enabled,
+                            room_enabled,
                         })
                         .await;
                 }
@@ -1209,7 +1215,8 @@ enum TimelineActorMessage {
         event_id: String,
     },
     LinkPreviewPolicyChanged {
-        policy: LinkPreviewContext,
+        global_enabled: bool,
+        room_enabled: Option<bool>,
     },
     /// Internal: diff batch from the relay task.
     DiffBatch(Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>),
@@ -1606,8 +1613,12 @@ impl TimelineActor {
             } => {
                 self.handle_hide_link_preview(request_id, event_id).await;
             }
-            TimelineActorMessage::LinkPreviewPolicyChanged { policy } => {
-                self.handle_link_preview_policy_changed(policy).await;
+            TimelineActorMessage::LinkPreviewPolicyChanged {
+                global_enabled,
+                room_enabled,
+            } => {
+                self.handle_link_preview_policy_changed(global_enabled, room_enabled)
+                    .await;
             }
             TimelineActorMessage::DiffBatch(diffs) => {
                 self.handle_diff_batch(diffs).await;
@@ -2710,8 +2721,13 @@ impl TimelineActor {
         }));
     }
 
-    async fn handle_link_preview_policy_changed(&mut self, policy: LinkPreviewContext) {
-        self.link_preview_policy = policy;
+    async fn handle_link_preview_policy_changed(
+        &mut self,
+        global_enabled: bool,
+        room_enabled: Option<bool>,
+    ) {
+        self.link_preview_policy
+            .apply_policy_delta(global_enabled, room_enabled);
         let context = self.link_preview_policy.for_room(self.key.room_id());
 
         let mut core_diffs = Vec::new();
