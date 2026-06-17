@@ -17,6 +17,8 @@ pub struct AppState {
     #[serde(default)]
     pub account_management: AccountManagementState,
     #[serde(default)]
+    pub soft_logout_reauth: SoftLogoutReauthState,
+    #[serde(default)]
     pub qr_login: QrLoginState,
     pub settings: SettingsState,
     pub profile: ProfileState,
@@ -59,6 +61,7 @@ impl Default for AppState {
             auth: AuthDiscoveryState::Unknown,
             device_sessions: DeviceSessionListState::Idle,
             account_management: AccountManagementState::Idle,
+            soft_logout_reauth: SoftLogoutReauthState::Idle,
             qr_login: QrLoginState::Idle,
             settings: SettingsState::default(),
             profile: ProfileState::default(),
@@ -491,6 +494,27 @@ pub enum QrLoginState {
         request_id: u64,
     },
     Verified {
+        request_id: u64,
+    },
+    Failed {
+        request_id: u64,
+        #[serde(rename = "failureKind")]
+        kind: AuthFailureKind,
+    },
+}
+
+/// Rust-owned state machine for soft-logout re-authentication (MSC2697).
+/// Product state contains only request ids and coarse failure kinds;
+/// passwords and session secrets remain command-boundary values.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SoftLogoutReauthState {
+    #[default]
+    Idle,
+    Authenticating {
+        request_id: u64,
+    },
+    Succeeded {
         request_id: u64,
     },
     Failed {

@@ -1739,6 +1739,19 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 AccountManagementOperation::DeleteOtherDevices
             },
         }),
+        AccountCommand::SubmitAccountManagementUia {
+            request_id: _,
+            flow_id,
+            ..
+        } => Some(AppAction::AccountManagementAuthSubmitted {
+            request_id: *flow_id,
+            flow_id: *flow_id,
+        }),
+        AccountCommand::SoftLogoutReauth { request_id, .. } => {
+            Some(AppAction::SoftLogoutReauthRequested {
+                request_id: request_id.sequence,
+            })
+        }
         AccountCommand::SetDisplayName {
             request_id,
             display_name,
@@ -1772,7 +1785,6 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         | AccountCommand::RestoreLastSession { .. }
         | AccountCommand::QuerySavedSessions { .. }
         | AccountCommand::SubmitRecovery { .. }
-        | AccountCommand::SoftLogoutReauth { .. }
         | AccountCommand::SetPresence { .. }
         | AccountCommand::Logout { .. }
         | AccountCommand::SwitchAccount { .. } => None,

@@ -69,6 +69,7 @@ impl CoreCommand {
                 | AccountCommand::QueryDevices { request_id }
                 | AccountCommand::RenameDevice { request_id, .. }
                 | AccountCommand::DeleteDevices { request_id, .. }
+                | AccountCommand::SubmitAccountManagementUia { request_id, .. }
                 | AccountCommand::SoftLogoutReauth { request_id, .. }
                 | AccountCommand::ExportRoomKeys { request_id, .. }
                 | AccountCommand::ImportRoomKeys { request_id, .. }
@@ -646,6 +647,11 @@ pub enum AccountCommand {
         device_ordinals: Vec<u64>,
         auth: Option<IdentityResetAuthRequest>,
     },
+    SubmitAccountManagementUia {
+        request_id: RequestId,
+        flow_id: u64,
+        auth: IdentityResetAuthRequest,
+    },
     SoftLogoutReauth {
         request_id: RequestId,
         password: matrix_desktop_state::AuthSecret,
@@ -755,6 +761,7 @@ impl AccountCommand {
                 | Self::QueryDevices { .. }
                 | Self::RenameDevice { .. }
                 | Self::DeleteDevices { .. }
+                | Self::SubmitAccountManagementUia { .. }
                 | Self::SoftLogoutReauth { .. }
                 | Self::ExportRoomKeys { .. }
                 | Self::ImportRoomKeys { .. }
@@ -852,6 +859,16 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("DeleteDevices")
                 .field("request_id", request_id)
                 .field("device_ordinals", device_ordinals)
+                .field("auth", auth)
+                .finish(),
+            Self::SubmitAccountManagementUia {
+                request_id,
+                flow_id,
+                auth,
+            } => formatter
+                .debug_struct("SubmitAccountManagementUia")
+                .field("request_id", request_id)
+                .field("flow_id", flow_id)
                 .field("auth", auth)
                 .finish(),
             Self::SoftLogoutReauth { request_id, .. } => formatter

@@ -18,6 +18,7 @@ export interface AppState {
   auth: AuthDiscoveryState;
   device_sessions: DeviceSessionListState;
   account_management: AccountManagementState;
+  soft_logout_reauth: SoftLogoutReauthState;
   qr_login: QrLoginState;
   settings: SettingsState;
   locale_profile: LocaleDisplayProfile;
@@ -285,6 +286,12 @@ export type QrLoginState =
   | { kind: "displaying"; request_id: number }
   | { kind: "scanning"; request_id: number }
   | { kind: "verified"; request_id: number }
+  | { kind: "failed"; request_id: number; failureKind: AuthFailureKind };
+
+export type SoftLogoutReauthState =
+  | { kind: "idle" }
+  | { kind: "authenticating"; request_id: number }
+  | { kind: "succeeded"; request_id: number }
   | { kind: "failed"; request_id: number; failureKind: AuthFailureKind };
 
 export type RecoveryMethod = "recoveryKey" | "securityPhrase";

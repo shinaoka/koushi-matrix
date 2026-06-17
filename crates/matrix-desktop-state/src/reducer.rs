@@ -12,9 +12,9 @@ use crate::{
         RoomKeyImportState, RoomManagementOperationKind, RoomManagementOperationState,
         RoomMemberRole, RoomModerationAction, SasEmoji, SearchState,
         SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionState,
-        SettingsPersistenceState, StagedUploadCompressionChoice, SyncState, ThreadAttentionState,
-        ThreadPaneState, TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
-        VerificationFlowState, VerificationTarget,
+        SettingsPersistenceState, SoftLogoutReauthState, StagedUploadCompressionChoice, SyncState,
+        ThreadAttentionState, ThreadPaneState, TimelinePaneState, TrustOperationFailureKind,
+        VerificationCancelReason, VerificationFlowState, VerificationTarget,
     },
 };
 
@@ -928,6 +928,57 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 kind,
             };
             vec![AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged)]
+        }
+        AppAction::AccountManagementAuthSubmitted {
+            request_id,
+            flow_id,
+        } => {
+            let operation = match &state.account_management {
+                AccountManagementState::AwaitingUia {
+                    request_id: active_request_id,
+                    flow_id: active_flow_id,
+                    operation,
+                } if *active_request_id == request_id && *active_flow_id == flow_id => *operation,
+                _ => return Vec::new(),
+            };
+            state.account_management = AccountManagementState::Working {
+                request_id,
+                operation,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged)]
+        }
+        AppAction::SoftLogoutReauthRequested { request_id } => {
+            if !is_session_ready(state)
+                || !matches!(state.soft_logout_reauth, SoftLogoutReauthState::Idle)
+            {
+                return Vec::new();
+            }
+            state.soft_logout_reauth = SoftLogoutReauthState::Authenticating { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged)]
+        }
+        AppAction::SoftLogoutReauthSucceeded { request_id } => {
+            if !matches!(
+                state.soft_logout_reauth,
+                SoftLogoutReauthState::Authenticating {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.soft_logout_reauth = SoftLogoutReauthState::Succeeded { request_id };
+            vec![AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged)]
+        }
+        AppAction::SoftLogoutReauthFailed { request_id, kind } => {
+            if !matches!(
+                state.soft_logout_reauth,
+                SoftLogoutReauthState::Authenticating {
+                    request_id: active
+                } if active == request_id
+            ) {
+                return Vec::new();
+            }
+            state.soft_logout_reauth = SoftLogoutReauthState::Failed { request_id, kind };
+            vec![AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged)]
         }
         AppAction::SettingsLoaded { values } => {
             state.settings.values = values;
@@ -3748,6 +3799,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
         state.e2ee_trust.key_management != E2eeKeyManagementState::default();
     let had_device_sessions = state.device_sessions != DeviceSessionListState::Idle;
     let had_account_management = state.account_management != AccountManagementState::Idle;
+    let had_soft_logout_reauth = state.soft_logout_reauth != SoftLogoutReauthState::Idle;
     let had_qr_login = state.qr_login != QrLoginState::Idle;
     let had_live_signals = state.live_signals != Default::default();
     let had_profile = state.profile != Default::default();
@@ -3781,6 +3833,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.e2ee_trust = E2eeTrustState::default();
     state.device_sessions = DeviceSessionListState::Idle;
     state.account_management = AccountManagementState::Idle;
+    state.soft_logout_reauth = SoftLogoutReauthState::Idle;
     state.qr_login = QrLoginState::Idle;
     state.live_signals = Default::default();
     state.local_encryption = LocalEncryptionState::Unknown;
@@ -3807,6 +3860,9 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_account_management {
         effects.push(AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged));
+    }
+    if had_soft_logout_reauth {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged));
     }
     if had_qr_login {
         effects.push(AppEffect::EmitUiEvent(UiEvent::QrLoginChanged));

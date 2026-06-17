@@ -99,6 +99,7 @@ pub enum UiEvent {
     E2eeKeyManagementChanged,
     DeviceSessionsChanged,
     AccountManagementChanged,
+    SoftLogoutReauthChanged,
     QrLoginChanged,
     RoomInteractionsChanged,
     DirectoryChanged,

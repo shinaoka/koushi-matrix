@@ -21,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use thiserror::Error;
 use url::Url;
@@ -374,6 +374,14 @@ pub enum E2eeTrustError {
     #[error("Matrix encryption is not initialized")]
     NoOlmMachine,
     #[error("Matrix SDK trust operation failed")]
+    Sdk(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DeleteDevicesError {
+    #[error("interactive authentication required")]
+    UiaaChallenge { session: Option<String> },
+    #[error("Matrix SDK delete devices failed")]
     Sdk(String),
 }
 
@@ -730,6 +738,9 @@ pub async fn complete_identity_reset(
     handle.reset(session, request).await
 }
 
+/// Threshold after which a device is considered inactive (90 days).
+const INACTIVE_DEVICE_THRESHOLD_DAYS: u64 = 90;
+
 pub async fn list_devices(
     session: &MatrixClientSession,
 ) -> Result<Vec<MatrixDeviceSessionSummary>, E2eeTrustError> {
@@ -738,17 +749,54 @@ pub async fn list_devices(
         .devices()
         .await
         .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
-    Ok(response
-        .devices
-        .into_iter()
-        .map(|device| MatrixDeviceSessionSummary {
-            current: device.device_id.as_str() == session.info.device_id,
-            raw_device_id: device.device_id.to_string(),
+    let user_id = match matrix_sdk::ruma::OwnedUserId::try_from(session.info.user_id.as_str()) {
+        Ok(user_id) => user_id,
+        Err(_) => {
+            return Err(E2eeTrustError::Sdk("invalid session user id".to_owned()));
+        }
+    };
+    let now_millis = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    let inactive_threshold_millis = INACTIVE_DEVICE_THRESHOLD_DAYS * 24 * 60 * 60 * 1000;
+
+    let mut summaries = Vec::with_capacity(response.devices.len());
+    for device in response.devices {
+        let device_id = device.device_id.clone();
+        let is_current = device_id.as_str() == session.info.device_id;
+        let verified = if is_current {
+            // The current device is implicitly verified from the session's
+            // own perspective; the crypto store lookup is still safe but
+            // avoids extra work.
+            true
+        } else {
+            match session
+                .client()
+                .encryption()
+                .get_device(&user_id, &device_id)
+                .await
+            {
+                Ok(Some(crypto_device)) => crypto_device.is_verified(),
+                Ok(None) | Err(_) => false,
+            }
+        };
+        let inactive = device
+            .last_seen_ts
+            .map(|timestamp| i64::from(timestamp.0) as u64)
+            .is_some_and(|timestamp_millis| {
+                now_millis.saturating_sub(timestamp_millis) > inactive_threshold_millis
+            });
+
+        summaries.push(MatrixDeviceSessionSummary {
+            current: is_current,
+            raw_device_id: device_id.to_string(),
             display_name: device.display_name,
-            verified: false,
-            inactive: false,
-        })
-        .collect())
+            verified,
+            inactive,
+        });
+    }
+    Ok(summaries)
 }
 
 pub async fn rename_device(
@@ -769,23 +817,35 @@ pub async fn delete_devices(
     session: &MatrixClientSession,
     raw_device_ids: &[String],
     auth: Option<&IdentityResetAuthRequest>,
-) -> Result<(), E2eeTrustError> {
+    uiaa_session: Option<&str>,
+) -> Result<(), DeleteDevicesError> {
     let device_ids = raw_device_ids
         .iter()
         .map(|id| matrix_sdk::ruma::OwnedDeviceId::from(id.as_str()))
         .collect::<Vec<_>>();
-    let auth_data = delete_devices_auth_data(session, auth);
-    session
+    let auth_data = delete_devices_auth_data(session, auth, uiaa_session);
+    match session
         .client()
         .delete_devices(&device_ids, auth_data)
         .await
-        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
-    Ok(())
+    {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            if let Some(uiaa) = error.as_uiaa_response() {
+                Err(DeleteDevicesError::UiaaChallenge {
+                    session: uiaa.session.clone(),
+                })
+            } else {
+                Err(DeleteDevicesError::Sdk(error.to_string()))
+            }
+        }
+    }
 }
 
 fn delete_devices_auth_data(
     session: &MatrixClientSession,
     auth: Option<&IdentityResetAuthRequest>,
+    uiaa_session: Option<&str>,
 ) -> Option<matrix_sdk::ruma::api::client::uiaa::AuthData> {
     let IdentityResetAuthRequest::UiaaPassword { password } = auth? else {
         return None;
@@ -795,10 +855,11 @@ fn delete_devices_auth_data(
             session.info.user_id.clone(),
         ),
     );
-    let password_auth = matrix_sdk::ruma::api::client::uiaa::Password::new(
+    let mut password_auth = matrix_sdk::ruma::api::client::uiaa::Password::new(
         identifier,
         password.expose_secret().to_owned(),
     );
+    password_auth.session = uiaa_session.map(str::to_owned);
     Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
         password_auth,
     ))
@@ -2298,6 +2359,36 @@ pub async fn login_with_password_with_store(
             homeserver: homeserver.normalized(),
             user_id,
             device_id,
+        },
+    })
+}
+
+/// Re-authenticate an existing soft-logged-out session with the same device id.
+/// The returned storeless session must be persisted and restored into the
+/// existing per-account store by the caller so crypto/cached data is preserved.
+pub async fn login_with_existing_device(
+    homeserver: &str,
+    user_id: &str,
+    device_id: &str,
+    password: &AuthSecret,
+) -> Result<MatrixClientSession, PasswordLoginError> {
+    let homeserver = Homeserver::parse(homeserver)?;
+    let client = build_client(&homeserver, None).await?;
+
+    let response = client
+        .matrix_auth()
+        .login_username(user_id, password.expose_secret())
+        .device_id(device_id)
+        .send()
+        .await
+        .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+
+    Ok(MatrixClientSession {
+        client,
+        info: SessionInfo {
+            homeserver: homeserver.normalized(),
+            user_id: response.user_id.to_string(),
+            device_id: response.device_id.to_string(),
         },
     })
 }

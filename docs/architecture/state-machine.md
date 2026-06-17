@@ -8,7 +8,7 @@ fixture/demo backend contract mentioned below is historical (dev/demo only).
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-06-16
+Date: 2026-06-17
 
 ## Contract
 
@@ -1261,6 +1261,7 @@ stateDiagram-v2
     Working --> AwaitingUia: AccountManagementUiaRequired [matching request_id]
     Working --> Succeeded: AccountManagementSucceeded [matching request_id]
     AwaitingUia --> Succeeded: AccountManagementSucceeded [matching request_id]
+    AwaitingUia --> Working: AccountManagementAuthSubmitted [matching request_id, flow_id]
     Working --> Failed: AccountManagementFailed [matching request_id]
     AwaitingUia --> Failed: AccountManagementFailed [matching request_id]
 ```
@@ -1268,9 +1269,39 @@ stateDiagram-v2
 - UIA continuation state carries only a local `flow_id`, request id, operation
   enum, and coarse failure kind. Passwords, auth sessions, and identity-server
   secrets remain in the account actor or native adapter.
+- `AccountManagementAuthSubmitted` is accepted only from `AwaitingUia` when both
+  `request_id` and `flow_id` match the pending UIA state. It transitions back to
+  `Working` with the original operation so the account actor can retry the
+  destructive action with the supplied auth.
 - Device rename/delete completion uses `AccountManagementSucceeded` /
   `AccountManagementFailed`; reducer state does not include raw device ids,
   device IPs, auth passwords, or SDK errors.
+
+Soft-logout re-authentication (MSC2697):
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Authenticating: SoftLogoutReauthRequested [Ready]
+    Authenticating --> Succeeded: SoftLogoutReauthSucceeded [matching request_id]
+    Authenticating --> Failed: SoftLogoutReauthFailed [matching request_id]
+    Authenticating --> Idle: LogoutRequested/SessionLocked/SwitchAccountRequested/SessionCleared
+    Succeeded --> Idle: LogoutRequested/SessionLocked/SwitchAccountRequested/SessionCleared
+    Failed --> Idle: LogoutRequested/SessionLocked/SwitchAccountRequested/SessionCleared
+```
+
+- Soft-logout re-auth is accepted only for a `Ready` session and only while no
+  re-auth is already in flight. The reducer state carries only a request id and a
+  coarse `AuthFailureKind` on failure.
+- Passwords and session secrets stay inside `CoreCommand::Account` /
+  `AccountActor`; `SoftLogoutReauthState` never stores credentials, access
+  tokens, or raw SDK errors.
+- `SoftLogoutReauthSucceeded` leaves the session `Ready` and restores sync once
+  the account actor has persisted the refreshed session into the existing
+  per-account store.
+- Logout, lock, account switch, and session clearing reset soft-logout re-auth
+  to `Idle` and emit `SoftLogoutReauthChanged` only when non-default state was
+  present.
 
 E2EE key management:
 

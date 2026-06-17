@@ -67,6 +67,20 @@ pub enum AppAction {
         operation: AccountManagementOperation,
         kind: AuthFailureKind,
     },
+    AccountManagementAuthSubmitted {
+        request_id: u64,
+        flow_id: u64,
+    },
+    SoftLogoutReauthRequested {
+        request_id: u64,
+    },
+    SoftLogoutReauthSucceeded {
+        request_id: u64,
+    },
+    SoftLogoutReauthFailed {
+        request_id: u64,
+        kind: AuthFailureKind,
+    },
     SettingsLoaded {
         values: SettingsValues,
     },

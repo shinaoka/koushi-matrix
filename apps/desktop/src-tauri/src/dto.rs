@@ -18,6 +18,7 @@ use matrix_desktop_state::{
     InvitePreview, LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile,
     NativeAttentionCapabilities, NativeAttentionState, NavigationState, ProfileState,
     QrLoginState, RecoveryMethod, RoomInteractionState, RoomManagementState, RoomSummary,
+    SoftLogoutReauthState,
     SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState,
     SettingsState, SidebarModel, SpaceSummary, SyncState, ThreadAttentionState, ThreadPaneState,
     TimelinePaneState, TypographyDisplayProfile, native_attention_capabilities_for_platform,
@@ -61,6 +62,7 @@ pub struct FrontendAppState {
     pub auth: AuthDiscoveryState,
     pub device_sessions: DeviceSessionListState,
     pub account_management: AccountManagementState,
+    pub soft_logout_reauth: SoftLogoutReauthState,
     pub qr_login: QrLoginState,
     pub settings: SettingsState,
     pub locale_profile: LocaleDisplayProfile,
@@ -107,6 +109,7 @@ impl From<AppState> for FrontendAppState {
             auth: state.auth,
             device_sessions: state.device_sessions,
             account_management: state.account_management,
+            soft_logout_reauth: state.soft_logout_reauth,
             qr_login: state.qr_login,
             settings: state.settings,
             locale_profile,
@@ -512,6 +515,7 @@ mod tests {
         assert_eq!(value["state"]["room_interactions"], json!({}));
         assert_eq!(value["state"]["device_sessions"]["kind"], json!("idle"));
         assert_eq!(value["state"]["account_management"]["kind"], json!("idle"));
+        assert_eq!(value["state"]["soft_logout_reauth"]["kind"], json!("idle"));
         assert_eq!(value["state"]["qr_login"]["kind"], json!("idle"));
         assert_eq!(
             value["state"]["directory"]["query"]["kind"],

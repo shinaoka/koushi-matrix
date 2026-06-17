@@ -155,6 +155,7 @@ function readySnapshot(
       room_interactions: {},
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
+      soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       directory: { query: { kind: "closed" }, join: { kind: "idle" } },
       room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },

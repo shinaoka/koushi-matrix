@@ -1993,6 +1993,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.activity = { kind: "closed" };
     this.snapshot.state.device_sessions = { kind: "idle" };
     this.snapshot.state.account_management = { kind: "idle" };
+    this.snapshot.state.soft_logout_reauth = { kind: "idle" };
     this.snapshot.state.qr_login = { kind: "idle" };
     this.snapshot.state.basic_operation = { kind: "idle" };
     this.snapshot.state.profile = defaultProfileState(null);
@@ -2055,6 +2056,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       auth: { kind: "unknown" },
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
+      soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),
@@ -2160,6 +2162,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       auth: { kind: "unknown" },
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
+      soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
       locale_profile: defaultLocaleDisplayProfile(),

@@ -4,7 +4,7 @@ use matrix_desktop_state::{
     DeviceSessionSummary, E2eeKeyManagementState, LoginFlow, LoginFlowKind, QrLoginState,
     RecoveryKeyDeliveryState, RoomKeyExportState, RoomKeyImportState,
     SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo, SessionState,
-    TrustOperationFailureKind, UiEvent, reduce,
+    SoftLogoutReauthState, TrustOperationFailureKind, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -370,5 +370,204 @@ fn key_management_and_qr_login_are_duplicate_guarded_and_request_correlated() {
     assert_eq!(
         state.qr_login,
         QrLoginState::CheckingCapability { request_id: 40 }
+    );
+}
+
+#[test]
+fn soft_logout_reauth_requested_sets_authenticating_and_emits_ui_event() {
+    let mut state = AppState::default();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SoftLogoutReauthRequested { request_id: 1 },
+    );
+    assert!(effects.is_empty());
+    assert_eq!(state.soft_logout_reauth, SoftLogoutReauthState::Idle);
+
+    state.session = SessionState::Ready(session_info());
+    let effects = reduce(
+        &mut state,
+        AppAction::SoftLogoutReauthRequested { request_id: 1 },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged)]
+    );
+    assert_eq!(
+        state.soft_logout_reauth,
+        SoftLogoutReauthState::Authenticating { request_id: 1 }
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SoftLogoutReauthRequested { request_id: 2 },
+    );
+    assert!(effects.is_empty());
+    assert_eq!(
+        state.soft_logout_reauth,
+        SoftLogoutReauthState::Authenticating { request_id: 1 }
+    );
+}
+
+#[test]
+fn soft_logout_reauth_succeeds_and_fails_are_request_correlated() {
+    let mut state = AppState::default();
+    state.session = SessionState::Ready(session_info());
+    reduce(
+        &mut state,
+        AppAction::SoftLogoutReauthRequested { request_id: 1 },
+    );
+    assert_eq!(
+        state.soft_logout_reauth,
+        SoftLogoutReauthState::Authenticating { request_id: 1 }
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SoftLogoutReauthSucceeded { request_id: 2 },
+    );
+    assert!(effects.is_empty());
+    assert_eq!(
+        state.soft_logout_reauth,
+        SoftLogoutReauthState::Authenticating { request_id: 1 }
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SoftLogoutReauthFailed {
+            request_id: 2,
+            kind: AuthFailureKind::Forbidden,
+        },
+    );
+    assert!(effects.is_empty());
+    assert_eq!(
+        state.soft_logout_reauth,
+        SoftLogoutReauthState::Authenticating { request_id: 1 }
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SoftLogoutReauthSucceeded { request_id: 1 },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged)]
+    );
+    assert_eq!(
+        state.soft_logout_reauth,
+        SoftLogoutReauthState::Succeeded { request_id: 1 }
+    );
+
+    let mut state = AppState::default();
+    state.session = SessionState::Ready(session_info());
+    reduce(
+        &mut state,
+        AppAction::SoftLogoutReauthRequested { request_id: 5 },
+    );
+    let effects = reduce(
+        &mut state,
+        AppAction::SoftLogoutReauthFailed {
+            request_id: 5,
+            kind: AuthFailureKind::Sdk,
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged)]
+    );
+    assert_eq!(
+        state.soft_logout_reauth,
+        SoftLogoutReauthState::Failed {
+            request_id: 5,
+            kind: AuthFailureKind::Sdk,
+        }
+    );
+}
+
+#[test]
+fn soft_logout_reauth_is_cleared_on_logout() {
+    let mut state = AppState::default();
+    state.session = SessionState::Ready(session_info());
+    state.soft_logout_reauth = SoftLogoutReauthState::Authenticating { request_id: 7 };
+
+    let effects = reduce(&mut state, AppAction::LogoutRequested);
+
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged)
+    )));
+    assert_eq!(state.soft_logout_reauth, SoftLogoutReauthState::Idle);
+    assert!(matches!(state.session, SessionState::LoggingOut));
+}
+
+#[test]
+fn account_management_auth_submitted_transitions_awaiting_uia_to_working() {
+    let mut state = AppState::default();
+    state.session = SessionState::Ready(session_info());
+    let operation = AccountManagementOperation::DeleteDevice;
+
+    reduce(
+        &mut state,
+        AppAction::AccountManagementRequested {
+            request_id: 10,
+            operation,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::AccountManagementUiaRequired {
+            request_id: 10,
+            flow_id: 10,
+            operation,
+        },
+    );
+    assert_eq!(
+        state.account_management,
+        AccountManagementState::AwaitingUia {
+            request_id: 10,
+            flow_id: 10,
+            operation,
+        }
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::AccountManagementAuthSubmitted {
+            request_id: 11,
+            flow_id: 10,
+        },
+    );
+    assert!(effects.is_empty());
+    assert!(matches!(
+        state.account_management,
+        AccountManagementState::AwaitingUia { .. }
+    ));
+
+    let effects = reduce(
+        &mut state,
+        AppAction::AccountManagementAuthSubmitted {
+            request_id: 10,
+            flow_id: 11,
+        },
+    );
+    assert!(effects.is_empty());
+
+    let effects = reduce(
+        &mut state,
+        AppAction::AccountManagementAuthSubmitted {
+            request_id: 10,
+            flow_id: 10,
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged)]
+    );
+    assert_eq!(
+        state.account_management,
+        AccountManagementState::Working {
+            request_id: 10,
+            operation,
+        }
     );
 }

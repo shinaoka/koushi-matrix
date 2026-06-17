@@ -154,6 +154,12 @@ struct PendingVerificationRequest {
     handle: matrix_desktop_sdk::MatrixVerificationRequestHandle,
 }
 
+struct PendingUiaOperation {
+    operation: AccountManagementOperation,
+    raw_device_ids: Vec<String>,
+    uiaa_session: Option<String>,
+}
+
 struct PendingSasVerification {
     request_id: RequestId,
     target: VerificationTarget,
@@ -199,6 +205,11 @@ pub struct AccountActor {
     /// Actor-private mapping from app-owned device ordinal to raw Matrix
     /// device id. Raw ids never enter reducer state or snapshots.
     device_session_ordinals: BTreeMap<u64, String>,
+    /// Pending UIA operations keyed by the flow id (original request id).
+    /// Holds the data needed to retry a destructive action after the user
+    /// supplies interactive auth. Secrets (password, UIA session) are held
+    /// only inside this actor-private map, never in reducer state.
+    pending_uia_operations: BTreeMap<u64, PendingUiaOperation>,
     /// Pending SDK verification request continuation, held only inside
     /// AccountActor and never projected into AppState.
     verification_request: Option<PendingVerificationRequest>,
@@ -244,6 +255,7 @@ impl AccountActor {
             recovery_observer: None,
             identity_reset_handle: None,
             device_session_ordinals: BTreeMap::new(),
+            pending_uia_operations: BTreeMap::new(),
             verification_request: None,
             sas_verification: None,
             verification_request_observer: None,
@@ -358,6 +370,7 @@ impl AccountActor {
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
         self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
         // Drop the session handle inside the runtime context
         // (overview.md Async rule 11 — deadpool-runtime panic prevention).
         drop(self.session.take());
@@ -940,6 +953,14 @@ impl AccountActor {
                 auth,
             } => {
                 self.handle_delete_devices(request_id, device_ordinals, auth)
+                    .await;
+            }
+            AccountCommand::SubmitAccountManagementUia {
+                request_id,
+                flow_id,
+                auth,
+            } => {
+                self.handle_submit_account_management_uia(request_id, flow_id, auth)
                     .await;
             }
             AccountCommand::SoftLogoutReauth {
@@ -2330,6 +2351,7 @@ impl AccountActor {
 
         let session_arc = Arc::new(store_backed);
         self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
         self.session = Some(session_arc.clone());
         self.session_key_id = Some(key_id);
 
@@ -2556,8 +2578,8 @@ impl AccountActor {
             }
         };
         let mut raw_device_ids = Vec::with_capacity(device_ordinals.len());
-        for ordinal in device_ordinals {
-            let Some(raw_device_id) = self.device_session_ordinals.get(&ordinal) else {
+        for ordinal in &device_ordinals {
+            let Some(raw_device_id) = self.device_session_ordinals.get(ordinal) else {
                 self.project_account_management_failure(
                     request_id,
                     operation,
@@ -2571,37 +2593,227 @@ impl AccountActor {
             raw_device_ids.push(raw_device_id.clone());
         }
 
-        let result =
-            matrix_desktop_sdk::delete_devices(&session, &raw_device_ids, auth.as_ref()).await;
+        // If this is the first attempt (no auth), try without auth so the
+        // server can challenge us with UIA. The challenge response is handled
+        // below by projecting AwaitingUia and storing the continuation.
+        let uiaa_session = auth
+            .as_ref()
+            .and_then(|_| self.pending_uia_operations.get(&request_id.sequence))
+            .and_then(|pending| pending.uiaa_session.clone());
+        let result = matrix_desktop_sdk::delete_devices(
+            &session,
+            &raw_device_ids,
+            auth.as_ref(),
+            uiaa_session.as_deref(),
+        )
+        .await;
         drop(auth);
         match result {
-            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
-                request_id: request_id.sequence,
-                operation,
-            }]),
-            Err(_) => self.project_account_management_failure(
+            Ok(()) => {
+                self.pending_uia_operations.remove(&request_id.sequence);
+                self.reduce(vec![AppAction::AccountManagementSucceeded {
+                    request_id: request_id.sequence,
+                    operation,
+                }]);
+            }
+            Err(matrix_desktop_sdk::DeleteDevicesError::UiaaChallenge { session }) => {
+                let flow_id = request_id.sequence;
+                self.pending_uia_operations.insert(
+                    flow_id,
+                    PendingUiaOperation {
+                        operation,
+                        raw_device_ids,
+                        uiaa_session: session,
+                    },
+                );
+                self.reduce(vec![AppAction::AccountManagementUiaRequired {
+                    request_id: request_id.sequence,
+                    flow_id,
+                    operation,
+                }]);
+            }
+            Err(matrix_desktop_sdk::DeleteDevicesError::Sdk(_)) => {
+                self.pending_uia_operations.remove(&request_id.sequence);
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_submit_account_management_uia(
+        &mut self,
+        request_id: RequestId,
+        flow_id: u64,
+        auth: matrix_desktop_state::IdentityResetAuthRequest,
+    ) {
+        let Some(pending) = self.pending_uia_operations.get(&flow_id) else {
+            self.emit_failure(
                 request_id,
-                operation,
-                AuthFailureKind::Sdk,
                 CoreFailure::AccountOperationFailed {
                     kind: AuthFailureKind::Sdk,
                 },
-            ),
+            );
+            return;
+        };
+        let operation = pending.operation;
+        let raw_device_ids = pending.raw_device_ids.clone();
+        let uiaa_session = pending.uiaa_session.clone();
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                self.pending_uia_operations.remove(&flow_id);
+                self.project_account_management_failure(
+                    RequestId {
+                        connection_id: request_id.connection_id,
+                        sequence: flow_id,
+                    },
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::SessionRequired,
+                );
+                return;
+            }
+        };
+
+        let result = matrix_desktop_sdk::delete_devices(
+            &session,
+            &raw_device_ids,
+            Some(&auth),
+            uiaa_session.as_deref(),
+        )
+        .await;
+        drop(auth);
+        match result {
+            Ok(()) => {
+                self.pending_uia_operations.remove(&flow_id);
+                self.reduce(vec![AppAction::AccountManagementSucceeded {
+                    request_id: flow_id,
+                    operation,
+                }]);
+            }
+            Err(matrix_desktop_sdk::DeleteDevicesError::UiaaChallenge { session }) => {
+                // The server is still challenging; update the session and
+                // leave state in AwaitingUia so the user can retry.
+                if let Some(pending) = self.pending_uia_operations.get_mut(&flow_id) {
+                    pending.uiaa_session = session;
+                }
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Forbidden,
+                    },
+                );
+            }
+            Err(matrix_desktop_sdk::DeleteDevicesError::Sdk(_)) => {
+                self.pending_uia_operations.remove(&flow_id);
+                self.project_account_management_failure(
+                    RequestId {
+                        connection_id: request_id.connection_id,
+                        sequence: flow_id,
+                    },
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                );
+            }
         }
     }
 
     async fn handle_soft_logout_reauth(
-        &self,
+        &mut self,
         request_id: RequestId,
         password: matrix_desktop_state::AuthSecret,
     ) {
+        let Some(session) = self.session.as_ref() else {
+            self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                request_id: request_id.sequence,
+                kind: AuthFailureKind::Sdk,
+            }]);
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        let info = session.info.clone();
+        let key_id = session_key_id_from_info(&info);
+
+        // Preserve the existing per-account store (and thus crypto/cached data)
+        // by stopping sync and dropping the stale session before re-auth.
+        self.stop_sync_actor().await;
+        drop(self.session.take());
+        self.session_key_id = None;
+
+        let login_session = match matrix_desktop_sdk::login_with_existing_device(
+            &info.homeserver,
+            &info.user_id,
+            &info.device_id,
+            &password,
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                    request_id: request_id.sequence,
+                    kind: AuthFailureKind::Sdk,
+                }]);
+                let failure = CoreFailure::LoginFailed {
+                    kind: classify_login_error(&matrix_desktop_sdk::PasswordLoginError::Sdk(
+                        error.to_string(),
+                    )),
+                };
+                self.emit_failure(request_id, failure);
+                return;
+            }
+        };
         drop(password);
-        self.emit_failure(
-            request_id,
-            CoreFailure::AccountOperationFailed {
-                kind: AuthFailureKind::Unsupported,
-            },
-        );
+
+        let persistable = match self.persist_session(&login_session, &key_id) {
+            Ok(persistable) => persistable,
+            Err(failure) => {
+                self.abort_login(login_session, &key_id, false).await;
+                self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                    request_id: request_id.sequence,
+                    kind: AuthFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, failure);
+                return;
+            }
+        };
+
+        let store_backed = match self.restore_into_store(&persistable, &key_id).await {
+            Ok(session) => session,
+            Err(failure) => {
+                self.abort_login(login_session, &key_id, true).await;
+                self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                    request_id: request_id.sequence,
+                    kind: AuthFailureKind::Sdk,
+                }]);
+                self.emit_failure(request_id, failure);
+                return;
+            }
+        };
+        drop(login_session);
+
+        let session_arc = Arc::new(store_backed);
+        self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
+        self.session = Some(session_arc.clone());
+        self.session_key_id = Some(key_id);
+        self.spawn_sync_actor(session_arc.clone());
+
+        self.reduce(vec![AppAction::SoftLogoutReauthSucceeded {
+            request_id: request_id.sequence,
+        }]);
+
+        self.start_recovery_observer(session_arc.clone());
+        self.start_incoming_verification_observer(session_arc);
     }
 
     fn project_account_management_failure(
@@ -2630,6 +2842,7 @@ impl AccountActor {
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
         self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
         // Drop the SDK handle inside the runtime context (Async rule 11).
         drop(self.session.take());
         self.session_key_id = None;
@@ -2710,6 +2923,7 @@ impl AccountActor {
 
                 let session_arc = Arc::new(session);
                 self.device_session_ordinals.clear();
+                self.pending_uia_operations.clear();
                 self.session = Some(session_arc.clone());
                 self.session_key_id = Some(key_id);
 
@@ -2808,6 +3022,7 @@ impl AccountActor {
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
         self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
 
         // Attempt server-side logout (best-effort; local cleanup always happens).
         let _ = matrix_desktop_sdk::logout(&session).await;
@@ -3002,6 +3217,7 @@ impl AccountActor {
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
         self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
 
         drop(self.session.take());
         self.clear_account_persistence(&key_id);
@@ -3801,6 +4017,7 @@ mod tests {
             recovery_observer: None,
             identity_reset_handle: None,
             device_session_ordinals: BTreeMap::new(),
+            pending_uia_operations: BTreeMap::new(),
             verification_request: None,
             sas_verification: None,
             verification_request_observer: None,
