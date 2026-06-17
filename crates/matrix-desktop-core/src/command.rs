@@ -14,7 +14,7 @@ use matrix_desktop_state::{
 use serde::{Deserialize, Serialize};
 
 use crate::event::TimelineViewportObservation;
-use crate::ids::{AccountKey, RequestId, TimelineKey};
+use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey};
 
 #[derive(Debug)]
 pub enum CoreCommand {
@@ -162,7 +162,13 @@ impl CoreCommand {
                 | TimelineCommand::SendReadReceipt { request_id, .. }
                 | TimelineCommand::SetFullyRead { request_id, .. }
                 | TimelineCommand::SetTyping { request_id, .. }
-                | TimelineCommand::ToggleReaction { request_id, .. } => *request_id,
+                | TimelineCommand::ToggleReaction { request_id, .. }
+                | TimelineCommand::LoadLinkPreviews { request_id, .. }
+                | TimelineCommand::HideLinkPreview { request_id, .. } => *request_id,
+                TimelineCommand::BroadcastLinkPreviewPolicy { .. } => RequestId {
+                    connection_id: RuntimeConnectionId(0),
+                    sequence: 0,
+                },
             },
             Self::Search(command) => match command {
                 SearchCommand::Query { request_id, .. }
@@ -1843,6 +1849,20 @@ pub enum TimelineCommand {
         key: TimelineKey,
         is_typing: bool,
     },
+    LoadLinkPreviews {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
+    HideLinkPreview {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
+    BroadcastLinkPreviewPolicy {
+        global_enabled: bool,
+        room_overrides: std::collections::BTreeMap<String, bool>,
+    },
 }
 
 // Message bodies and reaction keys are visible UI state but must not reach
@@ -2036,6 +2056,26 @@ impl fmt::Debug for TimelineCommand {
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("is_typing", is_typing)
+                .finish(),
+            Self::LoadLinkPreviews { request_id, .. } => formatter
+                .debug_struct("LoadLinkPreviews")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::HideLinkPreview { request_id, .. } => formatter
+                .debug_struct("HideLinkPreview")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::BroadcastLinkPreviewPolicy {
+                global_enabled,
+                room_overrides,
+            } => formatter
+                .debug_struct("BroadcastLinkPreviewPolicy")
+                .field("global_enabled", global_enabled)
+                .field("room_override_count", &room_overrides.len())
                 .finish(),
         }
     }

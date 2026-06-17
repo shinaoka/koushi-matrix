@@ -549,6 +549,11 @@ impl TimelineManagerActor {
                 )
                 .await;
             }
+            TimelineCommand::LoadLinkPreviews { .. }
+            | TimelineCommand::HideLinkPreview { .. }
+            | TimelineCommand::BroadcastLinkPreviewPolicy { .. } => {
+                // Placeholder: full wiring in Task 7.
+            }
         }
     }
 
@@ -3753,6 +3758,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 thread_root,
                 thread_summary,
                 media,
+                link_previews: None,
                 reactions,
                 can_react,
                 is_redacted: event_item.content().is_redacted(),
@@ -3784,6 +3790,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 thread_root: None,
                 thread_summary: None,
                 media: None,
+                link_previews: None,
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
@@ -4851,6 +4858,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -5388,6 +5396,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
