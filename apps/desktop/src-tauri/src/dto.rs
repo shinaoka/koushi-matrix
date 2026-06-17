@@ -13,14 +13,14 @@ use std::collections::BTreeMap;
 
 use matrix_desktop_state::{
     AccountManagementState, ActivityState, AppError, AppState, AuthDiscoveryState,
-    BasicOperationState, CjkTextPolicyState, ComposerState, DeviceSessionListState,
-    DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState, FocusedContextState,
-    InvitePreview, LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile,
-    NativeAttentionCapabilities, NativeAttentionState, NavigationState, ProfileState,
-    QrLoginState, RecoveryMethod, RoomInteractionState, RoomListProjection, RoomManagementState,
-    RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
-    SessionState, SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode,
-    SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState, TypographyDisplayProfile,
+    BasicOperationState, CjkTextPolicyState, ComposerState, DeviceSessionListState, DirectoryState,
+    DisplayPlatform, E2eeTrustState, FilesViewState, FocusedContextState, InvitePreview,
+    LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities,
+    NativeAttentionState, NavigationState, ProfileState, QrLoginState, RecoveryMethod,
+    RoomInteractionState, RoomListProjection, RoomManagementState, RoomSummary, SearchMatchField,
+    SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState, SettingsState,
+    SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
+    ThreadPaneState, TimelinePaneState, TypographyDisplayProfile,
     native_attention_capabilities_for_platform, resolve_locale_display_profile,
     resolve_typography_display_profile,
 };
@@ -554,7 +554,10 @@ mod tests {
         assert_eq!(value["state"]["sync_mode"]["kind"], json!("unsupported"));
         // room_list must be present so the UI renders the Rust-owned filtered
         // room-list projection instead of computing filters locally.
-        assert_eq!(value["state"]["room_list"]["active_filter"]["kind"], json!("rooms"));
+        assert_eq!(
+            value["state"]["room_list"]["active_filter"]["kind"],
+            json!("rooms")
+        );
         assert_eq!(value["state"]["room_list"]["items"], json!([]));
         // live_signals must be present so Phase B GUI renders Rust-owned live
         // signal state without inventing receipts, typing, or presence locally.

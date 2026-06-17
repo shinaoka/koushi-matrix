@@ -5268,3 +5268,92 @@ test("device session manager renames and signs out from Rust-owned snapshot", as
       deviceOrdinals: [2]
     });
 });
+
+test("room list filter and mark unread dispatch Rust-owned commands", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        rooms: [
+          ...snapshot.state.rooms,
+          {
+            room_id: "!room-alpha:example.invalid",
+            display_name: "Room Alpha",
+            display_label: "Room Alpha",
+            original_display_label: "Room Alpha",
+            avatar: null,
+            is_dm: false,
+            dm_user_ids: [],
+            tags: { favourite: null, low_priority: null },
+            unread_count: 3,
+            notification_count: 0,
+            highlight_count: 0,
+            parent_space_ids: []
+          },
+          {
+            room_id: "!room-beta:example.invalid",
+            display_name: "Room Beta",
+            display_label: "Room Beta",
+            original_display_label: "Room Beta",
+            avatar: null,
+            is_dm: false,
+            dm_user_ids: [],
+            tags: { favourite: null, low_priority: null },
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            parent_space_ids: []
+          },
+          {
+            room_id: "!dm-alpha:example.invalid",
+            display_name: "DM Alpha",
+            display_label: "DM Alpha",
+            original_display_label: "DM Alpha",
+            avatar: null,
+            is_dm: true,
+            dm_user_ids: ["@dm-alpha:example.invalid"],
+            tags: { favourite: null, low_priority: null },
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            parent_space_ids: []
+          }
+        ],
+        room_list: {
+          active_filter: { kind: "rooms" },
+          sort: { kind: "activity" },
+          items: [
+            { room_id: "!room-alpha:example.invalid", kind: "room" },
+            { room_id: "!room-beta:example.invalid", kind: "room" },
+            { room_id: "!dm-alpha:example.invalid", kind: "room" }
+          ]
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const alphaRow = page.getByTestId("room-item").filter({ hasText: "Room Alpha" }).first();
+  await expect(alphaRow).toBeVisible();
+
+  await page.getByRole("tab", { name: t("roomList.filterUnread") }).click();
+  await expect.poll(() => invocationCount(page, "select_room_list_filter")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("select_room_list_filter")[0]?.args)
+    )
+    .toEqual({ filter: { kind: "unread" } });
+
+  await alphaRow.click({ button: "right" });
+  await page.getByRole("menuitem", { name: t("room.markAsUnread") }).click();
+  await expect.poll(() => invocationCount(page, "mark_room_as_unread")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("mark_room_as_unread")[0]?.args)
+    )
+    .toEqual({ roomId: "!room-alpha:example.invalid", unread: true });
+});

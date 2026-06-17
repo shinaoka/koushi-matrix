@@ -242,6 +242,13 @@ export type MessageId =
   | "room.unbanMember"
   | "room.unread"
   | "room.unreadCount"
+  | "roomList.filterRooms"
+  | "roomList.filterUnread"
+  | "roomList.filterPeople"
+  | "roomList.filterFavourites"
+  | "roomList.filterInvites"
+  | "room.markAsRead"
+  | "room.markAsUnread"
   | "search.noExactMatches"
   | "search.matchAttachmentFileName"
   | "search.matchMessage"
@@ -588,6 +595,7 @@ export type MessageId =
   | "workspace.activity"
   | "workspace.createSpace"
   | "workspace.explore"
+  | "workspace.filters"
   | "workspace.home"
   | "workspace.invites"
   | "workspace.favourites"
@@ -936,6 +944,13 @@ const en: Catalog = {
   "room.unbanMember": "Unban {name}",
   "room.unread": "Unread",
   "room.unreadCount": "{count} unread",
+  "roomList.filterRooms": "Rooms",
+  "roomList.filterUnread": "Unread",
+  "roomList.filterPeople": "People",
+  "roomList.filterFavourites": "Favourites",
+  "roomList.filterInvites": "Invites",
+  "room.markAsRead": "Mark as read",
+  "room.markAsUnread": "Mark as unread",
   "search.noExactMatches": "No exact matches",
   "search.matchAttachmentFileName": "attachment filename",
   "search.matchMessage": "message",
@@ -1282,6 +1297,7 @@ const en: Catalog = {
   "workspace.activity": "Activity",
   "workspace.createSpace": "Create space",
   "workspace.explore": "Explore",
+  "workspace.filters": "Filters",
   "workspace.home": "Home",
   "workspace.invites": "Invites",
   "workspace.favourites": "Favourites",
@@ -1531,6 +1547,13 @@ const ja: Catalog = {
   "room.unbanMember": "{name}のBANを解除",
   "room.unread": "未読",
   "room.unreadCount": "未読 {count} 件",
+  "roomList.filterRooms": "ルーム",
+  "roomList.filterUnread": "未読",
+  "roomList.filterPeople": "ユーザー",
+  "roomList.filterFavourites": "お気に入り",
+  "roomList.filterInvites": "招待",
+  "room.markAsRead": "既読にする",
+  "room.markAsUnread": "未読にする",
   "search.noExactMatches": "完全一致はありません",
   "search.matchAttachmentFileName": "添付ファイル名",
   "search.matchMessage": "メッセージ",
@@ -1874,6 +1897,7 @@ const ja: Catalog = {
   "workspace.activity": "アクティビティ",
   "workspace.createSpace": "スペースを作成",
   "workspace.explore": "探索",
+  "workspace.filters": "フィルター",
   "workspace.home": "ホーム",
   "workspace.invites": "招待",
   "workspace.favourites": "お気に入り",

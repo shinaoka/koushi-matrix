@@ -55,7 +55,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { createDesktopApi } from "./backend/client";
-import { setActiveLocaleProfile, t } from "./i18n/messages";
+import { setActiveLocaleProfile, t, type MessageId } from "./i18n/messages";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   TimelineView,
@@ -142,6 +142,7 @@ import type {
   MentionTarget,
   OperationFailureKind,
   ResolveComposerKeyAction,
+  RoomListFilter,
   RoomListItem,
   RoomModerationAction,
   RoomSettingChange,
@@ -1437,6 +1438,10 @@ export function App() {
     setSnapshot(await api.selectRoom(roomId));
   }
 
+  async function selectRoomListFilter(filter: RoomListFilter) {
+    setSnapshot(await api.selectRoomListFilter(filter));
+  }
+
   async function openInvitesView() {
     setSnapshot(await api.getSnapshot());
     setPrimaryView("invites");
@@ -1971,6 +1976,14 @@ export function App() {
         case "removeRoomLowPriority":
           void api.removeRoomTag(target.roomId, "lowPriority").then(setSnapshot);
           return;
+        case "markRoomAsRead": {
+          const eventId = snapshot?.state.live_signals.rooms[target.roomId]?.fully_read_event_id ?? "";
+          void api.markRoomAsRead(target.roomId, eventId).then(setSnapshot);
+          return;
+        }
+        case "markRoomAsUnread":
+          void api.markRoomAsUnread(target.roomId, true).then(setSnapshot);
+          return;
         default:
           break;
       }
@@ -2122,6 +2135,7 @@ export function App() {
             void setRightPanelModeClosingFocusedContext("spaceInfo");
           }}
           onSelectRoom={selectRoom}
+          onSelectRoomListFilter={selectRoomListFilter}
         />
         {primaryView === "activity" ? (
           <ActivityPane
@@ -3178,6 +3192,43 @@ export function WorkspaceRail({
   );
 }
 
+const ROOM_LIST_FILTERS: { filter: RoomListFilter; label: MessageId }[] = [
+  { filter: { kind: "rooms" }, label: "roomList.filterRooms" },
+  { filter: { kind: "unread" }, label: "roomList.filterUnread" },
+  { filter: { kind: "people" }, label: "roomList.filterPeople" },
+  { filter: { kind: "favourites" }, label: "roomList.filterFavourites" },
+  { filter: { kind: "invites" }, label: "roomList.filterInvites" }
+];
+
+function RoomListFilterTabs({
+  activeFilter,
+  onSelectFilter
+}: {
+  activeFilter: RoomListFilter;
+  onSelectFilter: (filter: RoomListFilter) => void;
+}) {
+  return (
+    <div className="room-list-filter-tabs" role="tablist" aria-label={t("workspace.filters")}>
+      {ROOM_LIST_FILTERS.map(({ filter, label }) => {
+        const isActive = filter.kind === activeFilter.kind;
+        return (
+          <button
+            key={filter.kind}
+            className={`room-list-filter-tab ${isActive ? "room-list-filter-tab-active" : ""}`}
+            data-active={isActive || undefined}
+            role="tab"
+            aria-selected={isActive}
+            type="button"
+            onClick={() => onSelectFilter(filter)}
+          >
+            {t(label)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function Sidebar({
   activeRoomId,
   activeView,
@@ -3188,7 +3239,8 @@ function Sidebar({
   onOpenExplore,
   onOpenInvites,
   onOpenSpaceInfo,
-  onSelectRoom
+  onSelectRoom,
+  onSelectRoomListFilter
 }: {
   activeRoomId: string | null;
   activeView: PrimaryView;
@@ -3200,8 +3252,14 @@ function Sidebar({
   onOpenInvites: () => void;
   onOpenSpaceInfo: () => void;
   onSelectRoom: (roomId: string) => void;
+  onSelectRoomListFilter: (filter: RoomListFilter) => void;
 }) {
-  const sections = roomListSections(snapshot.sidebar);
+  const sections = roomListSections(
+    snapshot.state.room_list,
+    snapshot.state.spaces,
+    snapshot.state.rooms,
+    snapshot.state.invites
+  );
   const threadAttention =
     snapshot.state.thread_attention.kind === "tracking"
       ? snapshot.state.thread_attention
@@ -3238,6 +3296,10 @@ function Sidebar({
           <Edit3 size={ICON_SIZE.control} />
         </button>
       </div>
+      <RoomListFilterTabs
+        activeFilter={snapshot.state.room_list.active_filter}
+        onSelectFilter={onSelectRoomListFilter}
+      />
       <div className="sidebar-scroll">
         <NavButton
           active={activeView === "timeline" && snapshot.sidebar.account_home.is_active}

@@ -734,7 +734,7 @@ button {
 
 .sidebar {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   border-inline-end: 1px solid var(--line);
@@ -771,6 +771,38 @@ button {
   color: var(--text);
   font-weight: 750;
   background: var(--surface);
+}
+
+.room-list-filter-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px;
+  border-block-end: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.room-list-filter-tab {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  cursor: pointer;
+}
+
+.room-list-filter-tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.room-list-filter-tab-active,
+.room-list-filter-tab[data-active="true"] {
+  border-color: var(--brand);
+  color: var(--brand);
+  background: var(--brand-weak);
 }
 
 .sidebar-scroll,

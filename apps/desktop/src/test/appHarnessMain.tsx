@@ -153,7 +153,15 @@ function readySnapshot(
         }
       ],
       invites: [],
-      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
+      room_list: {
+        active_filter: { kind: "rooms" },
+        sort: { kind: "activity" },
+        items: [
+          { room_id: "!room-alpha:example.invalid", kind: "room" },
+          { room_id: "!room-beta:example.invalid", kind: "room" },
+          { room_id: "!dm-alpha:example.invalid", kind: "room" }
+        ]
+      },
       room_interactions: {},
       device_sessions: { kind: "idle" },
       account_management: { kind: "idle" },
@@ -573,6 +581,22 @@ mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch })
     }
   });
 });
+mock.setCommandResponse(
+  "select_room_list_filter",
+  ({ filter }: { filter: DesktopSnapshot["state"]["room_list"]["active_filter"] }) =>
+    setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        room_list: {
+          ...currentSnapshot.state.room_list,
+          active_filter: filter
+        }
+      }
+    })
+);
+mock.setCommandResponse("mark_room_as_read", () => currentSnapshot);
+mock.setCommandResponse("mark_room_as_unread", () => currentSnapshot);
 mock.setCommandResponse("query_devices", () =>
   setCurrentSnapshot({
     ...currentSnapshot,

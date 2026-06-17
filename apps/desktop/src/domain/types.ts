@@ -346,7 +346,7 @@ export type RoomListSort = { kind: "activity" };
 export interface RoomListProjection {
   active_filter: RoomListFilter;
   sort: RoomListSort;
-  items: RoomListProjectionItem[];
+  items: RoomListProjectionItem[] | null;
 }
 
 export interface RoomListProjectionItem {

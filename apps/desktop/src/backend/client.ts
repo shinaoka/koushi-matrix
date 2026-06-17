@@ -12,6 +12,7 @@ import type {
   DirectoryQuery,
   MentionIntent,
   PresenceKind,
+  RoomListFilter,
   RoomModerationAction,
   RoomSettingChange,
   RoomTagKind,
@@ -75,6 +76,22 @@ class TauriDesktopApi implements DesktopApi {
 
   async updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("update_settings", { patch });
+  }
+
+  async selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("select_room_list_filter", { filter });
+  }
+
+  setRoomListProjection(): void {
+    // No-op in Tauri runtime; helper exists only for browser fakes/tests.
+  }
+
+  async markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("mark_room_as_read", { roomId, eventId });
+  }
+
+  async markRoomAsUnread(roomId: string, unread: boolean): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("mark_room_as_unread", { roomId, unread });
   }
 
   async queryDevices(): Promise<DesktopSnapshot> {

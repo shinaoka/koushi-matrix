@@ -10,6 +10,8 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   DirectoryQuery,
+  RoomListFilter,
+  RoomListProjection,
   RoomModerationAction,
   RoomPermissionFacts,
   RoomSummary,
@@ -47,6 +49,9 @@ export interface DesktopApi {
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
   updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
+  selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot>;
+  markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  markRoomAsUnread(roomId: string, unread: boolean): Promise<DesktopSnapshot>;
   queryDevices(): Promise<DesktopSnapshot>;
   renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot>;
   deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot>;
@@ -165,6 +170,7 @@ export interface DesktopApi {
     body: string,
     mentions?: MentionIntent
   ): Promise<DesktopSnapshot>;
+  setRoomListProjection(projection: RoomListProjection): void;
 }
 
 export interface BrowserFakeApiOptions {
@@ -324,6 +330,33 @@ class BrowserFakeApi implements DesktopApi {
     );
     this.snapshot.state.settings.persistence = { kind: "idle" };
     return this.getSnapshot();
+  }
+
+  async selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.room_list.active_filter = filter;
+    // Do NOT recompute items. Tests seed room_list.items directly via setRoomListProjection().
+    return this.getSnapshot();
+  }
+
+  async markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    // Do NOT mutate unread counts. Tests seed the expected Rust-shaped snapshot.
+    void roomId;
+    void eventId;
+    return this.getSnapshot();
+  }
+
+  async markRoomAsUnread(roomId: string, unread: boolean): Promise<DesktopSnapshot> {
+    // Do NOT mutate unread counts. Tests seed the expected Rust-shaped snapshot.
+    void roomId;
+    void unread;
+    return this.getSnapshot();
+  }
+
+  setRoomListProjection(projection: RoomListProjection): void {
+    this.snapshot.state.room_list = projection;
   }
 
   async queryDevices(): Promise<DesktopSnapshot> {
@@ -2138,7 +2171,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       spaces,
       rooms,
       invites: [],
-      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
+      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: null },
       room_interactions: {},
       directory: defaultDirectoryState(),
       room_management: defaultRoomManagementState(),
@@ -2246,7 +2279,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       spaces: [],
       rooms: [],
       invites: [],
-      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
+      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: null },
       room_interactions: {},
       directory: defaultDirectoryState(),
       room_management: defaultRoomManagementState(),

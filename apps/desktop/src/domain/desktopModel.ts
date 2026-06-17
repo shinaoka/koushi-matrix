@@ -1,7 +1,9 @@
 import type {
   DesktopSnapshot,
-  RoomListSections,
+  InvitePreview,
   RoomListItem,
+  RoomListProjection,
+  RoomListSections,
   RoomSummary,
   SearchScopeKind,
   SpaceSummary,
@@ -15,14 +17,71 @@ export function visibleRooms(snapshot: DesktopSnapshot): VisibleRooms {
   };
 }
 
-export function roomListSections(sidebar: DesktopSnapshot["sidebar"]): RoomListSections {
+export function roomListSections(
+  roomList: RoomListProjection,
+  spaces: SpaceSummary[],
+  rooms: RoomSummary[],
+  invites: InvitePreview[]
+): RoomListSections {
+  if (roomList.items === null) {
+    const sidebar = composeSidebar(null, spaces, rooms);
+    return {
+      favourites: sidebar.space_rooms.filter((room) => room.tags.favourite !== null),
+      rooms: sidebar.space_rooms.filter(
+        (room) => room.tags.favourite === null && room.tags.low_priority === null
+      ),
+      people: sidebar.global_dms,
+      lowPriority: sidebar.space_rooms.filter((room) => room.tags.low_priority !== null)
+    };
+  }
+
+  const roomById = new Map(rooms.map((room) => [room.room_id, room]));
+  const inviteById = new Map(invites.map((invite) => [invite.room_id, invite]));
+
+  const favourites: RoomListItem[] = [];
+  const roomsSection: RoomListItem[] = [];
+  const people: RoomListItem[] = [];
+  const lowPriority: RoomListItem[] = [];
+
+  for (const item of roomList.items) {
+    const room = item.kind === "room" ? roomById.get(item.room_id) : undefined;
+    const invite = item.kind === "invite" ? inviteById.get(item.room_id) : undefined;
+    const source = room ?? invite;
+    if (!source) {
+      continue;
+    }
+    if (!room && !invite) {
+      continue;
+    }
+    const listItem = room ? roomListItem(room) : inviteListItem(invite as InvitePreview);
+    const isDm = room ? room.is_dm : (invite as InvitePreview).is_dm;
+    if (isDm) {
+      people.push(listItem);
+    } else if (room?.tags.favourite !== null) {
+      favourites.push(listItem);
+    } else if (room?.tags.low_priority !== null) {
+      lowPriority.push(listItem);
+    } else {
+      roomsSection.push(listItem);
+    }
+  }
+
   return {
-    favourites: sidebar.space_rooms.filter((room) => room.tags.favourite !== null),
-    rooms: sidebar.space_rooms.filter(
-      (room) => room.tags.favourite === null && room.tags.low_priority === null
-    ),
-    people: sidebar.global_dms,
-    lowPriority: sidebar.space_rooms.filter((room) => room.tags.low_priority !== null)
+    favourites,
+    rooms: roomsSection,
+    people,
+    lowPriority
+  };
+}
+
+function inviteListItem(invite: InvitePreview): RoomListItem {
+  return {
+    room_id: invite.room_id,
+    display_name: invite.display_name,
+    avatar: invite.avatar,
+    tags: { favourite: null, low_priority: null },
+    unread_count: 0,
+    highlight_count: 0
   };
 }
 

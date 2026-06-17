@@ -744,6 +744,9 @@ pub fn run() {
             commands::logout,
             commands::restart_sync,
             commands::update_settings,
+            commands::select_room_list_filter,
+            commands::mark_room_as_read,
+            commands::mark_room_as_unread,
             commands::query_devices,
             commands::rename_device,
             commands::delete_devices,
@@ -1220,13 +1223,14 @@ mod tests {
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
-            ActivityRow, ActivityStream, ActivityTab, AttachmentKind, AttachmentResult, DirectoryQuery,
-            DirectoryRoomSummary, IdentityResetAuthType, IdentityResetState, JapaneseCatalogProfile,
-            LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate, LocalEncryptionHealth,
-            NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
-            PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
-            RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
-            RoomTagKind, SasEmoji, SyncMode, VerificationFlowState, VerificationTarget,
+            ActivityRow, ActivityStream, ActivityTab, AttachmentKind, AttachmentResult,
+            DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType, IdentityResetState,
+            JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
+            LocalEncryptionHealth, NativeAttentionCapabilities, NativeAttentionCapability,
+            NativeAttentionSummary, PresenceKind, ReplyQuote, ReplyQuoteState,
+            RoomHistoryVisibility, RoomJoinRule, RoomMemberRole, RoomModerationAction,
+            RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji, SyncMode,
+            VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -2058,8 +2062,8 @@ mod tests {
             json!("japaneseCatalogProfileChanged")
         );
 
-        let search_attachments_results = serialize_core_event(&CoreEvent::Search(
-            SearchEvent::AttachmentsResults {
+        let search_attachments_results =
+            serialize_core_event(&CoreEvent::Search(SearchEvent::AttachmentsResults {
                 request_id,
                 results: vec![AttachmentResult {
                     room_id: "!r:example.test".to_owned(),
@@ -2073,21 +2077,19 @@ mod tests {
                     source_mxc: "mxc://example.invalid/abc".to_owned(),
                     thumbnail_mxc: Some("mxc://example.invalid/abc-thumb".to_owned()),
                 }],
-            },
-        ))
-        .expect("serialize search attachments results event");
+            }))
+            .expect("serialize search attachments results event");
         assert_eq!(
             search_attachments_results["event"]["AttachmentsResults"]["results"][0]["kind"],
             json!("image")
         );
 
-        let search_attachments_failed = serialize_core_event(&CoreEvent::Search(
-            SearchEvent::AttachmentsFailed {
+        let search_attachments_failed =
+            serialize_core_event(&CoreEvent::Search(SearchEvent::AttachmentsFailed {
                 request_id,
                 message: "index unavailable".to_owned(),
-            },
-        ))
-        .expect("serialize search attachments failed event");
+            }))
+            .expect("serialize search attachments failed event");
         assert_eq!(
             search_attachments_failed["event"]["AttachmentsFailed"]["message"],
             json!("index unavailable")
