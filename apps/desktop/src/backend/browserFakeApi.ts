@@ -1964,6 +1964,7 @@ class BrowserFakeApi implements DesktopApi {
   private clearSessionViews() {
     this.composerDrafts.clear();
     this.snapshot.state.sync = "stopped";
+    this.snapshot.state.sync_mode = { kind: "unsupported" };
     this.snapshot.state.navigation = {
       active_space_id: null,
       active_room_id: null
@@ -1971,6 +1972,11 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.spaces = [];
     this.snapshot.state.rooms = [];
     this.snapshot.state.invites = [];
+    this.snapshot.state.room_list = {
+      active_filter: { kind: "rooms" },
+      sort: { kind: "activity" },
+      items: []
+    };
     this.snapshot.state.timeline = {
       room_id: null,
       is_subscribed: false,
@@ -2063,6 +2069,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       typography_profile: defaultTypographyDisplayProfile(),
       profile: defaultProfileState(session.user_id),
       sync: "running",
+      sync_mode: { kind: "unsupported" },
       navigation: {
         active_space_id,
         active_room_id
@@ -2070,6 +2077,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       spaces,
       rooms,
       invites: [],
+      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
       room_interactions: {},
       directory: defaultDirectoryState(),
       room_management: defaultRoomManagementState(),
@@ -2169,6 +2177,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       typography_profile: defaultTypographyDisplayProfile(),
       profile: defaultProfileState(null),
       sync: "stopped",
+      sync_mode: { kind: "unsupported" },
       navigation: {
         active_space_id: null,
         active_room_id: null
@@ -2176,6 +2185,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       spaces: [],
       rooms: [],
       invites: [],
+      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
       room_interactions: {},
       directory: defaultDirectoryState(),
       room_management: defaultRoomManagementState(),

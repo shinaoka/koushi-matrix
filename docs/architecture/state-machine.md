@@ -86,6 +86,90 @@ stateDiagram-v2
 Logout and lock clear navigation, room lists, the main timeline, thread pane, and
 search state. The reducer emits UI events for any cleared visible panes.
 
+## Sync Mode
+
+`AppState.sync_mode` is a Rust-owned projection of the active Matrix sync
+backend. It is independent of `AppState.sync` (the connection lifecycle) and is
+set by `SyncModeChanged { mode }`. React renders the mode snapshot and must not
+infer the backend from sync lifecycle state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unsupported
+    Unsupported --> Legacy: SyncModeChanged(Legacy)
+    Unsupported --> Simplified: SyncModeChanged(Simplified)
+    Unsupported --> Transitioning: SyncModeChanged(Transitioning)
+    Unsupported --> Failed: SyncModeChanged(Failed)
+    Legacy --> Simplified: SyncModeChanged(Simplified)
+    Legacy --> Transitioning: SyncModeChanged(Transitioning)
+    Legacy --> Failed: SyncModeChanged(Failed)
+    Simplified --> Legacy: SyncModeChanged(Legacy)
+    Simplified --> Transitioning: SyncModeChanged(Transitioning)
+    Simplified --> Failed: SyncModeChanged(Failed)
+    Transitioning --> Simplified: SyncModeChanged(Simplified)
+    Transitioning --> Legacy: SyncModeChanged(Legacy)
+    Transitioning --> Failed: SyncModeChanged(Failed)
+    Failed --> Legacy: SyncModeChanged(Legacy) [recovery]
+    Failed --> Simplified: SyncModeChanged(Simplified) [recovery]
+    Failed --> Transitioning: SyncModeChanged(Transitioning)
+```
+
+- `SyncMode` is `Unsupported`, `Legacy`, `Simplified`, `Transitioning`, or
+  `Failed { failure_kind }`. It is not guarded by a Ready session; it updates
+  whenever the runtime/backend signals a change.
+- Duplicate deliveries (`state.sync_mode == mode`) are ignored.
+- Mode changes emit `UiEvent::SyncModeChanged`.
+
+## Room List Filter
+
+The visible room list is a Rust-owned projection (`AppState.room_list`). React
+renders `active_filter`, `sort`, and `items` and must not recompute filter
+membership, section order, or activity sort.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Rooms
+    Rooms --> Unread: RoomListFilterSelected(Unread)
+    Rooms --> People: RoomListFilterSelected(People)
+    Rooms --> Favourites: RoomListFilterSelected(Favourites)
+    Rooms --> Invites: RoomListFilterSelected(Invites)
+    Unread --> Rooms: RoomListFilterSelected(Rooms)
+    Unread --> People: RoomListFilterSelected(People)
+    Unread --> Favourites: RoomListFilterSelected(Favourites)
+    Unread --> Invites: RoomListFilterSelected(Invites)
+    People --> Rooms: RoomListFilterSelected(Rooms)
+    People --> Unread: RoomListFilterSelected(Unread)
+    People --> Favourites: RoomListFilterSelected(Favourites)
+    People --> Invites: RoomListFilterSelected(Invites)
+    Favourites --> Rooms: RoomListFilterSelected(Rooms)
+    Favourites --> Unread: RoomListFilterSelected(Unread)
+    Favourites --> People: RoomListFilterSelected(People)
+    Favourites --> Invites: RoomListFilterSelected(Invites)
+    Invites --> Rooms: RoomListFilterSelected(Rooms)
+    Invites --> Unread: RoomListFilterSelected(Unread)
+    Invites --> People: RoomListFilterSelected(People)
+    Invites --> Favourites: RoomListFilterSelected(Favourites)
+```
+
+- `RoomListFilterSelected { filter }` is accepted only for a Ready session and
+  only when `active_filter` differs. It recomputes `room_list.items` from the
+  current `rooms` and `invites` snapshots and emits `UiEvent::RoomListChanged`.
+- `RoomListFilterApplied { projection }` updates the projection directly when
+  the sync backend/RoomActor has already computed filtered entries (for example
+  from sliding-sync dynamic adapters). It is accepted only when the projection
+  changes.
+- `RoomListUpdated` and `InviteListUpdated` recompute the projection for the
+  current `active_filter`.
+- `RoomMarkedAsReadSucceeded` clears `marked_unread`, `unread_count`,
+  `notification_count`, and `highlight_count` for the room and recomputes the
+  projection.
+- `RoomMarkedAsUnreadSucceeded { unread: true }` sets `marked_unread` and bumps
+  `unread_count` to at least 1 when it was zero, then recomputes the projection.
+  `unread: false` clears the flag and resets `unread_count`.
+- Requested/failed mark-read/unread actions are accepted only for known rooms
+  in a Ready session and emit `RoomListChanged` (requested) or `ErrorChanged`
+  (failed).
+
 ## Navigation
 
 - Spaces filter non-DM rooms.

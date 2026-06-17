@@ -1888,6 +1888,8 @@ pub struct MatrixRoomListRoom {
     pub unread_count: u64,
     pub notification_count: u64,
     pub highlight_count: u64,
+    pub marked_unread: bool,
+    pub last_activity_ms: u64,
     pub parent_space_ids: Vec<String>,
 }
 
@@ -2956,6 +2958,32 @@ pub async fn unpin_event(
         .map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
+pub async fn mark_room_as_read(
+    session: &MatrixClientSession,
+    room_id: &str,
+    event_id: &str,
+) -> Result<(), MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidEventId)?;
+    use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
+    use matrix_sdk::ruma::events::receipt::ReceiptThread;
+    room.send_single_receipt(ReceiptType::FullyRead, ReceiptThread::Unthreaded, event_id)
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+pub async fn mark_room_as_unread(
+    session: &MatrixClientSession,
+    room_id: &str,
+    unread: bool,
+) -> Result<(), MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    room.set_unread_flag(unread)
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
 pub async fn load_pinned_event_ids(
     session: &MatrixClientSession,
     room_id: &str,
@@ -3723,10 +3751,11 @@ async fn matrix_room_list_snapshot_from_rooms(
         let unread_notifications = room.unread_notification_counts();
         let notification_count = unread_notifications.notification_count.into();
         let highlight_count = unread_notifications.highlight_count.into();
+        let is_marked_unread = room.is_marked_unread();
         let unread_count = room_attention_unread_count(
             notification_count,
             room.num_unread_messages(),
-            room.is_marked_unread(),
+            is_marked_unread,
         );
 
         let parent_space_ids = matrix_parent_space_ids(&room).await;
@@ -3753,6 +3782,8 @@ async fn matrix_room_list_snapshot_from_rooms(
             notification_count,
             highlight_count,
             unread_count,
+            is_marked_unread,
+            room.recency_stamp().map(|stamp| stamp.into()).unwrap_or(0),
             parent_space_ids,
         ));
     }
@@ -3843,6 +3874,8 @@ fn matrix_room_list_room_from_counts(
     notification_count: u64,
     highlight_count: u64,
     unread_count: u64,
+    marked_unread: bool,
+    last_activity_ms: u64,
     parent_space_ids: Vec<String>,
 ) -> MatrixRoomListRoom {
     MatrixRoomListRoom {
@@ -3855,6 +3888,8 @@ fn matrix_room_list_room_from_counts(
         unread_count,
         notification_count,
         highlight_count,
+        marked_unread,
+        last_activity_ms,
         parent_space_ids,
     }
 }
@@ -4227,6 +4262,8 @@ mod tests {
             4,
             2,
             4,
+            false,
+            0,
             vec!["!space:example.invalid".to_owned()],
         );
 
@@ -4254,6 +4291,8 @@ mod tests {
             tags.clone(),
             0,
             0,
+            0,
+            false,
             0,
             vec![],
         );

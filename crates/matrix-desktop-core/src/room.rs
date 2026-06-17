@@ -451,6 +451,22 @@ impl RoomActor {
                 // reducer effects in this actor.
                 self.reduce(vec![AppAction::SelectRoom { room_id }]);
             }
+            RoomCommand::MarkRoomAsRead {
+                request_id,
+                room_id,
+                event_id,
+            } => {
+                self.handle_mark_room_as_read(request_id, room_id, event_id)
+                    .await;
+            }
+            RoomCommand::MarkRoomAsUnread {
+                request_id,
+                room_id,
+                unread,
+            } => {
+                self.handle_mark_room_as_unread(request_id, room_id, unread)
+                    .await;
+            }
         }
     }
 
@@ -1340,6 +1356,94 @@ impl RoomActor {
         }
     }
 
+    async fn handle_mark_room_as_read(
+        &self,
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        self.reduce(vec![AppAction::RoomMarkedAsReadRequested {
+            request_id: request_id.sequence,
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+        }]);
+        if !self.ensure_known_room_for_message_interaction(request_id, &room_id) {
+            return;
+        }
+        match matrix_desktop_sdk::mark_room_as_read(session, &room_id, &event_id).await {
+            Ok(()) => {
+                self.reduce(vec![AppAction::RoomMarkedAsReadSucceeded {
+                    request_id: request_id.sequence,
+                    room_id: room_id.clone(),
+                }]);
+                self.emit(CoreEvent::Room(RoomEvent::MarkedAsRead {
+                    request_id,
+                    room_id: room_id.clone(),
+                }));
+                self.refresh_room_list().await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.reduce(vec![AppAction::RoomMarkedAsReadFailed {
+                    request_id: request_id.sequence,
+                    room_id,
+                    kind: operation_failure_kind(kind),
+                }]);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_mark_room_as_unread(
+        &self,
+        request_id: RequestId,
+        room_id: String,
+        unread: bool,
+    ) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        self.reduce(vec![AppAction::RoomMarkedAsUnreadRequested {
+            request_id: request_id.sequence,
+            room_id: room_id.clone(),
+            unread,
+        }]);
+        if !self.ensure_known_room_for_message_interaction(request_id, &room_id) {
+            return;
+        }
+        match matrix_desktop_sdk::mark_room_as_unread(session, &room_id, unread).await {
+            Ok(()) => {
+                self.reduce(vec![AppAction::RoomMarkedAsUnreadSucceeded {
+                    request_id: request_id.sequence,
+                    room_id: room_id.clone(),
+                    unread,
+                }]);
+                self.emit(CoreEvent::Room(RoomEvent::MarkedAsUnread {
+                    request_id,
+                    room_id: room_id.clone(),
+                    unread,
+                }));
+                self.refresh_room_list().await;
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.reduce(vec![AppAction::RoomMarkedAsUnreadFailed {
+                    request_id: request_id.sequence,
+                    room_id,
+                    kind: operation_failure_kind(kind),
+                }]);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
     fn clear_known_rooms(&self) {
         if let Ok(mut known_room_ids) = self.known_room_ids.write() {
             known_room_ids.clear();
@@ -1619,6 +1723,8 @@ fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec
                 unread_count: room.unread_count,
                 notification_count: room.notification_count,
                 highlight_count: room.highlight_count,
+                marked_unread: room.marked_unread,
+                last_activity_ms: room.last_activity_ms,
                 parent_space_ids: room.parent_space_ids.clone(),
             }
         })
@@ -2046,6 +2152,8 @@ pub mod tests {
                     unread_count: 0,
                     notification_count: 0,
                     highlight_count: 0,
+                    marked_unread: false,
+                    last_activity_ms: 0,
                     parent_space_ids: vec!["!space1:example.test".to_owned()],
                 },
                 MatrixRoomListRoom {
@@ -2058,6 +2166,8 @@ pub mod tests {
                     unread_count: 0,
                     notification_count: 0,
                     highlight_count: 0,
+                    marked_unread: false,
+                    last_activity_ms: 0,
                     parent_space_ids: vec![],
                 },
             ],
@@ -2118,6 +2228,8 @@ pub mod tests {
                 unread_count: 3,
                 notification_count: 3,
                 highlight_count: 1,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec![],
             }],
             ..MatrixRoomListSnapshot::default()
@@ -2145,6 +2257,8 @@ pub mod tests {
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec!["!space:example.test".to_owned()],
             }],
             ..MatrixRoomListSnapshot::default()
@@ -2170,6 +2284,8 @@ pub mod tests {
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec![],
             }],
             ..MatrixRoomListSnapshot::default()
@@ -2339,6 +2455,8 @@ pub mod tests {
                 unread_count: 0,
                 notification_count: 0,
                 highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids: vec![],
             }],
             invites: vec![],

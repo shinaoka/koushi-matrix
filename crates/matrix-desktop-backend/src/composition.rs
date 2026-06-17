@@ -74,6 +74,8 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
                 unread_count: room.unread_count,
                 notification_count: room.notification_count,
                 highlight_count: room.highlight_count,
+                marked_unread: false,
+                last_activity_ms: 0,
                 parent_space_ids,
             }
         })

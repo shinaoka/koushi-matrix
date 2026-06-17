@@ -25,10 +25,12 @@ export interface AppState {
   typography_profile: TypographyDisplayProfile;
   profile: ProfileState;
   sync: SyncState;
+  sync_mode: SyncMode;
   navigation: NavigationState;
   spaces: SpaceSummary[];
   rooms: RoomSummary[];
   invites: InvitePreview[];
+  room_list: RoomListProjection;
   room_interactions: Record<string, RoomInteractionState>;
   directory: DirectoryState;
   room_management: RoomManagementState;
@@ -319,6 +321,40 @@ export type SyncState =
   | "running"
   | { failed: string }
   | { reconnecting: string };
+
+// Rust SyncMode is #[serde(tag = "kind", rename_all = "camelCase")].
+export type SyncMode =
+  | { kind: "unsupported" }
+  | { kind: "legacy" }
+  | { kind: "simplified" }
+  | { kind: "transitioning" }
+  | { kind: "failed"; failureKind: SyncModeFailureKind };
+
+export type SyncModeFailureKind = "network" | "auth" | "store" | "internal";
+
+// Rust RoomListFilter is #[serde(tag = "kind", rename_all = "camelCase")].
+export type RoomListFilter =
+  | { kind: "rooms" }
+  | { kind: "unread" }
+  | { kind: "people" }
+  | { kind: "favourites" }
+  | { kind: "invites" };
+
+// Rust RoomListSort is #[serde(tag = "kind", rename_all = "camelCase")].
+export type RoomListSort = { kind: "activity" };
+
+export interface RoomListProjection {
+  active_filter: RoomListFilter;
+  sort: RoomListSort;
+  items: RoomListProjectionItem[];
+}
+
+export interface RoomListProjectionItem {
+  room_id: string;
+  kind: RoomListEntryKind;
+}
+
+export type RoomListEntryKind = "room" | "invite";
 
 export interface NavigationState {
   active_space_id: string | null;

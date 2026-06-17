@@ -827,6 +827,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             unread_count: 8,
             notification_count: 8,
             highlight_count: 1,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
         },
         RoomSummary {
@@ -841,6 +843,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             unread_count: 2,
             notification_count: 2,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
         },
         RoomSummary {
@@ -855,6 +859,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             unread_count: 1,
             notification_count: 1,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec!["!space-beta:example.invalid".to_owned()],
         },
         RoomSummary {
@@ -869,6 +875,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             unread_count: 1,
             notification_count: 1,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: Vec::new(),
         },
         RoomSummary {
@@ -883,6 +891,8 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             unread_count: 0,
             notification_count: 0,
             highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: Vec::new(),
         },
     ]

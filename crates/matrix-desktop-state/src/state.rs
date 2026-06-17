@@ -23,10 +23,14 @@ pub struct AppState {
     pub settings: SettingsState,
     pub profile: ProfileState,
     pub sync: SyncState,
+    #[serde(default)]
+    pub sync_mode: SyncMode,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
     pub rooms: Vec<RoomSummary>,
     pub invites: Vec<InvitePreview>,
+    #[serde(default)]
+    pub room_list: RoomListProjection,
     pub room_interactions: BTreeMap<String, RoomInteractionState>,
     #[serde(skip)]
     pub composer_drafts: ComposerDraftStore,
@@ -66,10 +70,12 @@ impl Default for AppState {
             settings: SettingsState::default(),
             profile: ProfileState::default(),
             sync: SyncState::Stopped,
+            sync_mode: SyncMode::Unsupported,
             navigation: NavigationState::default(),
             spaces: Vec::new(),
             rooms: Vec::new(),
             invites: Vec::new(),
+            room_list: RoomListProjection::default(),
             room_interactions: BTreeMap::new(),
             composer_drafts: ComposerDraftStore::default(),
             scheduled_sends: ScheduledSendStore::default(),
@@ -1223,6 +1229,67 @@ pub enum SyncState {
     Reconnecting { reason: String },
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SyncMode {
+    #[default]
+    Unsupported,
+    Legacy,
+    Simplified,
+    Transitioning,
+    Failed {
+        #[serde(rename = "failureKind")]
+        kind: SyncModeFailureKind,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncModeFailureKind {
+    Network,
+    Auth,
+    Store,
+    Internal,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomListFilter {
+    #[default]
+    Rooms,
+    Unread,
+    People,
+    Favourites,
+    Invites,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomListSort {
+    #[default]
+    Activity,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomListProjection {
+    pub active_filter: RoomListFilter,
+    pub sort: RoomListSort,
+    pub items: Vec<RoomListProjectionItem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomListProjectionItem {
+    pub room_id: String,
+    pub kind: RoomListEntryKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomListEntryKind {
+    Room,
+    Invite,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NavigationState {
     pub active_space_id: Option<String>,
@@ -1255,6 +1322,10 @@ pub struct RoomSummary {
     pub unread_count: u64,
     pub notification_count: u64,
     pub highlight_count: u64,
+    #[serde(default)]
+    pub marked_unread: bool,
+    #[serde(default)]
+    pub last_activity_ms: u64,
     pub parent_space_ids: Vec<String>,
 }
 
@@ -1273,6 +1344,8 @@ impl fmt::Debug for RoomSummary {
             .field("unread_count", &self.unread_count)
             .field("notification_count", &self.notification_count)
             .field("highlight_count", &self.highlight_count)
+            .field("marked_unread", &self.marked_unread)
+            .field("last_activity_ms", &self.last_activity_ms)
             .field("parent_space_ids", &self.parent_space_ids.len())
             .finish()
     }
@@ -3617,6 +3690,70 @@ fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
     values.sort();
     values.dedup();
     values
+}
+
+/// Rust-owned room-list filter + activity-sort projection. React renders this
+/// snapshot and must not recompute filter membership or sort order.
+pub fn compute_room_list_projection(
+    active_filter: RoomListFilter,
+    sort: RoomListSort,
+    rooms: &[RoomSummary],
+    invites: &[InvitePreview],
+) -> RoomListProjection {
+    let mut items: Vec<RoomListProjectionItem> = match active_filter {
+        RoomListFilter::Invites => invites
+            .iter()
+            .map(|invite| RoomListProjectionItem {
+                room_id: invite.room_id.clone(),
+                kind: RoomListEntryKind::Invite,
+            })
+            .collect(),
+        _ => rooms
+            .iter()
+            .filter(|room| match active_filter {
+                RoomListFilter::Unread => {
+                    room.unread_count > 0
+                        || room.notification_count > 0
+                        || room.highlight_count > 0
+                        || room.marked_unread
+                }
+                RoomListFilter::People => room.is_dm,
+                RoomListFilter::Rooms => !room.is_dm,
+                RoomListFilter::Favourites => room.tags.favourite.is_some(),
+                RoomListFilter::Invites => unreachable!(),
+            })
+            .map(|room| RoomListProjectionItem {
+                room_id: room.room_id.clone(),
+                kind: RoomListEntryKind::Room,
+            })
+            .collect(),
+    };
+
+    if sort == RoomListSort::Activity {
+        let activity_by_id: std::collections::HashMap<&str, u64> = rooms
+            .iter()
+            .map(|room| (room.room_id.as_str(), room.last_activity_ms))
+            .collect();
+        items.sort_by(|left, right| {
+            let left_ts = activity_by_id
+                .get(left.room_id.as_str())
+                .copied()
+                .unwrap_or_default();
+            let right_ts = activity_by_id
+                .get(right.room_id.as_str())
+                .copied()
+                .unwrap_or_default();
+            right_ts
+                .cmp(&left_ts)
+                .then_with(|| left.room_id.cmp(&right.room_id))
+        });
+    }
+
+    RoomListProjection {
+        active_filter,
+        sort,
+        items,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

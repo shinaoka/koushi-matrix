@@ -17,12 +17,12 @@ use matrix_desktop_state::{
     DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState, FocusedContextState,
     InvitePreview, LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile,
     NativeAttentionCapabilities, NativeAttentionState, NavigationState, ProfileState,
-    QrLoginState, RecoveryMethod, RoomInteractionState, RoomManagementState, RoomSummary,
-    SoftLogoutReauthState,
-    SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState,
-    SettingsState, SidebarModel, SpaceSummary, SyncState, ThreadAttentionState, ThreadPaneState,
-    TimelinePaneState, TypographyDisplayProfile, native_attention_capabilities_for_platform,
-    resolve_locale_display_profile, resolve_typography_display_profile,
+    QrLoginState, RecoveryMethod, RoomInteractionState, RoomListProjection, RoomManagementState,
+    RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+    SessionState, SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode,
+    SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState, TypographyDisplayProfile,
+    native_attention_capabilities_for_platform, resolve_locale_display_profile,
+    resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -69,10 +69,12 @@ pub struct FrontendAppState {
     pub typography_profile: TypographyDisplayProfile,
     pub profile: ProfileState,
     pub sync: FrontendSyncState,
+    pub sync_mode: SyncMode,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
     pub rooms: Vec<RoomSummary>,
     pub invites: Vec<InvitePreview>,
+    pub room_list: RoomListProjection,
     pub room_interactions: BTreeMap<String, RoomInteractionState>,
     pub directory: DirectoryState,
     pub room_management: RoomManagementState,
@@ -116,10 +118,12 @@ impl From<AppState> for FrontendAppState {
             typography_profile,
             profile: state.profile,
             sync: state.sync.into(),
+            sync_mode: state.sync_mode,
             navigation: state.navigation,
             spaces: state.spaces,
             rooms: state.rooms,
             invites: state.invites,
+            room_list: state.room_list,
             room_interactions: state.room_interactions,
             directory: state.directory,
             room_management: state.room_management,
@@ -545,6 +549,13 @@ mod tests {
         // basic_operation must be present (default Idle) so the UI can read
         // snapshot.state.basic_operation.kind without crashing.
         assert_eq!(value["state"]["basic_operation"]["kind"], json!("idle"));
+        // sync_mode must be present so the UI can render the Rust-owned sync
+        // backend/capability state (sliding sync vs legacy) without inference.
+        assert_eq!(value["state"]["sync_mode"]["kind"], json!("unsupported"));
+        // room_list must be present so the UI renders the Rust-owned filtered
+        // room-list projection instead of computing filters locally.
+        assert_eq!(value["state"]["room_list"]["active_filter"]["kind"], json!("rooms"));
+        assert_eq!(value["state"]["room_list"]["items"], json!([]));
         // live_signals must be present so Phase B GUI renders Rust-owned live
         // signal state without inventing receipts, typing, or presence locally.
         assert_eq!(value["state"]["live_signals"]["rooms"], json!({}));
@@ -787,6 +798,8 @@ mod tests {
             unread_count: 2,
             notification_count: 2,
             highlight_count: 1,
+            marked_unread: false,
+            last_activity_ms: 0,
             parent_space_ids: vec![],
         });
 

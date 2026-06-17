@@ -27,6 +27,8 @@ fn room(
         unread_count,
         notification_count,
         highlight_count,
+        marked_unread: false,
+        last_activity_ms: 0,
         parent_space_ids: Vec::new(),
     }
 }
