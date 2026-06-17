@@ -1507,7 +1507,7 @@ Expected: commit succeeds.
 Create `docs/architecture/state-machine.md`:
 
 ````markdown
-# Matrix Desktop State Machine
+# Ruri State Machine
 
 Date: 2026-06-11
 

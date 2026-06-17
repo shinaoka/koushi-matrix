@@ -1,11 +1,11 @@
-# Matrix Desktop Design
+# Ruri Design
 
 Date: 2026-06-11
 Status: Spike-validated; ready for full implementation planning
 
 ## Goal
 
-Build a Windows/macOS desktop Matrix client prototype that follows Element X's Rust SDK direction while providing an Element Desktop/Web-like desktop user experience on a Tauri and Rust SDK backend. The first version focuses on E2EE text chat, Spaces, room timelines, threads, desktop interaction, and ngram full-text search.
+Build Ruri, a Windows/macOS desktop Matrix client prototype that follows Element X's Rust SDK direction while providing an Element Desktop/Web-like desktop user experience on a Tauri and Rust SDK backend. The first version focuses on E2EE text chat, Spaces, room timelines, threads, desktop interaction, and ngram full-text search.
 
 Video calls, voice calls, screen sharing, bots, widgets, and app integrations are out of scope for the MVP.
 
