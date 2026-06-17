@@ -20,13 +20,14 @@ fn debug_output_redacts_decrypted_search_text() {
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("secret body")),
         attachment_filename: Some(SensitiveString::new("secret.pdf")),
+        attachment: None,
     };
 
     let debug = format!("{event:?}");
 
     assert!(!debug.contains("secret body"));
     assert!(!debug.contains("secret.pdf"));
-    assert!(debug.contains("SensitiveString(..)"));
+    assert!(debug.contains("MessageBody(..)"));
 }
 
 #[test]
@@ -39,6 +40,7 @@ fn exact_message_body_match_returns_utf16_highlight() {
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("再アンケートです")),
         attachment_filename: None,
+        attachment: None,
     });
 
     let result = store
@@ -75,6 +77,7 @@ fn full_width_query_matches_half_width_indexed_message_body() {
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("会議資料 ABC123 ready")),
         attachment_filename: None,
+        attachment: None,
     });
 
     let result = store
@@ -109,6 +112,7 @@ fn half_width_query_matches_full_width_indexed_message_body() {
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("会議資料 ＡＢＣ１２３ ready")),
         attachment_filename: None,
+        attachment: None,
     });
 
     let result = store
@@ -143,6 +147,7 @@ fn voiced_half_width_kana_query_matches_canonical_kana_and_highlights_source_clu
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("会議資料 ﾊﾞﾅﾅ ready")),
         attachment_filename: None,
+        attachment: None,
     });
 
     let result = store
@@ -193,6 +198,7 @@ fn attachment_filename_match_uses_attachment_field() {
         timestamp_ms: 1_700_000_000_000,
         body: None,
         attachment_filename: Some(SensitiveString::new("seminar_schedule.pdf")),
+        attachment: None,
     });
 
     let result = store
@@ -228,6 +234,7 @@ fn ngram_false_positive_without_exact_span_is_dropped() {
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("再アンケートです")),
         attachment_filename: None,
+        attachment: None,
     });
 
     let result = store.verify_candidate(
@@ -252,6 +259,7 @@ fn edit_before_target_is_pending_until_original_arrives() {
         timestamp_ms: 1_700_000_000_100,
         body: Some(SensitiveString::new("edited agenda")),
         attachment_filename: None,
+        attachment: None,
     });
 
     assert_eq!(store.pending_edit_count(), 1);
@@ -275,6 +283,7 @@ fn edit_before_target_is_pending_until_original_arrives() {
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("old agenda")),
         attachment_filename: None,
+        attachment: None,
     });
 
     let result = store
@@ -303,6 +312,7 @@ fn redacted_event_is_not_returned() {
         timestamp_ms: 1_700_000_000_000,
         body: Some(SensitiveString::new("visible before redaction")),
         attachment_filename: Some(SensitiveString::new("visible.pdf")),
+        attachment: None,
     });
 
     store.redact("$event");
