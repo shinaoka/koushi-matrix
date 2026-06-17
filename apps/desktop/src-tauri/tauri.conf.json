@@ -30,7 +30,7 @@
     "homepage": "https://github.com/matrix-org/matrix-rust-sdk",
     "icon": [],
     "copyright": "Copyright 2026 Ruri contributors",
-    "license": "MIT",
+    "license": "MIT OR Apache-2.0",
     "category": "SocialNetworking",
     "shortDescription": "Ruri — a Matrix desktop client.",
     "longDescription": "Ruri is a Matrix desktop client used to validate Matrix Rust SDK desktop integration, encrypted local stores, search, and Element-like desktop workflows.",

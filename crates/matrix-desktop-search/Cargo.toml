@@ -2,7 +2,7 @@
 name = "matrix-desktop-search"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license.workspace = true
 
 [dependencies]
 matrix-desktop-state = { path = "../matrix-desktop-state" }
