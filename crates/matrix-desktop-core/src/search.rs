@@ -826,4 +826,27 @@ mod tests {
             "snippet is allowed in SearchEvent Debug (visible UI state): {debug}"
         );
     }
+
+    #[test]
+    fn empty_query_is_not_special_cased_in_runtime() {
+        let runtime_source = include_str!("runtime.rs");
+        let search_source = include_str!("search.rs");
+
+        assert!(
+            !runtime_source.contains("is_empty_query"),
+            "runtime should not special-case empty search queries"
+        );
+        assert!(
+            !runtime_source.contains("results: Vec::new()"),
+            "runtime should not locally settle empty search results"
+        );
+        assert!(
+            search_source.contains("query.trim().is_empty()"),
+            "search actor should own empty-query handling"
+        );
+        assert!(
+            search_source.contains("CoreEvent::Search(SearchEvent::Results"),
+            "search actor should still emit search results events"
+        );
+    }
 }

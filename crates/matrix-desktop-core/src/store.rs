@@ -87,7 +87,7 @@ impl StoreActor {
 
     /// Test-only constructor with an explicit backend (avoids the env-global
     /// `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` race between unit tests).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn with_backend(
         credential_store: CredentialStoreBackend,
         data_dir: impl Into<PathBuf>,

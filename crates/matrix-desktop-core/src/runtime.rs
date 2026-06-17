@@ -89,8 +89,8 @@ impl CoreRuntime {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn start_with_event_capacity(event_capacity: usize) -> Self {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn start_with_event_capacity(event_capacity: usize) -> Self {
         let data_dir = default_data_dir();
         let account_store_actor = StoreActor::new(data_dir.clone());
         let composer_draft_store_actor = StoreActor::new(data_dir.clone());
@@ -102,8 +102,8 @@ impl CoreRuntime {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn start_with_data_dir_and_file_credentials(
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn start_with_data_dir_and_file_credentials(
         data_dir: PathBuf,
         credential_dir: PathBuf,
     ) -> Self {

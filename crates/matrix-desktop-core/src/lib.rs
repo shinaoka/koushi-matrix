@@ -51,6 +51,3 @@ pub use runtime::{
     COMMAND_INBOX_CAPACITY, CommandSubmitError, CoreConnection, CoreRuntime, EVENT_QUEUE_CAPACITY,
     EventStreamLag,
 };
-
-#[cfg(test)]
-mod tests;

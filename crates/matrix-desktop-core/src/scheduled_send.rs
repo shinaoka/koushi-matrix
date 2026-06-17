@@ -47,3 +47,50 @@ pub(crate) async fn detect_capability(client: &matrix_sdk::Client) -> ScheduledS
         Err(_) => ScheduledSendCapability::LocalFallback,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use matrix_desktop_state::ScheduledSendCapability;
+    use matrix_sdk::ruma::api::FeatureFlag;
+
+    use super::{MSC4140_FEATURE, capability_from_unstable_features, server_delay_timeout};
+
+    #[test]
+    fn capability_detects_msc4140_server_support() {
+        let features = [FeatureFlag::from(MSC4140_FEATURE)].into_iter().collect();
+
+        assert_eq!(
+            capability_from_unstable_features(&features),
+            ScheduledSendCapability::ServerDelayedEvents
+        );
+    }
+
+    #[test]
+    fn capability_falls_back_when_msc4140_is_absent_or_disabled() {
+        let absent = [FeatureFlag::from("org.matrix.something_else")]
+            .into_iter()
+            .collect();
+        let disabled = std::collections::BTreeMap::from([(MSC4140_FEATURE.to_owned(), false)]);
+
+        assert_eq!(
+            capability_from_unstable_features(&absent),
+            ScheduledSendCapability::LocalFallback
+        );
+        assert_eq!(
+            super::capability_from_versions_flags(&disabled),
+            ScheduledSendCapability::LocalFallback
+        );
+    }
+
+    #[test]
+    fn server_timeout_uses_target_delta_without_private_data() {
+        assert_eq!(
+            server_delay_timeout(1_500, 1_000),
+            std::time::Duration::from_millis(500)
+        );
+        assert_eq!(
+            server_delay_timeout(1_000, 1_500),
+            std::time::Duration::from_millis(0)
+        );
+    }
+}
