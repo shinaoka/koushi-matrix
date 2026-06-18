@@ -4273,10 +4273,7 @@ fn preferred_room_id_in_space(state: &AppState, space_id: &str) -> Option<String
         .or_else(|| first_room_id_in_space(state, space_id))
 }
 
-fn reconcile_space_order(
-    space_order: &mut Vec<String>,
-    spaces: &[crate::state::SpaceSummary],
-) {
+fn reconcile_space_order(space_order: &mut Vec<String>, spaces: &[crate::state::SpaceSummary]) {
     let available_space_ids = spaces
         .iter()
         .map(|space| space.space_id.as_str())
@@ -4307,10 +4304,7 @@ fn apply_space_order(spaces: &mut [crate::state::SpaceSummary], space_order: &[S
     });
 }
 
-fn is_complete_space_order(
-    spaces: &[crate::state::SpaceSummary],
-    space_ids: &[String],
-) -> bool {
+fn is_complete_space_order(spaces: &[crate::state::SpaceSummary], space_ids: &[String]) -> bool {
     if spaces.len() != space_ids.len() {
         return false;
     }
@@ -4771,7 +4765,10 @@ mod tests {
             },
         );
 
-        assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]);
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        );
         assert_eq!(
             state.navigation.space_order,
             vec!["!space-b:example.invalid", "!space-a:example.invalid"]
