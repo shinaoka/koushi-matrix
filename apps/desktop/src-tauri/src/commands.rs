@@ -1012,6 +1012,22 @@ pub async fn select_space(
 }
 
 #[tauri::command]
+pub async fn reorder_spaces(
+    space_ids: Vec<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_reorder_spaces_command(request_id, space_ids),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn select_room(
     room_id: String,
     app: AppHandle,
@@ -2564,6 +2580,34 @@ where
     }
 }
 
+async fn wait_for_room_joined(
+    event_conn: &mut CoreConnection,
+    operation_request_id: RequestId,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "directory room join did not complete".to_owned())?;
+        match event {
+            Ok(CoreEvent::Room(RoomEvent::RoomJoined {
+                request_id,
+                room_id,
+            })) if request_id == operation_request_id => {
+                return Ok(room_id);
+            }
+            Ok(CoreEvent::OperationFailed { request_id, .. })
+                if request_id == operation_request_id =>
+            {
+                return Err("directory room join failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_) => return Err("room operation event stream lagged".to_owned()),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn create_room(
     name: String,
@@ -2616,18 +2660,17 @@ pub async fn join_directory_room(
         .command(command)
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
+    let joined_room_id = wait_for_room_joined(
         &mut event_conn,
         request_id,
         ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::RoomJoined { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "directory room join did not complete",
-        "directory room join failed",
+    )
+    .await?;
+    wait_for_selected_room(
+        &mut event_conn,
+        request_id,
+        &joined_room_id,
+        SELECT_ROOM_EVENT_TIMEOUT,
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -3261,6 +3304,16 @@ pub(crate) fn build_select_space_command(
     CoreCommand::Room(RoomCommand::SelectSpace {
         request_id,
         space_id,
+    })
+}
+
+pub(crate) fn build_reorder_spaces_command(
+    request_id: matrix_desktop_core::RequestId,
+    space_ids: Vec<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::ReorderSpaces {
+        request_id,
+        space_ids,
     })
 }
 
@@ -4602,9 +4655,10 @@ mod tests {
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
         build_report_content_command, build_report_room_command, build_report_user_command,
-        build_reschedule_scheduled_send_command, build_reset_identity_command,
-        build_reset_local_data_command, build_restart_sync_command, build_retry_send_command,
-        build_schedule_send_command, build_select_room_command, build_select_space_command,
+        build_reorder_spaces_command, build_reschedule_scheduled_send_command,
+        build_reset_identity_command, build_reset_local_data_command, build_restart_sync_command,
+        build_retry_send_command, build_schedule_send_command, build_select_room_command,
+        build_select_space_command,
         build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
         build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
         build_set_avatar_command, build_set_composer_draft_command, build_set_display_name_command,
@@ -4932,6 +4986,26 @@ mod tests {
             }) => {
                 assert_eq!(request_id, fake_request_id(6));
                 assert_eq!(space_id.as_deref(), Some("!space:example.org"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_reorder_spaces_command(
+            fake_request_id(37),
+            vec![
+                "!space-b:example.org".to_owned(),
+                "!space-a:example.org".to_owned(),
+            ],
+        ) {
+            CoreCommand::Room(RoomCommand::ReorderSpaces {
+                request_id,
+                space_ids,
+            }) => {
+                assert_eq!(request_id, fake_request_id(37));
+                assert_eq!(
+                    space_ids,
+                    vec!["!space-b:example.org", "!space-a:example.org"]
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -7538,6 +7612,39 @@ mod tests {
         assert!(helper_source.contains("CoreEvent::StateChanged"));
         assert!(helper_source.contains(concat!("Operation", "Failed")));
         assert!(helper_source.contains(concat!("snapshot_has_active", "_room")));
+    }
+
+    #[test]
+    fn join_directory_room_waits_for_backend_selected_room() {
+        let source = include_str!("commands.rs");
+        let fn_name = "pub async fn join_directory_room";
+        let fn_offset = source
+            .find(fn_name)
+            .expect("join_directory_room command should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("pub async fn set_space_child")
+            .expect("next command should exist");
+        let join_source = &rest[..end];
+        let joined_offset = join_source
+            .find("wait_for_room_joined")
+            .expect("directory join should wait for RoomJoined");
+        let selected_offset = join_source
+            .find("wait_for_selected_room")
+            .expect("directory join should wait for selected-room state");
+
+        assert!(
+            joined_offset < selected_offset,
+            "join should learn the joined room id before waiting for selection"
+        );
+        assert!(
+            join_source.contains("joined_room_id"),
+            "joined room id should be carried into selected-room wait"
+        );
+        assert!(
+            join_source.contains("SELECT_ROOM_EVENT_TIMEOUT"),
+            "selected-room wait should be bounded"
+        );
     }
 
     #[test]

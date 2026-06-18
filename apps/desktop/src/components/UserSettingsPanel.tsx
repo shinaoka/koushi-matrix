@@ -6,6 +6,7 @@ import {
   Download,
   Edit3,
   EyeOff,
+  History,
   Image,
   KeyRound,
   Keyboard,
@@ -24,6 +25,8 @@ import {
 } from "lucide-react";
 
 import { t } from "../i18n/messages";
+import { KeyboardSettingsContent } from "./KeyboardSettingsPanel";
+import type { ShortcutLabelProfile } from "../domain/shortcuts";
 import type {
   AccountManagementCapabilities,
   AccountManagementState,
@@ -52,6 +55,7 @@ import type {
   SecureBackupPassphraseChangeState,
   SecureBackupSetupState,
   ThemePreference,
+  TimelineSettings,
   TrustOperationFailureKind,
   VerificationFlowState
 } from "../domain/types";
@@ -67,7 +71,7 @@ export function UserSettingsPanel({
   deviceSessions,
   accountManagement,
   accountManagementCapabilities,
-  onOpenKeyboardSettings,
+  keyboardLabelProfile,
   onUpdateSettings,
   onSetDisplayName,
   onSetAvatar,
@@ -105,6 +109,7 @@ export function UserSettingsPanel({
   deviceSessions: DeviceSessionListState;
   accountManagement: AccountManagementState;
   accountManagementCapabilities: AccountManagementCapabilities;
+  keyboardLabelProfile?: ShortcutLabelProfile;
   onOpenKeyboardSettings: () => void;
   onUpdateSettings: (patch: SettingsPatch) => void;
   onSetDisplayName: (displayName: string | null) => void;
@@ -151,8 +156,10 @@ export function UserSettingsPanel({
   const selectedNotifications = settings.values.notifications;
   const selectedDisplay = settings.values.display;
   const selectedMedia = settings.values.media;
+  const selectedTimeline = settings.values.timeline;
   const isSaving = settings.persistence.kind === "saving";
   const [displayNameDraft, setDisplayNameDraft] = useState(profile.own.display_name ?? "");
+  const panelRef = useRef<HTMLElement | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const profileBusy = profile.update.kind !== "idle";
   const displayNameBusy = profile.update.kind === "settingDisplayName";
@@ -181,8 +188,18 @@ export function UserSettingsPanel({
     onSetAvatar(file);
   }
 
+  function scrollToSection(sectionId: string) {
+    panelRef.current
+      ?.querySelector<HTMLElement>(`#${sectionId}`)
+      ?.scrollIntoView({ block: "start" });
+  }
+
   return (
-    <section className="settings-panel user-settings-panel" aria-labelledby="user-settings-title">
+    <section
+      ref={panelRef}
+      className="settings-panel user-settings-panel"
+      aria-labelledby="user-settings-title"
+    >
       <header className="settings-panel-header">
         <div>
           <h2 id="user-settings-title">{t("panel.userSettings")}</h2>
@@ -191,7 +208,11 @@ export function UserSettingsPanel({
       </header>
 
       <div className="settings-list">
-        <button className="settings-list-item" type="button">
+        <button
+          className="settings-list-item"
+          type="button"
+          onClick={() => scrollToSection("settings-general")}
+        >
           <span className="settings-list-label">
             <span className="settings-list-icon" aria-hidden="true">
               <UserRound size={16} />
@@ -199,7 +220,11 @@ export function UserSettingsPanel({
             <span>{t("settings.general")}</span>
           </span>
         </button>
-        <button className="settings-list-item" type="button">
+        <button
+          className="settings-list-item"
+          type="button"
+          onClick={() => scrollToSection("settings-security")}
+        >
           <span className="settings-list-label">
             <span className="settings-list-icon" aria-hidden="true">
               <ShieldCheck size={16} />
@@ -207,7 +232,11 @@ export function UserSettingsPanel({
             <span>{t("settings.securityPrivacy")}</span>
           </span>
         </button>
-        <button className="settings-list-item" type="button">
+        <button
+          className="settings-list-item"
+          type="button"
+          onClick={() => scrollToSection("settings-sessions")}
+        >
           <span className="settings-list-label">
             <span className="settings-list-icon" aria-hidden="true">
               <Smartphone size={16} />
@@ -215,7 +244,11 @@ export function UserSettingsPanel({
             <span>{t("settings.sessions")}</span>
           </span>
         </button>
-        <button className="settings-list-item" type="button" onClick={onOpenKeyboardSettings}>
+        <button
+          className="settings-list-item"
+          type="button"
+          onClick={() => scrollToSection("settings-keyboard")}
+        >
           <span className="settings-list-label">
             <span className="settings-list-icon" aria-hidden="true">
               <Keyboard size={16} />
@@ -223,7 +256,23 @@ export function UserSettingsPanel({
             <span>{t("settings.keyboard")}</span>
           </span>
         </button>
-        <button className="settings-list-item" type="button">
+        <button
+          className="settings-list-item"
+          type="button"
+          onClick={() => scrollToSection("settings-timeline")}
+        >
+          <span className="settings-list-label">
+            <span className="settings-list-icon" aria-hidden="true">
+              <History size={16} />
+            </span>
+            <span>{t("settings.timeline")}</span>
+          </span>
+        </button>
+        <button
+          className="settings-list-item"
+          type="button"
+          onClick={() => scrollToSection("settings-appearance")}
+        >
           <span className="settings-list-label">
             <span className="settings-list-icon" aria-hidden="true">
               <SlidersHorizontal size={16} />
@@ -233,7 +282,7 @@ export function UserSettingsPanel({
         </button>
       </div>
 
-      <section className="settings-section" aria-label={t("settings.profile")}>
+      <section id="settings-general" className="settings-section" aria-label={t("settings.profile")}>
         <h3>{t("settings.profile")}</h3>
         <div className="profile-settings">
           <div className="profile-settings-avatar" aria-hidden="true">
@@ -301,7 +350,39 @@ export function UserSettingsPanel({
         </div>
       </section>
 
-      <section className="settings-section" aria-label={t("settings.appearance")}>
+      <section id="settings-keyboard" className="settings-section" aria-label={t("settings.keyboard")}>
+        <div className="settings-section-heading">
+          <div>
+            <h3>{t("settings.keyboard")}</h3>
+            <p>{t("settings.keyboardDescription")}</p>
+          </div>
+          {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
+        </div>
+        <KeyboardSettingsContent
+          isSaving={isSaving}
+          labelProfile={keyboardLabelProfile}
+          selectedSendShortcut={settings.values.keyboard.composer_send_shortcut}
+          onUpdateSettings={onUpdateSettings}
+        />
+      </section>
+
+      <section id="settings-timeline" className="settings-section" aria-label={t("settings.timeline")}>
+        <div className="settings-section-heading">
+          <h3>{t("settings.timeline")}</h3>
+          {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
+        </div>
+        <div className="settings-toggle-list">
+          <TimelineToggle
+            label={t("settings.autoLoadOlderMessages")}
+            description={t("settings.autoLoadOlderMessagesDescription")}
+            settingKey="auto_load_older_messages"
+            current={selectedTimeline}
+            onSelect={onUpdateSettings}
+          />
+        </div>
+      </section>
+
+      <section id="settings-appearance" className="settings-section" aria-label={t("settings.appearance")}>
         <div className="settings-section-heading">
           <h3>{t("settings.appearance")}</h3>
           {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
@@ -369,7 +450,7 @@ export function UserSettingsPanel({
         </div>
       </section>
 
-      <section className="settings-section" aria-label={t("settings.display")}>
+      <section id="settings-display" className="settings-section" aria-label={t("settings.display")}>
         <div className="settings-section-heading">
           <h3>{t("settings.display")}</h3>
           {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
@@ -383,9 +464,17 @@ export function UserSettingsPanel({
             onSelect={onUpdateSettings}
           />
           <DisplayToggle
-            label={t("settings.urlPreviews")}
-            description={t("settings.urlPreviewsDescription")}
+            label={t("settings.urlPreviewsUnencrypted")}
+            description={t("settings.urlPreviewsUnencryptedDescription")}
             settingKey="url_previews_enabled"
+            icon="link"
+            current={selectedDisplay}
+            onSelect={onUpdateSettings}
+          />
+          <DisplayToggle
+            label={t("settings.urlPreviewsEncrypted")}
+            description={t("settings.urlPreviewsEncryptedDescription")}
+            settingKey="encrypted_url_previews_enabled"
             icon="link"
             current={selectedDisplay}
             onSelect={onUpdateSettings}
@@ -400,7 +489,7 @@ export function UserSettingsPanel({
         </div>
       </section>
 
-      <section className="settings-section" aria-label={t("settings.media")}>
+      <section id="settings-media" className="settings-section" aria-label={t("settings.media")}>
         <div className="settings-section-heading">
           <h3>{t("settings.media")}</h3>
           {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
@@ -433,7 +522,7 @@ export function UserSettingsPanel({
         </div>
       </section>
 
-      <section className="settings-section" aria-label={t("settings.notifications")}>
+      <section id="settings-notifications" className="settings-section" aria-label={t("settings.notifications")}>
         <div className="settings-section-heading">
           <h3>{t("settings.notifications")}</h3>
           {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
@@ -472,7 +561,7 @@ export function UserSettingsPanel({
         </div>
       </section>
 
-      <section className="settings-section" aria-label={t("settings.security")}>
+      <section id="settings-security" className="settings-section" aria-label={t("settings.security")}>
         <h3>{t("settings.security")}</h3>
         <SecuritySection
           keyManagement={e2eeTrust.key_management}
@@ -856,7 +945,7 @@ function SessionsSection({
   const otherOrdinals = otherDevices.map((device) => device.device_ordinal);
 
   return (
-    <section className="settings-section" aria-label={t("settings.sessions")}>
+    <section id="settings-sessions" className="settings-section" aria-label={t("settings.sessions")}>
       <div className="settings-section-heading">
         <h3>{t("settings.sessions")}</h3>
       </div>
@@ -2166,6 +2255,52 @@ function NotificationToggle({
           <Bell size={15} aria-hidden="true" />
           <span>{label}</span>
         </span>
+      </span>
+      <span className="settings-switch-track" aria-hidden="true">
+        <span className="settings-switch-thumb" />
+      </span>
+    </button>
+  );
+}
+
+function TimelineToggle({
+  label,
+  description,
+  settingKey,
+  current,
+  onSelect
+}: {
+  label: string;
+  description?: string;
+  settingKey: keyof TimelineSettings;
+  current: TimelineSettings;
+  onSelect: (patch: SettingsPatch) => void;
+}) {
+  const checked = current[settingKey];
+  return (
+    <button
+      className="settings-toggle-row"
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => {
+        onSelect({
+          timeline: {
+            ...current,
+            [settingKey]: !checked
+          }
+        });
+      }}
+    >
+      <span className="settings-toggle-copy">
+        <span className="settings-toggle-label">
+          <History size={15} aria-hidden="true" />
+          <span>{label}</span>
+        </span>
+        {description ? (
+          <span className="settings-toggle-description">{description}</span>
+        ) : null}
       </span>
       <span className="settings-switch-track" aria-hidden="true">
         <span className="settings-switch-thumb" />

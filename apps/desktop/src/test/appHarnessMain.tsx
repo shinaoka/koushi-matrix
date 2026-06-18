@@ -42,6 +42,7 @@ import type {
   UploadStagingRequestItem
 } from "../domain/types";
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
+import { computeBrowserRoomListProjection } from "../backend/roomListProjection";
 import "../styles.css";
 
 const CORE_EVENT_NAME = "matrix-desktop://event";
@@ -115,6 +116,23 @@ function readySnapshot(
     },
     ...(overrides.extraRailItems ?? [])
   ];
+  const rooms = [
+    {
+      room_id: ROOM_ID,
+      display_name: ROOM_NAME,
+      display_label: ROOM_NAME,
+      original_display_label: ROOM_NAME,
+      avatar: null,
+      is_dm: false,
+      dm_user_ids: [],
+      tags: { favourite: null, low_priority: null },
+      unread_count: 0,
+      notification_count: 0,
+      highlight_count: 0,
+      parent_space_ids: [],
+      is_encrypted: false
+    }
+  ];
   return {
     state: {
       session: {
@@ -139,31 +157,21 @@ function readySnapshot(
       },
       sync: "running",
       sync_mode: { kind: "unsupported" },
-      navigation: { active_space_id: null, active_room_id: ROOM_ID },
-      spaces,
-      rooms: [
-        {
-          room_id: ROOM_ID,
-          display_name: ROOM_NAME,
-          display_label: ROOM_NAME,
-          original_display_label: ROOM_NAME,
-          avatar: null,
-          is_dm: false,
-          dm_user_ids: [],
-          tags: { favourite: null, low_priority: null },
-          unread_count: 0,
-          notification_count: 0,
-          highlight_count: 0,
-          parent_space_ids: [],
-          is_encrypted: false
-        }
-      ],
-      invites: [],
-      room_list: {
-        active_filter: { kind: "rooms" },
-        sort: { kind: "activity" },
-        items: null
+      navigation: {
+        active_space_id: null,
+        active_room_id: ROOM_ID,
+        space_order: spaces.map((space) => space.space_id),
+        last_room_by_space_id: {}
       },
+      spaces,
+      rooms,
+      invites: [],
+      room_list: computeBrowserRoomListProjection(
+        { kind: "rooms" },
+        { kind: "activity" },
+        rooms,
+        []
+      ),
       room_notification_settings: {},
       room_interactions: {},
       device_sessions: { kind: "idle" },
@@ -241,15 +249,23 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
         send_read_receipts: true,
         send_typing_notifications: true
       },
-      display: { code_block_wrap: true, hide_redacted: false, url_previews_enabled: true },
+      display: {
+        code_block_wrap: true,
+        hide_redacted: true,
+        url_previews_enabled: true,
+        encrypted_url_previews_enabled: false
+      },
       media: {
-        image_upload_compression: "never",
+        image_upload_compression: "ask",
         image_upload_compression_policy: {
           threshold_bytes: 1048576,
           threshold_long_edge: 2560,
           target_long_edge: 2048,
           quality_percent: 82
         }
+      },
+      timeline: {
+        auto_load_older_messages: false
       }
     },
     persistence: { kind: "idle" }
@@ -334,7 +350,8 @@ function applySettingsPatch(
     keyboard: patch.keyboard ?? values.keyboard,
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
-    media: patch.media ?? values.media
+    media: patch.media ?? values.media,
+    timeline: patch.timeline ?? values.timeline
   };
 }
 
@@ -536,6 +553,12 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     unread_count: 0,
     highlight_count: 0
   });
+  snapshot.state.room_list = computeBrowserRoomListProjection(
+    snapshot.state.room_list.active_filter,
+    snapshot.state.room_list.sort,
+    snapshot.state.rooms,
+    snapshot.state.invites
+  );
   return snapshot;
 }
 
@@ -569,7 +592,18 @@ const mock = new TauriIpcMock();
 let currentSnapshot = readySnapshot();
 
 function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
-  currentSnapshot = next;
+  currentSnapshot = {
+    ...next,
+    state: {
+      ...next.state,
+      room_list: computeBrowserRoomListProjection(
+        next.state.room_list.active_filter,
+        next.state.room_list.sort,
+        next.state.rooms,
+        next.state.invites
+      )
+    }
+  };
   return currentSnapshot;
 }
 
@@ -577,6 +611,32 @@ function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
 mock.setCommandResponse("list_saved_sessions", () => []);
+mock.setCommandResponse("reorder_spaces", ({ spaceIds }: { spaceIds: string[] }) => {
+  const positionBySpaceId = new Map(spaceIds.map((spaceId, index) => [spaceId, index]));
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      navigation: {
+        ...currentSnapshot.state.navigation,
+        space_order: [...spaceIds]
+      },
+      spaces: [...currentSnapshot.state.spaces].sort(
+        (left, right) =>
+          (positionBySpaceId.get(left.space_id) ?? Number.MAX_SAFE_INTEGER) -
+          (positionBySpaceId.get(right.space_id) ?? Number.MAX_SAFE_INTEGER)
+      )
+    },
+    sidebar: {
+      ...currentSnapshot.sidebar,
+      space_rail: [...currentSnapshot.sidebar.space_rail].sort(
+        (left, right) =>
+          (positionBySpaceId.get(left.space_id) ?? Number.MAX_SAFE_INTEGER) -
+          (positionBySpaceId.get(right.space_id) ?? Number.MAX_SAFE_INTEGER)
+      )
+    }
+  });
+});
 mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch }) => {
   const values = applySettingsPatch(currentSnapshot.state.settings.values, patch);
   return setCurrentSnapshot({
@@ -602,7 +662,7 @@ mock.setCommandResponse(
     }
     const roomOverrides = { ...currentSnapshot.state.link_preview_settings.room_overrides };
     const defaultEnabled = room.is_encrypted
-      ? false
+      ? currentSnapshot.state.settings.values.display.encrypted_url_previews_enabled
       : currentSnapshot.state.settings.values.display.url_previews_enabled;
     if (enabled === defaultEnabled) {
       delete roomOverrides[roomId];
@@ -627,15 +687,69 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
-        room_list: {
-          ...currentSnapshot.state.room_list,
-          active_filter: filter
-        }
+        room_list: computeBrowserRoomListProjection(
+          filter,
+          currentSnapshot.state.room_list.sort,
+          currentSnapshot.state.rooms,
+          currentSnapshot.state.invites
+        )
       }
     })
 );
 mock.setCommandResponse("mark_room_as_read", () => currentSnapshot);
 mock.setCommandResponse("mark_room_as_unread", () => currentSnapshot);
+mock.setCommandResponse("leave_room", ({ roomId }: { roomId: string }) => {
+  const removedSpace = currentSnapshot.state.spaces.find((space) => space.space_id === roomId);
+  const nextSpaces = currentSnapshot.state.spaces.filter((space) => space.space_id !== roomId);
+  const nextRooms = removedSpace
+    ? currentSnapshot.state.rooms.map((room) => ({
+        ...room,
+        parent_space_ids: room.parent_space_ids.filter((spaceId) => spaceId !== roomId)
+      }))
+    : currentSnapshot.state.rooms.filter((room) => room.room_id !== roomId);
+  const nextActiveSpaceId =
+    currentSnapshot.state.navigation.active_space_id === roomId
+      ? null
+      : currentSnapshot.state.navigation.active_space_id;
+  const nextLastRoomBySpaceId = {
+    ...(currentSnapshot.state.navigation.last_room_by_space_id ?? {})
+  };
+  delete nextLastRoomBySpaceId[roomId];
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      navigation: {
+        ...currentSnapshot.state.navigation,
+        active_space_id: nextActiveSpaceId,
+        active_room_id:
+          removedSpace || currentSnapshot.state.navigation.active_room_id !== roomId
+            ? currentSnapshot.state.navigation.active_room_id
+            : null,
+        space_order:
+          currentSnapshot.state.navigation.space_order?.filter((spaceId) => spaceId !== roomId) ??
+          [],
+        last_room_by_space_id: nextLastRoomBySpaceId
+      },
+      spaces: nextSpaces,
+      rooms: nextRooms,
+      room_list: computeBrowserRoomListProjection(
+        currentSnapshot.state.room_list.active_filter,
+        currentSnapshot.state.room_list.sort,
+        nextRooms,
+        currentSnapshot.state.invites
+      )
+    },
+    sidebar: {
+      ...currentSnapshot.sidebar,
+      active_space_id: nextActiveSpaceId,
+      space_rail: currentSnapshot.sidebar.space_rail.filter((space) => space.space_id !== roomId),
+      space_rooms: removedSpace
+        ? currentSnapshot.sidebar.space_rooms
+        : currentSnapshot.sidebar.space_rooms.filter((room) => room.room_id !== roomId)
+    }
+  });
+});
 mock.setCommandResponse(
   "set_room_notification_mode",
   ({ roomId, mode }: { roomId: string; mode: RoomNotificationMode }) => {

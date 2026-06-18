@@ -23,6 +23,7 @@ export type ContextMenuActionId =
   | "markRoomAsUnread"
   | "selectSpace"
   | "openSpaceInfo"
+  | "leaveSpace"
   | "openUserSettings"
   | "openKeyboardSettings"
   | "switchAccount";
@@ -112,7 +113,8 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
     case "space":
       return [
         { id: "selectSpace", labelMessageId: "context.selectSpace" },
-        { id: "openSpaceInfo", labelMessageId: "context.openSpaceInfo" }
+        { id: "openSpaceInfo", labelMessageId: "context.openSpaceInfo" },
+        { id: "leaveSpace", labelMessageId: "context.leaveSpace", destructive: true }
       ];
     case "account":
       return [

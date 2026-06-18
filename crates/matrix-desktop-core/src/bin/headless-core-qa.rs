@@ -7356,6 +7356,7 @@ async fn run_link_preview_stage(
                     code_block_wrap: true,
                     hide_redacted: false,
                     url_previews_enabled: false,
+                    encrypted_url_previews_enabled: false,
                 }),
                 ..SettingsPatch::default()
             },
@@ -7391,6 +7392,7 @@ async fn run_link_preview_stage(
                     code_block_wrap: true,
                     hide_redacted: false,
                     url_previews_enabled: true,
+                    encrypted_url_previews_enabled: false,
                 }),
                 ..SettingsPatch::default()
             },
@@ -8331,6 +8333,7 @@ async fn run_hide_redacted_stage(
                 code_block_wrap: true,
                 hide_redacted: true,
                 url_previews_enabled: true,
+                encrypted_url_previews_enabled: false,
             }),
             ..SettingsPatch::default()
         },
@@ -8437,6 +8440,7 @@ fn assert_hide_redacted_projection() -> Result<(), String> {
         code_block_wrap: true,
         hide_redacted: true,
         url_previews_enabled: true,
+        encrypted_url_previews_enabled: false,
     };
     let key = TimelineKey::room(
         AccountKey("@projection:example.invalid".to_owned()),

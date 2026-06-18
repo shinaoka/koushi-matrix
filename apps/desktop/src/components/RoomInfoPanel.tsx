@@ -67,12 +67,11 @@ export function RoomInfoPanel({
   const roomId = room?.room_id ?? "";
   const roomName = room?.display_label ?? "";
   const isEncrypted = room?.is_encrypted ?? false;
-  const globalUrlPreviewsEnabled = appSettings?.values.display.url_previews_enabled ?? true;
+  const globalUrlPreviewsEnabled = isEncrypted
+    ? appSettings?.values.display.encrypted_url_previews_enabled ?? false
+    : appSettings?.values.display.url_previews_enabled ?? true;
   const roomOverride = linkPreviewSettings?.room_overrides[roomId];
-  const roomUrlPreviewsEnabled = isEncrypted
-    ? roomOverride === true
-    : roomOverride ?? globalUrlPreviewsEnabled;
-  const canToggleRoomUrlPreviews = !isEncrypted || roomUrlPreviewsEnabled;
+  const roomUrlPreviewsEnabled = roomOverride ?? globalUrlPreviewsEnabled;
   const parentSpaces = room
     ? spaces.filter((space) => room.parent_space_ids.includes(space.space_id))
     : [];
@@ -185,7 +184,6 @@ export function RoomInfoPanel({
             type="button"
             role="switch"
             aria-checked={roomUrlPreviewsEnabled}
-            disabled={!canToggleRoomUrlPreviews}
             onClick={() => {
               onSetRoomUrlPreviewOverride(roomId, !roomUrlPreviewsEnabled);
             }}
@@ -753,6 +751,7 @@ function SettingsEntryList({
           className="settings-list-item"
           key={entry.label}
           type="button"
+          disabled={!entry.onClick}
           onClick={entry.onClick}
         >
           <span className="settings-list-label">

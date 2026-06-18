@@ -294,6 +294,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
         navigation: matrix_desktop_state::NavigationState {
             active_space_id: Some("space-a".to_owned()),
             active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
         },
         timeline: TimelinePaneState {
             room_id: Some("room-a".to_owned()),
@@ -403,6 +404,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
         navigation: matrix_desktop_state::NavigationState {
             active_space_id: Some("space-a".to_owned()),
             active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
         },
         timeline: TimelinePaneState {
             room_id: Some("room-a".to_owned()),
@@ -521,6 +523,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
         navigation: matrix_desktop_state::NavigationState {
             active_space_id: Some("space-a".to_owned()),
             active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
         },
         timeline: TimelinePaneState {
             room_id: Some("room-a".to_owned()),
@@ -594,6 +597,7 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
         navigation: matrix_desktop_state::NavigationState {
             active_space_id: Some("space-a".to_owned()),
             active_room_id: Some("dm-a".to_owned()),
+            ..Default::default()
         },
         timeline: TimelinePaneState {
             room_id: Some("dm-a".to_owned()),
@@ -685,6 +689,8 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
     );
 
     assert_eq!(state.navigation.active_space_id.as_deref(), Some("space-a"));
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-a"));
+    assert_eq!(state.timeline.room_id.as_deref(), Some("room-a"));
     let sidebar = compose_sidebar(
         state.navigation.active_space_id.as_deref(),
         &state.spaces,
@@ -698,7 +704,93 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
     assert_eq!(sidebar.dm_unread_count, 3);
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SubscribeTimeline {
+                room_id: "room-a".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+        ]
+    );
+}
+
+#[test]
+fn selecting_space_restores_last_non_dm_room_for_that_space() {
+    let mut all_rooms = rooms();
+    all_rooms.push(RoomSummary {
+        room_id: "room-b".to_owned(),
+        display_name: "Room B".to_owned(),
+        display_label: "Room B".to_owned(),
+        original_display_label: "Room B".to_owned(),
+        avatar: None,
+        is_dm: false,
+        dm_user_ids: Vec::new(),
+        tags: RoomTags::default(),
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        marked_unread: false,
+        last_activity_ms: 0,
+        parent_space_ids: vec!["space-a".to_owned()],
+        is_encrypted: false,
+    });
+    let all_spaces = vec![SpaceSummary {
+        space_id: "space-a".to_owned(),
+        display_name: "Space A".to_owned(),
+        avatar: None,
+        child_room_ids: vec!["room-a".to_owned(), "room-b".to_owned(), "dm-a".to_owned()],
+    }];
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: all_spaces,
+        rooms: all_rooms,
+        navigation: matrix_desktop_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
+        },
+        ..AppState::default()
+    };
+
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-b".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "global-room".to_owned(),
+        },
+    );
+    let effects = reduce(
+        &mut state,
+        AppAction::SelectSpace {
+            space_id: Some("space-a".to_owned()),
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id.as_deref(), Some("space-a"));
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-b"));
+    assert_eq!(state.timeline.room_id.as_deref(), Some("room-b"));
+    assert_eq!(
+        state.navigation.last_room_by_space_id.get("space-a"),
+        Some(&"room-b".to_owned())
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SubscribeTimeline {
+                room_id: "room-b".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-b".to_owned(),
+            }),
+        ]
     );
 }
 
@@ -821,7 +913,13 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
 fn selecting_room_subscribes_timeline_and_clears_thread() {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),
+        spaces: spaces(),
         rooms: rooms(),
+        navigation: matrix_desktop_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: None,
+            ..Default::default()
+        },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
             root_event_id: "$root".to_owned(),
@@ -852,6 +950,104 @@ fn selecting_room_subscribes_timeline_and_clears_thread() {
                 room_id: "room-a".to_owned(),
             }),
             AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+        ]
+    );
+}
+
+#[test]
+fn selecting_non_dm_room_moves_scope_to_containing_space_or_home() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: spaces(),
+        rooms: rooms(),
+        navigation: matrix_desktop_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "global-room".to_owned(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id, None);
+    assert_eq!(
+        state.navigation.active_room_id.as_deref(),
+        Some("global-room")
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SubscribeTimeline {
+                room_id: "global-room".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "global-room".to_owned(),
+            }),
+        ]
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-a".to_owned(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id.as_deref(), Some("space-a"));
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-a"));
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SubscribeTimeline {
+                room_id: "room-a".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+        ]
+    );
+}
+
+#[test]
+fn selecting_dm_room_preserves_current_space_scope() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: spaces(),
+        rooms: rooms(),
+        navigation: matrix_desktop_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "dm-a".to_owned(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id.as_deref(), Some("space-a"));
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("dm-a"));
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::SubscribeTimeline {
+                room_id: "dm-a".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "dm-a".to_owned(),
+            }),
         ]
     );
 }

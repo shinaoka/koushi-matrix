@@ -442,6 +442,13 @@ impl RoomActor {
                 // request_id correlation via StateChanged is implicit per spec.
                 self.reduce(vec![AppAction::SelectSpace { space_id }]);
             }
+            RoomCommand::ReorderSpaces {
+                request_id: _,
+                space_ids,
+            } => {
+                // Pure navigation preference: project to reducer; no domain event.
+                self.reduce(vec![AppAction::ReorderSpaces { space_ids }]);
+            }
             RoomCommand::SelectRoom {
                 request_id: _,
                 room_id,
@@ -2577,6 +2584,36 @@ pub mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn reorder_spaces_projects_action() {
+        let (action_tx, mut action_rx) = mpsc::channel(16);
+        let (event_tx, _event_rx) = broadcast::channel(16);
+        let handle = RoomActor::spawn(action_tx, event_tx);
+
+        handle
+            .send(RoomMessage::Command(RoomCommand::ReorderSpaces {
+                request_id: make_request_id(1),
+                space_ids: vec![
+                    "!space-b:example.test".to_owned(),
+                    "!space-a:example.test".to_owned(),
+                ],
+            }))
+            .await;
+
+        let actions = action_rx.recv().await.expect("actions");
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [AppAction::ReorderSpaces { space_ids }]
+                    if space_ids == &vec![
+                        "!space-b:example.test".to_owned(),
+                        "!space-a:example.test".to_owned()
+                    ]
+            ),
+            "expected ReorderSpaces action, got {actions:?}"
+        );
+    }
+
     #[test]
     fn normalize_rooms_carries_sdk_room_tags() {
         let snapshot = MatrixRoomListSnapshot {
@@ -2884,6 +2921,29 @@ pub mod tests {
 
         assert!(!set_tag_body.contains("refresh_room_list().await"));
         assert!(!remove_tag_body.contains("refresh_room_list().await"));
+    }
+
+    #[test]
+    fn directory_join_selects_room_before_room_joined_event_is_emitted() {
+        let source = include_str!("room.rs");
+        let join_body = source
+            .split("async fn handle_join_directory_room")
+            .nth(1)
+            .expect("directory join handler")
+            .split("async fn handle_mark_room_as_read")
+            .next()
+            .expect("directory join body");
+        let success_reduce = join_body
+            .find("AppAction::DirectoryJoinSucceeded")
+            .expect("directory join success reduction");
+        let joined_event = join_body
+            .find("RoomEvent::RoomJoined")
+            .expect("directory join completion event");
+
+        assert!(
+            success_reduce < joined_event,
+            "DirectoryJoinSucceeded must select the room before Tauri observes RoomJoined"
+        );
     }
 
     #[test]

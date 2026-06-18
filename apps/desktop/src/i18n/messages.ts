@@ -77,6 +77,7 @@ export type MessageId =
   | "composer.imageCompressionCompressed"
   | "composer.imageCompressionOriginal"
   | "composer.imageCompressionPreviewAlt"
+  | "composer.imageCompressionSaveDefault"
   | "composer.imageCompressionTitle"
   | "composer.placeholder"
   | "composer.replying"
@@ -84,6 +85,7 @@ export type MessageId =
   | "composer.cancelReply"
   | "composer.selectedMentions"
   | "upload.captionForFile"
+  | "upload.ask"
   | "upload.clear"
   | "upload.compressed"
   | "upload.dialogTitle"
@@ -94,6 +96,7 @@ export type MessageId =
   | "context.addToFavourites"
   | "context.addToLowPriority"
   | "context.ignoreUser"
+  | "context.leaveSpace"
   | "context.openKeyboardSettings"
   | "context.openRoomInfo"
   | "context.openSpaceInfo"
@@ -262,7 +265,7 @@ export type MessageId =
   | "room.subscribed"
   | "room.summary"
   | "room.tabs"
-  | "room.threadToggle"
+  | "room.rightPanelToggle"
   | "room.timeline"
   | "room.topic"
   | "room.type"
@@ -290,6 +293,8 @@ export type MessageId =
   | "settings.appearance"
   | "settings.accountSwitcher"
   | "settings.current"
+  | "settings.autoLoadOlderMessages"
+  | "settings.autoLoadOlderMessagesDescription"
   | "settings.checkLocalEncryption"
   | "settings.credentialStore"
   | "settings.credentialStoreLinux"
@@ -303,6 +308,7 @@ export type MessageId =
   | "settings.homeserver"
   | "settings.keyboard"
   | "settings.keyboardDescription"
+  | "settings.timeline"
   | "settings.display"
   | "settings.codeBlockWrap"
   | "settings.hideRedacted"
@@ -644,6 +650,7 @@ export type MessageId =
   | "workspace.newDm"
   | "workspace.people"
   | "workspace.rooms"
+  | "workspace.resizeRoomList"
   | "workspace.search"
   | "workspace.searchPlaceholder"
   | "workspace.searchScope"
@@ -660,6 +667,10 @@ export type MessageId =
   | "settings.urlPreviews"
   | "settings.urlPreviewsEnabled"
   | "settings.urlPreviewsDescription"
+  | "settings.urlPreviewsUnencrypted"
+  | "settings.urlPreviewsUnencryptedDescription"
+  | "settings.urlPreviewsEncrypted"
+  | "settings.urlPreviewsEncryptedDescription"
   | "settings.urlPreviewsEncryptedNotice"
   | "settings.urlPreviewsEnabledForRoom"
   | "timeline.linkPreviewHide"
@@ -834,6 +845,7 @@ const en: Catalog = {
   "composer.imageCompressionCompressed": "Compressed",
   "composer.imageCompressionOriginal": "Original",
   "composer.imageCompressionPreviewAlt": "Compressed image preview",
+  "composer.imageCompressionSaveDefault": "Use this choice by default",
   "composer.imageCompressionTitle": "Compress image",
   "composer.placeholder": "Message {roomName}",
   "composer.replying": "Replying",
@@ -841,6 +853,7 @@ const en: Catalog = {
   "composer.cancelReply": "Cancel reply",
   "composer.selectedMentions": "Selected mentions",
   "upload.captionForFile": "Caption for {filename}",
+  "upload.ask": "Ask",
   "upload.clear": "Clear upload staging",
   "upload.compressed": "Compressed",
   "upload.dialogTitle": "Upload attachments",
@@ -851,6 +864,7 @@ const en: Catalog = {
   "context.addToFavourites": "Add to Favourites",
   "context.addToLowPriority": "Move to Low priority",
   "context.ignoreUser": "Ignore",
+  "context.leaveSpace": "Leave Space",
   "context.openKeyboardSettings": "Keyboard shortcuts",
   "context.openRoomInfo": "Room info",
   "context.openSpaceInfo": "Space info",
@@ -1019,7 +1033,7 @@ const en: Catalog = {
   "room.subscribed": "Subscribed",
   "room.summary": "Room summary",
   "room.tabs": "Room tabs",
-  "room.threadToggle": "Toggle thread",
+  "room.rightPanelToggle": "Toggle right panel",
   "room.timeline": "Timeline",
   "room.topic": "Room topic",
   "room.type": "Type",
@@ -1047,6 +1061,8 @@ const en: Catalog = {
   "settings.appearance": "Appearance",
   "settings.accountSwitcher": "Account switcher",
   "settings.current": "Current",
+  "settings.autoLoadOlderMessages": "Automatically load older messages",
+  "settings.autoLoadOlderMessagesDescription": "Prefetch room history when scrolling near the start of the loaded timeline",
   "settings.checkLocalEncryption": "Check local encryption",
   "settings.credentialStore": "Credential store",
   "settings.credentialStoreLinux": "Secret Service",
@@ -1060,13 +1076,18 @@ const en: Catalog = {
   "settings.homeserver": "Homeserver",
   "settings.keyboard": "Keyboard",
   "settings.keyboardDescription": "Shortcuts compatible with common Matrix desktop clients for implemented actions.",
+  "settings.timeline": "Timeline",
   "settings.display": "Display",
   "settings.codeBlockWrap": "Wrap long lines in code blocks",
   "settings.hideRedacted": "Hide deleted messages",
   "settings.urlPreviews": "URL previews",
   "settings.urlPreviewsEnabled": "Show link previews",
   "settings.urlPreviewsDescription": "Load previews for links in messages",
-  "settings.urlPreviewsEncryptedNotice": "Previews are disabled in encrypted rooms by default for privacy.",
+  "settings.urlPreviewsUnencrypted": "URL previews in non-encrypted rooms",
+  "settings.urlPreviewsUnencryptedDescription": "Load previews for links in non-encrypted rooms by default",
+  "settings.urlPreviewsEncrypted": "URL previews in encrypted rooms",
+  "settings.urlPreviewsEncryptedDescription": "Opt in to loading previews for links sent in encrypted rooms",
+  "settings.urlPreviewsEncryptedNotice": "Encrypted-room previews can reveal URLs to the homeserver and destination site.",
   "settings.urlPreviewsEnabledForRoom": "Enable link previews for this room",
   "timeline.linkPreviewHide": "Hide preview",
   "timeline.linkPreviewFailed": "Could not load preview",
@@ -1409,6 +1430,7 @@ const en: Catalog = {
   "workspace.newDm": "New DM",
   "workspace.people": "People",
   "workspace.rooms": "Rooms",
+  "workspace.resizeRoomList": "Resize room list",
   "workspace.search": "Search",
   "workspace.searchPlaceholder": "Search in {spaceName}",
   "workspace.searchScope": "Search scope",
@@ -1497,8 +1519,10 @@ const ja: Catalog = {
   "composer.imageCompressionCompressed": "圧縮済み",
   "composer.imageCompressionOriginal": "元の画像",
   "composer.imageCompressionPreviewAlt": "圧縮後の画像プレビュー",
+  "composer.imageCompressionSaveDefault": "この選択をデフォルトにする",
   "composer.imageCompressionTitle": "画像を圧縮",
   "upload.captionForFile": "{filename}のキャプション",
+  "upload.ask": "確認",
   "upload.clear": "アップロード準備をクリア",
   "upload.compressed": "圧縮",
   "upload.dialogTitle": "添付をアップロード",
@@ -1509,6 +1533,7 @@ const ja: Catalog = {
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",
   "context.ignoreUser": "無視",
+  "context.leaveSpace": "スペースから退出",
   "context.openKeyboardSettings": "キーボードショートカット",
   "context.openRoomInfo": "ルーム情報",
   "context.openSpaceInfo": "スペース情報",
@@ -1677,7 +1702,7 @@ const ja: Catalog = {
   "room.subscribed": "購読中",
   "room.summary": "ルーム概要",
   "room.tabs": "ルームタブ",
-  "room.threadToggle": "スレッドを切り替え",
+  "room.rightPanelToggle": "右パネルを切り替え",
   "room.timeline": "タイムライン",
   "room.topic": "ルームトピック",
   "room.type": "種類",
@@ -1705,6 +1730,8 @@ const ja: Catalog = {
   "settings.appearance": "外観",
   "settings.accountSwitcher": "アカウント切り替え",
   "settings.current": "現在",
+  "settings.autoLoadOlderMessages": "古いメッセージを自動で読み込む",
+  "settings.autoLoadOlderMessagesDescription": "読み込み済みタイムラインの先頭付近までスクロールしたらルーム履歴を先読みします",
   "settings.checkLocalEncryption": "ローカル暗号化を確認",
   "settings.credentialStore": "資格情報ストア",
   "settings.credentialStoreLinux": "Linux Secret Service",
@@ -1717,13 +1744,18 @@ const ja: Catalog = {
   "settings.homeserver": "ホームサーバー",
   "settings.keyboard": "キーボード",
   "settings.keyboardDescription": "実装済み操作の一般的なMatrixデスクトップクライアント互換ショートカットです。",
+  "settings.timeline": "タイムライン",
   "settings.display": "表示",
   "settings.codeBlockWrap": "コードブロックの長い行を折り返す",
   "settings.hideRedacted": "削除されたメッセージを非表示",
   "settings.urlPreviews": "URLプレビュー",
   "settings.urlPreviewsEnabled": "リンクプレビューを表示",
   "settings.urlPreviewsDescription": "メッセージ内のリンクのプレビューを読み込む",
-  "settings.urlPreviewsEncryptedNotice": "暗号化されたルームではプライバシー保護のため、プレビューはデフォルトで無効になっています。",
+  "settings.urlPreviewsUnencrypted": "非暗号化ルームのURLプレビュー",
+  "settings.urlPreviewsUnencryptedDescription": "非暗号化ルームではリンクのプレビューをデフォルトで読み込む",
+  "settings.urlPreviewsEncrypted": "暗号化ルームのURLプレビュー",
+  "settings.urlPreviewsEncryptedDescription": "暗号化ルームで送信されたリンクのプレビュー読み込みを有効にする",
+  "settings.urlPreviewsEncryptedNotice": "暗号化ルームのプレビューはURLをホームサーバーやアクセス先サイトに知らせる可能性があります。",
   "settings.urlPreviewsEnabledForRoom": "このルームでリンクプレビューを有効にする",
   "timeline.linkPreviewHide": "プレビューを非表示",
   "timeline.linkPreviewFailed": "プレビューを読み込めませんでした",
@@ -2064,6 +2096,7 @@ const ja: Catalog = {
   "workspace.newDm": "新しいDM",
   "workspace.people": "ユーザー",
   "workspace.rooms": "ルーム",
+  "workspace.resizeRoomList": "ルームリストの幅を変更",
   "workspace.search": "検索",
   "workspace.searchPlaceholder": "{spaceName}内を検索",
   "workspace.searchScope": "検索範囲",

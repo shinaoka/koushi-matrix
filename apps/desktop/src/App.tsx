@@ -41,8 +41,11 @@ import {
 import {
   type FormEvent,
   type ChangeEvent,
+  type CSSProperties,
+  type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
+  type PointerEvent,
   type ReactNode,
   type RefObject,
   useEffect,
@@ -162,6 +165,7 @@ import type {
   SettingsPatch,
   StagedUploadCompressionChoice,
   StagedUploadItem,
+  ThreadMessage,
   TimelineMessage,
   TimelineMediaGalleryItem,
   UploadStagingRequestItem,
@@ -419,6 +423,24 @@ type ReportDialogState =
   | { kind: "content"; roomId: string; eventId: string }
   | { kind: "room"; roomId: string };
 type PrimaryView = "timeline" | "invites" | "explore" | "activity";
+const DEFAULT_SIDEBAR_WIDTH = 318;
+const MIN_SIDEBAR_WIDTH = 260;
+const MAX_SIDEBAR_WIDTH = 440;
+const COMPACT_RAIL_WIDTH = 56;
+const MIN_TIMELINE_WIDTH_WHILE_RESIZING = 180;
+function clampSidebarWidth(width: number, viewportWidth = window.innerWidth): number {
+  const responsiveMax =
+    viewportWidth <= 760
+      ? Math.max(
+          MIN_SIDEBAR_WIDTH,
+          Math.min(
+            MAX_SIDEBAR_WIDTH,
+            viewportWidth - COMPACT_RAIL_WIDTH - MIN_TIMELINE_WIDTH_WHILE_RESIZING
+          )
+        )
+      : MAX_SIDEBAR_WIDTH;
+  return Math.min(responsiveMax, Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)));
+}
 type InviteUserDialogState = {
   roomId: string;
   title: string;
@@ -751,7 +773,13 @@ function initialStagedCompressionChoice(
   if (!isImageCompressionCandidate(file)) {
     return { kind: "notApplicable" };
   }
-  return mode === "always" ? { kind: "compressed", mode } : { kind: "original" };
+  if (mode === "always") {
+    return { kind: "compressed", mode };
+  }
+  if (mode === "ask") {
+    return { kind: "ask" };
+  }
+  return { kind: "original" };
 }
 
 function forcedUploadMode(
@@ -760,6 +788,9 @@ function forcedUploadMode(
 ): ImageUploadCompressionMode {
   if (choice?.kind === "compressed") {
     return "always";
+  }
+  if (choice?.kind === "ask") {
+    return "ask";
   }
   if (choice?.kind === "original") {
     return "never";
@@ -801,7 +832,8 @@ export function App() {
   const [loginDeviceName, setLoginDeviceName] = useState("Matrix Desktop");
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
-  const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("thread");
+  const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
@@ -832,6 +864,7 @@ export function App() {
   const loginPasswordRef = useRef<HTMLInputElement>(null);
   const recoverySecretRef = useRef<HTMLInputElement>(null);
   const roomSettingsLoadRef = useRef<string | null>(null);
+  const spaceSettingsLoadRef = useRef<string | null>(null);
   const appTimelineTransport = useMemo<TimelineTransport | null>(() => {
     if (!tauriTimelineTransport) {
       return null;
@@ -1026,10 +1059,10 @@ export function App() {
             effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot),
             qaSendStatus
           )
-        : desktopAttentionWindowTitle("matrix-desktop", safeAttentionSummary)
+        : desktopAttentionWindowTitle("Kagome", safeAttentionSummary)
       : qaTitleEnabled()
         ? "matrix-desktop qa session=booting"
-        : "matrix-desktop";
+        : "Kagome";
 
     document.title = title;
     if (!isTauriRuntime()) {
@@ -1261,6 +1294,41 @@ export function App() {
   }, [
     rightPanelMode,
     snapshot?.state.navigation.active_room_id,
+    snapshot?.state.room_management.operation,
+    snapshot?.state.room_management.selected_room_id,
+    snapshot?.state.room_management.settings
+  ]);
+
+  useEffect(() => {
+    if (!snapshot || rightPanelMode !== "spaceInfo") {
+      return;
+    }
+    const activeSpaceId = snapshot.state.navigation.active_space_id;
+    if (!activeSpaceId) {
+      return;
+    }
+    const roomManagement = snapshot.state.room_management;
+    if (
+      roomManagement.selected_room_id === activeSpaceId &&
+      roomManagement.settings
+    ) {
+      spaceSettingsLoadRef.current = activeSpaceId;
+      return;
+    }
+    if (
+      roomManagement.operation.kind === "pending" &&
+      roomManagement.operation.room_id === activeSpaceId
+    ) {
+      return;
+    }
+    if (spaceSettingsLoadRef.current === activeSpaceId) {
+      return;
+    }
+    spaceSettingsLoadRef.current = activeSpaceId;
+    void api.loadRoomSettings(activeSpaceId).then(setSnapshot);
+  }, [
+    rightPanelMode,
+    snapshot?.state.navigation.active_space_id,
     snapshot?.state.room_management.operation,
     snapshot?.state.room_management.selected_room_id,
     snapshot?.state.room_management.settings
@@ -1518,6 +1586,10 @@ export function App() {
     setSnapshot(await api.selectSpace(spaceId));
   }
 
+  async function reorderSpaces(spaceIds: string[]) {
+    setSnapshot(await api.reorderSpaces(spaceIds));
+  }
+
   async function selectRoom(roomId: string) {
     setPrimaryView("timeline");
     setSnapshot(await api.selectRoom(roomId));
@@ -1579,7 +1651,9 @@ export function App() {
     if (!alias || isBusy || snapshot?.state.directory.join.kind === "joining") {
       return;
     }
-    setSnapshot(await api.joinDirectoryRoom(alias, serverNameFromAlias(alias)));
+    const nextSnapshot = await api.joinDirectoryRoom(alias, serverNameFromAlias(alias));
+    setPrimaryView("timeline");
+    setSnapshot(nextSnapshot);
   }
 
   function openCreateDialog(kind: "room" | "space") {
@@ -1618,7 +1692,12 @@ export function App() {
     }
     setIsBusy(true);
     try {
-      setSnapshot(await api.acceptInvite(roomId));
+      let nextSnapshot = await api.acceptInvite(roomId);
+      if (nextSnapshot.state.rooms.some((room) => room.room_id === roomId)) {
+        nextSnapshot = await api.selectRoom(roomId);
+      }
+      setSnapshot(nextSnapshot);
+      setPrimaryView("timeline");
     } finally {
       setIsBusy(false);
     }
@@ -1669,6 +1748,8 @@ export function App() {
   async function submitCreateDialog() {
     const kind = createDialog;
     const name = createDraftName.trim();
+    const activeSpaceIdForCreatedRoom =
+      kind === "room" ? snapshot?.state.navigation.active_space_id ?? null : null;
     // Guard against double-submit: a create already in flight (isBusy) or a
     // pending basic_operation (Rust-owned) must block re-entry.
     if (
@@ -1681,8 +1762,17 @@ export function App() {
     }
     setIsBusy(true);
     try {
-      const nextSnapshot =
+      let nextSnapshot =
         kind === "space" ? await api.createSpace(name) : await api.createRoom(name);
+      const createdRoomId = nextSnapshot.state.navigation.active_room_id;
+      const viaServer = createdRoomId ? serverNameFromRoomId(createdRoomId) : null;
+      if (kind === "room" && activeSpaceIdForCreatedRoom && createdRoomId && viaServer) {
+        nextSnapshot = await api.setSpaceChild(
+          activeSpaceIdForCreatedRoom,
+          createdRoomId,
+          viaServer
+        );
+      }
       setSnapshot(nextSnapshot);
       closeCreateDialog();
     } finally {
@@ -1914,13 +2004,28 @@ export function App() {
     });
   }
 
-  function settleImageCompressionDialog(choice: ImageUploadVariantKindPayload | "cancel") {
-    if (!imageCompressionDialog) {
+  async function settleImageCompressionDialog(
+    choice: ImageUploadVariantKindPayload | "cancel",
+    saveDefault = false
+  ) {
+    const dialog = imageCompressionDialog;
+    if (!dialog) {
       return;
     }
-    imageCompressionDialog.resolve(choice);
-    releaseImageCompressionPlan(imageCompressionDialog.plan);
     setImageCompressionDialog(null);
+    try {
+      if (choice !== "cancel" && saveDefault && snapshot) {
+        await updateSettings({
+          media: {
+            ...snapshot.state.settings.values.media,
+            image_upload_compression: choice === "Compressed" ? "always" : "never"
+          }
+        });
+      }
+    } finally {
+      dialog.resolve(choice);
+      releaseImageCompressionPlan(dialog.plan);
+    }
   }
 
   async function editMessage(message: { body: string | null; room_id: string; event_id: string }) {
@@ -2137,6 +2242,16 @@ export function App() {
       }
     }
 
+    if (target.kind === "space" && actionId === "leaveSpace") {
+      void api.leaveRoom(target.spaceId).then((nextSnapshot) => {
+        setSnapshot(nextSnapshot);
+        if (rightPanelMode === "spaceInfo") {
+          void setRightPanelModeClosingFocusedContext("closed");
+        }
+      });
+      return;
+    }
+
     const intent = rightPanelIntentForContextMenuAction(
       rightPanelTargetFromContextMenuTarget(target),
       actionId
@@ -2191,14 +2306,14 @@ export function App() {
   }
 
   if (!snapshot) {
-    return <div className="boot-screen">matrix-desktop</div>;
+    return <div className="boot-screen">{t("app.title")}</div>;
   }
 
   const sessionKind = snapshot.state.session.kind;
   const recoveryRequired = sessionKind === "needsRecovery" || sessionKind === "recovering";
 
   if (sessionKind === "restoring" || sessionKind === "loggingOut") {
-    return <div className="boot-screen">matrix-desktop</div>;
+    return <div className="boot-screen">{t("app.title")}</div>;
   }
 
   setActiveLocaleProfile(
@@ -2235,6 +2350,27 @@ export function App() {
   const searchResults = snapshot.state.search.kind === "results" ? snapshot.state.search.results : [];
   const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const rightPanelOpen = effectiveRightPanelMode !== "closed";
+  const appGridStyle = {
+    "--sidebar-width": `${sidebarWidth}px`
+  } as CSSProperties;
+
+  function beginSidebarResize(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+
+    function onPointerMove(moveEvent: globalThis.PointerEvent) {
+      setSidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX));
+    }
+
+    function onPointerUp() {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    }
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+  }
 
   return (
     <div className="desktop">
@@ -2252,7 +2388,10 @@ export function App() {
         onSearchQueryChange={setSearchQuery}
         onSearchScopeChange={setSearchScope}
       />
-      <div className={`app-grid ${rightPanelOpen ? "right-panel-open" : "thread-closed"}`}>
+      <div
+        className={`app-grid ${rightPanelOpen ? "right-panel-open" : "thread-closed"}`}
+        style={appGridStyle}
+      >
         <WorkspaceRail
           activeView={primaryView}
           snapshot={snapshot}
@@ -2263,6 +2402,9 @@ export function App() {
           }}
           onOpenUserSettings={() => {
             void setRightPanelModeClosingFocusedContext("userSettings");
+          }}
+          onReorderSpaces={(spaceIds) => {
+            void reorderSpaces(spaceIds);
           }}
           onSelectSpace={selectSpace}
         />
@@ -2276,14 +2418,29 @@ export function App() {
           onOpenExplore={() => {
             void openExploreView();
           }}
+          onOpenHome={() => {
+            void selectSpace(null);
+          }}
           onOpenInvites={() => {
             void openInvitesView();
           }}
           onOpenSpaceInfo={() => {
             void setRightPanelModeClosingFocusedContext("spaceInfo");
           }}
+          onOpenThreads={() => {
+            const roomId = snapshot.state.navigation.active_room_id;
+            if (roomId) {
+              void openThreadsListPanel(roomId);
+            }
+          }}
           onSelectRoom={selectRoom}
           onSelectRoomListFilter={selectRoomListFilter}
+        />
+        <button
+          className="app-grid-resizer"
+          type="button"
+          aria-label={t("workspace.resizeRoomList")}
+          onPointerDown={beginSidebarResize}
         />
         {primaryView === "activity" ? (
           <ActivityPane
@@ -2432,6 +2589,14 @@ export function App() {
           onOpenFiles={(scope) => {
             void openFilesView(scope);
           }}
+          onOpenSpaceMembers={
+            activeSpace
+              ? () => {
+                  spaceSettingsLoadRef.current = null;
+                  void api.loadRoomSettings(activeSpace.space_id).then(setSnapshot);
+                }
+              : undefined
+          }
           onRefreshFilesView={(scope, filter, sort) => {
             void refreshFilesView(scope, filter, sort);
           }}
@@ -2632,7 +2797,7 @@ export function App() {
         <ImageCompressionDialog
           plan={imageCompressionDialog.plan}
           onCancel={() => settleImageCompressionDialog("cancel")}
-          onChoose={(choice) => settleImageCompressionDialog(choice)}
+          onChoose={(choice, saveDefault) => settleImageCompressionDialog(choice, saveDefault)}
         />
       ) : null}
     </div>
@@ -2730,8 +2895,10 @@ function ImageCompressionDialog({
 }: {
   plan: ImageCompressionPlan;
   onCancel: () => void;
-  onChoose: (choice: ImageUploadVariantKindPayload) => void;
+  onChoose: (choice: ImageUploadVariantKindPayload, saveDefault: boolean) => void;
 }) {
+  const [saveDefault, setSaveDefault] = useState(false);
+
   function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -2756,7 +2923,7 @@ function ImageCompressionDialog({
           <button
             className="image-compression-option"
             type="button"
-            onClick={() => onChoose("Original")}
+            onClick={() => onChoose("Original", saveDefault)}
           >
             <span>{t("composer.imageCompressionOriginal")}</span>
             <strong>
@@ -2767,7 +2934,7 @@ function ImageCompressionDialog({
             className="image-compression-option is-preferred"
             type="button"
             autoFocus
-            onClick={() => onChoose("Compressed")}
+            onClick={() => onChoose("Compressed", saveDefault)}
           >
             <span>{t("composer.imageCompressionCompressed")}</span>
             <strong>
@@ -2775,6 +2942,14 @@ function ImageCompressionDialog({
             </strong>
           </button>
         </div>
+        <label className="dialog-checkbox">
+          <input
+            type="checkbox"
+            checked={saveDefault}
+            onChange={(event) => setSaveDefault(event.currentTarget.checked)}
+          />
+          <span>{t("composer.imageCompressionSaveDefault")}</span>
+        </label>
         <div className="dialog-actions">
           <button className="dialog-button" type="button" onClick={onCancel}>
             {t("dialog.cancel")}
@@ -3372,6 +3547,7 @@ export function WorkspaceRail({
   onOpenContextMenu,
   onOpenActivity,
   onOpenUserSettings,
+  onReorderSpaces,
   onSelectSpace
 }: {
   activeView: PrimaryView;
@@ -3380,68 +3556,131 @@ export function WorkspaceRail({
   onOpenContextMenu: OpenContextMenu;
   onOpenActivity: () => void;
   onOpenUserSettings: () => void;
+  onReorderSpaces: (spaceIds: string[]) => void;
   onSelectSpace: (spaceId: string | null) => void;
 }) {
+  const [draggedSpaceId, setDraggedSpaceId] = useState<string | null>(null);
+  const [dragOverSpaceId, setDragOverSpaceId] = useState<string | null>(null);
+  const spaceIds = snapshot.sidebar.space_rail.map((space) => space.space_id);
+
+  function dropSpaceOn(targetSpaceId: string, event: DragEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const sourceSpaceId = draggedSpaceId ?? event.dataTransfer.getData("text/plain");
+    setDraggedSpaceId(null);
+    setDragOverSpaceId(null);
+
+    if (!sourceSpaceId || sourceSpaceId === targetSpaceId) {
+      return;
+    }
+
+    const sourceIndex = spaceIds.indexOf(sourceSpaceId);
+    const targetIndex = spaceIds.indexOf(targetSpaceId);
+    if (sourceIndex < 0 || targetIndex < 0) {
+      return;
+    }
+
+    const nextSpaceIds = [...spaceIds];
+    const [movedSpaceId] = nextSpaceIds.splice(sourceIndex, 1);
+    if (!movedSpaceId) {
+      return;
+    }
+    nextSpaceIds.splice(targetIndex, 0, movedSpaceId);
+    onReorderSpaces(nextSpaceIds);
+  }
+
   return (
     <nav className="workspace-rail" aria-label={t("workspace.workspaces")}>
-      <div className="workspace-list">
-        <button
-          className={`workspace-button ${activeView === "activity" ? "is-active" : ""}`}
-          data-count={snapshot.sidebar.account_home.unread_count || undefined}
-          data-mention-count={snapshot.sidebar.account_home.highlight_count || undefined}
-          type="button"
-          aria-label={t("workspace.activity")}
-          onClick={onOpenActivity}
-        >
-          <Clock3 size={ICON_SIZE.rail} />
-        </button>
-        <Tooltip label={snapshot.sidebar.account_home.display_name}>
-          {(tooltipProps) => (
-            <button
-              className={`workspace-button ${
-                activeView === "timeline" && snapshot.sidebar.account_home.is_active
-                  ? "is-active"
-                  : ""
-              }`}
-              data-count={snapshot.sidebar.account_home.unread_count || undefined}
-              data-mention-count={snapshot.sidebar.account_home.highlight_count || undefined}
-              type="button"
-              aria-label={snapshot.sidebar.account_home.display_name}
-              onClick={() => onSelectSpace(null)}
-              {...tooltipProps}
-            >
-              <Home size={ICON_SIZE.rail} />
-            </button>
-          )}
-        </Tooltip>
-        {snapshot.sidebar.space_rail.map((space) => (
-          <Tooltip label={space.display_name} key={space.space_id}>
+      <div className="workspace-rail-main">
+        <div className="workspace-list workspace-system-list">
+          <button
+            className={`workspace-button workspace-system-button ${
+              activeView === "activity" ? "is-active" : ""
+            }`}
+            data-count={snapshot.sidebar.account_home.unread_count || undefined}
+            data-mention-count={snapshot.sidebar.account_home.highlight_count || undefined}
+            type="button"
+            aria-label={t("workspace.activity")}
+            onClick={onOpenActivity}
+          >
+            <Bell size={ICON_SIZE.rail} />
+          </button>
+          <Tooltip label={snapshot.sidebar.account_home.display_name}>
             {(tooltipProps) => (
               <button
-                className={`workspace-button ${space.is_active ? "is-active" : ""}`}
-                data-count={space.unread_count || undefined}
-                data-mention-count={space.highlight_count || undefined}
+                className={`workspace-button workspace-system-button ${
+                  activeView === "timeline" && snapshot.sidebar.account_home.is_active
+                    ? "is-active"
+                    : ""
+                }`}
+                data-count={snapshot.sidebar.account_home.unread_count || undefined}
+                data-mention-count={snapshot.sidebar.account_home.highlight_count || undefined}
                 type="button"
-                aria-label={space.display_name}
-                onClick={() => onSelectSpace(space.space_id)}
-                onContextMenu={(event) =>
-                  onOpenContextMenu(
-                    event,
-                    { kind: "space", spaceId: space.space_id },
-                    contextMenuItems({ kind: "space" })
-                  )
-                }
+                aria-label={snapshot.sidebar.account_home.display_name}
+                onClick={() => onSelectSpace(null)}
                 {...tooltipProps}
               >
-                <EntityAvatar
-                  avatar={space.avatar}
-                  className="workspace-button-avatar is-space"
-                  fallback={initials(space.display_name)}
-                />
+                <Home size={ICON_SIZE.rail} />
               </button>
             )}
           </Tooltip>
-        ))}
+        </div>
+        <div className="workspace-rail-separator" role="separator" aria-orientation="horizontal" />
+        <div className="workspace-list workspace-space-list">
+          {snapshot.sidebar.space_rail.map((space) => (
+            <Tooltip label={space.display_name} key={space.space_id}>
+              {(tooltipProps) => (
+                <button
+                  className={`workspace-button workspace-space-button ${
+                    space.is_active ? "is-active" : ""
+                  }`}
+                  data-dragging={draggedSpaceId === space.space_id || undefined}
+                  data-drag-over={dragOverSpaceId === space.space_id || undefined}
+                  data-count={space.unread_count || undefined}
+                  data-mention-count={space.highlight_count || undefined}
+                  draggable
+                  type="button"
+                  aria-label={space.display_name}
+                  onClick={() => onSelectSpace(space.space_id)}
+                  onDragStart={(event) => {
+                    setDraggedSpaceId(space.space_id);
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", space.space_id);
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setDragOverSpaceId(space.space_id);
+                  }}
+                  onDragLeave={() => {
+                    setDragOverSpaceId((current) =>
+                      current === space.space_id ? null : current
+                    );
+                  }}
+                  onDrop={(event) => dropSpaceOn(space.space_id, event)}
+                  onDragEnd={() => {
+                    setDraggedSpaceId(null);
+                    setDragOverSpaceId(null);
+                  }}
+                  onContextMenu={(event) =>
+                    onOpenContextMenu(
+                      event,
+                      { kind: "space", spaceId: space.space_id },
+                      contextMenuItems({ kind: "space" })
+                    )
+                  }
+                  {...tooltipProps}
+                >
+                  <EntityAvatar
+                    avatar={space.avatar}
+                    className="workspace-button-avatar is-space"
+                    fallback={compactAvatarLabel(space.display_name)}
+                    fallbackMode="compactLabel"
+                  />
+                </button>
+              )}
+            </Tooltip>
+          ))}
+        </div>
       </div>
       <div className="rail-footer">
         <button
@@ -3511,8 +3750,10 @@ function Sidebar({
   onNewDm,
   onOpenContextMenu,
   onOpenExplore,
+  onOpenHome,
   onOpenInvites,
   onOpenSpaceInfo,
+  onOpenThreads,
   onSelectRoom,
   onSelectRoomListFilter
 }: {
@@ -3523,13 +3764,16 @@ function Sidebar({
   onNewDm: () => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenExplore: () => void;
+  onOpenHome: () => void;
   onOpenInvites: () => void;
   onOpenSpaceInfo: () => void;
+  onOpenThreads: () => void;
   onSelectRoom: (roomId: string) => void;
   onSelectRoomListFilter: (filter: RoomListFilter) => void;
 }) {
   const sections = roomListSections(
     snapshot.state.room_list,
+    snapshot.state.navigation.active_space_id,
     snapshot.state.spaces,
     snapshot.state.rooms,
     snapshot.state.invites
@@ -3579,6 +3823,7 @@ function Sidebar({
           active={activeView === "timeline" && snapshot.sidebar.account_home.is_active}
           icon={<Home size={ICON_SIZE.control} />}
           label={t("workspace.home")}
+          onClick={onOpenHome}
         />
         <NavButton
           count={threadAttention?.notification_count ?? 0}
@@ -3586,6 +3831,7 @@ function Sidebar({
           label={t("workspace.threads")}
           liveCount={threadAttention?.live_event_marker_count ?? 0}
           mentionCount={threadAttention?.highlight_count ?? 0}
+          onClick={onOpenThreads}
         />
         <NavButton
           active={activeView === "explore"}
@@ -3599,6 +3845,17 @@ function Sidebar({
           icon={<Bell size={ICON_SIZE.control} />}
           label={t("workspace.invites")}
           onClick={onOpenInvites}
+        />
+        <RoomSection
+          activeRoomId={activeRoomId}
+          id="invites"
+          kind="invite"
+          label={t("workspace.invites")}
+          rooms={sections.invites}
+          showWhenEmpty={snapshot.state.room_list.active_filter.kind === "invites"}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectInvite={onOpenInvites}
+          onSelectRoom={onSelectRoom}
         />
         <RoomSection
           activeRoomId={activeRoomId}
@@ -3651,15 +3908,17 @@ function RoomSection({
   rooms,
   showWhenEmpty = false,
   onOpenContextMenu,
+  onSelectInvite,
   onSelectRoom
 }: {
   activeRoomId: string | null;
   id: string;
-  kind: "room" | "dm";
+  kind: "room" | "dm" | "invite";
   label: string;
   rooms: RoomListItem[];
   showWhenEmpty?: boolean;
   onOpenContextMenu: OpenContextMenu;
+  onSelectInvite?: () => void;
   onSelectRoom: (roomId: string) => void;
 }) {
   if (!showWhenEmpty && rooms.length === 0) {
@@ -3676,6 +3935,7 @@ function RoomSection({
           key={room.room_id}
           room={room}
           onOpenContextMenu={onOpenContextMenu}
+          onSelectInvite={onSelectInvite}
           onSelectRoom={onSelectRoom}
         />
       ))}
@@ -3733,12 +3993,14 @@ function RoomButton({
   kind,
   room,
   onOpenContextMenu,
+  onSelectInvite,
   onSelectRoom
 }: {
   activeRoomId: string | null;
-  kind: "room" | "dm";
+  kind: "room" | "dm" | "invite";
   room: RoomListItem;
   onOpenContextMenu: OpenContextMenu;
+  onSelectInvite?: () => void;
   onSelectRoom: (roomId: string) => void;
 }) {
   const mentionCount = room.highlight_count || 0;
@@ -3749,8 +4011,18 @@ function RoomButton({
       data-room-kind={kind}
       data-testid="room-item"
       type="button"
-      onClick={() => onSelectRoom(room.room_id)}
-      onContextMenu={(event) =>
+      onClick={() => {
+        if (kind === "invite") {
+          onSelectInvite?.();
+          return;
+        }
+        onSelectRoom(room.room_id);
+      }}
+      onContextMenu={(event) => {
+        if (kind === "invite") {
+          event.preventDefault();
+          return;
+        }
         onOpenContextMenu(
           event,
           { kind: "room", roomId: room.room_id },
@@ -3759,8 +4031,8 @@ function RoomButton({
             roomId: room.room_id,
             tags: room.tags ?? EMPTY_ROOM_TAGS
           })
-        )
-      }
+        );
+      }}
     >
       <EntityAvatar
         avatar={room.avatar}
@@ -3779,16 +4051,32 @@ function RoomButton({
 function EntityAvatar({
   avatar,
   className,
-  fallback
+  fallback,
+  fallbackMode = "initials"
 }: {
   avatar: RoomListItem["avatar"];
   className: string;
   fallback: string;
+  fallbackMode?: "initials" | "compactLabel";
 }) {
   const sourceUrl = avatar?.thumbnail.kind === "ready" ? avatar.thumbnail.source_url : null;
+  const fallbackClassName =
+    fallbackMode === "compactLabel" ? "avatar-fallback compact-label" : "avatar-fallback";
+  const fallbackStyle =
+    fallbackMode === "compactLabel"
+      ? ({
+          "--avatar-label-length": Math.max(fallback.length, 1)
+        } as CSSProperties)
+      : undefined;
   return (
     <span className={className} aria-hidden="true">
-      {sourceUrl ? <img src={sourceUrl} /> : <span dir="auto">{fallback}</span>}
+      {sourceUrl ? (
+        <img src={sourceUrl} />
+      ) : (
+        <span className={fallbackClassName} dir="auto" style={fallbackStyle}>
+          {fallback}
+        </span>
+      )}
     </span>
   );
 }
@@ -4354,7 +4642,7 @@ function TimelinePane({
           >
             <ImageIcon size={ICON_SIZE.panel} />
           </button>
-          <button className="icon-button" type="button" aria-label={t("room.threadToggle")} onClick={onToggleThread}>
+          <button className="icon-button" type="button" aria-label={t("room.rightPanelToggle")} onClick={onToggleThread}>
             {snapshot.state.thread.kind !== "closed" ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
           </button>
           <button
@@ -4436,25 +4724,28 @@ function TimelinePane({
               onOpenContextMenu={onOpenContextMenu}
               currentUserId={currentUserId}
               ignoredUserIds={snapshot.state.profile.ignored_user_ids}
+              autoLoadOlderMessages={snapshot.state.settings.values.timeline.auto_load_older_messages}
               codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
-            snapshot.timeline.map((message) => (
-              <MessageArticle
-                key={message.event_id}
-                message={message}
-                query={searchQuery}
-                currentUserId={currentUserId}
-                onOpenContextMenu={onOpenContextMenu}
-                onEditMessage={onEditMessage}
-                onOpenThread={onOpenThread}
-                onRedactMessage={onRedactMessage}
-                profileUsers={snapshot.state.profile.users}
-                isIgnored={snapshot.state.profile.ignored_user_ids.includes(message.sender)}
-              />
-            ))
+            <div className="message-fixture-list">
+              {snapshot.timeline.map((message) => (
+                <MessageArticle
+                  key={message.event_id}
+                  message={message}
+                  query={searchQuery}
+                  currentUserId={currentUserId}
+                  onOpenContextMenu={onOpenContextMenu}
+                  onEditMessage={onEditMessage}
+                  onOpenThread={onOpenThread}
+                  onRedactMessage={onRedactMessage}
+                  profileUsers={snapshot.state.profile.users}
+                  isIgnored={snapshot.state.profile.ignored_user_ids.includes(message.sender)}
+                />
+              ))}
+            </div>
           )}
         </div>
       </section>
@@ -4563,6 +4854,16 @@ function UploadStagingDialog({
                   }}
                 >
                   {t("upload.original")}
+                </button>
+                <button
+                  className="dialog-button"
+                  type="button"
+                  aria-pressed={item.compression_choice.kind === "ask"}
+                  onClick={() => {
+                    void onUpdateCompression(item.staged_id, { kind: "ask" });
+                  }}
+                >
+                  {t("upload.ask")}
                 </button>
                 <button
                   className="dialog-button"
@@ -5555,6 +5856,7 @@ export function ContextualRightPanel({
   onClosePanel,
   onOpenThread,
   onOpenFiles,
+  onOpenSpaceMembers,
   onRefreshFilesView,
   onPaginateThreadsList,
   onOpenKeyboardSettings,
@@ -5618,6 +5920,7 @@ export function ContextualRightPanel({
   onClosePanel: () => void;
   onOpenThread: (roomId: string, rootEventId: string) => void;
   onOpenFiles: (scope: FilesViewScope) => void;
+  onOpenSpaceMembers?: () => void;
   onRefreshFilesView: (scope: AttachmentScope, filter: AttachmentFilter, sort: AttachmentSort) => void;
   onPaginateThreadsList: (roomId: string) => void;
   onOpenKeyboardSettings: () => void;
@@ -5722,6 +6025,7 @@ export function ContextualRightPanel({
           currentSession={currentSavedSession(snapshot)}
           e2eeTrust={snapshot.state.e2ee_trust}
           localEncryption={snapshot.state.local_encryption}
+          keyboardLabelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.locale_profile)}
           platform={snapshot.state.locale_profile.platform}
           profile={snapshot.state.profile}
           savedSessions={savedSessions}
@@ -5814,6 +6118,7 @@ export function ContextualRightPanel({
         <PanelHeader title={t("panel.spaceInfo")} onClose={onClosePanel} />
         <SpaceInfoPanel
           fallbackName={activeSpaceName}
+          roomManagement={snapshot.state.room_management}
           rooms={snapshot.state.rooms}
           space={activeSpace}
           onInvitePeople={
@@ -5828,6 +6133,11 @@ export function ContextualRightPanel({
           onOpenFiles={
             activeSpace
               ? () => onOpenFiles({ kind: "space", space_id: activeSpace.space_id })
+              : undefined
+          }
+          onOpenMembers={
+            activeSpace
+              ? onOpenSpaceMembers
               : undefined
           }
         />
@@ -5905,6 +6215,7 @@ export function ContextualRightPanel({
               pinnedEventIds={focusedPinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
               onSetLocalUserAlias={onSetLocalUserAlias}
+              autoLoadOlderMessages={snapshot.state.settings.values.timeline.auto_load_older_messages}
               codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
             />
@@ -5937,6 +6248,14 @@ export function ContextualRightPanel({
     currentUserId && timelineTransport && threadRoomId && rootEventId
       ? threadTimelineKey(currentUserId, threadRoomId, rootEventId)
       : null;
+  const fixtureThreadSnapshot = snapshot.thread;
+  const browserThreadSnapshot =
+    !timelineTransport &&
+    fixtureThreadSnapshot &&
+    fixtureThreadSnapshot.room_id === threadRoomId &&
+    fixtureThreadSnapshot.root_event_id === rootEventId
+      ? fixtureThreadSnapshot
+      : null;
   const threadPinnedEventIds = pinnedEventsForRoom(snapshot, threadRoomId).map(
     (event) => event.event_id
   );
@@ -5959,9 +6278,26 @@ export function ContextualRightPanel({
             pinnedEventIds={threadPinnedEventIds}
             forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
             onSetLocalUserAlias={onSetLocalUserAlias}
+            autoLoadOlderMessages={snapshot.state.settings.values.timeline.auto_load_older_messages}
             codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
             searchQuery={searchQuery}
           />
+        ) : browserThreadSnapshot ? (
+          <div className="message-fixture-list thread-fixture-list">
+            {browserThreadSnapshot.replies.map((reply) => (
+              <MessageArticle
+                key={reply.event_id}
+                message={threadReplyToTimelineMessage(reply)}
+                query={searchQuery}
+                currentUserId={currentUserId}
+                onEditMessage={() => undefined}
+                onOpenThread={() => undefined}
+                onRedactMessage={() => undefined}
+                profileUsers={snapshot.state.profile.users}
+                isIgnored={snapshot.state.profile.ignored_user_ids.includes(reply.sender)}
+              />
+            ))}
+          </div>
         ) : (
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>
         )}
@@ -6191,6 +6527,13 @@ function serverNameFromAlias(alias: string): string | null {
   return alias.slice(separatorIndex + 1).trim() || null;
 }
 
+function serverNameFromRoomId(roomId: string): string | null {
+  if (!roomId.startsWith("!")) {
+    return null;
+  }
+  return serverNameFromAlias(roomId);
+}
+
 function operationFailureLabel(kind: OperationFailureKind): string {
   switch (kind) {
     case "forbidden":
@@ -6214,6 +6557,23 @@ function initials(value: string): string {
     return ascii.slice(0, 2).join("").toUpperCase();
   }
   return value.slice(0, 2);
+}
+
+function compactAvatarLabel(value: string): string {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  return normalized || initials(value);
+}
+
+function threadReplyToTimelineMessage(reply: ThreadMessage): TimelineMessage {
+  return {
+    room_id: reply.room_id,
+    event_id: reply.event_id,
+    sender: reply.sender,
+    timestamp_ms: reply.timestamp_ms,
+    body: reply.body,
+    attachment_filename: null,
+    reply_count: 0
+  };
 }
 
 function formatTime(timestampMs: number): string {

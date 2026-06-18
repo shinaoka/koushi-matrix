@@ -76,7 +76,8 @@ describe("context menu registry", () => {
     ]);
     expect(contextMenuItems({ kind: "space" }).map((item) => item.id)).toEqual([
       "selectSpace",
-      "openSpaceInfo"
+      "openSpaceInfo",
+      "leaveSpace"
     ]);
     expect(contextMenuItems({ kind: "account" }).map((item) => item.id)).toEqual([
       "openUserSettings",

@@ -297,6 +297,7 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
         navigation: NavigationState {
             active_space_id: Some("space-a".to_owned()),
             active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
         },
         spaces: vec![SpaceSummary {
             space_id: "space-a".to_owned(),
@@ -520,6 +521,7 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
         navigation: NavigationState {
             active_space_id: Some("space-a".to_owned()),
             active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
         },
         spaces: vec![SpaceSummary {
             space_id: "space-a".to_owned(),
@@ -579,6 +581,7 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
         NavigationState {
             active_space_id: Some("space-a".to_owned()),
             active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
         }
     );
     assert_eq!(state.spaces.len(), 1);
@@ -653,6 +656,7 @@ fn logout_clears_session_views_and_notifies_ui() {
         navigation: NavigationState {
             active_space_id: Some("space-a".to_owned()),
             active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
         },
         spaces: vec![SpaceSummary {
             space_id: "space-a".to_owned(),

@@ -1,22 +1,36 @@
-import { Bell, ChevronRight, FileText, Home, MailPlus, Settings, SlidersHorizontal } from "lucide-react";
-import type { ReactNode } from "react";
+import {
+  Bell,
+  ChevronRight,
+  FileText,
+  Home,
+  MailPlus,
+  Settings,
+  SlidersHorizontal,
+  Users
+} from "lucide-react";
+import { type ReactNode, useRef } from "react";
 
 import { t } from "../i18n/messages";
-import type { RoomSummary, SpaceSummary } from "../domain/types";
+import type { RoomManagementState, RoomSummary, SpaceSummary } from "../domain/types";
 
 export function SpaceInfoPanel({
   fallbackName,
   rooms,
+  roomManagement,
   space,
   onInvitePeople,
-  onOpenFiles
+  onOpenFiles,
+  onOpenMembers
 }: {
   fallbackName: string;
   rooms: RoomSummary[];
+  roomManagement?: RoomManagementState;
   space: SpaceSummary | null;
   onInvitePeople?: () => void;
   onOpenFiles?: () => void;
+  onOpenMembers?: () => void;
 }) {
+  const membersSectionRef = useRef<HTMLElement>(null);
   const childRooms = space
     ? space.child_room_ids
         .map((roomId) => rooms.find((room) => room.room_id === roomId))
@@ -24,6 +38,22 @@ export function SpaceInfoPanel({
     : rooms.filter((room) => !room.is_dm);
   const unreadTotal = childRooms.reduce((sum, room) => sum + room.unread_count, 0);
   const title = space?.display_name ?? fallbackName;
+  const loadedSpaceSettings =
+    space && roomManagement?.selected_room_id === space.space_id
+      ? roomManagement.settings
+      : null;
+  const loadingMembers =
+    Boolean(space) &&
+    roomManagement?.operation.kind === "pending" &&
+    roomManagement.operation.room_id === space?.space_id;
+  const memberCount = loadedSpaceSettings?.members.length ?? 0;
+
+  function openMembers() {
+    onOpenMembers?.();
+    window.requestAnimationFrame(() => {
+      membersSectionRef.current?.scrollIntoView({ block: "start" });
+    });
+  }
 
   return (
     <section className="settings-panel space-info-panel" aria-labelledby="space-info-title">
@@ -36,6 +66,7 @@ export function SpaceInfoPanel({
 
       <div className="settings-summary-grid" aria-label={t("space.summary")}>
         <SummaryTile label={t("workspace.rooms")} value={String(childRooms.length)} />
+        <SummaryTile label={t("room.members")} value={loadedSpaceSettings ? String(memberCount) : "-"} />
         <SummaryTile label={t("room.unread")} value={String(unreadTotal)} />
       </div>
 
@@ -48,6 +79,34 @@ export function SpaceInfoPanel({
               <small dir="auto">{room.unread_count ? t("room.unreadCount", { count: room.unread_count }) : room.room_id}</small>
             </div>
           ))}
+        </div>
+      </section>
+
+      <section
+        ref={membersSectionRef}
+        className="settings-section"
+        id="space-members"
+        aria-label={t("room.members")}
+      >
+        <h3>{t("room.members")}</h3>
+        <div className="settings-detail-list">
+          {loadingMembers ? (
+            <DetailRow label={t("room.members")} value={t("settings.saving")} />
+          ) : loadedSpaceSettings ? (
+            loadedSpaceSettings.members.length > 0 ? (
+              loadedSpaceSettings.members.map((member) => (
+                <DetailRow
+                  key={member.user_id}
+                  label={member.display_label}
+                  value={member.user_id}
+                />
+              ))
+            ) : (
+              <DetailRow label={t("room.members")} value={t("room.noMembers")} />
+            )
+          ) : (
+            <DetailRow label={t("room.members")} value={t("room.noMembers")} />
+          )}
         </div>
       </section>
 
@@ -65,6 +124,7 @@ export function SpaceInfoPanel({
           { icon: <Home size={16} />, label: t("space.home") },
           { icon: <SlidersHorizontal size={16} />, label: t("space.preferences") },
           { icon: <Settings size={16} />, label: t("space.spaceSettings") },
+          { icon: <Users size={16} />, label: t("room.members"), onClick: space ? openMembers : undefined },
           { icon: <MailPlus size={16} />, label: t("space.invite"), onClick: onInvitePeople },
           { icon: <Bell size={16} />, label: t("room.notifications") },
           { icon: <FileText size={16} />, label: t("room.files"), onClick: onOpenFiles }
@@ -104,6 +164,7 @@ function SettingsEntryList({
           className="settings-list-item"
           key={entry.label}
           type="button"
+          disabled={!entry.onClick}
           onClick={entry.onClick}
         >
           <span className="settings-list-label">

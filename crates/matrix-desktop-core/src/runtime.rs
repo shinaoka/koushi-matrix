@@ -1596,7 +1596,13 @@ impl AppActor {
                 sequence: 0,
             },
             TimelineCommand::BroadcastLinkPreviewPolicy {
-                global_enabled: self.state.settings.values.display.url_previews_enabled,
+                unencrypted_global_enabled: self.state.settings.values.display.url_previews_enabled,
+                encrypted_global_enabled: self
+                    .state
+                    .settings
+                    .values
+                    .display
+                    .encrypted_url_previews_enabled,
                 room_overrides: self.state.link_preview_settings.room_overrides.clone(),
             },
         )
@@ -2320,6 +2326,7 @@ mod tests {
                             code_block_wrap: true,
                             hide_redacted: true,
                             url_previews_enabled: true,
+                            encrypted_url_previews_enabled: false,
                         }),
                         ..SettingsPatch::default()
                     },

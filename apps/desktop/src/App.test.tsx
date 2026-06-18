@@ -62,11 +62,13 @@ describe("ContextualRightPanel", () => {
         onOpenContextMenu={() => undefined}
         onOpenActivity={() => undefined}
         onOpenUserSettings={() => undefined}
+        onReorderSpaces={() => undefined}
         onSelectSpace={() => undefined}
       />
     );
 
     expect(markup).toContain('aria-label="Activity"');
+    expect(markup).toContain('role="separator"');
     expect(markup).toContain('aria-label="Create space"');
   });
 
@@ -94,11 +96,15 @@ describe("ContextualRightPanel", () => {
         onOpenContextMenu={() => undefined}
         onOpenActivity={() => undefined}
         onOpenUserSettings={() => undefined}
+        onReorderSpaces={() => undefined}
         onSelectSpace={() => undefined}
       />
     );
 
     expect(markup).toContain('aria-label="Ops Space"');
+    expect(markup).toContain("draggable");
+    expect(markup).toContain("compact-label");
+    expect(markup).toContain("Ops Space");
     expect(markup).toContain('data-count="13"');
     expect(markup).toContain('data-mention-count="2"');
   });
@@ -1117,16 +1123,21 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain("disabled");
   });
 
-  test("thread render path does not read legacy snapshot timeline or replies", () => {
+  test("thread render path keeps Tauri transport ahead of browser fixture fallback", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const threadBranchStart = source.indexOf("const threadState = snapshot.state.thread;");
     const threadBranchEnd = source.indexOf("function PanelHeader", threadBranchStart);
     const threadBranch = source.slice(threadBranchStart, threadBranchEnd);
+    const transportOffset = threadBranch.indexOf("threadTimelineKeyValue && threadRoomId && timelineTransport");
+    const fallbackOffset = threadBranch.indexOf("browserThreadSnapshot ?");
 
     expect(threadBranch).toContain("threadTimelineKey(");
+    expect(threadBranch).toContain("!timelineTransport");
+    expect(threadBranch).toContain("snapshot.thread");
+    expect(threadBranch).toContain("threadReplyToTimelineMessage(reply)");
     expect(threadBranch).not.toContain("snapshot.timeline");
-    expect(threadBranch).not.toContain("snapshot.thread");
-    expect(threadBranch).not.toContain(".replies");
+    expect(transportOffset).toBeGreaterThanOrEqual(0);
+    expect(fallbackOffset).toBeGreaterThan(transportOffset);
   });
 
   test("Tauri timeline transport routes thread pagination by TimelineKey", () => {
@@ -1192,6 +1203,57 @@ describe("Tauri state refresh wiring", () => {
     expect(source).toContain("STATE_EVENT_NAME");
     expect(source).toContain("listen<string>(STATE_EVENT_NAME");
     expect(source).toContain("void refresh()");
+  });
+
+  test("browser fixture messages use a natural-flow wrapper", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const fallbackStart = source.indexOf("Browser fixture preview only");
+    const fallbackEnd = source.indexOf("</div>", fallbackStart);
+    const fallbackSource = source.slice(fallbackStart, fallbackEnd);
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+    expect(fallbackStart).toBeGreaterThanOrEqual(0);
+    expect(fallbackSource).toContain('className="message-fixture-list"');
+    expect(fallbackSource).toContain("snapshot.timeline.map");
+    expect(styles).toContain(".message-fixture-list");
+    expect(styles).toContain("@media (min-width: 761px) and (max-width: 1180px)");
+    expect(styles).toContain(".app-grid.right-panel-open .thread-pane");
+  });
+
+  test("room creation links the new room into the active space", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const createStart = source.indexOf("async function submitCreateDialog");
+    const createEnd = source.indexOf("async function setComposerReplyTarget", createStart);
+    const createSource = source.slice(createStart, createEnd);
+
+    expect(createSource).toContain("activeSpaceIdForCreatedRoom");
+    expect(createSource).toContain("api.createRoom(name)");
+    expect(createSource).toContain("serverNameFromRoomId(createdRoomId)");
+    expect(createSource).toContain("api.setSpaceChild(");
+  });
+
+  test("accepting an invite returns to the timeline view", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const acceptStart = source.indexOf("async function acceptInvite");
+    const acceptEnd = source.indexOf("async function declineInvite", acceptStart);
+    const acceptSource = source.slice(acceptStart, acceptEnd);
+
+    expect(acceptSource).toContain("api.acceptInvite(roomId)");
+    expect(acceptSource).toContain("api.selectRoom(roomId)");
+    expect(acceptSource).toContain('setPrimaryView("timeline")');
+  });
+
+  test("joining a directory room shows the backend-selected timeline", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const joinStart = source.indexOf("async function joinDirectoryRoom");
+    const joinEnd = source.indexOf("function openCreateDialog", joinStart);
+    const joinSource = source.slice(joinStart, joinEnd);
+
+    expect(joinSource).toContain("api.joinDirectoryRoom(alias, serverNameFromAlias(alias))");
+    expect(joinSource).toContain('setPrimaryView("timeline")');
+    expect(joinSource).toContain("setSnapshot(nextSnapshot)");
+    expect(joinSource).not.toContain("previousRoomIds");
+    expect(joinSource).not.toContain("api.selectRoom(");
   });
 
   test("keeps post-login recovery in the desktop render path", () => {

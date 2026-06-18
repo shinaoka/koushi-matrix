@@ -164,6 +164,8 @@ pub struct SettingsValues {
     pub display: DisplaySettings,
     #[serde(default)]
     pub media: MediaSettings,
+    #[serde(default)]
+    pub timeline: TimelineSettings,
 }
 
 impl SettingsValues {
@@ -189,6 +191,9 @@ impl SettingsValues {
         if let Some(media) = patch.media {
             self.media = media;
         }
+        if let Some(timeline) = patch.timeline {
+            self.timeline = timeline;
+        }
     }
 }
 
@@ -202,6 +207,7 @@ impl Default for SettingsValues {
             notifications: NotificationSettings::default(),
             display: DisplaySettings::default(),
             media: MediaSettings::default(),
+            timeline: TimelineSettings::default(),
         }
     }
 }
@@ -370,23 +376,30 @@ impl Default for RoomNotificationModeOperation {
 pub struct DisplaySettings {
     #[serde(default = "default_code_block_wrap")]
     pub code_block_wrap: bool,
-    #[serde(default)]
+    #[serde(default = "default_hide_redacted")]
     pub hide_redacted: bool,
     #[serde(default = "default_url_previews_enabled")]
     pub url_previews_enabled: bool,
+    #[serde(default)]
+    pub encrypted_url_previews_enabled: bool,
 }
 
 impl Default for DisplaySettings {
     fn default() -> Self {
         Self {
             code_block_wrap: true,
-            hide_redacted: false,
+            hide_redacted: true,
             url_previews_enabled: true,
+            encrypted_url_previews_enabled: false,
         }
     }
 }
 
 fn default_code_block_wrap() -> bool {
+    true
+}
+
+fn default_hide_redacted() -> bool {
     true
 }
 
@@ -405,7 +418,7 @@ pub struct MediaSettings {
 impl Default for MediaSettings {
     fn default() -> Self {
         Self {
-            image_upload_compression: ImageUploadCompressionMode::Never,
+            image_upload_compression: ImageUploadCompressionMode::Ask,
             image_upload_compression_policy: ImageUploadCompressionPolicy::default(),
         }
     }
@@ -415,8 +428,8 @@ impl Default for MediaSettings {
 #[serde(rename_all = "camelCase")]
 pub enum ImageUploadCompressionMode {
     Always,
-    Ask,
     #[default]
+    Ask,
     Never,
 }
 
@@ -439,6 +452,12 @@ impl Default for ImageUploadCompressionPolicy {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineSettings {
+    #[serde(default)]
+    pub auto_load_older_messages: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SettingsPersistenceState {
@@ -455,6 +474,7 @@ pub struct SettingsPatch {
     pub notifications: Option<NotificationSettings>,
     pub display: Option<DisplaySettings>,
     pub media: Option<MediaSettings>,
+    pub timeline: Option<TimelineSettings>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1437,6 +1457,10 @@ pub enum RoomListEntryKind {
 pub struct NavigationState {
     pub active_space_id: Option<String>,
     pub active_room_id: Option<String>,
+    #[serde(default)]
+    pub space_order: Vec<String>,
+    #[serde(default)]
+    pub last_room_by_space_id: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2802,6 +2826,7 @@ pub enum StagedUploadKind {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum StagedUploadCompressionChoice {
     NotApplicable,
+    Ask,
     Original,
     Compressed { mode: ImageUploadCompressionMode },
 }

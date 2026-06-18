@@ -50,7 +50,12 @@ const baseAppSettings: SettingsState = {
       send_read_receipts: true,
       send_typing_notifications: true
     },
-    display: { code_block_wrap: true, hide_redacted: false, url_previews_enabled: true },
+    display: {
+      code_block_wrap: true,
+      hide_redacted: false,
+      url_previews_enabled: true,
+      encrypted_url_previews_enabled: false
+    },
     media: {
       image_upload_compression: "never",
       image_upload_compression_policy: {
@@ -59,6 +64,9 @@ const baseAppSettings: SettingsState = {
         target_long_edge: 2048,
         quality_percent: 82
       }
+    },
+    timeline: {
+      auto_load_older_messages: false
     }
   },
   persistence: { kind: "idle" }
@@ -376,7 +384,7 @@ describe("RoomInfoPanel URL previews", () => {
     expect(toggle.hasAttribute("disabled")).toBe(false);
   });
 
-  test("unchecks and disables the toggle for encrypted rooms by default", () => {
+  test("unchecks but keeps the toggle enabled for encrypted rooms by default", () => {
     const { getByRole, getByText } = render(
       <RoomInfoPanel
         room={{ ...baseRoom, is_encrypted: true }}
@@ -392,10 +400,37 @@ describe("RoomInfoPanel URL previews", () => {
       name: "Enable link previews for this room"
     });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
-    expect(toggle.hasAttribute("disabled")).toBe(true);
+    expect(toggle.hasAttribute("disabled")).toBe(false);
     expect(
-      getByText("Previews are disabled in encrypted rooms by default for privacy.")
+      getByText("Encrypted-room previews can reveal URLs to the homeserver and destination site.")
     ).toBeDefined();
+  });
+
+  test("checks the toggle for encrypted rooms when the encrypted global default is on", () => {
+    const { getByRole } = render(
+      <RoomInfoPanel
+        room={{ ...baseRoom, is_encrypted: true }}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        appSettings={{
+          ...baseAppSettings,
+          values: {
+            ...baseAppSettings.values,
+            display: {
+              ...baseAppSettings.values.display,
+              encrypted_url_previews_enabled: true
+            }
+          }
+        }}
+        linkPreviewSettings={baseLinkPreviewSettings}
+        onSetRoomUrlPreviewOverride={() => undefined}
+      />
+    );
+
+    const toggle = getByRole("switch", {
+      name: "Enable link previews for this room"
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
   });
 
   test("dispatches a per-room override when the toggle is clicked", () => {

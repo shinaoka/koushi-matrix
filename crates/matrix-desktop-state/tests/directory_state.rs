@@ -285,7 +285,7 @@ fn directory_join_by_alias_is_rust_owned_and_request_correlated() {
         DirectoryJoinState::Joining { request_id: 11, .. }
     ));
 
-    reduce(
+    let effects = reduce(
         &mut state,
         AppAction::DirectoryJoinSucceeded {
             request_id: 11,
@@ -294,6 +294,74 @@ fn directory_join_by_alias_is_rust_owned_and_request_correlated() {
     );
 
     assert_eq!(state.directory.join, DirectoryJoinState::Idle);
+    assert_eq!(
+        state.navigation.active_room_id.as_deref(),
+        Some("!joined:example.invalid")
+    );
+    assert_eq!(
+        state.timeline.room_id.as_deref(),
+        Some("!joined:example.invalid")
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::DirectoryChanged),
+            AppEffect::SubscribeTimeline {
+                room_id: "!joined:example.invalid".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "!joined:example.invalid".to_owned(),
+            }),
+        ]
+    );
+}
+
+#[test]
+fn directory_join_selects_joined_room_in_home_scope() {
+    let mut state = ready_state();
+    let alias = "#public:example.invalid".to_owned();
+    state.navigation.active_space_id = Some("!space:example.invalid".to_owned());
+    state.navigation.active_room_id = Some("!old:example.invalid".to_owned());
+
+    reduce(
+        &mut state,
+        AppAction::DirectoryJoinRequested {
+            request_id: 17,
+            alias: alias.clone(),
+            via_server: Some("example.invalid".to_owned()),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::DirectoryJoinSucceeded {
+            request_id: 17,
+            room_id: "!joined:example.invalid".to_owned(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_space_id, None);
+    assert_eq!(
+        state.navigation.active_room_id.as_deref(),
+        Some("!joined:example.invalid")
+    );
+    assert_eq!(
+        state.timeline.room_id.as_deref(),
+        Some("!joined:example.invalid")
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::DirectoryChanged),
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SubscribeTimeline {
+                room_id: "!joined:example.invalid".to_owned(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "!joined:example.invalid".to_owned(),
+            }),
+        ]
+    );
 }
 
 #[test]

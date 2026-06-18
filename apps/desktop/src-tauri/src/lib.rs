@@ -433,7 +433,7 @@ fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     let toggle_right_panel = menu_item(manager, MENU_ID_TOGGLE_RIGHT_PANEL)?;
     let show_keyboard_settings = menu_item(manager, MENU_ID_SHOW_KEYBOARD_SETTINGS)?;
 
-    let app_menu = SubmenuBuilder::new(manager, "matrix-desktop")
+    let app_menu = SubmenuBuilder::new(manager, "Kagome")
         .item(&open_user_settings)
         .separator()
         .quit()
@@ -773,6 +773,7 @@ pub fn run() {
             commands::submit_identity_reset_oauth,
             commands::resolve_composer_key_action,
             commands::select_space,
+            commands::reorder_spaces,
             commands::select_room,
             commands::select_search_result,
             commands::close_focused_context,
