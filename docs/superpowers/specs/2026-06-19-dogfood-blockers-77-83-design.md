@@ -1,7 +1,7 @@
 # Dogfood Blockers #77–#83 — Completion Design
 
 - Date: 2026-06-19
-- Status: Draft (for codex review, then user review)
+- Status: Revised after codex review (2026-06-19); pending user review
 - Branch: `feat/dogfood-blockers-77-83`
 - Issues: #77, #78, #79, #80, #81, #83
 - Cross-cutting constraint: issue #87 (behavior-preserving modularization +
@@ -82,7 +82,10 @@ with #87 instead of fighting it.
      - `crates/matrix-desktop-state/src/state/media_download.rs` —
        `TimelineMediaDownloadState`, `MediaTransferProgress`.
      - `state.rs` keeps the `AppState` / `SettingsValues` / `TimelinePaneState`
-       fields and `pub use`s the new modules. (`AppState`, `reducer.rs`, and
+       fields; callers import the new types via `state::search_crawler` /
+       `state::media_download` module paths. Add a compatibility `pub use` only
+       where an existing caller demonstrably requires it (avoid widening the
+       public surface — see #87 Phase 3). (`AppState`, `reducer.rs`, and
        `action.rs` are *not* split here — that is #87 Phase 2.)
    - React: new UI is extracted into bounded components rather than growing
      `TimelineView.tsx` / `App.tsx`:
@@ -105,8 +108,9 @@ with #87 instead of fighting it.
    `search-crawler.spec.ts`) instead of growing `basic-operations.spec.ts`.
    This also removes cross-agent file contention (§5).
 5. **Public-surface discipline** (#87 Phase 3). Export new types through their
-   module path; do not widen the broad `lib.rs` re-export beyond what callers
-   need.
+   module path (`state::search_crawler`, `state::media_download`); do not add
+   broad `state.rs` / `lib.rs` re-exports beyond what existing callers
+   demonstrably need. Fewer re-exports now = less to narrow at #87 Phase 3.
 
 ## 4. Per-issue design & completion scope
 
@@ -120,9 +124,18 @@ the Rust state, Tauri `dto.rs`, TypeScript `types.ts`, `coreEvents.ts`, and
 `SearchEvent::{HistoryCrawlProgress, HistoryCrawlCompleted, HistoryCrawlFailed}`;
 `AppState.search_crawler: SearchCrawlerState` keyed by room, with
 `SearchCrawlerRoomState ∈ {Idle, Running{processed, indexed}, Completed{indexed},
-Failed{kind, message}}`; `SettingsValues.search_crawler: SearchCrawlerSettings {
+Failed{kind}}`; `SettingsValues.search_crawler: SearchCrawlerSettings {
 speed ∈ {Standard, Fast, Slow, Paused}, include_media_captions,
 include_filenames }`.
+
+**Privacy of failures (revised per review, finding 1).** The mirrored failure
+carries only a coarse Rust-owned `kind`
+(`RoomNotFound | Sdk | Decryption | IndexUnavailable`), rendered via an i18n
+catalog key. The raw error string is **removed from the reducer state and the
+DTO** (the WIP's `Failed{message}` field is dropped); the detail is logged
+internally, redacted, and never crosses the Tauri/TypeScript boundary or appears
+in QA output. A test must assert that no raw SDK error text or Matrix identifier
+reaches the snapshot DTO.
 
 **Compile fixes (WP1).**
 
@@ -145,12 +158,36 @@ Index event text plus, per settings, media captions / filenames / metadata —
 skip UTD events. Progress/Completed/Failed projected into
 `AppState.search_crawler`.
 
-**Auto-start (new, approved by user).** When a *joined* room becomes known /
-observed and `speed != Paused`, enqueue an **idempotent** background crawl: do
-not restart a room already `Running` or `Completed`. Default `speed = Standard`
-(auto-on) — acceptable because only local test homeservers are used. `Paused`
-turns auto-start off. Manual `StartHistoryCrawl` / `StopHistoryCrawl` remain for
-explicit control.
+**Auto-start (new, approved by user; gated per review, finding 2).** Auto-start
+is gated behind the persisted Rust-owned `SearchCrawlerSettings.speed`: when
+crawling is enabled (`speed != Paused`) and a *joined* room is eligible, enqueue
+an **idempotent** background crawl — never restart a room already `Running` or
+`Completed`. Manual `StartHistoryCrawl` / `StopHistoryCrawl` remain for explicit
+control.
+
+Default: `speed = Standard` (auto-on) for the current **local-only / pre-dogfood
+phase** — faithful to the user's "auto-start" instruction and safe because only
+local test homeservers are used. Codex flagged that a persisted auto-on default
+is risky once real accounts exist (large histories decrypted/indexed, server
+load). Mitigation + **hard gate**: the default is a single Rust-owned persisted
+value and **must be revisited before any real-account / matrix.org support**
+(switch to default `Paused` with a first-run opt-in / migration). QA scenarios
+set `speed` explicitly rather than relying on the default.
+
+**Settings-change invalidation (guarded transitions, per review, finding 3).**
+The crawler is a guarded state machine over settings changes, not only over room
+discovery:
+- `Paused → active` (any non-`Paused` speed): enqueue **all** currently-known
+  eligible joined rooms (not just rooms observed after the toggle), so enabling
+  crawling backfills the existing room list.
+- `active → Paused`: stop in-flight crawls; keep `Completed` markers.
+- A **content-affecting** settings change (`include_media_captions` or
+  `include_filenames` toggled): invalidate affected `Completed` rooms back to an
+  eligible/`Idle` state so their indexes are rebuilt with the new inclusion
+  semantics; a pure `speed` change does **not** invalidate completed indexes.
+These transitions are Rust-owned and covered by reducer/state-machine tests; if
+the reducer gains new guarded transitions, keep the normative state-machine
+diagram in `docs/architecture/state-machine.md` in sync.
 
 **Settings UI (WP3).** A Search section: speed selector (incl. Paused = off),
 include-captions and include-filenames toggles, and per-room status
@@ -158,11 +195,15 @@ include-captions and include-filenames toggles, and per-room status
 state only.
 
 **Tests.** Crawler unit tests: no attachment bytes fetched, metadata indexed,
-edits skipped, throttle honored, failure surfaced. A headless-core-qa scenario
-(extend `search` or add `search_crawler`) proving backfill paging, no-media-byte
-fetch, throttle, and visible failure — **token-only** output
-(e.g. `crawl_backfill=ok`, `crawl_no_media_bytes=ok`, `crawl_throttle=ok`,
-`crawl_failure=ok`); no room IDs, event IDs, bodies, tokens, or raw SDK errors.
+edits skipped, throttle honored, failure surfaced as coarse `kind` only (assert
+no raw SDK error / Matrix id crosses the DTO). Reducer/state-machine tests for
+the guarded transitions above (enable enqueues all known eligible rooms;
+content-setting change invalidates completed rooms; idempotent no-restart). A
+headless-core-qa scenario (extend `search` or add `search_crawler`) proving
+backfill paging, no-media-byte fetch, throttle, and visible failure —
+**token-only** output (e.g. `crawl_backfill=ok`, `crawl_no_media_bytes=ok`,
+`crawl_throttle=ok`, `crawl_failure=ok`); no room IDs, event IDs, bodies, tokens,
+or raw SDK errors.
 
 ### #78 — Attachment download pending/progress
 
@@ -238,13 +279,18 @@ owns design, shared-surface integration, commits, codex reviews, and
 verification; Sonnet output is verified, never accepted blindly. No two agents
 edit the same hot file concurrently.
 
-- **WP1 — backend + compile (Sonnet, solo, first).** Owns all shared **Rust**
-  hot files (`state.rs`/new state submodules, `action.rs`, `reducer.rs`,
-  `command.rs`, `event.rs`, `search.rs`, `account.rs`, `sdk/src/lib.rs`,
-  `dto.rs`) and `search_crawler.rs`. Fix the 6 errors, finish #77 incl.
-  auto-start, relocate new state types into submodules, crawler unit tests +
-  headless-core-qa crawler scenario. **Exit criterion: `cargo build` and
-  `cargo test --workspace` green.** Everything else is blocked on this.
+- **WP1 — backend + compile + full mirror (Sonnet, solo, first).** Owns all
+  shared **Rust** hot files (`state.rs`/new state submodules, `action.rs`,
+  `reducer.rs`, `command.rs`, `event.rs`, `search.rs`, `account.rs`,
+  `sdk/src/lib.rs`) and `search_crawler.rs`, **and the complete DTO/IPC mirror
+  for the backend types it adds**: `dto.rs`, `types.ts`, `coreEvents.ts`,
+  `coreEvents.generated.json`, plus the DTO + IPC-contract tests. Fix the 6
+  errors, finish #77 incl. gated auto-start + invalidation transitions, relocate
+  new state types into submodules, crawler unit tests + headless-core-qa crawler
+  scenario. **Exit criterion: `cargo build`, `cargo test --workspace`,
+  `typecheck`, and the IPC/DTO contract tests all green.** WP1 is the single
+  serialized owner of the DTO mirror; **all dependents are blocked until it
+  lands** (resolves the review's mirror-ownership conflict, finding 4).
 - **WP2 — timeline lane (Sonnet, after WP1).** #78 + #80 + #83. Sole owner of
   `TimelineView.tsx`, the new timeline subcomponents, `mediaUrl.ts`, timeline
   CSS, and the timeline e2e specs. Single owner avoids `TimelineView.tsx`
@@ -253,13 +299,19 @@ edit the same hot file concurrently.
   Settings UI. Owns `App.tsx` composer/pill regions, `EmojiPicker`,
   `RoomInfoPanel` / `SpaceInfoPanel`, the Settings Search section, and the
   emoji/member-list e2e specs.
-- **Shared front-end surfaces are Opus-owned**: `i18n/messages.ts`,
-  `domain/types.ts`, `coreEvents.ts` + `coreEvents.generated.json`, and the
-  `dto.rs` contract. Opus pre-places the agreed keys/shapes so WP2 and WP3 never
-  collide on them, then reconciles.
+- **Opus integration gate (between WP1 and WP2/WP3).** After WP1 lands the full
+  backend mirror, Opus runs a single gate that pre-places only the
+  **front-end-only** shared surfaces WP2/WP3 need: `i18n/messages.ts` keys and
+  any presentation-only `types.ts` additions not already supplied by WP1. The
+  DTO mirror (`dto.rs`, `coreEvents*`, domain `types.ts`) is **not** touched here
+  — WP1 already owns it. WP2/WP3 then edit only their disjoint component files +
+  their own spec files.
 
-Ownership map (no overlap): `TimelineView.tsx`→WP2; `App.tsx`→WP3;
-shared FE surfaces→Opus; Rust hot files→WP1.
+Ownership map (single owner per file, serialized): Rust hot files + full DTO
+mirror (`dto.rs` / `coreEvents*` / domain `types.ts`) → WP1; FE-only shared
+surfaces (`messages.ts`, presentation `types.ts`) → Opus gate after WP1;
+`TimelineView.tsx` + timeline subcomponents → WP2; `App.tsx` / panels / Settings
+→ WP3. No file has two concurrent owners.
 
 ## 6. Done-bar — all headless tests
 
@@ -289,8 +341,9 @@ weakened assertions**; all QA output private-data-free.
 - **`TimelineView.tsx` contention** across #78/#80/#83 → single WP2 owner +
   subcomponent extraction.
 - **Shared-mirror drift** (Rust state ↔ dto.rs ↔ types.ts ↔ coreEvents{,.json})
-  → Opus-owned integration + the `core_event_wire_format…` IPC-contract test +
-  the `dto.rs` serialization-contract test.
+  → WP1 is the single serialized owner of the full mirror and lands before
+  dependents; the `core_event_wire_format…` IPC-contract test + the `dto.rs`
+  serialization-contract test gate it.
 - **headless-core-qa flakiness** (documented in AGENTS.md) → bounded `SyncOnce`
   per the live-signals/e2ee notes; verify both SyncService and legacy legs where
   relevant.
