@@ -1712,6 +1712,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                     scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
                     staged_uploads: state.upload_staging.items_for_room(&room_id),
                     media_gallery: state.media_gallery.items_for_room(&room_id),
+                    media_downloads: Default::default(),
                 };
                 effects.push(AppEffect::SubscribeTimeline {
                     room_id: room_id.clone(),
@@ -2183,6 +2184,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
                 staged_uploads: state.upload_staging.items_for_room(&room_id),
                 media_gallery: state.media_gallery.items_for_room(&room_id),
+                media_downloads: Default::default(),
             };
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
@@ -3003,6 +3005,23 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
             Vec::new()
         }
+        AppAction::MediaDownloadUpdated {
+            room_id,
+            event_id,
+            state: download_state,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
+                return Vec::new();
+            }
+            state
+                .timeline
+                .media_downloads
+                .insert(event_id, download_state);
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+        }
         AppAction::ComposerDraftsLoaded { drafts } => {
             if !is_session_ready(state) {
                 return Vec::new();
@@ -3484,6 +3503,41 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 message,
             };
             vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+        }
+        AppAction::HistoryCrawlStarted { request_id, room_id } => {
+            state.search_crawler.rooms.insert(
+                room_id,
+                crate::state::SearchCrawlerRoomState::Running { processed: 0, indexed: 0 },
+            );
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
+        }
+        AppAction::HistoryCrawlProgress {
+            room_id,
+            processed,
+            indexed,
+        } => {
+            state
+                .search_crawler
+                .rooms
+                .insert(room_id, crate::state::SearchCrawlerRoomState::Running {
+                    processed,
+                    indexed,
+                });
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
+        }
+        AppAction::HistoryCrawlCompleted { room_id, indexed } => {
+            state
+                .search_crawler
+                .rooms
+                .insert(room_id, crate::state::SearchCrawlerRoomState::Completed { indexed });
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
+        }
+        AppAction::HistoryCrawlFailed { room_id, kind, message } => {
+            state.search_crawler.rooms.insert(
+                room_id,
+                crate::state::SearchCrawlerRoomState::Failed { kind, message },
+            );
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
         }
         AppAction::FilesViewOpened {
             request_id,
@@ -4456,6 +4510,7 @@ fn select_active_room_after_room_list_update(
         scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
+        media_downloads: Default::default(),
     };
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
@@ -4488,6 +4543,7 @@ fn select_active_room_for_navigation(
         scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
+        media_downloads: Default::default(),
     };
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
@@ -4725,7 +4781,8 @@ mod tests {
     use super::*;
     use crate::state::{
         AvatarImage, AvatarThumbnailState, LiveEventReceiptSummary, LiveEventReceipts,
-        LiveReadReceipt, LiveRoomSignalUpdate, PresenceKind, RoomLiveSignals, UserProfile,
+        LiveReadReceipt, LiveRoomSignalUpdate, MediaTransferProgress, OperationFailureKind,
+        PresenceKind, RoomLiveSignals, TimelineMediaDownloadState, UserProfile,
     };
 
     fn ready_state() -> AppState {
@@ -5053,5 +5110,90 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn media_download_updated_stores_state_for_active_room() {
+        let mut state = ready_state();
+        state.timeline.room_id = Some("!r:example.invalid".to_owned());
+
+        let effects = reduce(
+            &mut state,
+            AppAction::MediaDownloadUpdated {
+                room_id: "!r:example.invalid".to_owned(),
+                event_id: "$ev:example.invalid".to_owned(),
+                state: TimelineMediaDownloadState::Pending {
+                    progress: Some(MediaTransferProgress {
+                        current: 3,
+                        total: 10,
+                    }),
+                },
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "!r:example.invalid".to_owned(),
+            })]
+        );
+        assert_eq!(state.timeline.media_downloads.len(), 1);
+        let download = state
+            .timeline
+            .media_downloads
+            .get("$ev:example.invalid")
+            .expect("download entry");
+        assert!(matches!(
+            download,
+            TimelineMediaDownloadState::Pending {
+                progress: Some(MediaTransferProgress {
+                    current: 3,
+                    total: 10
+                })
+            }
+        ));
+    }
+
+    #[test]
+    fn media_download_updated_ignored_for_inactive_room() {
+        let mut state = ready_state();
+        state.timeline.room_id = Some("!r:example.invalid".to_owned());
+
+        let effects = reduce(
+            &mut state,
+            AppAction::MediaDownloadUpdated {
+                room_id: "!other:example.invalid".to_owned(),
+                event_id: "$ev:example.invalid".to_owned(),
+                state: TimelineMediaDownloadState::Ready {
+                    source_url: "/tmp/x.png".to_owned(),
+                    width: Some(100),
+                    height: Some(100),
+                    mime_type: Some("image/png".to_owned()),
+                },
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert!(state.timeline.media_downloads.is_empty());
+    }
+
+    #[test]
+    fn media_download_updated_ignored_without_ready_session() {
+        let mut state = AppState::default();
+        state.timeline.room_id = Some("!r:example.invalid".to_owned());
+
+        let effects = reduce(
+            &mut state,
+            AppAction::MediaDownloadUpdated {
+                room_id: "!r:example.invalid".to_owned(),
+                event_id: "$ev:example.invalid".to_owned(),
+                state: TimelineMediaDownloadState::Failed {
+                    failure_kind: OperationFailureKind::Network,
+                },
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert!(state.timeline.media_downloads.is_empty());
     }
 }

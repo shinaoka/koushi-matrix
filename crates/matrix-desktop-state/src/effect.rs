@@ -105,6 +105,7 @@ pub enum UiEvent {
     ThreadChanged,
     ThreadsListChanged,
     SearchChanged,
+    SearchCrawlerChanged,
     FilesViewChanged,
     LiveSignalsChanged,
     E2eeTrustChanged,

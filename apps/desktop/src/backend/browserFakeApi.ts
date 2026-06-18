@@ -2460,7 +2460,8 @@ class BrowserFakeApi implements DesktopApi {
       scheduled_send_capability: this.snapshot.state.timeline.scheduled_send_capability,
       scheduled_sends: [],
       staged_uploads: [],
-      media_gallery: []
+      media_gallery: [],
+      media_downloads: {}
     };
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.state.thread_attention = { kind: "closed" };
@@ -2541,7 +2542,8 @@ class BrowserFakeApi implements DesktopApi {
       scheduled_send_capability: "unknown",
       scheduled_sends: [],
         staged_uploads: [],
-        media_gallery: []
+        media_gallery: [],
+      media_downloads: {}
     };
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.state.focused_context = { kind: "closed" };
@@ -2706,7 +2708,8 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         scheduled_send_capability: "unknown",
         scheduled_sends: [],
         staged_uploads: [],
-        media_gallery: []
+        media_gallery: [],
+        media_downloads: {}
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },
@@ -2802,7 +2805,8 @@ function createSignedOutSnapshot(): DesktopSnapshot {
         scheduled_send_capability: "unknown",
         scheduled_sends: [],
         staged_uploads: [],
-        media_gallery: []
+        media_gallery: [],
+        media_downloads: {}
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },

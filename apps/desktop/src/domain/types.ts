@@ -497,6 +497,7 @@ export interface RoomSummary {
   last_activity_ms?: number;
   parent_space_ids: string[];
   is_encrypted: boolean;
+  joined_members?: number;
 }
 
 export interface InvitePreview {
@@ -551,6 +552,23 @@ export type OperationFailureKind =
   | "timeout"
   | "invalid"
   | "sdk";
+
+export interface MediaTransferProgress {
+  current: number;
+  total: number;
+}
+
+export type TimelineMediaDownloadState =
+  | { kind: "notRequested" }
+  | { kind: "pending"; progress: MediaTransferProgress | null }
+  | {
+      kind: "ready";
+      source_url: string;
+      width: number | null;
+      height: number | null;
+      mime_type: string | null;
+    }
+  | { kind: "failed"; failure_kind: OperationFailureKind };
 
 export type ActivityState =
   | { kind: "closed" }
@@ -727,6 +745,7 @@ export interface TimelinePaneState {
   scheduled_sends: ScheduledSendItem[];
   staged_uploads: StagedUploadItem[];
   media_gallery: TimelineMediaGalleryItem[];
+  media_downloads: Record<string, TimelineMediaDownloadState>;
 }
 
 export type ScheduledSendCapability = "unknown" | "serverDelayedEvents" | "localFallback";

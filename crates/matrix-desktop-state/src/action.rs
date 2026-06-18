@@ -12,8 +12,8 @@ use crate::state::{
     RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability, ScheduledSendHandle,
     ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues,
     SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem, SyncMode,
-    TimelineMediaGalleryItem, TrustOperationFailureKind, UserProfile, VerificationCancelReason,
-    VerificationTarget,
+    TimelineMediaDownloadState, TimelineMediaGalleryItem, TrustOperationFailureKind, UserProfile,
+    VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -641,6 +641,11 @@ pub enum AppAction {
         room_id: String,
         items: Vec<TimelineMediaGalleryItem>,
     },
+    MediaDownloadUpdated {
+        room_id: String,
+        event_id: String,
+        state: TimelineMediaDownloadState,
+    },
     ComposerDraftsLoaded {
         drafts: crate::state::ComposerDraftStore,
     },
@@ -724,6 +729,24 @@ pub enum AppAction {
     },
     SearchFailed {
         request_id: u64,
+        message: String,
+    },
+    HistoryCrawlStarted {
+        request_id: u64,
+        room_id: String,
+    },
+    HistoryCrawlProgress {
+        room_id: String,
+        processed: u64,
+        indexed: u64,
+    },
+    HistoryCrawlCompleted {
+        room_id: String,
+        indexed: u64,
+    },
+    HistoryCrawlFailed {
+        room_id: String,
+        kind: crate::state::SearchCrawlerFailureKind,
         message: String,
     },
     FilesViewOpened {

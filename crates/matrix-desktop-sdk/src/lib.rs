@@ -2015,6 +2015,7 @@ pub struct MatrixRoomListRoom {
     pub last_activity_ms: u64,
     pub parent_space_ids: Vec<String>,
     pub is_encrypted: bool,
+    pub joined_members: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -4105,6 +4106,7 @@ async fn matrix_room_list_snapshot_from_rooms(
         let tags = matrix_room_tags(&room).await;
 
         let is_dm = room.is_dm();
+        let joined_members = active_user_ids.len() as u64;
         let own_user_id = room.own_user_id().to_string();
         let dm_user_ids = if is_dm {
             active_user_ids
@@ -4135,6 +4137,7 @@ async fn matrix_room_list_snapshot_from_rooms(
             room.recency_stamp().map(|stamp| stamp.into()).unwrap_or(0),
             parent_space_ids,
             is_encrypted,
+            joined_members,
         ));
     }
     snapshot.user_profiles = user_profiles.into_values().collect();
@@ -4232,6 +4235,7 @@ fn matrix_room_list_room_from_counts(
     last_activity_ms: u64,
     parent_space_ids: Vec<String>,
     is_encrypted: bool,
+    joined_members: u64,
 ) -> MatrixRoomListRoom {
     MatrixRoomListRoom {
         room_id,
@@ -4247,6 +4251,7 @@ fn matrix_room_list_room_from_counts(
         last_activity_ms,
         parent_space_ids,
         is_encrypted,
+        joined_members,
     }
 }
 
@@ -4715,11 +4720,13 @@ mod tests {
             0,
             vec!["!space:example.invalid".to_owned()],
             false,
+            2,
         );
 
         assert_eq!(room.notification_count, 4);
         assert_eq!(room.highlight_count, 2);
         assert_eq!(room.unread_count, 4);
+        assert_eq!(room.joined_members, 2);
         assert!(room.is_dm);
     }
 
@@ -4746,6 +4753,7 @@ mod tests {
             0,
             vec![],
             false,
+            0,
         );
 
         assert_eq!(room.tags, tags);

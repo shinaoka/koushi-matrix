@@ -22,6 +22,7 @@ pub struct DesktopRoomListRoom {
     pub notification_count: u64,
     pub highlight_count: u64,
     pub parent_space_ids: Vec<String>,
+    pub joined_members: u64,
 }
 
 pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
@@ -78,6 +79,7 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
                 last_activity_ms: 0,
                 parent_space_ids,
                 is_encrypted: false,
+                joined_members: room.joined_members,
             }
         })
         .collect();

@@ -6183,6 +6183,29 @@ test("room info Files entry opens the file browser with room scope", async ({ pa
   await expect(page.getByText("quarterly_report.pdf")).toBeVisible();
 });
 
+test("room header member pill opens room info and shows the Rust-owned member count", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  const pill = page.locator(".channel-actions").getByRole("button", { name: t("room.members") });
+  await expect(pill).toContainText("8");
+  await pill.click();
+
+  await expect(page.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
+});
+
+test("room info People entry scrolls to the members section", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: t("room.roomInfo") }).click();
+
+  const peopleButton = page.getByRole("button", { name: t("room.people"), exact: true });
+  await expect(peopleButton).toBeEnabled();
+  await peopleButton.click();
+
+  await expect(page.getByRole("heading", { name: t("room.members") })).toBeVisible();
+});
+
 test("timeline header Threads button opens the threads list and row opens a thread", async ({
   page
 }) => {

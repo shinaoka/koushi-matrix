@@ -29,6 +29,7 @@ fn room(room_id: &str) -> RoomSummary {
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
         is_encrypted: false,
+        joined_members: 0,
     }
 }
 
@@ -1121,6 +1122,7 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_downloads: Default::default(),
         },
         thread: ThreadPaneState::Opening {
             room_id: "room-a".to_owned(),

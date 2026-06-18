@@ -825,7 +825,8 @@ mod tests {
             last_activity_ms: 0,
             parent_space_ids: vec![],
             is_encrypted: false,
-        });
+            joined_members: 0,
+});
 
         let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
             .expect("snapshot should serialize");

@@ -182,7 +182,8 @@ function snapshotForPanelMode(
         scheduled_send_capability: "unknown",
         scheduled_sends: [],
         staged_uploads: [],
-        media_gallery: []
+        media_gallery: [],
+        media_downloads: {}
       },
       thread: hasThread
         ? { kind: "open", room_id: "!room:example", root_event_id: "$event" }

@@ -665,6 +665,7 @@ fn room_space_and_invite_summaries_surface_avatar_mxc() {
                 last_activity_ms: 0,
                 parent_space_ids: vec!["!space:localhost".to_owned()],
                 is_encrypted: false,
+                joined_members: 0,
             }],
         },
     );

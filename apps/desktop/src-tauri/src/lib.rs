@@ -1322,7 +1322,7 @@ mod tests {
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LinkPreview,
                 LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
-                MediaTransferProgress, NativeAttentionEvent, PaginationDirection, PaginationState,
+                NativeAttentionEvent, PaginationDirection, PaginationState,
                 ReactionGroup, RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent,
                 TimelineCodeBlock, TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody,
                 TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
@@ -1331,15 +1331,16 @@ mod tests {
                 TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
                 TimelineUnreadPosition,
             },
-            failure::CoreFailure,
+            failure::{CoreFailure, TimelineFailureKind},
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
             ActivityRow, ActivityStream, ActivityTab, AttachmentKind, AttachmentResult,
             AvatarThumbnailState, DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType,
             IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt,
-            LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionCapabilities,
-            NativeAttentionCapability, NativeAttentionSummary, PresenceKind, ReplyQuote,
+            LiveRoomSignalUpdate, LocalEncryptionHealth, MediaTransferProgress,
+            NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
+            PresenceKind, ReplyQuote,
             ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule, RoomMemberRole,
             RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji,
             SyncMode, VerificationFlowState, VerificationTarget,
@@ -1798,16 +1799,42 @@ mod tests {
             }))
             .expect("serialize media upload progress");
 
+        let media_download_progress = serialize_core_event(&CoreEvent::Timeline(
+            TimelineEvent::MediaDownloadProgress {
+                request_id,
+                key: key.clone(),
+                event_id: "$media1".to_owned(),
+                progress: MediaTransferProgress {
+                    current: 0,
+                    total: 68,
+                },
+            },
+        ))
+        .expect("serialize media download progress");
+
         let media_download_completed = serialize_core_event(&CoreEvent::Timeline(
             TimelineEvent::MediaDownloadCompleted {
                 request_id,
                 key: key.clone(),
                 event_id: "$media1".to_owned(),
+                source_url: "/data/media_downloads/!r:example.test/$media1.bin".to_owned(),
                 byte_count: 68,
                 mimetype: Some("image/png".to_owned()),
+                width: Some(2),
+                height: Some(2),
             },
         ))
         .expect("serialize media download completion");
+
+        let media_download_failed = serialize_core_event(&CoreEvent::Timeline(
+            TimelineEvent::MediaDownloadFailed {
+                request_id,
+                key: key.clone(),
+                event_id: "$media1".to_owned(),
+                kind: TimelineFailureKind::Sdk,
+            },
+        ))
+        .expect("serialize media download failure");
 
         let message_source_loaded =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MessageSourceLoaded {
@@ -2357,6 +2384,8 @@ mod tests {
             "timelineItemsUpdated": updated,
             "timelineLinkPreviewInitialItems": link_preview_initial,
             "timelineMediaDownloadCompleted": media_download_completed,
+            "timelineMediaDownloadFailed": media_download_failed,
+            "timelineMediaDownloadProgress": media_download_progress,
             "timelineMediaInitialItems": media_initial,
             "timelineMediaUploadProgress": media_upload_progress,
             "timelineMessageForwarded": message_forwarded,

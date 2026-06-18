@@ -7,9 +7,9 @@ use matrix_desktop_state::{
     ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarThumbnailState,
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
     JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
-    NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind, ProfileState,
-    ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode,
-    ThreadsListItem, VerificationFlowState, resolve_user_display_name,
+    MediaTransferProgress, NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind,
+    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
+    SessionState, SyncMode, ThreadsListItem, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 
@@ -728,12 +728,27 @@ pub enum TimelineEvent {
         progress: MediaTransferProgress,
         source: Option<TimelineMediaSource>,
     },
+    MediaDownloadProgress {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+        progress: MediaTransferProgress,
+    },
     MediaDownloadCompleted {
         request_id: RequestId,
         key: TimelineKey,
         event_id: String,
+        source_url: String,
         byte_count: u64,
         mimetype: Option<String>,
+        width: Option<u64>,
+        height: Option<u64>,
+    },
+    MediaDownloadFailed {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+        kind: TimelineFailureKind,
     },
     ResyncRequired {
         key: TimelineKey,
@@ -832,18 +847,43 @@ impl fmt::Debug for TimelineEvent {
                 .field("progress", progress)
                 .field("source", source)
                 .finish(),
+            Self::MediaDownloadProgress {
+                request_id,
+                progress,
+                ..
+            } => formatter
+                .debug_struct("MediaDownloadProgress")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .field("progress", progress)
+                .finish(),
             Self::MediaDownloadCompleted {
                 request_id,
                 byte_count,
                 mimetype,
+                width,
+                height,
                 ..
             } => formatter
                 .debug_struct("MediaDownloadCompleted")
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("event_id", &"EventId(..)")
+                .field("source_url", &"SourceUrl(..)")
                 .field("byte_count", byte_count)
                 .field("mimetype", mimetype)
+                .field("width", width)
+                .field("height", height)
+                .finish(),
+            Self::MediaDownloadFailed {
+                request_id, kind, ..
+            } => formatter
+                .debug_struct("MediaDownloadFailed")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .field("kind", kind)
                 .finish(),
             Self::ResyncRequired { reason, .. } => formatter
                 .debug_struct("ResyncRequired")
@@ -1405,12 +1445,6 @@ impl fmt::Debug for LinkPreview {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct MediaTransferProgress {
-    pub current: u64,
-    pub total: u64,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ThreadSummaryDto {
     pub reply_count: u32,
@@ -1438,7 +1472,9 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
         | TimelineEvent::MessageSourceLoaded { .. }
         | TimelineEvent::MessageForwarded { .. }
         | TimelineEvent::MediaUploadProgress { .. }
+        | TimelineEvent::MediaDownloadProgress { .. }
         | TimelineEvent::MediaDownloadCompleted { .. }
+        | TimelineEvent::MediaDownloadFailed { .. }
         | TimelineEvent::ResyncRequired { .. }
         | TimelineEvent::NavigationUpdated { .. }
         | TimelineEvent::DisplayPolicyUpdated { .. }
@@ -1617,6 +1653,21 @@ pub enum SearchEvent {
     /// pollers can wake on indexing progress instead of sleeping; the message
     /// body is never included (Security Model — Search).
     IndexUpdated { room_id: String, event_id: String },
+    HistoryCrawlProgress {
+        room_id: String,
+        processed: u64,
+        indexed: u64,
+    },
+    HistoryCrawlCompleted {
+        room_id: String,
+        indexed: u64,
+    },
+    HistoryCrawlFailed {
+        room_id: String,
+        #[serde(rename = "failureKind")]
+        kind: matrix_desktop_state::SearchCrawlerFailureKind,
+        message: String,
+    },
 }
 
 impl fmt::Debug for SearchEvent {
@@ -1647,6 +1698,26 @@ impl fmt::Debug for SearchEvent {
                 .debug_struct("IndexUpdated")
                 .field("room_id", &"RoomId(..)")
                 .field("event_id", &"EventId(..)")
+                .finish(),
+            SearchEvent::HistoryCrawlProgress {
+                room_id,
+                processed,
+                indexed,
+            } => formatter
+                .debug_struct("HistoryCrawlProgress")
+                .field("room_id", &"RoomId(..)")
+                .field("processed", processed)
+                .field("indexed", indexed)
+                .finish(),
+            SearchEvent::HistoryCrawlCompleted { room_id, indexed } => formatter
+                .debug_struct("HistoryCrawlCompleted")
+                .field("room_id", &"RoomId(..)")
+                .field("indexed", indexed)
+                .finish(),
+            SearchEvent::HistoryCrawlFailed { room_id, kind, .. } => formatter
+                .debug_struct("HistoryCrawlFailed")
+                .field("room_id", &"RoomId(..)")
+                .field("kind", kind)
                 .finish(),
         }
     }
@@ -2534,5 +2605,85 @@ mod tests {
             .find(|u| u.user_id == "@unknown:example.invalid")
             .expect("additional user id in updates");
         assert_eq!(unknown.display_label, "@unknown:example.invalid");
+    }
+
+    #[test]
+    fn media_download_events_redact_routing_and_source_url_in_debug() {
+        let key = TimelineKey::room(
+            AccountKey("@alice:example.invalid".to_owned()),
+            "!room:example.invalid",
+        );
+        let completed = TimelineEvent::MediaDownloadCompleted {
+            request_id: RequestId {
+                connection_id: crate::ids::RuntimeConnectionId(1),
+                sequence: 7,
+            },
+            key: key.clone(),
+            event_id: "$event:example.invalid".to_owned(),
+            source_url: "/data/secret.png".to_owned(),
+            byte_count: 1234,
+            mimetype: Some("image/png".to_owned()),
+            width: Some(640),
+            height: Some(480),
+        };
+
+        let debug = format!("{completed:?}");
+        assert!(debug.contains("MediaDownloadCompleted"), "{debug}");
+        assert!(debug.contains("byte_count"), "{debug}");
+        assert!(!debug.contains("!room:example.invalid"), "{debug}");
+        assert!(!debug.contains("@alice:example.invalid"), "{debug}");
+        assert!(!debug.contains("$event:example.invalid"), "{debug}");
+        assert!(!debug.contains("/data/secret.png"), "{debug}");
+
+        let failed = TimelineEvent::MediaDownloadFailed {
+            request_id: RequestId {
+                connection_id: crate::ids::RuntimeConnectionId(1),
+                sequence: 8,
+            },
+            key,
+            event_id: "$event:example.invalid".to_owned(),
+            kind: crate::failure::TimelineFailureKind::Network,
+        };
+        let debug = format!("{failed:?}");
+        assert!(debug.contains("MediaDownloadFailed"), "{debug}");
+        assert!(!debug.contains("$event:example.invalid"), "{debug}");
+    }
+
+    #[test]
+    fn media_download_event_serializes_with_camel_case_fields() {
+        let key = TimelineKey::room(
+            AccountKey("@alice:example.invalid".to_owned()),
+            "!room:example.invalid",
+        );
+        let event = TimelineEvent::MediaDownloadCompleted {
+            request_id: RequestId {
+                connection_id: crate::ids::RuntimeConnectionId(1),
+                sequence: 7,
+            },
+            key,
+            event_id: "$event:example.invalid".to_owned(),
+            source_url: "/data/image.png".to_owned(),
+            byte_count: 1234,
+            mimetype: Some("image/png".to_owned()),
+            width: Some(640),
+            height: Some(480),
+        };
+
+        let value = serde_json::to_value(&event).expect("MediaDownloadCompleted serializes");
+        let completed = value.get("MediaDownloadCompleted").expect("tagged variant");
+        assert_eq!(
+            completed.get("source_url").and_then(|v| v.as_str()),
+            Some("/data/image.png")
+        );
+        assert_eq!(
+            completed.get("byte_count").and_then(|v| v.as_u64()),
+            Some(1234)
+        );
+        assert_eq!(
+            completed.get("mimetype").and_then(|v| v.as_str()),
+            Some("image/png")
+        );
+        assert_eq!(completed.get("width").and_then(|v| v.as_u64()), Some(640));
+        assert_eq!(completed.get("height").and_then(|v| v.as_u64()), Some(480));
     }
 }

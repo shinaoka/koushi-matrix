@@ -39,6 +39,7 @@ fn room_list_smoke_report_counts_without_private_names() {
                 last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
                 is_encrypted: false,
+                joined_members: 0,
             },
             MatrixRoomListRoom {
                 room_id: "!room-b:example.invalid".into(),
@@ -54,6 +55,7 @@ fn room_list_smoke_report_counts_without_private_names() {
                 last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
                 is_encrypted: false,
+                joined_members: 0,
             },
         ],
         ..MatrixRoomListSnapshot::default()
@@ -91,6 +93,7 @@ fn real_account_qa_report_counts_without_private_timeline_data() {
             last_activity_ms: 0,
             parent_space_ids: Vec::new(),
             is_encrypted: false,
+            joined_members: 0,
         }],
         ..MatrixRoomListSnapshot::default()
     };
@@ -134,6 +137,7 @@ fn restored_real_account_qa_report_records_restore_without_private_data() {
             last_activity_ms: 0,
             parent_space_ids: Vec::new(),
             is_encrypted: false,
+            joined_members: 0,
         }],
         ..MatrixRoomListSnapshot::default()
     };
@@ -176,6 +180,7 @@ fn real_account_qa_report_records_search_without_private_candidate_ids() {
             last_activity_ms: 0,
             parent_space_ids: Vec::new(),
             is_encrypted: false,
+            joined_members: 0,
         }],
         ..MatrixRoomListSnapshot::default()
     };

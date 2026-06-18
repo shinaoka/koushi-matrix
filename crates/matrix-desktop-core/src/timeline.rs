@@ -47,17 +47,18 @@
 //! Message bodies appear in `TimelineItem.body` (visible UI state per canon)
 //! but never in error messages, log strings, or Debug output of error types.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
 use matrix_desktop_search::{AttachmentDocument, SensitiveString};
 use matrix_desktop_state::{
     ActivityRow, AppAction, AttachmentKind, ComposerSendIntent, FormattedMessageDraft,
-    LiveEventReceipts, LiveReadReceipt, MentionIntent, ReplyQuote, ReplyQuoteState,
-    SlashCommandIntent, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
-    TimelineMediaGallerySource, TimelineMediaGalleryThumbnail,
-    TimelineMediaKind as GalleryTimelineMediaKind, resolve_composer_send_intent,
+    LiveEventReceipts, LiveReadReceipt, MediaTransferProgress, MentionIntent, OperationFailureKind,
+    ReplyQuote, ReplyQuoteState, SlashCommandIntent, TimelineMediaDownloadState,
+    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
+    TimelineMediaGalleryThumbnail, TimelineMediaKind as GalleryTimelineMediaKind,
+    resolve_composer_send_intent,
 };
 use matrix_sdk::attachment::{
     AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbnail,
@@ -87,12 +88,12 @@ use crate::command::{
     MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 use crate::event::{
-    CoreEvent, LinkPreviewState, LiveSignalsEvent, MediaTransferProgress, PaginationDirection,
-    PaginationState, ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
-    TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
-    TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot,
-    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-    TimelineUnreadPosition, TimelineViewportObservation, message_actions_for_timeline_item,
+    CoreEvent, LinkPreviewState, LiveSignalsEvent, PaginationDirection, PaginationState,
+    ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
+    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
+    TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
+    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
+    TimelineViewportObservation, message_actions_for_timeline_item,
     message_source_for_timeline_item,
 };
 use crate::executor;
@@ -1245,6 +1246,9 @@ struct PrivateMediaEntry {
     source: MediaSource,
     thumbnail_source: Option<MediaSource>,
     mimetype: Option<String>,
+    size: u64,
+    width: Option<u64>,
+    height: Option<u64>,
 }
 
 struct ReactionTargetState {
@@ -1278,6 +1282,9 @@ struct TimelineActor {
     /// event_id -> SDK media source. This cache may contain encrypted media
     /// keys/hashes and must never be serialized or logged.
     media_sources: HashMap<String, PrivateMediaEntry>,
+    /// Event IDs for which a download is currently in flight. Prevents duplicate
+    /// concurrent downloads when the user clicks an attachment repeatedly.
+    media_downloads_in_progress: HashSet<String>,
     /// Search index mutation sender (Phase 6). `None` when no search index is
     /// configured (pre-session or pre-Phase-6 builds). Fire-and-forget: if the
     /// channel is full, we drop the mutation rather than block the diff relay.
@@ -1433,6 +1440,7 @@ impl TimelineActor {
             own_user_id,
             sent_event_txns: HashMap::new(),
             media_sources,
+            media_downloads_in_progress: HashSet::new(),
             search_index_tx,
             thread_attention_counts: ThreadAttentionCounters::default(),
             navigation_items,
@@ -2159,7 +2167,12 @@ impl TimelineActor {
         event_id: String,
         selection: MediaDownloadSelection,
     ) {
+        if !self.media_downloads_in_progress.insert(event_id.clone()) {
+            return;
+        }
+
         let Some(entry) = self.media_sources.get(&event_id).cloned() else {
+            self.media_downloads_in_progress.remove(&event_id);
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -2169,13 +2182,24 @@ impl TimelineActor {
             return;
         };
 
+        let total = entry.size;
+        self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadProgress {
+            request_id,
+            key: self.key.clone(),
+            event_id: event_id.clone(),
+            progress: MediaTransferProgress { current: 0, total },
+        }));
+        self.emit_action(AppAction::MediaDownloadUpdated {
+            room_id: self.key.room_id().to_owned(),
+            event_id: event_id.clone(),
+            state: TimelineMediaDownloadState::Pending {
+                progress: Some(MediaTransferProgress { current: 0, total }),
+            },
+        });
+
         let Some(request) = media_request_for_download(&entry, selection) else {
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::Sdk,
-                },
-            );
+            self.media_downloads_in_progress.remove(&event_id);
+            self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk);
             return;
         };
 
@@ -2187,23 +2211,92 @@ impl TimelineActor {
             .await
         {
             Ok(bytes) => {
+                let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                let mut download_state = TimelineMediaDownloadState::Pending {
+                    progress: Some(MediaTransferProgress {
+                        current: byte_count,
+                        total,
+                    }),
+                };
+
+                if let Some(data_dir) = self.data_dir.as_deref() {
+                    let dir = data_dir.join("media_downloads").join(self.key.room_id());
+                    if tokio::fs::create_dir_all(&dir).await.is_ok() {
+                        let path = dir.join(format!("{event_id}.bin"));
+                        if tokio::fs::write(&path, &bytes).await.is_ok() {
+                            download_state = TimelineMediaDownloadState::Ready {
+                                source_url: path.to_string_lossy().into_owned(),
+                                width: entry.width,
+                                height: entry.height,
+                                mime_type: entry.mimetype.clone(),
+                            };
+                        }
+                    }
+                }
+
+                let (source_url, width, height, mimetype) = match &download_state {
+                    TimelineMediaDownloadState::Ready {
+                        source_url,
+                        width,
+                        height,
+                        mime_type,
+                    } => (source_url.clone(), *width, *height, mime_type.clone()),
+                    _ => {
+                        self.media_downloads_in_progress.remove(&event_id);
+                        self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk);
+                        return;
+                    }
+                };
+
                 self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadCompleted {
                     request_id,
                     key: self.key.clone(),
-                    event_id,
-                    byte_count: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                    mimetype: entry.mimetype,
+                    event_id: event_id.clone(),
+                    source_url,
+                    byte_count,
+                    mimetype,
+                    width,
+                    height,
                 }));
+                self.emit_action(AppAction::MediaDownloadUpdated {
+                    room_id: self.key.room_id().to_owned(),
+                    event_id: event_id.clone(),
+                    state: download_state,
+                });
+                self.media_downloads_in_progress.remove(&event_id);
             }
             Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                self.media_downloads_in_progress.remove(&event_id);
+                self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk);
             }
         }
+    }
+
+    fn emit_download_failed(
+        &self,
+        request_id: RequestId,
+        event_id: &str,
+        kind: TimelineFailureKind,
+    ) {
+        self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadFailed {
+            request_id,
+            key: self.key.clone(),
+            event_id: event_id.to_owned(),
+            kind,
+        }));
+        self.emit_action(AppAction::MediaDownloadUpdated {
+            room_id: self.key.room_id().to_owned(),
+            event_id: event_id.to_owned(),
+            state: TimelineMediaDownloadState::Failed {
+                failure_kind: match kind {
+                    TimelineFailureKind::Network => OperationFailureKind::Network,
+                    TimelineFailureKind::Sdk => OperationFailureKind::Sdk,
+                    TimelineFailureKind::Forbidden => OperationFailureKind::Forbidden,
+                    TimelineFailureKind::Timeout => OperationFailureKind::Timeout,
+                    _ => OperationFailureKind::Sdk,
+                },
+            },
+        });
     }
 
     async fn handle_edit_text(&mut self, request_id: RequestId, event_id: String, body: String) {
@@ -3304,6 +3397,10 @@ impl TimelineActor {
 
     fn emit(&self, event: CoreEvent) {
         let _ = self.event_tx.send(event);
+    }
+
+    fn emit_action(&self, action: AppAction) {
+        let _ = self.action_tx.try_send(vec![action]);
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
@@ -4674,6 +4771,11 @@ fn private_media_entry_from_msgtype(msgtype: &MessageType) -> Option<PrivateMedi
                 source: content.source.clone(),
                 thumbnail_source: info.and_then(|info| info.thumbnail_source.clone()),
                 mimetype: info.and_then(|info| info.mimetype.clone()),
+                size: info
+                    .and_then(|info| uint_to_u64(info.size.as_ref()))
+                    .unwrap_or(0),
+                width: info.and_then(|info| uint_to_u64(info.width.as_ref())),
+                height: info.and_then(|info| uint_to_u64(info.height.as_ref())),
             })
         }
         MessageType::File(content) => {
@@ -4682,6 +4784,37 @@ fn private_media_entry_from_msgtype(msgtype: &MessageType) -> Option<PrivateMedi
                 source: content.source.clone(),
                 thumbnail_source: info.and_then(|info| info.thumbnail_source.clone()),
                 mimetype: info.and_then(|info| info.mimetype.clone()),
+                size: info
+                    .and_then(|info| uint_to_u64(info.size.as_ref()))
+                    .unwrap_or(0),
+                width: None,
+                height: None,
+            })
+        }
+        MessageType::Audio(content) => {
+            let info = content.info.as_deref();
+            Some(PrivateMediaEntry {
+                source: content.source.clone(),
+                thumbnail_source: None,
+                mimetype: info.and_then(|info| info.mimetype.clone()),
+                size: info
+                    .and_then(|info| uint_to_u64(info.size.as_ref()))
+                    .unwrap_or(0),
+                width: None,
+                height: None,
+            })
+        }
+        MessageType::Video(content) => {
+            let info = content.info.as_deref();
+            Some(PrivateMediaEntry {
+                source: content.source.clone(),
+                thumbnail_source: info.and_then(|info| info.thumbnail_source.clone()),
+                mimetype: info.and_then(|info| info.mimetype.clone()),
+                size: info
+                    .and_then(|info| uint_to_u64(info.size.as_ref()))
+                    .unwrap_or(0),
+                width: info.and_then(|info| uint_to_u64(info.width.as_ref())),
+                height: info.and_then(|info| uint_to_u64(info.height.as_ref())),
             })
         }
         _ => None,

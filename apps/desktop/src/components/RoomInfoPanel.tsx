@@ -1,5 +1,5 @@
 import { Bell, ChevronRight, FileText, Link, Settings, Users } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { t } from "../i18n/messages";
 import type {
@@ -97,6 +97,7 @@ export function RoomInfoPanel({
     useState<RoomHistoryVisibility>(settings?.history_visibility ?? "shared");
   const [aliasTarget, setAliasTarget] = useState<RoomMemberSummary | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
+  const membersRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     setNameDraft(settings?.name ?? roomName);
@@ -412,7 +413,7 @@ export function RoomInfoPanel({
         )}
       </section>
 
-      <section className="settings-section" aria-label={t("room.members")}>
+      <section ref={membersRef} className="settings-section" aria-label={t("room.members")}>
         <h3>{t("room.members")}</h3>
         {memberProfiles.length ? (
           <ul className="room-member-list">
@@ -589,7 +590,13 @@ export function RoomInfoPanel({
       <SettingsEntryList
         entries={[
           { icon: <Users size={16} />, label: t("room.invitePeople"), onClick: onInvitePeople },
-          { icon: <Users size={16} />, label: t("room.people") },
+          {
+            icon: <Users size={16} />,
+            label: t("room.people"),
+            onClick: () => {
+              membersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+          },
           { icon: <FileText size={16} />, label: t("room.files"), onClick: onOpenFiles },
           { icon: <Bell size={16} />, label: t("room.notifications") },
           { icon: <Settings size={16} />, label: t("room.roomSettings") }

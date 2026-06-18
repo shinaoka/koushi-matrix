@@ -86,6 +86,7 @@ fn room_list_composition_keeps_dms_global_and_preserves_multi_parent_rooms() {
                     "!space-a:example.invalid".to_owned(),
                     "!space-b:example.invalid".to_owned(),
                 ],
+                joined_members: 0,
             },
             DesktopRoomListRoom {
                 room_id: "!loose:example.invalid".to_owned(),
@@ -95,6 +96,7 @@ fn room_list_composition_keeps_dms_global_and_preserves_multi_parent_rooms() {
                 notification_count: 2,
                 highlight_count: 0,
                 parent_space_ids: Vec::new(),
+                joined_members: 0,
             },
             DesktopRoomListRoom {
                 room_id: "!dm-a:example.invalid".to_owned(),
@@ -104,6 +106,7 @@ fn room_list_composition_keeps_dms_global_and_preserves_multi_parent_rooms() {
                 notification_count: 3,
                 highlight_count: 0,
                 parent_space_ids: vec!["!space-a:example.invalid".to_owned()],
+                joined_members: 0,
             },
         ],
     });
@@ -575,6 +578,7 @@ fn deferred_sync_mode_defers_timeline_subscription_to_sdk_boundary() {
             notification_count: 0,
             highlight_count: 0,
             parent_space_ids: vec!["!sdk-space:example.invalid".to_owned()],
+            joined_members: 0,
         }],
     }));
 
@@ -617,6 +621,7 @@ fn deferred_sync_mode_defers_timeline_pagination_to_sdk_boundary() {
             notification_count: 0,
             highlight_count: 0,
             parent_space_ids: vec!["!sdk-space:example.invalid".to_owned()],
+            joined_members: 0,
         }],
     }));
     backend.dispatch(AppAction::SelectRoom {
@@ -673,6 +678,7 @@ fn deferred_sync_mode_defers_send_text_to_sdk_boundary() {
             notification_count: 0,
             highlight_count: 0,
             parent_space_ids: vec!["!sdk-space:example.invalid".to_owned()],
+            joined_members: 0,
         }],
     }));
     backend.dispatch(AppAction::SelectRoom {

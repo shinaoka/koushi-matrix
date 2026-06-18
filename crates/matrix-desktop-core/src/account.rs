@@ -438,7 +438,9 @@ impl AccountActor {
     async fn route_search_command(&self, command: SearchCommand) {
         let request_id = match &command {
             SearchCommand::Query { request_id, .. }
-            | SearchCommand::Attachments { request_id, .. } => *request_id,
+            | SearchCommand::Attachments { request_id, .. }
+            | SearchCommand::StartHistoryCrawl { request_id, .. }
+            | SearchCommand::StopHistoryCrawl { request_id, .. } => *request_id,
         };
         match &self.search_actor {
             Some(handle) => {

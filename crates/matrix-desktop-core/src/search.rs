@@ -44,6 +44,7 @@
 //! state). `SearchActorMessage::Query` redacts the query in Debug.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use matrix_desktop_sdk::MatrixClientSession;
@@ -51,7 +52,7 @@ use matrix_desktop_search::{
     AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent,
     SensitiveString, cjk_search_query_variants,
 };
-use matrix_desktop_state::{AppAction, AttachmentFilter, AttachmentScope, AttachmentSort};
+use matrix_desktop_state::{AppAction, AttachmentFilter, AttachmentScope, AttachmentSort, SearchCrawlerSettings};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::{SearchCommand, SearchScope};
@@ -155,6 +156,15 @@ enum SearchActorMessage {
         filter: AttachmentFilter,
         sort: AttachmentSort,
     },
+    StartHistoryCrawl {
+        request_id: RequestId,
+        room_id: String,
+        settings: SearchCrawlerSettings,
+    },
+    StopHistoryCrawl {
+        request_id: RequestId,
+        room_id: String,
+    },
     Shutdown,
 }
 
@@ -181,6 +191,21 @@ impl std::fmt::Debug for SearchActorMessage {
                 .field("scope", scope)
                 .field("filter", filter)
                 .field("sort", sort)
+                .finish(),
+            Self::StartHistoryCrawl {
+                request_id,
+                room_id,
+                settings,
+            } => f
+                .debug_struct("SearchActorMessage::StartHistoryCrawl")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("settings", settings)
+                .finish(),
+            Self::StopHistoryCrawl { request_id, room_id } => f
+                .debug_struct("SearchActorMessage::StopHistoryCrawl")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
                 .finish(),
             Self::Shutdown => write!(f, "SearchActorMessage::Shutdown"),
         }
@@ -218,6 +243,18 @@ impl SearchActorHandle {
                 filter,
                 sort,
             },
+            SearchCommand::StartHistoryCrawl {
+                request_id,
+                room_id,
+                settings,
+            } => SearchActorMessage::StartHistoryCrawl {
+                request_id,
+                room_id,
+                settings,
+            },
+            SearchCommand::StopHistoryCrawl { request_id, room_id } => {
+                SearchActorMessage::StopHistoryCrawl { request_id, room_id }
+            }
         };
         self.tx.send(msg).await.is_ok()
     }
@@ -248,6 +285,12 @@ pub(crate) struct SearchActor {
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<SearchActorMessage>,
+    /// Sender for feeding the actor's own document store from the history
+    /// crawler. The crawler runs in a separate task so the actor stays
+    /// responsive to queries while backfilling.
+    index_tx: mpsc::Sender<SearchIndexMessage>,
+    /// Active per-room crawl cancellation flags.
+    crawl_cancels: HashMap<String, Arc<AtomicBool>>,
 }
 
 impl SearchActor {
@@ -267,6 +310,8 @@ impl SearchActor {
             action_tx,
             event_tx,
             msg_rx,
+            index_tx: index_tx.clone(),
+            crawl_cancels: HashMap::new(),
         };
 
         // Spawn the actor task.
@@ -288,6 +333,17 @@ impl SearchActor {
                         }
                         SearchActorMessage::Attachments { request_id, scope, filter, sort } => {
                             self.handle_attachments(request_id, scope, filter, sort).await;
+                        }
+                        SearchActorMessage::StartHistoryCrawl {
+                            request_id,
+                            room_id,
+                            settings,
+                        } => {
+                            self.handle_start_history_crawl(request_id, room_id, settings)
+                                .await;
+                        }
+                        SearchActorMessage::StopHistoryCrawl { request_id, room_id } => {
+                            self.handle_stop_history_crawl(request_id, room_id).await;
                         }
                     }
                 }
@@ -518,6 +574,38 @@ impl SearchActor {
                 self.indexed_rooms.remove(&event_id);
                 self.document_store.redact(&event_id);
             }
+        }
+    }
+
+    async fn handle_start_history_crawl(
+        &mut self,
+        request_id: RequestId,
+        room_id: String,
+        settings: SearchCrawlerSettings,
+    ) {
+        // Cancel any existing crawl for this room before starting a new one.
+        if let Some(existing) = self.crawl_cancels.get(&room_id) {
+            existing.store(true, Ordering::Relaxed);
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.crawl_cancels.insert(room_id.clone(), cancel.clone());
+
+        crate::search_crawler::spawn_history_crawl(
+            self.session.clone(),
+            room_id,
+            request_id,
+            settings,
+            self.index_tx.clone(),
+            self.action_tx.clone(),
+            self.event_tx.clone(),
+            cancel,
+        );
+    }
+
+    async fn handle_stop_history_crawl(&mut self, _request_id: RequestId, room_id: String) {
+        if let Some(cancel) = self.crawl_cancels.get(&room_id) {
+            cancel.store(true, Ordering::Relaxed);
         }
     }
 

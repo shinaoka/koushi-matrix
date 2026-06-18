@@ -2125,6 +2125,15 @@ pub enum SearchCommand {
         filter: AttachmentFilter,
         sort: AttachmentSort,
     },
+    StartHistoryCrawl {
+        request_id: RequestId,
+        room_id: String,
+        settings: matrix_desktop_state::SearchCrawlerSettings,
+    },
+    StopHistoryCrawl {
+        request_id: RequestId,
+        room_id: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -2171,6 +2180,21 @@ impl fmt::Debug for SearchCommand {
                 .field("scope", scope)
                 .field("filter", filter)
                 .field("sort", sort)
+                .finish(),
+            Self::StartHistoryCrawl {
+                request_id,
+                room_id,
+                settings,
+            } => formatter
+                .debug_struct("StartHistoryCrawl")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("settings", settings)
+                .finish(),
+            Self::StopHistoryCrawl { request_id, room_id } => formatter
+                .debug_struct("StopHistoryCrawl")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
                 .finish(),
         }
     }

@@ -29,6 +29,7 @@ fn room(room_id: &str) -> RoomSummary {
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
         is_encrypted: false,
+        joined_members: 0,
     }
 }
 
@@ -257,6 +258,7 @@ fn timeline_pane_snapshot_contains_only_selected_room_scheduled_sends() {
         scheduled_sends: state.timeline.scheduled_sends.clone(),
         staged_uploads: Vec::new(),
         media_gallery: Vec::new(),
+        media_downloads: Default::default(),
     };
     assert_eq!(timeline.scheduled_sends.len(), 1);
 }

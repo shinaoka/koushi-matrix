@@ -323,12 +323,31 @@ export type TimelineEvent =
       };
     }
   | {
+      MediaDownloadProgress: {
+        request_id: RequestId;
+        key: TimelineKey;
+        event_id: string;
+        progress: MediaTransferProgress;
+      };
+    }
+  | {
       MediaDownloadCompleted: {
         request_id: RequestId;
         key: TimelineKey;
         event_id: string;
+        source_url: string;
         byte_count: number;
         mimetype: string | null;
+        width: number | null;
+        height: number | null;
+      };
+    }
+  | {
+      MediaDownloadFailed: {
+        request_id: RequestId;
+        key: TimelineKey;
+        event_id: string;
+        kind: TimelineFailureKind;
       };
     }
   | {

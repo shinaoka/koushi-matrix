@@ -130,7 +130,8 @@ function readySnapshot(
       notification_count: 0,
       highlight_count: 0,
       parent_space_ids: [],
-      is_encrypted: false
+      is_encrypted: false,
+      joined_members: 8
     }
   ];
   return {
@@ -194,7 +195,8 @@ function readySnapshot(
         scheduled_send_capability: "unknown",
         scheduled_sends: [],
         staged_uploads: [],
-        media_gallery: []
+        media_gallery: [],
+        media_downloads: {}
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },

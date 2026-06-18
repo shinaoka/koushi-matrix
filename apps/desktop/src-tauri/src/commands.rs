@@ -4768,7 +4768,8 @@ mod tests {
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
                 is_encrypted: false,
-            },
+                joined_members: 0,
+},
             RoomSummary {
                 room_id: "!room2:example.org".to_owned(),
                 display_name: "Room 2".to_owned(),
@@ -4785,7 +4786,8 @@ mod tests {
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
                 is_encrypted: false,
-            },
+                joined_members: 0,
+},
         ];
 
         let title = qa_window_title_string(&snapshot, 42);
