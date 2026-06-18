@@ -182,7 +182,6 @@ export function RoomInfoPanel({
             type="button"
             role="switch"
             aria-checked={roomUrlPreviewsEnabled}
-            aria-label={t("settings.urlPreviewsEnabledForRoom")}
             disabled={!canToggleRoomUrlPreviews}
             onClick={() => {
               onUpdateSettings({
