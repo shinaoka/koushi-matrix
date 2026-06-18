@@ -656,7 +656,15 @@ export type MessageId =
   | "threads.loading"
   | "threads.open"
   | "threads.replyCount"
-  | "threads.title";
+  | "threads.title"
+  | "settings.urlPreviews"
+  | "settings.urlPreviewsEnabled"
+  | "settings.urlPreviewsDescription"
+  | "settings.urlPreviewsEncryptedNotice"
+  | "settings.urlPreviewsEnabledForRoom"
+  | "timeline.linkPreviewHide"
+  | "timeline.linkPreviewFailed"
+  | "timeline.linkPreviewLoading";
 
 type MessageValues = Record<string, string | number>;
 type Catalog = Record<MessageId, string>;
@@ -1055,6 +1063,14 @@ const en: Catalog = {
   "settings.display": "Display",
   "settings.codeBlockWrap": "Wrap long lines in code blocks",
   "settings.hideRedacted": "Hide deleted messages",
+  "settings.urlPreviews": "URL previews",
+  "settings.urlPreviewsEnabled": "Show link previews",
+  "settings.urlPreviewsDescription": "Load previews for links in messages",
+  "settings.urlPreviewsEncryptedNotice": "Previews are disabled in encrypted rooms by default for privacy.",
+  "settings.urlPreviewsEnabledForRoom": "Enable link previews for this room",
+  "timeline.linkPreviewHide": "Hide preview",
+  "timeline.linkPreviewFailed": "Could not load preview",
+  "timeline.linkPreviewLoading": "Loading preview…",
   "settings.media": "Media",
   "settings.compressImages": "Compress images",
   "settings.compressImagesAlways": "Always",
@@ -1704,6 +1720,14 @@ const ja: Catalog = {
   "settings.display": "表示",
   "settings.codeBlockWrap": "コードブロックの長い行を折り返す",
   "settings.hideRedacted": "削除されたメッセージを非表示",
+  "settings.urlPreviews": "URLプレビュー",
+  "settings.urlPreviewsEnabled": "リンクプレビューを表示",
+  "settings.urlPreviewsDescription": "メッセージ内のリンクのプレビューを読み込む",
+  "settings.urlPreviewsEncryptedNotice": "暗号化されたルームではプライバシー保護のため、プレビューはデフォルトで無効になっています。",
+  "settings.urlPreviewsEnabledForRoom": "このルームでリンクプレビューを有効にする",
+  "timeline.linkPreviewHide": "プレビューを非表示",
+  "timeline.linkPreviewFailed": "プレビューを読み込めませんでした",
+  "timeline.linkPreviewLoading": "プレビューを読み込み中…",
   "settings.media": "メディア",
   "settings.compressImages": "画像を圧縮",
   "settings.compressImagesAlways": "常に圧縮",

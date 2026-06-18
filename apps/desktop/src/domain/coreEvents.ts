@@ -116,6 +116,23 @@ export interface TimelineMedia {
   thumbnail: TimelineMediaThumbnail | null;
 }
 
+export type LinkPreviewState = "pending" | "loading" | "ready" | "failed";
+
+export interface LinkPreviewImage {
+  source: TimelineMediaSource;
+  width?: number;
+  height?: number;
+  thumbnail: AvatarThumbnailState;
+}
+
+export interface LinkPreview {
+  url: string;
+  title?: string;
+  description?: string;
+  image?: LinkPreviewImage;
+  state: LinkPreviewState;
+}
+
 export type TimelineSendFailureReason = "recoverable" | "unrecoverable";
 
 export type TimelineSendState =
@@ -177,6 +194,7 @@ export interface TimelineItem {
   thread_root: string | null;
   thread_summary: ThreadSummaryDto | null;
   media?: TimelineMedia | null;
+  link_previews?: LinkPreview[];
   reactions: ReactionGroup[];
   can_react: boolean;
   is_redacted: boolean;

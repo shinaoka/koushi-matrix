@@ -1,3 +1,5 @@
+import type { TimelineMediaSource } from "./coreEvents";
+
 export type SearchScopeKind = "currentRoom" | "currentSpace" | "dms" | "allRooms";
 
 export interface DesktopSnapshot {
@@ -439,6 +441,23 @@ export type AvatarThumbnailState =
   | { kind: "failed"; request_id: number; failureKind: AvatarThumbnailFailureKind };
 
 export type AvatarThumbnailFailureKind = "network" | "forbidden" | "unsupported" | "sdk";
+
+export type LinkPreviewState = "pending" | "loading" | "ready" | "failed";
+
+export interface LinkPreviewImage {
+  source: TimelineMediaSource;
+  width?: number;
+  height?: number;
+  thumbnail: AvatarThumbnailState;
+}
+
+export interface LinkPreview {
+  url: string;
+  title?: string;
+  description?: string;
+  image?: LinkPreviewImage;
+  state: LinkPreviewState;
+}
 
 export type ProfileUpdateState =
   | { kind: "idle" }
