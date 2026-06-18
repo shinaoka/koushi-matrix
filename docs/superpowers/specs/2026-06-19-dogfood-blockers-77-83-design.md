@@ -158,21 +158,21 @@ Index event text plus, per settings, media captions / filenames / metadata —
 skip UTD events. Progress/Completed/Failed projected into
 `AppState.search_crawler`.
 
-**Auto-start (new, approved by user; gated per review, finding 2).** Auto-start
-is gated behind the persisted Rust-owned `SearchCrawlerSettings.speed`: when
-crawling is enabled (`speed != Paused`) and a *joined* room is eligible, enqueue
-an **idempotent** background crawl — never restart a room already `Running` or
-`Completed`. Manual `StartHistoryCrawl` / `StopHistoryCrawl` remain for explicit
-control.
+**Auto-start (Element-parity default).** Crawling past history is **on by
+default**, matching Element — whose search index crawler backfills room history
+automatically. Gating: when crawling is enabled (`speed != Paused`) and a
+*joined* room is eligible, enqueue an **idempotent** background crawl — never
+restart a room already `Running` or `Completed`. Manual `StartHistoryCrawl` /
+`StopHistoryCrawl` remain for explicit control; `Paused` disables it.
 
-Default: `speed = Standard` (auto-on) for the current **local-only / pre-dogfood
-phase** — faithful to the user's "auto-start" instruction and safe because only
-local test homeservers are used. Codex flagged that a persisted auto-on default
-is risky once real accounts exist (large histories decrypted/indexed, server
-load). Mitigation + **hard gate**: the default is a single Rust-owned persisted
-value and **must be revisited before any real-account / matrix.org support**
-(switch to default `Paused` with a first-run opt-in / migration). QA scenarios
-set `speed` explicitly rather than relying on the default.
+Default: `speed = Standard` (auto-on). The **load-safety mechanism is the rate
+limit**, exactly as in Element: each room is paged in bounded batches with an
+enforced inter-batch delay (see Behavior), so background backfill never bursts
+the homeserver. This is the confirmed intended behavior; codex's suggestion to
+default `Paused` is **not adopted** — the throttle is the durable safeguard and
+is a persisted, tested setting (issue #77 requires the throttle be persisted and
+honored). The default `Standard` keeps a real, non-zero inter-batch delay;
+`Fast` (0 ms) is reserved for explicit user choice / QA only.
 
 **Settings-change invalidation (guarded transitions, per review, finding 3).**
 The crawler is a guarded state machine over settings changes, not only over room
