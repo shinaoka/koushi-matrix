@@ -76,7 +76,7 @@ the name intentionally does not contain `desktop`.
 
 ## Verification Checklist
 
-- [ ] `gh repo view shinaoka/koushi-matrix --json visibility` shows `PUBLIC`.
-- [ ] `git remote -v` points to `shinaoka/koushi-matrix.git`.
-- [ ] README reflects the new repository name.
-- [ ] `git fetch origin` succeeds from the new URL.
+- [x] `gh repo view shinaoka/koushi-matrix --json visibility` shows `PUBLIC`.
+- [x] `git remote -v` points to `shinaoka/koushi-matrix.git`.
+- [x] README reflects the new repository name.
+- [x] `git fetch origin` succeeds from the new URL.
