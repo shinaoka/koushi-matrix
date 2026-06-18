@@ -1,9 +1,9 @@
 {
-  "name": "kagome-desktop-app",
+  "name": "koushi-desktop",
   "version": "0.1.0",
   "license": "MIT OR Apache-2.0",
   "private": true,
-  "description": "Kagome — a desktop Matrix client.",
+  "description": "Koushi — a desktop Matrix client.",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",

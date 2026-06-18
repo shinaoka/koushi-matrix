@@ -1,3 +1,3 @@
 fn main() {
-    matrix_desktop_app::run();
+    koushi_desktop::run();
 }

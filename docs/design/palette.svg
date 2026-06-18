@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="560" viewBox="0 0 760 560" font-family="Inter, system-ui, sans-serif">
   <rect width="760" height="560" fill="#ffffff"/>
-  <text x="24" y="34" font-size="20" font-weight="800" fill="#0F1B2D">Kagome — proposed blue palette (semantic tokens)</text>
+  <text x="24" y="34" font-size="20" font-weight="800" fill="#0F1B2D">Koushi — proposed blue palette (semantic tokens)</text>
   <text x="24" y="56" font-size="12" fill="#5B6B82">Differentiated from Element (green). Light is default; dark via [data-theme="dark"] + prefers-color-scheme.</text>
 
   <text x="24" y="92" font-size="13" font-weight="700" fill="#0F1B2D">token</text>

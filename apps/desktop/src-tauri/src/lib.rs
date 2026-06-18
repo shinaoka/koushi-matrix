@@ -264,7 +264,19 @@ pub(crate) fn saved_sessions_disabled_from_env() -> bool {
     )
 }
 
-pub(crate) fn matrix_desktop_data_dir() -> Result<PathBuf, String> {
+const DATA_DIR_NAME: &str = "koushi-desktop";
+const LEGACY_DATA_DIR_NAME: &str = "matrix-desktop";
+
+pub(crate) fn app_data_dir() -> Result<PathBuf, String> {
+    if let Ok(path) = std::env::var("KOUSHI_DATA_DIR") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
+    // Retain the legacy override name so existing QA lanes and portable runs
+    // continue to work across the rebrand.
     if let Ok(path) = std::env::var("MATRIX_DESKTOP_DATA_DIR") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
@@ -273,8 +285,80 @@ pub(crate) fn matrix_desktop_data_dir() -> Result<PathBuf, String> {
     }
 
     dirs::data_local_dir()
-        .map(|path| path.join("matrix-desktop"))
+        .map(|path| path.join(DATA_DIR_NAME))
         .ok_or_else(|| "local application data directory is unavailable".to_owned())
+}
+
+/// Migrate on-disk data from the legacy `matrix-desktop` directory to the
+/// current `koushi-desktop` directory. This is a one-time copy performed before
+/// the runtime starts so existing installs are not locked out after the rebrand.
+///
+/// The migration is atomic from the app's point of view: entries are copied
+/// into a sibling temporary directory first, and only renamed to the final name
+/// after every entry succeeds. A failure therefore leaves the final directory
+/// absent, so the next launch will retry the full migration.
+pub(crate) fn migrate_app_data_dir_if_needed() -> Result<(), String> {
+    // When an explicit data-dir override is in use we cannot know where the
+    // legacy default profile lives, and the caller is responsible for isolation.
+    // Empty or whitespace-only values are ignored, matching `app_data_dir()`.
+    let has_override = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    };
+    if has_override("KOUSHI_DATA_DIR") || has_override("MATRIX_DESKTOP_DATA_DIR") {
+        return Ok(());
+    }
+
+    let Some(base) = dirs::data_local_dir() else {
+        // No local app-data directory is available (e.g. minimal/headless
+        // environments). There is no default legacy profile to migrate, so let
+        // the caller fall back to its own data-dir path.
+        return Ok(());
+    };
+    let new_dir = base.join(DATA_DIR_NAME);
+    if new_dir.exists() {
+        return Ok(());
+    }
+    let legacy_dir = base.join(LEGACY_DATA_DIR_NAME);
+    if !legacy_dir.exists() {
+        return Ok(());
+    }
+
+    let temp_dir = base.join(format!("{}.{}", DATA_DIR_NAME, "migrating"));
+    // Remove any stale temporary directory from a previous failed attempt.
+    if temp_dir.exists() {
+        std::fs::remove_dir_all(&temp_dir)
+            .map_err(|e| format!("failed to remove stale migration temp dir: {e}"))?;
+    }
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("failed to create migration temp dir: {e}"))?;
+
+    for entry in std::fs::read_dir(&legacy_dir).map_err(|e| format!("failed to read legacy data dir: {e}"))? {
+        let entry = entry.map_err(|e| format!("failed to read legacy data dir entry: {e}"))?;
+        let src = entry.path();
+        let dst = temp_dir.join(entry.file_name());
+        copy_dir_or_file(&src, &dst).map_err(|e| format!("failed to migrate {}: {e}", src.display()))?;
+    }
+
+    std::fs::rename(&temp_dir, &new_dir)
+        .map_err(|e| format!("failed to finalize migration: {e}"))?;
+    Ok(())
+}
+
+fn copy_dir_or_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::metadata(src)?;
+    if metadata.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            copy_dir_or_file(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(src, dst).map(|_| ())
+    }
 }
 
 fn window_state_path(base_dir: &Path) -> PathBuf {
@@ -334,7 +418,7 @@ fn load_window_state_with_base(base_dir: &Path) -> Result<Option<PersistedWindow
 }
 
 fn load_window_state() -> Result<Option<PersistedWindowState>, String> {
-    load_window_state_with_base(&matrix_desktop_data_dir()?)
+    load_window_state_with_base(&app_data_dir()?)
 }
 
 fn persist_window_state_with_base(
@@ -362,7 +446,7 @@ fn persist_window_state_with_base(
 }
 
 fn persist_window_state(state: &PersistedWindowState) -> Result<(), String> {
-    persist_window_state_with_base(&matrix_desktop_data_dir()?, state)
+    persist_window_state_with_base(&app_data_dir()?, state)
 }
 
 fn apply_persisted_window_state<R: tauri::Runtime>(
@@ -648,13 +732,21 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
+            // One-time migration of on-disk data from the legacy
+            // `matrix-desktop` directory to `koushi-desktop`. A failure here
+            // is blocking: continuing with an empty new directory would strand
+            // existing installs, and the legacy directory is left untouched so
+            // the user can retry after resolving the error.
+            migrate_app_data_dir_if_needed()
+                .map_err(|e| format!("data directory migration failed: {e}"))?;
+
             // Build the CoreRuntime inside setup() so Tauri's async runtime is
             // already active. `CoreRuntime::start_with_data_dir` calls
             // `executor::spawn` which requires a Tokio runtime context. Tauri
             // starts its tokio runtime before invoking setup; we enter the
             // handle so `tokio::task::spawn` can find it from the main thread.
             let data_dir =
-                matrix_desktop_data_dir().unwrap_or_else(|_| PathBuf::from("matrix-desktop-data"));
+                app_data_dir().unwrap_or_else(|_| PathBuf::from("koushi-desktop-data"));
             // Enter Tauri's tokio runtime so `executor::spawn` (tokio::task::spawn)
             // can find a runtime handle from this non-tokio-worker thread.
             let async_handle = tauri::async_runtime::handle();

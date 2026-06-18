@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopDir = join(repoRoot, "apps", "desktop");
-const appProcessNames = ["matrix-desktop", "matrix-desktop-app"];
+const appProcessNames = ["koushi-desktop", "matrix-desktop", "matrix-desktop-app"];
 let activeProcessName = appProcessNames[0];
 const checks = [
   "launch Tauri dev shell",

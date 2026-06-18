@@ -1816,6 +1816,14 @@ button {
   letter-spacing: 0;
 }
 
+.message-timestamp {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
 .message-actions {
   display: inline-flex;
   gap: 2px;
@@ -2255,6 +2263,12 @@ button {
 
 .message-send-state[data-send-state="notSent"] {
   color: var(--danger);
+}
+
+.message-send-state[data-send-state="sent"] {
+  color: var(--success);
+  background: transparent;
+  padding: 0;
 }
 
 .message-send-actions {

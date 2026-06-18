@@ -1,9 +1,15 @@
-# Kagome (籠目)
+# Koushi (光子・格子)
 
 Desktop Matrix client prototype built toward Tauri, React, and matrix-rust-sdk.
 
-Kagome (籠目, woven-basket pattern) is the shipped product name for this
-desktop Matrix client. The repository codename remains `matrix-desktop`.
+**Koushi** (コウシ) is a deliberate double pun in Japanese:
+- **光子** — *photon*: light, signal, speed, communication.
+- **格子** — *lattice / grid*: a direct conceptual bridge to Matrix.
+
+The logo reflects both: a photon (the bright node) resting on a lattice, with
+light running through the grid. Do not rebrand back to "Kagome", "Ruri", or
+"Matrix Desktop" — the name is intentional. The repository is now
+`shinaoka/koushi-matrix`.
 
 Current status: pre-login desktop shell. The repository has pure Rust state/search/key crates, a no-network fake backend, a Tauri v2 + React app shell, and a static Slack-like reference shell.
 

@@ -1,9 +1,9 @@
-# Kagome — UI/UX Design Language (v1)
+# Koushi — UI/UX Design Language (v1)
 
 Status: design reference for implementers. Date: 2026-06-14.
 
 This document defines the visual + interaction design language for
-Kagome, the Element-like Matrix desktop client: a **blue** identity, **light + dark**
+Koushi, the Element-like Matrix desktop client: a **blue** identity, **light + dark**
 themes, and an **Element-aligned navigation/menu structure**. It is the design
 source other implementation agents follow so the UI is consistent and they do
 not have to re-derive look-and-feel per surface.

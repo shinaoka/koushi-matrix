@@ -4323,11 +4323,14 @@ function resolveDebugAppBinary() {
   const cargoTargetDir = process.env.CARGO_TARGET_DIR;
   const candidates = [];
   if (cargoTargetDir) {
+    candidates.push(join(cargoTargetDir, "debug", "koushi-desktop"));
     candidates.push(join(cargoTargetDir, "debug", "matrix-desktop-app"));
     candidates.push(join(cargoTargetDir, "debug", "matrix-desktop"));
   }
+  candidates.push(join(desktopDir, "src-tauri", "target", "debug", "koushi-desktop"));
   candidates.push(join(desktopDir, "src-tauri", "target", "debug", "matrix-desktop-app"));
   candidates.push(join(desktopDir, "src-tauri", "target", "debug", "matrix-desktop"));
+  candidates.push(join(repoRoot, "target", "debug", "koushi-desktop"));
   candidates.push(join(repoRoot, "target", "debug", "matrix-desktop-app"));
   candidates.push(join(repoRoot, "target", "debug", "matrix-desktop"));
   const found = candidates.find((candidate) => existsSync(candidate));

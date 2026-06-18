@@ -249,11 +249,12 @@ Issues: #40, #44, #49, #9, #31, #53.
 - #31 integration matrix:
   This is the final edge-case pass. Keep it synchronized with
   `docs/qa/integration-edge-cases.md` and run it after feature-specific gates.
-- #53 branding:
-  "Kagome" remains the preferred direction, but final rename waits for a current
-  availability and clash check covering app-store display names, package/bundle
-  identifiers, domains, GitHub/npm names, and trademark risk. Do not use Matrix
-  branding in shipped product names.
+- #53 branding / #82 rename:
+  The shipped product name is **Koushi**. The repository codename remains
+  `matrix-desktop`. Internal identifiers were migrated from Kagome to Koushi
+  (`chat.koushi.desktop`, `koushi-desktop`, `app.koushi.local_aliases`) with
+  read-old-write-new migration for persisted keychain and account-data entries.
+  Do not use Matrix branding in shipped product names.
 
 ### Dependency Order
 

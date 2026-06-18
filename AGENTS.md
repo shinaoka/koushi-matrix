@@ -434,9 +434,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   are Rust-owned DTOs. React renders them and dispatches `set_display_name` /
   `set_avatar`; do not add React-local profile success/failure semantics.
 - Personal local user aliases are also Rust-owned profile state. Keep alias
-  set/clear/list, persistence to `app.kagome.local_aliases`, display-name
+  set/clear/list, persistence to `app.koushi.local_aliases`, display-name
   resolution, and pending/failure state in Rust; React may render the returned
-  labels and dispatch typed commands only.
+  labels and dispatch typed commands only. The SDK reads the legacy
+  `app.kagome.local_aliases` key on first migration and writes future updates
+  to `app.koushi.local_aliases`.
 - `UserProfile.display_label`, `UserProfile.original_display_label`, and
   `UserProfile.mention_search_terms` are the Rust-owned person/mention
   projection. `display_label` may contain the local alias; `original_display_label`

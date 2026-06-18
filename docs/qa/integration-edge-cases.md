@@ -296,8 +296,8 @@ Open follow-ups:
 - #75 tracks mention autocomplete/member ordering that still needs stronger
   Rust-owned text/order semantics, especially for CJK/profile confidence.
 - Native-only and attended residual evidence stays in #66/#67. Product rename
-  issue #72 must run before macOS/native smoke so native evidence uses Kagome
-  naming.
+  issue #82 (Koushi) must run before macOS/native smoke so native evidence uses
+  Koushi naming.
 
 Deferred from this automated pass:
 

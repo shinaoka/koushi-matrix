@@ -30,7 +30,8 @@ use zeroize::Zeroizing;
 const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MATRIX_ROOM_LIST_SNAPSHOT_LIMIT: usize = 4096;
-pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.kagome.local_aliases";
+pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.koushi.local_aliases";
+const LEGACY_LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.kagome.local_aliases";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoginDiscovery {
@@ -2690,12 +2691,7 @@ pub async fn set_avatar(
 pub async fn get_local_user_aliases(
     session: &MatrixClientSession,
 ) -> Result<MatrixLocalUserAliases, MatrixProfileError> {
-    let raw = session
-        .client()
-        .account()
-        .fetch_account_data(local_user_aliases_event_type())
-        .await
-        .map_err(MatrixProfileError::from_sdk_error)?;
+    let raw = fetch_local_user_aliases_raw(session).await?;
     let Some(raw) = raw else {
         return Ok(MatrixLocalUserAliases::default());
     };
@@ -4324,6 +4320,38 @@ fn local_user_aliases_event_type() -> GlobalAccountDataEventType {
     GlobalAccountDataEventType::from(LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE.to_owned())
 }
 
+fn legacy_local_user_aliases_event_type() -> GlobalAccountDataEventType {
+    GlobalAccountDataEventType::from(LEGACY_LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE.to_owned())
+}
+
+async fn fetch_local_user_aliases_raw(
+    session: &MatrixClientSession,
+) -> Result<Option<Raw<AnyGlobalAccountDataEventContent>>, MatrixProfileError> {
+    let account = session.client().account();
+    match account
+        .fetch_account_data(local_user_aliases_event_type())
+        .await
+        .map_err(MatrixProfileError::from_sdk_error)?
+    {
+        Some(raw) => return Ok(Some(raw)),
+        None => {}
+    }
+    let Some(raw) = account
+        .fetch_account_data(legacy_local_user_aliases_event_type())
+        .await
+        .map_err(MatrixProfileError::from_sdk_error)?
+    else {
+        return Ok(None);
+    };
+    // Migrate: write the legacy content under the current key so future reads
+    // use the new identifier. A write failure here is not propagated; the
+    // caller already has usable aliases from the legacy key.
+    let _ = account
+        .set_account_data_raw(local_user_aliases_event_type(), raw.clone())
+        .await;
+    Ok(Some(raw))
+}
+
 fn normalized_local_user_aliases(aliases: BTreeMap<String, String>) -> BTreeMap<String, String> {
     aliases
         .into_iter()
@@ -4604,7 +4632,7 @@ mod tests {
         let value = serde_json::to_value(&content).expect("serialize local aliases");
         assert_eq!(
             LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE,
-            "app.kagome.local_aliases"
+            "app.koushi.local_aliases"
         );
         assert_eq!(
             value["aliases"]["@alice:example.invalid"],

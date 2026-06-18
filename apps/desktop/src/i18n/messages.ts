@@ -614,6 +614,7 @@ export type MessageId =
   | "timeline.sending"
   | "timeline.notSent"
   | "timeline.cancelledSend"
+  | "timeline.sent"
   | "timeline.resendSend"
   | "timeline.deleteSend"
   | "timeline.cancelSend"
@@ -794,8 +795,8 @@ const en: Catalog = {
   "auth.continue": "Continue",
   "auth.deviceName": "Device name",
   "auth.encryptionRecovery": "Encryption Recovery",
-  "app.about": "About Kagome",
-  "app.title": "Kagome",
+  "app.about": "About Koushi",
+  "app.title": "Koushi",
   "auth.failureForbidden": "Login methods are not available for this account",
   "auth.failureNetwork": "Could not reach the homeserver",
   "auth.failureSdk": "Could not check login methods",
@@ -807,7 +808,7 @@ const en: Catalog = {
   "auth.flowToken": "Token",
   "auth.flowUnknown": "Unknown method",
   "auth.matrixAccount": "Matrix account",
-  "auth.matrixDesktop": "Kagome",
+  "auth.matrixDesktop": "Koushi",
   "auth.noLoginMethods": "No login methods",
   "auth.notChecked": "Not checked",
   "auth.password": "Password",
@@ -846,7 +847,7 @@ const en: Catalog = {
   "upload.dialogTitle": "Upload attachments",
   "upload.original": "Original",
   "upload.sizeChoice": "Upload size",
-  "window.title": "Kagome",
+  "window.title": "Koushi",
   "context.editMessage": "Edit",
   "context.addToFavourites": "Add to Favourites",
   "context.addToLowPriority": "Move to Low priority",
@@ -1379,6 +1380,7 @@ const en: Catalog = {
   "timeline.sending": "Sending",
   "timeline.notSent": "Not sent",
   "timeline.cancelledSend": "Cancelled",
+  "timeline.sent": "Sent",
   "timeline.resendSend": "Resend",
   "timeline.deleteSend": "Delete",
   "timeline.cancelSend": "Cancel send",
@@ -1462,10 +1464,10 @@ const ja: Catalog = {
   "auth.continue": "続行",
   "auth.deviceName": "デバイス名",
   "auth.encryptionRecovery": "暗号化リカバリ",
-  "app.about": "Kagome（籠目）について",
-  "app.title": "Kagome（籠目）",
+  "app.about": "Koushi（光子・格子）について",
+  "app.title": "Koushi（光子・格子）",
   "auth.matrixAccount": "Matrixアカウント",
-  "auth.matrixDesktop": "Kagome（籠目）",
+  "auth.matrixDesktop": "Koushi（光子・格子）",
   "auth.noLoginMethods": "ログイン方法がありません",
   "auth.notChecked": "未確認",
   "auth.password": "パスワード",
@@ -1504,7 +1506,7 @@ const ja: Catalog = {
   "upload.dialogTitle": "添付をアップロード",
   "upload.original": "オリジナル",
   "upload.sizeChoice": "アップロードサイズ",
-  "window.title": "Kagome（籠目）",
+  "window.title": "Koushi（光子・格子）",
   "context.editMessage": "編集",
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",
@@ -2035,6 +2037,7 @@ const ja: Catalog = {
   "timeline.sending": "送信中",
   "timeline.notSent": "送信されていません",
   "timeline.cancelledSend": "キャンセル済み",
+  "timeline.sent": "送信済み",
   "timeline.resendSend": "再送信",
   "timeline.deleteSend": "削除",
   "timeline.cancelSend": "送信をキャンセル",

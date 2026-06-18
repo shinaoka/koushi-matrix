@@ -151,7 +151,7 @@ conflict is being resolved.
 - Manual room-key file export/import MUST use the Matrix key-export file
   format that Element clients use, including the encrypted Megolm session data
   header/footer handled by the public Matrix Rust SDK APIs. Do not introduce a
-  Kagome-specific JSON, archive, or wrapper file format for room-key transfer.
+  product-specific JSON, archive, or wrapper file format for room-key transfer.
   Tests for this flow must use synthetic fixtures and assert interoperability
   without logging or snapshotting room-key file contents.
   If the public SDK export API does not return an exported-session count,
@@ -308,6 +308,24 @@ conflict is being resolved.
   names, sender/member names, message bodies, thread labels, and snippets, but
   must not rewrite text, recompute sort keys, normalize queries, or repair
   highlights locally.
+
+## Product Identity And Migration
+
+- The shipped product name is **Koushi**. User-facing strings, window titles,
+  installer metadata, docs, and QA artifacts must use Koushi. The repository
+  codename remains `matrix-desktop`.
+- Current internal identifiers are:
+  - Tauri bundle identifier: `chat.koushi.desktop`
+  - npm/Cargo package name: `koushi-desktop`
+  - keychain / file credential-store service name: `koushi-desktop`
+  - Matrix global account-data key for local user aliases:
+    `app.koushi.local_aliases`
+- Migration from the previous Kagome-era identifiers is mandatory for any
+  persisted user data. The app must read legacy keychain entries under the old
+  `matrix-desktop` service name and legacy Matrix account-data under
+  `app.kagome.local_aliases`, then rewrite them under the current identifiers.
+  Renaming these identifiers again requires an explicit migration plan and user
+  approval.
 
 ## Concurrent Work And Merge-Conflict Avoidance
 

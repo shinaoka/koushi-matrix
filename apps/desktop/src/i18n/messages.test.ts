@@ -35,6 +35,15 @@ describe("i18n message catalog", () => {
     expect(identicalMessageIds).toEqual([]);
   });
 
+  test("product branding uses Koushi in English and Japanese", () => {
+    expect(t("app.title")).toBe("Koushi");
+    expect(t("window.title")).toBe("Koushi");
+    expect(t("auth.matrixDesktop")).toBe("Koushi");
+    expect(t("app.title", {}, "ja")).toBe("Koushi（光子・格子）");
+    expect(t("window.title", {}, "ja")).toBe("Koushi（光子・格子）");
+    expect(t("auth.matrixDesktop", {}, "ja")).toBe("Koushi（光子・格子）");
+  });
+
   test("Japanese catalog provides representative localized labels", () => {
     expect(t("composer.replying", {}, "ja")).toBe("返信中");
     expect(t("action.send", {}, "ja")).toBe("送信");

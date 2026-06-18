@@ -25,6 +25,7 @@
 import {
   ArrowDown,
   CalendarDays,
+  Check,
   Copy,
   Download,
   Edit3,
@@ -2141,6 +2142,17 @@ export function TimelineItemRow({
         : sendStateKind === "cancelled"
           ? t("timeline.cancelledSend")
           : null;
+  const messageTimestamp = formatMessageTimestamp(item.timestamp_ms);
+  const sentStateMark =
+    sendStateKind === "sent" ? (
+      <span
+        className="message-send-state"
+        data-send-state="sent"
+        aria-label={t("timeline.sent")}
+      >
+        <Check size={12} aria-hidden="true" />
+      </span>
+    ) : null;
   const avatarUrl =
     profile?.avatar?.thumbnail.kind === "ready" ? profile.avatar.thumbnail.source_url : null;
   const senderDisplayLabel = item.sender_label?.trim() || item.sender || "";
@@ -2282,7 +2294,7 @@ export function TimelineItemRow({
     <article
       className="message"
       data-item-id={domId}
-      data-send-state={sendStateKind && sendStateKind !== "sent" ? sendStateKind : undefined}
+      data-send-state={sendStateKind ?? undefined}
       data-event-id={eventId ?? undefined}
       data-redacted={isRedacted || undefined}
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
@@ -2302,6 +2314,11 @@ export function TimelineItemRow({
             />
           ) : null}
           <span className="sender" dir="auto">{senderDisplayLabel}</span>
+          {messageTimestamp ? (
+            <time className="message-timestamp" dateTime={new Date(item.timestamp_ms!).toISOString()}>
+              {messageTimestamp}
+            </time>
+          ) : null}
           {item.is_edited && !isRedacted ? (
             <span className="message-edited">{t("timeline.editedMessage")}</span>
           ) : null}
@@ -2313,6 +2330,7 @@ export function TimelineItemRow({
               {sendStateLabel}
             </span>
           ) : null}
+          {sentStateMark}
         </div>
         {replyQuoteContent}
         {mediaContent ? (
@@ -2811,6 +2829,15 @@ function formatReceiptTimestamp(timestampMs: number | null): string | null {
   }
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(timestampMs));
+}
+
+function formatMessageTimestamp(timestampMs: number | null): string | null {
+  if (timestampMs === null) {
+    return null;
+  }
+  return new Intl.DateTimeFormat(undefined, {
     timeStyle: "short"
   }).format(new Date(timestampMs));
 }

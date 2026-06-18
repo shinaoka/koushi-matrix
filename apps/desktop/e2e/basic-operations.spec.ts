@@ -298,7 +298,7 @@ test("auth form defaults to matrix.org and submits custom ports in the homeserve
   await homeserverInput.fill("https://example.org:8448");
   await page.getByRole("textbox", { name: t("auth.usernameOrMatrixId") }).fill("@alice:example.org");
   await page.getByLabel(t("auth.password")).fill("synthetic-password");
-  await page.getByRole("textbox", { name: t("auth.deviceName") }).fill("Kagome Test Device");
+  await page.getByRole("textbox", { name: t("auth.deviceName") }).fill("Koushi Test Device");
   await page.getByRole("button", { name: t("auth.continue") }).click();
 
   await expect.poll(() => invocationCount(page, "submit_login")).toBeGreaterThanOrEqual(1);
@@ -308,7 +308,7 @@ test("auth form defaults to matrix.org and submits custom ports in the homeserve
       homeserver: "https://example.org:8448",
       username: "@alice:example.org",
       password: "[REDACTED]",
-      deviceDisplayName: "Kagome Test Device"
+      deviceDisplayName: "Koushi Test Device"
     });
   await expect(page.locator('input[name="port"]')).toHaveCount(0);
 });
@@ -2419,6 +2419,40 @@ test("send queue room bar resends failed transactions in timeline order", async 
     .toEqual(["txn-fifo-first", "txn-fifo-second"]);
 });
 
+test("sent own messages show a visible timestamp and a sent check mark", async ({ page }) => {
+  await gotoReadyShell(page);
+  const timestampMs = 1_800_000_002_000;
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: "$sent-state-event:example.invalid" } },
+      sender: HARNESS_ACCOUNT_KEY,
+      sender_label: "Harness Sender",
+      body: "Sent and delivered",
+      timestamp_ms: timestampMs,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      reactions: [],
+      can_react: true,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: true,
+      is_edited: false,
+      can_edit: true,
+      send_state: { kind: "sent" }
+    }
+  ]);
+
+  const row = page.locator('[data-event-id="$sent-state-event:example.invalid"]');
+  await expect(row).toHaveAttribute("data-send-state", "sent");
+  const timestamp = row.locator(".message-timestamp");
+  await expect(timestamp).toHaveAttribute("datetime", new Date(timestampMs).toISOString());
+  await expect(timestamp).not.toBeEmpty();
+  const sentMark = row.locator('.message-send-state[data-send-state="sent"]');
+  await expect(sentMark).toBeVisible();
+  await expect(sentMark).toHaveAttribute("aria-label", t("timeline.sent"));
+});
+
 test("clicking an unselected reaction pill invokes send_reaction", async ({ page }) => {
   await gotoReadyShell(page);
   await expect(page.getByRole("button", { name: "Reaction 👍, count 1" }).first()).toBeVisible();
@@ -3800,6 +3834,24 @@ test("editing a message invokes edit_message and renders the edited marker", asy
 
   await expect(row.getByText("Edited seed message")).toBeVisible();
   await expect(row.locator(".message-edited")).toHaveText(t("timeline.editedMessage"));
+
+  // Re-edit: the edited message remains editable while can_edit is true.
+  await row.hover();
+  await page.getByRole("button", { name: t("timeline.editMessage") }).first().click();
+  await expect(editBody).toBeVisible();
+  await editBody.fill("Re-edited seed message");
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.getByRole("button", { name: t("timeline.saveEdit") }).click();
+  await expect.poll(() => invocationCount(page, "edit_message")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("edit_message")[0]?.args)
+    )
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      eventId: "$seed-event:example.invalid",
+      body: "Re-edited seed message"
+    });
 });
 
 test("selecting a search result opens focused context from Rust-owned state", async ({
@@ -5214,7 +5266,7 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
   await expect(page.getByRole("heading", { name: "Key management" })).toBeVisible();
 
   const exportForm = page.getByRole("form", { name: "Room key export", exact: true });
-  await exportForm.getByLabel("Key export destination").fill("/tmp/kagome-export.txt");
+  await exportForm.getByLabel("Key export destination").fill("/tmp/koushi-export.txt");
   await exportForm.getByLabel("Room key passphrase").fill("synthetic-export-passphrase");
   await exportForm.getByRole("button", { name: "Export room keys" }).click();
   await expect.poll(() => invocationCount(page, "export_room_keys")).toBe(1);

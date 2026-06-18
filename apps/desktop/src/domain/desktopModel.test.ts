@@ -282,7 +282,7 @@ describe("desktop model", () => {
       "https://matrix.example.org",
       "demo-user",
       "synthetic-password",
-      "Kagome Test"
+      "Koushi Test"
     );
 
     expect(snapshot.state.session.kind).toBe("signedOut");

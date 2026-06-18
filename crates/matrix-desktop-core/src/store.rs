@@ -28,7 +28,8 @@ use matrix_desktop_state::{ComposerDraftStore, LocalEncryptionHealth};
 use crate::failure::CoreFailure;
 
 /// Service name used for all keyring entries in this application.
-const CREDENTIAL_STORE_SERVICE_NAME: &str = "matrix-desktop";
+const CREDENTIAL_STORE_SERVICE_NAME: &str = "koushi-desktop";
+const LEGACY_CREDENTIAL_STORE_SERVICE_NAME: &str = "matrix-desktop";
 const COMPOSER_DRAFTS_FILE_MAGIC: &[u8] = b"RURI-DRAFTS-V1\0";
 const COMPOSER_DRAFTS_NONCE_LEN: usize = 12;
 
@@ -343,7 +344,9 @@ impl CredentialStoreBackend {
             tracing_or_eprintln("file credential store active (debug/test only)");
             return Self::FileDir(FileCredentialStore::new(dir));
         }
-        Self::OsKeychain(CredentialStore::new(CREDENTIAL_STORE_SERVICE_NAME))
+        let store = CredentialStore::new(CREDENTIAL_STORE_SERVICE_NAME);
+        migrate_keychain_credentials(&store);
+        Self::OsKeychain(store)
     }
 
     fn load(
@@ -558,6 +561,88 @@ impl CredentialStoreBackend {
             Self::FileDir(_) => None,
             #[cfg(test)]
             Self::InMemory(_) => None,
+        }
+    }
+}
+
+/// One-time migration of OS keychain entries from the legacy `matrix-desktop`
+/// service name to the current `koushi-desktop` service name.
+///
+/// Delete operations against the legacy store happen only after the
+/// corresponding write to the current store succeeds, so a migration failure
+/// never destroys the only copy of a saved session.
+fn migrate_keychain_credentials(store: &CredentialStore) {
+    let legacy = CredentialStore::new(LEGACY_CREDENTIAL_STORE_SERVICE_NAME);
+
+    // Migrate last-session pointer. Only delete the legacy pointer once the
+    // current store acknowledges the write.
+    if let Ok(Some(key_id)) = legacy.load_last_session() {
+        if store.save_last_session(&key_id).is_ok() {
+            let _ = legacy.delete_last_session();
+        }
+    }
+
+    // Migrate saved-sessions index and per-session secrets. Collect the key ids
+    // that were successfully written to the current store, commit the new index,
+    // and only then remove the corresponding legacy secrets and update the legacy
+    // index. If the new index cannot be committed, the legacy entries remain
+    // intact for the next retry.
+    let legacy_index = legacy.load_saved_sessions().unwrap_or_default();
+    if !legacy_index.sessions().is_empty() {
+        let mut current_index = store.load_saved_sessions().unwrap_or_default();
+        let mut migrated = Vec::new();
+        for key_id in legacy_index.sessions() {
+            let secret_result = legacy.load(key_id);
+            let session_result = legacy.load_matrix_session(key_id);
+
+            // Helper: an entry is absent (and therefore not required for a
+            // complete migration) only when the load error is a missing
+            // credential. Other errors mean the legacy store is unreadable, so
+            // we must not mark the session migrated or delete anything.
+            fn is_absent<T>(result: &Result<T, matrix_desktop_key::LocalSecretError>) -> bool {
+                result
+                    .as_ref()
+                    .err()
+                    .map(matrix_desktop_key::is_missing_credential_error)
+                    .unwrap_or(false)
+            }
+
+            let secret_absent = is_absent(&secret_result);
+            let session_absent = is_absent(&session_result);
+            let secret_present = secret_result.is_ok();
+            let session_present = session_result.is_ok();
+            if !secret_present && !session_present {
+                // Both loads failed. If either failure is non-missing, the
+                // legacy store is unreadable, so we must not delete anything.
+                if !secret_absent || !session_absent {
+                    continue;
+                }
+            }
+
+            let secret_ok = match secret_result {
+                Ok(secret) => store.save(key_id, &secret).is_ok(),
+                Err(_) if secret_absent => true,
+                Err(_) => false,
+            };
+            let session_ok = match session_result {
+                Ok(session) => store.save_matrix_session(key_id, &session).is_ok(),
+                Err(_) if session_absent => true,
+                Err(_) => false,
+            };
+
+            if secret_ok && session_ok {
+                current_index.upsert(key_id.clone());
+                migrated.push(key_id.clone());
+            }
+        }
+        if store.save_saved_sessions(&current_index).is_ok() {
+            let mut remaining_legacy_index = legacy_index.clone();
+            for key_id in &migrated {
+                let _ = legacy.delete(key_id);
+                let _ = legacy.delete_matrix_session(key_id);
+                remaining_legacy_index.remove(key_id);
+            }
+            let _ = legacy.save_saved_sessions(&remaining_legacy_index);
         }
     }
 }

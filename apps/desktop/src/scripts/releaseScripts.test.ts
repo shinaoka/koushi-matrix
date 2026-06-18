@@ -41,11 +41,16 @@ describe("desktop release scripts", () => {
       ".otf",
       ".zst"
     ]);
+    // Files that intentionally mention prior branding for documentation/history.
+    const intentionalPreviousBrandReferences = new Set(["README.md"]);
     const findings: string[] = [];
 
     for (const file of gitTrackedFiles()) {
       const extension = file.includes(".") ? file.slice(file.lastIndexOf(".")).toLowerCase() : "";
       if (binaryExtensions.has(extension)) {
+        continue;
+      }
+      if (intentionalPreviousBrandReferences.has(file)) {
         continue;
       }
       let contents: string;
@@ -1325,14 +1330,14 @@ describe("desktop release scripts", () => {
   test("mac GUI smoke send smoke mode passes only a synthetic body through child env", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
       "--child-env",
-      "--send-smoke-message=Kagome synthetic QA send"
+      "--send-smoke-message=Koushi synthetic QA send"
     ]);
     const sendLine = output
       .split("\n")
       .find((line) => line.startsWith("VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE="));
 
     expect(sendLine).toBe(
-      "VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE=Kagome synthetic QA send"
+      "VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE=Koushi synthetic QA send"
     );
     expect(sendLine).not.toContain("password");
   });

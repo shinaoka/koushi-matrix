@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Kagome",
+  "productName": "Koushi",
   "version": "0.1.0",
-  "identifier": "chat.kagome.desktop",
+  "identifier": "chat.koushi.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Kagome",
+        "title": "Koushi",
         "width": 1280,
         "height": 820,
         "minWidth": 760,
@@ -26,14 +26,21 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg", "msi", "nsis"],
-    "publisher": "Kagome contributors",
+    "publisher": "Koushi contributors",
     "homepage": "https://github.com/matrix-org/matrix-rust-sdk",
-    "icon": [],
-    "copyright": "Copyright 2026 Kagome contributors",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "copyright": "Copyright 2026 Koushi contributors",
     "license": "MIT OR Apache-2.0",
     "category": "SocialNetworking",
-    "shortDescription": "Kagome — a Matrix desktop client.",
-    "longDescription": "Kagome is a Matrix desktop client used to validate Matrix Rust SDK desktop integration, encrypted local stores, search, and Element-like desktop workflows.",
+    "shortDescription": "Koushi — a Matrix desktop client.",
+    "longDescription": "Koushi is a Matrix desktop client used to validate Matrix Rust SDK desktop integration, encrypted local stores, search, and Element-like desktop workflows.",
     "macOS": {
       "minimumSystemVersion": "12.0",
       "hardenedRuntime": true,

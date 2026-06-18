@@ -413,8 +413,8 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
 2. Never use `Cmd+Q` to stop the app from automation; focus slips can send
    it to the controlling agent. Use the script's process-group cleanup.
 3. Resolve processes as `first process whose name is <variable>` in
-   AppleScript; check both the dev process name (`matrix-desktop-app`) and
-   the product title (`Kagome`).
+   AppleScript; check both the dev process name (`koushi-desktop`) and
+   the product title (`Koushi`).
 4. First-run GUI smoke sets `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1`;
    real-login smoke additionally sets
    `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`.

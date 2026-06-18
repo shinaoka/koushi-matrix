@@ -799,7 +799,7 @@ stateDiagram-v2
   in-flight request id. Stale or duplicate completions are ignored. Failures
   also emit `ErrorChanged`.
 - Local user aliases are personal "only I see this name" data persisted as
-  private global account data under `app.kagome.local_aliases`. `AccountActor`
+  private global account data under `app.koushi.local_aliases`. `AccountActor`
   hydrates them after login/restore, and `SetLocalUserAlias` writes them through
   the SDK account-data boundary. They never become Matrix profile updates,
   room events, outgoing message content, notification text, or QA tokens.
@@ -1472,7 +1472,7 @@ stateDiagram-v2
   the public SDK export API does not return a count. File paths, passphrases,
   and file contents are native/Tauri/account-actor boundary values.
 - Manual room-key file transfer uses the Matrix key-export file format that
-  Element clients use. Kagome must not wrap the encrypted Megolm session data
+  Element clients use. Koushi must not wrap the encrypted Megolm session data
   in a custom JSON/archive format, and must not parse/decrypt the export file
   only to derive UI metadata.
 - Secure-backup setup and passphrase-change state may report recovery-key
