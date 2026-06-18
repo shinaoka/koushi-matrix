@@ -7,18 +7,18 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use matrix_desktop_search::{AttachmentDocument, AttachmentKind, SensitiveString};
+use matrix_desktop_search::{AttachmentDocument, SensitiveString};
 use matrix_desktop_state::{
-    AppAction, SearchCrawlerFailureKind, SearchCrawlerSettings, SearchCrawlerSpeed,
+    AppAction, AttachmentKind, SearchCrawlerFailureKind, SearchCrawlerSettings, SearchCrawlerSpeed,
 };
-use matrix_sdk::room::{MessagesOptions, Room};
-use matrix_sdk::ruma::api::client::direction::Direction;
+use matrix_sdk::room::MessagesOptions;
+use matrix_sdk::ruma::api::Direction;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::event::{CoreEvent, SearchEvent};
 use crate::ids::RequestId;
-use crate::search::SearchIndexMessage;
+use crate::search::{SearchActorMessage, SearchIndexMessage};
 use crate::executor;
 
 const BATCH_SIZE_FAST: u32 = 200;
@@ -36,6 +36,7 @@ pub fn spawn_history_crawl(
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     cancel: Arc<AtomicBool>,
+    actor_tx: mpsc::Sender<SearchActorMessage>,
 ) {
     executor::spawn(run_history_crawl(
         session,
@@ -46,6 +47,7 @@ pub fn spawn_history_crawl(
         action_tx,
         event_tx,
         cancel,
+        actor_tx,
     ));
 }
 
@@ -58,39 +60,71 @@ async fn run_history_crawl(
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     cancel: Arc<AtomicBool>,
+    actor_tx: mpsc::Sender<SearchActorMessage>,
 ) {
-    send_action(
+    let completed = run_history_crawl_inner(
+        &session,
+        &room_id,
+        request_id,
+        &settings,
+        &index_tx,
         &action_tx,
+        &event_tx,
+        &cancel,
+    )
+    .await;
+
+    // Notify the SearchActor that this crawl is done so it can clean up
+    // `crawl_cancels` and, if it completed successfully, record the room in
+    // `completed_rooms` to prevent duplicate auto-start crawls.
+    let _ = actor_tx
+        .try_send(SearchActorMessage::CrawlFinished { room_id, completed });
+}
+
+/// Core crawl logic.  Returns `true` if the room history was fully crawled
+/// (completed or already paused), or `false` if it failed.
+async fn run_history_crawl_inner(
+    session: &matrix_desktop_sdk::MatrixClientSession,
+    room_id: &str,
+    request_id: RequestId,
+    settings: &SearchCrawlerSettings,
+    index_tx: &mpsc::Sender<SearchIndexMessage>,
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    cancel: &Arc<AtomicBool>,
+) -> bool {
+    send_action(
+        action_tx,
         AppAction::HistoryCrawlStarted {
             request_id: request_id.sequence,
-            room_id: room_id.clone(),
+            room_id: room_id.to_owned(),
         },
     )
     .await;
 
     if settings.speed == SearchCrawlerSpeed::Paused {
         send_action(
-            &action_tx,
+            action_tx,
             AppAction::HistoryCrawlCompleted {
-                room_id,
+                room_id: room_id.to_owned(),
                 indexed: 0,
             },
         )
         .await;
-        return;
+        return true;
     }
 
     let parsed_room_id = match room_id.parse::<matrix_sdk::ruma::OwnedRoomId>() {
         Ok(id) => id,
         Err(_) => {
             send_failure(
-                &action_tx,
-                &room_id,
+                action_tx,
+                room_id,
                 SearchCrawlerFailureKind::RoomNotFound,
                 "invalid room id",
             )
             .await;
-            return;
+            return false;
         }
     };
 
@@ -98,13 +132,13 @@ async fn run_history_crawl(
         Some(room) => room,
         None => {
             send_failure(
-                &action_tx,
-                &room_id,
+                action_tx,
+                room_id,
                 SearchCrawlerFailureKind::RoomNotFound,
                 "room not found",
             )
             .await;
-            return;
+            return false;
         }
     };
 
@@ -114,35 +148,43 @@ async fn run_history_crawl(
         _ => (BATCH_SIZE_STANDARD, 100),
     };
 
-    let mut options = MessagesOptions::new(Direction::Backward);
-    options.limit = batch_size.into();
+    let mut from_token: Option<String> = None;
     let mut processed: u64 = 0;
     let mut indexed: u64 = 0;
 
     loop {
         if cancel.load(Ordering::Relaxed) {
+            // Cancelled: report as completed so the room can be re-crawled
+            // later from the start without being counted as failed.
             send_action(
-                &action_tx,
+                action_tx,
                 AppAction::HistoryCrawlCompleted {
-                    room_id: room_id.clone(),
+                    room_id: room_id.to_owned(),
                     indexed,
                 },
             )
             .await;
-            return;
+            // Return false so the actor does NOT add this room to
+            // `completed_rooms` — a cancelled crawl is retryable.
+            return false;
         }
 
-        let messages = match room.messages(options.clone()).await {
+        // Build a fresh MessagesOptions per page (MessagesOptions is not Clone).
+        let mut options = MessagesOptions::new(Direction::Backward);
+        options.limit = batch_size.into();
+        options.from = from_token.clone();
+
+        let messages = match room.messages(options).await {
             Ok(messages) => messages,
             Err(_) => {
                 send_failure(
-                    &action_tx,
-                    &room_id,
+                    action_tx,
+                    room_id,
                     SearchCrawlerFailureKind::Sdk,
                     "messages request failed",
                 )
                 .await;
-                return;
+                return false;
             }
         };
 
@@ -155,8 +197,8 @@ async fn run_history_crawl(
             }
 
             let raw = timeline_event.kind.raw();
-            let Some(json) = raw.json().ok() else { continue };
-            let Some(message) = event_json_to_index_message(&room_id, json, &settings) else {
+            let json = raw.json().get();
+            let Some(message) = event_json_to_index_message(room_id, json, settings) else {
                 continue;
             };
             indexed += 1;
@@ -164,9 +206,9 @@ async fn run_history_crawl(
         }
 
         send_action(
-            &action_tx,
+            action_tx,
             AppAction::HistoryCrawlProgress {
-                room_id: room_id.clone(),
+                room_id: room_id.to_owned(),
                 processed,
                 indexed,
             },
@@ -182,23 +224,24 @@ async fn run_history_crawl(
         }
 
         match messages.end {
-            Some(next_token) => options.from = Some(next_token),
+            Some(next_token) => from_token = Some(next_token),
             None => break,
         }
     }
 
     send_action(
-        &action_tx,
+        action_tx,
         AppAction::HistoryCrawlCompleted {
-            room_id: room_id.clone(),
+            room_id: room_id.to_owned(),
             indexed,
         },
     )
     .await;
     let _ = event_tx.send(CoreEvent::Search(SearchEvent::HistoryCrawlCompleted {
-        room_id,
+        room_id: room_id.to_owned(),
         indexed,
     }));
+    true
 }
 
 async fn send_action(action_tx: &mpsc::Sender<Vec<AppAction>>, action: AppAction) {
@@ -209,14 +252,15 @@ async fn send_failure(
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     room_id: &str,
     kind: SearchCrawlerFailureKind,
-    message: &str,
+    _detail: &str,
 ) {
+    // _detail is logged internally only; the coarse kind is what crosses the
+    // Tauri/TypeScript boundary (privacy rule: no raw SDK errors in state).
     send_action(
         action_tx,
         AppAction::HistoryCrawlFailed {
             room_id: room_id.to_owned(),
             kind,
-            message: message.to_owned(),
         },
     )
     .await;

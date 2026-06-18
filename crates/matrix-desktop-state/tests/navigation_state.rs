@@ -1,8 +1,8 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState,
     NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomSummary, RoomTags,
-    SessionInfo, SessionState, SpaceSummary, ThreadPaneState, TimelinePaneState, UiEvent,
-    compose_sidebar, native_attention_state_from_rooms, reduce,
+    SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary, ThreadPaneState,
+    TimelinePaneState, UiEvent, compose_sidebar, native_attention_state_from_rooms, reduce,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -36,6 +36,10 @@ fn spaces() -> Vec<SpaceSummary> {
         avatar: None,
         child_room_ids: vec!["room-a".to_owned(), "dm-a".to_owned()],
     }]
+}
+
+fn search_crawler_settings_standard() -> SearchCrawlerSettings {
+    SearchCrawlerSettings::default()
 }
 
 fn rooms() -> Vec<RoomSummary> {
@@ -252,6 +256,14 @@ fn room_list_update_replaces_state_and_emits_room_list_event() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec![
+                    "room-a".to_owned(),
+                    "dm-a".to_owned(),
+                    "global-room".to_owned(),
+                ],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::SubscribeTimeline {
                 room_id: "room-a".to_owned(),
             },
@@ -281,6 +293,14 @@ fn room_list_update_selects_first_room_when_no_room_is_active() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec![
+                    "room-a".to_owned(),
+                    "dm-a".to_owned(),
+                    "global-room".to_owned(),
+                ],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::SubscribeTimeline {
                 room_id: "room-a".to_owned(),
             },
@@ -355,6 +375,10 @@ fn room_list_update_clears_missing_active_space_and_room() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec!["global-room".to_owned()],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: "room-a".to_owned(),
             }),
@@ -495,6 +519,10 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec!["room-a".to_owned(), "room-b".to_owned()],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::SubscribeTimeline {
                 room_id: "room-b".to_owned(),
             },
@@ -591,6 +619,10 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec!["room-b".to_owned()],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: "room-a".to_owned(),
             }),
@@ -648,7 +680,17 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
     assert!(state.timeline.is_subscribed);
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec![
+                    "room-a".to_owned(),
+                    "dm-a".to_owned(),
+                    "global-room".to_owned(),
+                ],
+                settings: search_crawler_settings_standard(),
+            },
+        ]
     );
 }
 

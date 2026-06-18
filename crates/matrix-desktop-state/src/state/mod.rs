@@ -8,6 +8,19 @@ use serde::{Deserialize, Serialize};
 use crate::composer_shortcuts::FormattedMessageDraft;
 use crate::locale_profile::DisplayPlatform;
 
+// New cohesive submodules — #87 alignment (new types only, no mechanical move).
+pub mod media_download;
+pub mod search_crawler;
+
+// Re-export the new types at this module level so existing callers
+// (`matrix_desktop_state::SearchCrawlerState`, etc.) keep compiling
+// without changes. Only re-export where demonstrably needed.
+pub use media_download::{MediaTransferProgress, TimelineMediaDownloadState};
+pub use search_crawler::{
+    SearchCrawlerFailureKind, SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed,
+    SearchCrawlerState,
+};
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub session: SessionState,
@@ -337,7 +350,7 @@ impl Default for NotificationSettings {
     }
 }
 
-fn default_true() -> bool {
+pub(crate) fn default_true() -> bool {
     true
 }
 
@@ -467,25 +480,8 @@ pub struct TimelineSettings {
     pub auto_load_older_messages: bool,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SearchCrawlerSettings {
-    #[serde(default)]
-    pub speed: SearchCrawlerSpeed,
-    #[serde(default = "default_true")]
-    pub include_media_captions: bool,
-    #[serde(default = "default_true")]
-    pub include_filenames: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SearchCrawlerSpeed {
-    #[default]
-    Standard,
-    Fast,
-    Slow,
-    Paused,
-}
+// SearchCrawlerSettings and SearchCrawlerSpeed live in state/search_crawler.rs
+// and are re-exported above.
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -1796,30 +1792,8 @@ pub enum OperationFailureKind {
     Sdk,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct MediaTransferProgress {
-    pub current: u64,
-    pub total: u64,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum TimelineMediaDownloadState {
-    #[default]
-    NotRequested,
-    Pending {
-        progress: Option<MediaTransferProgress>,
-    },
-    Ready {
-        source_url: String,
-        width: Option<u64>,
-        height: Option<u64>,
-        mime_type: Option<String>,
-    },
-    Failed {
-        failure_kind: OperationFailureKind,
-    },
-}
+// MediaTransferProgress and TimelineMediaDownloadState live in
+// state/media_download.rs and are re-exported above.
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -3552,43 +3526,8 @@ pub enum SearchState {
     },
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SearchCrawlerState {
-    pub rooms: BTreeMap<String, SearchCrawlerRoomState>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum SearchCrawlerRoomState {
-    Idle,
-    Running {
-        processed: u64,
-        indexed: u64,
-    },
-    Completed {
-        indexed: u64,
-    },
-    Failed {
-        #[serde(rename = "failureKind")]
-        kind: SearchCrawlerFailureKind,
-        message: String,
-    },
-}
-
-impl Default for SearchCrawlerRoomState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SearchCrawlerFailureKind {
-    RoomNotFound,
-    Sdk,
-    Decryption,
-    IndexUnavailable,
-}
+// SearchCrawlerState, SearchCrawlerRoomState, and SearchCrawlerFailureKind live
+// in state/search_crawler.rs and are re-exported above.
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SearchScope {

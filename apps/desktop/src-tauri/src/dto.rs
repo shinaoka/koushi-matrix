@@ -18,12 +18,12 @@ use matrix_desktop_state::{
     FocusedContextState, InvitePreview, LinkPreviewSettingsState, LiveSignalsState, LocalEncryptionState,
     LocaleDisplayProfile, NativeAttentionCapabilities, NativeAttentionState, NavigationState,
     ProfileState, QrLoginState, RecoveryMethod, RoomInteractionState, RoomListProjection,
-    RoomManagementState, RoomNotificationSettings, RoomSummary, SearchMatchField, SearchMatchKind,
-    SearchResult, SearchScope, SearchState, SessionState, SettingsState, SidebarModel,
-    SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
-    ThreadPaneState, ThreadsListState, TimelinePaneState, TypographyDisplayProfile,
-    native_attention_capabilities_for_platform, resolve_locale_display_profile,
-    resolve_typography_display_profile,
+    RoomManagementState, RoomNotificationSettings, RoomSummary, SearchCrawlerState,
+    SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState,
+    SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState,
+    ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
+    TypographyDisplayProfile, native_attention_capabilities_for_platform,
+    resolve_locale_display_profile, resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -88,6 +88,7 @@ pub struct FrontendAppState {
     pub thread_attention: ThreadAttentionState,
     pub focused_context: FocusedContextState,
     pub search: FrontendSearchState,
+    pub search_crawler: SearchCrawlerState,
     pub files_view: FilesViewState,
     pub threads_list: ThreadsListState,
     pub basic_operation: BasicOperationState,
@@ -141,6 +142,7 @@ impl From<AppState> for FrontendAppState {
             thread_attention: state.thread_attention,
             focused_context: state.focused_context,
             search: state.search.into(),
+            search_crawler: state.search_crawler,
             files_view: state.files_view,
             threads_list: state.threads_list,
             basic_operation: state.basic_operation,
@@ -659,7 +661,7 @@ mod tests {
         assert_eq!(value["state"]["room_notification_settings"], json!({}));
         assert_eq!(
             value["state"]["settings"]["values"]["media"]["image_upload_compression"],
-            json!("never")
+            json!("ask")
         );
         assert_eq!(
             value["state"]["settings"]["values"]["media"]["image_upload_compression_policy"],

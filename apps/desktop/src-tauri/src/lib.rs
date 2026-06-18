@@ -1340,10 +1340,10 @@ mod tests {
             IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt,
             LiveRoomSignalUpdate, LocalEncryptionHealth, MediaTransferProgress,
             NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
-            PresenceKind, ReplyQuote,
-            ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule, RoomMemberRole,
-            RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji,
-            SyncMode, VerificationFlowState, VerificationTarget,
+            PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
+            RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
+            RoomTagKind, SasEmoji, SearchCrawlerFailureKind, SyncMode, VerificationFlowState,
+            VerificationTarget,
         };
         use serde_json::json;
 
@@ -2346,6 +2346,49 @@ mod tests {
             json!("index unavailable")
         );
 
+        // Search history crawler contract events (#77).
+        let search_crawl_progress = serialize_core_event(&CoreEvent::Search(
+            SearchEvent::HistoryCrawlProgress {
+                room_id: "!r:example.test".to_owned(),
+                processed: 100,
+                indexed: 42,
+            },
+        ))
+        .expect("serialize history crawl progress event");
+        assert_eq!(
+            search_crawl_progress["event"]["HistoryCrawlProgress"]["processed"],
+            json!(100u64)
+        );
+
+        let search_crawl_completed = serialize_core_event(&CoreEvent::Search(
+            SearchEvent::HistoryCrawlCompleted {
+                room_id: "!r:example.test".to_owned(),
+                indexed: 42,
+            },
+        ))
+        .expect("serialize history crawl completed event");
+        assert_eq!(
+            search_crawl_completed["event"]["HistoryCrawlCompleted"]["indexed"],
+            json!(42u64)
+        );
+
+        let search_crawl_failed = serialize_core_event(&CoreEvent::Search(
+            SearchEvent::HistoryCrawlFailed {
+                room_id: "!r:example.test".to_owned(),
+                kind: SearchCrawlerFailureKind::Sdk,
+            },
+        ))
+        .expect("serialize history crawl failed event");
+        assert_eq!(
+            search_crawl_failed["event"]["HistoryCrawlFailed"]["failureKind"],
+            json!("sdk")
+        );
+        // Privacy assertion: no raw error text in the failed event.
+        assert!(
+            !serde_json::to_string(&search_crawl_failed).unwrap().contains("message"),
+            "crawl failure must not carry a raw message field"
+        );
+
         let actual_contract = json!({
             "activityOpened": activity_opened,
             "activityMarkedRead": activity_marked_read,
@@ -2363,6 +2406,9 @@ mod tests {
             "operationFailedSessionNotFound": failed,
             "searchAttachmentsFailed": search_attachments_failed,
             "searchAttachmentsResults": search_attachments_results,
+            "searchCrawlProgress": search_crawl_progress,
+            "searchCrawlCompleted": search_crawl_completed,
+            "searchCrawlFailed": search_crawl_failed,
             "roomDirectoryQueryCompleted": directory_query_completed,
             "roomDirectMessageStarted": room_direct_message_started,
             "roomInviteAccepted": room_invite_accepted,

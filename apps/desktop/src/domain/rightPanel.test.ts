@@ -128,6 +128,11 @@ function snapshotForPanelMode(
           },
           timeline: {
             auto_load_older_messages: false
+          },
+          search_crawler: {
+            speed: "standard",
+            include_media_captions: true,
+            include_filenames: true
           }
         },
         persistence: { kind: "idle" }
@@ -200,6 +205,7 @@ function snapshotForPanelMode(
         : { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
+      search_crawler: { rooms: {} },
       files_view: { kind: "closed" },
       threads_list: { kind: "closed" },
       errors: [],

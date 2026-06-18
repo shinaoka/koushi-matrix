@@ -1378,6 +1378,18 @@ impl AppActor {
                         // wired to the reducer.
                         false
                     }
+                    SearchCommand::StartHistoryCrawl { .. }
+                    | SearchCommand::StopHistoryCrawl { .. } => {
+                        // Forward directly to the SearchActor; the crawler task sends
+                        // HistoryCrawlStarted/Progress/Completed/Failed actions itself.
+                        let _ = self
+                            .account_actor
+                            .send(crate::account::AccountMessage::SearchCommand(
+                                search_command,
+                            ))
+                            .await;
+                        false
+                    }
                 }
             }
         }
@@ -1531,6 +1543,16 @@ impl AppActor {
                         crate::command::ThreadsListCommand::Close { request_id },
                     ))
                     .await;
+            } else if let AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, settings } =
+                effect
+            {
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
+                        room_ids,
+                        settings,
+                    })
+                    .await;
             } else if let AppEffect::PersistSettings {
                 request_id: effect_request_id,
                 values,
@@ -1568,6 +1590,18 @@ impl AppActor {
         for effect in effects {
             if let AppEffect::EmitUiEvent(ui_event) = effect {
                 self.handle_ui_event_effect(ui_event, additional_user_ids)
+                    .await;
+            } else if let AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, settings } =
+                effect
+            {
+                // Route from actor-projection path: forward to SearchActor via
+                // AccountActor (fire-and-forget, idempotent).
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
+                        room_ids: room_ids.clone(),
+                        settings: settings.clone(),
+                    })
                     .await;
             }
         }

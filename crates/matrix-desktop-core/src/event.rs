@@ -1666,7 +1666,6 @@ pub enum SearchEvent {
         room_id: String,
         #[serde(rename = "failureKind")]
         kind: matrix_desktop_state::SearchCrawlerFailureKind,
-        message: String,
     },
 }
 
@@ -1714,7 +1713,7 @@ impl fmt::Debug for SearchEvent {
                 .field("room_id", &"RoomId(..)")
                 .field("indexed", indexed)
                 .finish(),
-            SearchEvent::HistoryCrawlFailed { room_id, kind, .. } => formatter
+            SearchEvent::HistoryCrawlFailed { kind, .. } => formatter
                 .debug_struct("HistoryCrawlFailed")
                 .field("room_id", &"RoomId(..)")
                 .field("kind", kind)

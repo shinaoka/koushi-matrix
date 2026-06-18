@@ -747,7 +747,6 @@ pub enum AppAction {
     HistoryCrawlFailed {
         room_id: String,
         kind: crate::state::SearchCrawlerFailureKind,
-        message: String,
     },
     FilesViewOpened {
         request_id: u64,

@@ -25,7 +25,7 @@
  *     — "Public Runtime API" (CoreEvent enum, TimelineEvent, etc.)
  */
 
-import type { AttachmentResult, SyncMode, ThreadsListItem } from "./types";
+import type { AttachmentResult, SearchCrawlerFailureKind, SyncMode, ThreadsListItem } from "./types";
 import type { LinkPreview } from "./linkPreview";
 
 // ---------------------------------------------------------------------------
@@ -612,6 +612,11 @@ export type SearchEvent = {
   Results: { request_id: RequestId; results: SearchResultItem[] };
   AttachmentsResults: { request_id: RequestId; results: AttachmentResult[] };
   AttachmentsFailed: { request_id: RequestId; message: string };
+  IndexUpdated: { room_id: string; event_id: string };
+  HistoryCrawlProgress: { room_id: string; processed: number; indexed: number };
+  HistoryCrawlCompleted: { room_id: string; indexed: number };
+  /** Failure carries only a coarse kind — no raw SDK error text (privacy rule). */
+  HistoryCrawlFailed: { room_id: string; failureKind: SearchCrawlerFailureKind };
 };
 
 // ---------------------------------------------------------------------------

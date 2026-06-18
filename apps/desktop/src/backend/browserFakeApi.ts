@@ -2715,6 +2715,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       thread_attention: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
+      search_crawler: { rooms: {} },
       files_view: { kind: "closed" },
       threads_list: { kind: "closed" },
       errors: [],
@@ -2813,6 +2814,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       threads_list: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
+      search_crawler: { rooms: {} },
       files_view: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" },
@@ -2859,6 +2861,11 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       },
       timeline: {
         auto_load_older_messages: false
+      },
+      search_crawler: {
+        speed: "standard" as const,
+        include_media_captions: true,
+        include_filenames: true
       }
     },
     persistence: { kind: "idle" }
@@ -3160,7 +3167,8 @@ function applySettingsPatch(
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
     media: patch.media ?? values.media,
-    timeline: patch.timeline ?? values.timeline
+    timeline: patch.timeline ?? values.timeline,
+    search_crawler: patch.search_crawler ?? values.search_crawler
   };
 }
 

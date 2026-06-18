@@ -1,8 +1,8 @@
 use crate::{
     action::{LoginRequest, RecoveryRequest},
     state::{
-        AttachmentFilter, AttachmentScope, AttachmentSort, SearchScope, SessionInfo,
-        SettingsValues, VerificationCancelReason, VerificationTarget,
+        AttachmentFilter, AttachmentScope, AttachmentSort, SearchCrawlerSettings, SearchScope,
+        SessionInfo, SettingsValues, VerificationCancelReason, VerificationTarget,
     },
 };
 
@@ -89,6 +89,13 @@ pub enum AppEffect {
         room_id: String,
     },
     UnsubscribeThreadsList,
+    /// Tell the `SearchActor` to idempotently start background crawls for
+    /// the given rooms.  Emitted when speed transitions from `Paused` to
+    /// active so the actor can enqueue all currently-known eligible rooms.
+    NotifySearchCrawlerRoomsAvailable {
+        room_ids: Vec<String>,
+        settings: SearchCrawlerSettings,
+    },
     EmitUiEvent(UiEvent),
 }
 

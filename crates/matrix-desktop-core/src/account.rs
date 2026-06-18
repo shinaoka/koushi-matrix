@@ -99,6 +99,12 @@ pub enum AccountMessage {
         timestamp_ms: u64,
     },
     SearchCommand(SearchCommand),
+    /// Forward `AppEffect::NotifySearchCrawlerRoomsAvailable` to the
+    /// `SearchActorHandle::notify_rooms_available` method.
+    NotifySearchCrawlerRoomsAvailable {
+        room_ids: Vec<String>,
+        settings: matrix_desktop_state::SearchCrawlerSettings,
+    },
     ThreadsListCommand(ThreadsListCommand),
     VerificationRequestProgress {
         request_id: RequestId,
@@ -361,6 +367,11 @@ impl AccountActor {
                 }
                 AccountMessage::SearchCommand(search_command) => {
                     self.route_search_command(search_command).await;
+                }
+                AccountMessage::NotifySearchCrawlerRoomsAvailable { room_ids, settings } => {
+                    if let Some(handle) = &self.search_actor {
+                        handle.notify_rooms_available(room_ids, settings);
+                    }
                 }
                 AccountMessage::ThreadsListCommand(threads_list_command) => {
                     self.route_threads_list_command(threads_list_command).await;

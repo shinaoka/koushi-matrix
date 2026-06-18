@@ -1039,15 +1039,53 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             ]
         }
         AppAction::SettingsUpdateRequested { request_id, patch } => {
+            // Capture the previous search-crawler settings so we can compute
+            // invalidation/enqueue transitions after apply_patch.
+            let prev_crawler = state.settings.values.search_crawler.clone();
+
             state.settings.values.apply_patch(patch);
             state.settings.persistence = SettingsPersistenceState::Saving { request_id };
-            vec![
+
+            let new_crawler = &state.settings.values.search_crawler;
+            let mut effects = vec![
                 AppEffect::PersistSettings {
                     request_id,
                     values: state.settings.values.clone(),
                 },
                 AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
-            ]
+            ];
+
+            // Guard: if content-indexing settings changed, invalidate all rooms
+            // that have already been marked `Completed` so they will be
+            // re-crawled with the new settings.
+            let content_changed = prev_crawler.include_media_captions
+                != new_crawler.include_media_captions
+                || prev_crawler.include_filenames != new_crawler.include_filenames;
+            if content_changed {
+                for room_state in state.search_crawler.rooms.values_mut() {
+                    if matches!(room_state, crate::state::SearchCrawlerRoomState::Completed { .. }) {
+                        *room_state = crate::state::SearchCrawlerRoomState::Idle;
+                    }
+                }
+                effects.push(AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged));
+            }
+
+            // Guard: if speed changed from Paused to active, enqueue all
+            // known joined rooms via the SearchActor.
+            use crate::state::SearchCrawlerSpeed;
+            if prev_crawler.speed == SearchCrawlerSpeed::Paused
+                && new_crawler.speed != SearchCrawlerSpeed::Paused
+            {
+                let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
+                if !room_ids.is_empty() {
+                    effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                        room_ids,
+                        settings: new_crawler.clone(),
+                    });
+                }
+            }
+
+            effects
         }
         AppAction::SettingsPersisted { request_id } => {
             if state.settings.persistence != (SettingsPersistenceState::Saving { request_id }) {
@@ -1639,6 +1677,25 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             refresh_timeline_media_gallery(state);
 
             let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
+
+            // Notify the search crawler of all current joined rooms on every
+            // RoomListUpdate so it can idempotently start/resume any missing
+            // crawls. The actor is responsible for deduplication.
+            {
+                use crate::state::SearchCrawlerSpeed;
+                let crawler_settings = &state.settings.values.search_crawler;
+                if crawler_settings.speed != SearchCrawlerSpeed::Paused {
+                    let room_ids: Vec<String> = state.rooms.iter()
+                        .map(|r| r.room_id.clone())
+                        .collect();
+                    if !room_ids.is_empty() {
+                        effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                            room_ids,
+                            settings: crawler_settings.clone(),
+                        });
+                    }
+                }
+            }
 
             if state
                 .navigation
@@ -3504,7 +3561,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             };
             vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
         }
-        AppAction::HistoryCrawlStarted { request_id, room_id } => {
+        AppAction::HistoryCrawlStarted { request_id: _, room_id } => {
             state.search_crawler.rooms.insert(
                 room_id,
                 crate::state::SearchCrawlerRoomState::Running { processed: 0, indexed: 0 },
@@ -3532,10 +3589,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 .insert(room_id, crate::state::SearchCrawlerRoomState::Completed { indexed });
             vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
         }
-        AppAction::HistoryCrawlFailed { room_id, kind, message } => {
+        AppAction::HistoryCrawlFailed { room_id, kind } => {
             state.search_crawler.rooms.insert(
                 room_id,
-                crate::state::SearchCrawlerRoomState::Failed { kind, message },
+                crate::state::SearchCrawlerRoomState::Failed { kind },
             );
             vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
         }

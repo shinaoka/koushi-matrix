@@ -513,6 +513,34 @@
     },
     "kind": "Search"
   },
+  "searchCrawlCompleted": {
+    "event": {
+      "HistoryCrawlCompleted": {
+        "indexed": 42,
+        "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Search"
+  },
+  "searchCrawlFailed": {
+    "event": {
+      "HistoryCrawlFailed": {
+        "failureKind": "sdk",
+        "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Search"
+  },
+  "searchCrawlProgress": {
+    "event": {
+      "HistoryCrawlProgress": {
+        "indexed": 42,
+        "processed": 100,
+        "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Search"
+  },
   "syncModeChanged": {
     "event": {
       "ModeChanged": {

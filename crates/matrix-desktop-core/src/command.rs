@@ -174,7 +174,9 @@ impl CoreCommand {
             },
             Self::Search(command) => match command {
                 SearchCommand::Query { request_id, .. }
-                | SearchCommand::Attachments { request_id, .. } => *request_id,
+                | SearchCommand::Attachments { request_id, .. }
+                | SearchCommand::StartHistoryCrawl { request_id, .. }
+                | SearchCommand::StopHistoryCrawl { request_id, .. } => *request_id,
             },
         }
     }
