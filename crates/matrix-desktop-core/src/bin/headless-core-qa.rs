@@ -49,10 +49,10 @@ use matrix_desktop_core::command::{
     SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
 };
 use matrix_desktop_core::event::{
-    AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
-    PaginationDirection, PaginationState, RoomEvent, SearchEvent, SyncBackendKind, SyncEvent,
-    TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMessageActions,
-    TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
+    AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LinkPreviewState, LiveSignalsEvent,
+    LocalEncryptionEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
+    SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
+    TimelineMessageActions, TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
 };
 use matrix_desktop_core::failure::{CoreFailure, RoomFailureKind};
 use matrix_desktop_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -69,7 +69,7 @@ use matrix_desktop_state::{
     OperationFailureKind, PresenceKind, RecoveryRequest, ReplyQuoteState, RoomAttentionKind,
     RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
     RoomNotificationMode, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
-    ScheduledSendCapability, SessionInfo, SessionState, SettingsPatch,
+    ScheduledSendCapability, SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, TimelineMediaGalleryItem,
     TimelineMediaGalleryMedia, TimelineMediaGallerySource, TimelineMediaKind,
     TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
@@ -126,6 +126,7 @@ enum QaScenario {
     ScheduledSend,
     SendQueue,
     RestoreCleanup,
+    LinkPreview,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,6 +151,7 @@ enum QaStage {
     ScheduledSend,
     SendQueue,
     RestoreCleanup,
+    LinkPreview,
 }
 
 fn main() -> ExitCode {
@@ -246,8 +248,9 @@ impl QaScenario {
             "scheduled_send" => Ok(Self::ScheduledSend),
             "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
+            "link_preview" => Ok(Self::LinkPreview),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, scheduled_send, send_queue, restore_cleanup; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, scheduled_send, restore_cleanup, link_preview; got {other}"
             )),
         }
     }
@@ -374,6 +377,15 @@ impl QaScenario {
                     | QaStage::EditRedactSearch
                     | QaStage::RestoreCleanup
             ),
+            Self::LinkPreview => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::Composer
+                    | QaStage::LinkPreview
+            ),
         }
     }
 
@@ -387,6 +399,7 @@ impl QaScenario {
                 | Self::Activity
                 | Self::CredentialHealth
                 | Self::NativeAttention
+                | Self::LinkPreview
         )
     }
 }
@@ -473,6 +486,12 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "unsent_restart=ok",
         ],
         QaStage::RestoreCleanup => &["restore_cleanup=ok"],
+        QaStage::LinkPreview => &[
+            "link_preview_global=ok",
+            "link_preview_room=ok",
+            "link_preview_e2ee_disabled=ok",
+            "link_preview_hide=ok",
+        ],
     }
 }
 
@@ -540,6 +559,10 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "joined_room_restore=ok",
         "e2ee_trust=ok",
         "restore_cleanup=ok",
+        "link_preview_global=ok",
+        "link_preview_room=ok",
+        "link_preview_e2ee_disabled=ok",
+        "link_preview_hide=ok",
     ]
 }
 
@@ -650,6 +673,14 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::EditRedactSearch,
             QaStage::RestoreCleanup,
         ],
+        QaScenario::LinkPreview => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::Composer,
+            QaStage::LinkPreview,
+        ],
         QaScenario::All => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -671,6 +702,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::SendQueue,
             QaStage::E2eeTrust,
             QaStage::RestoreCleanup,
+            QaStage::LinkPreview,
         ],
     }
 }
@@ -704,7 +736,8 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::EditRedactSearch
         | QaScenario::ScheduledSend
         | QaScenario::SendQueue
-        | QaScenario::RestoreCleanup => {
+        | QaScenario::RestoreCleanup
+        | QaScenario::LinkPreview => {
             let mut tokens = stages_for_scenario(scenario)
                 .into_iter()
                 .flat_map(|stage| tokens_for_stage(stage).iter().copied())
@@ -2494,6 +2527,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     if scenario.should_run_stage(QaStage::Media) {
         run_media_stage(&mut conn_a, &mut conn_b, &key_a, &key_b).await?;
+    }
+
+    if scenario.should_run_stage(QaStage::LinkPreview) {
+        run_link_preview_stage(&mut conn_a, &mut conn_b, &key_a, &key_b).await?;
     }
 
     if scenario.should_run_stage(QaStage::Thread) {
@@ -4798,6 +4835,7 @@ fn native_attention_room(
         marked_unread: false,
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
+        is_encrypted: false,
     }
 }
 
@@ -7286,6 +7324,243 @@ async fn run_media_stage(
     Ok(())
 }
 
+async fn run_link_preview_stage(
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+    key_a: &TimelineKey,
+    key_b: &TimelineKey,
+) -> Result<(), String> {
+    const URL_MESSAGE_BODY: &str = "link preview test message https://example.invalid/page";
+    const URL_EXTRACTED: &str = "https://example.invalid/page";
+
+    // 1. Send a message containing a URL from conn_a to the shared timeline room.
+    let txn = "qa-link-preview-txn".to_owned();
+    let send_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_id,
+            key: key_a.clone(),
+            transaction_id: txn.clone(),
+            body: URL_MESSAGE_BODY.to_owned(),
+            mentions: MentionIntent::default(),
+        }))
+        .await
+        .map_err(|e| format!("submit link preview message: {e}"))?;
+
+    let (_send_txn, _event_id) =
+        wait_for_send_completed(conn_a, send_id, key_a, "link preview send").await?;
+
+    // 2. Wait for conn_b to see the message and verify a pending preview.
+    let item =
+        wait_for_item_with_body(conn_b, key_b, URL_MESSAGE_BODY, "B sees URL message").await?;
+    let event_id = match &item.id {
+        TimelineItemId::Event { event_id } => event_id.clone(),
+        _ => return Err("link preview item was not event-backed".to_owned()),
+    };
+    let previews = item
+        .link_previews
+        .as_ref()
+        .ok_or("missing link_previews on URL message")?;
+    if previews.len() != 1 {
+        return Err(format!(
+            "link preview count mismatch: expected 1, got {}",
+            previews.len()
+        ));
+    }
+    if previews[0].url != URL_EXTRACTED {
+        return Err("link preview URL mismatch".to_owned());
+    }
+    if !matches!(previews[0].state, LinkPreviewState::Pending) {
+        return Err(format!(
+            "link preview state mismatch: expected Pending, got {:?}",
+            previews[0].state
+        ));
+    }
+    println!("link_preview_global=ok");
+
+    // 3. Disable URL previews globally via UpdateSettings and verify the
+    //    projection drops the preview.
+    let settings_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::App(AppCommand::UpdateSettings {
+            request_id: settings_id,
+            patch: SettingsPatch {
+                display: Some(DisplaySettings {
+                    code_block_wrap: true,
+                    hide_redacted: false,
+                    url_previews_enabled: false,
+                }),
+                ..SettingsPatch::default()
+            },
+        }))
+        .await
+        .map_err(|e| format!("submit global preview disable: {e}"))?;
+    wait_for_settings_persisted(conn_b, settings_id, "global preview disable").await?;
+
+    let disabled_item = wait_for_item_with_body(
+        conn_b,
+        key_b,
+        URL_MESSAGE_BODY,
+        "B sees message after global disable",
+    )
+    .await?;
+    if !disabled_item
+        .link_previews
+        .as_ref()
+        .map(|p| p.is_empty())
+        .unwrap_or(true)
+    {
+        return Err("global disable did not empty link previews".to_owned());
+    }
+    println!("link_preview_room=ok");
+
+    // 4. Re-enable URL previews globally.
+    let settings_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::App(AppCommand::UpdateSettings {
+            request_id: settings_id,
+            patch: SettingsPatch {
+                display: Some(DisplaySettings {
+                    code_block_wrap: true,
+                    hide_redacted: false,
+                    url_previews_enabled: true,
+                }),
+                ..SettingsPatch::default()
+            },
+        }))
+        .await
+        .map_err(|e| format!("submit global preview enable: {e}"))?;
+    wait_for_settings_persisted(conn_b, settings_id, "global preview enable").await?;
+
+    let reenabled_item = wait_for_item_with_body(
+        conn_b,
+        key_b,
+        URL_MESSAGE_BODY,
+        "B sees message after global re-enable",
+    )
+    .await?;
+    let reenabled_previews = reenabled_item
+        .link_previews
+        .as_ref()
+        .ok_or("missing link_previews after global re-enable")?;
+    if reenabled_previews.len() != 1
+        || reenabled_previews[0].url != URL_EXTRACTED
+        || !matches!(reenabled_previews[0].state, LinkPreviewState::Pending)
+    {
+        return Err("global re-enable did not restore the pending link preview".to_owned());
+    }
+
+    // 5. Send HideLinkPreview for the event and verify the message's previews
+    //    become an empty list.
+    let hide_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::HideLinkPreview {
+            request_id: hide_id,
+            key: key_b.clone(),
+            event_id: event_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("submit hide link preview: {e}"))?;
+
+    let hidden_item =
+        wait_for_item_with_body(conn_b, key_b, URL_MESSAGE_BODY, "B sees message after hide")
+            .await?;
+    if hidden_item.link_previews.as_ref() != Some(&Vec::new()) {
+        return Err("hide link preview did not produce empty preview list".to_owned());
+    }
+    println!("link_preview_hide=ok");
+
+    // 6. Test E2EE default-off: create a new encrypted room, send a URL message,
+    //    and verify no previews are projected for the sender's own item.
+    //
+    //    The sender can decrypt their own event, so checking A's timeline asserts
+    //    the Rust-owned encrypted-room policy end-to-end without depending on
+    //    cross-device key sharing. The unit tests in link_preview.rs already
+    //    assert the encrypted-room default-off rule directly.
+    let enc_room_id = create_room_for_qa(
+        conn_a,
+        "QA Link Preview E2EE Room",
+        true,
+        "link_preview create encrypted room",
+    )
+    .await?;
+
+    sync_once_for_qa(conn_a, "sync after link preview encrypted room creation").await?;
+    wait_for_room_in_room_list(
+        conn_a,
+        &enc_room_id,
+        "room list after link preview encrypted room",
+    )
+    .await?;
+
+    // Wait until the room summary reports encryption enabled before sending.
+    let mut found_encrypted = false;
+    for _ in 0..30 {
+        if conn_a
+            .snapshot()
+            .rooms
+            .iter()
+            .any(|r| r.room_id == enc_room_id && r.is_encrypted)
+        {
+            found_encrypted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    if !found_encrypted {
+        return Err("encrypted room did not report is_encrypted".to_owned());
+    }
+
+    let account_key_a = match &conn_a.snapshot().session {
+        SessionState::Ready(info) => AccountKey(info.user_id.clone()),
+        _ => return Err("link_preview: session A was not ready".to_owned()),
+    };
+    let enc_key_a = TimelineKey::room(account_key_a, enc_room_id.clone());
+
+    let sub_a_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: sub_a_id,
+            key: enc_key_a.clone(),
+        }))
+        .await
+        .map_err(|e| format!("link_preview subscribe encrypted room A: {e}"))?;
+    wait_for_initial_items(conn_a, &enc_key_a, sub_a_id, "subscribe encrypted room A").await?;
+
+    let enc_txn = "qa-link-preview-e2ee-txn".to_owned();
+    let enc_send_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: enc_send_id,
+            key: enc_key_a.clone(),
+            transaction_id: enc_txn.clone(),
+            body: URL_MESSAGE_BODY.to_owned(),
+            mentions: MentionIntent::default(),
+        }))
+        .await
+        .map_err(|e| format!("submit encrypted room URL message: {e}"))?;
+    wait_for_send_completed(conn_a, enc_send_id, &enc_key_a, "encrypted room URL send").await?;
+
+    let enc_item = wait_for_item_with_body(
+        conn_a,
+        &enc_key_a,
+        URL_MESSAGE_BODY,
+        "A sees encrypted room URL message",
+    )
+    .await?;
+    if enc_item
+        .link_previews
+        .as_ref()
+        .map(|p| !p.is_empty())
+        .unwrap_or(false)
+    {
+        return Err("encrypted room projected link previews".to_owned());
+    }
+    println!("link_preview_e2ee_disabled=ok");
+
+    Ok(())
+}
+
 fn assert_image_upload_compression_contract() -> Result<(), String> {
     let policy = ImageUploadCompressionPolicy::default();
     let original_dimensions = ImageUploadDimensions {
@@ -8088,6 +8363,7 @@ async fn run_hide_redacted_stage(
             display: Some(DisplaySettings {
                 code_block_wrap: true,
                 hide_redacted: true,
+                url_previews_enabled: true,
             }),
             ..SettingsPatch::default()
         },
@@ -8133,11 +8409,87 @@ async fn wait_for_display_policy_update(
     }
 }
 
+/// Wait for a settings update to finish persisting.
+///
+/// The reducer sets `SettingsPersistenceState::Saving` while the store write is
+/// in flight and returns to `Idle` once the values are durable. We wait for the
+/// snapshot to reach `Idle` after an `UpdateSettings` command so later steps can
+/// rely on the policy having been broadcast to timelines.
+async fn wait_for_settings_persisted(
+    conn: &mut CoreConnection,
+    request_id: RequestId,
+    label: &str,
+) -> Result<(), String> {
+    let timeout = Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    // First observe the saving state for our request so we don't mistake an
+    // idle snapshot left over from a prior update for completion of this one.
+    let already_saving = matches!(
+        &conn.snapshot().settings.persistence,
+        SettingsPersistenceState::Saving { request_id: rid } if *rid == request_id.sequence
+    );
+    if !already_saving {
+        loop {
+            let event = tokio::time::timeout_at(deadline, conn.recv_event())
+                .await
+                .map_err(|_| format!("{label}: timed out waiting for settings save to start"))?
+                .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+            match event {
+                CoreEvent::StateChanged(snapshot)
+                    if matches!(
+                        &snapshot.settings.persistence,
+                        SettingsPersistenceState::Saving { request_id: rid }
+                            if *rid == request_id.sequence
+                    ) =>
+                {
+                    break;
+                }
+                CoreEvent::OperationFailed {
+                    request_id: ev_id,
+                    failure,
+                } if ev_id == request_id => {
+                    return Err(format!("{label}: settings update failed: {failure:?}"));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Now wait for the persistence state to return to Idle.
+    if conn.snapshot().settings.persistence == SettingsPersistenceState::Idle {
+        return Ok(());
+    }
+    loop {
+        let event = tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for settings save to complete"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot)
+                if snapshot.settings.persistence == SettingsPersistenceState::Idle =>
+            {
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: settings update failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
 fn assert_hide_redacted_projection() -> Result<(), String> {
     let mut state = AppState::default();
     state.settings.values.display = DisplaySettings {
         code_block_wrap: true,
         hide_redacted: true,
+        url_previews_enabled: true,
     };
     let key = TimelineKey::room(
         AccountKey("@projection:example.invalid".to_owned()),
@@ -8188,6 +8540,7 @@ fn projection_timeline_item(event_id: &str, is_redacted: bool) -> TimelineItem {
         thread_root: None,
         thread_summary: None,
         media: None,
+        link_previews: None,
         reactions: Vec::new(),
         can_react: false,
         is_redacted,
@@ -8493,6 +8846,10 @@ mod tests {
             QaScenario::from_env_value("e2ee_trust").unwrap(),
             QaScenario::E2eeTrust
         );
+        assert_eq!(
+            QaScenario::from_env_value("link_preview").unwrap(),
+            QaScenario::LinkPreview
+        );
     }
 
     #[test]
@@ -8525,6 +8882,7 @@ mod tests {
             QaScenario::SendQueue,
             QaScenario::RestoreCleanup,
             QaScenario::E2eeTrust,
+            QaScenario::LinkPreview,
         ] {
             scenario_preflight_error(scenario).unwrap();
         }
@@ -8542,6 +8900,7 @@ mod tests {
         assert!(QaScenario::ScheduledSend.suppress_matrix_identifiers());
         assert!(QaScenario::CredentialHealth.suppress_matrix_identifiers());
         assert!(QaScenario::NativeAttention.suppress_matrix_identifiers());
+        assert!(QaScenario::LinkPreview.suppress_matrix_identifiers());
         assert!(!QaScenario::Timeline.suppress_matrix_identifiers());
         assert!(!QaScenario::All.suppress_matrix_identifiers());
     }
@@ -8565,6 +8924,7 @@ mod tests {
                 thread_root: None,
                 thread_summary: None,
                 media: None,
+                link_previews: None,
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
@@ -8591,6 +8951,7 @@ mod tests {
                 thread_root: None,
                 thread_summary: None,
                 media: None,
+                link_previews: None,
                 reactions: Vec::new(),
                 can_react: true,
                 is_redacted: false,
@@ -8628,6 +8989,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -8663,6 +9025,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -8709,6 +9072,7 @@ mod tests {
             thread_root: thread_root.map(str::to_owned),
             thread_summary,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -8934,6 +9298,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -8971,6 +9336,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -9035,6 +9401,7 @@ mod tests {
                         thread_root: None,
                         thread_summary: None,
                         media: None,
+                        link_previews: None,
                         reactions: Vec::new(),
                         can_react: false,
                         is_redacted: false,
@@ -9149,6 +9516,15 @@ mod tests {
         assert!(!QaScenario::RoomManagement.should_run_stage(QaStage::Timeline));
         assert!(!QaScenario::RoomManagement.should_run_stage(QaStage::Reply));
 
+        assert!(QaScenario::LinkPreview.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::LinkPreview.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::LinkPreview.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::LinkPreview.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::LinkPreview.should_run_stage(QaStage::Composer));
+        assert!(QaScenario::LinkPreview.should_run_stage(QaStage::LinkPreview));
+        assert!(!QaScenario::LinkPreview.should_run_stage(QaStage::Reply));
+        assert!(QaScenario::LinkPreview.suppress_matrix_identifiers());
+
         assert!(QaScenario::All.should_run_stage(QaStage::Safety));
         assert!(QaScenario::All.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::All.should_run_stage(QaStage::E2eeTrust));
@@ -9167,6 +9543,7 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::ScheduledSend));
         assert!(QaScenario::All.should_run_stage(QaStage::SendQueue));
         assert!(QaScenario::All.should_run_stage(QaStage::RestoreCleanup));
+        assert!(QaScenario::All.should_run_stage(QaStage::LinkPreview));
     }
 
     #[test]
@@ -9349,6 +9726,10 @@ mod tests {
                 "joined_room_restore=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
+                "link_preview_global=ok",
+                "link_preview_room=ok",
+                "link_preview_e2ee_disabled=ok",
+                "link_preview_hide=ok",
             ][..]
         );
     }
@@ -9687,6 +10068,10 @@ mod tests {
                 "joined_room_restore=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
+                "link_preview_global=ok",
+                "link_preview_room=ok",
+                "link_preview_e2ee_disabled=ok",
+                "link_preview_hide=ok",
             ][..]
         );
     }

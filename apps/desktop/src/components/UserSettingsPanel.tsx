@@ -9,6 +9,7 @@ import {
   Image,
   KeyRound,
   Keyboard,
+  Link,
   RefreshCcw,
   RotateCcw,
   ShieldAlert,
@@ -378,6 +379,14 @@ export function UserSettingsPanel({
             label={t("settings.codeBlockWrap")}
             settingKey="code_block_wrap"
             icon="code"
+            current={selectedDisplay}
+            onSelect={onUpdateSettings}
+          />
+          <DisplayToggle
+            label={t("settings.urlPreviews")}
+            description={t("settings.urlPreviewsDescription")}
+            settingKey="url_previews_enabled"
+            icon="link"
             current={selectedDisplay}
             onSelect={onUpdateSettings}
           />
@@ -2167,19 +2176,21 @@ function NotificationToggle({
 
 function DisplayToggle({
   label,
+  description,
   settingKey,
   icon,
   current,
   onSelect
 }: {
   label: string;
+  description?: string;
   settingKey: keyof DisplaySettings;
-  icon: "code" | "hideRedacted";
+  icon: "code" | "hideRedacted" | "link";
   current: DisplaySettings;
   onSelect: (patch: SettingsPatch) => void;
 }) {
   const checked = current[settingKey];
-  const Icon = icon === "code" ? Code2 : EyeOff;
+  const Icon = icon === "code" ? Code2 : icon === "hideRedacted" ? EyeOff : Link;
   return (
     <button
       className="settings-toggle-row"
@@ -2201,6 +2212,9 @@ function DisplayToggle({
           <Icon size={15} aria-hidden="true" />
           <span>{label}</span>
         </span>
+        {description ? (
+          <span className="settings-toggle-description">{description}</span>
+        ) : null}
       </span>
       <span className="settings-switch-track" aria-hidden="true">
         <span className="settings-switch-thumb" />

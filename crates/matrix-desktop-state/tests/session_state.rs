@@ -319,6 +319,7 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            is_encrypted: false,
         }],
         timeline: TimelinePaneState {
             room_id: Some("room-a".to_owned()),
@@ -541,6 +542,7 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            is_encrypted: false,
         }],
         timeline: TimelinePaneState {
             room_id: Some("room-a".to_owned()),
@@ -673,6 +675,7 @@ fn logout_clears_session_views_and_notifies_ui() {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            is_encrypted: false,
         }],
         timeline: TimelinePaneState {
             room_id: Some("room-a".to_owned()),

@@ -13,16 +13,15 @@ use std::collections::BTreeMap;
 
 use matrix_desktop_state::{
     AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
-    AuthDiscoveryState,
-    BasicOperationState, CjkTextPolicyState, ComposerState, DeviceSessionListState, DirectoryState,
-    DisplayPlatform, E2eeTrustState, FilesViewState, FocusedContextState, InvitePreview,
-    LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities,
-    NativeAttentionState, NavigationState, ProfileState, QrLoginState, RecoveryMethod,
-    RoomInteractionState, RoomListProjection, RoomManagementState, RoomNotificationSettings,
-    RoomSummary, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
-    SessionState, SettingsState,
-    SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
-    ThreadPaneState, TimelinePaneState, TypographyDisplayProfile,
+    AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
+    DeviceSessionListState, DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState,
+    FocusedContextState, InvitePreview, LiveSignalsState, LocalEncryptionState,
+    LocaleDisplayProfile, NativeAttentionCapabilities, NativeAttentionState, NavigationState,
+    ProfileState, QrLoginState, RecoveryMethod, RoomInteractionState, RoomListProjection,
+    RoomManagementState, RoomNotificationSettings, RoomSummary, SearchMatchField, SearchMatchKind,
+    SearchResult, SearchScope, SearchState, SessionState, SettingsState, SidebarModel,
+    SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
+    ThreadPaneState, ThreadsListState, TimelinePaneState, TypographyDisplayProfile,
     native_attention_capabilities_for_platform, resolve_locale_display_profile,
     resolve_typography_display_profile,
 };
@@ -89,6 +88,7 @@ pub struct FrontendAppState {
     pub focused_context: FocusedContextState,
     pub search: FrontendSearchState,
     pub files_view: FilesViewState,
+    pub threads_list: ThreadsListState,
     pub basic_operation: BasicOperationState,
     pub live_signals: LiveSignalsState,
     pub e2ee_trust: E2eeTrustState,
@@ -140,6 +140,7 @@ impl From<AppState> for FrontendAppState {
             focused_context: state.focused_context,
             search: state.search.into(),
             files_view: state.files_view,
+            threads_list: state.threads_list,
             basic_operation: state.basic_operation,
             live_signals: state.live_signals,
             e2ee_trust: state.e2ee_trust,
@@ -821,6 +822,7 @@ mod tests {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![],
+            is_encrypted: false,
         });
 
         let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))

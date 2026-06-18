@@ -4,11 +4,12 @@
 use std::fmt;
 
 use matrix_desktop_state::{
-    ActivityStream, ActivityTab, AppState, AttachmentResult, CrossSigningStatus, DirectoryQuery,
-    DirectoryRoomSummary, IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus,
-    LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionSummary, PinnedEvent, PresenceKind,
-    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
-    SessionState, SyncMode, VerificationFlowState, resolve_user_display_name,
+    ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarThumbnailState,
+    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
+    JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
+    NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind, ProfileState,
+    ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode,
+    ThreadsListItem, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +42,7 @@ pub enum CoreEvent {
     LocalEncryption(LocalEncryptionEvent),
     NativeAttention(NativeAttentionEvent),
     CjkTextPolicy(CjkTextPolicyEvent),
+    ThreadsList(ThreadsListEvent),
     OperationFailed {
         request_id: RequestId,
         failure: CoreFailure,
@@ -147,6 +149,35 @@ impl fmt::Debug for NativeAttentionEvent {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CjkTextPolicyEvent {
     JapaneseCatalogProfileChanged { profile: JapaneseCatalogProfile },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ThreadsListEvent {
+    Opened {
+        request_id: RequestId,
+        room_id: String,
+        items: Vec<ThreadsListItem>,
+        end_reached: bool,
+    },
+    Updated {
+        request_id: RequestId,
+        room_id: String,
+        items: Vec<ThreadsListItem>,
+        is_paginating: bool,
+        end_reached: bool,
+    },
+    PaginationCompleted {
+        request_id: RequestId,
+        room_id: String,
+        items: Vec<ThreadsListItem>,
+        end_reached: bool,
+    },
+    Failed {
+        request_id: RequestId,
+        room_id: String,
+        failure_kind: OperationFailureKind,
+    },
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -1193,6 +1224,8 @@ pub struct TimelineItem {
     pub thread_summary: Option<ThreadSummaryDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<TimelineMedia>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_previews: Option<Vec<LinkPreview>>,
     #[serde(default)]
     pub reactions: Vec<ReactionGroup>,
     #[serde(default)]
@@ -1245,6 +1278,13 @@ impl fmt::Debug for TimelineItem {
                 &self.thread_summary.as_ref().map(|_| "ThreadSummary(..)"),
             )
             .field("media", &self.media)
+            .field(
+                "link_previews",
+                &self
+                    .link_previews
+                    .as_ref()
+                    .map(|previews| format!("{} preview(s)", previews.len())),
+            )
             .field("reactions", &self.reactions)
             .field("can_react", &self.can_react)
             .field("is_redacted", &self.is_redacted)
@@ -1319,6 +1359,50 @@ pub struct TimelineMediaThumbnail {
     pub size: Option<u64>,
     pub width: Option<u64>,
     pub height: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkPreviewState {
+    #[default]
+    Pending,
+    Loading,
+    Ready,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LinkPreviewImage {
+    pub source: TimelineMediaSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    #[serde(default)]
+    pub thumbnail: AvatarThumbnailState,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LinkPreview {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<LinkPreviewImage>,
+    #[serde(default)]
+    pub state: LinkPreviewState,
+}
+
+impl fmt::Debug for LinkPreview {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinkPreview")
+            .field("state", &self.state)
+            .field("has_image", &self.image.is_some())
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1639,6 +1723,7 @@ mod tests {
                 latest_timestamp_ms: Some(1_456),
             }),
             media: None,
+            link_previews: None,
             reactions: vec![ReactionGroup {
                 key: "👍".to_owned(),
                 count: 2,
@@ -1712,6 +1797,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -1771,6 +1857,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -1835,6 +1922,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -1997,6 +2085,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -2065,6 +2154,7 @@ mod tests {
                     height: Some(1),
                 }),
             }),
+            link_previews: None,
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -2274,6 +2364,7 @@ mod tests {
             thread_root: None,
             thread_summary: None,
             media: None,
+            link_previews: None,
             reactions: Vec::new(),
             can_react: !is_redacted,
             is_redacted,

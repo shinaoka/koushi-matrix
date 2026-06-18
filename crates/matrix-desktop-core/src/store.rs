@@ -213,6 +213,12 @@ impl StoreActor {
         &self.credential_store
     }
 
+    /// Application data directory under which per-account sub-directories are
+    /// created.
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
     // --- private helpers ---
 
     fn load_or_create_unlock_secret(

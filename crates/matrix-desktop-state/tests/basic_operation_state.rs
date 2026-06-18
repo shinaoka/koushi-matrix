@@ -25,6 +25,7 @@ fn ready_state() -> AppState {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![],
+            is_encrypted: false,
         }],
         timeline: TimelinePaneState {
             room_id: Some("!room:localhost".to_owned()),

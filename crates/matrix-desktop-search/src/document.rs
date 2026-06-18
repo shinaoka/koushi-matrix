@@ -31,6 +31,12 @@ pub struct AttachmentDocument {
     pub source_mxc: String,
     pub thumbnail_mxc: Option<String>,
     pub filename: SensitiveString,
+    pub thread_root: Option<String>,
+    pub encrypted: bool,
+    pub encryption_version: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub is_edited: bool,
 }
 
 impl std::fmt::Debug for AttachmentDocument {
@@ -47,6 +53,15 @@ impl std::fmt::Debug for AttachmentDocument {
                 &self.thumbnail_mxc.as_ref().map(|_| "MxcUri(..)"),
             )
             .field("filename", &"AttachmentFilename(..)")
+            .field(
+                "thread_root",
+                &self.thread_root.as_ref().map(|_| "EventId(..)"),
+            )
+            .field("encrypted", &self.encrypted)
+            .field("encryption_version", &self.encryption_version)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("is_edited", &self.is_edited)
             .finish()
     }
 }
@@ -224,6 +239,12 @@ impl SearchDocumentStore {
                     size: attachment.size,
                     source_mxc: attachment.source_mxc.clone(),
                     thumbnail_mxc: attachment.thumbnail_mxc.clone(),
+                    thread_root: attachment.thread_root.clone(),
+                    encrypted: attachment.encrypted,
+                    encryption_version: attachment.encryption_version.clone(),
+                    width: attachment.width,
+                    height: attachment.height,
+                    is_edited: attachment.is_edited,
                 })
             })
             .collect();

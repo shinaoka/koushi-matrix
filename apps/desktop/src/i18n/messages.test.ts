@@ -148,10 +148,19 @@ describe("i18n message catalog", () => {
         shortcut.labelMessageId,
         ...(shortcut.noteMessageId ? [shortcut.noteMessageId] : [])
       ]),
-      ...contextMenuItems({ kind: "message", canManage: true, hasThread: true }).map(
+      ...contextMenuItems({
+        kind: "message",
+        canManage: true,
+        hasThread: true,
+        senderUserId: "@a:example.invalid",
+        currentUserId: "@a:example.invalid",
+        roomId: "!room:example.invalid",
+        eventId: "$event:example.invalid",
+        isIgnored: false
+      }).map((item) => item.labelMessageId),
+      ...contextMenuItems({ kind: "room", roomId: "!room:example.invalid" }).map(
         (item) => item.labelMessageId
       ),
-      ...contextMenuItems({ kind: "room" }).map((item) => item.labelMessageId),
       ...contextMenuItems({ kind: "space" }).map((item) => item.labelMessageId),
       ...contextMenuItems({ kind: "account" }).map((item) => item.labelMessageId)
     ];

@@ -1843,6 +1843,7 @@ fn normalize_rooms(snapshot: &matrix_desktop_sdk::MatrixRoomListSnapshot) -> Vec
                 marked_unread: room.marked_unread,
                 last_activity_ms: room.last_activity_ms,
                 parent_space_ids: room.parent_space_ids.clone(),
+                is_encrypted: room.is_encrypted,
             }
         })
         .collect()
@@ -2288,6 +2289,7 @@ pub mod tests {
                     marked_unread: false,
                     last_activity_ms: 0,
                     parent_space_ids: vec!["!space1:example.test".to_owned()],
+                    is_encrypted: false,
                 },
                 MatrixRoomListRoom {
                     room_id: "!room2:example.test".to_owned(),
@@ -2302,6 +2304,7 @@ pub mod tests {
                     marked_unread: false,
                     last_activity_ms: 0,
                     parent_space_ids: vec![],
+                    is_encrypted: false,
                 },
             ],
             ..MatrixRoomListSnapshot::default()
@@ -2364,6 +2367,7 @@ pub mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                is_encrypted: false,
             }],
             ..MatrixRoomListSnapshot::default()
         };
@@ -2393,6 +2397,7 @@ pub mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec!["!space:example.test".to_owned()],
+                is_encrypted: false,
             }],
             ..MatrixRoomListSnapshot::default()
         };
@@ -2420,6 +2425,7 @@ pub mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                is_encrypted: false,
             }],
             ..MatrixRoomListSnapshot::default()
         };
@@ -2593,6 +2599,7 @@ pub mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                is_encrypted: false,
             }],
             invites: vec![],
             user_profiles: vec![],

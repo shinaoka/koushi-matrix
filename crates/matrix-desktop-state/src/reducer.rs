@@ -14,7 +14,7 @@ use crate::{
         RoomModerationAction, SasEmoji, SearchState, SecureBackupPassphraseChangeState,
         SecureBackupSetupState, SessionState, SettingsPersistenceState, SoftLogoutReauthState,
         StagedUploadCompressionChoice, SyncState, ThreadAttentionState, ThreadPaneState,
-        TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
+        ThreadsListState, TimelinePaneState, TrustOperationFailureKind, VerificationCancelReason,
         VerificationFlowState, VerificationTarget, compute_room_list_projection,
     },
 };
@@ -1640,16 +1640,21 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                     let previous_room_id = state.timeline.room_id.clone().unwrap_or(active_room_id);
                     let had_thread = state.thread != ThreadPaneState::Closed
                         || state.thread_attention != ThreadAttentionState::Closed;
+                    let had_threads_list = state.threads_list != ThreadsListState::Closed;
 
                     state.timeline = Default::default();
                     state.thread = ThreadPaneState::Closed;
                     state.thread_attention = ThreadAttentionState::Closed;
+                    state.threads_list = ThreadsListState::Closed;
 
                     effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                         room_id: previous_room_id,
                     }));
                     if had_thread {
                         effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+                    }
+                    if had_threads_list {
+                        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
                     }
                 }
             }
@@ -2675,6 +2680,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             let had_thread = state.thread != ThreadPaneState::Closed
                 || state.thread_attention != ThreadAttentionState::Closed;
+            let had_threads_list = state.threads_list != ThreadsListState::Closed;
             state.navigation.active_room_id = Some(room_id.clone());
             state.timeline = TimelinePaneState {
                 room_id: Some(room_id.clone()),
@@ -2688,6 +2694,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             };
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
+            state.threads_list = ThreadsListState::Closed;
             state.focused_context = FocusedContextState::Closed;
             let mut effects = vec![
                 AppEffect::SubscribeTimeline {
@@ -2697,6 +2704,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             ];
             if had_thread {
                 effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+            }
+            if had_threads_list {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
             }
             effects
         }
@@ -3519,6 +3529,152 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 Vec::new()
             }
         }
+        AppAction::OpenThreadsList {
+            request_id,
+            room_id,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if state.navigation.active_room_id.as_deref() != Some(room_id.as_str()) {
+                return Vec::new();
+            }
+            if state.threads_list.room_id() == Some(room_id.as_str())
+                && matches!(state.threads_list, ThreadsListState::Loading { .. })
+            {
+                return Vec::new();
+            }
+            state.threads_list = ThreadsListState::Loading {
+                room_id: room_id.clone(),
+                request_id,
+            };
+            vec![
+                AppEffect::SubscribeThreadsList {
+                    request_id,
+                    room_id,
+                },
+                AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged),
+            ]
+        }
+        AppAction::ThreadsListOpened {
+            request_id,
+            room_id,
+            items,
+            end_reached,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if state.threads_list.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+            state.threads_list = ThreadsListState::Open {
+                room_id,
+                request_id,
+                items,
+                is_paginating: false,
+                end_reached,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)]
+        }
+        AppAction::ThreadsListUpdated {
+            request_id,
+            room_id,
+            items,
+            is_paginating,
+            end_reached,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if state.threads_list.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+            state.threads_list = ThreadsListState::Open {
+                room_id,
+                request_id,
+                items,
+                is_paginating,
+                end_reached,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)]
+        }
+        AppAction::ThreadsListPaginationCompleted {
+            request_id,
+            room_id,
+            items,
+            end_reached,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if state.threads_list.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+            state.threads_list = ThreadsListState::Open {
+                room_id,
+                request_id,
+                items,
+                is_paginating: false,
+                end_reached,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)]
+        }
+        AppAction::ThreadsListFailed {
+            request_id,
+            room_id,
+            failure_kind,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if state.threads_list.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+            state.threads_list = ThreadsListState::Failed {
+                room_id,
+                request_id,
+                failure_kind,
+            };
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)]
+        }
+        AppAction::PaginateThreadsList {
+            request_id,
+            room_id,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if state.threads_list.request_id() != Some(request_id) {
+                return Vec::new();
+            }
+            match &state.threads_list {
+                ThreadsListState::Open {
+                    is_paginating,
+                    end_reached,
+                    ..
+                } if !is_paginating && !end_reached => {}
+                _ => return Vec::new(),
+            }
+            state.threads_list.set_paginating(true);
+            vec![
+                AppEffect::PaginateThreadsList {
+                    request_id,
+                    room_id,
+                },
+                AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged),
+            ]
+        }
+        AppAction::CloseThreadsList => {
+            if state.threads_list == ThreadsListState::Closed {
+                return Vec::new();
+            }
+            state.threads_list = ThreadsListState::Closed;
+            vec![
+                AppEffect::UnsubscribeThreadsList,
+                AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged),
+            ]
+        }
         AppAction::ClearError { code } => {
             state.errors.retain(|error| error.code != code);
             vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
@@ -4175,6 +4331,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_local_encryption = state.local_encryption != LocalEncryptionState::Unknown;
     let had_native_attention = state.native_attention != Default::default();
     let had_files_view = state.files_view != FilesViewState::Closed;
+    let had_threads_list = state.threads_list != ThreadsListState::Closed;
     let had_room_notification_settings = !state.room_notification_settings.is_empty();
 
     state.navigation = NavigationState::default();
@@ -4196,6 +4353,7 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.focused_context = FocusedContextState::Closed;
     state.search = SearchState::Closed;
     state.files_view = FilesViewState::Closed;
+    state.threads_list = ThreadsListState::Closed;
     state.e2ee_trust = E2eeTrustState::default();
     state.device_sessions = DeviceSessionListState::Idle;
     state.account_management = AccountManagementState::Idle;
@@ -4266,6 +4424,9 @@ fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_files_view {
         effects.push(AppEffect::EmitUiEvent(UiEvent::FilesViewChanged));
+    }
+    if had_threads_list {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
     }
     if had_room_notification_settings {
         effects.push(AppEffect::EmitUiEvent(

@@ -50,6 +50,7 @@ pub struct AppState {
     pub timeline: TimelinePaneState,
     pub thread: ThreadPaneState,
     pub thread_attention: ThreadAttentionState,
+    pub threads_list: ThreadsListState,
     pub focused_context: FocusedContextState,
     pub search: SearchState,
     pub files_view: FilesViewState,
@@ -93,6 +94,7 @@ impl Default for AppState {
             timeline: TimelinePaneState::default(),
             thread: ThreadPaneState::Closed,
             thread_attention: ThreadAttentionState::Closed,
+            threads_list: ThreadsListState::Closed,
             focused_context: FocusedContextState::Closed,
             search: SearchState::Closed,
             files_view: FilesViewState::Closed,
@@ -122,6 +124,8 @@ impl Default for SettingsState {
     }
 }
 
+pub type RoomUrlPreviews = BTreeMap<String, bool>;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SettingsValues {
     pub locale: LocaleSettings,
@@ -134,6 +138,8 @@ pub struct SettingsValues {
     pub display: DisplaySettings,
     #[serde(default)]
     pub media: MediaSettings,
+    #[serde(default)]
+    pub room_url_previews: RoomUrlPreviews,
 }
 
 impl SettingsValues {
@@ -159,6 +165,15 @@ impl SettingsValues {
         if let Some(media) = patch.media {
             self.media = media;
         }
+        if let Some(room_url_previews) = patch.room_url_previews {
+            for (room_id, enabled) in room_url_previews {
+                if enabled {
+                    self.room_url_previews.insert(room_id, enabled);
+                } else {
+                    self.room_url_previews.remove(&room_id);
+                }
+            }
+        }
     }
 }
 
@@ -172,6 +187,7 @@ impl Default for SettingsValues {
             notifications: NotificationSettings::default(),
             display: DisplaySettings::default(),
             media: MediaSettings::default(),
+            room_url_previews: RoomUrlPreviews::new(),
         }
     }
 }
@@ -342,6 +358,8 @@ pub struct DisplaySettings {
     pub code_block_wrap: bool,
     #[serde(default)]
     pub hide_redacted: bool,
+    #[serde(default = "default_url_previews_enabled")]
+    pub url_previews_enabled: bool,
 }
 
 impl Default for DisplaySettings {
@@ -349,11 +367,16 @@ impl Default for DisplaySettings {
         Self {
             code_block_wrap: true,
             hide_redacted: false,
+            url_previews_enabled: true,
         }
     }
 }
 
 fn default_code_block_wrap() -> bool {
+    true
+}
+
+fn default_url_previews_enabled() -> bool {
     true
 }
 
@@ -418,6 +441,7 @@ pub struct SettingsPatch {
     pub notifications: Option<NotificationSettings>,
     pub display: Option<DisplaySettings>,
     pub media: Option<MediaSettings>,
+    pub room_url_previews: Option<RoomUrlPreviews>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1433,6 +1457,8 @@ pub struct RoomSummary {
     #[serde(default)]
     pub last_activity_ms: u64,
     pub parent_space_ids: Vec<String>,
+    #[serde(default)]
+    pub is_encrypted: bool,
 }
 
 impl fmt::Debug for RoomSummary {
@@ -1453,6 +1479,7 @@ impl fmt::Debug for RoomSummary {
             .field("marked_unread", &self.marked_unread)
             .field("last_activity_ms", &self.last_activity_ms)
             .field("parent_space_ids", &self.parent_space_ids.len())
+            .field("is_encrypted", &self.is_encrypted)
             .finish()
     }
 }
@@ -3322,6 +3349,70 @@ pub enum ThreadAttentionState {
     },
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ThreadsListState {
+    #[default]
+    Closed,
+    Loading {
+        room_id: String,
+        request_id: u64,
+    },
+    Open {
+        room_id: String,
+        request_id: u64,
+        items: Vec<ThreadsListItem>,
+        is_paginating: bool,
+        end_reached: bool,
+    },
+    Failed {
+        room_id: String,
+        request_id: u64,
+        failure_kind: OperationFailureKind,
+    },
+}
+
+impl ThreadsListState {
+    pub fn room_id(&self) -> Option<&str> {
+        match self {
+            Self::Closed => None,
+            Self::Loading { room_id, .. }
+            | Self::Open { room_id, .. }
+            | Self::Failed { room_id, .. } => Some(room_id.as_str()),
+        }
+    }
+
+    pub fn request_id(&self) -> Option<u64> {
+        match self {
+            Self::Closed => None,
+            Self::Loading { request_id, .. }
+            | Self::Open { request_id, .. }
+            | Self::Failed { request_id, .. } => Some(*request_id),
+        }
+    }
+
+    pub fn set_paginating(&mut self, value: bool) {
+        if let Self::Open { is_paginating, .. } = self {
+            *is_paginating = value;
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadsListItem {
+    pub root_event_id: String,
+    pub root_sender: String,
+    pub root_sender_label: Option<String>,
+    pub root_body_preview: Option<String>,
+    pub root_timestamp_ms: Option<u64>,
+    pub latest_event_id: Option<String>,
+    pub latest_sender: Option<String>,
+    pub latest_sender_label: Option<String>,
+    pub latest_body_preview: Option<String>,
+    pub latest_timestamp_ms: Option<u64>,
+    pub reply_count: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FocusedContextState {
@@ -3485,35 +3576,50 @@ pub enum AttachmentSort {
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AttachmentResult {
-    pub room_id: String,
     pub event_id: String,
-    pub sender: String,
-    pub timestamp_ms: u64,
-    pub kind: AttachmentKind,
     pub filename: String,
+    pub kind: AttachmentKind,
     pub mimetype: Option<String>,
+    pub room_id: String,
+    pub sender: String,
     pub size: Option<u64>,
     pub source_mxc: String,
     pub thumbnail_mxc: Option<String>,
+    pub timestamp_ms: u64,
+    pub thread_root: Option<String>,
+    pub encrypted: bool,
+    pub encryption_version: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub is_edited: bool,
 }
 
 impl fmt::Debug for AttachmentResult {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("AttachmentResult")
-            .field("room_id", &"RoomId(..)")
             .field("event_id", &"EventId(..)")
-            .field("sender", &"UserId(..)")
-            .field("timestamp_ms", &self.timestamp_ms)
-            .field("kind", &self.kind)
             .field("filename", &"AttachmentFilename(..)")
+            .field("kind", &self.kind)
             .field("mimetype", &self.mimetype)
+            .field("room_id", &"RoomId(..)")
+            .field("sender", &"UserId(..)")
             .field("size", &self.size)
             .field("source_mxc", &"MxcUri(..)")
             .field(
                 "thumbnail_mxc",
                 &self.thumbnail_mxc.as_ref().map(|_| "MxcUri(..)"),
             )
+            .field("timestamp_ms", &self.timestamp_ms)
+            .field(
+                "thread_root",
+                &self.thread_root.as_ref().map(|_| "EventId(..)"),
+            )
+            .field("encrypted", &self.encrypted)
+            .field("encryption_version", &self.encryption_version)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("is_edited", &self.is_edited)
             .finish()
     }
 }

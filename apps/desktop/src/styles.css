@@ -3579,6 +3579,12 @@ mark {
   font-size: 13px;
 }
 
+.settings-notice {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .sessions-list {
   display: grid;
   gap: 10px;
@@ -3748,6 +3754,12 @@ mark {
 .settings-toggle-label span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.settings-toggle-description {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
 }
 
 .settings-switch-track {
@@ -4592,6 +4604,152 @@ kbd {
   opacity: 0.72;
 }
 
+.files-view-panel,
+.threads-list-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.files-view-toolbar {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.files-view-kind-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.files-view-kind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.files-view-kind-chip input {
+  margin: 0;
+}
+
+.files-view-query-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.files-view-query-input,
+.files-view-sort-select {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.files-view-list,
+.threads-list {
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.files-view-row,
+.threads-list-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.files-view-row-icon,
+.threads-list-row-icon {
+  color: var(--text-muted);
+  display: inline-flex;
+}
+
+.files-view-row-main,
+.threads-list-row-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.files-view-row-name,
+.threads-list-row-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.files-view-row-meta,
+.threads-list-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.threads-list-row-button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.files-view-empty,
+.threads-list-empty {
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.files-view-error,
+.threads-list-error {
+  color: var(--error);
+}
+
+.threads-list-load-more {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 16px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
 @media (max-width: 1180px) {
   .app-grid,
   .app-grid.thread-closed {
@@ -4754,4 +4912,67 @@ kbd {
     justify-content: center;
     width: fit-content;
   }
+}
+
+.link-preview-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.link-preview-card {
+  display: flex;
+  gap: 0.75rem;
+  border: 1px solid var(--line, var(--color-border, #e3e8f0));
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  max-width: 32rem;
+  position: relative;
+}
+
+.link-preview-image {
+  width: 6rem;
+  height: 6rem;
+  object-fit: cover;
+  border-radius: 0.25rem;
+  flex-shrink: 0;
+}
+
+.link-preview-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.link-preview-title {
+  font-weight: 600;
+}
+
+.link-preview-description {
+  color: var(--text-muted, var(--color-text-secondary, #5b6b82));
+  font-size: 0.875rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.link-preview-url {
+  color: var(--text-faint, var(--color-text-tertiary, #93a0b4));
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-preview-hide {
+  position: absolute;
+  top: 0.25rem;
+  inset-inline-end: 0.25rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted, var(--color-text-secondary, #5b6b82));
 }

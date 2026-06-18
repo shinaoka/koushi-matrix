@@ -5,16 +5,16 @@ use std::{fmt, path::PathBuf};
 
 use matrix_desktop_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
-    DirectoryQuery, FormattedMessageDraft, IdentityResetAuthRequest, ImageUploadCompressionMode,
-    JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest, MentionIntent,
-    NativeAttentionState, PresenceKind, RecoveryRequest, RoomListFilter, RoomModerationAction,
-    RoomSettingChange, RoomTagKind, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
-    VerificationCancelReason, VerificationTarget,
+    DirectoryQuery, FilesViewScope, FormattedMessageDraft, IdentityResetAuthRequest,
+    ImageUploadCompressionMode, JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest,
+    MentionIntent, NativeAttentionState, PresenceKind, RecoveryRequest, RoomListFilter,
+    RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
+    StagedUploadCompressionChoice, StagedUploadItem, VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::event::TimelineViewportObservation;
-use crate::ids::{AccountKey, RequestId, TimelineKey};
+use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey};
 
 #[derive(Debug)]
 pub enum CoreCommand {
@@ -54,6 +54,11 @@ impl CoreCommand {
                 | AppCommand::SetActivityTab { request_id, .. }
                 | AppCommand::PaginateActivity { request_id, .. }
                 | AppCommand::MarkActivityRead { request_id, .. }
+                | AppCommand::OpenFilesView { request_id, .. }
+                | AppCommand::CloseFilesView { request_id }
+                | AppCommand::OpenThreadsList { request_id, .. }
+                | AppCommand::CloseThreadsList { request_id }
+                | AppCommand::PaginateThreadsList { request_id, .. }
                 | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
                 | AppCommand::UpdateNativeAttentionState { request_id, .. }
                 | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. }
@@ -157,7 +162,13 @@ impl CoreCommand {
                 | TimelineCommand::SendReadReceipt { request_id, .. }
                 | TimelineCommand::SetFullyRead { request_id, .. }
                 | TimelineCommand::SetTyping { request_id, .. }
-                | TimelineCommand::ToggleReaction { request_id, .. } => *request_id,
+                | TimelineCommand::ToggleReaction { request_id, .. }
+                | TimelineCommand::LoadLinkPreviews { request_id, .. }
+                | TimelineCommand::HideLinkPreview { request_id, .. } => *request_id,
+                TimelineCommand::BroadcastLinkPreviewPolicy { .. } => RequestId {
+                    connection_id: RuntimeConnectionId(0),
+                    sequence: 0,
+                },
             },
             Self::Search(command) => match command {
                 SearchCommand::Query { request_id, .. }
@@ -189,6 +200,10 @@ impl CoreCommand {
                         | AppCommand::UpdateStagedUploadCaption { .. }
                         | AppCommand::UpdateStagedUploadCompression { .. }
                         | AppCommand::ClearUploadStaging { .. }
+                        | AppCommand::OpenFilesView { .. }
+                        | AppCommand::OpenThreadsList { .. }
+                        | AppCommand::CloseThreadsList { .. }
+                        | AppCommand::PaginateThreadsList { .. }
                 )
             )
     }
@@ -294,6 +309,26 @@ pub enum AppCommand {
     MarkActivityRead {
         request_id: RequestId,
         target: ActivityMarkReadTarget,
+    },
+    OpenFilesView {
+        request_id: RequestId,
+        scope: FilesViewScope,
+        filter: AttachmentFilter,
+        sort: AttachmentSort,
+    },
+    CloseFilesView {
+        request_id: RequestId,
+    },
+    OpenThreadsList {
+        request_id: RequestId,
+        room_id: String,
+    },
+    CloseThreadsList {
+        request_id: RequestId,
+    },
+    PaginateThreadsList {
+        request_id: RequestId,
+        room_id: String,
     },
     RecordLocalEncryptionHealth {
         request_id: RequestId,
@@ -479,6 +514,36 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("MarkActivityRead")
                 .field("request_id", request_id)
                 .field("target", target)
+                .finish(),
+            Self::OpenFilesView {
+                request_id,
+                scope,
+                filter,
+                sort,
+            } => formatter
+                .debug_struct("OpenFilesView")
+                .field("request_id", request_id)
+                .field("scope", scope)
+                .field("filter", filter)
+                .field("sort", sort)
+                .finish(),
+            Self::CloseFilesView { request_id } => formatter
+                .debug_struct("CloseFilesView")
+                .field("request_id", request_id)
+                .finish(),
+            Self::OpenThreadsList { request_id, .. } => formatter
+                .debug_struct("OpenThreadsList")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::CloseThreadsList { request_id } => formatter
+                .debug_struct("CloseThreadsList")
+                .field("request_id", request_id)
+                .finish(),
+            Self::PaginateThreadsList { request_id, .. } => formatter
+                .debug_struct("PaginateThreadsList")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
                 .finish(),
             Self::RecordLocalEncryptionHealth { request_id, health } => formatter
                 .debug_struct("RecordLocalEncryptionHealth")
@@ -1784,6 +1849,20 @@ pub enum TimelineCommand {
         key: TimelineKey,
         is_typing: bool,
     },
+    LoadLinkPreviews {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
+    HideLinkPreview {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
+    BroadcastLinkPreviewPolicy {
+        global_enabled: bool,
+        room_overrides: std::collections::BTreeMap<String, bool>,
+    },
 }
 
 // Message bodies and reaction keys are visible UI state but must not reach
@@ -1978,6 +2057,26 @@ impl fmt::Debug for TimelineCommand {
                 .field("key", &"TimelineKey(..)")
                 .field("is_typing", is_typing)
                 .finish(),
+            Self::LoadLinkPreviews { request_id, .. } => formatter
+                .debug_struct("LoadLinkPreviews")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::HideLinkPreview { request_id, .. } => formatter
+                .debug_struct("HideLinkPreview")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::BroadcastLinkPreviewPolicy {
+                global_enabled,
+                room_overrides,
+            } => formatter
+                .debug_struct("BroadcastLinkPreviewPolicy")
+                .field("global_enabled", global_enabled)
+                .field("room_override_count", &room_overrides.len())
+                .finish(),
         }
     }
 }
@@ -1993,6 +2092,21 @@ pub enum SearchCommand {
         scope: AttachmentScope,
         filter: AttachmentFilter,
         sort: AttachmentSort,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum ThreadsListCommand {
+    Open {
+        request_id: RequestId,
+        room_id: String,
+    },
+    Close {
+        request_id: RequestId,
+    },
+    Paginate {
+        request_id: RequestId,
+        room_id: String,
     },
 }
 

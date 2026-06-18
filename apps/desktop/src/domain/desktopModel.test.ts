@@ -42,6 +42,7 @@ describe("desktop model", () => {
         dm_user_ids: [],
         tags: { favourite: { order: "0.25" }, low_priority: null },
         parent_space_ids: ["!space-a:example.invalid"],
+        is_encrypted: false,
         unread_count: 5
       },
       {
@@ -54,6 +55,7 @@ describe("desktop model", () => {
         dm_user_ids: [],
         tags: { favourite: null, low_priority: null },
         parent_space_ids: [],
+        is_encrypted: false,
         unread_count: 2
       },
       {
@@ -66,6 +68,7 @@ describe("desktop model", () => {
         dm_user_ids: ["@direct:example.invalid"],
         tags: { favourite: null, low_priority: null },
         parent_space_ids: ["!space-a:example.invalid"],
+        is_encrypted: false,
         unread_count: 3
       }
     ];
@@ -468,6 +471,7 @@ function roomSummary(
     dm_user_ids: isDm ? [`@${roomId.replace(/^!/, "")}`] : [],
     tags,
     parent_space_ids: [],
+    is_encrypted: false,
     unread_count: 0
   };
 }

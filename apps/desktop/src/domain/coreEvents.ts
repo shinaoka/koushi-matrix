@@ -25,7 +25,8 @@
  *     — "Public Runtime API" (CoreEvent enum, TimelineEvent, etc.)
  */
 
-import type { AttachmentResult, SyncMode } from "./types";
+import type { AttachmentResult, SyncMode, ThreadsListItem } from "./types";
+import type { LinkPreview } from "./linkPreview";
 
 // ---------------------------------------------------------------------------
 // Identity types
@@ -116,6 +117,8 @@ export interface TimelineMedia {
   thumbnail: TimelineMediaThumbnail | null;
 }
 
+export type { LinkPreview, LinkPreviewImage, LinkPreviewState } from "./linkPreview";
+
 export type TimelineSendFailureReason = "recoverable" | "unrecoverable";
 
 export type TimelineSendState =
@@ -177,6 +180,7 @@ export interface TimelineItem {
   thread_root: string | null;
   thread_summary: ThreadSummaryDto | null;
   media?: TimelineMedia | null;
+  link_previews?: LinkPreview[];
   reactions: ReactionGroup[];
   can_react: boolean;
   is_redacted: boolean;
@@ -786,6 +790,36 @@ export type CjkTextPolicyEvent = {
   profile: JapaneseCatalogProfile;
 };
 
+export type ThreadsListEvent =
+  | {
+      kind: "opened";
+      request_id: RequestId;
+      room_id: string;
+      items: ThreadsListItem[];
+      end_reached: boolean;
+    }
+  | {
+      kind: "updated";
+      request_id: RequestId;
+      room_id: string;
+      items: ThreadsListItem[];
+      is_paginating: boolean;
+      end_reached: boolean;
+    }
+  | {
+      kind: "paginationCompleted";
+      request_id: RequestId;
+      room_id: string;
+      items: ThreadsListItem[];
+      end_reached: boolean;
+    }
+  | {
+      kind: "failed";
+      request_id: RequestId;
+      room_id: string;
+      failure_kind: OperationFailureKind;
+    };
+
 // ---------------------------------------------------------------------------
 // Failures (externally tagged; unit variants are bare strings)
 // ---------------------------------------------------------------------------
@@ -829,6 +863,7 @@ export type CoreEventPayload =
   | { kind: "LocalEncryption"; event: LocalEncryptionEvent }
   | { kind: "NativeAttention"; event: NativeAttentionEvent }
   | { kind: "CjkTextPolicy"; event: CjkTextPolicyEvent }
+  | { kind: "ThreadsList"; event: ThreadsListEvent }
   | {
       kind: "OperationFailed";
       request_id: RequestId | null;

@@ -3180,6 +3180,7 @@ dependencies = [
  "matrix-desktop-state",
  "matrix-sdk",
  "matrix-sdk-ui",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

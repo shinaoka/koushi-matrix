@@ -868,6 +868,38 @@ stateDiagram-v2
   handling; decrypted bytes, encrypted media keys, local filesystem paths, and
   raw SDK errors stay outside snapshots and QA output.
 
+## Ignore, Block, And Report
+
+Ignore/unignore and report commands are Rust-owned account/room operations.
+React renders the resulting `AppState.profile.ignored_user_ids` snapshot and the
+`IgnoredUserUpdateState` pending indicator, dispatches typed commands, and does
+not maintain a separate ignore/report policy.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Saving: IgnoreUserRequested/UnignoreUserRequested [Ready]
+    Saving --> Idle: IgnoreUserSucceeded/UnignoreUserSucceeded [matching request_id]
+    Saving --> Idle: IgnoreUserFailed/UnignoreUserFailed [matching request_id]
+```
+
+- `IgnoredUserUpdateState` carries only `Idle` or `Saving { request_id }`. The
+  reducer applies the optimistic `ignored_user_ids` change when the request is
+  accepted and reverts it on a matching failure. Stale or duplicate completions
+  are ignored.
+- Ignore/unignore requests are accepted only for a `Ready` session. Logout,
+  lock, account switch, and session clearing reset the state to `Idle`.
+- Report commands (`ReportUser`, `ReportContent`, `ReportRoom`) are fire-and-
+  forget one-shots from the GUI perspective. The typed command carries the
+  target identifiers and reason; success is signalled back through a coarse
+  `ReportCompleted` event and any resulting snapshot update. The reducer does
+  not keep a dedicated report pending state.
+- GUI code may open a lightweight reason dialog for report actions, but it must
+  not log or display the reason, target user ids, event ids, or room ids in
+  diagnostics or QA tokens. Headless QA evidence uses private-data-free tokens
+  such as `ignore_user=ok`, `unignore_user=ok`, `report_user=ok`,
+  `report_content=ok`, and `report_room=ok`.
+
 ## Live Signals
 
 Live signals are Rust-owned room/account projections in

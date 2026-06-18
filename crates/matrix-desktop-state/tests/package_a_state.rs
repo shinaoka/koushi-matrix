@@ -604,6 +604,7 @@ fn room_summary(
         marked_unread,
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
+        is_encrypted: false,
     }
 }
 

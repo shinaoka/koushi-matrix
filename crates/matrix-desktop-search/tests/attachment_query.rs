@@ -20,6 +20,12 @@ fn attachment(kind: AttachmentKind, filename: &str) -> AttachmentDocument {
         source_mxc: "mxc://example.invalid/source".into(),
         thumbnail_mxc: None,
         filename: SensitiveString::new(filename),
+        thread_root: None,
+        encrypted: false,
+        encryption_version: None,
+        width: None,
+        height: None,
+        is_edited: false,
     }
 }
 

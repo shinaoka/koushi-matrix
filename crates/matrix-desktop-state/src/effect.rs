@@ -80,6 +80,15 @@ pub enum AppEffect {
         filter: AttachmentFilter,
         sort: AttachmentSort,
     },
+    SubscribeThreadsList {
+        request_id: u64,
+        room_id: String,
+    },
+    PaginateThreadsList {
+        request_id: u64,
+        room_id: String,
+    },
+    UnsubscribeThreadsList,
     EmitUiEvent(UiEvent),
 }
 
@@ -93,6 +102,7 @@ pub enum UiEvent {
     RoomListChanged,
     TimelineChanged { room_id: String },
     ThreadChanged,
+    ThreadsListChanged,
     SearchChanged,
     FilesViewChanged,
     LiveSignalsChanged,

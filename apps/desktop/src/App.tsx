@@ -71,9 +71,11 @@ import {
   roomTimelineKey,
   threadTimelineKey
 } from "./domain/coreEvents";
+import { FilesView } from "./components/FilesView";
 import { KeyboardSettingsPanel } from "./components/KeyboardSettingsPanel";
 import { RoomInfoPanel } from "./components/RoomInfoPanel";
 import { SpaceInfoPanel } from "./components/SpaceInfoPanel";
+import { ThreadsListView } from "./components/ThreadsListView";
 import { Tooltip } from "./components/Tooltip";
 import { UserSettingsPanel } from "./components/UserSettingsPanel";
 import {
@@ -130,10 +132,14 @@ import type {
   ActivityState,
   ActivityStream,
   ActivityTab,
+  AttachmentFilter,
+  AttachmentScope,
+  AttachmentSort,
   AuthFailureKind,
   ComposerMode,
   DesktopSnapshot,
   DirectoryRoomSummary,
+  FilesViewScope,
   ImageUploadCompressionMode,
   ImageUploadCompressionPolicy,
   LocaleDisplayProfile,
@@ -362,6 +368,12 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       ) {
         await invoke("forward_message", { roomId, sourceEventId, destinationRoomId });
       },
+      async loadLinkPreviews(roomId: string, eventId: string) {
+        await invoke("load_link_previews", { roomId, eventId });
+      },
+      async hideLinkPreview(roomId: string, eventId: string) {
+        await invoke("hide_link_preview", { roomId, eventId });
+      },
       async observeViewport(
         roomId: string,
         firstVisibleEventId: string | null,
@@ -384,7 +396,10 @@ const tauriNotificationTransport = isTauriRuntime()
   ? createTauriDesktopNotificationTransport()
   : null;
 type ContextMenuTarget =
-  | { kind: "message"; message: TimelineMessage }
+  | {
+      kind: "message";
+      message: Pick<TimelineMessage, "sender" | "room_id" | "event_id" | "body">;
+    }
   | { kind: "room"; roomId: string }
   | { kind: "space"; spaceId: string }
   | { kind: "account" };
@@ -399,6 +414,10 @@ type ActiveContextMenu = {
   target: ContextMenuTarget;
   items: ContextMenuItem[];
 };
+type ReportDialogState =
+  | { kind: "user"; userId: string }
+  | { kind: "content"; roomId: string; eventId: string }
+  | { kind: "room"; roomId: string };
 type PrimaryView = "timeline" | "invites" | "explore" | "activity";
 type InviteUserDialogState = {
   roomId: string;
@@ -798,6 +817,8 @@ export function App() {
   // (basic_operation); the created room/space identity comes from the API.
   const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
   const [createDraftName, setCreateDraftName] = useState("");
+  const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
+  const [reportReasonDraft, setReportReasonDraft] = useState("");
   const searchTimer = useRef<number | null>(null);
   const qaSendStarted = useRef(false);
   const qaSendPending = useRef(false);
@@ -1358,6 +1379,43 @@ export function App() {
     setSnapshot(await api.setLocalUserAlias(userId, alias));
   }
 
+  async function ignoreUser(userId: string) {
+    setSnapshot(await api.ignoreUser(userId));
+  }
+
+  async function unignoreUser(userId: string) {
+    setSnapshot(await api.unignoreUser(userId));
+  }
+
+  function openReportDialog(state: ReportDialogState) {
+    setReportDialog(state);
+    setReportReasonDraft("");
+  }
+
+  function closeReportDialog() {
+    setReportDialog(null);
+    setReportReasonDraft("");
+  }
+
+  function submitReportDialog() {
+    const reason = reportReasonDraft.trim();
+    if (!reason || !reportDialog) {
+      return;
+    }
+    switch (reportDialog.kind) {
+      case "user":
+        void api.reportUser(reportDialog.userId, reason).then(setSnapshot);
+        break;
+      case "content":
+        void api.reportContent(reportDialog.roomId, reportDialog.eventId, reason).then(setSnapshot);
+        break;
+      case "room":
+        void api.reportRoom(reportDialog.roomId, reason).then(setSnapshot);
+        break;
+    }
+    closeReportDialog();
+  }
+
   async function setRoomNotificationMode(roomId: string, mode: RoomNotificationMode) {
     setSnapshot(await api.setRoomNotificationMode(roomId, mode));
   }
@@ -1855,8 +1913,8 @@ export function App() {
     setImageCompressionDialog(null);
   }
 
-  async function editMessage(message: TimelineMessage) {
-    const body = window.prompt(t("timeline.editMessage"), message.body);
+  async function editMessage(message: { body: string | null; room_id: string; event_id: string }) {
+    const body = window.prompt(t("timeline.editMessage"), message.body ?? undefined);
     if (body === null || !body.trim()) {
       return;
     }
@@ -1904,6 +1962,42 @@ export function App() {
     setRightPanelMode("closed");
   }
 
+  async function openThreadsListPanel(roomId: string) {
+    await closeFocusedContextIfHiddenBy("threads");
+    setSnapshot(await api.openThreadsList(roomId));
+    setRightPanelMode("threads");
+  }
+
+  async function closeThreadsListPanel() {
+    setSnapshot(await api.closeThreadsList());
+    setRightPanelMode("closed");
+  }
+
+  async function paginateThreadsList(roomId: string) {
+    setSnapshot(await api.paginateThreadsList(roomId));
+  }
+
+  async function openFilesView(scope: FilesViewScope) {
+    await closeFocusedContextIfHiddenBy("files");
+    const filter: AttachmentFilter = { kinds: ["image", "video", "audio", "file"], filename_query: null };
+    const sort: AttachmentSort = "newestFirst";
+    setSnapshot(await api.openFilesView(scope, filter, sort));
+    setRightPanelMode("files");
+  }
+
+  async function closeFilesViewPanel() {
+    setSnapshot(await api.closeFilesView());
+    setRightPanelMode("closed");
+  }
+
+  async function refreshFilesView(scope: AttachmentScope, filter: AttachmentFilter, sort: AttachmentSort) {
+    const scopeParam: FilesViewScope =
+      scope.kind === "space"
+        ? { kind: "space", space_id: scope.space_id }
+        : scope;
+    setSnapshot(await api.openFilesView(scopeParam, filter, sort));
+  }
+
   async function setThreadComposerDraft(
     roomId: string,
     rootEventId: string,
@@ -1944,6 +2038,14 @@ export function App() {
   }
 
   async function closeFocusedContextPanel() {
+    if (rightPanelMode === "files") {
+      await closeFilesViewPanel();
+      return;
+    }
+    if (rightPanelMode === "threads") {
+      await closeThreadsListPanel();
+      return;
+    }
     await setRightPanelModeClosingFocusedContext("closed");
   }
 
@@ -1974,6 +2076,22 @@ export function App() {
         case "redactMessage":
           void redactMessage(target.message.room_id, target.message.event_id);
           return;
+        case "ignoreUser":
+          void ignoreUser(target.message.sender);
+          return;
+        case "unignoreUser":
+          void unignoreUser(target.message.sender);
+          return;
+        case "reportUser":
+          openReportDialog({ kind: "user", userId: target.message.sender });
+          return;
+        case "reportContent":
+          openReportDialog({
+            kind: "content",
+            roomId: target.message.room_id,
+            eventId: target.message.event_id
+          });
+          return;
         default:
           return;
       }
@@ -2000,6 +2118,9 @@ export function App() {
         }
         case "markRoomAsUnread":
           void api.markRoomAsUnread(target.roomId, true).then(setSnapshot);
+          return;
+        case "reportRoom":
+          openReportDialog({ kind: "room", roomId: target.roomId });
           return;
         default:
           break;
@@ -2268,6 +2389,12 @@ export function App() {
             onOpenRoomInfo={() => {
               void setRightPanelModeClosingFocusedContext("roomInfo");
             }}
+            onOpenThreadsList={() => {
+              const roomId = snapshot.state.navigation.active_room_id;
+              if (roomId) {
+                void openThreadsListPanel(roomId);
+              }
+            }}
           />
         )}
         <ContextualRightPanel
@@ -2288,6 +2415,18 @@ export function App() {
           }}
           onClosePanel={() => {
             void closeFocusedContextPanel();
+          }}
+          onOpenThread={(roomId, rootEventId) => {
+            void openThread(roomId, rootEventId);
+          }}
+          onOpenFiles={(scope) => {
+            void openFilesView(scope);
+          }}
+          onRefreshFilesView={(scope, filter, sort) => {
+            void refreshFilesView(scope, filter, sort);
+          }}
+          onPaginateThreadsList={(roomId) => {
+            void paginateThreadsList(roomId);
           }}
           onOpenKeyboardSettings={() => {
             void setRightPanelModeClosingFocusedContext("keyboardSettings");
@@ -2407,6 +2546,15 @@ export function App() {
           onUpdateRoomSetting={(roomId, change) => {
             void updateRoomSetting(roomId, change);
           }}
+          onIgnoreUser={(userId) => {
+            void ignoreUser(userId);
+          }}
+          onUnignoreUser={(userId) => {
+            void unignoreUser(userId);
+          }}
+          onReportUser={(userId) => {
+            openReportDialog({ kind: "user", userId });
+          }}
         />
       </div>
       {contextMenu ? (
@@ -2456,6 +2604,15 @@ export function App() {
             void submitInviteUserDialog();
           }}
           onValueChange={setInviteUserDraftUserId}
+        />
+      ) : null}
+      {reportDialog ? (
+        <ReportReasonDialog
+          reason={reportReasonDraft}
+          title={t("dialog.reportReasonTitle")}
+          onCancel={closeReportDialog}
+          onReasonChange={setReportReasonDraft}
+          onSubmit={submitReportDialog}
         />
       ) : null}
       {imageCompressionDialog ? (
@@ -2687,6 +2844,81 @@ function UserIdDialog({
             disabled={!canSubmit}
           >
             {submitLabel}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ReportReasonDialog({
+  reason,
+  title,
+  onCancel,
+  onReasonChange,
+  onSubmit
+}: {
+  reason: string;
+  title: string;
+  onCancel: () => void;
+  onReasonChange: (reason: string) => void;
+  onSubmit: () => void;
+}) {
+  const canSubmit = reason.trim().length > 0;
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={onDialogKeyDown}
+    >
+      <form
+        className="dialog-box"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) {
+            onSubmit();
+          }
+        }}
+      >
+        <div className="dialog-title">{title}</div>
+        <label className="dialog-input-label">
+          <span>{t("dialog.reportReasonLabel")}</span>
+          <input
+            className="dialog-input"
+            type="text"
+            autoFocus
+            aria-label={t("dialog.reportReasonLabel")}
+            placeholder={t("dialog.reportReasonPlaceholder")}
+            value={reason}
+            onChange={(event) => onReasonChange(event.target.value)}
+          />
+        </label>
+        <div className="dialog-actions">
+          <button
+            className="dialog-button"
+            type="button"
+            aria-label={t("action.cancel")}
+            onClick={onCancel}
+          >
+            {t("action.cancel")}
+          </button>
+          <button
+            className="dialog-button is-primary"
+            type="submit"
+            aria-label={t("action.report")}
+            disabled={!canSubmit}
+          >
+            {t("action.report")}
           </button>
         </div>
       </form>
@@ -3509,7 +3741,11 @@ function RoomButton({
         onOpenContextMenu(
           event,
           { kind: "room", roomId: room.room_id },
-          contextMenuItems({ kind: "room", tags: room.tags ?? EMPTY_ROOM_TAGS })
+          contextMenuItems({
+            kind: "room",
+            roomId: room.room_id,
+            tags: room.tags ?? EMPTY_ROOM_TAGS
+          })
         )
       }
     >
@@ -4028,7 +4264,8 @@ function TimelinePane({
   onSetLocalUserAlias,
   onUnpinPinnedEvent,
   onToggleThread,
-  onOpenRoomInfo
+  onOpenRoomInfo,
+  onOpenThreadsList
 }: {
   activeRoomName: string;
   composerDraft: string;
@@ -4051,7 +4288,7 @@ function TimelinePane({
   ) => void | Promise<void>;
   onComposerDraftChange: (value: string) => void;
   onMentionIntentChange: (intent: MentionIntent) => void;
-  onEditMessage: (message: TimelineMessage) => void;
+  onEditMessage: (message: { body: string | null; room_id: string; event_id: string }) => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenThread: (roomId: string, rootEventId: string) => void;
   onPaginateBackwards: (roomId: string) => void;
@@ -4065,6 +4302,7 @@ function TimelinePane({
   onUnpinPinnedEvent: (roomId: string, eventId: string) => void;
   onToggleThread: () => void;
   onOpenRoomInfo: () => void;
+  onOpenThreadsList: () => void;
 }) {
   const timelineRoomId = snapshot.state.timeline.room_id;
   const currentUserId = snapshot.state.session.user_id ?? null;
@@ -4105,6 +4343,14 @@ function TimelinePane({
           </button>
           <button className="icon-button" type="button" aria-label={t("room.threadToggle")} onClick={onToggleThread}>
             {snapshot.state.thread.kind !== "closed" ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("threads.title")}
+            onClick={onOpenThreadsList}
+          >
+            <MessageCircle size={ICON_SIZE.panel} />
           </button>
           <button className="icon-button" type="button" aria-label={t("room.roomInfo")} onClick={onOpenRoomInfo}>
             <MoreVertical size={ICON_SIZE.panel} />
@@ -4174,6 +4420,9 @@ function TimelinePane({
               pinnedEventIds={pinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
               onSetLocalUserAlias={onSetLocalUserAlias}
+              onOpenContextMenu={onOpenContextMenu}
+              currentUserId={currentUserId}
+              ignoredUserIds={snapshot.state.profile.ignored_user_ids}
               codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
             />
@@ -4190,6 +4439,7 @@ function TimelinePane({
                 onOpenThread={onOpenThread}
                 onRedactMessage={onRedactMessage}
                 profileUsers={snapshot.state.profile.users}
+                isIgnored={snapshot.state.profile.ignored_user_ids.includes(message.sender)}
               />
             ))
           )}
@@ -4765,16 +5015,18 @@ function MessageArticle({
   onEditMessage,
   onOpenThread,
   onRedactMessage,
-  profileUsers
+  profileUsers,
+  isIgnored
 }: {
   currentUserId: string | null;
   message: TimelineMessage;
   query: string;
   onOpenContextMenu?: OpenContextMenu;
-  onEditMessage: (message: TimelineMessage) => void;
+  onEditMessage: (message: { body: string | null; room_id: string; event_id: string }) => void;
   onOpenThread: (roomId: string, rootEventId: string) => void;
   onRedactMessage: (roomId: string, eventId: string) => void;
   profileUsers: Record<string, UserProfile>;
+  isIgnored: boolean;
 }) {
   const canManage = currentUserId === message.sender;
 
@@ -4791,7 +5043,12 @@ function MessageArticle({
                 contextMenuItems({
                   kind: "message",
                   canManage,
-                  hasThread: true
+                  hasThread: true,
+                  senderUserId: message.sender,
+                  currentUserId: currentUserId ?? "",
+                  roomId: message.room_id,
+                  eventId: message.event_id,
+                  isIgnored
                 })
               )
           : undefined
@@ -5283,6 +5540,10 @@ export function ContextualRightPanel({
   savedSessions,
   onCloseThread,
   onClosePanel,
+  onOpenThread,
+  onOpenFiles,
+  onRefreshFilesView,
+  onPaginateThreadsList,
   onOpenKeyboardSettings,
   onOpenRecovery,
   onProbeLocalEncryption,
@@ -5314,6 +5575,9 @@ export function ContextualRightPanel({
   onSubmitIdentityResetPassword,
   onUpdateSettings = () => undefined,
   onUpdateRoomSetting = () => undefined,
+  onIgnoreUser = () => undefined,
+  onUnignoreUser = () => undefined,
+  onReportUser = () => undefined,
   onQueryDevices = () => undefined,
   onRenameDevice = () => undefined,
   onDeleteDevices = () => undefined,
@@ -5338,6 +5602,10 @@ export function ContextualRightPanel({
   savedSessions: SavedSessionInfo[];
   onCloseThread: () => void;
   onClosePanel: () => void;
+  onOpenThread: (roomId: string, rootEventId: string) => void;
+  onOpenFiles: (scope: FilesViewScope) => void;
+  onRefreshFilesView: (scope: AttachmentScope, filter: AttachmentFilter, sort: AttachmentSort) => void;
+  onPaginateThreadsList: (roomId: string) => void;
   onOpenKeyboardSettings: () => void;
   onOpenRecovery: () => void;
   onProbeLocalEncryption: () => void;
@@ -5392,6 +5660,9 @@ export function ContextualRightPanel({
   onDeactivateAccount?: (eraseData: boolean) => void;
   onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
+  onIgnoreUser?: (userId: string) => void;
+  onUnignoreUser?: (userId: string) => void;
+  onReportUser?: (userId: string) => void;
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
   onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
 }) {
@@ -5483,11 +5754,13 @@ export function ContextualRightPanel({
         <PanelHeader title={t("panel.roomInfo")} onClose={onClosePanel} />
         <RoomInfoPanel
           currentUserId={snapshot.state.session.user_id ?? null}
+          ignoredUserIds={snapshot.state.profile.ignored_user_ids}
           room={activeRoom}
           roomManagement={snapshot.state.room_management}
           roomNotificationSettings={
             activeRoom ? snapshot.state.room_notification_settings[activeRoom.room_id] : undefined
           }
+          appSettings={snapshot.state.settings}
           spaces={snapshot.state.spaces}
           onInvitePeople={
             activeRoom
@@ -5498,11 +5771,22 @@ export function ContextualRightPanel({
                   )
               : undefined
           }
+          onIgnoreUser={onIgnoreUser}
+          onUnignoreUser={onUnignoreUser}
+          onReportUser={onReportUser}
           onModerateMember={onModerateMember}
+          onOpenFiles={
+            activeRoom
+              ? () => onOpenFiles({ kind: "room", room_id: activeRoom.room_id })
+              : undefined
+          }
           onSetLocalUserAlias={onSetLocalUserAlias}
           onSetRoomNotificationMode={onSetRoomNotificationMode}
           onUpdateMemberRole={onUpdateMemberRole}
           onUpdateRoomSetting={onUpdateRoomSetting}
+          onUpdateSettings={(patch) => {
+            void onUpdateSettings(patch);
+          }}
         />
       </aside>
     );
@@ -5525,6 +5809,38 @@ export function ContextualRightPanel({
                   )
               : undefined
           }
+          onOpenFiles={
+            activeSpace
+              ? () => onOpenFiles({ kind: "space", space_id: activeSpace.space_id })
+              : undefined
+          }
+        />
+      </aside>
+    );
+  }
+
+  if (mode === "files") {
+    return (
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={t("files.title")} onClose={onClosePanel} />
+        <FilesView
+          filesView={snapshot.state.files_view}
+          onChangeFilterSort={onRefreshFilesView}
+        />
+      </aside>
+    );
+  }
+
+  if (mode === "threads") {
+    return (
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        <PanelHeader title={t("threads.title")} onClose={onClosePanel} />
+        <ThreadsListView
+          threadsList={snapshot.state.threads_list}
+          roomId={activeRoom?.room_id ?? null}
+          onClose={onClosePanel}
+          onOpenThread={onOpenThread}
+          onPaginate={onPaginateThreadsList}
         />
       </aside>
     );

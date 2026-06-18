@@ -13,6 +13,7 @@ pub mod event;
 pub mod executor;
 pub mod failure;
 pub mod ids;
+pub(crate) mod link_preview;
 pub mod room;
 pub mod runtime;
 pub(crate) mod scheduled_send;
@@ -20,6 +21,7 @@ pub mod search;
 pub mod settings;
 pub mod store;
 pub mod sync;
+pub mod threads_list;
 pub mod timeline;
 
 pub use command::{
@@ -32,12 +34,13 @@ pub use command::{
 };
 pub use event::{
     AccountEvent, ActivityEvent, AppStateSnapshot, CjkTextPolicyEvent, CoreEvent, E2eeTrustEvent,
-    LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent, PaginationDirection,
-    PaginationState, ReactionGroup, RoomEvent, SearchEvent, SearchResultItem, SyncBackendKind,
-    SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
-    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageKind,
-    TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
-    TimelineSpoilerSpan, TimelineUnreadPosition, TimelineViewportObservation,
+    LinkPreview, LinkPreviewImage, LinkPreviewState, LocalEncryptionEvent, MediaTransferProgress,
+    NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup, RoomEvent,
+    SearchEvent, SearchResultItem, SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent,
+    TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
+    TimelineMediaThumbnail, TimelineMessageKind, TimelineNavigationSnapshot, TimelineResyncReason,
+    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
+    TimelineViewportObservation,
 };
 pub use failure::{
     CoreFailure, LoginFailureKind, ProfileFailureKind, RecoveryFailureKind, RoomFailureKind,

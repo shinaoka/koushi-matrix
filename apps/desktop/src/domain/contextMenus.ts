@@ -7,9 +7,14 @@ export type ContextMenuActionId =
   | "openThread"
   | "editMessage"
   | "redactMessage"
+  | "ignoreUser"
+  | "unignoreUser"
+  | "reportUser"
+  | "reportContent"
   | "selectRoom"
   | "openRoomInfo"
   | "searchInRoom"
+  | "reportRoom"
   | "setRoomFavourite"
   | "removeRoomFavourite"
   | "setRoomLowPriority"
@@ -33,9 +38,15 @@ export type ContextMenuRequest =
       kind: "message";
       canManage: boolean;
       hasThread: boolean;
+      senderUserId: string;
+      currentUserId: string;
+      roomId: string;
+      eventId: string;
+      isIgnored: boolean;
     }
   | {
       kind: "room";
+      roomId: string;
       tags?: RoomTags;
     }
   | {
@@ -60,6 +71,23 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
           destructive: true
         });
       }
+      if (request.senderUserId !== request.currentUserId) {
+        if (request.isIgnored) {
+          items.push({ id: "unignoreUser", labelMessageId: "context.unignoreUser" });
+        } else {
+          items.push({ id: "ignoreUser", labelMessageId: "context.ignoreUser" });
+        }
+        items.push({
+          id: "reportUser",
+          labelMessageId: "context.reportUser",
+          destructive: true
+        });
+        items.push({
+          id: "reportContent",
+          labelMessageId: "context.reportContent",
+          destructive: true
+        });
+      }
       return items;
     }
     case "room":
@@ -67,6 +95,11 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
         { id: "selectRoom", labelMessageId: "context.selectRoom" },
         { id: "openRoomInfo", labelMessageId: "context.openRoomInfo" },
         { id: "searchInRoom", labelMessageId: "context.searchInRoom" },
+        {
+          id: "reportRoom",
+          labelMessageId: "context.reportRoom",
+          destructive: true
+        },
         request.tags?.favourite
           ? { id: "removeRoomFavourite", labelMessageId: "context.removeFromFavourites" }
           : { id: "setRoomFavourite", labelMessageId: "context.addToFavourites" },

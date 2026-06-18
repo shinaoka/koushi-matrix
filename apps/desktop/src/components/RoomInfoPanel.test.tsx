@@ -1,8 +1,12 @@
+// @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, test } from "vitest";
+import { cleanup, fireEvent, render } from "@testing-library/react";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { RoomInfoPanel } from "./RoomInfoPanel";
-import type { RoomNotificationSettings, RoomSummary } from "../domain/types";
+
+afterEach(cleanup);
+import type { RoomNotificationSettings, RoomSummary, SettingsState } from "../domain/types";
 
 const baseRoom: RoomSummary = {
   room_id: "!room-alpha:example.invalid",
@@ -14,6 +18,7 @@ const baseRoom: RoomSummary = {
   dm_user_ids: [],
   tags: { favourite: null, low_priority: null },
   parent_space_ids: ["!space-work:example.invalid"],
+  is_encrypted: false,
   unread_count: 8
 };
 
@@ -25,6 +30,34 @@ const idleSettings: RoomNotificationSettings = {
 const pendingSettings: RoomNotificationSettings = {
   mode: { kind: "mute" },
   operation: { kind: "pending", request_id: 1 }
+};
+
+const baseAppSettings: SettingsState = {
+  values: {
+    locale: { language_tag: null, text_direction: "auto" },
+    appearance: { theme: "dark" },
+    typography: { font: "system", emoji: "system" },
+    keyboard: { composer_send_shortcut: "enter" },
+    notifications: {
+      desktop_notifications: true,
+      sound: true,
+      badges: true,
+      send_read_receipts: true,
+      send_typing_notifications: true
+    },
+    display: { code_block_wrap: true, hide_redacted: false, url_previews_enabled: true },
+    media: {
+      image_upload_compression: "never",
+      image_upload_compression_policy: {
+        threshold_bytes: 1048576,
+        threshold_long_edge: 2560,
+        target_long_edge: 2048,
+        quality_percent: 82
+      }
+    },
+    room_url_previews: {}
+  },
+  persistence: { kind: "idle" }
 };
 
 describe("RoomInfoPanel", () => {
@@ -295,5 +328,87 @@ describe("RoomInfoPanel", () => {
     );
 
     expect(markup).toContain('disabled=""');
+  });
+});
+
+describe("RoomInfoPanel URL previews", () => {
+  test("renders the URL-preview section when settings and handler are supplied", () => {
+    const { getByRole } = render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        appSettings={baseAppSettings}
+        onUpdateSettings={() => undefined}
+      />
+    );
+
+    expect(
+      getByRole("switch", { name: "Enable link previews for this room" })
+    ).toBeDefined();
+  });
+
+  test("checks the toggle for an unencrypted room that falls back to the global setting", () => {
+    const { getByRole } = render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        appSettings={baseAppSettings}
+        onUpdateSettings={() => undefined}
+      />
+    );
+
+    const toggle = getByRole("switch", {
+      name: "Enable link previews for this room"
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(toggle.hasAttribute("disabled")).toBe(false);
+  });
+
+  test("unchecks and disables the toggle for encrypted rooms by default", () => {
+    const { getByRole, getByText } = render(
+      <RoomInfoPanel
+        room={{ ...baseRoom, is_encrypted: true }}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        appSettings={baseAppSettings}
+        onUpdateSettings={() => undefined}
+      />
+    );
+
+    const toggle = getByRole("switch", {
+      name: "Enable link previews for this room"
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.hasAttribute("disabled")).toBe(true);
+    expect(
+      getByText("Previews are disabled in encrypted rooms by default for privacy.")
+    ).toBeDefined();
+  });
+
+  test("dispatches a per-room override when the toggle is clicked", () => {
+    const onUpdateSettings = vi.fn();
+    const { getByRole } = render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        appSettings={baseAppSettings}
+        onUpdateSettings={onUpdateSettings}
+      />
+    );
+
+    const toggle = getByRole("switch", {
+      name: "Enable link previews for this room"
+    });
+    fireEvent.click(toggle);
+
+    expect(onUpdateSettings).toHaveBeenCalledTimes(1);
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      room_url_previews: {
+        "!room-alpha:example.invalid": false
+      }
+    });
   });
 });

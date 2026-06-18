@@ -34,22 +34,24 @@ use matrix_desktop_sdk::{MatrixClientSession, PersistableMatrixSession};
 use matrix_desktop_state::{
     AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage, AvatarThumbnailState,
     CrossSigningStatus, DeviceSessionSummary, E2eeRecoveryState, IdentityResetAuthType,
-    IdentityResetState, LoginRequest, OwnProfile, PresenceKind, RecoveryKeyDeliveryState,
-    RecoveryMethod, RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SessionInfo, TrustOperationFailureKind, VerificationCancelReason,
-    VerificationFlowState, VerificationTarget,
+    IdentityResetState, LoginRequest, OperationFailureKind, OwnProfile, PresenceKind,
+    RecoveryKeyDeliveryState, RecoveryMethod, RecoveryRequest, ScheduledSendCapability,
+    ScheduledSendHandle, ScheduledSendItem, SessionInfo, TrustOperationFailureKind,
+    VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
-    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, TimelineCommand,
+    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, ThreadsListCommand,
+    TimelineCommand,
 };
 use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
 };
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
+use crate::link_preview::LinkPreviewContext;
 use crate::room::{RoomActorHandle, RoomMessage};
 use crate::search::SearchActorHandle;
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
@@ -97,6 +99,7 @@ pub enum AccountMessage {
         timestamp_ms: u64,
     },
     SearchCommand(SearchCommand),
+    ThreadsListCommand(ThreadsListCommand),
     VerificationRequestProgress {
         request_id: RequestId,
         target: VerificationTarget,
@@ -201,10 +204,18 @@ pub struct AccountActor {
     /// TimelineManagerActor handle (Phase 5). Spawned once at actor creation;
     /// session reference is updated when a store-backed session is established.
     timeline_manager: TimelineManagerHandle,
+    /// Application data directory for cached preview images.
+    data_dir: std::path::PathBuf,
+    /// Latest link-preview policy snapshot from AppState, kept current so a
+    /// newly-created session-scoped timeline manager starts with the right policy.
+    link_preview_policy: LinkPreviewContext,
     /// SearchActor handle (Phase 6). Present only when a store-backed session
     /// exists. Created at the same time as SyncActor; stopped in the ordered
     /// shutdown between timelines and sync (canon Async rule 12 step 3).
     search_actor: Option<SearchActorHandle>,
+    /// ThreadsListActor handle. Present only while the threads list view is
+    /// open. Dropping the handle cancels the actor and its SDK subscriptions.
+    threads_list_actor: Option<crate::threads_list::ThreadsListActorHandle>,
     /// Recovery-state observer task for the active store-backed session.
     recovery_observer: Option<RecoveryStateObservation>,
     /// Pending SDK identity reset continuation, held only inside AccountActor.
@@ -238,15 +249,20 @@ impl AccountActor {
         store_actor: StoreActor,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
+        initial_link_preview_policy: LinkPreviewContext,
     ) -> AccountActorHandle {
         let (tx, command_rx) = mpsc::channel(64);
+        let data_dir = store_actor.data_dir().to_path_buf();
         // Spawn RoomActor once at AccountActor creation. It starts with no
         // session and waits for RoomMessage::SyncStarted.
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
         // Spawn TimelineManagerActor. It starts with no session; the session
         // is injected when a store-backed session is established.
-        let timeline_manager =
-            crate::timeline::TimelineManagerActor::spawn(action_tx.clone(), event_tx.clone());
+        let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
+            action_tx.clone(),
+            event_tx.clone(),
+            Some(data_dir.clone()),
+        );
         let actor = AccountActor {
             session: None,
             session_key_id: None,
@@ -258,7 +274,10 @@ impl AccountActor {
             sync_actor: None,
             room_actor,
             timeline_manager,
+            data_dir,
+            link_preview_policy: initial_link_preview_policy,
             search_actor: None,
+            threads_list_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
             device_session_ordinals: BTreeMap::new(),
@@ -343,6 +362,9 @@ impl AccountActor {
                 AccountMessage::SearchCommand(search_command) => {
                     self.route_search_command(search_command).await;
                 }
+                AccountMessage::ThreadsListCommand(threads_list_command) => {
+                    self.route_threads_list_command(threads_list_command).await;
+                }
                 AccountMessage::VerificationRequestProgress {
                     request_id,
                     target,
@@ -371,6 +393,7 @@ impl AccountActor {
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
         self.stop_timeline_actor().await;
+        self.stop_threads_list_actor().await;
         self.stop_search_actor().await;
         self.stop_room_actor().await;
         self.stop_sync_actor().await;
@@ -393,7 +416,15 @@ impl AccountActor {
     /// Route a TimelineCommand to the TimelineManagerActor.
     /// Session guard is enforced by AppActor before routing; AccountActor
     /// passes through directly to avoid double-gating.
-    async fn route_timeline_command(&self, command: TimelineCommand) {
+    async fn route_timeline_command(&mut self, command: TimelineCommand) {
+        if let TimelineCommand::BroadcastLinkPreviewPolicy {
+            global_enabled,
+            room_overrides,
+        } = &command
+        {
+            self.link_preview_policy.global_enabled = *global_enabled;
+            self.link_preview_policy.room_overrides = room_overrides.clone();
+        }
         let _ = self
             .timeline_manager
             .send(TimelineMessage::Command(command))
@@ -419,6 +450,57 @@ impl AccountActor {
                 self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
                     .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
+            }
+        }
+    }
+
+    /// Route a ThreadsListCommand to the ThreadsListActor. Spawns the actor
+    /// on `Open` when a session is present; drops it on `Close`.
+    async fn route_threads_list_command(&mut self, command: ThreadsListCommand) {
+        match command {
+            ThreadsListCommand::Open {
+                request_id,
+                room_id,
+            } => {
+                let Some(session) = self.session.clone() else {
+                    self.emit_threads_list_failed(request_id, room_id).await;
+                    self.emit_failure(request_id, CoreFailure::SessionRequired);
+                    return;
+                };
+                if self
+                    .threads_list_actor
+                    .as_ref()
+                    .map(|handle| handle.room_id() != room_id)
+                    .unwrap_or(false)
+                {
+                    self.threads_list_actor = None;
+                }
+                if self.threads_list_actor.is_none() {
+                    self.threads_list_actor = Some(crate::threads_list::ThreadsListActor::spawn(
+                        session,
+                        self.action_tx.clone(),
+                        self.event_tx.clone(),
+                        room_id.clone(),
+                    ));
+                }
+                if let Some(handle) = &self.threads_list_actor {
+                    let _ = handle.open(request_id, room_id).await;
+                }
+            }
+            ThreadsListCommand::Close { request_id } => {
+                if let Some(handle) = self.threads_list_actor.take() {
+                    let _ = handle.close(request_id).await;
+                }
+            }
+            ThreadsListCommand::Paginate {
+                request_id,
+                room_id,
+            } => {
+                if let Some(handle) = &self.threads_list_actor {
+                    if handle.room_id() == room_id {
+                        let _ = handle.paginate(request_id).await;
+                    }
+                }
             }
         }
     }
@@ -630,8 +712,19 @@ impl AccountActor {
             .await;
     }
 
+    async fn emit_threads_list_failed(&self, request_id: RequestId, room_id: String) {
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::ThreadsListFailed {
+                request_id: request_id.sequence,
+                room_id,
+                failure_kind: OperationFailureKind::Network,
+            }])
+            .await;
+    }
+
     async fn handle_open_timeline_at_timestamp(
-        &self,
+        &mut self,
         request_id: RequestId,
         room_id: String,
         timestamp_ms: u64,
@@ -694,6 +787,12 @@ impl AccountActor {
         if let Some(handle) = self.search_actor.take() {
             handle.shutdown().await;
         }
+    }
+
+    /// Ordered shutdown of the ThreadsListActor. Dropping the handle cancels
+    /// the actor and its SDK subscriptions.
+    async fn stop_threads_list_actor(&mut self) {
+        let _ = self.threads_list_actor.take();
     }
 
     /// Ordered shutdown of the TimelineManagerActor (step 2 of the shutdown
@@ -768,6 +867,8 @@ impl AccountActor {
             self.action_tx.clone(),
             self.event_tx.clone(),
             search_index_tx,
+            Some(self.data_dir.clone()),
+            self.link_preview_policy.clone(),
         );
 
         let handle = crate::sync::SyncActor::spawn(
@@ -4124,7 +4225,7 @@ mod tests {
 
         let (action_tx, mut action_rx) = mpsc::channel(16);
         let (event_tx, mut event_rx) = broadcast::channel(16);
-        let handle = AccountActor::spawn(store, action_tx, event_tx);
+        let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
 
         let request_id = RequestId {
             connection_id: crate::ids::RuntimeConnectionId(1),
@@ -4184,7 +4285,7 @@ mod tests {
         );
         let (action_tx, action_rx) = mpsc::channel(16);
         let (event_tx, event_rx) = broadcast::channel(16);
-        let handle = AccountActor::spawn(store, action_tx, event_tx);
+        let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
         (handle, action_rx, event_rx)
     }
 
@@ -4422,9 +4523,13 @@ mod tests {
         let (action_tx, mut action_rx) = mpsc::channel(16);
         let (event_tx, _) = broadcast::channel(16);
         let (self_tx, command_rx) = mpsc::channel(16);
+        let data_dir_path = store.data_dir().to_path_buf();
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
-        let timeline_manager =
-            crate::timeline::TimelineManagerActor::spawn(action_tx.clone(), event_tx.clone());
+        let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
+            action_tx.clone(),
+            event_tx.clone(),
+            Some(data_dir_path.clone()),
+        );
         let mut actor = AccountActor {
             session: None,
             session_key_id: Some(key_id.clone()),
@@ -4436,7 +4541,10 @@ mod tests {
             sync_actor: None,
             room_actor,
             timeline_manager,
+            data_dir: data_dir_path,
+            link_preview_policy: LinkPreviewContext::default(),
             search_actor: None,
+            threads_list_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
             device_session_ordinals: BTreeMap::new(),

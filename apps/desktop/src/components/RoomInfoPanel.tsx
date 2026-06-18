@@ -1,4 +1,4 @@
-import { Bell, ChevronRight, FileText, Settings, Users } from "lucide-react";
+import { Bell, ChevronRight, FileText, Link, Settings, Users } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { t } from "../i18n/messages";
@@ -13,41 +13,63 @@ import type {
   RoomNotificationSettings,
   RoomSettingChange,
   RoomSummary,
+  SettingsPatch,
+  SettingsState,
   SpaceSummary
 } from "../domain/types";
 
 export function RoomInfoPanel({
   currentUserId = null,
+  ignoredUserIds = [],
   room,
   roomManagement,
   roomNotificationSettings,
+  appSettings,
   spaces,
   onInvitePeople,
+  onIgnoreUser,
+  onUnignoreUser,
+  onReportUser,
   onModerateMember,
+  onOpenFiles,
   onSetLocalUserAlias,
   onSetRoomNotificationMode,
   onUpdateMemberRole,
-  onUpdateRoomSetting
+  onUpdateRoomSetting,
+  onUpdateSettings
 }: {
   currentUserId?: string | null;
+  ignoredUserIds?: string[];
   room: RoomSummary | null;
   roomManagement?: RoomManagementState;
   roomNotificationSettings: RoomNotificationSettings | undefined;
+  appSettings?: SettingsState;
   spaces: SpaceSummary[];
   onInvitePeople?: () => void;
+  onIgnoreUser?: (userId: string) => void;
+  onUnignoreUser?: (userId: string) => void;
+  onReportUser?: (userId: string) => void;
   onModerateMember?: (
     roomId: string,
     targetUserId: string,
     action: RoomModerationAction,
     reason: string | null
   ) => void;
+  onOpenFiles?: () => void;
   onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
   onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onUpdateMemberRole?: (roomId: string, targetUserId: string, powerLevel: number) => void;
+  onUpdateSettings?: (patch: SettingsPatch) => void;
 }) {
   const roomId = room?.room_id ?? "";
   const roomName = room?.display_label ?? "";
+  const isEncrypted = room?.is_encrypted ?? false;
+  const roomOverride = appSettings?.values.room_url_previews[roomId];
+  const roomUrlPreviewsEnabled = isEncrypted
+    ? roomOverride === true
+    : roomOverride !== false;
+  const canToggleRoomUrlPreviews = !isEncrypted || roomUrlPreviewsEnabled;
   const parentSpaces = room
     ? spaces.filter((space) => room.parent_space_ids.includes(space.space_id))
     : [];
@@ -151,6 +173,41 @@ export function RoomInfoPanel({
           <DetailRow label={t("room.dmList")} value={room.is_dm ? t("room.globalDmList") : t("room.roomScoped")} />
         </div>
       </section>
+
+      {appSettings && onUpdateSettings ? (
+        <section className="settings-section" aria-label={t("settings.urlPreviews")}>
+          <h3>{t("settings.urlPreviews")}</h3>
+          <button
+            className="settings-toggle-row"
+            type="button"
+            role="switch"
+            aria-checked={roomUrlPreviewsEnabled}
+            disabled={!canToggleRoomUrlPreviews}
+            onClick={() => {
+              onUpdateSettings({
+                room_url_previews: {
+                  [roomId]: !roomUrlPreviewsEnabled
+                }
+              });
+            }}
+          >
+            <span className="settings-toggle-copy">
+              <span className="settings-toggle-label">
+                <Link size={15} aria-hidden="true" />
+                <span>{t("settings.urlPreviewsEnabledForRoom")}</span>
+              </span>
+            </span>
+            <span className="settings-switch-track" aria-hidden="true">
+              <span className="settings-switch-thumb" />
+            </span>
+          </button>
+          {isEncrypted ? (
+            <p className="settings-notice" role="note">
+              {t("settings.urlPreviewsEncryptedNotice")}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="settings-section" aria-label={t("room.notifications")}>
         <h3>{t("room.notifications")}</h3>
@@ -465,6 +522,36 @@ export function RoomInfoPanel({
                       onModerateMember?.(room.room_id, profile.user_id, "unban", null)
                     }
                   />
+                  {ignoredUserIds.includes(profile.user_id) ? (
+                    <button
+                      className="profile-settings-action room-member-action"
+                      type="button"
+                      aria-label={t("context.unignoreUser")}
+                      disabled={!onUnignoreUser}
+                      onClick={() => onUnignoreUser?.(profile.user_id)}
+                    >
+                      {t("context.unignoreUser")}
+                    </button>
+                  ) : (
+                    <button
+                      className="profile-settings-action room-member-action"
+                      type="button"
+                      aria-label={t("context.ignoreUser")}
+                      disabled={!onIgnoreUser}
+                      onClick={() => onIgnoreUser?.(profile.user_id)}
+                    >
+                      {t("context.ignoreUser")}
+                    </button>
+                  )}
+                  <button
+                    className="profile-settings-action room-member-action"
+                    type="button"
+                    aria-label={t("context.reportUser")}
+                    disabled={!onReportUser}
+                    onClick={() => onReportUser?.(profile.user_id)}
+                  >
+                    {t("context.reportUser")}
+                  </button>
                 </span>
               </li>
             ))}
@@ -506,7 +593,7 @@ export function RoomInfoPanel({
         entries={[
           { icon: <Users size={16} />, label: t("room.invitePeople"), onClick: onInvitePeople },
           { icon: <Users size={16} />, label: t("room.people") },
-          { icon: <FileText size={16} />, label: t("room.files") },
+          { icon: <FileText size={16} />, label: t("room.files"), onClick: onOpenFiles },
           { icon: <Bell size={16} />, label: t("room.notifications") },
           { icon: <Settings size={16} />, label: t("room.roomSettings") }
         ]}

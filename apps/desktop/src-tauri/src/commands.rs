@@ -23,13 +23,13 @@ use matrix_desktop_core::{
     UploadMediaRequest, UploadMediaThumbnail,
 };
 use matrix_desktop_state::{
-    ActivityMarkReadTarget, ActivityTab, AuthSecret, ComposerKeyEvent, ComposerResolvedAction,
-    ComposerResolverContext, ComposerSurface, DirectoryQuery, FocusedContextState,
-    IdentityResetAuthRequest, ImageUploadCompressionMode, LoginRequest, MentionIntent,
-    PresenceKind, RecoveryRequest, RoomListFilter, RoomModerationAction, RoomNotificationMode,
-    RoomSettingChange, RoomTagKind, SessionInfo, SettingsPatch, StagedUploadCompressionChoice,
-    StagedUploadItem,
-    StagedUploadKind, VerificationCancelReason, build_formatted_message_draft,
+    ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
+    ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
+    DirectoryQuery, FilesViewScope, FocusedContextState, IdentityResetAuthRequest,
+    ImageUploadCompressionMode, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest,
+    RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange, RoomTagKind,
+    SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    VerificationCancelReason, build_formatted_message_draft,
 };
 use serde::Deserialize;
 #[cfg(any(debug_assertions, test))]
@@ -1597,6 +1597,42 @@ pub async fn load_message_source(
 }
 
 #[tauri::command]
+pub async fn load_link_previews(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) =
+        build_load_link_previews_command(request_id, account_key, room_id, event_id)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn hide_link_preview(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    if let Some(command) =
+        build_hide_link_preview_command(request_id, account_key, room_id, event_id)
+    {
+        submit_core_command(state.inner(), command).await?;
+    }
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn forward_message(
     room_id: String,
     source_event_id: String,
@@ -1838,6 +1874,90 @@ pub async fn set_local_user_alias(
     submit_core_command(
         state.inner(),
         build_set_local_user_alias_command(request_id, user_id, alias),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn ignore_user(
+    user_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_ignore_user_command(request_id, user_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn unignore_user(
+    user_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_unignore_user_command(request_id, user_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn report_user(
+    user_id: String,
+    reason: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_report_user_command(request_id, user_id, optional_non_blank(reason)),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn report_content(
+    room_id: String,
+    event_id: String,
+    reason: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_report_content_command(request_id, room_id, event_id, optional_non_blank(reason)),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn report_room(
+    room_id: String,
+    reason: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_report_room_command(request_id, room_id, optional_non_blank(reason)),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -2166,6 +2286,78 @@ pub async fn mark_activity_read(
     submit_core_command(
         state.inner(),
         build_mark_activity_read_command(request_id, target),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn open_files_view(
+    scope: FilesViewScope,
+    filter: AttachmentFilter,
+    sort: AttachmentSort,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_open_files_view_command(request_id, scope, filter, sort),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn close_files_view(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_close_files_view_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn open_threads_list(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_open_threads_list_command(request_id, room_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn close_threads_list(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_close_threads_list_command(request_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn paginate_threads_list(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_paginate_threads_list_command(request_id, room_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -2810,6 +3002,52 @@ pub(crate) fn build_mark_activity_read_command(
     CoreCommand::App(AppCommand::MarkActivityRead { request_id, target })
 }
 
+pub(crate) fn build_open_files_view_command(
+    request_id: matrix_desktop_core::RequestId,
+    scope: FilesViewScope,
+    filter: AttachmentFilter,
+    sort: AttachmentSort,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::OpenFilesView {
+        request_id,
+        scope,
+        filter,
+        sort,
+    })
+}
+
+pub(crate) fn build_close_files_view_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::CloseFilesView { request_id })
+}
+
+pub(crate) fn build_open_threads_list_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::OpenThreadsList {
+        request_id,
+        room_id,
+    })
+}
+
+pub(crate) fn build_close_threads_list_command(
+    request_id: matrix_desktop_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::CloseThreadsList { request_id })
+}
+
+pub(crate) fn build_paginate_threads_list_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::PaginateThreadsList {
+        request_id,
+        room_id,
+    })
+}
+
 pub(crate) fn build_bootstrap_cross_signing_command(
     request_id: matrix_desktop_core::RequestId,
     auth: Option<AuthSecret>,
@@ -3397,6 +3635,38 @@ pub(crate) fn build_load_message_source_command(
     }))
 }
 
+pub(crate) fn build_load_link_previews_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+) -> Option<CoreCommand> {
+    if event_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::LoadLinkPreviews {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+    }))
+}
+
+pub(crate) fn build_hide_link_preview_command(
+    request_id: matrix_desktop_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+) -> Option<CoreCommand> {
+    if event_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::HideLinkPreview {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+    }))
+}
+
 pub(crate) fn build_forward_message_command(
     request_id: matrix_desktop_core::RequestId,
     account_key: AccountKey,
@@ -3584,6 +3854,64 @@ pub(crate) fn build_set_local_user_alias_command(
         request_id,
         user_id,
         alias,
+    })
+}
+
+pub(crate) fn build_ignore_user_command(
+    request_id: matrix_desktop_core::RequestId,
+    user_id: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::IgnoreUser {
+        request_id,
+        user_id,
+    })
+}
+
+pub(crate) fn build_unignore_user_command(
+    request_id: matrix_desktop_core::RequestId,
+    user_id: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::UnignoreUser {
+        request_id,
+        user_id,
+    })
+}
+
+pub(crate) fn build_report_user_command(
+    request_id: matrix_desktop_core::RequestId,
+    user_id: String,
+    reason: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ReportUser {
+        request_id,
+        user_id,
+        reason: reason.unwrap_or_default(),
+    })
+}
+
+pub(crate) fn build_report_content_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    event_id: String,
+    reason: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::ReportContent {
+        request_id,
+        room_id,
+        event_id,
+        reason,
+    })
+}
+
+pub(crate) fn build_report_room_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    reason: Option<String>,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::ReportRoom {
+        request_id,
+        room_id,
+        reason: reason.unwrap_or_default(),
     })
 }
 
@@ -4228,20 +4556,23 @@ mod tests {
         build_bootstrap_cross_signing_command, build_bootstrap_secure_backup_command,
         build_cancel_scheduled_send_command, build_cancel_send_command,
         build_cancel_verification_command, build_change_secure_backup_passphrase_command,
-        build_close_activity_command, build_confirm_sas_verification_command,
-        build_create_room_command, build_create_space_command, build_decline_invite_command,
-        build_discover_login_command, build_download_media_command, build_edit_message_command,
-        build_enable_key_backup_command, build_export_room_keys_command, build_forget_room_command,
-        build_forward_message_command, build_import_room_keys_command, build_invite_user_command,
-        build_join_directory_room_command, build_leave_room_command,
-        build_load_message_source_command, build_load_room_settings_command, build_logout_command,
-        build_mark_activity_read_command, build_moderate_room_member_command,
-        build_observe_timeline_viewport_command, build_open_activity_command,
+        build_close_activity_command, build_close_files_view_command,
+        build_confirm_sas_verification_command, build_create_room_command,
+        build_create_space_command, build_decline_invite_command, build_discover_login_command,
+        build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
+        build_export_room_keys_command, build_forget_room_command, build_forward_message_command,
+        build_hide_link_preview_command, build_ignore_user_command, build_import_room_keys_command,
+        build_invite_user_command, build_join_directory_room_command, build_leave_room_command,
+        build_load_link_previews_command, build_load_message_source_command,
+        build_load_room_settings_command, build_logout_command, build_mark_activity_read_command,
+        build_moderate_room_member_command, build_observe_timeline_viewport_command,
+        build_open_activity_command, build_open_files_view_command,
         build_open_timeline_at_timestamp_command, build_paginate_activity_command,
         build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
+        build_report_content_command, build_report_room_command, build_report_user_command,
         build_reschedule_scheduled_send_command, build_reset_identity_command,
         build_reset_local_data_command, build_restart_sync_command, build_retry_send_command,
         build_schedule_send_command, build_select_room_command, build_select_space_command,
@@ -4255,10 +4586,11 @@ mod tests {
         build_submit_identity_reset_password_command, build_submit_login_command,
         build_submit_recovery_command, build_submit_search_command,
         build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
-        build_switch_account_command, build_toggle_reaction_command, build_unpin_event_command,
-        build_update_room_member_role_command, build_update_room_setting_command,
-        build_update_settings_command, build_upload_media_command, parse_qa_control_pipe_line,
-        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
+        build_switch_account_command, build_toggle_reaction_command, build_unignore_user_command,
+        build_unpin_event_command, build_update_room_member_role_command,
+        build_update_room_setting_command, build_update_settings_command,
+        build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
+        qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
     use matrix_desktop_state::{
@@ -4351,6 +4683,7 @@ mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                is_encrypted: false,
             },
             RoomSummary {
                 room_id: "!room2:example.org".to_owned(),
@@ -4367,6 +4700,7 @@ mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                is_encrypted: false,
             },
         ];
 
@@ -5397,6 +5731,132 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_ignore_user_command(fake_request_id(60), "@ignored:example.invalid".to_owned())
+        {
+            CoreCommand::Account(AccountCommand::IgnoreUser {
+                request_id,
+                user_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(60));
+                assert_eq!(user_id, "@ignored:example.invalid");
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Account(AccountCommand::IgnoreUser {
+                        request_id,
+                        user_id
+                    })
+                );
+                assert!(!debug.contains("@ignored:example.invalid"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_unignore_user_command(
+            fake_request_id(61),
+            "@ignored:example.invalid".to_owned(),
+        ) {
+            CoreCommand::Account(AccountCommand::UnignoreUser {
+                request_id,
+                user_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(61));
+                assert_eq!(user_id, "@ignored:example.invalid");
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Account(AccountCommand::UnignoreUser {
+                        request_id,
+                        user_id
+                    })
+                );
+                assert!(!debug.contains("@ignored:example.invalid"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_report_user_command(
+            fake_request_id(62),
+            "@reported:example.invalid".to_owned(),
+            Some("spam".to_owned()),
+        ) {
+            CoreCommand::Account(AccountCommand::ReportUser {
+                request_id,
+                user_id,
+                reason,
+            }) => {
+                assert_eq!(request_id, fake_request_id(62));
+                assert_eq!(user_id, "@reported:example.invalid");
+                assert_eq!(reason, "spam");
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Account(AccountCommand::ReportUser {
+                        request_id,
+                        user_id,
+                        reason: reason.clone(),
+                    })
+                );
+                assert!(!debug.contains("@reported:example.invalid"), "{debug}");
+                assert!(!debug.contains("spam"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_report_content_command(
+            fake_request_id(63),
+            room_id.clone(),
+            "$reported-event".to_owned(),
+            Some("abuse".to_owned()),
+        ) {
+            CoreCommand::Room(RoomCommand::ReportContent {
+                request_id,
+                room_id: route_room_id,
+                event_id,
+                reason,
+            }) => {
+                assert_eq!(request_id, fake_request_id(63));
+                assert_eq!(route_room_id, room_id);
+                assert_eq!(event_id, "$reported-event");
+                assert_eq!(reason.as_deref(), Some("abuse"));
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Room(RoomCommand::ReportContent {
+                        request_id,
+                        room_id: route_room_id.clone(),
+                        event_id: event_id.clone(),
+                        reason: reason.clone(),
+                    })
+                );
+                assert!(!debug.contains("$reported-event"), "{debug}");
+                assert!(!debug.contains("abuse"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_report_room_command(
+            fake_request_id(64),
+            room_id.clone(),
+            Some("spam room".to_owned()),
+        ) {
+            CoreCommand::Room(RoomCommand::ReportRoom {
+                request_id,
+                room_id: route_room_id,
+                reason,
+            }) => {
+                assert_eq!(request_id, fake_request_id(64));
+                assert_eq!(route_room_id, room_id);
+                assert_eq!(reason, "spam room");
+                let debug = format!(
+                    "{:?}",
+                    CoreCommand::Room(RoomCommand::ReportRoom {
+                        request_id,
+                        room_id: route_room_id.clone(),
+                        reason: reason.clone(),
+                    })
+                );
+                assert!(!debug.contains("spam room"), "{debug}");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_set_avatar_command(
             fake_request_id(33),
             "image/png".to_owned(),
@@ -5922,6 +6382,43 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        let files_scope = matrix_desktop_state::FilesViewScope::Room {
+            room_id: "!room:example.org".to_owned(),
+        };
+        let files_filter = matrix_desktop_state::AttachmentFilter {
+            kinds: vec![matrix_desktop_state::AttachmentKind::Image],
+            filename_query: Some("cat".to_owned()),
+        };
+        match build_open_files_view_command(
+            fake_request_id(65),
+            files_scope.clone(),
+            files_filter.clone(),
+            matrix_desktop_state::AttachmentSort::Filename,
+        ) {
+            CoreCommand::App(AppCommand::OpenFilesView {
+                request_id,
+                scope,
+                filter,
+                sort,
+            }) => {
+                assert_eq!(request_id, fake_request_id(65));
+                assert_eq!(scope, files_scope);
+                assert_eq!(filter, files_filter);
+                assert!(matches!(
+                    sort,
+                    matrix_desktop_state::AttachmentSort::Filename
+                ));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_close_files_view_command(fake_request_id(66)) {
+            CoreCommand::App(AppCommand::CloseFilesView { request_id }) => {
+                assert_eq!(request_id, fake_request_id(66));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         match build_update_room_member_role_command(
             fake_request_id(37),
             "!room:example.org".to_owned(),
@@ -5941,6 +6438,46 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn load_link_previews_tauri_command_contract_is_present() {
+        let request_id = matrix_desktop_core::RequestId {
+            connection_id: matrix_desktop_core::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let command = build_load_link_previews_command(
+            request_id,
+            AccountKey("@u:example.test".to_owned()),
+            "!room:example.test".to_owned(),
+            "$event:example.test".to_owned(),
+        );
+        assert!(matches!(
+            command,
+            Some(CoreCommand::Timeline(
+                TimelineCommand::LoadLinkPreviews { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn hide_link_preview_tauri_command_contract_is_present() {
+        let request_id = matrix_desktop_core::RequestId {
+            connection_id: matrix_desktop_core::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let command = build_hide_link_preview_command(
+            request_id,
+            AccountKey("@u:example.test".to_owned()),
+            "!room:example.test".to_owned(),
+            "$event:example.test".to_owned(),
+        );
+        assert!(matches!(
+            command,
+            Some(CoreCommand::Timeline(
+                TimelineCommand::HideLinkPreview { .. }
+            ))
+        ));
     }
 
     #[test]
@@ -6209,6 +6746,16 @@ mod tests {
                 "pub async fn mark_activity_read",
                 "build_mark_activity_read_command",
                 "commands::mark_activity_read",
+            ),
+            (
+                "pub async fn open_files_view",
+                "build_open_files_view_command",
+                "commands::open_files_view",
+            ),
+            (
+                "pub async fn close_files_view",
+                "build_close_files_view_command",
+                "commands::close_files_view",
             ),
         ] {
             assert!(

@@ -749,6 +749,10 @@ describe("ContextualRightPanel", () => {
         snapshot={snapshot}
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -818,11 +822,17 @@ describe("ContextualRightPanel", () => {
             unpinEvent: async () => undefined,
             downloadMedia: async () => undefined,
             loadMessageSource: async () => undefined,
-            forwardMessage: async () => undefined
+            forwardMessage: async () => undefined,
+            loadLinkPreviews: async () => undefined,
+            hideLinkPreview: async () => undefined
           } as const
         }
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -885,11 +895,17 @@ describe("ContextualRightPanel", () => {
             unpinEvent: async () => undefined,
             downloadMedia: async () => undefined,
             loadMessageSource: async () => undefined,
-            forwardMessage: async () => undefined
+            forwardMessage: async () => undefined,
+            loadLinkPreviews: async () => undefined,
+            hideLinkPreview: async () => undefined
           } as const
         }
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -966,11 +982,17 @@ describe("ContextualRightPanel", () => {
             unpinEvent: async () => undefined,
             downloadMedia: async () => undefined,
             loadMessageSource: async () => undefined,
-            forwardMessage: async () => undefined
+            forwardMessage: async () => undefined,
+            loadLinkPreviews: async () => undefined,
+            hideLinkPreview: async () => undefined
           } as const
         }
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -1021,6 +1043,10 @@ describe("ContextualRightPanel", () => {
         snapshot={snapshot}
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -1071,6 +1097,10 @@ describe("ContextualRightPanel", () => {
         snapshot={snapshot}
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
@@ -1131,6 +1161,10 @@ describe("ContextualRightPanel", () => {
         snapshot={snapshot}
         onClosePanel={() => undefined}
         onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
         onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}

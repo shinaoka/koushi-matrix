@@ -21,7 +21,10 @@ import type {
   SearchScopeKind,
   SettingsPatch,
   StagedUploadCompressionChoice,
-  UploadStagingRequestItem
+  UploadStagingRequestItem,
+  AttachmentFilter,
+  AttachmentSort,
+  FilesViewScope
 } from "../domain/types";
 
 export function createDesktopApi(): DesktopApi {
@@ -337,6 +340,30 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("set_local_user_alias", { userId, alias });
   }
 
+  async ignoreUser(userId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("ignore_user", { userId });
+  }
+
+  async unignoreUser(userId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("unignore_user", { userId });
+  }
+
+  async reportUser(userId: string, reason: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("report_user", { userId, reason });
+  }
+
+  async reportContent(
+    roomId: string,
+    eventId: string,
+    reason: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("report_content", { roomId, eventId, reason });
+  }
+
+  async reportRoom(roomId: string, reason: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("report_room", { roomId, reason });
+  }
+
   async setAvatar(mimeType: string, bytes: number[]): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("set_avatar", { mimeType, bytes });
   }
@@ -363,6 +390,14 @@ class TauriDesktopApi implements DesktopApi {
       sourceEventId,
       destinationRoomId
     });
+  }
+
+  async loadLinkPreviews(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("load_link_previews", { roomId, eventId });
+  }
+
+  async hideLinkPreview(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("hide_link_preview", { roomId, eventId });
   }
 
   async leaveRoom(roomId: string): Promise<DesktopSnapshot> {
@@ -463,6 +498,30 @@ class TauriDesktopApi implements DesktopApi {
 
   async closeThread(): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("close_thread");
+  }
+
+  async openThreadsList(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("open_threads_list", { roomId });
+  }
+
+  async closeThreadsList(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("close_threads_list");
+  }
+
+  async openFilesView(
+    scope: FilesViewScope,
+    filter: AttachmentFilter,
+    sort: AttachmentSort
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("open_files_view", { scope, filter, sort });
+  }
+
+  async closeFilesView(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("close_files_view");
+  }
+
+  async paginateThreadsList(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("paginate_threads_list", { roomId });
   }
 
   async setThreadComposerDraft(
