@@ -116,7 +116,10 @@ function makeThreadItem(index: number, rootEventId = "$seed-event:example.invali
 function makeSendQueueItem(
   transactionId: string,
   body: string,
-  sendState: { kind: "sending" } | { kind: "notSent"; reason: "recoverable" | "unrecoverable" }
+  sendState:
+    | { kind: "sending" }
+    | { kind: "notSent"; reason: "recoverable" | "unrecoverable" }
+    | { kind: "cancelled" }
 ) {
   return {
     id: { Transaction: { transaction_id: transactionId } },
@@ -2495,6 +2498,18 @@ test("send queue rows dispatch retry and cancel commands from Rust-owned send st
       roomId: HARNESS_ROOM_ID,
       transactionId: "txn-sending"
     });
+});
+
+test("cancelled send queue row renders the cancelled state label", async ({ page }) => {
+  await gotoReadyShell(page);
+  const cancelled = makeSendQueueItem("txn-cancelled", "Synthetic cancelled send", {
+    kind: "cancelled"
+  });
+  await seedTimelineItems(page, [cancelled]);
+
+  const row = page.locator('[data-item-id="txn:txn-cancelled"]');
+  await expect(row).toHaveAttribute("data-send-state", "cancelled");
+  await expect(row.locator('[data-send-state="cancelled"]')).toHaveText("Cancelled");
 });
 
 test("send queue room bar resends failed transactions in timeline order", async ({ page }) => {
