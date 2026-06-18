@@ -42,6 +42,7 @@ const checks = [
   "scenario live_signals",
   "scenario thread",
   "scenario edit_redact_search",
+  "scenario search_crawler",
   "scenario scheduled_send",
   "scenario send_queue",
   "scenario restore_cleanup",

@@ -77,8 +77,12 @@ async fn run_history_crawl(
     // Notify the SearchActor that this crawl is done so it can clean up
     // `crawl_cancels` and, if it completed successfully, record the room in
     // `completed_rooms` to prevent duplicate auto-start crawls.
+    // Use `send` (not `try_send`) so CrawlFinished is reliably delivered:
+    // a dropped state-machine transition is prohibited by the repository
+    // reliability rules (REPOSITORY_RULES L124-128).
     let _ = actor_tx
-        .try_send(SearchActorMessage::CrawlFinished { room_id, completed });
+        .send(SearchActorMessage::CrawlFinished { room_id, completed })
+        .await;
 }
 
 /// Core crawl logic.  Returns `true` if the room history was fully crawled

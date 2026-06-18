@@ -248,6 +248,12 @@ pub struct AccountActor {
     incoming_verification_observer: Option<IncomingVerificationObservation>,
     /// Synthetic flow id sequence for SDK-originated verification requests.
     next_incoming_verification_sequence: u64,
+    /// Last `NotifySearchCrawlerRoomsAvailable` payload received before the
+    /// `SearchActor` was spawned.  Replayed into the actor immediately after
+    /// it is created so rooms that were already known to the reducer at
+    /// session-restore time are not missed by the auto-start logic.
+    pending_crawler_notification:
+        Option<(Vec<String>, matrix_desktop_state::SearchCrawlerSettings)>,
 }
 
 impl AccountActor {
@@ -294,6 +300,7 @@ impl AccountActor {
             sas_verification_observer: None,
             incoming_verification_observer: None,
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
+            pending_crawler_notification: None,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -371,6 +378,13 @@ impl AccountActor {
                 AccountMessage::NotifySearchCrawlerRoomsAvailable { room_ids, settings } => {
                     if let Some(handle) = &self.search_actor {
                         handle.notify_rooms_available(room_ids, settings);
+                    } else {
+                        // Buffer the notification so it can be replayed once the
+                        // SearchActor is spawned (e.g., a RoomListUpdated fires
+                        // between session establishment and actor creation at
+                        // session restore). Keep only the latest; the actor
+                        // deduplicates idempotently.
+                        self.pending_crawler_notification = Some((room_ids, settings));
                     }
                 }
                 AccountMessage::ThreadsListCommand(threads_list_command) => {
@@ -799,6 +813,9 @@ impl AccountActor {
     /// Ordered shutdown of the SearchActor (step 3 of the shutdown sequence,
     /// after timelines and before sync — canon Async rule 12 step 3).
     async fn stop_search_actor(&mut self) {
+        // Clear any buffered notification so it is not replayed for the next
+        // session after logout or account switch.
+        self.pending_crawler_notification = None;
         if let Some(handle) = self.search_actor.take() {
             handle.shutdown().await;
         }
@@ -871,6 +888,13 @@ impl AccountActor {
             self.event_tx.clone(),
         );
         let search_index_tx = search_handle.index_sender();
+
+        // Replay any notification that arrived before the actor was ready so
+        // rooms already known to the reducer at session-restore time are not
+        // missed by the auto-start logic (AGENTS.md Task 4).
+        if let Some((room_ids, settings)) = self.pending_crawler_notification.take() {
+            search_handle.notify_rooms_available(room_ids, settings);
+        }
         self.search_actor = Some(search_handle);
 
         // Replace the TimelineManagerActor with one holding the current session
@@ -4570,6 +4594,7 @@ mod tests {
             sas_verification_observer: None,
             incoming_verification_observer: None,
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
+            pending_crawler_notification: None,
         };
         let request_id = test_request_id();
 

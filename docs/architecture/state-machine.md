@@ -2102,6 +2102,67 @@ room timeline. It should avoid implying that search results are a complete
 chronological timeline unless the backend explicitly provides enough surrounding
 context and replacement/redaction state to render that context safely.
 
+## Search History Crawler
+
+The crawler maintains a per-room state machine inside
+`AppState.search_crawler.rooms: BTreeMap<room_id, SearchCrawlerRoomState>`.
+Each room progresses independently; rooms absent from the map are implicitly
+`Idle`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Running : HistoryCrawlStarted\n(actor auto-start or explicit StartHistoryCrawl)
+    Running --> Running : HistoryCrawlProgress\n(processed / indexed updated)
+    Running --> Completed : HistoryCrawlCompleted
+    Running --> Failed : HistoryCrawlFailed
+    Completed --> Idle : content-setting toggle\n(include_media_captions or\ninclude_filenames changed)
+    Failed --> Running : HistoryCrawlStarted\n(retry)
+```
+
+### Guards and lifecycle
+
+- **Auto-start (idempotent)**: `RoomListUpdated` emits
+  `AppEffect::NotifySearchCrawlerRoomsAvailable` with all current joined rooms
+  whenever `speed != Paused`. The `SearchActor` skips rooms already in
+  `crawl_cancels` (Running) or `completed_rooms` (Completed). The actor is
+  responsible for deduplication; the reducer emits on every update.
+- **Paused → active**: When `SettingsUpdateRequested` changes speed from
+  `Paused` to any active value, the reducer emits
+  `NotifySearchCrawlerRoomsAvailable` with all known rooms so previously-paused
+  rooms are enqueued. This is the only trigger that re-enqueues all rooms on a
+  speed change.
+- **Pure speed change**: Changing speed between two active values (e.g.
+  `Standard → Slow`) does NOT invalidate `Completed` rooms and does NOT emit
+  `NotifySearchCrawlerRoomsAvailable`. No `SearchCrawlerChanged` event is
+  emitted for a pure speed change.
+- **Content-setting toggle**: Changing `include_media_captions` or
+  `include_filenames` resets all `Completed` rooms to `Idle` and emits
+  `SearchCrawlerChanged`. Running rooms are not interrupted; they will re-crawl
+  when their current crawl ends and they are re-queued by the next
+  `NotifySearchCrawlerRoomsAvailable`.
+- **Reliable delivery**: `CrawlFinished` is delivered from the crawler task to
+  the `SearchActor` via `async send` (not `try_send`) so the state-machine
+  transition is never silently dropped (REPOSITORY_RULES reliable-delivery
+  rule).
+- **Restore gap**: A `NotifySearchCrawlerRoomsAvailable` that arrives before
+  the `SearchActor` is spawned (e.g. `RoomListUpdated` fires between session
+  establishment and `SearchActor` creation at restore time) is buffered in
+  `AccountActor.pending_crawler_notification` and replayed immediately after
+  the actor is created.
+- **Failure kinds**: `Failed` carries only a coarse `SearchCrawlerFailureKind`
+  (`RoomNotFound | Sdk | Decryption | IndexUnavailable`). Raw SDK error text,
+  room IDs, event IDs, and message bodies never appear in the state machine,
+  logs, or QA output.
+- **No attachment bytes**: The crawler indexes body text, captions (if
+  `include_media_captions`), and filenames (if `include_filenames`). It never
+  downloads attachment binary content. Media events produce only
+  `AttachmentDocument` metadata; blob bytes remain out of scope.
+- **Shutdown**: Crawl tasks hold an `Arc<AtomicBool>` cancel flag. On actor
+  shutdown, all flags are set via `StopHistoryCrawl` before the actor loop
+  exits. Completed rooms are NOT persisted across restarts; the actor uses an
+  in-memory `completed_rooms: HashSet<String>` seeded fresh each session.
+
 ## Appearance / Theme Ownership
 
 Theme *appearance* is split deliberately:
