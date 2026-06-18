@@ -7351,13 +7351,8 @@ async fn run_link_preview_stage(
         wait_for_send_completed(conn_a, send_id, key_a, "link preview send").await?;
 
     // 2. Wait for conn_b to see the message and verify a pending preview.
-    let item = wait_for_item_with_body(
-        conn_b,
-        key_b,
-        URL_MESSAGE_BODY,
-        "B sees URL message",
-    )
-    .await?;
+    let item =
+        wait_for_item_with_body(conn_b, key_b, URL_MESSAGE_BODY, "B sees URL message").await?;
     let event_id = match &item.id {
         TimelineItemId::Event { event_id } => event_id.clone(),
         _ => return Err("link preview item was not event-backed".to_owned()),
@@ -7437,6 +7432,24 @@ async fn run_link_preview_stage(
         .map_err(|e| format!("submit global preview enable: {e}"))?;
     wait_for_settings_persisted(conn_b, settings_id, "global preview enable").await?;
 
+    let reenabled_item = wait_for_item_with_body(
+        conn_b,
+        key_b,
+        URL_MESSAGE_BODY,
+        "B sees message after global re-enable",
+    )
+    .await?;
+    let reenabled_previews = reenabled_item
+        .link_previews
+        .as_ref()
+        .ok_or("missing link_previews after global re-enable")?;
+    if reenabled_previews.len() != 1
+        || reenabled_previews[0].url != URL_EXTRACTED
+        || !matches!(reenabled_previews[0].state, LinkPreviewState::Pending)
+    {
+        return Err("global re-enable did not restore the pending link preview".to_owned());
+    }
+
     // 5. Send HideLinkPreview for the event and verify the message's previews
     //    become an empty list.
     let hide_id = conn_b.next_request_id();
@@ -7449,13 +7462,9 @@ async fn run_link_preview_stage(
         .await
         .map_err(|e| format!("submit hide link preview: {e}"))?;
 
-    let hidden_item = wait_for_item_with_body(
-        conn_b,
-        key_b,
-        URL_MESSAGE_BODY,
-        "B sees message after hide",
-    )
-    .await?;
+    let hidden_item =
+        wait_for_item_with_body(conn_b, key_b, URL_MESSAGE_BODY, "B sees message after hide")
+            .await?;
     if hidden_item.link_previews.as_ref() != Some(&Vec::new()) {
         return Err("hide link preview did not produce empty preview list".to_owned());
     }
@@ -7504,13 +7513,7 @@ async fn run_link_preview_stage(
         }))
         .await
         .map_err(|e| format!("submit encrypted room URL message: {e}"))?;
-    wait_for_send_completed(
-        conn_a,
-        enc_send_id,
-        &enc_key_a,
-        "encrypted room URL send",
-    )
-    .await?;
+    wait_for_send_completed(conn_a, enc_send_id, &enc_key_a, "encrypted room URL send").await?;
 
     let enc_item = wait_for_item_with_body(
         conn_a,
