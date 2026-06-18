@@ -23,6 +23,8 @@ pub struct AppState {
     #[serde(default)]
     pub qr_login: QrLoginState,
     pub settings: SettingsState,
+    #[serde(default)]
+    pub link_preview_settings: LinkPreviewSettingsState,
     pub profile: ProfileState,
     pub sync: SyncState,
     #[serde(default)]
@@ -74,6 +76,7 @@ impl Default for AppState {
             soft_logout_reauth: SoftLogoutReauthState::Idle,
             qr_login: QrLoginState::Idle,
             settings: SettingsState::default(),
+            link_preview_settings: LinkPreviewSettingsState::default(),
             profile: ProfileState::default(),
             sync: SyncState::Stopped,
             sync_mode: SyncMode::Unsupported,
@@ -109,6 +112,31 @@ impl Default for AppState {
     }
 }
 
+pub type RoomUrlPreviews = BTreeMap<String, bool>;
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LinkPreviewSettingsState {
+    #[serde(default)]
+    pub room_overrides: RoomUrlPreviews,
+}
+
+impl Default for LinkPreviewSettingsState {
+    fn default() -> Self {
+        Self {
+            room_overrides: RoomUrlPreviews::new(),
+        }
+    }
+}
+
+impl fmt::Debug for LinkPreviewSettingsState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinkPreviewSettingsState")
+            .field("room_override_count", &self.room_overrides.len())
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SettingsState {
     pub values: SettingsValues,
@@ -124,8 +152,6 @@ impl Default for SettingsState {
     }
 }
 
-pub type RoomUrlPreviews = BTreeMap<String, bool>;
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SettingsValues {
     pub locale: LocaleSettings,
@@ -138,8 +164,6 @@ pub struct SettingsValues {
     pub display: DisplaySettings,
     #[serde(default)]
     pub media: MediaSettings,
-    #[serde(default)]
-    pub room_url_previews: RoomUrlPreviews,
 }
 
 impl SettingsValues {
@@ -165,15 +189,6 @@ impl SettingsValues {
         if let Some(media) = patch.media {
             self.media = media;
         }
-        if let Some(room_url_previews) = patch.room_url_previews {
-            for (room_id, enabled) in room_url_previews {
-                if enabled {
-                    self.room_url_previews.insert(room_id, enabled);
-                } else {
-                    self.room_url_previews.remove(&room_id);
-                }
-            }
-        }
     }
 }
 
@@ -187,7 +202,6 @@ impl Default for SettingsValues {
             notifications: NotificationSettings::default(),
             display: DisplaySettings::default(),
             media: MediaSettings::default(),
-            room_url_previews: RoomUrlPreviews::new(),
         }
     }
 }
@@ -441,7 +455,6 @@ pub struct SettingsPatch {
     pub notifications: Option<NotificationSettings>,
     pub display: Option<DisplaySettings>,
     pub media: Option<MediaSettings>,
-    pub room_url_previews: Option<RoomUrlPreviews>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -3,10 +3,13 @@
 use std::time::Duration;
 
 use matrix_desktop_core::{
-    AccountKey, CoreCommand, CoreEvent, CoreFailure, CoreRuntime, PaginationDirection, RoomCommand,
-    TimelineCommand, TimelineKey, executor,
+    AccountKey, AppCommand, CoreCommand, CoreEvent, CoreFailure, CoreRuntime, PaginationDirection,
+    RoomCommand, TimelineCommand, TimelineKey, executor,
 };
-use matrix_desktop_state::{AppAction, SessionState};
+use matrix_desktop_state::{
+    AppAction, AuthSecret, RecoveryMethod, RecoveryRequest, SessionState,
+    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+};
 
 mod support;
 use support::*;
@@ -96,4 +99,87 @@ async fn ready_session_routes_past_appactor_session_gate() {
             _ => continue,
         }
     }
+}
+
+#[tokio::test]
+async fn recovery_sessions_route_ready_guarded_app_commands() {
+    for target in [
+        RecoveryRouteTarget::NeedsRecovery,
+        RecoveryRouteTarget::Recovering,
+    ] {
+        assert_upload_staging_command_routes_for_recovery_session(target).await;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RecoveryRouteTarget {
+    NeedsRecovery,
+    Recovering,
+}
+
+async fn assert_upload_staging_command_routes_for_recovery_session(target: RecoveryRouteTarget) {
+    let runtime = CoreRuntime::start();
+    let mut connection = runtime.attach();
+    let room_id = "!room:example.test";
+    let mut actions = vec![
+        AppAction::E2eeRecoveryRequired {
+            info: session_info(),
+            methods: vec![RecoveryMethod::RecoveryKey],
+        },
+        AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary(room_id)],
+        },
+        AppAction::SelectRoom {
+            room_id: room_id.to_owned(),
+        },
+    ];
+    if matches!(target, RecoveryRouteTarget::Recovering) {
+        actions.push(AppAction::E2eeRecoverySubmitted(RecoveryRequest {
+            secret: AuthSecret::new("synthetic recovery secret"),
+        }));
+    }
+    runtime.inject_actions(actions).await;
+    wait_for_state(&mut connection, |state| {
+        state.navigation.active_room_id.as_deref() == Some(room_id)
+            && match target {
+                RecoveryRouteTarget::NeedsRecovery => {
+                    matches!(state.session, SessionState::NeedsRecovery { .. })
+                }
+                RecoveryRouteTarget::Recovering => {
+                    matches!(state.session, SessionState::Recovering { .. })
+                }
+            }
+    })
+    .await;
+
+    let request_id = connection.next_request_id();
+    let staged_item = StagedUploadItem {
+        staged_id: "staged-1".to_owned(),
+        room_id: room_id.to_owned(),
+        position: 0,
+        filename: "synthetic.txt".to_owned(),
+        mime_type: "text/plain".to_owned(),
+        byte_count: 12,
+        kind: StagedUploadKind::File,
+        caption: None,
+        compression_choice: StagedUploadCompressionChoice::NotApplicable,
+    };
+    connection
+        .command(CoreCommand::App(AppCommand::SetUploadStaging {
+            request_id,
+            room_id: room_id.to_owned(),
+            items: vec![staged_item],
+        }))
+        .await
+        .expect("submit");
+
+    wait_for_state(&mut connection, |state| {
+        state
+            .timeline
+            .staged_uploads
+            .iter()
+            .any(|item| item.staged_id == "staged-1" && item.room_id == room_id)
+    })
+    .await;
 }

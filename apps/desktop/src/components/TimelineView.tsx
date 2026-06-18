@@ -2784,8 +2784,8 @@ function formatReceiptDetails(receipts: LiveReadReceipt[], overflowCount: number
   return details;
 }
 
-function receiptDisplayName(receipt: LiveReadReceipt): string {
-  return receipt.display_name?.trim() || receipt.user_id;
+export function receiptDisplayName(receipt: LiveReadReceipt): string {
+  return receipt.display_name?.trim() || receipt.original_display_label.trim();
 }
 
 function receiptInitials(receipt: LiveReadReceipt): string {

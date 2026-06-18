@@ -11,7 +11,57 @@ function runScript(script: string, args: string[] = []): string {
   });
 }
 
+function gitTrackedFiles(): string[] {
+  return execFileSync("git", ["ls-files"], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  })
+    .split("\n")
+    .map((file) => file.trim())
+    .filter(Boolean);
+}
+
 describe("desktop release scripts", () => {
+  test("tracked text artifacts contain no previous branding residue", () => {
+    const oldLatinBrand = "Ru" + "ri";
+    const oldLowerBrand = oldLatinBrand.toLowerCase();
+    const oldJapaneseBrand = "瑠" + "璃";
+    const pattern = new RegExp(`${oldLatinBrand}|${oldLowerBrand}|${oldJapaneseBrand}`);
+    const binaryExtensions = new Set([
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".gif",
+      ".webp",
+      ".ico",
+      ".icns",
+      ".woff",
+      ".woff2",
+      ".ttf",
+      ".otf",
+      ".zst"
+    ]);
+    const findings: string[] = [];
+
+    for (const file of gitTrackedFiles()) {
+      const extension = file.includes(".") ? file.slice(file.lastIndexOf(".")).toLowerCase() : "";
+      if (binaryExtensions.has(extension)) {
+        continue;
+      }
+      let contents: string;
+      try {
+        contents = readFileSync(new URL(`../../../../${file}`, import.meta.url), "utf8");
+      } catch {
+        continue;
+      }
+      if (pattern.test(contents)) {
+        findings.push(file);
+      }
+    }
+
+    expect(findings).toEqual([]);
+  });
+
   test("release preflight validates installer and signing preparation", () => {
     const output = runScript("scripts/desktop-release-preflight.mjs", ["--check-config"]);
 
@@ -187,6 +237,8 @@ describe("desktop release scripts", () => {
 
     expect(source).toContain("./lib/qa-token-contract.mjs");
     expect(source).toContain("assertNoMatrixIdentifiers");
+    expect(source).toContain("assertNoLocalPaths");
+    expect(source).toContain("assertNoRawSdkErrors");
     expect(source).toContain("assertRequiredTokens");
     expect(source).toContain("requiredTokensForScenario");
   });
@@ -199,10 +251,28 @@ describe("desktop release scripts", () => {
 
     const writeLogOffset = source.indexOf("writeFileSync(logPath");
     const matrixIdCheckOffset = source.indexOf("assertNoMatrixIdentifiers(combinedOutput");
+    const localPathCheckOffset = source.indexOf("assertNoLocalPaths(combinedOutput");
 
     expect(matrixIdCheckOffset).toBeGreaterThan(-1);
+    expect(localPathCheckOffset).toBeGreaterThan(-1);
     expect(writeLogOffset).toBeGreaterThan(-1);
     expect(matrixIdCheckOffset).toBeLessThan(writeLogOffset);
+    expect(localPathCheckOffset).toBeLessThan(writeLogOffset);
+  });
+
+  test("real homeserver QA runner stdout omits local paths and raw child output", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-real-homeserver-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).not.toContain("run dir = ${runDir}");
+    expect(source).not.toContain("credentials file = ${credentialsPath}");
+    expect(source).not.toContain("stdout: ${stdout");
+    expect(source).not.toContain("stderr: ${stderr");
+    expect(source).not.toContain("log: ${logPath}");
+    expect(source).not.toContain("PASSED. Log");
+    expect(source).toContain("child output omitted after private-data validation");
   });
 
   test("real homeserver QA binary emits private-data-free tokens (no Matrix ids)", () => {
@@ -233,6 +303,9 @@ describe("desktop release scripts", () => {
     expect(source).toContain("export function tokensFromOutput");
     expect(source).toContain("export function assertRequiredTokens");
     expect(source).toContain("export function assertNoMatrixIdentifiers");
+    expect(source).toContain("export function assertNoLocalPaths");
+    expect(source).toContain("export function assertNoRawSdkErrors");
+    expect(source).not.toContain("${match[1]}");
   });
 
   test("release preflight validates headless local QA entry", () => {
@@ -338,6 +411,7 @@ describe("desktop release scripts", () => {
       "scenario local-room-management",
       "scenario local-explore",
       "scenario local-message-actions",
+      "scenario local-pins",
       "scenario local-composer",
       "scenario local-scheduled-send",
       "scenario local-timeline-navigation",
@@ -489,6 +563,7 @@ describe("desktop release scripts", () => {
     expect(docs).toContain("--scenario=local-room-management");
     expect(docs).toContain("--scenario=local-explore");
     expect(docs).toContain("--scenario=local-message-actions");
+    expect(docs).toContain("--scenario=local-pins");
     expect(docs).toContain("--scenario=local-composer");
     expect(docs).toContain("--scenario=local-scheduled-send");
     expect(docs).toContain("--scenario=local-timeline-navigation");
@@ -547,6 +622,11 @@ describe("desktop release scripts", () => {
 
     expect(source).toContain("gui_local_login=ok");
     expect(source).toContain("gui_local_send=ok");
+    expect(source).toContain("gui_local_logout=ok");
+    expect(source).toContain("gui_local_relogin=ok");
+    expect(source).toContain("gui_local_spaces_home=ok");
+    expect(source).toContain("gui_local_spaces_nav=ok");
+    expect(source).toContain("gui_local_spaces_info=ok");
     expect(source).toContain("gui_local_explore_query=ok");
     expect(source).toContain("gui_local_explore_join=ok");
     expect(source).toContain("gui_local_room_topic=ok");
@@ -563,6 +643,40 @@ describe("desktop release scripts", () => {
     expect(source).toContain("gui_local_cjk=ok");
   });
 
+  test("linux GUI local logout/relogin uses the gated QA control pipe", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("local-logout-relogin");
+    expect(source).toContain("MATRIX_DESKTOP_QA_CONTROL_PIPE");
+    expect(source).toContain("qa-control.pipe");
+    expect(source).toContain('JSON.stringify({ command: "logout" })');
+    expect(source).toContain("requestQaLogout");
+    expect(source).toContain("submitLoginForm");
+    expect(source).toMatch(
+      /function childEnvironment\(dataDir, qaLoginPipePath = null, qaControlPipePath = null\)/
+    );
+    expect(source).toMatch(
+      /if \(qaControlPipePath\) \{[\s\S]*env\.MATRIX_DESKTOP_QA_CONTROL_PIPE = qaControlPipePath;/
+    );
+  });
+
+  test("linux GUI local spaces navigation checks rail selection and space info", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("local-spaces-nav");
+    expect(source).toContain("waitForWorkspaceActive");
+    expect(source).toContain("clickWorkspaceButton");
+    expect(source).toContain("gui_local_spaces_home=ok");
+    expect(source).toContain("gui_local_spaces_nav=ok");
+    expect(source).toContain("gui_local_spaces_info=ok");
+  });
+
   test("linux GUI local scenarios also emit DBus and window-state evidence", () => {
     const source = readFileSync(
       new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
@@ -572,6 +686,9 @@ describe("desktop release scripts", () => {
     expect(source).toContain("recordLocalGuiEvidence");
     expect(source).toContain("notification_dbus=ok");
     expect(source).toContain("window_state_path_contract=ok");
+    expect(source).toContain("run_dir=artifact");
+    expect(source).not.toContain("window_state_path=${");
+    expect(source).not.toContain("run_dir=${");
     expect(source).toMatch(
       /async function runLocalLoginScenario\(\)[\s\S]*await recordLocalGuiEvidence\(session\);[\s\S]*gui_local_login=ok/
     );
@@ -978,6 +1095,36 @@ describe("desktop release scripts", () => {
     expect(source).toContain("MATRIX_DESKTOP_QA_SCENARIO");
   });
 
+  test("headless local QA runner validates child output before writing artifacts", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    const firstValidation = source.indexOf("assertQaOutputIsPrivate(");
+    const firstAppend = source.indexOf("appendQaOutput(");
+
+    expect(source).toContain("./lib/qa-token-contract.mjs");
+    expect(source).toContain("assertNoMatrixIdentifiers");
+    expect(source).toContain("assertNoLocalPaths");
+    expect(source).toContain("assertNoRawSdkErrors");
+    expect(firstValidation).toBeGreaterThan(-1);
+    expect(firstAppend).toBeGreaterThan(-1);
+    expect(firstValidation).toBeLessThan(firstAppend);
+  });
+
+  test("headless local QA failure messages do not replay raw child output or paths", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).not.toContain("stdout=${stdout");
+    expect(source).not.toContain("stderr=${stderr");
+    expect(source).not.toContain("see ${logPath}");
+    expect(source).toContain("child output omitted after private-data validation");
+  });
+
   test("headless local QA configs bind only to loopback disposable stores", () => {
     const conduit = runScript("scripts/desktop-headless-local-qa.mjs", [
       "--print-conduit-config"
@@ -1178,14 +1325,14 @@ describe("desktop release scripts", () => {
   test("mac GUI smoke send smoke mode passes only a synthetic body through child env", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
       "--child-env",
-      "--send-smoke-message=Ruri synthetic QA send"
+      "--send-smoke-message=Kagome synthetic QA send"
     ]);
     const sendLine = output
       .split("\n")
       .find((line) => line.startsWith("VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE="));
 
     expect(sendLine).toBe(
-      "VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE=Ruri synthetic QA send"
+      "VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE=Kagome synthetic QA send"
     );
     expect(sendLine).not.toContain("password");
   });

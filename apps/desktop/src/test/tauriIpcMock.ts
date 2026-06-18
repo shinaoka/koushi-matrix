@@ -167,18 +167,18 @@ function defaultSnapshotResponse() {
           },
           display: { code_block_wrap: true, hide_redacted: false, url_previews_enabled: true },
           media: {
-        image_upload_compression: "never",
-        image_upload_compression_policy: {
-          threshold_bytes: 1048576,
-          threshold_long_edge: 2560,
-          target_long_edge: 2048,
-          quality_percent: 82
-        }
-      },
-          room_url_previews: {}
+            image_upload_compression: "never",
+            image_upload_compression_policy: {
+              threshold_bytes: 1048576,
+              threshold_long_edge: 2560,
+              target_long_edge: 2048,
+              quality_percent: 82
+            }
+          }
         },
         persistence: { kind: "idle" }
       },
+      link_preview_settings: { room_overrides: {} },
       locale_profile: {
         lang: "en",
         dir: "ltr",

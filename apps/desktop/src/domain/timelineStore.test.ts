@@ -734,7 +734,7 @@ describe("login credential safety", () => {
       homeserver: "https://matrix.example.org",
       username: "fixture-user",
       password: "synthetic-password-123",
-      deviceDisplayName: "Ruri"
+      deviceDisplayName: "Kagome"
     });
 
     const calls = ipc.invocationsOf("submit_login");

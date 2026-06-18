@@ -390,17 +390,8 @@ impl QaScenario {
     }
 
     fn suppress_matrix_identifiers(self) -> bool {
-        matches!(
-            self,
-            Self::LiveSignals
-                | Self::SendQueue
-                | Self::ScheduledSend
-                | Self::RoomManagement
-                | Self::Activity
-                | Self::CredentialHealth
-                | Self::NativeAttention
-                | Self::LinkPreview
-        )
+        let _ = self;
+        true
     }
 }
 
@@ -1981,11 +1972,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .map_err(|e| format!("submit create room: {e}"))?;
 
     let room_id = wait_for_room_created(&mut conn_a, create_room_id, "create room").await?;
-    if scenario.suppress_matrix_identifiers() {
-        println!("room_created=ok");
-    } else {
-        println!("room_id={room_id}");
-    }
+    println!("room_created=ok");
 
     // A creates a space
     let create_space_id = conn_a.next_request_id();
@@ -1998,11 +1985,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .map_err(|e| format!("submit create space: {e}"))?;
 
     let space_id = wait_for_space_created(&mut conn_a, create_space_id, "create space").await?;
-    if scenario.suppress_matrix_identifiers() {
-        println!("space_created=ok");
-    } else {
-        println!("space_id={space_id}");
-    }
+    println!("space_created=ok");
 
     // Extract server name from room_id (e.g., "!room:localhost:PORT" → "localhost:PORT")
     let via_server = config.server_name.clone();
@@ -2241,18 +2224,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         "send flow msg1",
     )
     .await?;
-    let echo1_sdk_txn = send1_outcome.sdk_transaction_id.clone();
-    if scenario.suppress_matrix_identifiers() {
-        println!("local_echo_msg1=ok");
-    } else {
-        println!("local_echo_msg1=ok sdk_txn={echo1_sdk_txn}");
-    }
+    let _echo1_sdk_txn = send1_outcome.sdk_transaction_id;
     let event1_id = send1_outcome.event_id;
-    if scenario.suppress_matrix_identifiers() {
-        println!("send_completed_msg1=ok");
-    } else {
-        println!("send_completed_msg1=ok event_id={event1_id}");
-    }
+    println!("local_echo_msg1=ok");
+    println!("send_completed_msg1=ok");
 
     // A sends message 2.
     let txn2 = "qa-phase5-txn-2".to_owned();
@@ -2277,18 +2252,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         "send flow msg2",
     )
     .await?;
-    let echo2_sdk_txn = send2_outcome.sdk_transaction_id.clone();
-    if scenario.suppress_matrix_identifiers() {
-        println!("local_echo_msg2=ok");
-    } else {
-        println!("local_echo_msg2=ok sdk_txn={echo2_sdk_txn}");
-    }
+    let _echo2_sdk_txn = send2_outcome.sdk_transaction_id;
     let event2_id = send2_outcome.event_id;
-    if scenario.suppress_matrix_identifiers() {
-        println!("send_completed_msg2=ok");
-    } else {
-        println!("send_completed_msg2=ok event_id={event2_id}");
-    }
+    println!("local_echo_msg2=ok");
+    println!("send_completed_msg2=ok");
 
     // B subscribes and receives both messages (event-driven wait on diffs).
     let key_b = TimelineKey::room(account_key_b.clone(), room_id.clone());
@@ -2792,7 +2759,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         "send search msg",
     )
     .await?;
-    println!("search_msg_sent=ok event_id={search_event_id}");
+    println!("search_msg_sent=ok");
 
     // Poll SearchCommand::Query until Results contains search_event_id.
     // The ngram index is fed by the SDK sync loop; wait up to 30s for indexing.
@@ -7395,7 +7362,7 @@ async fn run_link_preview_stage(
         }))
         .await
         .map_err(|e| format!("submit global preview disable: {e}"))?;
-    wait_for_settings_persisted(conn_b, settings_id, "global preview disable").await?;
+    wait_for_settings_persisted(conn_b, settings_id, "global preview disable", false).await?;
 
     let disabled_item = wait_for_item_with_body(
         conn_b,
@@ -7430,7 +7397,7 @@ async fn run_link_preview_stage(
         }))
         .await
         .map_err(|e| format!("submit global preview enable: {e}"))?;
-    wait_for_settings_persisted(conn_b, settings_id, "global preview enable").await?;
+    wait_for_settings_persisted(conn_b, settings_id, "global preview enable", true).await?;
 
     let reenabled_item = wait_for_item_with_body(
         conn_b,
@@ -8411,65 +8378,37 @@ async fn wait_for_display_policy_update(
 
 /// Wait for a settings update to finish persisting.
 ///
-/// The reducer sets `SettingsPersistenceState::Saving` while the store write is
-/// in flight and returns to `Idle` once the values are durable. We wait for the
-/// snapshot to reach `Idle` after an `UpdateSettings` command so later steps can
-/// rely on the policy having been broadcast to timelines.
+/// The runtime may complete the fast local settings write before publishing a
+/// snapshot, so this waits for the final `Idle` state with the expected display
+/// policy instead of requiring an intermediate `Saving` snapshot.
 async fn wait_for_settings_persisted(
     conn: &mut CoreConnection,
     request_id: RequestId,
     label: &str,
+    expected_url_previews_enabled: bool,
 ) -> Result<(), String> {
     let timeout = Duration::from_secs(10);
     let deadline = tokio::time::Instant::now() + timeout;
 
-    // First observe the saving state for our request so we don't mistake an
-    // idle snapshot left over from a prior update for completion of this one.
-    let already_saving = matches!(
-        &conn.snapshot().settings.persistence,
-        SettingsPersistenceState::Saving { request_id: rid } if *rid == request_id.sequence
-    );
-    if !already_saving {
-        loop {
-            let event = tokio::time::timeout_at(deadline, conn.recv_event())
-                .await
-                .map_err(|_| format!("{label}: timed out waiting for settings save to start"))?
-                .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-            match event {
-                CoreEvent::StateChanged(snapshot)
-                    if matches!(
-                        &snapshot.settings.persistence,
-                        SettingsPersistenceState::Saving { request_id: rid }
-                            if *rid == request_id.sequence
-                    ) =>
-                {
-                    break;
-                }
-                CoreEvent::OperationFailed {
-                    request_id: ev_id,
-                    failure,
-                } if ev_id == request_id => {
-                    return Err(format!("{label}: settings update failed: {failure:?}"));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Now wait for the persistence state to return to Idle.
-    if conn.snapshot().settings.persistence == SettingsPersistenceState::Idle {
+    if settings_snapshot_matches_link_preview_policy(
+        &conn.snapshot(),
+        expected_url_previews_enabled,
+    ) {
         return Ok(());
     }
+
     loop {
         let event = tokio::time::timeout_at(deadline, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for settings save to complete"))?
+            .map_err(|_| format!("{label}: timed out waiting for settings save"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
             CoreEvent::StateChanged(snapshot)
-                if snapshot.settings.persistence == SettingsPersistenceState::Idle =>
+                if settings_snapshot_matches_link_preview_policy(
+                    &snapshot,
+                    expected_url_previews_enabled,
+                ) =>
             {
                 return Ok(());
             }
@@ -8482,6 +8421,14 @@ async fn wait_for_settings_persisted(
             _ => {}
         }
     }
+}
+
+fn settings_snapshot_matches_link_preview_policy(
+    snapshot: &AppState,
+    expected_url_previews_enabled: bool,
+) -> bool {
+    snapshot.settings.persistence == SettingsPersistenceState::Idle
+        && snapshot.settings.values.display.url_previews_enabled == expected_url_previews_enabled
 }
 
 fn assert_hide_redacted_projection() -> Result<(), String> {
@@ -8894,15 +8841,36 @@ mod tests {
     }
 
     #[test]
-    fn privacy_sensitive_scenarios_suppress_matrix_identifiers() {
-        assert!(QaScenario::LiveSignals.suppress_matrix_identifiers());
-        assert!(QaScenario::SendQueue.suppress_matrix_identifiers());
-        assert!(QaScenario::ScheduledSend.suppress_matrix_identifiers());
-        assert!(QaScenario::CredentialHealth.suppress_matrix_identifiers());
-        assert!(QaScenario::NativeAttention.suppress_matrix_identifiers());
-        assert!(QaScenario::LinkPreview.suppress_matrix_identifiers());
-        assert!(!QaScenario::Timeline.suppress_matrix_identifiers());
-        assert!(!QaScenario::All.suppress_matrix_identifiers());
+    fn all_core_qa_scenarios_suppress_matrix_identifiers() {
+        for scenario in [
+            QaScenario::All,
+            QaScenario::Safety,
+            QaScenario::LoginSync,
+            QaScenario::CredentialHealth,
+            QaScenario::NativeAttention,
+            QaScenario::E2eeTrust,
+            QaScenario::InvitesDm,
+            QaScenario::RoomSpace,
+            QaScenario::Directory,
+            QaScenario::RoomManagement,
+            QaScenario::Timeline,
+            QaScenario::Activity,
+            QaScenario::Composer,
+            QaScenario::Reply,
+            QaScenario::Media,
+            QaScenario::LiveSignals,
+            QaScenario::Thread,
+            QaScenario::EditRedactSearch,
+            QaScenario::ScheduledSend,
+            QaScenario::SendQueue,
+            QaScenario::RestoreCleanup,
+            QaScenario::LinkPreview,
+        ] {
+            assert!(
+                scenario.suppress_matrix_identifiers(),
+                "{scenario:?} should keep core QA stdout private-data-free"
+            );
+        }
     }
 
     #[test]
@@ -9741,6 +9709,24 @@ mod tests {
 
         assert!(source.contains("println!(\"joined_room_restore=ok\")"));
         assert!(!source.contains(legacy_token));
+    }
+
+    #[test]
+    fn core_qa_stdout_does_not_format_matrix_identifiers() {
+        let source = include_str!("headless-core-qa.rs");
+
+        for forbidden in [
+            concat!("println!(\"", "room_", "id={"),
+            concat!("println!(\"", "space_", "id={"),
+            concat!("println!(\"", "event_", "id={"),
+            concat!("println!(\"", "sdk_", "txn={"),
+            concat!("println!(\"", "transaction_", "id={"),
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "core QA stdout must not format {forbidden}"
+            );
+        }
     }
 
     #[test]

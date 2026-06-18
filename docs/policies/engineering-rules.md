@@ -116,6 +116,14 @@ Rules:
    updates, but browser-headless coverage must drive the visible controls and
    assert the `update_settings` payload plus the returned Rust-shaped snapshot
    state; React must not repair switch state locally after dispatch.
+   Per-room URL-preview overrides are not settings-file data because the key is
+   a Matrix room identifier. They live in Rust-owned non-persisted
+   `AppState.link_preview_settings.room_overrides`, are changed only through a
+   typed room-override command, and are exposed to React as current snapshot
+   state for rendering. `SettingsValues` / `SettingsPatch` must not gain
+   room-, event-, or user-id keyed maps; if a durable per-identity preference is
+   required later, define a dedicated privacy-reviewed local store instead of
+   extending general settings JSON.
    Unsent composer drafts are not settings. If product behavior persists them
    across restart, they must be account-scoped encrypted local data owned by
    `StoreActor`/`AppActor`, derived from a dedicated local-unlock-secret key
@@ -246,8 +254,17 @@ Rules:
 2. Raw SDK errors may be printed only behind an explicit debug/test
    diagnostic switch. They must never reach `AppState`, committed logs,
    normal test fixtures, or release diagnostics.
-3. QA asserts on `CoreEvent` and `AppStateSnapshot`, never on log output.
-4. Real-account and real-homeserver QA output is tokenized before it becomes an
+3. Public boundary types (`CoreCommand`, `CoreEvent`, snapshot DTOs, Tauri DTO
+   mirrors, and shared QA payloads) must treat `Debug` as artifact-facing. Use
+   derived `Debug` only when every field is safe if copied into CI logs or a
+   GitHub issue. Use custom redacted `Debug` for any field that may contain
+   message bodies, search snippets/queries, attachment names, room/user/event/
+   transaction IDs, local filesystem paths, URLs from rooms, raw SDK errors, or
+   secrets. Redacted `Debug` may expose variant names, request ids, enum kinds,
+   booleans, counts, lengths, and placeholders such as `Snippet(..)` or
+   `RoomId(..)`.
+4. QA asserts on `CoreEvent` and `AppStateSnapshot`, never on log output.
+5. Real-account and real-homeserver QA output is tokenized before it becomes an
    artifact. Captured logs must not contain raw Matrix IDs, event IDs,
    transaction IDs, user IDs, message bodies, search queries, local paths, or raw
    SDK errors. Producers should avoid formatting those values; wrappers must not
@@ -397,7 +414,7 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    it to the controlling agent. Use the script's process-group cleanup.
 3. Resolve processes as `first process whose name is <variable>` in
    AppleScript; check both the dev process name (`matrix-desktop-app`) and
-   the product title (`Ruri`).
+   the product title (`Kagome`).
 4. First-run GUI smoke sets `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1`;
    real-login smoke additionally sets
    `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`.

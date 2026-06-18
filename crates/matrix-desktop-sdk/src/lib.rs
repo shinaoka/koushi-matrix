@@ -30,7 +30,7 @@ use zeroize::Zeroizing;
 const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MATRIX_ROOM_LIST_SNAPSHOT_LIMIT: usize = 4096;
-pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.ruri.local_aliases";
+pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.kagome.local_aliases";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoginDiscovery {
@@ -3277,9 +3277,9 @@ fn room_notification_rule_id(room_id: &matrix_sdk::ruma::RoomId) -> String {
     format!("{ROOM_NOTIFICATION_RULE_ID_PREFIX}{room_id}")
 }
 
-/// Sets the per-room notification mode by manipulating Ruri-owned push rules.
+/// Sets the per-room notification mode by manipulating app-owned push rules.
 ///
-/// - `All`: removes any Ruri-owned override/underride rule for the room.
+/// - `All`: removes any app-owned override/underride rule for the room.
 /// - `Mentions`: adds an underride rule with empty actions so generic message
 ///   rules are suppressed but mention/highlight rules still fire.
 /// - `Mute`: adds an override rule with empty actions so all notifications for
@@ -3301,7 +3301,7 @@ pub async fn set_room_notification_mode(
     let rule_id = room_notification_rule_id(&room_id);
     let client = session.client();
 
-    // Remove any previous Ruri-owned rule for this room. Missing-rule errors are
+    // Remove any previous app-owned rule for this room. Missing-rule errors are
     // ignored so the operation is idempotent.
     for kind in [RuleKind::Override, RuleKind::Underride] {
         let delete_request = delete_pushrule::v3::Request::new(kind, rule_id.clone());
@@ -4604,7 +4604,7 @@ mod tests {
         let value = serde_json::to_value(&content).expect("serialize local aliases");
         assert_eq!(
             LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE,
-            "app.ruri.local_aliases"
+            "app.kagome.local_aliases"
         );
         assert_eq!(
             value["aliases"]["@alice:example.invalid"],
@@ -4614,6 +4614,23 @@ mod tests {
         let parsed: MatrixLocalUserAliases =
             serde_json::from_value(value).expect("deserialize local aliases");
         assert_eq!(parsed.aliases, aliases);
+    }
+
+    #[test]
+    fn local_user_aliases_debug_is_artifact_safe() {
+        let content = MatrixLocalUserAliases {
+            aliases: BTreeMap::from([(
+                "@alice:example.invalid".to_owned(),
+                "Local Alice".to_owned(),
+            )]),
+        };
+
+        let debug = format!("{content:?}");
+
+        assert!(debug.contains("MatrixLocalUserAliases"));
+        assert!(debug.contains("alias_count"));
+        assert!(!debug.contains("@alice:example.invalid"));
+        assert!(!debug.contains("Local Alice"));
     }
 
     #[test]

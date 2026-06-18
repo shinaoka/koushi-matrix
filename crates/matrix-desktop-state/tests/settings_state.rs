@@ -95,7 +95,6 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
             image_upload_compression: ImageUploadCompressionMode::Always,
             ..MediaSettings::default()
         },
-        room_url_previews: Default::default(),
     };
 
     let effects = reduce(

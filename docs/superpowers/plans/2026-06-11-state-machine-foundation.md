@@ -1507,7 +1507,7 @@ Expected: commit succeeds.
 Create `docs/architecture/state-machine.md`:
 
 ````markdown
-# Ruri State Machine
+# Kagome State Machine
 
 Date: 2026-06-11
 

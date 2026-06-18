@@ -82,6 +82,13 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("update_settings", { patch });
   }
 
+  async setRoomUrlPreviewOverride(
+    roomId: string,
+    enabled: boolean
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_room_url_preview_override", { roomId, enabled });
+  }
+
   async selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("select_room_list_filter", { filter });
   }

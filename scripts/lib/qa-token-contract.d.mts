@@ -7,3 +7,5 @@ export function assertRequiredTokens(
   label: string
 ): void;
 export function assertNoMatrixIdentifiers(output: string, label: string): void;
+export function assertNoLocalPaths(output: string, label: string): void;
+export function assertNoRawSdkErrors(output: string, label: string): void;

@@ -1076,6 +1076,27 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
             ]
         }
+        AppAction::RoomUrlPreviewOverrideSet {
+            room_id, enabled, ..
+        } => {
+            let Some(room) = state.rooms.iter().find(|room| room.room_id == room_id) else {
+                return Vec::new();
+            };
+            let default_enabled = if room.is_encrypted {
+                false
+            } else {
+                state.settings.values.display.url_previews_enabled
+            };
+            if enabled == default_enabled {
+                state.link_preview_settings.room_overrides.remove(&room_id);
+            } else {
+                state
+                    .link_preview_settings
+                    .room_overrides
+                    .insert(room_id, enabled);
+            }
+            vec![AppEffect::EmitUiEvent(UiEvent::LinkPreviewSettingsChanged)]
+        }
         AppAction::RoomNotificationModeSet {
             request_id,
             room_id,

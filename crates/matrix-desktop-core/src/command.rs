@@ -49,6 +49,7 @@ impl CoreCommand {
                 | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
                 | AppCommand::UpdateSettings { request_id, .. }
+                | AppCommand::SetRoomUrlPreviewOverride { request_id, .. }
                 | AppCommand::OpenActivity { request_id }
                 | AppCommand::CloseActivity { request_id }
                 | AppCommand::SetActivityTab { request_id, .. }
@@ -177,7 +178,9 @@ impl CoreCommand {
         }
     }
 
-    /// Commands that require a `Ready` session before they are routed.
+    /// Commands that require an authenticated Matrix-capable session before
+    /// they are routed. Runtime gating uses the reducer's "Ready session"
+    /// contract: `Ready`, `NeedsRecovery`, or `Recovering`.
     ///
     /// `SyncCommand` is intentionally not included here: the reducer's
     /// authenticated-session contract allows sync while E2EE recovery is
@@ -200,6 +203,7 @@ impl CoreCommand {
                         | AppCommand::UpdateStagedUploadCaption { .. }
                         | AppCommand::UpdateStagedUploadCompression { .. }
                         | AppCommand::ClearUploadStaging { .. }
+                        | AppCommand::SetRoomUrlPreviewOverride { .. }
                         | AppCommand::OpenFilesView { .. }
                         | AppCommand::OpenThreadsList { .. }
                         | AppCommand::CloseThreadsList { .. }
@@ -290,6 +294,11 @@ pub enum AppCommand {
     UpdateSettings {
         request_id: RequestId,
         patch: SettingsPatch,
+    },
+    SetRoomUrlPreviewOverride {
+        request_id: RequestId,
+        room_id: String,
+        enabled: bool,
     },
     OpenActivity {
         request_id: RequestId,
@@ -486,6 +495,16 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("UpdateSettings")
                 .field("request_id", request_id)
                 .field("patch_fields", &settings_patch_field_names(patch))
+                .finish(),
+            Self::SetRoomUrlPreviewOverride {
+                request_id,
+                enabled,
+                ..
+            } => formatter
+                .debug_struct("SetRoomUrlPreviewOverride")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("enabled", enabled)
                 .finish(),
             Self::OpenActivity { request_id } => formatter
                 .debug_struct("OpenActivity")
@@ -2442,9 +2461,23 @@ mod tests {
     }
 
     #[test]
+    fn set_room_url_preview_override_debug_redacts_room_id() {
+        let command = AppCommand::SetRoomUrlPreviewOverride {
+            request_id: fake_rid(14),
+            room_id: "!room:example.invalid".to_owned(),
+            enabled: false,
+        };
+        let debug = format!("{command:?}");
+        assert!(debug.contains("SetRoomUrlPreviewOverride"), "{debug}");
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        assert!(debug.contains("enabled"), "{debug}");
+        assert!(!debug.contains("!room:example.invalid"), "{debug}");
+    }
+
+    #[test]
     fn directory_commands_debug_redacts_query_alias_and_server() {
         let query = RoomCommand::QueryDirectory {
-            request_id: fake_rid(14),
+            request_id: fake_rid(15),
             query: DirectoryQuery {
                 term: Some("private search".to_owned()),
                 server_name: Some("example.invalid".to_owned()),

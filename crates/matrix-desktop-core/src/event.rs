@@ -1598,7 +1598,7 @@ pub enum TimelineDiff {
     Reset { items: Vec<TimelineItem> },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SearchEvent {
     Results {
         request_id: RequestId,
@@ -1619,11 +1619,55 @@ pub enum SearchEvent {
     IndexUpdated { room_id: String, event_id: String },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+impl fmt::Debug for SearchEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SearchEvent::Results {
+                request_id,
+                results,
+            } => formatter
+                .debug_struct("Results")
+                .field("request_id", request_id)
+                .field("result_count", &results.len())
+                .finish(),
+            SearchEvent::AttachmentsResults {
+                request_id,
+                results,
+            } => formatter
+                .debug_struct("AttachmentsResults")
+                .field("request_id", request_id)
+                .field("result_count", &results.len())
+                .finish(),
+            SearchEvent::AttachmentsFailed { request_id, .. } => formatter
+                .debug_struct("AttachmentsFailed")
+                .field("request_id", request_id)
+                .field("message", &"SearchFailure(..)")
+                .finish(),
+            SearchEvent::IndexUpdated { .. } => formatter
+                .debug_struct("IndexUpdated")
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchResultItem {
     pub room_id: String,
     pub event_id: String,
     pub snippet: String,
+}
+
+impl fmt::Debug for SearchResultItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SearchResultItem")
+            .field("room_id", &"RoomId(..)")
+            .field("event_id", &"EventId(..)")
+            .field("snippet", &"Snippet(..)")
+            .finish()
+    }
 }
 
 #[cfg(test)]

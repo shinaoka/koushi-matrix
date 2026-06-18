@@ -78,19 +78,19 @@ Element X validates the direction of pushing protocol and crypto semantics into
 SDK-backed services instead of UI state.
 
 - Secure backup/recovery is split into recovery state, key-backup state, setup
-  progress, reset/recover operations, and backup upload steady-state. Ruri
+  progress, reset/recover operations, and backup upload steady-state. Kagome
   mirrors that separation in Rust-owned state rather than forcing all
   operations into the existing `key_backup` enum.
 - Element X Android exposes recovery-key setup progress with a final recovery
-  key. Ruri deliberately diverges at the GUI boundary: recovery keys may be
+  key. Kagome deliberately diverges at the GUI boundary: recovery keys may be
   handled as one-shot native/Rust artifacts, but they must not be projected into
   React state, DTO snapshots, logs, or QA tokens.
 - Element X Android's room-list service requires the sync service to be running
-  and provides dynamic lists from the live service. Ruri already has the same
+  and provides dynamic lists from the live service. Kagome already has the same
   constraint: use the single live `SyncService`/`RoomListService` source, never
   ad-hoc room-list services for product projections.
 - Element X Android's OAuth notes show redirect URI, dynamic client metadata,
-  and Rust SDK OIDC usage as service-level concerns. Ruri keeps OIDC/MAS
+  and Rust SDK OIDC usage as service-level concerns. Kagome keeps OIDC/MAS
   discovery, PKCE state, token exchange, refresh, revocation, and account
   management URLs in Rust/Tauri auth state, not React.
 
@@ -127,7 +127,7 @@ Keep #46 as one issue, but implement it internally as:
    Rust/Tauri owns file paths and passphrases. State contains request id,
    running/succeeded/failed, counts, and coarse failure kind only. The file
    format is the Matrix key-export format used by Element clients, including
-   the encrypted Megolm session data header/footer; Ruri must not add a custom
+   the encrypted Megolm session data header/footer; Kagome must not add a custom
    JSON, archive, or wrapper format around it.
 2. A2 secure-backup setup and passphrase change.
    Use SDK recovery APIs such as `enable`, `reset_key`, and
@@ -250,7 +250,7 @@ Issues: #40, #44, #49, #9, #31, #53.
   This is the final edge-case pass. Keep it synchronized with
   `docs/qa/integration-edge-cases.md` and run it after feature-specific gates.
 - #53 branding:
-  "Ruri" remains the preferred direction, but final rename waits for a current
+  "Kagome" remains the preferred direction, but final rename waits for a current
   availability and clash check covering app-store display names, package/bundle
   identifiers, domains, GitHub/npm names, and trademark risk. Do not use Matrix
   branding in shipped product names.

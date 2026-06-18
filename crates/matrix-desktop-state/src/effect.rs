@@ -97,6 +97,7 @@ pub enum UiEvent {
     SessionChanged,
     AuthChanged,
     SettingsChanged,
+    LinkPreviewSettingsChanged,
     ProfileChanged,
     SyncModeChanged,
     RoomListChanged,

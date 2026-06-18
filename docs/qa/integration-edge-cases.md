@@ -4,7 +4,12 @@ Source: GitHub issue #31. This file is the repository mirror used by #9/#31 so f
 
 ## Purpose
 
-The **final integration-test matrix** for umbrella #12 — concrete, testable edge cases mined from Element Web / Desktop / Element X GitHub issues, their unit/integration tests, and Matrix spec/MSC gotchas. Each feature issue (#4–#23) wires its own headless GUI-operation check; this matrix is the *exhaustive* end-state pass executed under #9 before the umbrella closes.
+The **final integration-test matrix** for umbrella #12 and the later roadmap
+hardening issues now tracked by #70 — concrete, testable edge cases mined from
+Element Web / Desktop / Element X GitHub issues, their unit/integration tests,
+and Matrix spec/MSC gotchas. Each feature family wires its own Rust/headless or
+browser-headless check; this matrix is the *exhaustive* end-state pass executed
+under #9/#31 before pre-dogfood audit closure.
 
 **Legend** — verifiable: `[H]` headless (Rust-owned state / mock-IPC / browser-DOM) · `[N]` native (real rendering, scroll, OS surface) · `[HN]` both. Refs: `EW#` element-web, `RS#` matrix-rust-sdk, `JS#` matrix-js-sdk, `EX` element-x, `MSC`/`spec`.
 
@@ -233,3 +238,75 @@ The **final integration-test matrix** for umbrella #12 — concrete, testable ed
 - `[H]` items: extend the Rust headless core QA + browser-headless (Vitest/Playwright) suites with crafted `/sync` fixtures; private-data-free tokens.
 - `[N]`/`[HN]` items: Linux virtual-display lane.
 - Keep this document and GitHub issue #31 synchronized whenever the final matrix changes.
+
+## Current triage for the pre-dogfood audit
+
+Status date: 2026-06-18.
+
+This section is the current #31 contract for the #9 automated audit pass. It
+does not mark every matrix row above as complete. "Covered" means the standing
+gate exercises the current shipped surface for that family with Rust-owned state
+or typed browser/headless commands. Row-level edge cases above remain open until
+a focused fixture, browser-headless check, or native lane is added for the exact
+case.
+
+Covered by standing automated gates:
+
+- Rust core/local-homeserver QA now covers login/sync, credential health,
+  native-attention state, invites and DM start, room/space creation and joins,
+  public directory query/join, room settings and moderation guards, timeline
+  send/edit/redact/pagination/navigation, activity streams, composer
+  mention/markdown/slash/IME guards, read receipts, fully-read markers, typing,
+  presence, reply quotes, pins, media staging/gallery/compression, link
+  previews, threads, scheduled send local fallback, send queue retry/cancel/FIFO,
+  restart persistence, search edit/redact, and E2EE trust/key-backup/
+  verification/identity-reset smoke.
+- Browser-headless gates cover visible-control dispatch and Rust-shaped
+  snapshots for create room/space, invites/DMs, directory, activity, room
+  management, room tags, notification attention, aliases/profile labels,
+  mention and markdown composer paths, send queue, reactions, reply/pin/source/
+  forward actions, media/file/link-preview surfaces, live signals, search,
+  threads, locale/RTL/CJK/pseudo-locale, typography/font tokens, settings,
+  security, device sessions, reports, and scroll/navigation surfaces.
+- Structural gates cover IPC contract drift, TypeScript typecheck, wasm
+  compilation for state/search crates, secret scanning, release-gate structure,
+  QA token privacy checks, and Rust/Tauri focused contract tests.
+
+Failures found in this pass and fixed in the same hardening branch:
+
+- Browser-headless display-setting expectations were stale after URL-preview
+  state became part of the Rust-owned display DTO; the tests now assert the full
+  Rust-shaped display patch.
+- The link-preview local-homeserver QA waited for a transient
+  `SettingsPersistenceState::Saving` snapshot. Fast local persistence may reach
+  final `Idle` before publication, so the QA contract is now final `Idle` plus
+  the expected URL-preview policy value.
+- Per-room URL-preview overrides were removed from persisted `SettingsValues`
+  because their keys are Matrix room identifiers. They now live in non-persisted
+  Rust-owned `AppState.link_preview_settings` and are changed through a typed
+  room-override command.
+- Public boundary `Debug` is now explicit repository policy: derive only when
+  every field is artifact-safe; otherwise implement redacted `Debug` exposing
+  only kinds, booleans, counts, lengths, request ids, and placeholders.
+
+Open follow-ups:
+
+- #74 tracks browser fake top-level timeline/thread DTO alignment so
+  browser-headless evidence stays congruent with the Tauri/CoreEvent path.
+- #75 tracks mention autocomplete/member ordering that still needs stronger
+  Rust-owned text/order semantics, especially for CJK/profile confidence.
+- Native-only and attended residual evidence stays in #66/#67. Product rename
+  issue #72 must run before macOS/native smoke so native evidence uses Kagome
+  naming.
+
+Deferred from this automated pass:
+
+- Exact row-level fixtures for the full E2EE/device-trust matrix, deep sync-gap
+  behavior, room upgrades, power-level edge cases, tag ordering/rebalancing,
+  settings multi-device conflict resolution, and many Element-derived
+  historical bug regressions above.
+- Native rendering and OS-surface checks that need a real WebView or platform
+  adapter: scroll anchoring with real media layout, blurhash/image layout shift,
+  desktop toast click/focus, dock/taskbar badges, fonts/emoji fallback, CJK IME
+  candidate handling, macOS Keychain prompts, and platform notification
+  compatibility.

@@ -801,10 +801,10 @@ mod tests {
         );
     }
 
-    // --- SearchResultItem in SearchEvent allows snippet (visible UI state) ---
+    // --- SearchResultItem in SearchEvent redacts snippets from Debug ---
 
     #[test]
-    fn search_result_item_snippet_is_visible() {
+    fn search_result_item_snippet_is_redacted_from_debug() {
         use crate::event::{SearchEvent, SearchResultItem};
         use crate::ids::{RequestId, RuntimeConnectionId};
         let result = SearchResultItem {
@@ -819,11 +819,18 @@ mod tests {
             },
             results: vec![result],
         };
-        // Snippets in SearchEvent results are allowed visible UI state.
         let debug = format!("{event:?}");
         assert!(
-            debug.contains("检索目标消息"),
-            "snippet is allowed in SearchEvent Debug (visible UI state): {debug}"
+            !debug.contains("检索目标消息"),
+            "snippet must not appear in SearchEvent Debug: {debug}"
+        );
+        assert!(
+            !debug.contains("!r:test") && !debug.contains("$e:test"),
+            "Matrix identifiers must not appear in SearchEvent Debug: {debug}"
+        );
+        assert!(
+            debug.contains("result_count"),
+            "redacted Debug should keep structural counts: {debug}"
         );
     }
 

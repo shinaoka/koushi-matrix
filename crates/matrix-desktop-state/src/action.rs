@@ -104,6 +104,11 @@ pub enum AppAction {
         request_id: u64,
         message: String,
     },
+    RoomUrlPreviewOverrideSet {
+        request_id: u64,
+        room_id: String,
+        enabled: bool,
+    },
     OwnProfileUpdated {
         profile: OwnProfile,
     },
@@ -876,6 +881,16 @@ impl fmt::Debug for AppAction {
                 .field("alias", &"RoomAlias(..)")
                 .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
                 .field("kind", kind)
+                .finish(),
+            Self::RoomUrlPreviewOverrideSet {
+                request_id,
+                enabled,
+                ..
+            } => formatter
+                .debug_struct("RoomUrlPreviewOverrideSet")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("enabled", enabled)
                 .finish(),
             Self::RoomSettingsSnapshotLoaded { .. } => formatter
                 .debug_struct("RoomSettingsSnapshotLoaded")

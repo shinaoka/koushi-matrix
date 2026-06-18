@@ -24,6 +24,7 @@ export interface AppState {
   soft_logout_reauth: SoftLogoutReauthState;
   qr_login: QrLoginState;
   settings: SettingsState;
+  link_preview_settings: LinkPreviewSettingsState;
   locale_profile: LocaleDisplayProfile;
   typography_profile: TypographyDisplayProfile;
   profile: ProfileState;
@@ -60,6 +61,10 @@ export interface SettingsState {
   persistence: SettingsPersistenceState;
 }
 
+export interface LinkPreviewSettingsState {
+  room_overrides: Record<string, boolean>;
+}
+
 export interface SettingsValues {
   locale: LocaleSettings;
   appearance: AppearanceSettings;
@@ -68,7 +73,6 @@ export interface SettingsValues {
   notifications: NotificationSettings;
   display: DisplaySettings;
   media: MediaSettings;
-  room_url_previews: Record<string, boolean>;
 }
 
 export interface SettingsPatch {
@@ -79,7 +83,6 @@ export interface SettingsPatch {
   notifications?: NotificationSettings;
   display?: DisplaySettings;
   media?: MediaSettings;
-  room_url_previews?: Record<string, boolean>;
 }
 
 export interface LocaleSettings {

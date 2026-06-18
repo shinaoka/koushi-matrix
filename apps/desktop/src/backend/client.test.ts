@@ -35,6 +35,18 @@ describe("TauriDesktopApi", () => {
     });
   });
 
+  test("passes room URL-preview overrides to the dedicated Rust command", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.setRoomUrlPreviewOverride("!room:example.invalid", false);
+
+    expect(invoke).toHaveBeenCalledWith("set_room_url_preview_override", {
+      roomId: "!room:example.invalid",
+      enabled: false
+    });
+  });
+
   test("passes composer resolver facts to the Rust resolver command", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

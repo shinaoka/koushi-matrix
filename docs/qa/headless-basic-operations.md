@@ -465,6 +465,8 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-login --server=co
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-send --server=conduit --artifact-dir=artifacts/linux-gui-local-send --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --artifact-dir=artifacts/linux-gui-local-create-room --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-space --server=conduit --artifact-dir=artifacts/linux-gui-local-create-space --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-logout-relogin --server=conduit --artifact-dir=artifacts/linux-gui-local-logout-relogin --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-spaces-nav --server=conduit --artifact-dir=artifacts/linux-gui-local-spaces-nav --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-invites-dm --server=conduit --artifact-dir=artifacts/linux-gui-local-invites-dm --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-reply --server=conduit --artifact-dir=artifacts/linux-gui-local-reply --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --artifact-dir=artifacts/linux-gui-local-media --timeout-ms=180000
@@ -473,6 +475,7 @@ npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-management -
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server=conduit --artifact-dir=artifacts/linux-gui-local-activity --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --artifact-dir=artifacts/linux-gui-local-explore --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --artifact-dir=artifacts/linux-gui-local-message-actions --timeout-ms=180000
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-pins --server=conduit --artifact-dir=artifacts/linux-gui-local-pins --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --artifact-dir=artifacts/linux-gui-local-composer --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-scheduled-send --server=conduit --artifact-dir=artifacts/linux-gui-local-scheduled-send --timeout-ms=180000
 npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting --server=conduit --artifact-dir=artifacts/linux-gui-local-rich-formatting --timeout-ms=180000
@@ -495,6 +498,19 @@ replying to a real timeline event. They assert the Rust-owned snapshot reacts
 (`rooms`/`spaces` counts grow; a `data-reply="true"` row renders) rather than
 relying on React-only state. These destructive operations stay local-only;
 matrix.org is reserved for the final compatibility gate.
+
+`local-logout-relogin` proves the real GUI session can transition through
+logout and back to a ready synced state before Mac dogfood. The first login is
+driven through the debug/test-only login FIFO; logout uses the same gated QA
+control FIFO as the Mac cleanup lane and dispatches the normal Core logout
+command; relogin uses the visible auth form fields. The lane prints only
+`gui_local_logout=ok` and `gui_local_relogin=ok`.
+
+`local-spaces-nav` creates a disposable space, then drives the real workspace
+rail: it selects Home, selects the new space, opens the Space info panel, and
+waits for Rust-shaped snapshot/panel state instead of inferring local React
+state. It prints only `gui_local_spaces_home=ok`,
+`gui_local_spaces_nav=ok`, and `gui_local_spaces_info=ok`.
 
 `local-media` writes a synthetic fixture file under the ignored scenario
 artifact directory, sets that path on the Composer's hidden file input through
@@ -563,6 +579,14 @@ timeline row from the WebView. The lane prints only
 permalinks in React, copy message bodies through React for forwarding, derive
 redacted visibility in React, or print Matrix IDs, message bodies, generated
 permalinks, or raw SDK errors.
+
+`local-pins` sends one synthetic message, clicks the real hover-gated Pin
+message affordance in the Linux Tauri WebView, waits for the Rust-owned pinned
+messages projection to render the pinned region, then clicks Unpin message and
+waits for that projection to clear. The lane prints only
+`gui_local_pin_set=ok` and `gui_local_pin_removed=ok`; it must not monkeypatch
+Tauri IPC, maintain a React-local pin list, clear failed pin state from React,
+or print Matrix room IDs, event IDs, message bodies, or raw SDK errors.
 
 `local-composer` registers a synthetic helper account, gives it a synthetic
 display name, joins it to the seeded local room, and sends one helper seed
@@ -652,6 +676,11 @@ gui_local_login=ok
 gui_local_send=ok
 gui_local_create_room=ok
 gui_local_create_space=ok
+gui_local_logout=ok
+gui_local_relogin=ok
+gui_local_spaces_home=ok
+gui_local_spaces_nav=ok
+gui_local_spaces_info=ok
 gui_local_invite_accept=ok
 gui_local_dm_start=ok
 gui_local_reply=ok

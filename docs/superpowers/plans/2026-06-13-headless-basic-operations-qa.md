@@ -763,7 +763,7 @@ For `--scenario=local-send`:
 ```js
 const composer = await browser.$('textarea[aria-label="Message composer"]');
 await composer.waitForDisplayed({ timeout: timeoutMs });
-await composer.setValue(`Ruri GUI QA ${timestamp()}`);
+await composer.setValue(`Kagome GUI QA ${timestamp()}`);
 await browser.keys("Enter");
 ```
 

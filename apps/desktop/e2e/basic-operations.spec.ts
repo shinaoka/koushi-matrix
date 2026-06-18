@@ -142,6 +142,53 @@ async function gotoReadyShell(page: Page): Promise<void> {
   await expect(page.getByRole("button", { name: "Reply to message" }).first()).toBeVisible();
 }
 
+async function gotoSignedOutAuth(page: Page): Promise<void> {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        session: { kind: "signedOut" },
+        auth: { kind: "unknown" },
+        sync: "stopped",
+        navigation: { active_space_id: null, active_room_id: null },
+        rooms: [],
+        spaces: [],
+        invites: [],
+        room_notification_settings: {},
+        room_interactions: {},
+        timeline: {
+          room_id: null,
+          is_subscribed: false,
+          is_paginating_backwards: false,
+          composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
+          scheduled_send_capability: "unknown",
+          scheduled_sends: [],
+          staged_uploads: [],
+          media_gallery: []
+        }
+      },
+      sidebar: {
+        active_space_id: null,
+        account_home: { display_name: "Home", unread_count: 0, highlight_count: 0, is_active: true },
+        space_rail: [],
+        space_rooms: [],
+        global_dms: [],
+        space_unread_count: 0,
+        dm_unread_count: 0,
+        space_highlight_count: 0,
+        dm_highlight_count: 0
+      },
+      timeline: []
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+  await expect(page.getByTestId("auth-screen")).toBeVisible();
+}
+
 async function invocationCount(page: Page, command: string): Promise<number> {
   return page.evaluate((cmd) => window.__harness.invocationsOf(cmd).length, command);
 }
@@ -238,6 +285,32 @@ test("create-room dialog submits create_room and closes on success", async ({ pa
   await expect.poll(() => invocationCount(page, "create_room")).toBeGreaterThanOrEqual(1);
   // Dialog closed on success (the name input is gone).
   await expect(roomNameInput).toBeHidden();
+});
+
+test("auth form defaults to matrix.org and submits custom ports in the homeserver URL field", async ({
+  page
+}) => {
+  await gotoSignedOutAuth(page);
+
+  const homeserverInput = page.locator('input[name="homeserver"]');
+  await expect(homeserverInput).toHaveValue("https://matrix.org");
+
+  await homeserverInput.fill("https://example.org:8448");
+  await page.getByRole("textbox", { name: t("auth.usernameOrMatrixId") }).fill("@alice:example.org");
+  await page.getByLabel(t("auth.password")).fill("synthetic-password");
+  await page.getByRole("textbox", { name: t("auth.deviceName") }).fill("Kagome Test Device");
+  await page.getByRole("button", { name: t("auth.continue") }).click();
+
+  await expect.poll(() => invocationCount(page, "submit_login")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("submit_login")[0]?.args))
+    .toEqual({
+      homeserver: "https://example.org:8448",
+      username: "@alice:example.org",
+      password: "[REDACTED]",
+      deviceDisplayName: "Kagome Test Device"
+    });
+  await expect(page.locator('input[name="port"]')).toHaveCount(0);
 });
 
 test("create-space dialog submits create_space and closes on success", async ({ page }) => {
@@ -2580,6 +2653,67 @@ test("pin and unpin actions dispatch typed commands and pinned banner waits for 
   await expect(pinnedRegion).toHaveCount(0);
 });
 
+test("pin and unpin actions render the Tauri snapshot response without a manual state event", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
+  const pinnedRegion = page.getByRole("region", { name: "Pinned messages" });
+
+  await page.evaluate((roomId) => {
+    window.__harness.setCommandResponse("pin_event", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      return {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          room_interactions: {
+            ...snapshot.state.room_interactions,
+            [roomId]: {
+              pinned_events: [
+                {
+                  event_id: "$seed-event:example.invalid",
+                  sender: "@harness-user:example.invalid",
+                  body_preview: "Pinned from Tauri response",
+                  redacted: false
+                }
+              ],
+              pin_operation: { kind: "idle" }
+            }
+          }
+        }
+      };
+    });
+    window.__harness.setCommandResponse("unpin_event", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      return {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          room_interactions: {
+            ...snapshot.state.room_interactions,
+            [roomId]: {
+              pinned_events: [],
+              pin_operation: { kind: "idle" }
+            }
+          }
+        }
+      };
+    });
+    window.__harness.clearInvocations();
+  }, HARNESS_ROOM_ID);
+
+  await row.hover();
+  await row.getByRole("button", { name: "Pin message" }).click();
+  await expect.poll(() => invocationCount(page, "pin_event")).toBeGreaterThanOrEqual(1);
+  await expect(pinnedRegion.getByText("Pinned from Tauri response", { exact: true })).toBeVisible();
+
+  await row.hover();
+  await row.getByRole("button", { name: "Unpin message" }).click();
+  await expect.poll(() => invocationCount(page, "unpin_event")).toBeGreaterThanOrEqual(1);
+  await expect(pinnedRegion).toHaveCount(0);
+});
+
 test("message action menu copies Rust-owned body and permalink values", async ({ page }) => {
   await page.addInitScript(() => {
     let clipboardText = "";
@@ -4653,7 +4787,11 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
     )
     .toEqual({
       patch: {
-        display: { code_block_wrap: false, hide_redacted: false }
+        display: {
+          code_block_wrap: false,
+          hide_redacted: false,
+          url_previews_enabled: true
+        }
       }
     });
   await expect(wrapToggle).toHaveAttribute("aria-checked", "false");
@@ -4728,7 +4866,11 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
     )
     .toEqual({
       patch: {
-        display: { code_block_wrap: true, hide_redacted: true }
+        display: {
+          code_block_wrap: true,
+          hide_redacted: true,
+          url_previews_enabled: true
+        }
       }
     });
   await expect(redactedRow.getByText(t("timeline.redactedMessage"))).toBeVisible();
@@ -5072,7 +5214,7 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
   await expect(page.getByRole("heading", { name: "Key management" })).toBeVisible();
 
   const exportForm = page.getByRole("form", { name: "Room key export", exact: true });
-  await exportForm.getByLabel("Key export destination").fill("/tmp/ruri-export.txt");
+  await exportForm.getByLabel("Key export destination").fill("/tmp/kagome-export.txt");
   await exportForm.getByLabel("Room key passphrase").fill("synthetic-export-passphrase");
   await exportForm.getByRole("button", { name: "Export room keys" }).click();
   await expect.poll(() => invocationCount(page, "export_room_keys")).toBe(1);
@@ -5889,6 +6031,32 @@ test("URL previews global toggle invokes update_settings", async ({ page }) => {
         }
       }
     });
+});
+
+test("room URL preview toggle invokes the per-room command instead of update_settings", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page.getByRole("button", { name: t("room.roomInfo") }).click();
+  const toggle = page.getByRole("switch", { name: t("settings.urlPreviewsEnabledForRoom") });
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await toggle.click();
+
+  await expect
+    .poll(() => invocationCount(page, "set_room_url_preview_override"))
+    .toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_room_url_preview_override")[0]?.args)
+    )
+    .toEqual({
+      roomId: HARNESS_ROOM_ID,
+      enabled: false
+    });
+  await expect.poll(() => invocationCount(page, "update_settings")).toBe(0);
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
 });
 
 test("link preview card renders from Rust-owned DTO and hides on close", async ({ page }) => {

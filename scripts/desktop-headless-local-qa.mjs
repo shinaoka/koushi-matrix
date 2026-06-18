@@ -15,6 +15,11 @@ import {
   tuwunelConfig,
   waitForHomeserver
 } from "./lib/local-homeserver-qa.mjs";
+import {
+  assertNoLocalPaths,
+  assertNoMatrixIdentifiers,
+  assertNoRawSdkErrors
+} from "./lib/qa-token-contract.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localSecretsRoot = join(repoRoot, ".local-secrets", "headless-local-qa");
@@ -211,7 +216,16 @@ function runHeadlessQa({
 }) {
   const result = spawnSync(
     "cargo",
-    ["run", "-p", "matrix-desktop-sdk", "--features", "smoke", "--bin", "headless-local-qa"],
+    [
+      "run",
+      "--quiet",
+      "-p",
+      "matrix-desktop-sdk",
+      "--features",
+      "smoke",
+      "--bin",
+      "headless-local-qa"
+    ],
     {
       cwd: repoRoot,
       encoding: "utf8",
@@ -229,19 +243,19 @@ function runHeadlessQa({
       timeout: timeoutMs
     }
   );
+  assertQaOutputIsPrivate("headless SDK QA", result, [
+    ["passwordA", passwordA],
+    ["passwordB", passwordB]
+  ]);
   appendQaOutput(logPath, result.stdout, result.stderr);
   if (result.error?.code === "ETIMEDOUT") {
-    const stderr = result.stderr.trim();
-    const stdout = result.stdout.trim();
     throw new Error(
-      `headless SDK QA timed out for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
+      `headless SDK QA timed out for ${serverKind}; child output omitted after private-data validation`
     );
   }
   if (result.status !== 0) {
-    const stderr = result.stderr.trim();
-    const stdout = result.stdout.trim();
     throw new Error(
-      `headless SDK QA failed for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
+      `headless SDK QA failed for ${serverKind} with status ${result.status ?? "unknown"}; child output omitted after private-data validation`
     );
   }
   return result.stdout;
@@ -291,7 +305,16 @@ function runCoreHeadlessQa({
 
   const result = spawnSync(
     "cargo",
-    ["run", "-p", "matrix-desktop-core", "--features", "qa-bin", "--bin", "headless-core-qa"],
+    [
+      "run",
+      "--quiet",
+      "-p",
+      "matrix-desktop-core",
+      "--features",
+      "qa-bin",
+      "--bin",
+      "headless-core-qa"
+    ],
     {
       cwd: repoRoot,
       encoding: "utf8",
@@ -300,31 +323,36 @@ function runCoreHeadlessQa({
       timeout: timeoutMs
     }
   );
-  appendQaOutput(logPath, result.stdout, result.stderr);
-  // Secret redaction check: ensure passwords do not appear in QA output.
-  for (const [label, secret] of [
+  assertQaOutputIsPrivate("headless core QA", result, [
     ["passwordA", passwordA],
     ["passwordB", passwordB]
-  ]) {
-    if (result.stdout.includes(secret) || result.stderr.includes(secret)) {
-      throw new Error(
-        `headless core QA output contains ${label} — secret redaction failure`
-      );
-    }
-  }
+  ]);
+  appendQaOutput(logPath, result.stdout, result.stderr);
   if (result.status !== 0) {
-    const stderr = result.stderr.trim();
-    const stdout = result.stdout.trim();
     if (result.error?.code === "ETIMEDOUT") {
       throw new Error(
-        `headless core QA (leg=${legLabel}) timed out for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
+        `headless core QA (leg=${legLabel}) timed out for ${serverKind}; child output omitted after private-data validation`
       );
     }
     throw new Error(
-      `headless core QA (leg=${legLabel}) failed for ${serverKind}; stdout=${stdout || "<empty>"} stderr=${stderr || "<empty>"}; see ${logPath}`
+      `headless core QA (leg=${legLabel}) failed for ${serverKind} with status ${result.status ?? "unknown"}; child output omitted after private-data validation`
     );
   }
   return result.stdout;
+}
+
+function assertQaOutputIsPrivate(label, result, secrets) {
+  const stdout = result.stdout || "";
+  const stderr = result.stderr || "";
+  const output = `${stdout}\n${stderr}`;
+  for (const [secretLabel, secret] of secrets) {
+    if (secret && output.includes(secret)) {
+      throw new Error(`${label}: ${secretLabel} leaked into QA output`);
+    }
+  }
+  assertNoMatrixIdentifiers(output, label);
+  assertNoLocalPaths(output, label);
+  assertNoRawSdkErrors(output, label);
 }
 
 function appendQaOutput(logPath, stdout, stderr) {

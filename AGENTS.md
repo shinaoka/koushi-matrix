@@ -434,7 +434,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   are Rust-owned DTOs. React renders them and dispatches `set_display_name` /
   `set_avatar`; do not add React-local profile success/failure semantics.
 - Personal local user aliases are also Rust-owned profile state. Keep alias
-  set/clear/list, persistence to `app.ruri.local_aliases`, display-name
+  set/clear/list, persistence to `app.kagome.local_aliases`, display-name
   resolution, and pending/failure state in Rust; React may render the returned
   labels and dispatch typed commands only.
 - `UserProfile.display_label`, `UserProfile.original_display_label`, and

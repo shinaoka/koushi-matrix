@@ -34,7 +34,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertNoLocalPaths,
   assertNoMatrixIdentifiers,
+  assertNoRawSdkErrors,
   assertRequiredTokens
 } from "./lib/qa-token-contract.mjs";
 
@@ -66,8 +68,7 @@ async function run() {
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(credStoreDir, { recursive: true });
 
-  console.log(`real-homeserver-qa: run dir = ${runDir}`);
-  console.log(`real-homeserver-qa: credentials file = ${credentialsPath}`);
+  console.log(`real-homeserver-qa: run=${ts}`);
   console.log("real-homeserver-qa: running binary (output captured to log)...");
 
   const env = {
@@ -85,6 +86,7 @@ async function run() {
     "cargo",
     [
       "run",
+      "--quiet",
       "-p",
       "matrix-desktop-core",
       "--features",
@@ -115,24 +117,21 @@ async function run() {
   // file and verify neither password nor recovery_key appears in the output.
   // We do this before writing artifacts or checking the exit code so a failed
   // run cannot persist private output.
-  checkForLeaks(result.stdout, result.stderr, credentialsPath, logPath);
+  checkForLeaks(result.stdout, result.stderr, credentialsPath);
 
   // Matrix identifiers must never appear in real QA output — enforce this even
   // on failure, since a failed run can still leak an id into captured output.
   const combinedOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
   assertNoMatrixIdentifiers(combinedOutput, "real-homeserver-qa");
+  assertNoLocalPaths(combinedOutput, "real-homeserver-qa");
+  assertNoRawSdkErrors(combinedOutput, "real-homeserver-qa");
 
   writeFileSync(logPath, logParts.join(""), "utf8");
 
   // Now check exit code.
   if (result.status !== 0) {
-    const stdout = (result.stdout || "").trim();
-    const stderr = (result.stderr || "").trim();
     throw new Error(
-      `real-homeserver-qa binary exited with status ${result.status}\n` +
-        `stdout: ${stdout || "<empty>"}\n` +
-        `stderr: ${stderr || "<empty>"}\n` +
-        `log: ${logPath}`
+      `real-homeserver-qa binary exited with status ${result.status ?? "unknown"}; child output omitted after private-data validation`
     );
   }
 
@@ -153,7 +152,7 @@ async function run() {
   if (summaryLine) {
     console.log(`real-homeserver-qa: ${summaryLine}`);
   }
-  console.log(`real-homeserver-qa: PASSED. Log: ${logPath}`);
+  console.log("real-homeserver-qa: PASSED");
 }
 
 /**
@@ -163,16 +162,15 @@ async function run() {
  * We read the credentials file here for the sole purpose of performing the
  * negative check. We do NOT print, log, or expose the values.
  */
-function checkForLeaks(stdout, stderr, credPath, logPath) {
+function checkForLeaks(stdout, stderr, credPath) {
   let creds;
   try {
     creds = JSON.parse(readFileSync(credPath, "utf8"));
   } catch (e) {
     // If we cannot read the creds file, we cannot perform the check.
     // That is itself a problem, but not a leak — skip rather than error.
-    console.warn(
-      `real-homeserver-qa: WARNING: could not read credentials for leak check: ${e.message}`
-    );
+    void e;
+    console.warn("real-homeserver-qa: WARNING: could not read credentials for leak check");
     return;
   }
 
@@ -182,8 +180,7 @@ function checkForLeaks(stdout, stderr, credPath, logPath) {
     if (typeof value === "string" && value.length > 0 && combined.includes(value)) {
       throw new Error(
         `REDACTION FAILURE: '${field}' appears in QA output. ` +
-          `This is a secrets leak. Log: ${logPath}. ` +
-          `Do NOT share the log file.`
+          "This is a secrets leak. Do NOT share the QA output."
       );
     }
   }

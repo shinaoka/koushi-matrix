@@ -6,7 +6,12 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { RoomInfoPanel } from "./RoomInfoPanel";
 
 afterEach(cleanup);
-import type { RoomNotificationSettings, RoomSummary, SettingsState } from "../domain/types";
+import type {
+  LinkPreviewSettingsState,
+  RoomNotificationSettings,
+  RoomSummary,
+  SettingsState
+} from "../domain/types";
 
 const baseRoom: RoomSummary = {
   room_id: "!room-alpha:example.invalid",
@@ -54,10 +59,13 @@ const baseAppSettings: SettingsState = {
         target_long_edge: 2048,
         quality_percent: 82
       }
-    },
-    room_url_previews: {}
+    }
   },
   persistence: { kind: "idle" }
+};
+
+const baseLinkPreviewSettings: LinkPreviewSettingsState = {
+  room_overrides: {}
 };
 
 describe("RoomInfoPanel", () => {
@@ -339,7 +347,8 @@ describe("RoomInfoPanel URL previews", () => {
         roomNotificationSettings={idleSettings}
         spaces={[]}
         appSettings={baseAppSettings}
-        onUpdateSettings={() => undefined}
+        linkPreviewSettings={baseLinkPreviewSettings}
+        onSetRoomUrlPreviewOverride={() => undefined}
       />
     );
 
@@ -355,7 +364,8 @@ describe("RoomInfoPanel URL previews", () => {
         roomNotificationSettings={idleSettings}
         spaces={[]}
         appSettings={baseAppSettings}
-        onUpdateSettings={() => undefined}
+        linkPreviewSettings={baseLinkPreviewSettings}
+        onSetRoomUrlPreviewOverride={() => undefined}
       />
     );
 
@@ -373,7 +383,8 @@ describe("RoomInfoPanel URL previews", () => {
         roomNotificationSettings={idleSettings}
         spaces={[]}
         appSettings={baseAppSettings}
-        onUpdateSettings={() => undefined}
+        linkPreviewSettings={baseLinkPreviewSettings}
+        onSetRoomUrlPreviewOverride={() => undefined}
       />
     );
 
@@ -388,14 +399,15 @@ describe("RoomInfoPanel URL previews", () => {
   });
 
   test("dispatches a per-room override when the toggle is clicked", () => {
-    const onUpdateSettings = vi.fn();
+    const onSetRoomUrlPreviewOverride = vi.fn();
     const { getByRole } = render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
         spaces={[]}
         appSettings={baseAppSettings}
-        onUpdateSettings={onUpdateSettings}
+        linkPreviewSettings={baseLinkPreviewSettings}
+        onSetRoomUrlPreviewOverride={onSetRoomUrlPreviewOverride}
       />
     );
 
@@ -404,11 +416,10 @@ describe("RoomInfoPanel URL previews", () => {
     });
     fireEvent.click(toggle);
 
-    expect(onUpdateSettings).toHaveBeenCalledTimes(1);
-    expect(onUpdateSettings).toHaveBeenCalledWith({
-      room_url_previews: {
-        "!room-alpha:example.invalid": false
-      }
-    });
+    expect(onSetRoomUrlPreviewOverride).toHaveBeenCalledTimes(1);
+    expect(onSetRoomUrlPreviewOverride).toHaveBeenCalledWith(
+      "!room-alpha:example.invalid",
+      false
+    );
   });
 });

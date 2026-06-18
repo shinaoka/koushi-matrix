@@ -548,6 +548,23 @@ pub async fn update_settings(
 }
 
 #[tauri::command]
+pub async fn set_room_url_preview_override(
+    room_id: String,
+    enabled: bool,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_room_url_preview_override_command(request_id, room_id, enabled),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn select_room_list_filter(
     filter: RoomListFilter,
     state: State<'_, CoreRuntimeState>,
@@ -2952,6 +2969,18 @@ pub(crate) fn build_update_settings_command(
     CoreCommand::App(AppCommand::UpdateSettings { request_id, patch })
 }
 
+pub(crate) fn build_set_room_url_preview_override_command(
+    request_id: matrix_desktop_core::RequestId,
+    room_id: String,
+    enabled: bool,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::SetRoomUrlPreviewOverride {
+        request_id,
+        room_id,
+        enabled,
+    })
+}
+
 pub(crate) fn build_probe_local_encryption_health_command(
     request_id: matrix_desktop_core::RequestId,
 ) -> CoreCommand {
@@ -4580,7 +4609,8 @@ mod tests {
         build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
         build_set_avatar_command, build_set_composer_draft_command, build_set_display_name_command,
         build_set_fully_read_command, build_set_local_user_alias_command,
-        build_set_presence_command, build_set_room_tag_command, build_set_space_child_command,
+        build_set_presence_command, build_set_room_tag_command,
+        build_set_room_url_preview_override_command, build_set_space_child_command,
         build_set_thread_composer_draft_command, build_set_typing_command,
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
         build_submit_identity_reset_password_command, build_submit_login_command,
@@ -6814,6 +6844,40 @@ mod tests {
     }
 
     #[test]
+    fn set_room_url_preview_override_command_routes_to_app_state() {
+        let command = build_set_room_url_preview_override_command(
+            fake_request_id(24),
+            "!room:example.invalid".to_owned(),
+            false,
+        );
+
+        match command {
+            CoreCommand::App(AppCommand::SetRoomUrlPreviewOverride {
+                request_id,
+                room_id,
+                enabled,
+            }) => {
+                assert_eq!(request_id, fake_request_id(24));
+                assert_eq!(room_id, "!room:example.invalid");
+                assert!(!enabled);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let debug = format!(
+            "{:?}",
+            build_set_room_url_preview_override_command(
+                fake_request_id(25),
+                "!private-room:example.invalid".to_owned(),
+                true,
+            )
+        );
+        assert!(debug.contains("SetRoomUrlPreviewOverride"), "{debug}");
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+    }
+
+    #[test]
     fn e2ee_trust_commands_route_to_account_state_machine() {
         match build_bootstrap_cross_signing_command(
             fake_request_id(25),
@@ -6923,27 +6987,37 @@ mod tests {
     fn update_settings_tauri_command_contract_is_present() {
         let commands_source = include_str!("commands.rs");
         let lib_source = include_str!("lib.rs");
-        let command_name = "pub async fn update_settings";
-        let builder_name = "build_update_settings_command";
-        let route_name = "AppCommand::UpdateSettings";
-        let registration_name = "commands::update_settings";
-
-        assert!(
-            commands_source.contains(command_name),
-            "Tauri command should expose update_settings"
-        );
-        assert!(
-            commands_source.contains(builder_name),
-            "Tauri command should keep a testable UpdateSettings builder"
-        );
-        assert!(
-            commands_source.contains(route_name),
-            "Tauri command should route through the Rust settings state machine"
-        );
-        assert!(
-            lib_source.contains(registration_name),
-            "Tauri command should be registered in generate_handler"
-        );
+        for (command_name, builder_name, route_name, registration_name) in [
+            (
+                "pub async fn update_settings",
+                "build_update_settings_command",
+                "AppCommand::UpdateSettings",
+                "commands::update_settings",
+            ),
+            (
+                "pub async fn set_room_url_preview_override",
+                "build_set_room_url_preview_override_command",
+                "AppCommand::SetRoomUrlPreviewOverride",
+                "commands::set_room_url_preview_override",
+            ),
+        ] {
+            assert!(
+                commands_source.contains(command_name),
+                "Tauri command should expose {command_name}"
+            );
+            assert!(
+                commands_source.contains(builder_name),
+                "Tauri command should keep a testable builder {builder_name}"
+            );
+            assert!(
+                commands_source.contains(route_name),
+                "Tauri command should route through {route_name}"
+            );
+            assert!(
+                lib_source.contains(registration_name),
+                "Tauri command should register {registration_name}"
+            );
+        }
     }
 
     #[test]

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ruri",
+  "productName": "Kagome",
   "version": "0.1.0",
-  "identifier": "chat.ruri.desktop",
+  "identifier": "chat.kagome.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Ruri",
+        "title": "Kagome",
         "width": 1280,
         "height": 820,
         "minWidth": 760,
@@ -26,14 +26,14 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg", "msi", "nsis"],
-    "publisher": "Ruri contributors",
+    "publisher": "Kagome contributors",
     "homepage": "https://github.com/matrix-org/matrix-rust-sdk",
     "icon": [],
-    "copyright": "Copyright 2026 Ruri contributors",
+    "copyright": "Copyright 2026 Kagome contributors",
     "license": "MIT OR Apache-2.0",
     "category": "SocialNetworking",
-    "shortDescription": "Ruri — a Matrix desktop client.",
-    "longDescription": "Ruri is a Matrix desktop client used to validate Matrix Rust SDK desktop integration, encrypted local stores, search, and Element-like desktop workflows.",
+    "shortDescription": "Kagome — a Matrix desktop client.",
+    "longDescription": "Kagome is a Matrix desktop client used to validate Matrix Rust SDK desktop integration, encrypted local stores, search, and Element-like desktop workflows.",
     "macOS": {
       "minimumSystemVersion": "12.0",
       "hardenedRuntime": true,

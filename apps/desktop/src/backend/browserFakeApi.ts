@@ -58,6 +58,7 @@ export interface DesktopApi {
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
   updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
+  setRoomUrlPreviewOverride(roomId: string, enabled: boolean): Promise<DesktopSnapshot>;
   selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot>;
   markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   markRoomAsUnread(roomId: string, unread: boolean): Promise<DesktopSnapshot>;
@@ -354,6 +355,25 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.settings.values.typography
     );
     this.snapshot.state.settings.persistence = { kind: "idle" };
+    return this.getSnapshot();
+  }
+
+  async setRoomUrlPreviewOverride(
+    roomId: string,
+    enabled: boolean
+  ): Promise<DesktopSnapshot> {
+    const room = this.snapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+    if (!room || !this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    const defaultEnabled = room.is_encrypted
+      ? false
+      : this.snapshot.state.settings.values.display.url_previews_enabled;
+    if (enabled === defaultEnabled) {
+      delete this.snapshot.state.link_preview_settings.room_overrides[roomId];
+    } else {
+      this.snapshot.state.link_preview_settings.room_overrides[roomId] = enabled;
+    }
     return this.getSnapshot();
   }
 
@@ -712,6 +732,9 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
+    if (!this.snapshot.state.rooms.some((room) => room.room_id === roomId)) {
+      return this.getSnapshot();
+    }
 
     this.snapshot.state.navigation.active_room_id = roomId;
     this.snapshot.state.timeline.room_id = roomId;
@@ -722,6 +745,8 @@ class BrowserFakeApi implements DesktopApi {
       mode: "Plain"
     };
     this.snapshot.state.thread = { kind: "closed" };
+    this.snapshot.state.thread_attention = { kind: "closed" };
+    this.snapshot.state.threads_list = { kind: "closed" };
     this.snapshot.state.focused_context = { kind: "closed" };
     this.snapshot.thread = null;
     this.snapshot.timeline = timelineMessages.filter((message) => message.room_id === roomId);
@@ -2455,6 +2480,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
+      link_preview_settings: { room_overrides: {} },
       locale_profile: defaultLocaleDisplayProfile(),
       typography_profile: defaultTypographyDisplayProfile(),
       profile: defaultProfileState(session.user_id),
@@ -2566,6 +2592,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       soft_logout_reauth: { kind: "idle" },
       qr_login: { kind: "idle" },
       settings: defaultSettingsState(),
+      link_preview_settings: { room_overrides: {} },
       locale_profile: defaultLocaleDisplayProfile(),
       typography_profile: defaultTypographyDisplayProfile(),
       profile: defaultProfileState(null),
@@ -2641,8 +2668,7 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
           target_long_edge: 2048,
           quality_percent: 82
         }
-      },
-      room_url_previews: {}
+      }
     },
     persistence: { kind: "idle" }
   };
@@ -2935,17 +2961,6 @@ function applySettingsPatch(
   values: DesktopSnapshot["state"]["settings"]["values"],
   patch: SettingsPatch
 ): DesktopSnapshot["state"]["settings"]["values"] {
-  const roomUrlPreviews = { ...values.room_url_previews };
-  if (patch.room_url_previews) {
-    for (const [roomId, enabled] of Object.entries(patch.room_url_previews)) {
-      if (enabled) {
-        roomUrlPreviews[roomId] = enabled;
-      } else {
-        delete roomUrlPreviews[roomId];
-      }
-    }
-  }
-
   return {
     locale: patch.locale ?? values.locale,
     appearance: patch.appearance ?? values.appearance,
@@ -2953,8 +2968,7 @@ function applySettingsPatch(
     keyboard: patch.keyboard ?? values.keyboard,
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
-    media: patch.media ?? values.media,
-    room_url_previews: roomUrlPreviews
+    media: patch.media ?? values.media
   };
 }
 

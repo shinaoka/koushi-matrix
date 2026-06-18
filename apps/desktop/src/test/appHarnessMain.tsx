@@ -125,6 +125,7 @@ function readySnapshot(
       },
       auth: { kind: "unknown" },
       settings: defaultSettingsState(),
+      link_preview_settings: { room_overrides: {} },
       locale_profile: defaultLocaleDisplayProfile(),
       typography_profile: defaultTypographyDisplayProfile(),
       profile: {
@@ -249,8 +250,7 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
           target_long_edge: 2048,
           quality_percent: 82
         }
-      },
-      room_url_previews: {}
+      }
     },
     persistence: { kind: "idle" }
   };
@@ -327,17 +327,6 @@ function applySettingsPatch(
   values: DesktopSnapshot["state"]["settings"]["values"],
   patch: SettingsPatch
 ): DesktopSnapshot["state"]["settings"]["values"] {
-  const roomUrlPreviews = { ...values.room_url_previews };
-  if (patch.room_url_previews) {
-    for (const [roomId, enabled] of Object.entries(patch.room_url_previews)) {
-      if (enabled) {
-        roomUrlPreviews[roomId] = enabled;
-      } else {
-        delete roomUrlPreviews[roomId];
-      }
-    }
-  }
-
   return {
     locale: patch.locale ?? values.locale,
     appearance: patch.appearance ?? values.appearance,
@@ -345,8 +334,7 @@ function applySettingsPatch(
     keyboard: patch.keyboard ?? values.keyboard,
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
-    media: patch.media ?? values.media,
-    room_url_previews: roomUrlPreviews
+    media: patch.media ?? values.media
   };
 }
 
@@ -605,6 +593,33 @@ mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch })
     }
   });
 });
+mock.setCommandResponse(
+  "set_room_url_preview_override",
+  ({ roomId, enabled }: { roomId: string; enabled: boolean }) => {
+    const room = currentSnapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+    if (!room) {
+      return currentSnapshot;
+    }
+    const roomOverrides = { ...currentSnapshot.state.link_preview_settings.room_overrides };
+    const defaultEnabled = room.is_encrypted
+      ? false
+      : currentSnapshot.state.settings.values.display.url_previews_enabled;
+    if (enabled === defaultEnabled) {
+      delete roomOverrides[roomId];
+    } else {
+      roomOverrides[roomId] = enabled;
+    }
+    return setCurrentSnapshot({
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        link_preview_settings: {
+          room_overrides: roomOverrides
+        }
+      }
+    });
+  }
+);
 mock.setCommandResponse(
   "select_room_list_filter",
   ({ filter }: { filter: DesktopSnapshot["state"]["room_list"]["active_filter"] }) =>

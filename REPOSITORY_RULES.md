@@ -136,6 +136,12 @@ conflict is being resolved.
   record passwords, tokens, recovery material, message bodies, attachment
   names, raw SDK errors, transaction IDs, event IDs from real accounts, or room
   IDs from real accounts.
+- Public command/event/snapshot DTOs must make their `Debug` privacy contract
+  explicit. Derive `Debug` only for types whose fields are all safe to paste
+  into CI logs, QA artifacts, and GitHub issues. If a public type carries
+  private content, Matrix identifiers, local paths, raw SDK diagnostics, or
+  plaintext-derived snippets, implement custom redacted `Debug` that exposes
+  only kinds, booleans, counts, and placeholders.
 - E2EE trust, verification, cross-signing, key-backup, and identity-reset
   state may carry only app-owned DTOs and private-data-free failure kinds.
   Private keys, recovery secrets, room keys, key-backup secrets, and raw SDK
@@ -145,7 +151,7 @@ conflict is being resolved.
 - Manual room-key file export/import MUST use the Matrix key-export file
   format that Element clients use, including the encrypted Megolm session data
   header/footer handled by the public Matrix Rust SDK APIs. Do not introduce a
-  Ruri-specific JSON, archive, or wrapper file format for room-key transfer.
+  Kagome-specific JSON, archive, or wrapper file format for room-key transfer.
   Tests for this flow must use synthetic fixtures and assert interoperability
   without logging or snapshotting room-key file contents.
   If the public SDK export API does not return an exported-session count,

@@ -61,7 +61,7 @@ Package A is reviewed or explicitly paused.
   event IDs, or message content.
 - #46 room-key import/export uses the Matrix key-export file format used by
   Element clients. Use the public Matrix Rust SDK room-key export/import APIs
-  and do not introduce a Ruri-specific JSON, archive, or wrapper file format.
+  and do not introduce a Kagome-specific JSON, archive, or wrapper file format.
   Synthetic fixture tests may assert the encrypted Megolm session data
   header/footer, but must never log or snapshot file contents from real
   accounts.
@@ -1283,11 +1283,11 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
   await bootHarness(page, "security-key-management");
   await page.getByRole("button", { name: /settings/i }).click();
   await page.getByRole("tab", { name: /security/i }).click();
-  await page.getByLabel(/key export destination/i).fill("/tmp/ruri-export.txt");
+  await page.getByLabel(/key export destination/i).fill("/tmp/kagome-export.txt");
   await page.getByLabel(/key export passphrase/i).fill("synthetic-passphrase");
   await page.getByRole("button", { name: /export room keys/i }).click();
   await expect(page.getByTestId("room-key-export-state")).toHaveText(/exported/i);
-  await page.getByLabel(/recovery key destination/i).fill("/tmp/ruri-recovery.txt");
+  await page.getByLabel(/recovery key destination/i).fill("/tmp/kagome-recovery.txt");
   await page.getByLabel(/secure backup passphrase/i).fill("synthetic-passphrase");
   await page.getByRole("button", { name: /set up secure backup/i }).click();
   await expect(page.getByTestId("secure-backup-state")).toHaveText(/recovery key saved/i);

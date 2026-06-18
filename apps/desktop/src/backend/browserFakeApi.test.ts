@@ -16,6 +16,18 @@ describe("BrowserFakeApi settings preview", () => {
     expect(snapshot.state.settings.persistence).toEqual({ kind: "idle" });
   });
 
+  test("stores room URL-preview overrides outside settings values", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+
+    const disabled = await api.setRoomUrlPreviewOverride(roomId, false);
+    expect(disabled.state.link_preview_settings.room_overrides[roomId]).toBe(false);
+    expect("room_url_previews" in disabled.state.settings.values).toBe(false);
+
+    const restored = await api.setRoomUrlPreviewOverride(roomId, true);
+    expect(restored.state.link_preview_settings.room_overrides[roomId]).toBeUndefined();
+  });
+
   test("resolves composer key actions from the Rust-shaped settings snapshot", async () => {
     const api = createBrowserFakeApi();
 
@@ -260,6 +272,49 @@ describe("BrowserFakeApi settings preview", () => {
     const snapshot = await api.unpinEvent("!missing:browser.fake", "$event:browser.fake");
 
     expect(snapshot.state.room_interactions["!missing:browser.fake"]).toBeUndefined();
+  });
+
+  test("selectRoom mirrors the Rust unknown-room guard", async () => {
+    const api = createBrowserFakeApi();
+    const before = await api.getSnapshot();
+
+    const selected = await api.selectRoom("!missing:example.invalid");
+
+    expect(selected.state.navigation.active_room_id).toBe(
+      before.state.navigation.active_room_id
+    );
+    expect(selected.state.timeline.room_id).toBe(before.state.timeline.room_id);
+    expect(selected.timeline.map((message) => message.room_id)).toEqual(
+      before.timeline.map((message) => message.room_id)
+    );
+  });
+
+  test("selectRoom closes dependent panes like the Rust reducer", async () => {
+    const api = createBrowserFakeApi();
+
+    await api.openThreadsList("!room-alpha:example.invalid");
+    const selected = await api.selectRoom("!room-planning:example.invalid");
+
+    expect(selected.state.navigation.active_room_id).toBe("!room-planning:example.invalid");
+    expect(selected.state.thread).toEqual({ kind: "closed" });
+    expect(selected.state.thread_attention).toEqual({ kind: "closed" });
+    expect(selected.state.threads_list).toEqual({ kind: "closed" });
+    expect(selected.state.focused_context).toEqual({ kind: "closed" });
+    expect(selected.thread).toBeNull();
+  });
+
+  test("selectRoom closes focused context after search navigation", async () => {
+    const api = createBrowserFakeApi();
+
+    const focused = await api.selectSearchResult(
+      "!room-alpha:example.invalid",
+      "$alpha-update"
+    );
+    expect(focused.state.focused_context.kind).toBe("opening");
+
+    const selected = await api.selectRoom("!room-planning:example.invalid");
+
+    expect(selected.state.focused_context).toEqual({ kind: "closed" });
   });
 
   test("models public directory query and join pending substates", async () => {

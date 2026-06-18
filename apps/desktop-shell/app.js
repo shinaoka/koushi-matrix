@@ -455,7 +455,7 @@ function unreadForSpace(space) {
 }
 
 function activeSpaceName() {
-  return spaces.find((space) => space.id === state.activeSpaceId)?.name ?? "Ruri";
+  return spaces.find((space) => space.id === state.activeSpaceId)?.name ?? "Kagome";
 }
 
 function roomById(roomId) {

@@ -43,6 +43,8 @@ const checks = [
   "scenario local-send",
   "scenario local-create-room",
   "scenario local-create-space",
+  "scenario local-logout-relogin",
+  "scenario local-spaces-nav",
   "scenario local-invites-dm",
   "scenario local-reply",
   "scenario local-media",
@@ -52,6 +54,7 @@ const checks = [
   "scenario local-activity",
   "scenario local-explore",
   "scenario local-message-actions",
+  "scenario local-pins",
   "scenario local-message-types",
   "scenario local-composer",
   "scenario local-scheduled-send",
@@ -215,6 +218,14 @@ async function run() {
     await runLocalCreateSpaceScenario();
     return;
   }
+  if (guiScenario === "local-logout-relogin") {
+    await runLocalLogoutReloginScenario();
+    return;
+  }
+  if (guiScenario === "local-spaces-nav") {
+    await runLocalSpacesNavScenario();
+    return;
+  }
   if (guiScenario === "local-invites-dm") {
     await runLocalInvitesDmScenario();
     return;
@@ -249,6 +260,10 @@ async function run() {
   }
   if (guiScenario === "local-message-actions") {
     await runLocalMessageActionsScenario();
+    return;
+  }
+  if (guiScenario === "local-pins") {
+    await runLocalPinsScenario();
     return;
   }
   if (guiScenario === "local-message-types") {
@@ -355,7 +370,7 @@ async function runSignedOutScenario() {
     await waitForDbusMonitorToken(dbusMonitor, timeoutMs);
     console.log("notification_dbus=ok");
 
-    console.log(`run_dir=${runDir}`);
+    console.log("run_dir=artifact");
   } finally {
     try {
       if (dbusMonitor) {
@@ -366,8 +381,6 @@ async function runSignedOutScenario() {
         await safeDeleteSession(browser);
       }
       if (appLaunched) {
-        const windowStatePath = join(dataDir, "app-shell", "window-state.json");
-        console.log(`window_state_path=${windowStatePath}`);
         console.log("window_state_path_contract=ok");
       }
     } finally {
@@ -481,6 +494,90 @@ async function runLocalCreateSpaceScenario() {
     );
     await recordLocalGuiEvidence(session);
     console.log("gui_local_create_space=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalLogoutReloginScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    await requestQaLogout(session.qaControlPipePath);
+    await waitForSignedOutTitle(session.browser, timeoutMs);
+    await waitForAuthScreen(session.browser, timeoutMs);
+    console.log("gui_local_logout=ok");
+
+    await submitLoginForm(session.browser, session.credentials, timeoutMs);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_relogin=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalSpacesNavScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+
+    const baselineSpaces = parseQaTitle(
+      await session.browser.execute(() => document.title)
+    ).spaces;
+    const spaceName = `QA Nav Space ${safeTimestamp()}`;
+    const createButton = await session.browser.$('button[aria-label="Create space"]');
+    await createButton.waitForDisplayed({ timeout: timeoutMs });
+    await createButton.click();
+    const nameInput = await session.browser.$('input[aria-label="Space name"]');
+    await nameInput.waitForDisplayed({ timeout: timeoutMs });
+    await nameInput.setValue(spaceName);
+    const submit = await session.browser.$('button[aria-label="Submit create space"]');
+    await submit.click();
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.spaces > baselineSpaces,
+      timeoutMs,
+      "local GUI spaces navigation create"
+    );
+    await waitForWorkspaceButton(session.browser, spaceName, timeoutMs, "created space");
+
+    await clickWorkspaceButton(session.browser, "Home", timeoutMs, "local GUI spaces home");
+    await waitForWorkspaceActive(session.browser, "Home", true, timeoutMs, "local GUI spaces home");
+    console.log("gui_local_spaces_home=ok");
+
+    await clickWorkspaceButton(session.browser, spaceName, timeoutMs, "local GUI spaces select");
+    await waitForWorkspaceActive(
+      session.browser,
+      spaceName,
+      true,
+      timeoutMs,
+      "local GUI spaces select"
+    );
+    console.log("gui_local_spaces_nav=ok");
+
+    const spaceInfo = await session.browser.$('button[aria-label="Space info and settings"]');
+    await spaceInfo.waitForDisplayed({ timeout: timeoutMs });
+    await spaceInfo.click();
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.panel === "spaceInfo",
+      timeoutMs,
+      "local GUI spaces info panel"
+    );
+    await waitForDocumentText(
+      session.browser,
+      [spaceName],
+      timeoutMs,
+      "local GUI spaces info panel"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_spaces_info=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -1074,7 +1171,7 @@ async function runLocalMessageActionsScenario() {
     await closeSource.waitForDisplayed({ timeout: timeoutMs });
     await closeSource.click();
 
-    const baselineMessages = await elementCount(session.browser, ".message");
+    const baselineMessages = await elementCount(session.browser, ".message[data-event-id]");
     const forwardActionButton = await waitForLatestMessageActionButton(session.browser, timeoutMs);
     await forwardActionButton.moveTo();
     await forwardActionButton.waitForDisplayed({ timeout: timeoutMs });
@@ -1083,7 +1180,7 @@ async function runLocalMessageActionsScenario() {
     await clickVisibleMenuItemByText(session.browser, "QA Seed Room", timeoutMs);
     await waitForElementCountGreaterThan(
       session.browser,
-      ".message",
+      ".message[data-event-id]",
       baselineMessages,
       timeoutMs,
       "local GUI message forward"
@@ -1162,6 +1259,53 @@ async function runLocalMessageActionsScenario() {
 
     await recordLocalGuiEvidence(session);
     console.log("gui_local_hide_redacted=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function runLocalPinsScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session.browser, timeoutMs);
+    await selectRoomByName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForActiveRoomName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForQaTitle(
+      session.browser,
+      (status) => status.timeline_room === true && status.timeline_subscribed === true,
+      timeoutMs,
+      "local GUI pins timeline room"
+    );
+    await waitForTimelineViewMounted(session.browser, timeoutMs);
+
+    const row = await waitForLatestEventMessageRow(
+      session.browser,
+      timeoutMs,
+      "local GUI pin target"
+    );
+    await row.moveTo();
+    await clickVisibleButtonByAriaLabelInElement(
+      row,
+      "Pin message",
+      timeoutMs,
+      "local GUI pin message"
+    );
+    await waitForPinnedRegionVisible(session.browser, timeoutMs, "local GUI pin set");
+    console.log("gui_local_pin_set=ok");
+
+    await row.moveTo();
+    await clickVisibleButtonByAriaLabelInElement(
+      row,
+      "Unpin message",
+      timeoutMs,
+      "local GUI unpin message"
+    );
+    await waitForPinnedRegionCleared(session.browser, timeoutMs, "local GUI pin clear");
+
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_pin_removed=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -2362,6 +2506,46 @@ async function waitForElementCount(browser, selector, expected, timeout, descrip
   );
 }
 
+async function waitForPinnedRegionVisible(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    lastDiagnostics = await pinnedRegionDiagnostics(browser);
+    if (lastDiagnostics.regionCount > 0) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} did not render pinned region: ${JSON.stringify(lastDiagnostics)}`);
+}
+
+async function waitForPinnedRegionCleared(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    lastDiagnostics = await pinnedRegionDiagnostics(browser);
+    if (lastDiagnostics.regionCount === 0) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} did not clear pinned region: ${JSON.stringify(lastDiagnostics)}`);
+}
+
+async function pinnedRegionDiagnostics(browser) {
+  return browser.execute(() => {
+    const regions = Array.from(
+      document.querySelectorAll('section.pinned-events[aria-label="Pinned messages"]')
+    );
+    return {
+      title: document.title,
+      regionCount: regions.length,
+      pinButtons: document.querySelectorAll('button[aria-label="Pin message"]').length,
+      unpinButtons: document.querySelectorAll('button[aria-label="Unpin message"]').length
+    };
+  });
+}
+
 async function waitForRoomManagementTopic(browser, expectedTopic, timeout, description) {
   const startedAt = Date.now();
   let matched = false;
@@ -2506,6 +2690,80 @@ async function selectRoomByName(browser, roomName, timeout) {
   );
   await roomButton.waitForDisplayed({ timeout });
   await roomButton.click();
+}
+
+async function waitForWorkspaceButton(browser, label, timeout, description) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await workspaceButtonState(browser, label);
+    if (lastState.exists) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} workspace button did not appear. Last state=${JSON.stringify(lastState)}`
+  );
+}
+
+async function waitForWorkspaceActive(browser, label, expected, timeout, description) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await workspaceButtonState(browser, label);
+    if (lastState.exists && lastState.active === expected) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} workspace active state did not become ${expected}. Last state=${JSON.stringify(
+      lastState
+    )}`
+  );
+}
+
+async function clickWorkspaceButton(browser, label, timeout, description) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await browser.execute((targetLabel) => {
+      const rail = document.querySelector(".workspace-rail");
+      const button = Array.from(rail?.querySelectorAll("button") ?? []).find(
+        (candidate) => candidate.getAttribute("aria-label") === targetLabel
+      );
+      if (!(button instanceof HTMLButtonElement)) {
+        return { clicked: false, exists: false };
+      }
+      button.click();
+      return {
+        clicked: true,
+        exists: true,
+        active: button.classList.contains("is-active")
+      };
+    }, label);
+    if (lastState?.clicked) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} workspace button was not clickable. Last state=${JSON.stringify(lastState)}`
+  );
+}
+
+async function workspaceButtonState(browser, label) {
+  return browser.execute((targetLabel) => {
+    const rail = document.querySelector(".workspace-rail");
+    const button = Array.from(rail?.querySelectorAll("button") ?? []).find(
+      (candidate) => candidate.getAttribute("aria-label") === targetLabel
+    );
+    return {
+      exists: button instanceof HTMLButtonElement,
+      active: button instanceof HTMLButtonElement && button.classList.contains("is-active")
+    };
+  }, label);
 }
 
 async function waitForActiveRoomName(browser, roomName, timeout) {
@@ -2774,6 +3032,62 @@ async function clickVisibleButtonByAriaLabel(browser, label, timeout, descriptio
   );
 }
 
+async function clickVisibleButtonByAriaLabelInElement(element, label, timeout, description) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await element.execute((root, targetLabel) => {
+      const visible = (candidate) => {
+        const style = window.getComputedStyle(candidate);
+        const rect = candidate.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity) !== 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const labelFor = (candidate) =>
+        candidate?.getAttribute("aria-label") ??
+        candidate?.textContent?.replace(/\s+/g, " ").trim() ??
+        "";
+      const buttons = Array.from(root.querySelectorAll("button"));
+      const labels = buttons.map(labelFor).filter(Boolean);
+      const target = buttons.find(
+        (button) => button.getAttribute("aria-label") === targetLabel && visible(button)
+      );
+      if (!target) {
+        return { clicked: false, reason: "missing", labels };
+      }
+      target.scrollIntoView({ block: "center", inline: "center" });
+      const rect = target.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const topElement = document.elementFromPoint(centerX, centerY);
+      if (topElement !== target && !target.contains(topElement)) {
+        return {
+          clicked: false,
+          reason: "covered",
+          labels,
+          topLabel: labelFor(topElement),
+          topTag: topElement?.tagName ?? null,
+          topClass: topElement instanceof HTMLElement ? topElement.className : null
+        };
+      }
+      target.click();
+      return { clicked: true, labels };
+    }, label);
+    if (lastState?.clicked) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} button with aria-label ${label} was not clickable in target row. Last state=${JSON.stringify(lastState)}`
+  );
+}
+
 async function clickMenuItemByText(browser, label, timeout) {
   const menuItemSelector = 'button[role="menuitem"]';
   const startedAt = Date.now();
@@ -2914,6 +3228,22 @@ async function clickLatestMessageRedactButtonByText(browser, bodyText, timeout) 
   const redactButton = await row.$('button[aria-label="Redact message"]');
   await redactButton.waitForDisplayed({ timeout });
   await redactButton.click();
+}
+
+async function waitForLatestEventMessageRow(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastDiagnostics = null;
+  while (Date.now() - startedAt < timeout) {
+    const rows = await browser.$$(".message[data-event-id]");
+    if (rows.length > 0) {
+      return rows[rows.length - 1];
+    }
+    lastDiagnostics = await messageActionDiagnostics(browser);
+    await sleep(250);
+  }
+  throw new Error(
+    `${description} event row was not found. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
+  );
 }
 
 async function waitForLatestEventMessageRowByText(browser, bodyText, timeout, description) {
@@ -3283,6 +3613,7 @@ async function startLocalGuiScenario() {
     dbusMonitor: null,
     dbusSession: null,
     logPath,
+    qaControlPipePath: null,
     qaLoginPipePath: null,
     runDir,
     serverProcess: null,
@@ -3525,8 +3856,16 @@ async function startLocalGuiScenario() {
 
     session.qaLoginPipePath = join(appDataDir, "qa-login.pipe");
     createNamedPipe(session.qaLoginPipePath);
+    if (guiScenario === "local-logout-relogin") {
+      session.qaControlPipePath = join(appDataDir, "qa-control.pipe");
+      createNamedPipe(session.qaControlPipePath);
+    }
 
-    const baseEnv = childEnvironment(appDataDir, session.qaLoginPipePath);
+    const baseEnv = childEnvironment(
+      appDataDir,
+      session.qaLoginPipePath,
+      session.qaControlPipePath
+    );
     session.dbusSession = ensureDbusSession(logPath, baseEnv);
     session.buildEnv = {
       ...baseEnv,
@@ -3609,10 +3948,8 @@ async function recordLocalGuiEvidence(session) {
   await waitForDbusMonitorToken(session.dbusMonitor, timeoutMs);
   console.log("notification_dbus=ok");
 
-  const windowStatePath = join(session.appDataDir, "app-shell", "window-state.json");
-  console.log(`window_state_path=${windowStatePath}`);
   console.log("window_state_path_contract=ok");
-  console.log(`run_dir=${session.runDir}`);
+  console.log("run_dir=artifact");
 }
 
 async function waitForAuthScreen(browser, timeout) {
@@ -3696,6 +4033,36 @@ async function writeLocalLoginPipe(path, credentials) {
   await writeSensitivePayloadToPath(path, payload, 10000);
 }
 
+async function requestQaLogout(path) {
+  if (!path) {
+    throw new Error("local GUI logout scenario requires a QA control pipe");
+  }
+  const payload = JSON.stringify({ command: "logout" }) + "\n";
+  await writeSensitivePayloadToPath(path, payload, 10000);
+}
+
+async function submitLoginForm(browser, credentials, timeout) {
+  const homeserverInput = await browser.$('input[name="homeserver"]');
+  await homeserverInput.waitForDisplayed({ timeout });
+  await homeserverInput.setValue(credentials.homeserver);
+
+  const usernameInput = await browser.$('input[name="username"]');
+  await usernameInput.waitForDisplayed({ timeout });
+  await usernameInput.setValue(credentials.username);
+
+  const passwordInput = await browser.$('input[name="password"]');
+  await passwordInput.waitForDisplayed({ timeout });
+  await passwordInput.setValue(credentials.password);
+
+  const deviceNameInput = await browser.$('input[name="deviceName"]');
+  await deviceNameInput.waitForDisplayed({ timeout });
+  await deviceNameInput.setValue(`${credentials.deviceName} Relogin`);
+
+  const submit = await browser.$("button.auth-submit");
+  await submit.waitForDisplayed({ timeout });
+  await submit.click();
+}
+
 function createNamedPipe(path) {
   execFileSync("mkfifo", [path], { stdio: "ignore" });
 }
@@ -3757,7 +4124,7 @@ function checkLinuxTools() {
   }
 }
 
-function childEnvironment(dataDir, qaLoginPipePath = null) {
+function childEnvironment(dataDir, qaLoginPipePath = null, qaControlPipePath = null) {
   const allowedKeys = [
     "AR",
     "CARGO_HOME",
@@ -3813,6 +4180,9 @@ function childEnvironment(dataDir, qaLoginPipePath = null) {
     env.MATRIX_DESKTOP_QA_LOGIN_PIPE = qaLoginPipePath;
   } else if (realLoginFromStdin) {
     env.MATRIX_DESKTOP_QA_LOGIN_PIPE = join(dataDir, "qa-login.pipe");
+  }
+  if (qaControlPipePath) {
+    env.MATRIX_DESKTOP_QA_CONTROL_PIPE = qaControlPipePath;
   }
   Object.assign(env, nssWrapperEnvironment(dataDir));
   return env;
@@ -4015,7 +4385,9 @@ function parseQaTitle(title) {
     if (!value) {
       continue;
     }
-    if (["rooms", "spaces", "timeline_items", "errors", "unread", "badge"].includes(key)) {
+    if (
+      ["rooms", "spaces", "timeline_items", "pinned", "pin_ops", "errors", "unread", "badge"].includes(key)
+    ) {
       status[key] = Number(value);
     } else if (["active_room", "timeline_room", "timeline_subscribed"].includes(key)) {
       status[key] = value === "true";

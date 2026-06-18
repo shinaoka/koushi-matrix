@@ -13,7 +13,7 @@ import type {
   RoomNotificationSettings,
   RoomSettingChange,
   RoomSummary,
-  SettingsPatch,
+  LinkPreviewSettingsState,
   SettingsState,
   SpaceSummary
 } from "../domain/types";
@@ -25,6 +25,7 @@ export function RoomInfoPanel({
   roomManagement,
   roomNotificationSettings,
   appSettings,
+  linkPreviewSettings,
   spaces,
   onInvitePeople,
   onIgnoreUser,
@@ -36,7 +37,7 @@ export function RoomInfoPanel({
   onSetRoomNotificationMode,
   onUpdateMemberRole,
   onUpdateRoomSetting,
-  onUpdateSettings
+  onSetRoomUrlPreviewOverride
 }: {
   currentUserId?: string | null;
   ignoredUserIds?: string[];
@@ -44,6 +45,7 @@ export function RoomInfoPanel({
   roomManagement?: RoomManagementState;
   roomNotificationSettings: RoomNotificationSettings | undefined;
   appSettings?: SettingsState;
+  linkPreviewSettings?: LinkPreviewSettingsState;
   spaces: SpaceSummary[];
   onInvitePeople?: () => void;
   onIgnoreUser?: (userId: string) => void;
@@ -60,15 +62,16 @@ export function RoomInfoPanel({
   onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onUpdateMemberRole?: (roomId: string, targetUserId: string, powerLevel: number) => void;
-  onUpdateSettings?: (patch: SettingsPatch) => void;
+  onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
 }) {
   const roomId = room?.room_id ?? "";
   const roomName = room?.display_label ?? "";
   const isEncrypted = room?.is_encrypted ?? false;
-  const roomOverride = appSettings?.values.room_url_previews[roomId];
+  const globalUrlPreviewsEnabled = appSettings?.values.display.url_previews_enabled ?? true;
+  const roomOverride = linkPreviewSettings?.room_overrides[roomId];
   const roomUrlPreviewsEnabled = isEncrypted
     ? roomOverride === true
-    : roomOverride !== false;
+    : roomOverride ?? globalUrlPreviewsEnabled;
   const canToggleRoomUrlPreviews = !isEncrypted || roomUrlPreviewsEnabled;
   const parentSpaces = room
     ? spaces.filter((space) => room.parent_space_ids.includes(space.space_id))
@@ -174,7 +177,7 @@ export function RoomInfoPanel({
         </div>
       </section>
 
-      {appSettings && onUpdateSettings ? (
+      {appSettings && linkPreviewSettings && onSetRoomUrlPreviewOverride ? (
         <section className="settings-section" aria-label={t("settings.urlPreviews")}>
           <h3>{t("settings.urlPreviews")}</h3>
           <button
@@ -184,11 +187,7 @@ export function RoomInfoPanel({
             aria-checked={roomUrlPreviewsEnabled}
             disabled={!canToggleRoomUrlPreviews}
             onClick={() => {
-              onUpdateSettings({
-                room_url_previews: {
-                  [roomId]: !roomUrlPreviewsEnabled
-                }
-              });
+              onSetRoomUrlPreviewOverride(roomId, !roomUrlPreviewsEnabled);
             }}
           >
             <span className="settings-toggle-copy">

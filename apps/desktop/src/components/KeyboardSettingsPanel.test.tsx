@@ -30,8 +30,7 @@ describe("KeyboardSettingsPanel", () => {
           target_long_edge: 2048,
           quality_percent: 82
         }
-      },
-            room_url_previews: {}
+      }
           },
           persistence: { kind: "idle" }
         }}
@@ -74,8 +73,7 @@ describe("KeyboardSettingsPanel", () => {
           target_long_edge: 2048,
           quality_percent: 82
         }
-      },
-            room_url_previews: {}
+      }
           },
           persistence: { kind: "saving", request_id: 7 }
         }}

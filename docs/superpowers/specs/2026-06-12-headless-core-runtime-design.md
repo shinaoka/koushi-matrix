@@ -6,7 +6,7 @@ move the current implementation toward the normative architecture in
 
 ## Scope
 
-This design defines the final architecture for Ruri's non-UI runtime. It covers the in-process headless actor runtime, GUI/logic separation, command/event/state boundaries, sync lifecycle, room operations, timeline operations, local homeserver QA, real homeserver QA, and security gates.
+This design defines the final architecture for Kagome's non-UI runtime. It covers the in-process headless actor runtime, GUI/logic separation, command/event/state boundaries, sync lifecycle, room operations, timeline operations, local homeserver QA, real homeserver QA, and security gates.
 
 This design does not define Element-style visual layout, shortcut mapping, settings placement, or other UI presentation details. Those should be designed on top of this runtime boundary.
 

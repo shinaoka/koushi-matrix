@@ -799,7 +799,7 @@ stateDiagram-v2
   in-flight request id. Stale or duplicate completions are ignored. Failures
   also emit `ErrorChanged`.
 - Local user aliases are personal "only I see this name" data persisted as
-  private global account data under `app.ruri.local_aliases`. `AccountActor`
+  private global account data under `app.kagome.local_aliases`. `AccountActor`
   hydrates them after login/restore, and `SetLocalUserAlias` writes them through
   the SDK account-data boundary. They never become Matrix profile updates,
   room events, outgoing message content, notification text, or QA tokens.
@@ -896,9 +896,11 @@ stateDiagram-v2
   not keep a dedicated report pending state.
 - GUI code may open a lightweight reason dialog for report actions, but it must
   not log or display the reason, target user ids, event ids, or room ids in
-  diagnostics or QA tokens. Headless QA evidence uses private-data-free tokens
-  such as `ignore_user=ok`, `unignore_user=ok`, `report_user=ok`,
-  `report_content=ok`, and `report_room=ok`.
+  diagnostics or QA tokens. Browser-headless GUI evidence for these affordances
+  should use private-data-free tokens such as `ignore_user=ok`,
+  `unignore_user=ok`, `report_user=ok`, `report_content=ok`, and
+  `report_room=ok` when that lane is added; there is no separate core
+  ignore/report QA scenario at this point.
 
 ## Live Signals
 
@@ -1470,9 +1472,9 @@ stateDiagram-v2
   the public SDK export API does not return a count. File paths, passphrases,
   and file contents are native/Tauri/account-actor boundary values.
 - Manual room-key file transfer uses the Matrix key-export file format that
-  Element clients use. Ruri must not wrap the encrypted Megolm session data in a
-  custom JSON/archive format, and must not parse/decrypt the export file only
-  to derive UI metadata.
+  Element clients use. Kagome must not wrap the encrypted Megolm session data
+  in a custom JSON/archive format, and must not parse/decrypt the export file
+  only to derive UI metadata.
 - Secure-backup setup and passphrase-change state may report recovery-key
   delivery status, but recovery-key material itself never reaches reducer state,
   DTO snapshots, React state, logs, QA tokens, or issue comments.

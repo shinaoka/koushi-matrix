@@ -37,16 +37,15 @@ pub struct LinkPreviewContext {
 }
 
 impl LinkPreviewContext {
-    /// Build a context from application settings. Per-room overrides are kept
-    /// in `room_overrides`; `room_enabled` is left `None` and resolved per-room
-    /// via `for_room`.
+    /// Build a context from persisted application settings. Per-room overrides
+    /// are runtime state and are supplied by policy broadcasts.
     pub fn from_settings(values: &matrix_desktop_state::SettingsValues) -> Self {
         Self {
             global_enabled: values.display.url_previews_enabled,
             room_enabled: None,
             hidden_event_ids: BTreeSet::new(),
             cache: HashMap::new(),
-            room_overrides: values.room_url_previews.clone(),
+            room_overrides: BTreeMap::new(),
         }
     }
 

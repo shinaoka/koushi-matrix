@@ -44,8 +44,32 @@ export function assertNoMatrixIdentifiers(output, label) {
   const matrixIdPattern = /(?:^|[\s=])([@!$][A-Za-z0-9._=\-]+:[A-Za-z0-9.\-]+)(?:\s|$)/;
   const match = text.match(matrixIdPattern);
   if (match) {
-    throw new Error(
-      `${label}: private Matrix identifier leaked into QA output: ${match[1]}`
-    );
+    throw new Error(`${label}: private Matrix identifier leaked into QA output`);
+  }
+}
+
+/**
+ * Throw if a local filesystem path appears in output that may become an issue
+ * artifact. Keep the diagnostic generic so the rejection itself is shareable.
+ */
+export function assertNoLocalPaths(output, label) {
+  const text = String(output);
+  const localPathPattern =
+    /(?:^|[\s"'(=])((?:\/(?:home|Users|tmp|private\/tmp|var\/folders|workspace|runner|Volumes)\/[^\s"'<>]*)|(?:[A-Za-z]:\\[^\s"'<>]+))/;
+  if (localPathPattern.test(text)) {
+    throw new Error(`${label}: local filesystem path leaked into QA output`);
+  }
+}
+
+/**
+ * Throw on common raw SDK/runtime diagnostic shapes. Public QA output should
+ * contain stable product tokens and coarse failure kinds, not library internals.
+ */
+export function assertNoRawSdkErrors(output, label) {
+  const text = String(output);
+  const rawSdkPattern =
+    /\b(?:matrix_sdk::|ruma::|reqwest::|hyper::|SdkError|HttpError|ClientApiError|StoreError|ServerError|M_[A-Z0-9_]+)\b/;
+  if (rawSdkPattern.test(text)) {
+    throw new Error(`${label}: raw SDK diagnostic leaked into QA output`);
   }
 }

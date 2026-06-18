@@ -924,12 +924,12 @@ Expected: passes after implementation.
 
 Document the contract in a new file `docs/superpowers/specs/2026-06-17-room-notification-mode-contract.md`:
 
-Use Matrix push-rule overrides scoped to the room. Rule IDs owned by Ruri are prefixed `org.matrix.desktop.notify.room.<room_id>.` so they can be added and removed idempotently.
+Use Matrix push-rule overrides scoped to the room. Rule IDs owned by Kagome are prefixed `org.matrix.desktop.notify.room.<room_id>.` so they can be added and removed idempotently.
 
-- `All`: remove any Ruri-owned override rule for the room. Default global rules continue to apply.
-- `Mentions`: add a Ruri-owned **underride** rule at default order, matching the room by `room_id`, with action `"dont_notify"`. Because underride priority is below override/content rules, mention rules (`.m.rule.contains_display_name`, `.m.rule.contains_user_name`, `.m.rule.roomnotif`) and highlight rules still fire. The underride suppresses only the lower-priority generic message rules (`.m.rule.message`, `.m.rule.room_one_to_one`, `.m.rule.encrypted`).
-- `Mute`: add a Ruri-owned **override** rule at high priority, matching the room by `room_id`, with action `"dont_notify"`. Override priority suppresses all lower-priority rules for that room, including mentions and highlights.
-- On mode change, remove the previous Ruri-owned rule for the room before adding the new one.
+- `All`: remove any Kagome-owned override rule for the room. Default global rules continue to apply.
+- `Mentions`: add a Kagome-owned **underride** rule at default order, matching the room by `room_id`, with action `"dont_notify"`. Because underride priority is below override/content rules, mention rules (`.m.rule.contains_display_name`, `.m.rule.contains_user_name`, `.m.rule.roomnotif`) and highlight rules still fire. The underride suppresses only the lower-priority generic message rules (`.m.rule.message`, `.m.rule.room_one_to_one`, `.m.rule.encrypted`).
+- `Mute`: add a Kagome-owned **override** rule at high priority, matching the room by `room_id`, with action `"dont_notify"`. Override priority suppresses all lower-priority rules for that room, including mentions and highlights.
+- On mode change, remove the previous Kagome-owned rule for the room before adding the new one.
 - Failures map to `OperationFailureKind` coarse kinds (`network`, `timeout`, `forbidden`, `sdk`).
 - Never log raw rule IDs, room IDs, or SDK errors in QA output or Debug output.
 

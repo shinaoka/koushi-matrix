@@ -730,12 +730,7 @@ impl AppActor {
 
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, command: CoreCommand) -> bool {
-        if command.requires_ready_session()
-            && !matches!(
-                self.state.session,
-                matrix_desktop_state::SessionState::Ready(_)
-            )
-        {
+        if command.requires_ready_session() && !is_ready_session_for_commands(&self.state.session) {
             self.emit(CoreEvent::OperationFailed {
                 request_id: command.request_id(),
                 failure: CoreFailure::SessionRequired,
@@ -1113,6 +1108,21 @@ impl AppActor {
                         .reduce_app_action(AppAction::SettingsUpdateRequested {
                             request_id: request_id.sequence,
                             patch,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::SetRoomUrlPreviewOverride {
+                    request_id,
+                    room_id,
+                    enabled,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::RoomUrlPreviewOverrideSet {
+                            request_id: request_id.sequence,
+                            room_id,
+                            enabled,
                         })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
@@ -1571,6 +1581,9 @@ impl AppActor {
             self.emit_timeline_display_policy_update();
             self.broadcast_link_preview_policy().await;
         }
+        if *ui_event == UiEvent::LinkPreviewSettingsChanged {
+            self.broadcast_link_preview_policy().await;
+        }
     }
 
     async fn broadcast_link_preview_policy(&self) {
@@ -1584,7 +1597,7 @@ impl AppActor {
             },
             TimelineCommand::BroadcastLinkPreviewPolicy {
                 global_enabled: self.state.settings.values.display.url_previews_enabled,
-                room_overrides: self.state.settings.values.room_url_previews.clone(),
+                room_overrides: self.state.link_preview_settings.room_overrides.clone(),
             },
         )
         .await;
@@ -1746,6 +1759,15 @@ fn unsubscribe_replaced_timeline_key(
     replacement_key: TimelineKey,
 ) -> Option<TimelineKey> {
     current_key.filter(|current_key| current_key != &replacement_key)
+}
+
+fn is_ready_session_for_commands(session: &SessionState) -> bool {
+    matches!(
+        session,
+        SessionState::Ready(_)
+            | SessionState::NeedsRecovery { .. }
+            | SessionState::Recovering { .. }
+    )
 }
 
 fn composer_draft_session_key(state: &AppState) -> Option<matrix_desktop_key::SessionKeyId> {

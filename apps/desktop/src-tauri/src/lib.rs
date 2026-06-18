@@ -745,6 +745,7 @@ pub fn run() {
             commands::logout,
             commands::restart_sync,
             commands::update_settings,
+            commands::set_room_url_preview_override,
             commands::select_room_list_filter,
             commands::mark_room_as_read,
             commands::mark_room_as_unread,

@@ -838,6 +838,12 @@ export function App() {
     }
     return {
       ...tauriTimelineTransport,
+      async pinEvent(roomId: string, eventId: string) {
+        setSnapshot(await api.pinEvent(roomId, eventId));
+      },
+      async unpinEvent(roomId: string, eventId: string) {
+        setSnapshot(await api.unpinEvent(roomId, eventId));
+      },
       async openAtTimestamp(roomId: string, timestampMs: number) {
         const nextSnapshot = await api.openTimelineAtTimestamp(roomId, timestampMs);
         setSnapshot(nextSnapshot);
@@ -1341,6 +1347,10 @@ export function App() {
 
   async function updateSettings(patch: SettingsPatch) {
     setSnapshot(await api.updateSettings(patch));
+  }
+
+  async function setRoomUrlPreviewOverride(roomId: string, enabled: boolean) {
+    setSnapshot(await api.setRoomUrlPreviewOverride(roomId, enabled));
   }
 
   async function queryDevices() {
@@ -2521,6 +2531,9 @@ export function App() {
           }}
           onUpdateSettings={(patch) => {
             void updateSettings(patch);
+          }}
+          onSetRoomUrlPreviewOverride={(roomId, enabled) => {
+            void setRoomUrlPreviewOverride(roomId, enabled);
           }}
           onQueryDevices={() => {
             void queryDevices();
@@ -5574,6 +5587,7 @@ export function ContextualRightPanel({
   onSubmitIdentityResetOAuth,
   onSubmitIdentityResetPassword,
   onUpdateSettings = () => undefined,
+  onSetRoomUrlPreviewOverride = () => undefined,
   onUpdateRoomSetting = () => undefined,
   onIgnoreUser = () => undefined,
   onUnignoreUser = () => undefined,
@@ -5652,6 +5666,7 @@ export function ContextualRightPanel({
   onSubmitIdentityResetOAuth: (flowId: number) => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onUpdateSettings?: (patch: SettingsPatch) => void;
+  onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
   onQueryDevices?: () => void;
   onRenameDevice?: (deviceOrdinal: number, displayName: string) => void;
   onDeleteDevices?: (deviceOrdinals: number[]) => void;
@@ -5761,6 +5776,7 @@ export function ContextualRightPanel({
             activeRoom ? snapshot.state.room_notification_settings[activeRoom.room_id] : undefined
           }
           appSettings={snapshot.state.settings}
+          linkPreviewSettings={snapshot.state.link_preview_settings}
           spaces={snapshot.state.spaces}
           onInvitePeople={
             activeRoom
@@ -5784,8 +5800,8 @@ export function ContextualRightPanel({
           onSetRoomNotificationMode={onSetRoomNotificationMode}
           onUpdateMemberRole={onUpdateMemberRole}
           onUpdateRoomSetting={onUpdateRoomSetting}
-          onUpdateSettings={(patch) => {
-            void onUpdateSettings(patch);
+          onSetRoomUrlPreviewOverride={(roomId, enabled) => {
+            void onSetRoomUrlPreviewOverride(roomId, enabled);
           }}
         />
       </aside>

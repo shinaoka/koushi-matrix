@@ -18,6 +18,8 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("timeline_room=true");
     expect(title).toContain("timeline_subscribed=true");
     expect(title).toContain("timeline_items=");
+    expect(title).toContain("pinned=");
+    expect(title).toContain("pin_ops=");
     expect(title).toContain("unread=");
     expect(title).toContain("badge=");
     expect(title).toContain("notify=");
@@ -117,6 +119,43 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("focused=open");
     expect(title).not.toContain("private-room");
     expect(title).not.toContain("private-event");
+  });
+
+  test("summarizes pinned state as counts without identifiers or bodies", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const title = qaWindowTitle({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        room_interactions: {
+          "!private-room:example.test": {
+            pinned_events: [
+              {
+                event_id: "$private-event:example.test",
+                sender: "@private-user:example.test",
+                body_preview: "private body",
+                redacted: false
+              }
+            ],
+            pin_operation: {
+              kind: "pending",
+              request_id: 1,
+              room_id: "!private-room:example.test",
+              event_id: "$private-event:example.test",
+              op: "pin"
+            }
+          }
+        }
+      }
+    });
+
+    expect(title).toContain("pinned=1");
+    expect(title).toContain("pin_ops=1");
+    expect(title).not.toContain("private-room");
+    expect(title).not.toContain("private-event");
+    expect(title).not.toContain("private-user");
+    expect(title).not.toContain("private body");
   });
 
   test("includes an optional send smoke status token when provided", async () => {
