@@ -1,11 +1,9 @@
 import { composeSidebar, roomIsInScope, textRangeUtf16 } from "../domain/desktopModel";
 import type {
   AvatarThumbnailState,
-  LinkPreview,
-  LinkPreviewImage,
-  LinkPreviewState,
   TimelineMediaSource
 } from "../domain/coreEvents";
+import type { LinkPreview, LinkPreviewImage, LinkPreviewState } from "../domain/linkPreview";
 import type {
   ActivityMarkReadTarget,
   ActivityRow,

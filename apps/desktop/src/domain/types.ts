@@ -1,4 +1,4 @@
-import type { LinkPreview } from "./coreEvents";
+import type { LinkPreview } from "./linkPreview";
 
 export type SearchScopeKind = "currentRoom" | "currentSpace" | "dms" | "allRooms";
 

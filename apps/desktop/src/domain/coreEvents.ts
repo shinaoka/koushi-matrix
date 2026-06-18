@@ -26,6 +26,7 @@
  */
 
 import type { AttachmentResult, SyncMode, ThreadsListItem } from "./types";
+import type { LinkPreview } from "./linkPreview";
 
 // ---------------------------------------------------------------------------
 // Identity types
@@ -116,22 +117,7 @@ export interface TimelineMedia {
   thumbnail: TimelineMediaThumbnail | null;
 }
 
-export type LinkPreviewState = "pending" | "loading" | "ready" | "failed";
-
-export interface LinkPreviewImage {
-  source: TimelineMediaSource;
-  width?: number;
-  height?: number;
-  thumbnail: AvatarThumbnailState;
-}
-
-export interface LinkPreview {
-  url: string;
-  title?: string;
-  description?: string;
-  image?: LinkPreviewImage;
-  state: LinkPreviewState;
-}
+export type { LinkPreview, LinkPreviewImage, LinkPreviewState } from "./linkPreview";
 
 export type TimelineSendFailureReason = "recoverable" | "unrecoverable";
 
