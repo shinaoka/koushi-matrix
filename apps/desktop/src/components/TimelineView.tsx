@@ -62,6 +62,7 @@ import {
 } from "../domain/contextMenus";
 
 import type {
+  AvatarThumbnailState,
   CoreEventPayload,
   MediaTransferProgress,
   TimelineItem,
@@ -142,6 +143,10 @@ export interface TimelineTransport {
     sourceEventId: string,
     destinationRoomId: string
   ): Promise<void>;
+  /** Request Rust-owned link-preview metadata for a timeline event. */
+  loadLinkPreviews(roomId: string, eventId: string): Promise<void>;
+  /** Hide the link previews for a timeline event. */
+  hideLinkPreview(roomId: string, eventId: string): Promise<void>;
   /** Report viewport facts; Rust owns marker/count semantics. */
   observeViewport?(
     roomId: string,
@@ -176,6 +181,8 @@ export interface TimelineRowActionHandlers {
   onDownloadMedia: (roomId: string, eventId: string) => void;
   onLoadMessageSource: (roomId: string, eventId: string) => void;
   onForwardMessage: (roomId: string, sourceEventId: string, destinationRoomId: string) => void;
+  onLoadLinkPreviews: (roomId: string, eventId: string) => void;
+  onHideLinkPreview: (roomId: string, eventId: string) => void;
   onCopyText: (value: string) => void;
   onSetLocalUserAlias: (userId: string, alias: string | null) => void;
   onRetrySend: (roomId: string, transactionId: string) => void;
@@ -1300,6 +1307,18 @@ export function TimelineView({
     },
     [transport]
   );
+  const onLoadLinkPreviews = useCallback(
+    (targetRoomId: string, eventId: string) => {
+      void transport.loadLinkPreviews(targetRoomId, eventId).catch(() => undefined);
+    },
+    [transport]
+  );
+  const onHideLinkPreview = useCallback(
+    (targetRoomId: string, eventId: string) => {
+      void transport.hideLinkPreview(targetRoomId, eventId).catch(() => undefined);
+    },
+    [transport]
+  );
   const onCopyText = useCallback((value: string) => {
     void writeClipboardText(value).catch(() => undefined);
   }, []);
@@ -1638,6 +1657,8 @@ export function TimelineView({
               onDownloadMedia={onDownloadMedia}
               onLoadMessageSource={onLoadMessageSource}
               onForwardMessage={onForwardMessage}
+              onLoadLinkPreviews={onLoadLinkPreviews}
+              onHideLinkPreview={onHideLinkPreview}
               onCopyText={onCopyText}
               onOpenAliasDialog={onSetLocalUserAlias ? openAliasDialog : undefined}
               forwardDestinations={effectiveForwardDestinations}
@@ -1730,6 +1751,8 @@ export function TimelineItemRow({
   onDownloadMedia = () => undefined,
   onLoadMessageSource = () => undefined,
   onForwardMessage = () => undefined,
+  onLoadLinkPreviews = () => undefined,
+  onHideLinkPreview = () => undefined,
   onCopyText = () => undefined,
   onOpenAliasDialog,
   forwardDestinations = [],
@@ -1763,6 +1786,8 @@ export function TimelineItemRow({
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
   onLoadMessageSource?: TimelineRowActionHandlers["onLoadMessageSource"];
   onForwardMessage?: TimelineRowActionHandlers["onForwardMessage"];
+  onLoadLinkPreviews?: TimelineRowActionHandlers["onLoadLinkPreviews"];
+  onHideLinkPreview?: TimelineRowActionHandlers["onHideLinkPreview"];
   onCopyText?: TimelineRowActionHandlers["onCopyText"];
   onOpenAliasDialog?: (target: TimelineAliasTarget) => void;
   forwardDestinations?: readonly TimelineForwardDestination[];
@@ -1807,6 +1832,18 @@ export function TimelineItemRow({
   const actionMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const requestedLinkPreviewsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!eventId || !item.link_previews?.some((preview) => preview.state === "pending")) {
+      return;
+    }
+    if (requestedLinkPreviewsRef.current.has(eventId)) {
+      return;
+    }
+    requestedLinkPreviewsRef.current.add(eventId);
+    onLoadLinkPreviews(roomId, eventId);
+  }, [eventId, item.link_previews, onLoadLinkPreviews, roomId]);
 
   useEffect(() => {
     if (!isReactionPickerOpen) {
@@ -2286,6 +2323,38 @@ export function TimelineItemRow({
         ) : (
           bodyContent
         )}
+        {!isRedacted && eventId && item.link_previews && item.link_previews.length > 0 ? (
+          <div className="link-preview-cards">
+            {item.link_previews.map((preview) => (
+              <div key={preview.url} className="link-preview-card">
+                {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
+                  <img
+                    src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
+                    alt={""}
+                    className="link-preview-image"
+                  />
+                ) : null}
+                <div className="link-preview-text">
+                  {preview.title ? (
+                    <div className="link-preview-title">{preview.title}</div>
+                  ) : null}
+                  {preview.description ? (
+                    <div className="link-preview-description">{preview.description}</div>
+                  ) : null}
+                  <div className="link-preview-url">{preview.url}</div>
+                </div>
+                <button
+                  type="button"
+                  className="link-preview-hide"
+                  onClick={() => onHideLinkPreview(roomId, eventId)}
+                  aria-label={t("timeline.linkPreviewHide")}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {transactionId && sendStateKind === "notSent" ? (
           <div className="message-send-actions">
             <button className="message-send-action" type="button" onClick={submitRetrySend}>
@@ -2730,6 +2799,10 @@ function receiptInitials(receipt: LiveReadReceipt): string {
 
 function receiptAvatarSource(receipt: LiveReadReceipt): string | null {
   return receipt.avatar?.thumbnail.kind === "ready" ? receipt.avatar.thumbnail.source_url : null;
+}
+
+function thumbnailSourceUrl(thumbnail: AvatarThumbnailState): string | null {
+  return thumbnail.kind === "ready" ? thumbnail.source_url : null;
 }
 
 function formatReceiptTimestamp(timestampMs: number | null): string | null {

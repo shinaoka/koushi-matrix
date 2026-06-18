@@ -136,6 +136,8 @@ export interface DesktopApi {
     sourceEventId: string,
     destinationRoomId: string
   ): Promise<DesktopSnapshot>;
+  loadLinkPreviews(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  hideLinkPreview(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   leaveRoom(roomId: string): Promise<DesktopSnapshot>;
   forgetRoom(roomId: string): Promise<DesktopSnapshot>;
   setRoomTag(roomId: string, tag: RoomTagKind, order?: number | null): Promise<DesktopSnapshot>;
@@ -1191,6 +1193,14 @@ class BrowserFakeApi implements DesktopApi {
     _sourceEventId: string,
     _destinationRoomId: string
   ): Promise<DesktopSnapshot> {
+    return this.getSnapshot();
+  }
+
+  async loadLinkPreviews(_roomId: string, _eventId: string): Promise<DesktopSnapshot> {
+    return this.getSnapshot();
+  }
+
+  async hideLinkPreview(_roomId: string, _eventId: string): Promise<DesktopSnapshot> {
     return this.getSnapshot();
   }
 

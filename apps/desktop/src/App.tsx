@@ -368,6 +368,12 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       ) {
         await invoke("forward_message", { roomId, sourceEventId, destinationRoomId });
       },
+      async loadLinkPreviews(roomId: string, eventId: string) {
+        await invoke("load_link_previews", { roomId, eventId });
+      },
+      async hideLinkPreview(roomId: string, eventId: string) {
+        await invoke("hide_link_preview", { roomId, eventId });
+      },
       async observeViewport(
         roomId: string,
         firstVisibleEventId: string | null,

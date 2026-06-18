@@ -392,6 +392,14 @@ class TauriDesktopApi implements DesktopApi {
     });
   }
 
+  async loadLinkPreviews(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("load_link_previews", { roomId, eventId });
+  }
+
+  async hideLinkPreview(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("hide_link_preview", { roomId, eventId });
+  }
+
   async leaveRoom(roomId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("leave_room", { roomId });
   }
