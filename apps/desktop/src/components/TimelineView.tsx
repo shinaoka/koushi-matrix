@@ -2147,25 +2147,6 @@ export function TimelineItemRow({
     canSetSenderAlias || canCopyMessage || canCopyPermalink || canViewSource || canForward;
   const canShowThreadSummary = Boolean(eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
-  const sendStateLabel =
-    sendStateKind === "sending"
-      ? t("timeline.sending")
-      : sendStateKind === "notSent"
-        ? t("timeline.notSent")
-        : sendStateKind === "cancelled"
-          ? t("timeline.cancelledSend")
-          : null;
-  const messageTimestamp = formatMessageTimestamp(item.timestamp_ms);
-  const sentStateMark =
-    sendStateKind === "sent" ? (
-      <span
-        className="message-send-state"
-        data-send-state="sent"
-        aria-label={t("timeline.sent")}
-      >
-        <Check size={12} aria-hidden="true" />
-      </span>
-    ) : null;
   const avatarUrl =
     profile?.avatar?.thumbnail.kind === "ready" ? profile.avatar.thumbnail.source_url : null;
   const senderDisplayLabel = item.sender_label?.trim() || item.sender || "";
@@ -2320,31 +2301,14 @@ export function TimelineItemRow({
       </div>
       <div className="message-main">
         <div className="message-heading">
-          {presence ? (
-            <span
-              className="presence-dot message-presence"
-              data-presence={presence}
-              aria-label={presenceLabel(presence)}
-            />
-          ) : null}
-          <span className="sender" dir="auto">{senderDisplayLabel}</span>
-          {messageTimestamp ? (
-            <time className="message-timestamp" dateTime={new Date(item.timestamp_ms!).toISOString()}>
-              {messageTimestamp}
-            </time>
-          ) : null}
-          {item.is_edited && !isRedacted ? (
-            <span className="message-edited">{t("timeline.editedMessage")}</span>
-          ) : null}
-          {sendStateLabel ? (
-            <span
-              className="message-send-state"
-              data-send-state={sendStateKind ?? undefined}
-            >
-              {sendStateLabel}
-            </span>
-          ) : null}
-          {sentStateMark}
+          <MessageMeta
+            senderDisplayLabel={senderDisplayLabel}
+            timestampMs={item.timestamp_ms ?? null}
+            isEdited={item.is_edited}
+            isRedacted={isRedacted}
+            sendStateKind={sendStateKind}
+            presence={presence}
+          />
         </div>
         {replyQuoteContent}
         {mediaContent ? (
@@ -2904,6 +2868,82 @@ function mediaUploadProgressForItem(
   return getMediaUploadProgress(store, key, item.id.Transaction.transaction_id);
 }
 
+// ---------------------------------------------------------------------------
+// MessageMeta: timestamp + send-state marks (extracted for testability, #83)
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders the heading-region metadata for a timeline message row:
+ * sender label, timestamp, edited marker, send-state text labels, and the
+ * sent checkmark. All data comes from Rust-owned DTO fields; no local
+ * inference of send/edit state is performed here.
+ */
+export function MessageMeta({
+  senderDisplayLabel,
+  timestampMs,
+  isEdited,
+  isRedacted,
+  sendStateKind,
+  presence
+}: {
+  senderDisplayLabel: string;
+  timestampMs: number | null;
+  isEdited: boolean;
+  isRedacted: boolean;
+  sendStateKind: string | null;
+  presence?: import("../domain/types").PresenceKind;
+}): ReactNode {
+  const messageTimestamp = formatMessageTimestamp(timestampMs);
+  const sendStateLabel =
+    sendStateKind === "sending"
+      ? t("timeline.sending")
+      : sendStateKind === "notSent"
+        ? t("timeline.notSent")
+        : sendStateKind === "cancelled"
+          ? t("timeline.cancelledSend")
+          : null;
+  const sentStateMark =
+    sendStateKind === "sent" ? (
+      <span
+        className="message-send-state"
+        data-send-state="sent"
+        aria-label={t("timeline.sent")}
+      >
+        <Check size={12} aria-hidden="true" />
+      </span>
+    ) : null;
+
+  return (
+    <>
+      {presence ? (
+        <span
+          className="presence-dot message-presence"
+          data-presence={presence}
+          aria-label={presenceLabel(presence)}
+        />
+      ) : null}
+      <span className="sender" dir="auto">{senderDisplayLabel}</span>
+      {messageTimestamp ? (
+        <time className="message-timestamp" dateTime={new Date(timestampMs!).toISOString()}>
+          {messageTimestamp}
+        </time>
+      ) : null}
+      {isEdited && !isRedacted ? (
+        <span className="message-edited">{t("timeline.editedMessage")}</span>
+      ) : null}
+      {sendStateLabel ? (
+        <span
+          className="message-send-state"
+          data-send-state={sendStateKind ?? undefined}
+        >
+          {sendStateLabel}
+        </span>
+      ) : null}
+      {sentStateMark}
+    </>
+  );
+}
+
 function TimelineMediaAttachment({
   media,
   progress,
@@ -2934,6 +2974,7 @@ function TimelineMediaAttachment({
         className="message-media message-media-ready"
         data-media-kind={media.kind}
         data-media-encrypted={media.source.encrypted || undefined}
+        data-download-state="ready"
       >
         <img
           className="message-media-image"
@@ -2954,6 +2995,18 @@ function TimelineMediaAttachment({
             ) : null}
           </div>
         </div>
+        {canDownload ? (
+          <a
+            className="message-media-download"
+            href={mediaSourceUrl(downloadState.source_url)}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={t("timeline.mediaOpenFile")}
+            download={media.filename}
+          >
+            <Download size={15} />
+          </a>
+        ) : null}
       </div>
     );
   }
