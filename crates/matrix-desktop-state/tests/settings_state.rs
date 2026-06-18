@@ -2,7 +2,7 @@ use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AppearanceSettings, ComposerSendShortcut, DisplaySettings,
     EmojiPreference, FontPreference, ImageUploadCompressionMode, KeyboardSettings, LocaleSettings,
     MediaSettings, NotificationSettings, SettingsPatch, SettingsPersistenceState, SettingsValues,
-    TextDirectionPreference, ThemePreference, UiEvent, reduce,
+    TextDirectionPreference, ThemePreference, TimelineSettings, UiEvent, reduce,
 };
 
 fn dark_theme_patch() -> SettingsPatch {
@@ -47,15 +47,22 @@ fn app_state_carries_default_non_secret_settings() {
         state.settings.values.display,
         DisplaySettings {
             code_block_wrap: true,
-            hide_redacted: false,
+            hide_redacted: true,
             url_previews_enabled: true,
+            encrypted_url_previews_enabled: false,
         }
     );
     assert_eq!(
         state.settings.values.media,
         MediaSettings {
-            image_upload_compression: ImageUploadCompressionMode::Never,
+            image_upload_compression: ImageUploadCompressionMode::Ask,
             ..MediaSettings::default()
+        }
+    );
+    assert_eq!(
+        state.settings.values.timeline,
+        TimelineSettings {
+            auto_load_older_messages: false,
         }
     );
     assert_eq!(state.settings.persistence, SettingsPersistenceState::Idle);
@@ -90,10 +97,14 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
             code_block_wrap: false,
             hide_redacted: true,
             url_previews_enabled: true,
+            encrypted_url_previews_enabled: true,
         },
         media: MediaSettings {
             image_upload_compression: ImageUploadCompressionMode::Always,
             ..MediaSettings::default()
+        },
+        timeline: TimelineSettings {
+            auto_load_older_messages: true,
         },
     };
 
@@ -130,7 +141,7 @@ fn settings_values_deserialize_empty_display_as_default() {
 }
 
 #[test]
-fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_off() {
+fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_on() {
     let values = serde_json::from_str::<SettingsValues>(
         r#"{
   "locale": { "language_tag": null, "text_direction": "auto" },
@@ -148,24 +159,26 @@ fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_o
         values.display,
         DisplaySettings {
             code_block_wrap: false,
-            hide_redacted: false,
+            hide_redacted: true,
             url_previews_enabled: true,
+            encrypted_url_previews_enabled: false,
         }
     );
 }
 
 #[test]
-fn display_settings_deserialize_legacy_without_url_previews_as_default_on() {
+fn display_settings_deserialize_legacy_without_url_previews_as_defaults() {
     let display = serde_json::from_str::<DisplaySettings>(
         r#"{ "code_block_wrap": true, "hide_redacted": false }"#,
     )
     .expect("legacy display object should deserialize");
 
     assert!(display.url_previews_enabled);
+    assert!(!display.encrypted_url_previews_enabled);
 }
 
 #[test]
-fn settings_values_deserialize_legacy_without_media_as_default_never() {
+fn settings_values_deserialize_legacy_without_media_as_default_ask() {
     let values = serde_json::from_str::<SettingsValues>(
         r#"{
   "locale": { "language_tag": null, "text_direction": "auto" },
@@ -182,8 +195,32 @@ fn settings_values_deserialize_legacy_without_media_as_default_never() {
     assert_eq!(
         values.media,
         MediaSettings {
-            image_upload_compression: ImageUploadCompressionMode::Never,
+            image_upload_compression: ImageUploadCompressionMode::Ask,
             ..MediaSettings::default()
+        }
+    );
+}
+
+#[test]
+fn settings_values_deserialize_legacy_without_timeline_as_default_manual() {
+    let values = serde_json::from_str::<SettingsValues>(
+        r#"{
+  "locale": { "language_tag": null, "text_direction": "auto" },
+  "appearance": { "theme": "system" },
+  "typography": { "font": "system", "emoji": "system" },
+  "keyboard": { "composer_send_shortcut": "enter" },
+  "notifications": { "desktop_notifications": true, "sound": true, "badges": true },
+  "display": { "code_block_wrap": true, "hide_redacted": true },
+  "media": { "image_upload_compression": "ask" }
+}
+"#,
+    )
+    .expect("legacy settings without timeline should deserialize");
+
+    assert_eq!(
+        values.timeline,
+        TimelineSettings {
+            auto_load_older_messages: false,
         }
     );
 }
@@ -234,6 +271,7 @@ fn code_block_wrap_patch_is_rust_owned_and_persisted() {
         code_block_wrap: false,
         hide_redacted: false,
         url_previews_enabled: true,
+        encrypted_url_previews_enabled: false,
     };
 
     let effects = reduce(
@@ -271,6 +309,7 @@ fn hide_redacted_patch_is_rust_owned_and_persisted() {
         code_block_wrap: true,
         hide_redacted: true,
         url_previews_enabled: true,
+        encrypted_url_previews_enabled: false,
     };
 
     let effects = reduce(
@@ -330,6 +369,41 @@ fn image_upload_compression_patch_is_rust_owned_and_persisted() {
         vec![
             AppEffect::PersistSettings {
                 request_id: 80,
+                values: state.settings.values.clone(),
+            },
+            AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+        ]
+    );
+}
+
+#[test]
+fn timeline_auto_load_patch_is_rust_owned_and_persisted() {
+    let mut state = AppState::default();
+    let timeline_settings = TimelineSettings {
+        auto_load_older_messages: true,
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 88,
+            patch: SettingsPatch {
+                timeline: Some(timeline_settings.clone()),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert_eq!(state.settings.values.timeline, timeline_settings);
+    assert_eq!(
+        state.settings.persistence,
+        SettingsPersistenceState::Saving { request_id: 88 }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSettings {
+                request_id: 88,
                 values: state.settings.values.clone(),
             },
             AppEffect::EmitUiEvent(UiEvent::SettingsChanged),

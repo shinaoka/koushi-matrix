@@ -46,6 +46,24 @@ conflict is being resolved.
   model for the agent family before implementation continues. Code that
   diverges from canon must not land.
 
+## Root-Cause Fix Discipline
+
+- Permanent fixes must address the authoritative cause, not only the visible
+  symptom. When a bug exposes a mismatch between Rust state/reducers, core
+  actors, Tauri commands, React rendering, browser fakes, QA scripts, or docs,
+  fix the owning contract first and align adapters, fixtures, and tests to that
+  contract.
+- Ad hoc patches, UI-only repairs, fixture-only behavior, extra waits, or
+  expectation relaxations are allowed only as temporary diagnostic or
+  containment steps. They must be called out as temporary, tracked in the
+  relevant plan/worklog/issue, and removed or replaced by the root-cause fix
+  before phase exit, release gating, or landing on `main`.
+- A review finding that can be fixed either by masking the failure or by
+  correcting the underlying state machine, command/event contract, SDK adapter,
+  or QA oracle must choose the underlying correction. If that correction
+  requires a canon change, follow the Canon-First Change Protocol before code
+  continues.
+
 ## Architecture And Ownership
 
 - New Matrix behavior is headless-first and local-server-first. It lands in

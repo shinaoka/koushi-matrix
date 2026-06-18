@@ -1073,6 +1073,7 @@ export function TimelineView({
   currentUserId,
   ignoredUserIds = [],
   suppressPaginationUi = false,
+  autoLoadOlderMessages = false,
   codeBlockWrap = true,
   searchQuery = ""
 }: {
@@ -1098,6 +1099,7 @@ export function TimelineView({
   currentUserId?: string;
   ignoredUserIds?: string[];
   suppressPaginationUi?: boolean;
+  autoLoadOlderMessages?: boolean;
   codeBlockWrap?: boolean;
   searchQuery?: string;
 }) {
@@ -1435,7 +1437,7 @@ export function TimelineView({
 
   // --- Automatic backfill on scroll near the top ---
   const maybeAutoBackfill = useCallback(() => {
-    if (suppressPaginationUi) {
+    if (suppressPaginationUi || !autoLoadOlderMessages) {
       return;
     }
     const container = containerRef.current;
@@ -1460,7 +1462,7 @@ export function TimelineView({
       .finally(() => {
         backfillInFlightRef.current = false;
       });
-  }, [store, transport, suppressPaginationUi]);
+  }, [store, transport, suppressPaginationUi, autoLoadOlderMessages]);
   const onTimelineScroll = useCallback(() => {
     reportViewportObservation();
     maybeAutoBackfill();

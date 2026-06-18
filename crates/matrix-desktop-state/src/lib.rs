@@ -61,7 +61,7 @@ pub use state::{
     SettingsPatch, SettingsPersistenceState, SettingsState, SettingsValues, SoftLogoutReauthState,
     SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, SyncMode,
     SyncModeFailureKind, SyncState, TextDirectionPreference, TextRange, ThemePreference,
-    ThreadAttentionState, ThreadPaneState, ThreadsListItem, ThreadsListState,
+    ThreadAttentionState, ThreadPaneState, ThreadsListItem, ThreadsListState, TimelineSettings,
     TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
     TimelineMediaGalleryThumbnail, TimelineMediaKind, TimelinePaneState, TrustOperationFailureKind,
     TypographySettings, UploadStagingStore, UserProfile, VerificationCancelReason,

@@ -586,6 +586,9 @@ pub enum AppAction {
     SelectSpace {
         space_id: Option<String>,
     },
+    ReorderSpaces {
+        space_ids: Vec<String>,
+    },
     SelectRoom {
         room_id: String,
     },

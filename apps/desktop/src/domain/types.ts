@@ -73,6 +73,7 @@ export interface SettingsValues {
   notifications: NotificationSettings;
   display: DisplaySettings;
   media: MediaSettings;
+  timeline: TimelineSettings;
 }
 
 export interface SettingsPatch {
@@ -83,6 +84,7 @@ export interface SettingsPatch {
   notifications?: NotificationSettings;
   display?: DisplaySettings;
   media?: MediaSettings;
+  timeline?: TimelineSettings;
 }
 
 export interface LocaleSettings {
@@ -153,11 +155,16 @@ export interface DisplaySettings {
   code_block_wrap: boolean;
   hide_redacted: boolean;
   url_previews_enabled: boolean;
+  encrypted_url_previews_enabled: boolean;
 }
 
 export interface MediaSettings {
   image_upload_compression: ImageUploadCompressionMode;
   image_upload_compression_policy: ImageUploadCompressionPolicy;
+}
+
+export interface TimelineSettings {
+  auto_load_older_messages: boolean;
 }
 
 export type ImageUploadCompressionMode = "always" | "ask" | "never";
@@ -396,6 +403,8 @@ export interface RoomNotificationSettings {
 export interface NavigationState {
   active_space_id: string | null;
   active_room_id: string | null;
+  space_order?: string[];
+  last_room_by_space_id?: Record<string, string>;
 }
 
 export interface ProfileState {
@@ -484,6 +493,8 @@ export interface RoomSummary {
   unread_count: number;
   notification_count?: number;
   highlight_count?: number;
+  marked_unread?: boolean;
+  last_activity_ms?: number;
   parent_space_ids: string[];
   is_encrypted: boolean;
 }
@@ -738,6 +749,7 @@ export type StagedUploadKind =
 
 export type StagedUploadCompressionChoice =
   | { kind: "notApplicable" }
+  | { kind: "ask" }
   | { kind: "original" }
   | { kind: "compressed"; mode: ImageUploadCompressionMode };
 
@@ -1314,6 +1326,7 @@ export interface VisibleRooms {
 
 export interface RoomListSections {
   favourites: RoomListItem[];
+  invites: RoomListItem[];
   rooms: RoomListItem[];
   people: RoomListItem[];
   lowPriority: RoomListItem[];

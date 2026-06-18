@@ -1104,6 +1104,7 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
         navigation: NavigationState {
             active_space_id: None,
             active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
         },
         rooms: vec![room("room-a")],
         timeline: TimelinePaneState {

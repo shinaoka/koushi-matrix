@@ -18,9 +18,6 @@ export function KeyboardSettingsPanel({
 }) {
   const selectedSendShortcut = settings.values.keyboard.composer_send_shortcut;
   const isSaving = settings.persistence.kind === "saving";
-  const modEnterLabel = t("shortcut.modEnterSends", {
-    shortcut: formatModShortcut("Enter", labelProfile)
-  });
 
   return (
     <section className="settings-panel keyboard-settings" aria-labelledby="keyboard-settings-title">
@@ -30,6 +27,33 @@ export function KeyboardSettingsPanel({
           <p>{t("settings.keyboardDescription")}</p>
         </div>
       </header>
+      <KeyboardSettingsContent
+        isSaving={isSaving}
+        labelProfile={labelProfile}
+        selectedSendShortcut={selectedSendShortcut}
+        onUpdateSettings={onUpdateSettings}
+      />
+    </section>
+  );
+}
+
+export function KeyboardSettingsContent({
+  isSaving,
+  labelProfile,
+  selectedSendShortcut,
+  onUpdateSettings
+}: {
+  isSaving: boolean;
+  labelProfile?: ShortcutLabelProfile;
+  selectedSendShortcut: ComposerSendShortcut;
+  onUpdateSettings: (patch: SettingsPatch) => void;
+}) {
+  const modEnterLabel = t("shortcut.modEnterSends", {
+    shortcut: formatModShortcut("Enter", labelProfile)
+  });
+
+  return (
+    <>
       <section className="settings-section" aria-label={t("shortcut.composerSendShortcut")}>
         <div className="settings-section-heading">
           <h3>{t("shortcut.composerSendShortcut")}</h3>
@@ -62,7 +86,7 @@ export function KeyboardSettingsPanel({
           </section>
         ))}
       </div>
-    </section>
+    </>
   );
 }
 

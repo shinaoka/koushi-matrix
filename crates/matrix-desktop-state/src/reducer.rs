@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
 const SETTINGS_LOAD_FAILED_MESSAGE: &str = "Settings could not be loaded";
@@ -1083,7 +1083,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             };
             let default_enabled = if room.is_encrypted {
-                false
+                state.settings.values.display.encrypted_url_previews_enabled
             } else {
                 state.settings.values.display.url_previews_enabled
             };
@@ -1608,6 +1608,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             let own_user_id = session_user_id(state).map(str::to_owned);
             let mut rooms = rooms;
+            let mut spaces = spaces;
             crate::state::refresh_room_summary_display_projection(
                 &mut rooms,
                 &state.profile,
@@ -1618,8 +1619,11 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 .map(|room| room.room_id.clone())
                 .collect::<BTreeSet<_>>();
             let had_active_room_before_update = state.navigation.active_room_id.is_some();
+            reconcile_space_order(&mut state.navigation.space_order, &spaces);
+            apply_space_order(&mut spaces, &state.navigation.space_order);
             state.spaces = spaces;
             state.rooms = rooms;
+            retain_navigation_room_memory(state);
             state.room_list = compute_room_list_projection(
                 state.room_list.active_filter,
                 state.room_list.sort,
@@ -1683,7 +1687,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             if had_active_room_before_update
                 && state.navigation.active_room_id.is_none()
                 && state.navigation.active_space_id.is_some()
-                && let Some(room_id) = first_room_id_in_active_space(state)
+                && let Some(room_id) = preferred_room_id_in_active_space(state)
             {
                 select_active_room_after_room_list_update(state, &mut effects, room_id);
             }
@@ -2151,7 +2155,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         AppAction::DirectoryJoinSucceeded {
             request_id,
-            room_id: _,
+            room_id,
         } => {
             if !matches!(
                 &state.directory.join,
@@ -2163,8 +2167,43 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            let previous_active_space_id = state.navigation.active_space_id.clone();
+            let had_thread = state.thread != ThreadPaneState::Closed
+                || state.thread_attention != ThreadAttentionState::Closed;
+            let had_threads_list = state.threads_list != ThreadsListState::Closed;
             state.directory.join = DirectoryJoinState::Idle;
-            vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
+            state.navigation.active_space_id = None;
+            state.navigation.active_room_id = Some(room_id.clone());
+            state.timeline = TimelinePaneState {
+                room_id: Some(room_id.clone()),
+                is_subscribed: false,
+                is_paginating_backwards: false,
+                composer: state.composer_drafts.composer_for_room(&room_id),
+                scheduled_send_capability: state.scheduled_sends.capability.clone(),
+                scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
+                staged_uploads: state.upload_staging.items_for_room(&room_id),
+                media_gallery: state.media_gallery.items_for_room(&room_id),
+            };
+            state.thread = ThreadPaneState::Closed;
+            state.thread_attention = ThreadAttentionState::Closed;
+            state.threads_list = ThreadsListState::Closed;
+            state.focused_context = FocusedContextState::Closed;
+
+            let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)];
+            if previous_active_space_id.is_some() {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+            }
+            effects.push(AppEffect::SubscribeTimeline {
+                room_id: room_id.clone(),
+            });
+            effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
+            if had_thread {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+            }
+            if had_threads_list {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+            }
+            effects
         }
         AppAction::DirectoryJoinFailed {
             request_id,
@@ -2690,45 +2729,76 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 return Vec::new();
             }
 
+            remember_active_room_for_current_space(state);
+            let previous_room_id = state.navigation.active_room_id.clone();
             state.navigation.active_space_id = space_id
                 .filter(|space_id| state.spaces.iter().any(|space| space.space_id == *space_id));
-            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+            let target_room_id = match state.navigation.active_space_id.as_deref() {
+                Some(space_id) => preferred_room_id_in_space(state, space_id),
+                None => first_default_room_id(state),
+            };
+            let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
+            if target_room_id != state.navigation.active_room_id {
+                match target_room_id {
+                    Some(room_id) => {
+                        select_active_room_for_navigation(state, &mut effects, room_id);
+                    }
+                    None => {
+                        if let Some(previous_room_id) = previous_room_id {
+                            clear_active_room_for_navigation(state, &mut effects, previous_room_id);
+                        }
+                    }
+                }
+            }
+            remember_active_room_for_current_space(state);
+            effects
         }
-        AppAction::SelectRoom { room_id } => {
-            if !is_session_ready(state) || !state.rooms.iter().any(|room| room.room_id == room_id) {
+        AppAction::ReorderSpaces { space_ids } => {
+            if !is_session_ready(state) {
                 return Vec::new();
             }
 
-            let had_thread = state.thread != ThreadPaneState::Closed
-                || state.thread_attention != ThreadAttentionState::Closed;
-            let had_threads_list = state.threads_list != ThreadsListState::Closed;
-            state.navigation.active_room_id = Some(room_id.clone());
-            state.timeline = TimelinePaneState {
-                room_id: Some(room_id.clone()),
-                is_subscribed: false,
-                is_paginating_backwards: false,
-                composer: state.composer_drafts.composer_for_room(&room_id),
-                scheduled_send_capability: state.scheduled_sends.capability.clone(),
-                scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
-                staged_uploads: state.upload_staging.items_for_room(&room_id),
-                media_gallery: state.media_gallery.items_for_room(&room_id),
+            if !is_complete_space_order(&state.spaces, &space_ids) {
+                return Vec::new();
+            }
+
+            state.navigation.space_order = space_ids;
+            apply_space_order(&mut state.spaces, &state.navigation.space_order);
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        }
+        AppAction::SelectRoom { room_id } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+
+            let Some(selected_room) = state
+                .rooms
+                .iter()
+                .find(|room| room.room_id == room_id)
+                .cloned()
+            else {
+                return Vec::new();
             };
-            state.thread = ThreadPaneState::Closed;
-            state.thread_attention = ThreadAttentionState::Closed;
-            state.threads_list = ThreadsListState::Closed;
-            state.focused_context = FocusedContextState::Closed;
-            let mut effects = vec![
-                AppEffect::SubscribeTimeline {
-                    room_id: room_id.clone(),
-                },
-                AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
-            ];
-            if had_thread {
-                effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+
+            remember_active_room_for_current_space(state);
+            let previous_active_space_id = state.navigation.active_space_id.clone();
+            if !selected_room.is_dm {
+                let active_space_contains_selected_room = state
+                    .navigation
+                    .active_space_id
+                    .as_ref()
+                    .is_some_and(|space_id| selected_room.parent_space_ids.contains(space_id));
+                if !active_space_contains_selected_room {
+                    state.navigation.active_space_id =
+                        selected_room.parent_space_ids.first().cloned();
+                }
             }
-            if had_threads_list {
-                effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+            let mut effects = Vec::new();
+            if previous_active_space_id != state.navigation.active_space_id {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
             }
+            select_active_room_for_navigation(state, &mut effects, room_id);
+            remember_active_room_for_current_space(state);
             effects
         }
         AppAction::TimelineSubscribed { room_id } => {
@@ -4167,10 +4237,14 @@ fn first_default_room_id(state: &AppState) -> Option<String> {
 
 fn first_room_id_in_active_space(state: &AppState) -> Option<String> {
     let active_space_id = state.navigation.active_space_id.as_deref()?;
+    first_room_id_in_space(state, active_space_id)
+}
+
+fn first_room_id_in_space(state: &AppState, space_id: &str) -> Option<String> {
     let active_space = state
         .spaces
         .iter()
-        .find(|space| space.space_id == active_space_id)?;
+        .find(|space| space.space_id == space_id)?;
 
     active_space
         .child_room_ids
@@ -4182,6 +4256,136 @@ fn first_room_id_in_active_space(state: &AppState) -> Option<String> {
                 .find(|room| room.room_id == *child_room_id && !room.is_dm)
                 .map(|room| room.room_id.clone())
         })
+}
+
+fn preferred_room_id_in_active_space(state: &AppState) -> Option<String> {
+    let active_space_id = state.navigation.active_space_id.as_deref()?;
+    preferred_room_id_in_space(state, active_space_id)
+}
+
+fn preferred_room_id_in_space(state: &AppState, space_id: &str) -> Option<String> {
+    state
+        .navigation
+        .last_room_by_space_id
+        .get(space_id)
+        .filter(|room_id| room_belongs_to_space(state, room_id, space_id))
+        .cloned()
+        .or_else(|| first_room_id_in_space(state, space_id))
+}
+
+fn reconcile_space_order(
+    space_order: &mut Vec<String>,
+    spaces: &[crate::state::SpaceSummary],
+) {
+    let available_space_ids = spaces
+        .iter()
+        .map(|space| space.space_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut retained_space_ids = BTreeSet::new();
+    space_order.retain(|space_id| {
+        available_space_ids.contains(space_id.as_str())
+            && retained_space_ids.insert(space_id.clone())
+    });
+    for space in spaces {
+        if retained_space_ids.insert(space.space_id.clone()) {
+            space_order.push(space.space_id.clone());
+        }
+    }
+}
+
+fn apply_space_order(spaces: &mut [crate::state::SpaceSummary], space_order: &[String]) {
+    let position_by_space_id = space_order
+        .iter()
+        .enumerate()
+        .map(|(position, space_id)| (space_id.as_str(), position))
+        .collect::<BTreeMap<_, _>>();
+    spaces.sort_by_key(|space| {
+        position_by_space_id
+            .get(space.space_id.as_str())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+}
+
+fn is_complete_space_order(
+    spaces: &[crate::state::SpaceSummary],
+    space_ids: &[String],
+) -> bool {
+    if spaces.len() != space_ids.len() {
+        return false;
+    }
+
+    let current_space_ids = spaces
+        .iter()
+        .map(|space| space.space_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut requested_space_ids = BTreeSet::new();
+    for space_id in space_ids {
+        if !requested_space_ids.insert(space_id.as_str()) {
+            return false;
+        }
+    }
+
+    current_space_ids == requested_space_ids
+}
+
+fn room_belongs_to_space(state: &AppState, room_id: &str, space_id: &str) -> bool {
+    let Some(room) = state.rooms.iter().find(|room| room.room_id == room_id) else {
+        return false;
+    };
+    if room.is_dm {
+        return false;
+    }
+
+    state
+        .spaces
+        .iter()
+        .find(|space| space.space_id == space_id)
+        .is_some_and(|space| {
+            space
+                .child_room_ids
+                .iter()
+                .any(|child_room_id| child_room_id == room_id)
+        })
+}
+
+fn remember_active_room_for_current_space(state: &mut AppState) {
+    let Some(space_id) = state.navigation.active_space_id.clone() else {
+        return;
+    };
+    let Some(room_id) = state.navigation.active_room_id.clone() else {
+        return;
+    };
+    if room_belongs_to_space(state, &room_id, &space_id) {
+        state
+            .navigation
+            .last_room_by_space_id
+            .insert(space_id, room_id);
+    }
+}
+
+fn retain_navigation_room_memory(state: &mut AppState) {
+    let valid_pairs = state
+        .spaces
+        .iter()
+        .flat_map(|space| {
+            space
+                .child_room_ids
+                .iter()
+                .map(|room_id| (space.space_id.clone(), room_id.clone()))
+        })
+        .filter(|(_, room_id)| {
+            state
+                .rooms
+                .iter()
+                .any(|room| room.room_id == *room_id && !room.is_dm)
+        })
+        .collect::<BTreeSet<_>>();
+
+    state
+        .navigation
+        .last_room_by_space_id
+        .retain(|space_id, room_id| valid_pairs.contains(&(space_id.clone(), room_id.clone())));
 }
 
 fn active_room_left_selected_space(state: &AppState, active_room_id: &str) -> bool {
@@ -4271,6 +4475,70 @@ fn select_active_room_after_room_list_update(
     }
 }
 
+fn select_active_room_for_navigation(
+    state: &mut AppState,
+    effects: &mut Vec<AppEffect>,
+    room_id: String,
+) {
+    let had_thread = state.thread != ThreadPaneState::Closed
+        || state.thread_attention != ThreadAttentionState::Closed;
+    let had_threads_list = state.threads_list != ThreadsListState::Closed;
+
+    state.navigation.active_room_id = Some(room_id.clone());
+    state.timeline = TimelinePaneState {
+        room_id: Some(room_id.clone()),
+        is_subscribed: false,
+        is_paginating_backwards: false,
+        composer: state.composer_drafts.composer_for_room(&room_id),
+        scheduled_send_capability: state.scheduled_sends.capability.clone(),
+        scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
+        staged_uploads: state.upload_staging.items_for_room(&room_id),
+        media_gallery: state.media_gallery.items_for_room(&room_id),
+    };
+    state.thread = ThreadPaneState::Closed;
+    state.thread_attention = ThreadAttentionState::Closed;
+    state.threads_list = ThreadsListState::Closed;
+    state.focused_context = FocusedContextState::Closed;
+    effects.push(AppEffect::SubscribeTimeline {
+        room_id: room_id.clone(),
+    });
+    effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
+
+    if had_thread {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+    }
+    if had_threads_list {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+    }
+}
+
+fn clear_active_room_for_navigation(
+    state: &mut AppState,
+    effects: &mut Vec<AppEffect>,
+    previous_room_id: String,
+) {
+    let had_thread = state.thread != ThreadPaneState::Closed
+        || state.thread_attention != ThreadAttentionState::Closed;
+    let had_threads_list = state.threads_list != ThreadsListState::Closed;
+
+    state.navigation.active_room_id = None;
+    state.timeline = Default::default();
+    state.thread = ThreadPaneState::Closed;
+    state.thread_attention = ThreadAttentionState::Closed;
+    state.threads_list = ThreadsListState::Closed;
+    state.focused_context = FocusedContextState::Closed;
+    effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+        room_id: previous_room_id,
+    }));
+
+    if had_thread {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+    }
+    if had_threads_list {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+    }
+}
+
 fn refresh_timeline_scheduled_sends(state: &mut AppState) {
     state.timeline.scheduled_send_capability = state.scheduled_sends.capability.clone();
     state.timeline.scheduled_sends = state
@@ -4307,7 +4575,8 @@ fn staged_compression_choice_is_valid_for_item(
         (Some(item), StagedUploadCompressionChoice::NotApplicable) => {
             matches!(item.kind, crate::state::StagedUploadKind::File)
         }
-        (Some(item), StagedUploadCompressionChoice::Original)
+        (Some(item), StagedUploadCompressionChoice::Ask)
+        | (Some(item), StagedUploadCompressionChoice::Original)
         | (Some(item), StagedUploadCompressionChoice::Compressed { .. }) => {
             matches!(item.kind, crate::state::StagedUploadKind::Image { .. })
         }
@@ -4473,6 +4742,82 @@ mod tests {
             device_id: "DEVICE".to_owned(),
         });
         state
+    }
+
+    fn test_space(space_id: &str) -> crate::state::SpaceSummary {
+        crate::state::SpaceSummary {
+            space_id: space_id.to_owned(),
+            display_name: space_id.to_owned(),
+            avatar: None,
+            child_room_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn reorder_spaces_persists_and_reapplies_to_room_list_updates() {
+        let mut state = ready_state();
+        state.spaces = vec![
+            test_space("!space-a:example.invalid"),
+            test_space("!space-b:example.invalid"),
+        ];
+
+        let effects = reduce(
+            &mut state,
+            AppAction::ReorderSpaces {
+                space_ids: vec![
+                    "!space-b:example.invalid".to_owned(),
+                    "!space-a:example.invalid".to_owned(),
+                ],
+            },
+        );
+
+        assert_eq!(effects, vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]);
+        assert_eq!(
+            state.navigation.space_order,
+            vec!["!space-b:example.invalid", "!space-a:example.invalid"]
+        );
+        assert_eq!(
+            state
+                .spaces
+                .iter()
+                .map(|space| space.space_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["!space-b:example.invalid", "!space-a:example.invalid"]
+        );
+
+        let effects = reduce(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: vec![
+                    test_space("!space-a:example.invalid"),
+                    test_space("!space-b:example.invalid"),
+                    test_space("!space-c:example.invalid"),
+                ],
+                rooms: Vec::new(),
+            },
+        );
+
+        assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)));
+        assert_eq!(
+            state.navigation.space_order,
+            vec![
+                "!space-b:example.invalid",
+                "!space-a:example.invalid",
+                "!space-c:example.invalid"
+            ]
+        );
+        assert_eq!(
+            state
+                .spaces
+                .iter()
+                .map(|space| space.space_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "!space-b:example.invalid",
+                "!space-a:example.invalid",
+                "!space-c:example.invalid"
+            ]
+        );
     }
 
     #[test]

@@ -176,6 +176,9 @@ stateDiagram-v2
 - DMs are global and remain visible regardless of active Space.
 - If no active Space is selected, only non-DM rooms with no parent Space appear
   in the room list.
+- Navigation remembers the last non-DM room selected inside each Space. Selecting
+  a Space restores that room when it still belongs to the Space, otherwise it
+  falls back to the Space's first non-DM room and retargets the timeline.
 - Room-list updates clear an active Space or room if the item disappears.
 - Selecting a room closes any open thread pane and emits a timeline subscription
   effect. It hydrates the selected room's active composer from the Rust-owned

@@ -113,11 +113,12 @@ describe("desktop model", () => {
       items: null
     };
 
-    const sections = roomListSections(roomList, [], rooms, []);
+    const sections = roomListSections(roomList, null, [], rooms, []);
 
     expect(sections.favourites.map((room) => room.room_id)).toEqual([
       "!fav:example.invalid"
     ]);
+    expect(sections.invites).toEqual([]);
     expect(sections.rooms.map((room) => room.room_id)).toEqual([
       "!plain:example.invalid"
     ]);
@@ -151,7 +152,7 @@ describe("desktop model", () => {
       ]
     };
 
-    const sections = roomListSections(roomList, [], rooms, []);
+    const sections = roomListSections(roomList, null, [], rooms, []);
 
     expect(sections.people.map((room) => room.room_id)).toEqual([
       "!dm-fav:example.invalid"
@@ -162,6 +163,38 @@ describe("desktop model", () => {
     expect(sections.rooms.map((room) => room.room_id)).toEqual([
       "!plain:example.invalid"
     ]);
+  });
+
+  test("room list sections keep invite projection entries out of favourites", () => {
+    const roomList: DesktopSnapshot["state"]["room_list"] = {
+      active_filter: { kind: "invites" },
+      sort: { kind: "activity" },
+      items: [{ room_id: "!invite:example.invalid", kind: "invite" }]
+    };
+
+    const sections = roomListSections(
+      roomList,
+      null,
+      [],
+      [],
+      [
+        {
+          room_id: "!invite:example.invalid",
+          display_name: "Invite Room",
+          avatar: null,
+          topic: null,
+          inviter_display_name: "Inviter",
+          inviter_user_id: "@inviter:example.invalid",
+          is_dm: false
+        }
+      ]
+    );
+
+    expect(sections.invites.map((room) => room.room_id)).toEqual([
+      "!invite:example.invalid"
+    ]);
+    expect(sections.favourites).toEqual([]);
+    expect(sections.rooms).toEqual([]);
   });
 
   test("room list sections fall back to sidebar when projection is unavailable", () => {
@@ -178,13 +211,68 @@ describe("desktop model", () => {
       items: null
     };
 
-    const sections = roomListSections(roomList, [], rooms, []);
+    const sections = roomListSections(roomList, null, [], rooms, []);
 
     expect(sections.rooms.map((room) => room.room_id)).toEqual([
       "!plain:example.invalid"
     ]);
     expect(sections.favourites.map((room) => room.room_id)).toEqual([
       "!fav:example.invalid"
+    ]);
+  });
+
+  test("room list fallback respects the active space scope", () => {
+    const spaces: SpaceSummary[] = [
+      {
+        space_id: "!space-a:example.invalid",
+        display_name: "Alpha",
+        avatar: null,
+        child_room_ids: ["!in-space:example.invalid"]
+      },
+      {
+        space_id: "!space-empty:example.invalid",
+        display_name: "Empty",
+        avatar: null,
+        child_room_ids: []
+      }
+    ];
+    const rooms: RoomSummary[] = [
+      roomSummary("!in-space:example.invalid", "In space", false),
+      roomSummary("!outside:example.invalid", "Outside", false),
+      roomSummary("!dm:example.invalid", "Direct", true)
+    ];
+    const roomList: DesktopSnapshot["state"]["room_list"] = {
+      active_filter: { kind: "rooms" },
+      sort: { kind: "activity" },
+      items: null
+    };
+
+    const sections = roomListSections(
+      roomList,
+      "!space-a:example.invalid",
+      spaces,
+      rooms,
+      []
+    );
+    const emptySections = roomListSections(
+      roomList,
+      "!space-empty:example.invalid",
+      spaces,
+      rooms,
+      []
+    );
+
+    expect(sections.rooms.map((room) => room.room_id)).toEqual([
+      "!in-space:example.invalid"
+    ]);
+    expect(sections.people.map((room) => room.room_id)).toEqual([
+      "!dm:example.invalid"
+    ]);
+    expect(emptySections.rooms).toEqual([]);
+    expect(emptySections.favourites).toEqual([]);
+    expect(emptySections.lowPriority).toEqual([]);
+    expect(emptySections.people.map((room) => room.room_id)).toEqual([
+      "!dm:example.invalid"
     ]);
   });
 

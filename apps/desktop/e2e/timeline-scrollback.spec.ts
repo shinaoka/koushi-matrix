@@ -68,7 +68,7 @@ async function pushInitialTimelineItems(page: Page, count: number) {
 test("scrollback prepend keeps the anchor item visually stable and gates auto-backfill", async ({
   page
 }) => {
-  await page.goto("/harness.html");
+  await page.goto("/harness.html?autoLoadOlderMessages=true");
   await page.waitForSelector("[data-testid=timeline-view]");
 
   // ---- (a) InitialItems filling the viewport (30 × 48px ≫ 400px) ----
@@ -282,10 +282,28 @@ test("scrollback prepend keeps the anchor item visually stable and gates auto-ba
   expect(countAfterEndReached).toBe(1);
 });
 
+test("timeline does not auto-backfill unless the setting enables it", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 30);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await container.evaluate((node) => {
+    node.scrollTop = 40;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__harness.invocationsOf("paginate_timeline_backwards").length)
+    )
+    .toBe(0);
+});
+
 test("timeline navigation renders Rust-owned unread controls and sends viewport facts", async ({
   page
 }) => {
-  await page.goto("/harness.html");
+  await page.goto("/harness.html?autoLoadOlderMessages=true");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 30);
 
@@ -349,7 +367,7 @@ test("timeline navigation renders Rust-owned unread controls and sends viewport 
 });
 
 test("scrolling to bottom marks the latest readable event", async ({ page }) => {
-  await page.goto("/harness.html");
+  await page.goto("/harness.html?autoLoadOlderMessages=true");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 40);
 
@@ -384,7 +402,7 @@ test("scrolling to bottom marks the latest readable event", async ({ page }) => 
 });
 
 test("timeline jump-to-date dispatches Rust timestamp resolution", async ({ page }) => {
-  await page.goto("/harness.html");
+  await page.goto("/harness.html?autoLoadOlderMessages=true");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 8);
 
@@ -407,7 +425,7 @@ test("timeline jump-to-date dispatches Rust timestamp resolution", async ({ page
 });
 
 test("timeline jump-to-date reads the submitted input value", async ({ page }) => {
-  await page.goto("/harness.html");
+  await page.goto("/harness.html?autoLoadOlderMessages=true");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 8);
 

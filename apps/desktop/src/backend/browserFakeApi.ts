@@ -1,4 +1,5 @@
 import { composeSidebar, roomIsInScope, textRangeUtf16 } from "../domain/desktopModel";
+import { computeBrowserRoomListProjection } from "./roomListProjection";
 import type {
   AvatarThumbnailState,
   TimelineMediaSource
@@ -9,6 +10,7 @@ import type {
   ActivityRow,
   ActivityStream,
   ActivityTab,
+  AttachmentResult,
   DesktopSnapshot,
   ComposerKeyEvent,
   ComposerResolvedAction,
@@ -19,6 +21,7 @@ import type {
   RoomListProjection,
   RoomModerationAction,
   RoomNotificationMode,
+  InvitePreview,
   RoomPermissionFacts,
   RoomSummary,
   RoomSettingChange,
@@ -38,8 +41,10 @@ import type {
   SpaceSummary,
   StagedUploadCompressionChoice,
   TimelineMessage,
+  ThreadsListItem,
   UploadStagingRequestItem,
   AttachmentFilter,
+  AttachmentScope,
   AttachmentSort,
   FilesViewScope
 } from "../domain/types";
@@ -97,6 +102,7 @@ export interface DesktopApi {
     options: ComposerResolverOptions
   ): Promise<ComposerResolvedAction>;
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
+  reorderSpaces(spaceIds: string[]): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
   selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<DesktopSnapshot>;
@@ -320,18 +326,48 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.navigation.active_space_id = spaceId;
+    this.rememberActiveRoomForCurrentSpace();
+    const nextSpaceId =
+      spaceId && this.snapshot.state.spaces.some((space) => space.space_id === spaceId)
+        ? spaceId
+        : null;
+    this.snapshot.state.navigation.active_space_id = nextSpaceId;
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
       this.snapshot.state.spaces,
       this.snapshot.state.rooms
     );
 
-    const firstRoom = this.snapshot.sidebar.space_rooms[0];
-    if (firstRoom) {
-      await this.selectRoom(firstRoom.room_id);
+    const targetRoomId = nextSpaceId
+      ? this.preferredRoomIdInSpace(nextSpaceId)
+      : this.firstDefaultRoomId();
+    if (targetRoomId && targetRoomId !== this.snapshot.state.navigation.active_room_id) {
+      await this.selectRoom(targetRoomId);
+    } else if (!targetRoomId) {
+      this.clearActiveRoomSelection();
+    }
+    this.rememberActiveRoomForCurrentSpace();
+
+    return this.getSnapshot();
+  }
+
+  async reorderSpaces(spaceIds: string[]): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !isCompleteSpaceOrder(this.snapshot.state.spaces, spaceIds)) {
+      return this.getSnapshot();
     }
 
+    const positionBySpaceId = new Map(spaceIds.map((spaceId, index) => [spaceId, index]));
+    this.snapshot.state.navigation.space_order = [...spaceIds];
+    this.snapshot.state.spaces = [...this.snapshot.state.spaces].sort(
+      (left, right) =>
+        (positionBySpaceId.get(left.space_id) ?? Number.MAX_SAFE_INTEGER) -
+        (positionBySpaceId.get(right.space_id) ?? Number.MAX_SAFE_INTEGER)
+    );
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.navigation.active_space_id,
+      this.snapshot.state.spaces,
+      this.snapshot.state.rooms
+    );
     return this.getSnapshot();
   }
 
@@ -367,7 +403,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
     const defaultEnabled = room.is_encrypted
-      ? false
+      ? this.snapshot.state.settings.values.display.encrypted_url_previews_enabled
       : this.snapshot.state.settings.values.display.url_previews_enabled;
     if (enabled === defaultEnabled) {
       delete this.snapshot.state.link_preview_settings.room_overrides[roomId];
@@ -381,8 +417,7 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    this.snapshot.state.room_list.active_filter = filter;
-    // Do NOT recompute items. Tests seed room_list.items directly via setRoomListProjection().
+    this.refreshRoomListProjection(filter);
     return this.getSnapshot();
   }
 
@@ -422,6 +457,15 @@ class BrowserFakeApi implements DesktopApi {
 
   setRoomListProjection(projection: RoomListProjection): void {
     this.snapshot.state.room_list = projection;
+  }
+
+  private refreshRoomListProjection(filter = this.snapshot.state.room_list.active_filter): void {
+    this.snapshot.state.room_list = computeBrowserRoomListProjection(
+      filter,
+      this.snapshot.state.room_list.sort,
+      this.snapshot.state.rooms,
+      this.snapshot.state.invites
+    );
   }
 
   async queryDevices(): Promise<DesktopSnapshot> {
@@ -732,10 +776,27 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    if (!this.snapshot.state.rooms.some((room) => room.room_id === roomId)) {
+    const selectedRoom = this.snapshot.state.rooms.find((room) => room.room_id === roomId);
+    if (!selectedRoom) {
       return this.getSnapshot();
     }
 
+    this.rememberActiveRoomForCurrentSpace();
+    if (!selectedRoom.is_dm) {
+      const activeSpaceContainsSelectedRoom = Boolean(
+        this.snapshot.state.navigation.active_space_id &&
+          selectedRoom.parent_space_ids.includes(this.snapshot.state.navigation.active_space_id)
+      );
+      if (!activeSpaceContainsSelectedRoom) {
+        this.snapshot.state.navigation.active_space_id =
+          selectedRoom.parent_space_ids[0] ?? null;
+        this.snapshot.sidebar = composeSidebar(
+          this.snapshot.state.navigation.active_space_id,
+          this.snapshot.state.spaces,
+          this.snapshot.state.rooms
+        );
+      }
+    }
     this.snapshot.state.navigation.active_room_id = roomId;
     this.snapshot.state.timeline.room_id = roomId;
     this.snapshot.state.timeline.is_subscribed = true;
@@ -750,6 +811,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.focused_context = { kind: "closed" };
     this.snapshot.thread = null;
     this.snapshot.timeline = timelineMessages.filter((message) => message.room_id === roomId);
+    this.rememberActiveRoomForCurrentSpace();
     return this.getSnapshot();
   }
 
@@ -1302,9 +1364,9 @@ class BrowserFakeApi implements DesktopApi {
       kind: "open",
       room_id: roomId,
       request_id: 0,
-      items: [],
+      items: threadsListItemsForRoom(roomId),
       is_paginating: false,
-      end_reached: false,
+      end_reached: true,
     };
     return this.getSnapshot();
   }
@@ -1325,13 +1387,14 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
+    const resolvedScope = this.resolveFilesViewScope(scope);
     this.snapshot.state.files_view = {
       kind: "open",
       request_id: 0,
-      scope: this.resolveFilesViewScope(scope),
+      scope: resolvedScope,
       filter,
       sort,
-      items: [],
+      items: attachmentResultsForScope(resolvedScope, filter, sort),
       selected_event_id: null
     };
     return this.getSnapshot();
@@ -1512,13 +1575,13 @@ class BrowserFakeApi implements DesktopApi {
 
     this.snapshot.state.rooms = [...this.snapshot.state.rooms, joinedRoom];
     this.snapshot.state.directory.join = { kind: "idle" };
+    this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
       this.snapshot.state.spaces,
       this.snapshot.state.rooms
     );
-    await this.selectRoom(roomId);
-    return this.getSnapshot();
+    return this.selectRoom(roomId);
   }
 
   async loadRoomSettings(roomId: string): Promise<DesktopSnapshot> {
@@ -1593,6 +1656,7 @@ class BrowserFakeApi implements DesktopApi {
           }
         : room
     );
+    this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
       this.snapshot.state.spaces,
@@ -1748,6 +1812,7 @@ class BrowserFakeApi implements DesktopApi {
       is_encrypted: false
     };
     this.snapshot.state.rooms = [...this.snapshot.state.rooms, newRoom];
+    this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
       this.snapshot.state.spaces,
@@ -1801,6 +1866,7 @@ class BrowserFakeApi implements DesktopApi {
           }
         : room
     );
+    this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
       this.snapshot.state.spaces,
@@ -1836,6 +1902,7 @@ class BrowserFakeApi implements DesktopApi {
       (candidate) => candidate.room_id !== roomId
     );
     this.snapshot.state.rooms = [...this.snapshot.state.rooms, joinedRoom];
+    this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
       this.snapshot.state.spaces,
@@ -1853,6 +1920,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.invites = this.snapshot.state.invites.filter(
       (candidate) => candidate.room_id !== roomId
     );
+    this.refreshRoomListProjection();
     return this.getSnapshot();
   }
 
@@ -1882,6 +1950,7 @@ class BrowserFakeApi implements DesktopApi {
       is_encrypted: false
     };
     this.snapshot.state.rooms = [...this.snapshot.state.rooms, newRoom];
+    this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
       this.snapshot.state.spaces,
@@ -1925,6 +1994,7 @@ class BrowserFakeApi implements DesktopApi {
           }
         : room
     );
+    this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
       this.snapshot.state.spaces,
@@ -1949,6 +2019,7 @@ class BrowserFakeApi implements DesktopApi {
           }
         : room
     );
+    this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.navigation.active_space_id,
       this.snapshot.state.spaces,
@@ -2320,6 +2391,85 @@ class BrowserFakeApi implements DesktopApi {
     );
   }
 
+  private roomBelongsToSpace(roomId: string, spaceId: string): boolean {
+    const room = this.snapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+    if (!room || room.is_dm) {
+      return false;
+    }
+    return (
+      this.snapshot.state.spaces
+        .find((space) => space.space_id === spaceId)
+        ?.child_room_ids.includes(roomId) ?? false
+    );
+  }
+
+  private rememberActiveRoomForCurrentSpace(): void {
+    const spaceId = this.snapshot.state.navigation.active_space_id;
+    const roomId = this.snapshot.state.navigation.active_room_id;
+    if (!spaceId || !roomId || !this.roomBelongsToSpace(roomId, spaceId)) {
+      return;
+    }
+    this.snapshot.state.navigation.last_room_by_space_id = {
+      ...(this.snapshot.state.navigation.last_room_by_space_id ?? {}),
+      [spaceId]: roomId
+    };
+  }
+
+  private retainNavigationRoomMemory(): void {
+    const rememberedRooms = Object.entries(
+      this.snapshot.state.navigation.last_room_by_space_id ?? {}
+    ).filter(([spaceId, roomId]) => this.roomBelongsToSpace(roomId, spaceId));
+    this.snapshot.state.navigation.last_room_by_space_id =
+      Object.fromEntries(rememberedRooms);
+  }
+
+  private firstRoomIdInSpace(spaceId: string): string | null {
+    const space = this.snapshot.state.spaces.find((candidate) => candidate.space_id === spaceId);
+    return (
+      space?.child_room_ids.find((roomId) => this.roomBelongsToSpace(roomId, spaceId)) ?? null
+    );
+  }
+
+  private preferredRoomIdInSpace(spaceId: string): string | null {
+    const rememberedRoomId = this.snapshot.state.navigation.last_room_by_space_id?.[spaceId];
+    if (rememberedRoomId && this.roomBelongsToSpace(rememberedRoomId, spaceId)) {
+      return rememberedRoomId;
+    }
+    return this.firstRoomIdInSpace(spaceId);
+  }
+
+  private firstDefaultRoomId(): string | null {
+    return (
+      this.snapshot.state.rooms.find((room) => !room.is_dm)?.room_id ??
+      this.snapshot.state.rooms[0]?.room_id ??
+      null
+    );
+  }
+
+  private clearActiveRoomSelection(): void {
+    this.snapshot.state.navigation.active_room_id = null;
+    this.snapshot.state.timeline = {
+      room_id: null,
+      is_subscribed: false,
+      is_paginating_backwards: false,
+      composer: {
+        pending_transaction_id: null,
+        draft: "",
+        mode: "Plain"
+      },
+      scheduled_send_capability: this.snapshot.state.timeline.scheduled_send_capability,
+      scheduled_sends: [],
+      staged_uploads: [],
+      media_gallery: []
+    };
+    this.snapshot.state.thread = { kind: "closed" };
+    this.snapshot.state.thread_attention = { kind: "closed" };
+    this.snapshot.state.threads_list = { kind: "closed" };
+    this.snapshot.state.focused_context = { kind: "closed" };
+    this.snapshot.thread = null;
+    this.snapshot.timeline = [];
+  }
+
   private nextRequestId(): number {
     const requestId = this.requestSequence;
     this.requestSequence += 1;
@@ -2368,7 +2518,8 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.sync_mode = { kind: "unsupported" };
     this.snapshot.state.navigation = {
       active_space_id: null,
-      active_room_id: null
+      active_room_id: null,
+      last_room_by_space_id: {}
     };
     this.snapshot.state.spaces = [];
     this.snapshot.state.rooms = [];
@@ -2415,12 +2566,32 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
+    const removedSpace = this.snapshot.state.spaces.find((space) => space.space_id === roomId);
+    if (removedSpace) {
+      this.snapshot.state.spaces = this.snapshot.state.spaces.filter(
+        (space) => space.space_id !== roomId
+      );
+      this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) => ({
+        ...room,
+        parent_space_ids: room.parent_space_ids.filter((spaceId) => spaceId !== roomId)
+      }));
+      this.snapshot.state.navigation.space_order =
+        this.snapshot.state.navigation.space_order?.filter((spaceId) => spaceId !== roomId) ?? [];
+      if (this.snapshot.state.navigation.last_room_by_space_id) {
+        delete this.snapshot.state.navigation.last_room_by_space_id[roomId];
+      }
+      if (this.snapshot.state.navigation.active_space_id === roomId) {
+        this.snapshot.state.navigation.active_space_id = null;
+      }
+    }
+
     this.composerDrafts.delete(roomId);
     this.snapshot.state.rooms = this.snapshot.state.rooms.filter((room) => room.room_id !== roomId);
     this.snapshot.state.spaces = this.snapshot.state.spaces.map((space) => ({
       ...space,
       child_room_ids: space.child_room_ids.filter((childRoomId) => childRoomId !== roomId)
     }));
+    this.retainNavigationRoomMemory();
     if (this.snapshot.state.navigation.active_room_id === roomId) {
       this.snapshot.state.navigation.active_room_id = null;
       this.snapshot.state.timeline.room_id = null;
@@ -2434,6 +2605,7 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.spaces,
       this.snapshot.state.rooms
     );
+    this.refreshRoomListProjection();
     return this.getSnapshot();
   }
 }
@@ -2449,6 +2621,20 @@ function syntheticLinkPreviewImage(): LinkPreviewImage {
     source,
     thumbnail
   };
+}
+
+function isCompleteSpaceOrder(spaces: SpaceSummary[], spaceIds: string[]): boolean {
+  if (spaces.length !== spaceIds.length) {
+    return false;
+  }
+
+  const currentSpaceIds = new Set(spaces.map((space) => space.space_id));
+  const requestedSpaceIds = new Set(spaceIds);
+  if (requestedSpaceIds.size !== spaceIds.length) {
+    return false;
+  }
+
+  return [...currentSpaceIds].every((spaceId) => requestedSpaceIds.has(spaceId));
 }
 
 function createInitialSnapshot(session: BrowserFakeApiOptions["session"]): DesktopSnapshot {
@@ -2488,12 +2674,21 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
       sync_mode: { kind: "unsupported" },
       navigation: {
         active_space_id,
-        active_room_id
+        active_room_id,
+        space_order: spaces.map((space) => space.space_id),
+        last_room_by_space_id: {
+          [active_space_id]: active_room_id
+        }
       },
       spaces,
       rooms,
-      invites: [],
-      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: null },
+      invites,
+      room_list: computeBrowserRoomListProjection(
+        { kind: "rooms" },
+        { kind: "activity" },
+        rooms,
+        invites
+      ),
       room_notification_settings: {},
       room_interactions: {},
       directory: defaultDirectoryState(),
@@ -2513,25 +2708,8 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         staged_uploads: [],
         media_gallery: []
       },
-      thread: {
-        kind: "open",
-        room_id: active_room_id,
-        root_event_id: "$alpha-update",
-        is_subscribed: true,
-        composer: {
-          pending_transaction_id: null,
-          draft: "",
-          mode: "Plain"
-        }
-      },
-      thread_attention: {
-        kind: "tracking",
-        room_id: active_room_id,
-        root_event_id: "$alpha-update",
-        notification_count: 0,
-        highlight_count: 0,
-        live_event_marker_count: 0
-      },
+      thread: { kind: "closed" },
+      thread_attention: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
       files_view: { kind: "closed" },
@@ -2546,13 +2724,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
     },
     sidebar,
     timeline: timelineMessages.filter((message) => message.room_id === active_room_id),
-    thread: {
-      room_id: active_room_id,
-      root_event_id: "$alpha-update",
-      replies: threadReplies.filter(
-        (reply) => reply.room_id === active_room_id && reply.root_event_id === "$alpha-update"
-      )
-    }
+    thread: null
   };
 
   return snapshot;
@@ -2600,12 +2772,19 @@ function createSignedOutSnapshot(): DesktopSnapshot {
       sync_mode: { kind: "unsupported" },
       navigation: {
         active_space_id: null,
-        active_room_id: null
+        active_room_id: null,
+        space_order: [],
+        last_room_by_space_id: {}
       },
       spaces: [],
       rooms: [],
       invites: [],
-      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: null },
+      room_list: computeBrowserRoomListProjection(
+        { kind: "rooms" },
+        { kind: "activity" },
+        [],
+        []
+      ),
       room_notification_settings: {},
       room_interactions: {},
       directory: defaultDirectoryState(),
@@ -2659,15 +2838,23 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
         send_read_receipts: true,
         send_typing_notifications: true
       },
-      display: { code_block_wrap: true, hide_redacted: false, url_previews_enabled: true },
+      display: {
+        code_block_wrap: true,
+        hide_redacted: true,
+        url_previews_enabled: true,
+        encrypted_url_previews_enabled: false
+      },
       media: {
-        image_upload_compression: "never",
+        image_upload_compression: "ask",
         image_upload_compression_policy: {
           threshold_bytes: 1048576,
           threshold_long_edge: 2560,
           target_long_edge: 2048,
           quality_percent: 82
         }
+      },
+      timeline: {
+        auto_load_older_messages: false
       }
     },
     persistence: { kind: "idle" }
@@ -2968,7 +3155,8 @@ function applySettingsPatch(
     keyboard: patch.keyboard ?? values.keyboard,
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
-    media: patch.media ?? values.media
+    media: patch.media ?? values.media,
+    timeline: patch.timeline ?? values.timeline
   };
 }
 
@@ -3283,6 +3471,18 @@ const rooms: RoomSummary[] = [
   }
 ];
 
+const invites: InvitePreview[] = [
+  {
+    room_id: "!invite-design-review:example.invalid",
+    display_name: "design-review-invite",
+    avatar: null,
+    topic: "Pending invite fixture for local UI review",
+    inviter_display_name: "Design Reviewer",
+    inviter_user_id: "@reviewer:example.invalid",
+    is_dm: false
+  }
+];
+
 const timelineMessages: TimelineMessage[] = [
   {
     room_id: "!room-alpha:example.invalid",
@@ -3370,3 +3570,106 @@ const threadReplies = [
     body: "Synthetic follow-up item two."
   }
 ];
+
+function threadsListItemsForRoom(roomId: string): ThreadsListItem[] {
+  return timelineMessages
+    .filter((message) => message.room_id === roomId && message.reply_count > 0)
+    .map((message) => {
+      const replies = threadReplies
+        .filter((reply) => reply.room_id === roomId && reply.root_event_id === message.event_id)
+        .sort((left, right) => left.timestamp_ms - right.timestamp_ms);
+      const latestReply = replies[replies.length - 1] ?? null;
+      return {
+        root_event_id: message.event_id,
+        root_sender: message.sender,
+        root_sender_label: message.sender,
+        root_body_preview: message.body,
+        root_timestamp_ms: message.timestamp_ms,
+        latest_event_id: latestReply?.event_id ?? null,
+        latest_sender: latestReply?.sender ?? null,
+        latest_sender_label: latestReply?.sender ?? null,
+        latest_body_preview: latestReply?.body ?? null,
+        latest_timestamp_ms: latestReply?.timestamp_ms ?? null,
+        reply_count: Math.max(message.reply_count, replies.length)
+      };
+    });
+}
+
+function attachmentResultsForScope(
+  scope: AttachmentScope,
+  filter: AttachmentFilter,
+  sort: AttachmentSort
+): AttachmentResult[] {
+  const filenameQuery = filter.filename_query?.trim().toLocaleLowerCase() ?? "";
+  const results = timelineMessages
+    .filter((message) => message.attachment_filename)
+    .filter((message) => attachmentInScope(scope, message.room_id))
+    .map((message) => attachmentResultFromMessage(message))
+    .filter((item) => filter.kinds.includes(item.kind))
+    .filter((item) =>
+      filenameQuery ? item.filename.toLocaleLowerCase().includes(filenameQuery) : true
+    );
+
+  return results.sort((left, right) => compareAttachmentResults(left, right, sort));
+}
+
+function attachmentInScope(scope: AttachmentScope, roomId: string): boolean {
+  switch (scope.kind) {
+    case "account":
+      return true;
+    case "room":
+      return scope.room_id === roomId;
+    case "space":
+      return scope.child_room_ids.includes(roomId);
+  }
+}
+
+function attachmentResultFromMessage(message: TimelineMessage): AttachmentResult {
+  const filename = message.attachment_filename ?? "attachment";
+  return {
+    room_id: message.room_id,
+    event_id: message.event_id,
+    sender: message.sender,
+    timestamp_ms: message.timestamp_ms,
+    kind: "file",
+    filename,
+    mimetype: mimetypeForFilename(filename),
+    size: 18_432,
+    source_mxc: `mxc://browser.fake/${message.event_id.slice(1)}`,
+    thumbnail_mxc: null,
+    thread_root: null,
+    encrypted: false,
+    encryption_version: null,
+    width: null,
+    height: null,
+    is_edited: false
+  };
+}
+
+function compareAttachmentResults(
+  left: AttachmentResult,
+  right: AttachmentResult,
+  sort: AttachmentSort
+): number {
+  switch (sort) {
+    case "oldestFirst":
+      return left.timestamp_ms - right.timestamp_ms;
+    case "sender":
+      return left.sender.localeCompare(right.sender) || right.timestamp_ms - left.timestamp_ms;
+    case "filename":
+      return left.filename.localeCompare(right.filename) || right.timestamp_ms - left.timestamp_ms;
+    case "newestFirst":
+      return right.timestamp_ms - left.timestamp_ms;
+  }
+}
+
+function mimetypeForFilename(filename: string): string | null {
+  const lower = filename.toLocaleLowerCase();
+  if (lower.endsWith(".xlsx")) {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  if (lower.endsWith(".pdf")) {
+    return "application/pdf";
+  }
+  return null;
+}

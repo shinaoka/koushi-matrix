@@ -27,7 +27,8 @@ use matrix_desktop_state::{ComposerDraftStore, LocalEncryptionHealth};
 
 use crate::failure::CoreFailure;
 
-/// Service name used for all keyring entries in this application.
+/// Service name used for OS keyring entries. This is user-visible in macOS
+/// Keychain Access, so keep it aligned with the shipped product name.
 const CREDENTIAL_STORE_SERVICE_NAME: &str = "koushi-desktop";
 const LEGACY_CREDENTIAL_STORE_SERVICE_NAME: &str = "matrix-desktop";
 const COMPOSER_DRAFTS_FILE_MAGIC: &[u8] = b"RURI-DRAFTS-V1\0";
@@ -329,7 +330,7 @@ fn account_dir_name(key_id: &SessionKeyId) -> String {
 /// Credential store backend. Production = OS keychain; debug/test = file dir
 /// override when `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` is set.
 pub enum CredentialStoreBackend {
-    OsKeychain(CredentialStore),
+    OsKeychain(OsCredentialStore),
     #[cfg(any(debug_assertions, test))]
     FileDir(FileCredentialStore),
     #[cfg(test)]
@@ -344,9 +345,7 @@ impl CredentialStoreBackend {
             tracing_or_eprintln("file credential store active (debug/test only)");
             return Self::FileDir(FileCredentialStore::new(dir));
         }
-        let store = CredentialStore::new(CREDENTIAL_STORE_SERVICE_NAME);
-        migrate_keychain_credentials(&store);
-        Self::OsKeychain(store)
+        Self::OsKeychain(OsCredentialStore::new())
     }
 
     fn load(
@@ -556,7 +555,7 @@ impl CredentialStoreBackend {
     /// Expose the underlying `CredentialStore` (for OS keychain backend).
     pub fn as_os_credential_store(&self) -> Option<&CredentialStore> {
         match self {
-            Self::OsKeychain(store) => Some(store),
+            Self::OsKeychain(store) => Some(store.primary()),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(_) => None,
             #[cfg(test)]
@@ -565,85 +564,224 @@ impl CredentialStoreBackend {
     }
 }
 
-/// One-time migration of OS keychain entries from the legacy `matrix-desktop`
-/// service name to the current `koushi-desktop` service name.
-///
-/// Delete operations against the legacy store happen only after the
-/// corresponding write to the current store succeeds, so a migration failure
-/// never destroys the only copy of a saved session.
-fn migrate_keychain_credentials(store: &CredentialStore) {
-    let legacy = CredentialStore::new(LEGACY_CREDENTIAL_STORE_SERVICE_NAME);
+pub struct OsCredentialStore<B = matrix_desktop_key::KeyringCredentialBackend> {
+    primary: CredentialStore<B>,
+    legacy: Option<CredentialStore<B>>,
+}
 
-    // Migrate last-session pointer. Only delete the legacy pointer once the
-    // current store acknowledges the write.
-    if let Ok(Some(key_id)) = legacy.load_last_session() {
-        if store.save_last_session(&key_id).is_ok() {
-            let _ = legacy.delete_last_session();
+impl OsCredentialStore {
+    fn new() -> Self {
+        let legacy = (LEGACY_CREDENTIAL_STORE_SERVICE_NAME != CREDENTIAL_STORE_SERVICE_NAME)
+            .then(|| CredentialStore::new(LEGACY_CREDENTIAL_STORE_SERVICE_NAME));
+        Self {
+            primary: CredentialStore::new(CREDENTIAL_STORE_SERVICE_NAME),
+            legacy,
+        }
+    }
+}
+
+impl<B: matrix_desktop_key::CredentialBackend> OsCredentialStore<B> {
+    fn primary(&self) -> &CredentialStore<B> {
+        &self.primary
+    }
+
+    fn load(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<LocalUnlockSecret, matrix_desktop_key::LocalSecretError> {
+        match self.primary.load(key_id) {
+            Ok(secret) => Ok(secret),
+            Err(error) if matrix_desktop_key::is_missing_credential_error(&error) => {
+                let Some(legacy) = &self.legacy else {
+                    return Err(error);
+                };
+                match legacy.load(key_id) {
+                    Ok(secret) => {
+                        self.primary.save(key_id, &secret)?;
+                        let _ = legacy.delete(key_id);
+                        Ok(secret)
+                    }
+                    Err(legacy_error)
+                        if matrix_desktop_key::is_missing_credential_error(&legacy_error) =>
+                    {
+                        Err(error)
+                    }
+                    Err(legacy_error) => Err(legacy_error),
+                }
+            }
+            Err(error) => Err(error),
         }
     }
 
-    // Migrate saved-sessions index and per-session secrets. Collect the key ids
-    // that were successfully written to the current store, commit the new index,
-    // and only then remove the corresponding legacy secrets and update the legacy
-    // index. If the new index cannot be committed, the legacy entries remain
-    // intact for the next retry.
-    let legacy_index = legacy.load_saved_sessions().unwrap_or_default();
-    if !legacy_index.sessions().is_empty() {
-        let mut current_index = store.load_saved_sessions().unwrap_or_default();
-        let mut migrated = Vec::new();
-        for key_id in legacy_index.sessions() {
-            let secret_result = legacy.load(key_id);
-            let session_result = legacy.load_matrix_session(key_id);
+    fn save(
+        &self,
+        key_id: &SessionKeyId,
+        secret: &LocalUnlockSecret,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        self.primary.save(key_id, secret)?;
+        if let Some(legacy) = &self.legacy {
+            let _ = legacy.delete(key_id);
+        }
+        Ok(())
+    }
 
-            // Helper: an entry is absent (and therefore not required for a
-            // complete migration) only when the load error is a missing
-            // credential. Other errors mean the legacy store is unreadable, so
-            // we must not mark the session migrated or delete anything.
-            fn is_absent<T>(result: &Result<T, matrix_desktop_key::LocalSecretError>) -> bool {
-                result
-                    .as_ref()
-                    .err()
-                    .map(matrix_desktop_key::is_missing_credential_error)
-                    .unwrap_or(false)
-            }
+    fn delete(&self, key_id: &SessionKeyId) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        let primary = self.primary.delete(key_id);
+        let legacy = self.legacy.as_ref().map(|store| store.delete(key_id));
+        primary?;
+        if let Some(result) = legacy {
+            result?;
+        }
+        Ok(())
+    }
 
-            let secret_absent = is_absent(&secret_result);
-            let session_absent = is_absent(&session_result);
-            let secret_present = secret_result.is_ok();
-            let session_present = session_result.is_ok();
-            if !secret_present && !session_present {
-                // Both loads failed. If either failure is non-missing, the
-                // legacy store is unreadable, so we must not delete anything.
-                if !secret_absent || !session_absent {
-                    continue;
+    fn save_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+        session: &matrix_desktop_key::StoredMatrixSession,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        self.primary.save_matrix_session(key_id, session)?;
+        if let Some(legacy) = &self.legacy {
+            let _ = legacy.delete_matrix_session(key_id);
+        }
+        Ok(())
+    }
+
+    fn load_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<matrix_desktop_key::StoredMatrixSession, matrix_desktop_key::LocalSecretError> {
+        match self.primary.load_matrix_session(key_id) {
+            Ok(session) => Ok(session),
+            Err(error) if matrix_desktop_key::is_missing_credential_error(&error) => {
+                let Some(legacy) = &self.legacy else {
+                    return Err(error);
+                };
+                match legacy.load_matrix_session(key_id) {
+                    Ok(session) => {
+                        self.primary.save_matrix_session(key_id, &session)?;
+                        let _ = legacy.delete_matrix_session(key_id);
+                        Ok(session)
+                    }
+                    Err(legacy_error)
+                        if matrix_desktop_key::is_missing_credential_error(&legacy_error) =>
+                    {
+                        Err(error)
+                    }
+                    Err(legacy_error) => Err(legacy_error),
                 }
             }
-
-            let secret_ok = match secret_result {
-                Ok(secret) => store.save(key_id, &secret).is_ok(),
-                Err(_) if secret_absent => true,
-                Err(_) => false,
-            };
-            let session_ok = match session_result {
-                Ok(session) => store.save_matrix_session(key_id, &session).is_ok(),
-                Err(_) if session_absent => true,
-                Err(_) => false,
-            };
-
-            if secret_ok && session_ok {
-                current_index.upsert(key_id.clone());
-                migrated.push(key_id.clone());
-            }
+            Err(error) => Err(error),
         }
-        if store.save_saved_sessions(&current_index).is_ok() {
-            let mut remaining_legacy_index = legacy_index.clone();
-            for key_id in &migrated {
-                let _ = legacy.delete(key_id);
-                let _ = legacy.delete_matrix_session(key_id);
-                remaining_legacy_index.remove(key_id);
-            }
-            let _ = legacy.save_saved_sessions(&remaining_legacy_index);
+    }
+
+    fn delete_matrix_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        let primary = self.primary.delete_matrix_session(key_id);
+        let legacy = self
+            .legacy
+            .as_ref()
+            .map(|store| store.delete_matrix_session(key_id));
+        primary?;
+        if let Some(result) = legacy {
+            result?;
         }
+        Ok(())
+    }
+
+    fn save_last_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        self.primary.save_last_session(key_id)?;
+        if let Some(legacy) = &self.legacy {
+            let _ = legacy.delete_last_session();
+        }
+        Ok(())
+    }
+
+    fn load_last_session(
+        &self,
+    ) -> Result<Option<SessionKeyId>, matrix_desktop_key::LocalSecretError> {
+        if let Some(key_id) = self.primary.load_last_session()? {
+            return Ok(Some(key_id));
+        }
+        let Some(legacy) = &self.legacy else {
+            return Ok(None);
+        };
+        let Some(key_id) = legacy.load_last_session()? else {
+            return Ok(None);
+        };
+        self.primary.save_last_session(&key_id)?;
+        let _ = legacy.delete_last_session();
+        Ok(Some(key_id))
+    }
+
+    fn delete_last_session(&self) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        let primary = self.primary.delete_last_session();
+        let legacy = self
+            .legacy
+            .as_ref()
+            .map(|store| store.delete_last_session());
+        primary?;
+        if let Some(result) = legacy {
+            result?;
+        }
+        Ok(())
+    }
+
+    fn load_saved_sessions(
+        &self,
+    ) -> Result<matrix_desktop_key::SavedSessionIndex, matrix_desktop_key::LocalSecretError> {
+        let mut index = self.primary.load_saved_sessions()?;
+        let Some(legacy) = &self.legacy else {
+            return Ok(index);
+        };
+        let legacy_index = legacy.load_saved_sessions()?;
+        if legacy_index.sessions().is_empty() {
+            return Ok(index);
+        }
+        for key_id in legacy_index.sessions() {
+            index.upsert(key_id.clone());
+        }
+        self.primary.save_saved_sessions(&index)?;
+        let _ = legacy.delete_saved_sessions();
+        Ok(index)
+    }
+
+    fn remember_saved_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        let mut index = self.load_saved_sessions()?;
+        index.upsert(key_id.clone());
+        self.primary.save_saved_sessions(&index)?;
+        if let Some(legacy) = &self.legacy {
+            let _ = legacy.delete_saved_sessions();
+        }
+        Ok(())
+    }
+
+    fn forget_saved_session(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), matrix_desktop_key::LocalSecretError> {
+        let mut index = self.load_saved_sessions()?;
+        index.remove(key_id);
+        self.primary.save_saved_sessions(&index)?;
+        if let Some(legacy) = &self.legacy {
+            let _ = legacy.delete_saved_sessions();
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl<B: matrix_desktop_key::CredentialBackend> OsCredentialStore<B> {
+    fn with_stores(primary: CredentialStore<B>, legacy: Option<CredentialStore<B>>) -> Self {
+        Self { primary, legacy }
     }
 }
 
@@ -972,6 +1110,55 @@ mod tests {
             actor.probe_local_encryption_health(&key_id),
             matrix_desktop_state::LocalEncryptionHealth::LockedOrInaccessible
         );
+    }
+
+    #[test]
+    fn os_keychain_service_name_is_product_branded() {
+        assert_eq!(CREDENTIAL_STORE_SERVICE_NAME, "Kagome");
+    }
+
+    #[test]
+    fn os_keychain_load_migrates_legacy_unlock_secret_to_product_service() {
+        let backend = matrix_desktop_key::InMemoryCredentialBackend::default();
+        let primary = matrix_desktop_key::CredentialStore::with_backend(
+            CREDENTIAL_STORE_SERVICE_NAME,
+            backend.clone(),
+        );
+        let legacy = matrix_desktop_key::CredentialStore::with_backend(
+            LEGACY_CREDENTIAL_STORE_SERVICE_NAME,
+            backend.clone(),
+        );
+        let store = OsCredentialStore::with_stores(primary, Some(legacy));
+        let key_id = make_key_id();
+        let secret = LocalUnlockSecret::generate();
+
+        let legacy_probe = matrix_desktop_key::CredentialStore::with_backend(
+            LEGACY_CREDENTIAL_STORE_SERVICE_NAME,
+            backend.clone(),
+        );
+        legacy_probe
+            .save(&key_id, &secret)
+            .expect("seed legacy unlock secret");
+
+        let loaded = store.load(&key_id).expect("migrate legacy secret");
+        assert_eq!(
+            secret.derive_sdk_store_key().as_bytes(),
+            loaded.derive_sdk_store_key().as_bytes()
+        );
+
+        let primary_probe = matrix_desktop_key::CredentialStore::with_backend(
+            CREDENTIAL_STORE_SERVICE_NAME,
+            backend,
+        );
+        primary_probe
+            .load(&key_id)
+            .expect("primary product service should receive migrated secret");
+        let legacy_missing = legacy_probe
+            .load(&key_id)
+            .expect_err("legacy service secret should be removed");
+        assert!(matrix_desktop_key::is_missing_credential_error(
+            &legacy_missing
+        ));
     }
 
     #[test]

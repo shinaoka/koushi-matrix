@@ -18,7 +18,12 @@ describe("UserSettingsPanel", () => {
         send_read_receipts: true,
         send_typing_notifications: true
       },
-      display: { code_block_wrap: true, hide_redacted: false, url_previews_enabled: true },
+      display: {
+        code_block_wrap: true,
+        hide_redacted: false,
+        url_previews_enabled: true,
+        encrypted_url_previews_enabled: false
+      },
       media: {
         image_upload_compression: "never",
         image_upload_compression_policy: {
@@ -27,6 +32,9 @@ describe("UserSettingsPanel", () => {
           target_long_edge: 2048,
           quality_percent: 82
         }
+      },
+      timeline: {
+        auto_load_older_messages: false
       }
     },
     persistence: { kind: "idle" }
@@ -168,6 +176,8 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Current");
     expect(markup).toContain("Switch");
     expect(markup).toContain("Keyboard");
+    expect(markup).toContain("Timeline");
+    expect(markup).toContain("Automatically load older messages");
     expect(markup).toContain("Session");
     expect(markup).toContain("Profile");
     expect(markup).toContain("Demo User");
@@ -230,7 +240,12 @@ describe("UserSettingsPanel", () => {
           ...settings,
           values: {
             ...settings.values,
-            display: { code_block_wrap: false, hide_redacted: true, url_previews_enabled: true }
+            display: {
+              code_block_wrap: false,
+              hide_redacted: true,
+              url_previews_enabled: true,
+              encrypted_url_previews_enabled: false
+            }
           }
         }}
         {...handlers}
@@ -239,7 +254,10 @@ describe("UserSettingsPanel", () => {
 
     expect(markup).toContain("Display");
     expect(markup).toContain("Wrap long lines in code blocks");
+    expect(markup).toContain("URL previews in non-encrypted rooms");
+    expect(markup).toContain("URL previews in encrypted rooms");
     expect(markup).toContain("Hide deleted messages");
+    expect(markup).toContain("Automatically load older messages");
     expect(markup).toContain('role="switch"');
     expect(markup).toContain('aria-checked="false"');
   });

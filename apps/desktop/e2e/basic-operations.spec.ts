@@ -48,6 +48,10 @@
  *      state and typed schedule/cancel/reschedule commands.
  *  21. Drive Security key-management controls through Rust-owned room-key and
  *      secure-backup commands, with secret/path redaction in recorded IPC.
+ *  22. Drive Space rail separator, drag/drop order, and leave actions through
+ *      mocked IPC without launching the native GUI.
+ *  23. Keep sidebar navigation buttons wired by asserting Home and Threads
+ *      dispatch their Rust-owned commands in headless browser mode.
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -193,6 +197,29 @@ async function invocationCount(page: Page, command: string): Promise<number> {
   return page.evaluate((cmd) => window.__harness.invocationsOf(cmd).length, command);
 }
 
+async function setTimelineAutoLoadOlderMessages(page: Page, enabled: boolean): Promise<void> {
+  await page.evaluate((value) => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        settings: {
+          ...snapshot.state.settings,
+          values: {
+            ...snapshot.state.settings.values,
+            timeline: {
+              ...snapshot.state.settings.values.timeline,
+              auto_load_older_messages: value
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  }, enabled);
+}
+
 async function dispatchComposingEnter(locator: Locator): Promise<boolean> {
   return locator.evaluate((element) => {
     const event = new KeyboardEvent("keydown", {
@@ -326,6 +353,109 @@ test("create-space dialog submits create_space and closes on success", async ({ 
 
   await expect.poll(() => invocationCount(page, "create_space")).toBeGreaterThanOrEqual(1);
   await expect(spaceNameInput).toBeHidden();
+});
+
+test("space rail separates system buttons, reorders Spaces, and leaves a Space headlessly", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const secondSpace = {
+      space_id: "!second-harness-space:example.invalid",
+      display_name: "Second Harness Space",
+      avatar: null,
+      child_room_ids: []
+    };
+    const secondRailItem = {
+      space_id: secondSpace.space_id,
+      display_name: secondSpace.display_name,
+      avatar: null,
+      unread_count: 0,
+      highlight_count: 0,
+      is_active: false
+    };
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        navigation: {
+          ...snapshot.state.navigation,
+          space_order: [
+            ...snapshot.state.spaces.map((space) => space.space_id),
+            secondSpace.space_id
+          ]
+        },
+        spaces: [...snapshot.state.spaces, secondSpace]
+      },
+      sidebar: {
+        ...snapshot.sidebar,
+        space_rail: [...snapshot.sidebar.space_rail, secondRailItem]
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const rail = page.getByRole("navigation", { name: "Workspaces" });
+  await expect(rail.locator('[role="separator"]')).toBeVisible();
+  await expect(rail.getByRole("button", { name: "Activity", exact: true })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "Home", exact: true })).toBeVisible();
+
+  const firstSpace = rail.getByRole("button", { name: "Harness Space", exact: true });
+  const secondSpace = rail.getByRole("button", { name: "Second Harness Space", exact: true });
+  await expect(firstSpace).toHaveAttribute("draggable", "true");
+  await expect(secondSpace).toHaveAttribute("draggable", "true");
+
+  await rail.locator(".workspace-space-button").evaluateAll((buttons) => {
+    const source = buttons[0];
+    const target = buttons[1];
+    if (!source || !target) {
+      throw new Error("expected two Space rail buttons");
+    }
+    const dataTransfer = new DataTransfer();
+    source.dispatchEvent(
+      new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer })
+    );
+    target.dispatchEvent(
+      new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer })
+    );
+    target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }));
+    source.dispatchEvent(
+      new DragEvent("dragend", { bubbles: true, cancelable: true, dataTransfer })
+    );
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("reorder_spaces").at(-1)?.args.spaceIds ?? []
+      )
+    )
+    .toEqual(["!second-harness-space:example.invalid", "!harness-space:example.invalid"]);
+  await expect
+    .poll(() =>
+      rail
+        .locator(".workspace-space-button")
+        .evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")))
+    )
+    .toEqual(["Second Harness Space", "Harness Space"]);
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await rail.getByRole("button", { name: "Second Harness Space", exact: true }).click({
+    button: "right"
+  });
+  await page.getByRole("menuitem", { name: "Leave Space", exact: true }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("leave_room").at(-1)?.args.roomId ?? null
+      )
+    )
+    .toBe("!second-harness-space:example.invalid");
+  await expect(
+    rail.getByRole("button", { name: "Second Harness Space", exact: true })
+  ).toHaveCount(0);
 });
 
 test("invites view accepts a seeded invite and New DM renders the returned direct room", async ({
@@ -485,9 +615,6 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
     )
     .toEqual({ roomId: "!invite-seed:example.invalid" });
   await expect(page.getByRole("button", { name: "Seeded Invite" })).toBeVisible();
-  await expect(
-    page.getByRole("main", { name: "Invites" }).getByText("No pending invites").first()
-  ).toBeVisible();
 
   await page.getByRole("button", { name: "Seeded Invite" }).click();
   await page.getByRole("button", { name: "Room info" }).click();
@@ -519,6 +646,10 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
       page.evaluate(() => window.__harness.invocationsOf("start_direct_message")[0]?.args)
     )
     .toEqual({ userId: "@target:example.invalid" });
+  await page
+    .getByRole("tablist", { name: t("workspace.filters") })
+    .getByRole("tab", { name: t("roomList.filterPeople"), exact: true })
+    .click();
   await expect(page.getByRole("button", { name: "@target:example.invalid" })).toBeVisible();
 });
 
@@ -1261,6 +1392,10 @@ test("local aliases dispatch typed account command and render Rust-projected lab
   });
   await expect(aliasedMemberRow).toBeVisible();
   await expect(aliasedMemberRow.getByText("Original: Target Member")).toBeVisible();
+  await page
+    .getByRole("tablist", { name: t("workspace.filters") })
+    .getByRole("tab", { name: t("roomList.filterPeople"), exact: true })
+    .click();
   await expect(page.locator('[data-room-section="people"]').getByText("Desk Alias")).toBeVisible();
 
   await seedTimelineItems(
@@ -1560,9 +1695,10 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
     )
     .toEqual(["favourites", "people", "rooms", "low-priority"]);
 
-  for (const id of ["favourites", "people", "rooms", "low-priority"]) {
-    await expect(page.locator(`[data-room-section="${id}"] .section-count`)).toHaveText("1");
-  }
+  await expect(page.locator('[data-room-section="favourites"] .section-count')).toHaveText("1");
+  await expect(page.locator('[data-room-section="people"] .section-count')).toHaveText("0");
+  await expect(page.locator('[data-room-section="rooms"] .section-count')).toHaveText("1");
+  await expect(page.locator('[data-room-section="low-priority"] .section-count')).toHaveText("1");
 
   const favouriteRoom = page
     .locator('[data-room-section="favourites"]')
@@ -1741,7 +1877,7 @@ test("notification attention snapshot drives room, space, thread, and click rout
   await expect(sidebarThreadsButton).toHaveAttribute("data-count", "2");
   await expect(sidebarThreadsButton).toHaveAttribute("data-mention-count", "1");
   await expect(sidebarThreadsButton).toHaveAttribute("data-live-count", "3");
-  await expect(page).toHaveTitle("matrix-desktop · 4 unread");
+  await expect(page).toHaveTitle("Kagome · 4 unread");
 
   await attentionRoom.click();
   await expect.poll(() => invocationCount(page, "select_room")).toBeGreaterThanOrEqual(1);
@@ -2236,37 +2372,7 @@ test("thread and edit composers composing Enter never send through GUI", async (
   page
 }) => {
   await gotoReadyShell(page);
-
-  await page.evaluate(() => {
-    const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({
-      ...snapshot,
-      state: {
-        ...snapshot.state,
-        thread: {
-          kind: "open",
-          room_id: "!harness-room:example.invalid",
-          root_event_id: "$seed-event:example.invalid",
-          is_subscribed: true,
-          composer: {
-            pending_transaction_id: null,
-            draft: "",
-            mode: "Plain"
-          }
-        },
-        thread_attention: {
-          kind: "tracking",
-          room_id: "!harness-room:example.invalid",
-          root_event_id: "$seed-event:example.invalid",
-          notification_count: 0,
-          highlight_count: 0,
-          live_event_marker_count: 0
-        }
-      },
-      thread: null
-    });
-    window.__harness.pushStateChanged();
-  });
+  await page.getByRole("button", { name: /2 replies/ }).click();
   const threadComposer = page.getByRole("textbox", { name: t("timeline.threadComposer") });
   await expect(threadComposer).toBeVisible();
   await threadComposer.fill("スレッド変換中");
@@ -2742,8 +2848,7 @@ test("pin and unpin actions render the Tauri snapshot response without a manual 
   await expect.poll(() => invocationCount(page, "pin_event")).toBeGreaterThanOrEqual(1);
   await expect(pinnedRegion.getByText("Pinned from Tauri response", { exact: true })).toBeVisible();
 
-  await row.hover();
-  await row.getByRole("button", { name: "Unpin message" }).click();
+  await pinnedRegion.getByRole("button", { name: "Unpin message" }).click();
   await expect.poll(() => invocationCount(page, "unpin_event")).toBeGreaterThanOrEqual(1);
   await expect(pinnedRegion).toHaveCount(0);
 });
@@ -3329,6 +3434,24 @@ test("image compression setting and dialog send selected Rust-owned variant meta
   await gotoReadyShell(page);
   await page.evaluate(() => {
     window.__harness.setCommandResponse("upload_media", () => window.__harness.currentSnapshot());
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        settings: {
+          ...snapshot.state.settings,
+          values: {
+            ...snapshot.state.settings.values,
+            media: {
+              ...snapshot.state.settings.values.media,
+              image_upload_compression: "never"
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   });
 
@@ -4016,6 +4139,7 @@ test("thread panel scrollback invokes thread pagination command only", async ({
   page
 }) => {
   await gotoReadyShell(page);
+  await setTimelineAutoLoadOlderMessages(page, true);
 
   await expect(page.getByRole("button", { name: /2 replies/ })).toBeVisible();
   await page.getByRole("button", { name: /2 replies/ }).click();
@@ -4776,6 +4900,34 @@ test("notification settings dispatch Rust-owned update_settings patches", async 
   await expect(sound).toHaveAttribute("aria-checked", "false");
 });
 
+test("timeline auto-load setting dispatches a Rust-owned update_settings patch", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await page.getByRole("button", { name: "User settings" }).click();
+  await expect(page.getByRole("heading", { name: t("settings.timeline") })).toBeVisible();
+
+  const autoLoad = page.getByRole("switch", { name: t("settings.autoLoadOlderMessages") });
+  await expect(autoLoad).toHaveAttribute("aria-checked", "false");
+  await autoLoad.click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        timeline: {
+          auto_load_older_messages: true
+        }
+      }
+    });
+  await expect(autoLoad).toHaveAttribute("aria-checked", "true");
+});
+
 test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting", async ({
   page
 }) => {
@@ -4841,8 +4993,9 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
       patch: {
         display: {
           code_block_wrap: false,
-          hide_redacted: false,
-          url_previews_enabled: true
+          hide_redacted: true,
+          url_previews_enabled: true,
+          encrypted_url_previews_enabled: false
         }
       }
     });
@@ -4856,6 +5009,26 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
   page
 }) => {
   await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        settings: {
+          ...snapshot.state.settings,
+          values: {
+            ...snapshot.state.settings.values,
+            display: {
+              ...snapshot.state.settings.values.display,
+              hide_redacted: false
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
   const redactedEventId = "$redacted-hidden:example.invalid";
   const replyEventId = "$reply-to-hidden-redacted:example.invalid";
   await seedTimelineItems(page, [
@@ -4921,7 +5094,8 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
         display: {
           code_block_wrap: true,
           hide_redacted: true,
-          url_previews_enabled: true
+          url_previews_enabled: true,
+          encrypted_url_previews_enabled: false
         }
       }
     });
@@ -5938,40 +6112,44 @@ test("room info Files entry opens the file browser with room scope", async ({ pa
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setCommandResponse("open_files_view", () => ({
-      ...snapshot,
-      state: {
-        ...snapshot.state,
-        files_view: {
-          kind: "open",
-          request_id: 1,
-          scope: { kind: "room", room_id: "!harness-room:example.invalid" },
-          filter: { kinds: ["image", "video", "audio", "file"], filename_query: null },
-          sort: "newestFirst",
-          items: [
-            {
-              room_id: "!harness-room:example.invalid",
-              event_id: "$file-event:example.invalid",
-              sender: "@file-sender:example.invalid",
-              timestamp_ms: 1_800_000_000_000,
-              kind: "file",
-              filename: "quarterly_report.pdf",
-              mimetype: "application/pdf",
-              size: 12_345,
-              source_mxc: "mxc://example.invalid/source",
-              thumbnail_mxc: null,
-              thread_root: null,
-              encrypted: false,
-              encryption_version: null,
-              width: null,
-              height: null,
-              is_edited: false
-            }
-          ],
-          selected_event_id: null
+    window.__harness.setCommandResponse("open_files_view", () => {
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          files_view: {
+            kind: "open",
+            request_id: 1,
+            scope: { kind: "room", room_id: "!harness-room:example.invalid" },
+            filter: { kinds: ["image", "video", "audio", "file"], filename_query: null },
+            sort: "newestFirst",
+            items: [
+              {
+                room_id: "!harness-room:example.invalid",
+                event_id: "$file-event:example.invalid",
+                sender: "@file-sender:example.invalid",
+                timestamp_ms: 1_800_000_000_000,
+                kind: "file",
+                filename: "quarterly_report.pdf",
+                mimetype: "application/pdf",
+                size: 12_345,
+                source_mxc: "mxc://example.invalid/source",
+                thumbnail_mxc: null,
+                thread_root: null,
+                encrypted: false,
+                encryption_version: null,
+                width: null,
+                height: null,
+                is_edited: false
+              }
+            ],
+            selected_event_id: null
+          }
         }
-      }
-    }));
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
   });
 
   await page.getByRole("button", { name: t("room.roomInfo") }).click();
@@ -5995,6 +6173,10 @@ test("timeline header Threads button opens the threads list and row opens a thre
 }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());
+
+  await expect(
+    page.locator(".channel-actions").getByRole("button", { name: t("room.rightPanelToggle") })
+  ).toBeVisible();
 
   await page
     .locator(".channel-actions")
@@ -6056,6 +6238,33 @@ test("timeline header Threads button opens the threads list and row opens a thre
     });
 });
 
+test("sidebar Home and Threads navigation buttons dispatch Rust-owned commands", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  const sidebar = page.getByRole("complementary", { name: t("workspace.rooms") });
+  await sidebar.getByRole("button", { name: t("workspace.explore") }).click();
+  await expect(page.getByRole("main", { name: t("workspace.explore") })).toBeVisible();
+
+  await sidebar.getByRole("button", { name: t("workspace.home") }).click();
+  await expect.poll(() => invocationCount(page, "select_space")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("select_space")[0]?.args))
+    .toEqual({ spaceId: null });
+  await expect(page.getByRole("main", { name: t("timeline.conversation") })).toBeVisible();
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await sidebar.getByRole("button", { name: t("workspace.threads") }).click();
+  await expect.poll(() => invocationCount(page, "open_threads_list")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("open_threads_list")[0]?.args)
+    )
+    .toEqual({ roomId: HARNESS_ROOM_ID });
+});
+
 test("URL previews global toggle invokes update_settings", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => {
@@ -6065,7 +6274,7 @@ test("URL previews global toggle invokes update_settings", async ({ page }) => {
 
   await page.getByRole("button", { name: t("workspace.userSettings") }).click();
 
-  const toggle = page.getByRole("switch", { name: t("settings.urlPreviews") });
+  const toggle = page.getByRole("switch", { name: t("settings.urlPreviewsUnencrypted") });
   await expect(toggle).toHaveAttribute("aria-checked", "true");
   await toggle.click();
 
@@ -6078,8 +6287,9 @@ test("URL previews global toggle invokes update_settings", async ({ page }) => {
       patch: {
         display: {
           code_block_wrap: true,
-          hide_redacted: false,
-          url_previews_enabled: false
+          hide_redacted: true,
+          url_previews_enabled: false,
+          encrypted_url_previews_enabled: false
         }
       }
     });

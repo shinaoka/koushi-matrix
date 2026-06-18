@@ -155,7 +155,7 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
         .map_err(|_| "system clock is before unix epoch".to_owned())?
         .as_nanos();
     let path: PathBuf = std::env::temp_dir().join(format!(
-        "matrix-desktop-keychain-qa-{}-{unique}.keychain-db",
+        "kagome-keychain-qa-{}-{unique}.keychain-db",
         std::process::id()
     ));
     let path = path.to_string_lossy().into_owned();
@@ -215,7 +215,7 @@ fn run_macos_temporary_keychain_round_trip() -> Result<(), String> {
         path.clone(),
     ]);
 
-    let store = CredentialStore::new(&format!("matrix-desktop-keychain-qa-{unique}"));
+    let store = CredentialStore::new(&format!("Kagome Keychain QA {unique}"));
     let secret = LocalUnlockSecret::generate();
     store
         .save(&key_id(), &secret)

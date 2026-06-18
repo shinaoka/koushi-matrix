@@ -30,6 +30,8 @@ declare global {
 
 const ACCOUNT_KEY = "@harness-user:example.invalid";
 const ROOM_ID = "!harness-room:example.invalid";
+const autoLoadOlderMessages =
+  new URLSearchParams(window.location.search).get("autoLoadOlderMessages") === "true";
 
 const ipc = new TauriIpcMock();
 
@@ -135,6 +137,7 @@ createRoot(root).render(
     roomId={ROOM_ID}
     timelineKey={roomTimelineKey(ACCOUNT_KEY, ROOM_ID)}
     transport={transport}
+    autoLoadOlderMessages={autoLoadOlderMessages}
     onReply={(roomId, eventId) => {
       void ipc.invoke("set_composer_reply_target", { roomId, eventId });
     }}

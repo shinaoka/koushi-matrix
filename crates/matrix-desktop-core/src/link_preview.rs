@@ -29,7 +29,8 @@ fn href_regex() -> &'static Regex {
 
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct LinkPreviewContext {
-    pub global_enabled: bool,
+    pub unencrypted_global_enabled: bool,
+    pub encrypted_global_enabled: bool,
     pub room_enabled: Option<bool>,
     pub hidden_event_ids: BTreeSet<String>,
     pub cache: HashMap<String, LinkPreview>,
@@ -41,7 +42,8 @@ impl LinkPreviewContext {
     /// are runtime state and are supplied by policy broadcasts.
     pub fn from_settings(values: &matrix_desktop_state::SettingsValues) -> Self {
         Self {
-            global_enabled: values.display.url_previews_enabled,
+            unencrypted_global_enabled: values.display.url_previews_enabled,
+            encrypted_global_enabled: values.display.encrypted_url_previews_enabled,
             room_enabled: None,
             hidden_event_ids: BTreeSet::new(),
             cache: HashMap::new(),
@@ -53,7 +55,8 @@ impl LinkPreviewContext {
     /// into `room_enabled`.
     pub fn for_room(&self, room_id: &str) -> Self {
         Self {
-            global_enabled: self.global_enabled,
+            unencrypted_global_enabled: self.unencrypted_global_enabled,
+            encrypted_global_enabled: self.encrypted_global_enabled,
             room_enabled: self.room_overrides.get(room_id).copied(),
             hidden_event_ids: self.hidden_event_ids.clone(),
             cache: self.cache.clone(),
@@ -63,8 +66,14 @@ impl LinkPreviewContext {
 
     /// Update only the policy fields that can change from a settings broadcast,
     /// preserving cached previews and the hidden-event set.
-    pub fn apply_policy_delta(&mut self, global_enabled: bool, room_enabled: Option<bool>) {
-        self.global_enabled = global_enabled;
+    pub fn apply_policy_delta(
+        &mut self,
+        unencrypted_global_enabled: bool,
+        encrypted_global_enabled: bool,
+        room_enabled: Option<bool>,
+    ) {
+        self.unencrypted_global_enabled = unencrypted_global_enabled;
+        self.encrypted_global_enabled = encrypted_global_enabled;
         self.room_enabled = room_enabled;
     }
 }
@@ -73,7 +82,11 @@ impl fmt::Debug for LinkPreviewContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("LinkPreviewContext")
-            .field("global_enabled", &self.global_enabled)
+            .field(
+                "unencrypted_global_enabled",
+                &self.unencrypted_global_enabled,
+            )
+            .field("encrypted_global_enabled", &self.encrypted_global_enabled)
             .field("room_enabled", &self.room_enabled)
             .field("room_override_count", &self.room_overrides.len())
             .field("hidden_event_ids_count", &self.hidden_event_ids.len())
@@ -132,9 +145,13 @@ pub fn link_previews_for_message(
     }
 
     let effective_enabled = if is_encrypted {
-        context.room_enabled.unwrap_or(false)
+        context
+            .room_enabled
+            .unwrap_or(context.encrypted_global_enabled)
     } else {
-        context.room_enabled.unwrap_or(context.global_enabled)
+        context
+            .room_enabled
+            .unwrap_or(context.unencrypted_global_enabled)
     };
 
     if !effective_enabled {
@@ -169,16 +186,20 @@ pub fn link_previews_for_message(
 pub fn effective_room_url_previews_enabled(
     room_id: &str,
     is_encrypted: bool,
-    global_enabled: bool,
+    unencrypted_global_enabled: bool,
+    encrypted_global_enabled: bool,
     room_overrides: &BTreeMap<String, bool>,
 ) -> bool {
     if is_encrypted {
-        room_overrides.get(room_id).copied().unwrap_or(false)
+        room_overrides
+            .get(room_id)
+            .copied()
+            .unwrap_or(encrypted_global_enabled)
     } else {
         room_overrides
             .get(room_id)
             .copied()
-            .unwrap_or(global_enabled)
+            .unwrap_or(unencrypted_global_enabled)
     }
 }
 
@@ -351,7 +372,8 @@ mod tests {
     #[test]
     fn encrypted_room_default_off() {
         let context = LinkPreviewContext {
-            global_enabled: true,
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: false,
             room_enabled: None,
             hidden_event_ids: BTreeSet::new(),
             cache: HashMap::new(),
@@ -363,9 +385,34 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_room_global_setting_can_enable() {
+        let context = LinkPreviewContext {
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: true,
+            room_enabled: None,
+            hidden_event_ids: BTreeSet::new(),
+            cache: HashMap::new(),
+            room_overrides: BTreeMap::new(),
+        };
+        let previews =
+            link_previews_for_message(Some("https://example.com"), None, "$event", true, &context);
+        assert_eq!(
+            previews,
+            Some(vec![LinkPreview {
+                url: "https://example.com".to_owned(),
+                title: None,
+                description: None,
+                image: None,
+                state: LinkPreviewState::Pending,
+            }])
+        );
+    }
+
+    #[test]
     fn encrypted_room_explicit_override_enables() {
         let context = LinkPreviewContext {
-            global_enabled: true,
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: false,
             room_enabled: Some(true),
             hidden_event_ids: BTreeSet::new(),
             cache: HashMap::new(),
@@ -388,7 +435,8 @@ mod tests {
     #[test]
     fn encrypted_room_explicit_disable_overrides_global() {
         let context = LinkPreviewContext {
-            global_enabled: true,
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: true,
             room_enabled: Some(false),
             hidden_event_ids: BTreeSet::new(),
             cache: HashMap::new(),
@@ -404,7 +452,8 @@ mod tests {
         let mut hidden = BTreeSet::new();
         hidden.insert("$event".to_owned());
         let context = LinkPreviewContext {
-            global_enabled: true,
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: false,
             room_enabled: None,
             hidden_event_ids: hidden,
             cache: HashMap::new(),
@@ -421,7 +470,8 @@ mod tests {
         hidden.insert("$alpha".to_owned());
         hidden.insert("$beta".to_owned());
         let context = LinkPreviewContext {
-            global_enabled: true,
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: false,
             room_enabled: None,
             hidden_event_ids: hidden,
             cache: HashMap::new(),
@@ -453,7 +503,8 @@ mod tests {
         let mut cache = HashMap::new();
         cache.insert("https://example.com".to_owned(), ready.clone());
         let context = LinkPreviewContext {
-            global_enabled: true,
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: false,
             room_enabled: None,
             hidden_event_ids: BTreeSet::new(),
             cache,
@@ -470,17 +521,19 @@ mod tests {
         overrides.insert("!room:example.com".to_owned(), true);
         overrides.insert("!disabled:example.com".to_owned(), false);
 
-        // Encrypted rooms default to false regardless of global setting.
+        // Encrypted rooms follow the encrypted-room global default.
         assert!(!effective_room_url_previews_enabled(
             "!other:example.com",
             true,
             true,
+            false,
             &overrides
         ));
-        assert!(!effective_room_url_previews_enabled(
+        assert!(effective_room_url_previews_enabled(
             "!other:example.com",
             true,
             false,
+            true,
             &overrides
         ));
         // Encrypted explicit override enables.
@@ -488,10 +541,12 @@ mod tests {
             "!room:example.com",
             true,
             false,
+            false,
             &overrides
         ));
         assert!(!effective_room_url_previews_enabled(
             "!disabled:example.com",
+            true,
             true,
             true,
             &overrides
@@ -502,12 +557,14 @@ mod tests {
             "!other:example.com",
             false,
             true,
+            false,
             &overrides
         ));
         assert!(!effective_room_url_previews_enabled(
             "!other:example.com",
             false,
             false,
+            true,
             &overrides
         ));
         // Non-encrypted explicit overrides.
@@ -515,11 +572,13 @@ mod tests {
             "!room:example.com",
             false,
             false,
+            false,
             &overrides
         ));
         assert!(!effective_room_url_previews_enabled(
             "!disabled:example.com",
             false,
+            true,
             true,
             &overrides
         ));
@@ -552,14 +611,16 @@ mod tests {
             },
         );
         let context = LinkPreviewContext {
-            global_enabled: true,
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: false,
             room_enabled: Some(false),
             hidden_event_ids: hidden,
             cache,
             room_overrides: BTreeMap::new(),
         };
         let debug = format!("{:?}", context);
-        assert!(debug.contains("global_enabled"));
+        assert!(debug.contains("unencrypted_global_enabled"));
+        assert!(debug.contains("encrypted_global_enabled"));
         assert!(debug.contains("room_enabled"));
         assert!(debug.contains("room_override_count"));
         assert!(debug.contains("hidden_event_ids_count"));
@@ -584,16 +645,18 @@ mod tests {
         cache.insert(ready.url.clone(), ready.clone());
 
         let mut context = LinkPreviewContext {
-            global_enabled: true,
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: false,
             room_enabled: None,
             hidden_event_ids: hidden.clone(),
             cache: cache.clone(),
             room_overrides: BTreeMap::new(),
         };
 
-        context.apply_policy_delta(false, Some(true));
+        context.apply_policy_delta(false, true, Some(true));
 
-        assert!(!context.global_enabled);
+        assert!(!context.unencrypted_global_enabled);
+        assert!(context.encrypted_global_enabled);
         assert_eq!(context.room_enabled, Some(true));
         assert_eq!(context.hidden_event_ids, hidden);
         assert_eq!(context.cache, cache);

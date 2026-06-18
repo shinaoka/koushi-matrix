@@ -614,6 +614,10 @@ impl<B: CredentialBackend> CredentialStore<B> {
         self.save_raw(SAVED_SESSIONS_ACCOUNT_NAME, index_json.as_str())
     }
 
+    pub fn delete_saved_sessions(&self) -> Result<(), LocalSecretError> {
+        self.delete_raw(SAVED_SESSIONS_ACCOUNT_NAME)
+    }
+
     pub fn remember_saved_session(&self, key_id: &SessionKeyId) -> Result<(), LocalSecretError> {
         let mut index = self.load_saved_sessions()?;
         index.upsert(key_id.clone());

@@ -418,11 +418,13 @@ impl AccountActor {
     /// passes through directly to avoid double-gating.
     async fn route_timeline_command(&mut self, command: TimelineCommand) {
         if let TimelineCommand::BroadcastLinkPreviewPolicy {
-            global_enabled,
+            unencrypted_global_enabled,
+            encrypted_global_enabled,
             room_overrides,
         } = &command
         {
-            self.link_preview_policy.global_enabled = *global_enabled;
+            self.link_preview_policy.unencrypted_global_enabled = *unencrypted_global_enabled;
+            self.link_preview_policy.encrypted_global_enabled = *encrypted_global_enabled;
             self.link_preview_policy.room_overrides = room_overrides.clone();
         }
         let _ = self

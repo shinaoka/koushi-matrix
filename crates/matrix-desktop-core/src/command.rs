@@ -136,6 +136,7 @@ impl CoreCommand {
                 | RoomCommand::ModerateRoomMember { request_id, .. }
                 | RoomCommand::UpdateRoomMemberRole { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
+                | RoomCommand::ReorderSpaces { request_id, .. }
                 | RoomCommand::SelectRoom { request_id, .. }
                 | RoomCommand::MarkRoomAsRead { request_id, .. }
                 | RoomCommand::MarkRoomAsUnread { request_id, .. }
@@ -1319,6 +1320,10 @@ pub enum RoomCommand {
         request_id: RequestId,
         space_id: Option<String>,
     },
+    ReorderSpaces {
+        request_id: RequestId,
+        space_ids: Vec<String>,
+    },
     SelectRoom {
         request_id: RequestId,
         room_id: String,
@@ -1508,6 +1513,11 @@ impl fmt::Debug for RoomCommand {
                 .debug_struct("SelectSpace")
                 .field("request_id", request_id)
                 .field("space_id", &space_id.as_ref().map(|_| "RoomId(..)"))
+                .finish(),
+            Self::ReorderSpaces { request_id, .. } => formatter
+                .debug_struct("ReorderSpaces")
+                .field("request_id", request_id)
+                .field("space_ids", &"Vec<RoomId>(..)")
                 .finish(),
             Self::SelectRoom { request_id, .. } => formatter
                 .debug_struct("SelectRoom")
@@ -1879,7 +1889,8 @@ pub enum TimelineCommand {
         event_id: String,
     },
     BroadcastLinkPreviewPolicy {
-        global_enabled: bool,
+        unencrypted_global_enabled: bool,
+        encrypted_global_enabled: bool,
         room_overrides: std::collections::BTreeMap<String, bool>,
     },
 }
@@ -2089,11 +2100,13 @@ impl fmt::Debug for TimelineCommand {
                 .field("event_id", &"EventId(..)")
                 .finish(),
             Self::BroadcastLinkPreviewPolicy {
-                global_enabled,
+                unencrypted_global_enabled,
+                encrypted_global_enabled,
                 room_overrides,
             } => formatter
                 .debug_struct("BroadcastLinkPreviewPolicy")
-                .field("global_enabled", global_enabled)
+                .field("unencrypted_global_enabled", unencrypted_global_enabled)
+                .field("encrypted_global_enabled", encrypted_global_enabled)
                 .field("room_override_count", &room_overrides.len())
                 .finish(),
         }

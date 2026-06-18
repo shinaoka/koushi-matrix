@@ -28,6 +28,42 @@ describe("BrowserFakeApi settings preview", () => {
     expect(restored.state.link_preview_settings.room_overrides[roomId]).toBeUndefined();
   });
 
+  test("projects room-list filters like the Rust reducer", async () => {
+    const api = createBrowserFakeApi();
+
+    const initial = await api.getSnapshot();
+    expect(initial.state.room_list.items?.map((item) => item.room_id)).toEqual([
+      "!room-alpha:example.invalid",
+      "!room-planning:example.invalid",
+      "!room-search:example.invalid"
+    ]);
+
+    const people = await api.selectRoomListFilter({ kind: "people" });
+    expect(people.state.room_list.items).toEqual([
+      { room_id: "!dm-member-1:example.invalid", kind: "room" },
+      { room_id: "!dm-member-2:example.invalid", kind: "room" }
+    ]);
+
+    const unread = await api.selectRoomListFilter({ kind: "unread" });
+    expect(unread.state.room_list.items?.map((item) => item.room_id)).toEqual([
+      "!dm-member-1:example.invalid",
+      "!room-alpha:example.invalid",
+      "!room-planning:example.invalid",
+      "!room-search:example.invalid"
+    ]);
+
+    await api.setRoomTag("!room-planning:example.invalid", "favourite");
+    const favourites = await api.selectRoomListFilter({ kind: "favourites" });
+    expect(favourites.state.room_list.items).toEqual([
+      { room_id: "!room-planning:example.invalid", kind: "room" }
+    ]);
+
+    const invites = await api.selectRoomListFilter({ kind: "invites" });
+    expect(invites.state.room_list.items).toEqual([
+      { room_id: "!invite-design-review:example.invalid", kind: "invite" }
+    ]);
+  });
+
   test("resolves composer key actions from the Rust-shaped settings snapshot", async () => {
     const api = createBrowserFakeApi();
 
@@ -303,6 +339,109 @@ describe("BrowserFakeApi settings preview", () => {
     expect(selected.thread).toBeNull();
   });
 
+  test("selectSpace restores the last non-DM room visited in that space", async () => {
+    const api = createBrowserFakeApi();
+
+    await api.selectRoom("!room-planning:example.invalid");
+    await api.selectRoom("!room-search:example.invalid");
+    const restored = await api.selectSpace("!space-alpha:example.invalid");
+
+    expect(restored.state.navigation.active_space_id).toBe("!space-alpha:example.invalid");
+    expect(restored.state.navigation.active_room_id).toBe("!room-planning:example.invalid");
+    expect(restored.state.timeline.room_id).toBe("!room-planning:example.invalid");
+    expect(restored.state.navigation.last_room_by_space_id).toMatchObject({
+      "!space-alpha:example.invalid": "!room-planning:example.invalid",
+      "!space-beta:example.invalid": "!room-search:example.invalid"
+    });
+  });
+
+  test("reorderSpaces persists the synthetic rail order", async () => {
+    const api = createBrowserFakeApi();
+
+    const reordered = await api.reorderSpaces([
+      "!space-beta:example.invalid",
+      "!space-alpha:example.invalid"
+    ]);
+
+    expect(reordered.state.navigation.space_order).toEqual([
+      "!space-beta:example.invalid",
+      "!space-alpha:example.invalid"
+    ]);
+    expect(reordered.state.spaces.map((space) => space.space_id)).toEqual([
+      "!space-beta:example.invalid",
+      "!space-alpha:example.invalid"
+    ]);
+    expect(reordered.sidebar.space_rail.map((space) => space.space_id)).toEqual([
+      "!space-beta:example.invalid",
+      "!space-alpha:example.invalid"
+    ]);
+  });
+
+  test("leaveRoom removes a Space without leaving its child rooms", async () => {
+    const api = createBrowserFakeApi();
+
+    const left = await api.leaveRoom("!space-alpha:example.invalid");
+
+    expect(left.state.spaces.map((space) => space.space_id)).toEqual([
+      "!space-beta:example.invalid"
+    ]);
+    expect(left.state.navigation.active_space_id).toBeNull();
+    expect(left.state.rooms.some((room) => room.room_id === "!room-alpha:example.invalid")).toBe(
+      true
+    );
+    expect(
+      left.state.rooms
+        .find((room) => room.room_id === "!room-alpha:example.invalid")
+        ?.parent_space_ids
+    ).toEqual([]);
+    expect(left.sidebar.space_rail.map((space) => space.space_id)).toEqual([
+      "!space-beta:example.invalid"
+    ]);
+  });
+
+  test("openThreadsList mirrors visible timeline thread summaries", async () => {
+    const api = createBrowserFakeApi();
+
+    const opened = await api.openThreadsList("!room-alpha:example.invalid");
+
+    expect(opened.state.threads_list).toMatchObject({
+      kind: "open",
+      room_id: "!room-alpha:example.invalid",
+      end_reached: true,
+      items: [
+        expect.objectContaining({
+          root_event_id: "$alpha-update",
+          root_body_preview: "Alpha keyword update from demo coordinator.",
+          latest_event_id: "$thread-2",
+          latest_body_preview: "Synthetic follow-up item two.",
+          reply_count: 2
+        })
+      ]
+    });
+  });
+
+  test("openFilesView mirrors visible timeline attachments", async () => {
+    const api = createBrowserFakeApi();
+
+    const opened = await api.openFilesView(
+      { kind: "room", room_id: "!room-alpha:example.invalid" },
+      { kinds: ["image", "video", "audio", "file", "sticker"], filename_query: null },
+      "newestFirst"
+    );
+
+    expect(opened.state.files_view).toMatchObject({
+      kind: "open",
+      items: [
+        expect.objectContaining({
+          room_id: "!room-alpha:example.invalid",
+          event_id: "$budget-file",
+          filename: "fixture_budget.xlsx",
+          kind: "file"
+        })
+      ]
+    });
+  });
+
   test("selectRoom closes focused context after search navigation", async () => {
     const api = createBrowserFakeApi();
 
@@ -315,6 +454,53 @@ describe("BrowserFakeApi settings preview", () => {
     const selected = await api.selectRoom("!room-planning:example.invalid");
 
     expect(selected.state.focused_context).toEqual({ kind: "closed" });
+  });
+
+  test("initial browser fake snapshot starts with thread panel closed", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+
+    expect(snapshot.state.thread).toEqual({ kind: "closed" });
+    expect(snapshot.state.thread_attention).toEqual({ kind: "closed" });
+    expect(snapshot.thread).toBeNull();
+  });
+
+  test("initial browser fake snapshot includes a pending invite fixture", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+
+    expect(snapshot.state.invites.map((invite) => invite.room_id)).toContain(
+      "!invite-design-review:example.invalid"
+    );
+  });
+
+  test("acceptInvite joins the invited room", async () => {
+    const api = createBrowserFakeApi();
+
+    const accepted = await api.acceptInvite("!invite-design-review:example.invalid");
+
+    expect(
+      accepted.state.invites.some(
+        (invite) => invite.room_id === "!invite-design-review:example.invalid"
+      )
+    ).toBe(false);
+    expect(
+      accepted.state.rooms.some(
+        (room) => room.room_id === "!invite-design-review:example.invalid"
+      )
+    ).toBe(true);
+  });
+
+  test("declineInvite removes the pending invite", async () => {
+    const api = createBrowserFakeApi();
+
+    const declined = await api.declineInvite("!invite-design-review:example.invalid");
+
+    expect(
+      declined.state.invites.some(
+        (invite) => invite.room_id === "!invite-design-review:example.invalid"
+      )
+    ).toBe(false);
   });
 
   test("models public directory query and join pending substates", async () => {
@@ -348,6 +534,15 @@ describe("BrowserFakeApi settings preview", () => {
 
     const joined = await joinPromise;
     expect(joined.state.directory.join).toEqual({ kind: "idle" });
+    expect(joined.state.navigation.active_space_id).toBeNull();
+    expect(joined.state.navigation.active_room_id).toMatch(/^!joined-/);
+    expect(joined.state.timeline.room_id).toBe(joined.state.navigation.active_room_id);
+    expect(joined.sidebar.space_rooms).toContainEqual(
+      expect.objectContaining({
+        room_id: joined.state.navigation.active_room_id,
+        display_name: "public-demo"
+      })
+    );
   });
 
   test("models room management settings, moderation, and permission guard substates", async () => {

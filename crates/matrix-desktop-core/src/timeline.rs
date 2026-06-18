@@ -592,10 +592,12 @@ impl TimelineManagerActor {
                 .await;
             }
             TimelineCommand::BroadcastLinkPreviewPolicy {
-                global_enabled,
+                unencrypted_global_enabled,
+                encrypted_global_enabled,
                 room_overrides,
             } => {
-                self.link_preview_policy.global_enabled = global_enabled;
+                self.link_preview_policy.unencrypted_global_enabled = unencrypted_global_enabled;
+                self.link_preview_policy.encrypted_global_enabled = encrypted_global_enabled;
                 self.link_preview_policy.room_overrides = room_overrides;
                 for (key, handle) in &self.timelines {
                     let room_enabled = self
@@ -605,7 +607,8 @@ impl TimelineManagerActor {
                         .copied();
                     let _ = handle
                         .send(TimelineActorMessage::LinkPreviewPolicyChanged {
-                            global_enabled,
+                            unencrypted_global_enabled,
+                            encrypted_global_enabled,
                             room_enabled,
                         })
                         .await;
@@ -1215,7 +1218,8 @@ enum TimelineActorMessage {
         event_id: String,
     },
     LinkPreviewPolicyChanged {
-        global_enabled: bool,
+        unencrypted_global_enabled: bool,
+        encrypted_global_enabled: bool,
         room_enabled: Option<bool>,
     },
     /// Internal: diff batch from the relay task.
@@ -1614,11 +1618,16 @@ impl TimelineActor {
                 self.handle_hide_link_preview(request_id, event_id).await;
             }
             TimelineActorMessage::LinkPreviewPolicyChanged {
-                global_enabled,
+                unencrypted_global_enabled,
+                encrypted_global_enabled,
                 room_enabled,
             } => {
-                self.handle_link_preview_policy_changed(global_enabled, room_enabled)
-                    .await;
+                self.handle_link_preview_policy_changed(
+                    unencrypted_global_enabled,
+                    encrypted_global_enabled,
+                    room_enabled,
+                )
+                .await;
             }
             TimelineActorMessage::DiffBatch(diffs) => {
                 self.handle_diff_batch(diffs).await;
@@ -2723,11 +2732,15 @@ impl TimelineActor {
 
     async fn handle_link_preview_policy_changed(
         &mut self,
-        global_enabled: bool,
+        unencrypted_global_enabled: bool,
+        encrypted_global_enabled: bool,
         room_enabled: Option<bool>,
     ) {
-        self.link_preview_policy
-            .apply_policy_delta(global_enabled, room_enabled);
+        self.link_preview_policy.apply_policy_delta(
+            unencrypted_global_enabled,
+            encrypted_global_enabled,
+            room_enabled,
+        );
         let context = self.link_preview_policy.for_room(self.key.room_id());
 
         let mut core_diffs = Vec::new();

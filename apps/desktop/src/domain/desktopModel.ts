@@ -19,14 +19,16 @@ export function visibleRooms(snapshot: DesktopSnapshot): VisibleRooms {
 
 export function roomListSections(
   roomList: RoomListProjection,
+  activeSpaceId: string | null,
   spaces: SpaceSummary[],
   rooms: RoomSummary[],
   invites: InvitePreview[]
 ): RoomListSections {
   if (roomList.items === null) {
-    const sidebar = composeSidebar(null, spaces, rooms);
+    const sidebar = composeSidebar(activeSpaceId, spaces, rooms);
     return {
       favourites: sidebar.space_rooms.filter((room) => room.tags.favourite !== null),
+      invites: [],
       rooms: sidebar.space_rooms.filter(
         (room) => room.tags.favourite === null && room.tags.low_priority === null
       ),
@@ -39,6 +41,7 @@ export function roomListSections(
   const inviteById = new Map(invites.map((invite) => [invite.room_id, invite]));
 
   const favourites: RoomListItem[] = [];
+  const invitesSection: RoomListItem[] = [];
   const roomsSection: RoomListItem[] = [];
   const people: RoomListItem[] = [];
   const lowPriority: RoomListItem[] = [];
@@ -53,13 +56,26 @@ export function roomListSections(
     if (!room && !invite) {
       continue;
     }
-    const listItem = room ? roomListItem(room) : inviteListItem(invite as InvitePreview);
-    const isDm = room ? room.is_dm : (invite as InvitePreview).is_dm;
-    if (isDm) {
+    if (invite) {
+      const listItem = inviteListItem(invite);
+      if (invite.is_dm) {
+        people.push(listItem);
+      } else {
+        invitesSection.push(listItem);
+      }
+      continue;
+    }
+
+    if (!room) {
+      continue;
+    }
+
+    const listItem = roomListItem(room);
+    if (room.is_dm) {
       people.push(listItem);
-    } else if (room?.tags.favourite !== null) {
+    } else if (room.tags.favourite !== null) {
       favourites.push(listItem);
-    } else if (room?.tags.low_priority !== null) {
+    } else if (room.tags.low_priority !== null) {
       lowPriority.push(listItem);
     } else {
       roomsSection.push(listItem);
@@ -68,6 +84,7 @@ export function roomListSections(
 
   return {
     favourites,
+    invites: invitesSection,
     rooms: roomsSection,
     people,
     lowPriority

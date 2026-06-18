@@ -230,6 +230,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("select_space", { spaceId });
   }
 
+  async reorderSpaces(spaceIds: string[]): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("reorder_spaces", { spaceIds });
+  }
+
   async selectRoom(roomId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("select_room", { roomId });
   }

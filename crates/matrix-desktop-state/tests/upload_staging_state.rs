@@ -179,9 +179,7 @@ fn upload_staging_updates_caption_and_compression_choice() {
         &mut state,
         AppAction::UploadStagingCompressionChanged {
             staged_id: "stage-1".to_owned(),
-            compression_choice: StagedUploadCompressionChoice::Compressed {
-                mode: ImageUploadCompressionMode::Ask,
-            },
+            compression_choice: StagedUploadCompressionChoice::Ask,
         },
     );
 
@@ -192,8 +190,22 @@ fn upload_staging_updates_caption_and_compression_choice() {
     );
     assert_eq!(
         staged.compression_choice,
+        StagedUploadCompressionChoice::Ask
+    );
+
+    reduce(
+        &mut state,
+        AppAction::UploadStagingCompressionChanged {
+            staged_id: "stage-1".to_owned(),
+            compression_choice: StagedUploadCompressionChoice::Compressed {
+                mode: ImageUploadCompressionMode::Always,
+            },
+        },
+    );
+    assert_eq!(
+        state.timeline.staged_uploads[0].compression_choice,
         StagedUploadCompressionChoice::Compressed {
-            mode: ImageUploadCompressionMode::Ask
+            mode: ImageUploadCompressionMode::Always
         }
     );
 }

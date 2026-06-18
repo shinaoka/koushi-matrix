@@ -116,6 +116,11 @@ Rules:
    updates, but browser-headless coverage must drive the visible controls and
    assert the `update_settings` payload plus the returned Rust-shaped snapshot
    state; React must not repair switch state locally after dispatch.
+   Link-preview global defaults are Rust-owned display settings with separate
+   preferences for non-encrypted rooms (`url_previews_enabled`, default true)
+   and encrypted rooms (`encrypted_url_previews_enabled`, default false). The
+   encrypted-room default remains privacy-conservative, but it is an explicit
+   user setting rather than a hidden UI-only special case.
    Per-room URL-preview overrides are not settings-file data because the key is
    a Matrix room identifier. They live in Rust-owned non-persisted
    `AppState.link_preview_settings.room_overrides`, are changed only through a
@@ -334,6 +339,14 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    Headless helpers that seed fake event-driven timeline rows must wait for the
    resulting DOM identity (`data-item-id`) and fail if the CoreEvent was not
    applied; fixed-count fire-and-forget event emission is not valid evidence.
+   Bugs and product-spec changes discovered during interactive browser/GUI
+   exploration must be pinned by headless coverage whenever feasible before the
+   work is considered complete. Prefer unit/component tests for pure state or
+   rendering contracts, and browser-headless tests for user-visible DOM,
+   scrolling, context-menu, drag/drop, and mocked IPC behavior. Native GUI lanes
+   may remain final smoke evidence, but they do not replace a cheap headless
+   regression test unless the behavior is inherently OS-window, keychain, menu,
+   notification, or WebView-native.
    Room-list section tests must prove tag-driven movement from Rust-shaped
    `RoomSummary.tags` snapshots, not from React-local menu state after
    `set_room_tag` or `remove_room_tag` is clicked.
@@ -347,13 +360,13 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    snapshot. GUI code may map `code_block_wrap` to CSS only and must not keep a
    separate local wrap policy.
    Redacted-message visibility is also a Rust-owned display preference:
-   `SettingsValues.display.hide_redacted` defaults to `false`, persists through
+   `SettingsValues.display.hide_redacted` defaults to `true`, persists through
    the settings store, and is projected onto timeline DTOs as
    `TimelineItem.is_hidden`. React may omit rows only when this DTO flag is
    true; it must not remove redacted events from state or derive visibility
    from a React-local setting.
    Image upload compression preference is a Rust-owned media setting:
-   `SettingsValues.media.image_upload_compression` defaults to `never`,
+   `SettingsValues.media.image_upload_compression` defaults to `ask`,
    persists through the settings store, and is read by Tauri before building the
    upload command. React may run the browser/native pixel transform, but the
    mode, policy thresholds, selected/original variant metadata, metadata-strip
