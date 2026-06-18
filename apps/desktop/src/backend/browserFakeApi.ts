@@ -1,5 +1,12 @@
 import { composeSidebar, roomIsInScope, textRangeUtf16 } from "../domain/desktopModel";
 import type {
+  AvatarThumbnailState,
+  LinkPreview,
+  LinkPreviewImage,
+  LinkPreviewState,
+  TimelineMediaSource
+} from "../domain/coreEvents";
+import type {
   ActivityMarkReadTarget,
   ActivityRow,
   ActivityStream,
@@ -1196,11 +1203,28 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async loadLinkPreviews(_roomId: string, _eventId: string): Promise<DesktopSnapshot> {
+  async loadLinkPreviews(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    const message = this.findTimelineMessage(roomId, eventId);
+    if (message && message.link_previews?.some((preview) => preview.state === "pending")) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const readyPreviews: LinkPreview[] = message.link_previews.map((preview) =>
+        preview.state === "pending"
+          ? {
+              ...preview,
+              title: preview.title ?? "Synthetic preview",
+              description: preview.description ?? "A synthetic link preview for testing.",
+              image: preview.image ?? syntheticLinkPreviewImage(),
+              state: "ready" as LinkPreviewState
+            }
+          : preview
+      );
+      this.updateTimelineMessageLinkPreviews(roomId, eventId, readyPreviews);
+    }
     return this.getSnapshot();
   }
 
-  async hideLinkPreview(_roomId: string, _eventId: string): Promise<DesktopSnapshot> {
+  async hideLinkPreview(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    this.updateTimelineMessageLinkPreviews(roomId, eventId, []);
     return this.getSnapshot();
   }
 
@@ -2279,6 +2303,30 @@ class BrowserFakeApi implements DesktopApi {
     return requestId;
   }
 
+  private findTimelineMessage(
+    roomId: string,
+    eventId: string
+  ): TimelineMessage | undefined {
+    return this.snapshot.timeline.find(
+      (message) => message.room_id === roomId && message.event_id === eventId
+    );
+  }
+
+  private updateTimelineMessageLinkPreviews(
+    roomId: string,
+    eventId: string,
+    linkPreviews: LinkPreview[]
+  ): void {
+    const update = (message: TimelineMessage) => {
+      if (message.room_id === roomId && message.event_id === eventId) {
+        message.link_previews = linkPreviews;
+      }
+    };
+    this.snapshot.timeline.forEach(update);
+    timelineMessages.forEach(update);
+    backwardTimelineMessages.forEach(update);
+  }
+
   private completeIdentityReset() {
     this.snapshot.state.e2ee_trust.identity_reset = { kind: "idle" };
     this.snapshot.state.e2ee_trust.cross_signing = { kind: "missing" };
@@ -2365,6 +2413,19 @@ class BrowserFakeApi implements DesktopApi {
     );
     return this.getSnapshot();
   }
+}
+
+function syntheticLinkPreviewImage(): LinkPreviewImage {
+  const source: TimelineMediaSource = {
+    mxc_uri: "mxc://example.invalid/synthetic-preview",
+    encrypted: false,
+    encryption_version: null
+  };
+  const thumbnail: AvatarThumbnailState = { kind: "notRequested" };
+  return {
+    source,
+    thumbnail
+  };
 }
 
 function createInitialSnapshot(session: BrowserFakeApiOptions["session"]): DesktopSnapshot {

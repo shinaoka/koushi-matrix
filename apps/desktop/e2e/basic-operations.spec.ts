@@ -5861,3 +5861,109 @@ test("timeline header Threads button opens the threads list and row opens a thre
       rootEventId: "$thread-root:example.invalid"
     });
 });
+
+test("URL previews global toggle invokes update_settings", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("update_settings", () => window.__harness.currentSnapshot());
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: t("workspace.userSettings") }).click();
+
+  const toggle = page.getByRole("switch", { name: t("settings.urlPreviews") });
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await toggle.click();
+
+  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
+    )
+    .toEqual({
+      patch: {
+        display: {
+          code_block_wrap: true,
+          hide_redacted: false,
+          url_previews_enabled: false
+        }
+      }
+    });
+});
+
+test("link preview card renders from Rust-owned DTO and hides on close", async ({ page }) => {
+  await gotoReadyShell(page);
+  const eventId = "$link-preview:example.invalid";
+  const linkPreviewItem = {
+    id: { Event: { event_id: eventId } },
+    sender: "@harness-user:example.invalid",
+    body: "See https://example.invalid/page",
+    timestamp_ms: 1_800_000_001_000,
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    reactions: [],
+    can_react: true,
+    is_redacted: false,
+    is_hidden: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false,
+    link_previews: [
+      {
+        url: "https://example.invalid/page",
+        title: "Example Preview",
+        description: "A synthetic preview for testing.",
+        image: null,
+        state: "ready"
+      }
+    ]
+  };
+  await seedTimelineItems(page, [linkPreviewItem]);
+
+  const row = page.locator(`[data-event-id="${eventId}"]`);
+  await expect(row.locator(".link-preview-card")).toBeVisible();
+  await expect(row.getByText("Example Preview")).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("hide_link_preview", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.clearInvocations();
+  });
+  await row.getByRole("button", { name: t("timeline.linkPreviewHide") }).click();
+
+  await expect.poll(() => invocationCount(page, "hide_link_preview")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("hide_link_preview")[0]?.args)
+    )
+    .toEqual({ roomId: "!harness-room:example.invalid", eventId });
+
+  // Simulate Rust removing the preview cards after the viewer-local hide command.
+  await pushTimelineDiffs(
+    page,
+    [{ Set: { index: 0, item: { ...linkPreviewItem, link_previews: [] } } }],
+    2,
+    3
+  );
+  await expect(row.locator(".link-preview-card")).toHaveCount(0);
+});
+
+test("encrypted room suppresses link previews and shows privacy notice", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    snapshot.state.rooms[0] = {
+      ...snapshot.state.rooms[0],
+      is_encrypted: true
+    };
+    window.__harness.setSnapshot(snapshot);
+    window.__harness.setCommandResponse("load_room_settings", () =>
+      window.__harness.currentSnapshot()
+    );
+  });
+
+  await page.getByRole("button", { name: t("room.roomInfo") }).click();
+  await expect(page.getByText(t("settings.urlPreviewsEncryptedNotice"))).toBeVisible();
+});

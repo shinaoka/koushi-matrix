@@ -1,3 +1,5 @@
+import type { LinkPreview } from "./coreEvents";
+
 export type SearchScopeKind = "currentRoom" | "currentSpace" | "dms" | "allRooms";
 
 export interface DesktopSnapshot {
@@ -1284,6 +1286,7 @@ export interface TimelineMessage {
   body: string;
   attachment_filename: string | null;
   reply_count: number;
+  link_previews?: LinkPreview[];
 }
 
 export interface ThreadSnapshot {
