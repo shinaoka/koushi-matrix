@@ -330,18 +330,6 @@
     },
     "kind": "Room"
   },
-  "roomReportCompleted": {
-    "event": {
-      "ReportCompleted": {
-        "kind": "event",
-        "request_id": {
-          "connection_id": 3,
-          "sequence": 7
-        }
-      }
-    },
-    "kind": "Room"
-  },
   "roomMemberModerated": {
     "event": {
       "RoomMemberModerated": {
@@ -366,6 +354,18 @@
         },
         "room_id": "!r:example.test",
         "target_user_id": "@target:example.test"
+      }
+    },
+    "kind": "Room"
+  },
+  "roomReportCompleted": {
+    "event": {
+      "ReportCompleted": {
+        "kind": "event",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
       }
     },
     "kind": "Room"
@@ -491,40 +491,27 @@
         },
         "results": [
           {
+            "encrypted": false,
+            "encryption_version": null,
             "event_id": "$f1",
             "filename": "photo.png",
+            "height": null,
+            "is_edited": false,
             "kind": "image",
             "mimetype": "image/png",
             "room_id": "!r:example.test",
             "sender": "@u:example.test",
             "size": 1234,
             "source_mxc": "mxc://example.invalid/abc",
+            "thread_root": null,
             "thumbnail_mxc": "mxc://example.invalid/abc-thumb",
             "timestamp_ms": 1,
-            "thread_root": null,
-            "encrypted": false,
-            "encryption_version": null,
-            "width": null,
-            "height": null,
-            "is_edited": false
+            "width": null
           }
         ]
       }
     },
     "kind": "Search"
-  },
-  "threadsListOpened": {
-    "event": {
-      "kind": "opened",
-      "request_id": {
-        "connection_id": 3,
-        "sequence": 7
-      },
-      "room_id": "!room:example.test",
-      "items": [],
-      "end_reached": false
-    },
-    "kind": "ThreadsList"
   },
   "syncModeChanged": {
     "event": {
@@ -535,6 +522,19 @@
       }
     },
     "kind": "Sync"
+  },
+  "threadsListOpened": {
+    "event": {
+      "end_reached": false,
+      "items": [],
+      "kind": "opened",
+      "request_id": {
+        "connection_id": 3,
+        "sequence": 7
+      },
+      "room_id": "!room:example.test"
+    },
+    "kind": "ThreadsList"
   },
   "timelineDisplayLabelsUpdated": {
     "event": {
@@ -715,6 +715,82 @@
               "room_id": "!r:example.test"
             }
           }
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineLinkPreviewInitialItems": {
+    "event": {
+      "InitialItems": {
+        "generation": 5,
+        "items": [
+          {
+            "actions": {
+              "can_copy": true,
+              "can_forward": true,
+              "can_permalink": true,
+              "can_view_source": true,
+              "permalink": "https://matrix.to/#/!r%3Aexample.test/%24linkpreview1"
+            },
+            "body": "Check out https://example.invalid/page",
+            "can_edit": false,
+            "can_react": true,
+            "can_redact": true,
+            "id": {
+              "Event": {
+                "event_id": "$linkpreview1"
+              }
+            },
+            "in_reply_to_event_id": null,
+            "is_edited": false,
+            "is_hidden": false,
+            "is_redacted": false,
+            "link_previews": [
+              {
+                "description": "A synthetic fixture page.",
+                "image": {
+                  "height": 630,
+                  "source": {
+                    "encrypted": false,
+                    "encryption_version": null,
+                    "mxc_uri": "mxc://example.invalid/preview-image"
+                  },
+                  "thumbnail": {
+                    "height": 315,
+                    "kind": "ready",
+                    "mime_type": "image/png",
+                    "source_url": "file:///tmp/link-preview-thumbnails/fixture.bin",
+                    "width": 600
+                  },
+                  "width": 1200
+                },
+                "state": "ready",
+                "title": "Example Page",
+                "url": "https://example.invalid/page"
+              }
+            ],
+            "message_kind": "text",
+            "reactions": [],
+            "sender": "@u:example.test",
+            "sender_label": null,
+            "spoiler_spans": [],
+            "thread_root": null,
+            "thread_summary": null,
+            "timestamp_ms": 1111
+          }
+        ],
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
         }
       }
     },

@@ -1226,28 +1226,29 @@ mod tests {
         use matrix_desktop_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
-                AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LiveSignalsEvent,
-                LocalEncryptionEvent, MediaTransferProgress, NativeAttentionEvent,
-                PaginationDirection, PaginationState, ReactionGroup, RoomEvent, SearchEvent,
-                SyncEvent, ThreadsListEvent, TimelineCodeBlock, TimelineDisplayLabelUpdate,
-                TimelineEvent, TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
-                TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
-                TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
-                TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason,
-                TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
+                AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LinkPreview,
+                LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
+                MediaTransferProgress, NativeAttentionEvent, PaginationDirection, PaginationState,
+                ReactionGroup, RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent,
+                TimelineCodeBlock, TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody,
+                TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
+                TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
+                TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
+                TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
+                TimelineUnreadPosition,
             },
             failure::CoreFailure,
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
             ActivityRow, ActivityStream, ActivityTab, AttachmentKind, AttachmentResult,
-            DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType, IdentityResetState,
-            JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
-            LocalEncryptionHealth, NativeAttentionCapabilities, NativeAttentionCapability,
-            NativeAttentionSummary, PresenceKind, ReplyQuote, ReplyQuoteState,
-            RoomHistoryVisibility, RoomJoinRule, RoomMemberRole, RoomModerationAction,
-            RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji, SyncMode,
-            VerificationFlowState, VerificationTarget,
+            AvatarThumbnailState, DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType,
+            IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt,
+            LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionCapabilities,
+            NativeAttentionCapability, NativeAttentionSummary, PresenceKind, ReplyQuote,
+            ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule, RoomMemberRole,
+            RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji,
+            SyncMode, VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -1430,6 +1431,59 @@ mod tests {
             },
             send_state: None,
         };
+        let link_preview_item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: "$linkpreview1".to_owned(),
+            },
+            sender: Some("@u:example.test".to_owned()),
+            sender_label: None,
+            body: Some("Check out https://example.invalid/page".to_owned()),
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
+            timestamp_ms: Some(1111),
+            in_reply_to_event_id: None,
+            formatted: None,
+            reply_quote: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            link_previews: Some(vec![LinkPreview {
+                url: "https://example.invalid/page".to_owned(),
+                title: Some("Example Page".to_owned()),
+                description: Some("A synthetic fixture page.".to_owned()),
+                image: Some(LinkPreviewImage {
+                    source: TimelineMediaSource {
+                        mxc_uri: "mxc://example.invalid/preview-image".to_owned(),
+                        encrypted: false,
+                        encryption_version: None,
+                    },
+                    width: Some(1200),
+                    height: Some(630),
+                    thumbnail: AvatarThumbnailState::Ready {
+                        source_url: "file:///tmp/link-preview-thumbnails/fixture.bin".to_owned(),
+                        width: Some(600),
+                        height: Some(315),
+                        mime_type: Some("image/png".to_owned()),
+                    },
+                }),
+                state: LinkPreviewState::Ready,
+            }]),
+            reactions: Vec::new(),
+            can_react: true,
+            is_redacted: false,
+            is_hidden: false,
+            can_redact: true,
+            is_edited: false,
+            can_edit: false,
+            actions: TimelineMessageActions {
+                can_copy: true,
+                can_forward: true,
+                can_permalink: true,
+                can_view_source: true,
+                permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24linkpreview1".to_owned()),
+            },
+            send_state: None,
+        };
 
         // InitialItems envelope + payload
         let initial = serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
@@ -1594,6 +1648,42 @@ mod tests {
                 "body_preview": "quoted preview",
                 "state": "ready"
             })
+        );
+
+        let link_preview_initial =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(request_id),
+                key: key.clone(),
+                generation: TimelineGeneration(5),
+                items: vec![link_preview_item],
+            }))
+            .expect("serialize link preview initial items");
+        assert_eq!(
+            link_preview_initial["event"]["InitialItems"]["items"][0]["link_previews"],
+            json!([
+                {
+                    "url": "https://example.invalid/page",
+                    "title": "Example Page",
+                    "description": "A synthetic fixture page.",
+                    "image": {
+                        "source": {
+                            "mxc_uri": "mxc://example.invalid/preview-image",
+                            "encrypted": false,
+                            "encryption_version": null
+                        },
+                        "width": 1200,
+                        "height": 630,
+                        "thumbnail": {
+                            "kind": "ready",
+                            "source_url": "file:///tmp/link-preview-thumbnails/fixture.bin",
+                            "width": 600,
+                            "height": 315,
+                            "mime_type": "image/png"
+                        }
+                    },
+                    "state": "ready"
+                }
+            ])
         );
 
         let media_upload_progress =
@@ -2171,6 +2261,7 @@ mod tests {
             "timelineDisplayPolicyUpdated": display_policy_updated,
             "timelineInitialItems": initial,
             "timelineItemsUpdated": updated,
+            "timelineLinkPreviewInitialItems": link_preview_initial,
             "timelineMediaDownloadCompleted": media_download_completed,
             "timelineMediaInitialItems": media_initial,
             "timelineMediaUploadProgress": media_upload_progress,
