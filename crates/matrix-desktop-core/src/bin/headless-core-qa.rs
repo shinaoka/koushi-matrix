@@ -7485,6 +7485,32 @@ async fn run_link_preview_stage(
     )
     .await?;
 
+    sync_once_for_qa(conn_a, "sync after link preview encrypted room creation").await?;
+    wait_for_room_in_room_list(
+        conn_a,
+        &enc_room_id,
+        "room list after link preview encrypted room",
+    )
+    .await?;
+
+    // Wait until the room summary reports encryption enabled before sending.
+    let mut found_encrypted = false;
+    for _ in 0..30 {
+        if conn_a
+            .snapshot()
+            .rooms
+            .iter()
+            .any(|r| r.room_id == enc_room_id && r.is_encrypted)
+        {
+            found_encrypted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    if !found_encrypted {
+        return Err("encrypted room did not report is_encrypted".to_owned());
+    }
+
     let account_key_a = match &conn_a.snapshot().session {
         SessionState::Ready(info) => AccountKey(info.user_id.clone()),
         _ => return Err("link_preview: session A was not ready".to_owned()),
@@ -8397,14 +8423,48 @@ async fn wait_for_settings_persisted(
     let timeout = Duration::from_secs(10);
     let deadline = tokio::time::Instant::now() + timeout;
 
+    // First observe the saving state for our request so we don't mistake an
+    // idle snapshot left over from a prior update for completion of this one.
+    let already_saving = matches!(
+        &conn.snapshot().settings.persistence,
+        SettingsPersistenceState::Saving { request_id: rid } if *rid == request_id.sequence
+    );
+    if !already_saving {
+        loop {
+            let event = tokio::time::timeout_at(deadline, conn.recv_event())
+                .await
+                .map_err(|_| format!("{label}: timed out waiting for settings save to start"))?
+                .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+            match event {
+                CoreEvent::StateChanged(snapshot)
+                    if matches!(
+                        &snapshot.settings.persistence,
+                        SettingsPersistenceState::Saving { request_id: rid }
+                            if *rid == request_id.sequence
+                    ) =>
+                {
+                    break;
+                }
+                CoreEvent::OperationFailed {
+                    request_id: ev_id,
+                    failure,
+                } if ev_id == request_id => {
+                    return Err(format!("{label}: settings update failed: {failure:?}"));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Now wait for the persistence state to return to Idle.
     if conn.snapshot().settings.persistence == SettingsPersistenceState::Idle {
         return Ok(());
     }
-
     loop {
         let event = tokio::time::timeout_at(deadline, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for settings persisted"))?
+            .map_err(|_| format!("{label}: timed out waiting for settings save to complete"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -8419,11 +8479,7 @@ async fn wait_for_settings_persisted(
             } if ev_id == request_id => {
                 return Err(format!("{label}: settings update failed: {failure:?}"));
             }
-            _ => {
-                if conn.snapshot().settings.persistence == SettingsPersistenceState::Idle {
-                    return Ok(());
-                }
-            }
+            _ => {}
         }
     }
 }
