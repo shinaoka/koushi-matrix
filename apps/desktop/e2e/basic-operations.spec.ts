@@ -1877,7 +1877,7 @@ test("notification attention snapshot drives room, space, thread, and click rout
   await expect(sidebarThreadsButton).toHaveAttribute("data-count", "2");
   await expect(sidebarThreadsButton).toHaveAttribute("data-mention-count", "1");
   await expect(sidebarThreadsButton).toHaveAttribute("data-live-count", "3");
-  await expect(page).toHaveTitle("Kagome · 4 unread");
+  await expect(page).toHaveTitle("Koushi · 4 unread");
 
   await attentionRoom.click();
   await expect.poll(() => invocationCount(page, "select_room")).toBeGreaterThanOrEqual(1);

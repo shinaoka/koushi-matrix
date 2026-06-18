@@ -1114,7 +1114,7 @@ mod tests {
 
     #[test]
     fn os_keychain_service_name_is_product_branded() {
-        assert_eq!(CREDENTIAL_STORE_SERVICE_NAME, "Kagome");
+        assert_eq!(CREDENTIAL_STORE_SERVICE_NAME, "koushi-desktop");
     }
 
     #[test]

@@ -517,7 +517,7 @@ fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     let toggle_right_panel = menu_item(manager, MENU_ID_TOGGLE_RIGHT_PANEL)?;
     let show_keyboard_settings = menu_item(manager, MENU_ID_SHOW_KEYBOARD_SETTINGS)?;
 
-    let app_menu = SubmenuBuilder::new(manager, "Kagome")
+    let app_menu = SubmenuBuilder::new(manager, "Koushi")
         .item(&open_user_settings)
         .separator()
         .quit()

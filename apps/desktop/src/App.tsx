@@ -1059,10 +1059,10 @@ export function App() {
             effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot),
             qaSendStatus
           )
-        : desktopAttentionWindowTitle("Kagome", safeAttentionSummary)
+        : desktopAttentionWindowTitle("Koushi", safeAttentionSummary)
       : qaTitleEnabled()
         ? "matrix-desktop qa session=booting"
-        : "Kagome";
+        : "Koushi";
 
     document.title = title;
     if (!isTauriRuntime()) {
