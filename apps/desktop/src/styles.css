@@ -3579,6 +3579,12 @@ mark {
   font-size: 13px;
 }
 
+.settings-notice {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .sessions-list {
   display: grid;
   gap: 10px;
@@ -3748,6 +3754,12 @@ mark {
 .settings-toggle-label span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.settings-toggle-description {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
 }
 
 .settings-switch-track {

@@ -5754,6 +5754,7 @@ export function ContextualRightPanel({
           roomNotificationSettings={
             activeRoom ? snapshot.state.room_notification_settings[activeRoom.room_id] : undefined
           }
+          appSettings={snapshot.state.settings}
           spaces={snapshot.state.spaces}
           onInvitePeople={
             activeRoom
@@ -5777,6 +5778,9 @@ export function ContextualRightPanel({
           onSetRoomNotificationMode={onSetRoomNotificationMode}
           onUpdateMemberRole={onUpdateMemberRole}
           onUpdateRoomSetting={onUpdateRoomSetting}
+          onUpdateSettings={(patch) => {
+            void onUpdateSettings(patch);
+          }}
         />
       </aside>
     );

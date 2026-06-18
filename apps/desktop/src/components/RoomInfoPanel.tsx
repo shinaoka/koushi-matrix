@@ -1,4 +1,4 @@
-import { Bell, ChevronRight, FileText, Settings, Users } from "lucide-react";
+import { Bell, ChevronRight, FileText, Link, Settings, Users } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { t } from "../i18n/messages";
@@ -13,6 +13,8 @@ import type {
   RoomNotificationSettings,
   RoomSettingChange,
   RoomSummary,
+  SettingsPatch,
+  SettingsState,
   SpaceSummary
 } from "../domain/types";
 
@@ -22,6 +24,7 @@ export function RoomInfoPanel({
   room,
   roomManagement,
   roomNotificationSettings,
+  appSettings,
   spaces,
   onInvitePeople,
   onIgnoreUser,
@@ -32,13 +35,15 @@ export function RoomInfoPanel({
   onSetLocalUserAlias,
   onSetRoomNotificationMode,
   onUpdateMemberRole,
-  onUpdateRoomSetting
+  onUpdateRoomSetting,
+  onUpdateSettings
 }: {
   currentUserId?: string | null;
   ignoredUserIds?: string[];
   room: RoomSummary | null;
   roomManagement?: RoomManagementState;
   roomNotificationSettings: RoomNotificationSettings | undefined;
+  appSettings?: SettingsState;
   spaces: SpaceSummary[];
   onInvitePeople?: () => void;
   onIgnoreUser?: (userId: string) => void;
@@ -55,9 +60,16 @@ export function RoomInfoPanel({
   onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onUpdateMemberRole?: (roomId: string, targetUserId: string, powerLevel: number) => void;
+  onUpdateSettings?: (patch: SettingsPatch) => void;
 }) {
   const roomId = room?.room_id ?? "";
   const roomName = room?.display_label ?? "";
+  const isEncrypted = room?.is_encrypted ?? false;
+  const roomOverride = appSettings?.values.room_url_previews[roomId];
+  const roomUrlPreviewsEnabled = isEncrypted
+    ? roomOverride === true
+    : roomOverride !== false;
+  const canToggleRoomUrlPreviews = !isEncrypted || roomUrlPreviewsEnabled;
   const parentSpaces = room
     ? spaces.filter((space) => room.parent_space_ids.includes(space.space_id))
     : [];
@@ -161,6 +173,42 @@ export function RoomInfoPanel({
           <DetailRow label={t("room.dmList")} value={room.is_dm ? t("room.globalDmList") : t("room.roomScoped")} />
         </div>
       </section>
+
+      {appSettings && onUpdateSettings ? (
+        <section className="settings-section" aria-label={t("settings.urlPreviews")}>
+          <h3>{t("settings.urlPreviews")}</h3>
+          <button
+            className="settings-toggle-row"
+            type="button"
+            role="switch"
+            aria-checked={roomUrlPreviewsEnabled}
+            aria-label={t("settings.urlPreviewsEnabledForRoom")}
+            disabled={!canToggleRoomUrlPreviews}
+            onClick={() => {
+              onUpdateSettings({
+                room_url_previews: {
+                  [roomId]: !roomUrlPreviewsEnabled
+                }
+              });
+            }}
+          >
+            <span className="settings-toggle-copy">
+              <span className="settings-toggle-label">
+                <Link size={15} aria-hidden="true" />
+                <span>{t("settings.urlPreviewsEnabledForRoom")}</span>
+              </span>
+            </span>
+            <span className="settings-switch-track" aria-hidden="true">
+              <span className="settings-switch-thumb" />
+            </span>
+          </button>
+          {isEncrypted ? (
+            <p className="settings-notice" role="note">
+              {t("settings.urlPreviewsEncryptedNotice")}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="settings-section" aria-label={t("room.notifications")}>
         <h3>{t("room.notifications")}</h3>
