@@ -5849,6 +5849,7 @@ export function Composer({
             </button>
             {emojiPickerOpen ? (
               <EmojiPicker
+                anchorRef={emojiButtonRef}
                 onSelect={insertEmoji}
                 onClose={() => setEmojiPickerOpen(false)}
               />
@@ -6095,6 +6096,7 @@ export function ContextualRightPanel({
           platform={snapshot.state.locale_profile.platform}
           profile={snapshot.state.profile}
           savedSessions={savedSessions}
+          searchCrawlerState={snapshot.state.search_crawler}
           settings={snapshot.state.settings}
           onAcceptVerification={onAcceptVerification}
           onBootstrapCrossSigning={onBootstrapCrossSigning}
@@ -6128,6 +6130,12 @@ export function ContextualRightPanel({
           onChangePassword={onChangePassword ?? (() => undefined)}
           onDeactivateAccount={onDeactivateAccount ?? (() => undefined)}
           onSubmitAccountManagementUia={onSubmitAccountManagementUia ?? (() => undefined)}
+          onStartCrawlRoom={(_roomId) => {
+            // TODO: dispatch start_room_crawl command when Rust command is wired
+          }}
+          onStopCrawlRoom={(_roomId) => {
+            // TODO: dispatch stop_room_crawl command when Rust command is wired
+          }}
         />
       </aside>
     );

@@ -1,5 +1,6 @@
 import { Search, X } from "lucide-react";
 import {
+  type RefObject,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -58,9 +59,13 @@ function pushRecentEmoji(emoji: string) {
 interface EmojiPickerProps {
   onSelect: (emoji: string) => void;
   onClose: () => void;
+  /** Element that triggered the picker; excluded from outside-click detection
+   * so the trigger button can handle its own toggle without the picker
+   * re-opening after the outside-click handler fires. */
+  anchorRef?: RefObject<Element | null>;
 }
 
-export function EmojiPicker({ onSelect, onClose }: EmojiPickerProps) {
+export function EmojiPicker({ onSelect, onClose, anchorRef }: EmojiPickerProps) {
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState<
     EmojiCategory | "recent"
@@ -126,7 +131,8 @@ export function EmojiPicker({ onSelect, onClose }: EmojiPickerProps) {
     function handleClickOutside(event: MouseEvent) {
       if (
         panelRef.current &&
-        !panelRef.current.contains(event.target as Node)
+        !panelRef.current.contains(event.target as Node) &&
+        !(anchorRef?.current?.contains(event.target as Node) ?? false)
       ) {
         onClose();
       }
@@ -137,7 +143,7 @@ export function EmojiPicker({ onSelect, onClose }: EmojiPickerProps) {
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("mousedown", handleClickOutside);
     };
-  }, [onClose]);
+  }, [onClose, anchorRef]);
 
   const handleSelect = useCallback(
     (emoji: string) => {

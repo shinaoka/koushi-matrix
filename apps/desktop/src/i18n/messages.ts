@@ -681,6 +681,21 @@ export type MessageId =
   | "threads.open"
   | "threads.replyCount"
   | "threads.title"
+  | "settings.searchHistory"
+  | "settings.searchHistorySpeed"
+  | "settings.searchHistorySpeedStandard"
+  | "settings.searchHistorySpeedFast"
+  | "settings.searchHistorySpeedSlow"
+  | "settings.searchHistorySpeedPaused"
+  | "settings.searchHistoryIncludeCaptions"
+  | "settings.searchHistoryIncludeFilenames"
+  | "settings.searchHistoryRoomStatus"
+  | "settings.searchHistoryRoomIdle"
+  | "settings.searchHistoryRoomRunning"
+  | "settings.searchHistoryRoomCompleted"
+  | "settings.searchHistoryRoomFailed"
+  | "settings.searchHistoryStartRoom"
+  | "settings.searchHistoryStopRoom"
   | "settings.urlPreviews"
   | "settings.urlPreviewsEnabled"
   | "settings.urlPreviewsDescription"
@@ -1477,7 +1492,22 @@ const en: Catalog = {
   "threads.loading": "Loading threads…",
   "threads.open": "Open thread",
   "threads.replyCount": "{count} replies",
-  "threads.title": "Threads"
+  "threads.title": "Threads",
+  "settings.searchHistory": "Search history",
+  "settings.searchHistorySpeed": "Crawl speed",
+  "settings.searchHistorySpeedStandard": "Standard",
+  "settings.searchHistorySpeedFast": "Fast",
+  "settings.searchHistorySpeedSlow": "Slow",
+  "settings.searchHistorySpeedPaused": "Off",
+  "settings.searchHistoryIncludeCaptions": "Index media captions",
+  "settings.searchHistoryIncludeFilenames": "Index file names",
+  "settings.searchHistoryRoomStatus": "Room index status",
+  "settings.searchHistoryRoomIdle": "Not started",
+  "settings.searchHistoryRoomRunning": "Indexing ({processed} processed, {indexed} indexed)",
+  "settings.searchHistoryRoomCompleted": "Complete ({indexed} indexed)",
+  "settings.searchHistoryRoomFailed": "Failed",
+  "settings.searchHistoryStartRoom": "Start",
+  "settings.searchHistoryStopRoom": "Stop"
 };
 
 const ja: Catalog = {
@@ -2160,7 +2190,22 @@ const ja: Catalog = {
   "threads.loading": "スレッドを読み込み中…",
   "threads.open": "スレッドを開く",
   "threads.replyCount": "{count}件の返信",
-  "threads.title": "スレッド"
+  "threads.title": "スレッド",
+  "settings.searchHistory": "検索履歴",
+  "settings.searchHistorySpeed": "クロール速度",
+  "settings.searchHistorySpeedStandard": "標準",
+  "settings.searchHistorySpeedFast": "高速",
+  "settings.searchHistorySpeedSlow": "低速",
+  "settings.searchHistorySpeedPaused": "オフ",
+  "settings.searchHistoryIncludeCaptions": "メディアキャプションをインデックス",
+  "settings.searchHistoryIncludeFilenames": "ファイル名をインデックス",
+  "settings.searchHistoryRoomStatus": "ルームインデックス状況",
+  "settings.searchHistoryRoomIdle": "未開始",
+  "settings.searchHistoryRoomRunning": "インデックス中（処理済み: {processed}件、インデックス済み: {indexed}件）",
+  "settings.searchHistoryRoomCompleted": "完了（{indexed}件インデックス済み）",
+  "settings.searchHistoryRoomFailed": "失敗",
+  "settings.searchHistoryStartRoom": "開始",
+  "settings.searchHistoryStopRoom": "停止"
 };
 
 const pseudo: Catalog = Object.fromEntries(

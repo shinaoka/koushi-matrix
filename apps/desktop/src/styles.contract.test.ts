@@ -44,9 +44,9 @@ function expectBlockUses(block: string, tokens: string[]) {
 
 describe("styles.css token system", () => {
   test("defines the blue brand token in light and dark", () => {
-    expect(css).toContain("--brand: #2D6FEF;");
+    expect(css).toContain("--brand: #2d6fef;");
     expect(css).toMatch(/:root\[data-theme="dark"\]/);
-    expect(css).toContain("--brand: #5C8DF6;");
+    expect(css).toContain("--brand: #5c8df6;");
   });
 
   test("supports OS dark mode and a color-scheme", () => {
