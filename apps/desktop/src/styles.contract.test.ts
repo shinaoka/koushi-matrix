@@ -4,6 +4,22 @@ import { describe, expect, test } from "vitest";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const uiSharedSource = readFileSync(new URL("./app/uiShared.ts", import.meta.url), "utf8");
+
+// Sources that render Lucide icons: App.tsx plus the per-component modules the #87
+// Phase 2d split moved icon usages into. Fixed icon sizes must stay centralized in
+// ICON_SIZE, so the contract scan must cover all of them, not just App.tsx.
+const iconRenderingSources: ReadonlyArray<readonly [string, string]> = [
+  ["App.tsx", appSource],
+  ["app/uiShared.ts", uiSharedSource],
+  ...["dialogs", "Shell", "panes", "auth", "mediaLists", "composer", "rightPanel"].map(
+    (name) =>
+      [
+        `components/${name}.tsx`,
+        readFileSync(new URL(`./components/${name}.tsx`, import.meta.url), "utf8")
+      ] as const
+  )
+];
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -260,8 +276,15 @@ describe("styles.css token system", () => {
     ]);
   });
 
-  test("App.tsx centralizes fixed Lucide icon sizes", () => {
-    expect(appSource).toContain("const ICON_SIZE");
-    expect(appSource).not.toMatch(/size=\{\d+\}/);
+  test("fixed Lucide icon sizes stay centralized in ICON_SIZE", () => {
+    expect(uiSharedSource).toContain("const ICON_SIZE");
+    // No icon-rendering module may hard-code a numeric `size={N}`; all fixed sizes
+    // must come from ICON_SIZE. After the Phase 2d split this scans the moved
+    // component modules too, not only App.tsx.
+    for (const [name, source] of iconRenderingSources) {
+      expect(source, `${name} should not hard-code Lucide icon sizes`).not.toMatch(
+        /size=\{\d+\}/
+      );
+    }
   });
 });
