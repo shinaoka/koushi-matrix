@@ -64,7 +64,11 @@ fn app_state_serializes_a_focused_context_state_slot() {
 
 #[test]
 fn reducer_source_mentions_the_focused_context_state_machine() {
-    let source = include_str!("../src/reducer.rs");
+    // The reducer is split into submodules; check the delegating root and the
+    // thread submodule (which owns focused-context handlers).
+    let root = include_str!("../src/reducer/mod.rs");
+    let thread = include_str!("../src/reducer/thread.rs");
+    let source = format!("{root}{thread}");
 
     assert!(
         source.contains("OpenFocusedContext"),
