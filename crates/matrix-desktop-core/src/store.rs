@@ -794,33 +794,21 @@ fn local_secret_error_health(
     if matrix_desktop_key::is_locked_or_inaccessible_error(error) {
         return LocalEncryptionHealth::LockedOrInaccessible;
     }
+    // Credential-backend errors arrive pre-abstracted as `CredentialBackendErrorKind`
+    // (the keyring adapter maps raw `keyring::Error` into these kinds inside the key
+    // crate), so the domain layer never matches platform error types directly.
     match error {
         matrix_desktop_key::LocalSecretError::CredentialBackend(
             matrix_desktop_key::CredentialBackendErrorKind::Unavailable,
-        )
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::PlatformFailure(
-            _,
-        ))
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::TooLong(_, _))
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::Invalid(_, _)) => {
-            LocalEncryptionHealth::Unavailable
-        }
-        matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoStorageAccess(
-            _,
-        )) => LocalEncryptionHealth::LockedOrInaccessible,
+        ) => LocalEncryptionHealth::Unavailable,
         matrix_desktop_key::LocalSecretError::CredentialBackend(
             matrix_desktop_key::CredentialBackendErrorKind::Corrupt,
         )
         | matrix_desktop_key::LocalSecretError::Base64Decode(_)
         | matrix_desktop_key::LocalSecretError::InvalidSecretLength { .. }
         | matrix_desktop_key::LocalSecretError::Json(_)
-        | matrix_desktop_key::LocalSecretError::Derivation
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::BadEncoding(_))
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::Ambiguous(_)) => {
-            LocalEncryptionHealth::ResetRequired
-        }
-        matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoEntry)
-        | matrix_desktop_key::LocalSecretError::CredentialBackend(
+        | matrix_desktop_key::LocalSecretError::Derivation => LocalEncryptionHealth::ResetRequired,
+        matrix_desktop_key::LocalSecretError::CredentialBackend(
             matrix_desktop_key::CredentialBackendErrorKind::MissingCredential,
         ) => LocalEncryptionHealth::MissingCredential,
         matrix_desktop_key::LocalSecretError::CredentialBackend(
@@ -864,7 +852,9 @@ impl FileCredentialStore {
     ) -> Result<LocalUnlockSecret, matrix_desktop_key::LocalSecretError> {
         let path = self.account_file(key_id);
         let value = std::fs::read_to_string(&path).map_err(|_| {
-            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoEntry)
+            matrix_desktop_key::LocalSecretError::CredentialBackend(
+                matrix_desktop_key::CredentialBackendErrorKind::MissingCredential,
+            )
         })?;
         LocalUnlockSecret::from_storage_string(value.trim())
     }
@@ -904,7 +894,9 @@ impl FileCredentialStore {
     ) -> Result<String, matrix_desktop_key::LocalSecretError> {
         let path = self.named_file(name);
         std::fs::read_to_string(&path).map_err(|_| {
-            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoEntry)
+            matrix_desktop_key::LocalSecretError::CredentialBackend(
+                matrix_desktop_key::CredentialBackendErrorKind::MissingCredential,
+            )
         })
     }
 
@@ -918,10 +910,10 @@ impl FileCredentialStore {
     }
 
     fn ensure_dir(&self) -> Result<(), matrix_desktop_key::LocalSecretError> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| {
-            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::PlatformFailure(
-                Box::new(e),
-            ))
+        std::fs::create_dir_all(&self.dir).map_err(|_| {
+            matrix_desktop_key::LocalSecretError::CredentialBackend(
+                matrix_desktop_key::CredentialBackendErrorKind::Unavailable,
+            )
         })
     }
 
@@ -930,10 +922,10 @@ impl FileCredentialStore {
         path: &std::path::Path,
         value: &str,
     ) -> Result<(), matrix_desktop_key::LocalSecretError> {
-        std::fs::write(path, value).map_err(|e| {
-            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::PlatformFailure(
-                Box::new(e),
-            ))
+        std::fs::write(path, value).map_err(|_| {
+            matrix_desktop_key::LocalSecretError::CredentialBackend(
+                matrix_desktop_key::CredentialBackendErrorKind::Unavailable,
+            )
         })
     }
 }

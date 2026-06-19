@@ -1,7 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use matrix_desktop_key::{
-    CredentialStore, LocalSecretError, LocalUnlockSecret, SavedSessionIndex, SessionKeyId,
-    StoredMatrixSession, is_missing_credential_error, map_delete_result,
+    CredentialBackendErrorKind, CredentialStore, LocalSecretError, LocalUnlockSecret,
+    SavedSessionIndex, SessionKeyId, StoredMatrixSession, is_missing_credential_error,
+    map_delete_result,
 };
 
 fn secret_from_test_byte(byte: u8) -> LocalUnlockSecret {
@@ -196,7 +197,7 @@ fn delete_missing_credential_is_success() {
 #[test]
 fn missing_credential_error_is_classified_for_fail_closed_store_restore() {
     assert!(is_missing_credential_error(
-        &LocalSecretError::CredentialStore(keyring::Error::NoEntry)
+        &LocalSecretError::CredentialBackend(CredentialBackendErrorKind::MissingCredential)
     ));
 }
 

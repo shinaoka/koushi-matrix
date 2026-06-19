@@ -25,8 +25,9 @@ const SAVED_SESSIONS_ACCOUNT_NAME: &str = "matrix-desktop:saved-sessions:v1";
 
 #[derive(Debug, Error)]
 pub enum LocalSecretError {
-    #[error("credential store error: {0}")]
-    CredentialStore(#[from] keyring::Error),
+    // Credential-backend failures are carried as the platform-free
+    // `CredentialBackendErrorKind`; the keyring adapter maps raw `keyring::Error`
+    // into a kind so consumers (e.g. matrix-desktop-core) never see platform error types.
     #[error("credential backend error: {0}")]
     CredentialBackend(CredentialBackendErrorKind),
     #[error("key derivation failed")]
@@ -656,15 +657,16 @@ impl<B: CredentialBackend> CredentialStore<B> {
 pub fn map_delete_result(result: keyring::Result<()>) -> Result<(), LocalSecretError> {
     match result {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(LocalSecretError::CredentialStore(error)),
+        Err(error) => Err(LocalSecretError::CredentialBackend(
+            CredentialBackendErrorKind::from_keyring_error(error),
+        )),
     }
 }
 
 pub fn is_missing_credential_error(error: &LocalSecretError) -> bool {
     matches!(
         error,
-        LocalSecretError::CredentialStore(keyring::Error::NoEntry)
-            | LocalSecretError::CredentialBackend(CredentialBackendErrorKind::MissingCredential)
+        LocalSecretError::CredentialBackend(CredentialBackendErrorKind::MissingCredential)
     )
 }
 

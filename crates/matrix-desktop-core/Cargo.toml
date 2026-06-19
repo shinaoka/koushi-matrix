@@ -24,7 +24,6 @@ chacha20poly1305 = "0.10"
 eyeball = "0.8"
 eyeball-im = "0.8"
 futures-util = "0.3"
-keyring = { version = "3", features = ["apple-native", "windows-native"] }
 regex = "1"
 matrix-sdk = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk", default-features = false, features = ["e2e-encryption", "experimental-search", "sqlite"] }
 matrix-sdk-ui = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-ui", default-features = false }

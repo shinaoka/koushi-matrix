@@ -42,17 +42,13 @@ import { fileURLToPath } from "url";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = join(__dirname, "..");
 
-const CARGO_TOML_PATH = join(
-  repoRoot,
-  "crates",
-  "matrix-desktop-state",
-  "Cargo.toml"
-);
-
 /**
- * Platform/OS crate names that must not appear as direct dependencies of
- * matrix-desktop-state. Extend this list when Phase 5 removes keyring from
- * core/key and any future platform dep is added elsewhere.
+ * Platform/OS crate names that must not appear as direct dependencies of the
+ * pure domain crates. matrix-desktop-state forbids the full list (incl. tokio);
+ * matrix-desktop-core forbids the same list EXCEPT tokio, which it confines to
+ * executor.rs per Platform Portability rule 2. keyring left core in #87 Phase 5
+ * (credential errors are abstracted into CredentialBackendErrorKind in the key
+ * adapter crate), so core is now enforced keyring-free too.
  *
  * Rationale per crate:
  *   keyring        — OS credential store (apple-native, windows-native); must
@@ -85,8 +81,15 @@ const BANNED_PLATFORM_DEPS = [
   "security-framework",
 ];
 
-const cargoToml = readFileSync(CARGO_TOML_PATH, "utf-8");
-const lines = cargoToml.split("\n");
+// Pure domain crates and the platform deps each forbids. State is sync/pure and
+// forbids everything; core may use tokio (executor.rs only) but nothing else.
+const DOMAIN_CRATES = [
+  { name: "matrix-desktop-state", banned: BANNED_PLATFORM_DEPS },
+  {
+    name: "matrix-desktop-core",
+    banned: BANNED_PLATFORM_DEPS.filter((dep) => dep !== "tokio"),
+  },
+];
 
 /**
  * Determine if a line is a dependency section header.
@@ -123,59 +126,60 @@ function isAnySectionHeader(line) {
   return trimmed.startsWith("[") && !trimmed.startsWith("[[");
 }
 
-const violations = [];
-let inDepSection = false;
+// Scan one crate's Cargo.toml for any banned platform dep (declared name or
+// `package = "..."` alias) across all dependency tables.
+function scanCrate(crateName, banned) {
+  const cargoToml = readFileSync(
+    join(repoRoot, "crates", crateName, "Cargo.toml"),
+    "utf-8"
+  );
+  const violations = [];
+  let inDepSection = false;
+  for (const line of cargoToml.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    if (isAnySectionHeader(line)) {
+      inDepSection = isDepSectionHeader(line);
+      continue;
+    }
+    if (!inDepSection) continue;
 
-for (const line of lines) {
-  const trimmed = line.trim();
-  // Skip blank and comment lines.
-  if (trimmed === "" || trimmed.startsWith("#")) continue;
-
-  if (isAnySectionHeader(line)) {
-    inDepSection = isDepSectionHeader(line);
-    continue;
-  }
-
-  if (!inDepSection) continue;
-
-  // Check the declared dep name (the left-hand key before `=` or `.`).
-  const nameMatch = /^([A-Za-z0-9_-]+)\s*[=.]/.exec(trimmed);
-  if (nameMatch) {
-    const depName = nameMatch[1];
-    if (BANNED_PLATFORM_DEPS.includes(depName)) {
-      violations.push({ kind: "name", dep: depName, line: trimmed });
+    const nameMatch = /^([A-Za-z0-9_-]+)\s*[=.]/.exec(trimmed);
+    if (nameMatch && banned.includes(nameMatch[1])) {
+      violations.push({ kind: "name", dep: nameMatch[1], line: trimmed });
+    }
+    const packageMatch = /package\s*=\s*["']([A-Za-z0-9_-]+)["']/.exec(trimmed);
+    if (packageMatch && banned.includes(packageMatch[1])) {
+      violations.push({ kind: "package-alias", dep: packageMatch[1], line: trimmed });
     }
   }
-
-  // Also catch renamed packages: `foo = { package = "keyring", ... }`.
-  const packageMatch = /package\s*=\s*["']([A-Za-z0-9_-]+)["']/.exec(trimmed);
-  if (packageMatch) {
-    const pkgName = packageMatch[1];
-    if (BANNED_PLATFORM_DEPS.includes(pkgName)) {
-      violations.push({ kind: "package-alias", dep: pkgName, line: trimmed });
-    }
-  }
+  return violations;
 }
 
-if (violations.length === 0) {
-  console.log(
-    "check-domain-crate-platform-deps: ok — matrix-desktop-state has no banned platform deps."
-  );
-  process.exit(0);
-} else {
+let failed = false;
+for (const crate of DOMAIN_CRATES) {
+  const violations = scanCrate(crate.name, crate.banned);
+  if (violations.length === 0) {
+    console.log(
+      `check-domain-crate-platform-deps: ok — ${crate.name} has no banned platform deps.`
+    );
+    continue;
+  }
+  failed = true;
   console.error(
-    "check-domain-crate-platform-deps: FAILED — matrix-desktop-state must not depend on platform/OS crates."
+    `check-domain-crate-platform-deps: FAILED — ${crate.name} must not depend on platform/OS crates.`
   );
   console.error(
-    "This crate is the pure domain/serialization layer; it must target WASM and future mobile."
+    "Pure domain crates must target WASM and future mobile; platform access goes behind a port."
   );
   console.error(
-    "See REPOSITORY_RULES.md and #87 Phase 5 for the SecretStore port plan.\n"
+    "See REPOSITORY_RULES.md and #87 Phase 5 (SecretStore / keyring confined to the key adapter).\n"
   );
-  console.error("Banned deps found (all dependency tables scanned):");
+  console.error(`Banned deps found in ${crate.name} (all dependency tables scanned):`);
   for (const v of violations) {
     const tag = v.kind === "package-alias" ? " (via package alias)" : "";
     console.error(`  - ${v.dep}${tag}: ${v.line}`);
   }
-  process.exit(1);
 }
+
+process.exit(failed ? 1 : 0);
