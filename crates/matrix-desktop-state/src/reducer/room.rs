@@ -1,0 +1,582 @@
+use std::collections::BTreeSet;
+
+use crate::{
+    effect::{AppEffect, UiEvent},
+    state::{
+        AppError, AppState, OperationFailureKind, PinOp, PinnedEvent, PinOperationState,
+        RoomListFilter, RoomTagKind, RoomTagInfo, ThreadAttentionState, ThreadPaneState,
+        ThreadsListState, TimelinePaneState, compute_room_list_projection,
+    },
+};
+
+use super::{
+    is_session_ready, refresh_timeline_media_gallery, refresh_timeline_scheduled_sends,
+    refresh_timeline_upload_staging, retain_navigation_room_memory,
+    select_active_room_after_room_list_update, retarget_active_room_for_selected_space,
+    preferred_room_id_in_active_space, first_default_room_id,
+    active_room_left_selected_space, room_exists, reconcile_space_order, apply_space_order,
+    session_user_id,
+};
+
+const PIN_EVENT_FAILED_MESSAGE: &str = "Pinning the event failed";
+const UNPIN_EVENT_FAILED_MESSAGE: &str = "Unpinning the event failed";
+
+pub(crate) fn handle_room_list_updated(
+    state: &mut AppState,
+    spaces: Vec<crate::state::SpaceSummary>,
+    rooms: Vec<crate::state::RoomSummary>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let own_user_id = session_user_id(state).map(str::to_owned);
+    let mut rooms = rooms;
+    let mut spaces = spaces;
+    crate::state::refresh_room_summary_display_projection(
+        &mut rooms,
+        &state.profile,
+        own_user_id.as_deref(),
+    );
+    let retained_room_ids = rooms
+        .iter()
+        .map(|room| room.room_id.clone())
+        .collect::<BTreeSet<_>>();
+    let had_active_room_before_update = state.navigation.active_room_id.is_some();
+    reconcile_space_order(&mut state.navigation.space_order, &spaces);
+    apply_space_order(&mut spaces, &state.navigation.space_order);
+    state.spaces = spaces;
+    state.rooms = rooms;
+    retain_navigation_room_memory(state);
+    state.room_list = compute_room_list_projection(
+        state.room_list.active_filter,
+        state.room_list.sort,
+        &state.rooms,
+        &state.invites,
+    );
+    state.composer_drafts.retain_rooms(&retained_room_ids);
+    state.scheduled_sends.retain_rooms(&retained_room_ids);
+    state.upload_staging.retain_rooms(&retained_room_ids);
+    state.media_gallery.retain_rooms(&retained_room_ids);
+    refresh_timeline_scheduled_sends(state);
+    refresh_timeline_upload_staging(state);
+    refresh_timeline_media_gallery(state);
+
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
+
+    // Notify the search crawler of all current joined rooms on every
+    // RoomListUpdate so it can idempotently start/resume any missing
+    // crawls. The actor is responsible for deduplication.
+    {
+        use crate::state::SearchCrawlerSpeed;
+        let crawler_settings = &state.settings.values.search_crawler;
+        if crawler_settings.speed != SearchCrawlerSpeed::Paused {
+            let room_ids: Vec<String> = state.rooms.iter()
+                .map(|r| r.room_id.clone())
+                .collect();
+            if !room_ids.is_empty() {
+                effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                    room_ids,
+                    settings: crawler_settings.clone(),
+                });
+            }
+        }
+    }
+
+    if state
+        .navigation
+        .active_space_id
+        .as_deref()
+        .is_some_and(|active_space_id| {
+            !state
+                .spaces
+                .iter()
+                .any(|space| space.space_id == active_space_id)
+        })
+    {
+        state.navigation.active_space_id = None;
+    }
+
+    if let Some(active_room_id) = state.navigation.active_room_id.clone() {
+        let room_still_exists = state
+            .rooms
+            .iter()
+            .any(|room| room.room_id == active_room_id);
+
+        if !room_still_exists {
+            state.navigation.active_room_id = None;
+            let previous_room_id = state.timeline.room_id.clone().unwrap_or(active_room_id);
+            let had_thread = state.thread != ThreadPaneState::Closed
+                || state.thread_attention != ThreadAttentionState::Closed;
+            let had_threads_list = state.threads_list != ThreadsListState::Closed;
+
+            state.timeline = Default::default();
+            state.thread = ThreadPaneState::Closed;
+            state.thread_attention = ThreadAttentionState::Closed;
+            state.threads_list = ThreadsListState::Closed;
+
+            effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: previous_room_id,
+            }));
+            if had_thread {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadChanged));
+            }
+            if had_threads_list {
+                effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+            }
+        }
+    }
+
+    if had_active_room_before_update
+        && state.navigation.active_room_id.is_none()
+        && state.navigation.active_space_id.is_some()
+        && let Some(room_id) = preferred_room_id_in_active_space(state)
+    {
+        select_active_room_after_room_list_update(state, &mut effects, room_id);
+    }
+
+    if let Some(active_room_id) = state.navigation.active_room_id.clone()
+        && active_room_left_selected_space(state, &active_room_id)
+    {
+        retarget_active_room_for_selected_space(state, &mut effects, active_room_id);
+    }
+
+    if !had_active_room_before_update
+        && state.navigation.active_room_id.is_none()
+        && let Some(room_id) = first_default_room_id(state)
+    {
+        state.navigation.active_room_id = Some(room_id.clone());
+        state.timeline = TimelinePaneState {
+            room_id: Some(room_id.clone()),
+            is_subscribed: false,
+            is_paginating_backwards: false,
+            composer: state.composer_drafts.composer_for_room(&room_id),
+            scheduled_send_capability: state.scheduled_sends.capability.clone(),
+            scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
+            staged_uploads: state.upload_staging.items_for_room(&room_id),
+            media_gallery: state.media_gallery.items_for_room(&room_id),
+            media_downloads: Default::default(),
+        };
+        effects.push(AppEffect::SubscribeTimeline {
+            room_id: room_id.clone(),
+        });
+        effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
+    }
+
+    effects
+}
+
+pub(crate) fn handle_room_list_filter_selected(
+    state: &mut AppState,
+    filter: RoomListFilter,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || state.room_list.active_filter == filter {
+        return Vec::new();
+    }
+
+    state.room_list = compute_room_list_projection(
+        filter,
+        state.room_list.sort,
+        &state.rooms,
+        &state.invites,
+    );
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_list_filter_applied(
+    state: &mut AppState,
+    projection: crate::state::RoomListProjection,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || state.room_list == projection {
+        return Vec::new();
+    }
+
+    state.room_list = projection;
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_tags_updated(
+    state: &mut AppState,
+    room_id: String,
+    tags: crate::state::RoomTags,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) else {
+        return Vec::new();
+    };
+
+    if room.tags == tags {
+        return Vec::new();
+    }
+
+    room.tags = tags;
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_tag_set(
+    state: &mut AppState,
+    room_id: String,
+    tag: RoomTagKind,
+    info: RoomTagInfo,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) else {
+        return Vec::new();
+    };
+
+    let mut tags = room.tags.clone();
+    tags.set(tag, info);
+    if room.tags == tags {
+        return Vec::new();
+    }
+
+    room.tags = tags;
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_tag_removed(
+    state: &mut AppState,
+    room_id: String,
+    tag: RoomTagKind,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) else {
+        return Vec::new();
+    };
+
+    let mut tags = room.tags.clone();
+    tags.remove(tag);
+    if room.tags == tags {
+        return Vec::new();
+    }
+
+    room.tags = tags;
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_pinned_events_updated(
+    state: &mut AppState,
+    room_id: String,
+    pinned: Vec<PinnedEvent>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let entry = state.room_interactions.entry(room_id).or_default();
+    if entry.pinned_events == pinned {
+        return Vec::new();
+    }
+
+    entry.pinned_events = pinned;
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+}
+
+pub(crate) fn handle_pin_event_requested(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    event_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || event_id.is_empty() || !room_exists(state, &room_id) {
+        return Vec::new();
+    }
+
+    let entry = state.room_interactions.entry(room_id.clone()).or_default();
+    if !entry.pin_operation.accepts_new_request() {
+        return Vec::new();
+    }
+
+    entry.pin_operation = PinOperationState::Pending {
+        request_id,
+        room_id,
+        event_id,
+        op: PinOp::Pin,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+}
+
+pub(crate) fn handle_pin_event_completed(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let Some(entry) = state.room_interactions.get_mut(&room_id) else {
+        return Vec::new();
+    };
+    if !matches!(
+        entry.pin_operation,
+        PinOperationState::Pending {
+            request_id: pending_request_id,
+            op: PinOp::Pin,
+            ..
+        } if pending_request_id == request_id
+    ) {
+        return Vec::new();
+    }
+
+    entry.pin_operation = PinOperationState::Idle;
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+}
+
+pub(crate) fn handle_pin_event_failed(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    _kind: crate::state::OperationFailureKind,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let Some(entry) = state.room_interactions.get_mut(&room_id) else {
+        return Vec::new();
+    };
+    let PinOperationState::Pending {
+        request_id: pending_request_id,
+        event_id,
+        op: PinOp::Pin,
+        ..
+    } = &entry.pin_operation
+    else {
+        return Vec::new();
+    };
+    if *pending_request_id != request_id {
+        return Vec::new();
+    };
+    let event_id = event_id.clone();
+
+    entry.pin_operation = PinOperationState::Failed {
+        room_id,
+        event_id,
+        op: PinOp::Pin,
+        recoverable: true,
+    };
+    state.errors.push(AppError {
+        code: "pin_event_failed".to_owned(),
+        message: PIN_EVENT_FAILED_MESSAGE.to_owned(),
+        recoverable: true,
+    });
+    vec![
+        AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged),
+        AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+    ]
+}
+
+pub(crate) fn handle_unpin_event_requested(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    event_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || event_id.is_empty() || !room_exists(state, &room_id) {
+        return Vec::new();
+    }
+
+    let entry = state.room_interactions.entry(room_id.clone()).or_default();
+    if !entry.pin_operation.accepts_new_request() {
+        return Vec::new();
+    }
+
+    entry.pin_operation = PinOperationState::Pending {
+        request_id,
+        room_id,
+        event_id,
+        op: PinOp::Unpin,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+}
+
+pub(crate) fn handle_unpin_event_completed(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let Some(entry) = state.room_interactions.get_mut(&room_id) else {
+        return Vec::new();
+    };
+    if !matches!(
+        entry.pin_operation,
+        PinOperationState::Pending {
+            request_id: pending_request_id,
+            op: PinOp::Unpin,
+            ..
+        } if pending_request_id == request_id
+    ) {
+        return Vec::new();
+    }
+
+    entry.pin_operation = PinOperationState::Idle;
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+}
+
+pub(crate) fn handle_unpin_event_failed(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    _kind: crate::state::OperationFailureKind,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let Some(entry) = state.room_interactions.get_mut(&room_id) else {
+        return Vec::new();
+    };
+    let PinOperationState::Pending {
+        request_id: pending_request_id,
+        event_id,
+        op: PinOp::Unpin,
+        ..
+    } = &entry.pin_operation
+    else {
+        return Vec::new();
+    };
+    if *pending_request_id != request_id {
+        return Vec::new();
+    };
+    let event_id = event_id.clone();
+
+    entry.pin_operation = PinOperationState::Failed {
+        room_id,
+        event_id,
+        op: PinOp::Unpin,
+        recoverable: true,
+    };
+    state.errors.push(AppError {
+        code: "unpin_event_failed".to_owned(),
+        message: UNPIN_EVENT_FAILED_MESSAGE.to_owned(),
+        recoverable: true,
+    });
+    vec![
+        AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged),
+        AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+    ]
+}
+
+pub(crate) fn handle_room_marked_as_read_requested(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    event_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || !room_exists(state, &room_id) {
+        return Vec::new();
+    }
+
+    let _ = (request_id, event_id);
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_marked_as_read_succeeded(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || !room_exists(state, &room_id) {
+        return Vec::new();
+    }
+
+    let _ = request_id;
+    if let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) {
+        room.marked_unread = false;
+        room.unread_count = 0;
+        room.notification_count = 0;
+        room.highlight_count = 0;
+        state.room_list = compute_room_list_projection(
+            state.room_list.active_filter,
+            state.room_list.sort,
+            &state.rooms,
+            &state.invites,
+        );
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_marked_as_read_failed(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    kind: OperationFailureKind,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || !room_exists(state, &room_id) {
+        return Vec::new();
+    }
+
+    let _ = (request_id, kind);
+    vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+}
+
+pub(crate) fn handle_room_marked_as_unread_requested(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    unread: bool,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || !room_exists(state, &room_id) {
+        return Vec::new();
+    }
+
+    let _ = (request_id, unread);
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_marked_as_unread_succeeded(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    unread: bool,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || !room_exists(state, &room_id) {
+        return Vec::new();
+    }
+
+    let _ = request_id;
+    if let Some(room) = state.rooms.iter_mut().find(|room| room.room_id == room_id) {
+        room.marked_unread = unread;
+        if unread && room.unread_count == 0 {
+            room.unread_count = 1;
+        }
+        if !unread {
+            room.unread_count = 0;
+        }
+        state.room_list = compute_room_list_projection(
+            state.room_list.active_filter,
+            state.room_list.sort,
+            &state.rooms,
+            &state.invites,
+        );
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_room_marked_as_unread_failed(
+    state: &mut AppState,
+    request_id: u64,
+    room_id: String,
+    kind: OperationFailureKind,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || !room_exists(state, &room_id) {
+        return Vec::new();
+    }
+
+    let _ = (request_id, kind);
+    vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+}
