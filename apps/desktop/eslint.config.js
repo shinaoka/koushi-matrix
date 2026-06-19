@@ -7,21 +7,20 @@
 //
 // Rules encoded here:
 //
-// 1. Components must not import @tauri-apps/* directly.
+// 1. src/components/** AND src/App.tsx must not import @tauri-apps/* directly.
 //    The transport boundary is apps/desktop/src/backend/*. React components
 //    receive the API surface through props/context from App.tsx; they must not
-//    reach Tauri IPC themselves.
+//    reach Tauri IPC themselves. App.tsx has three grandfathered import lines
+//    acknowledged with inline eslint-disable-next-line no-restricted-imports
+//    comments (tracked for Phase 2 migration). Any NEW direct @tauri-apps import
+//    in App.tsx without a disable comment will be caught by this rule.
+//    domain/** and test/** are intentionally excluded: convertFileSrc in
+//    domain/mediaUrl.ts, notification helpers in domain/desktopNotification.ts,
+//    and the @tauri-apps/api/mocks in test/** are correct at those layers.
 //
 // 2. No source file may import from ../../src-tauri (path escape into the
 //    Rust adapter layer). TypeScript types from src-tauri are hand-mirrored
 //    in apps/desktop/src/domain/types.ts; that file is the correct import.
-//
-// 3. App.tsx itself currently holds some direct invoke/listen/getCurrentWindow
-//    calls as part of the Tauri event-listener and window-state wiring that
-//    has not yet been migrated to backend/client.ts (tracked in #87). Those
-//    lines are acknowledged with inline eslint-disable-next-line comments so
-//    the rule still catches NEW accidental violations while the migration is
-//    in progress.
 //
 // The @typescript-eslint plugin is registered (but no @typescript-eslint
 // rules are enabled) so that existing // eslint-disable-next-line
@@ -59,12 +58,17 @@ export default tseslint.config(
     },
   },
 
-  // Rule 1 (components only): Components must route through the backend client,
-  // not Tauri IPC. Scope: src/components/** (App.tsx is the integration host and
-  // has acknowledged in-progress violations; domain/** has legitimate @tauri-apps
-  // helpers such as convertFileSrc that are correct at that layer).
+  // Rule 1 (components + App.tsx): Must not directly import @tauri-apps/*.
+  // - src/components/**  — zero current violations; any new import is a bug.
+  // - src/App.tsx        — the 3 existing @tauri-apps lines are acknowledged
+  //   with eslint-disable-next-line no-restricted-imports comments and tracked
+  //   for Phase 2 migration. Any NEW import without a disable comment is caught.
   {
-    files: ["src/components/**/*.ts", "src/components/**/*.tsx"],
+    files: [
+      "src/components/**/*.ts",
+      "src/components/**/*.tsx",
+      "src/App.tsx",
+    ],
     rules: {
       "no-restricted-imports": [
         "error",
@@ -73,7 +77,7 @@ export default tseslint.config(
             {
               group: ["@tauri-apps/**"],
               message:
-                "Components must not import @tauri-apps directly. Use the backend client (src/backend/client.ts) or props passed from App.tsx.",
+                "Do not import @tauri-apps directly here. Route through src/backend/client.ts or use props from App.tsx. Existing App.tsx transport wiring is acknowledged with eslint-disable-next-line; do not add new ones without a tracking comment.",
             },
             {
               group: ["**/src-tauri/**", "../../src-tauri/**", "../src-tauri/**"],

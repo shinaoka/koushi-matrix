@@ -53,8 +53,15 @@ import {
   useRef,
   useState
 } from "react";
+// App.tsx is the Tauri integration host. The three @tauri-apps imports below
+// are acknowledged in-progress transport wiring tracked for Phase 2 migration
+// to backend/client.ts (#87). Each line has its own disable directive so the
+// rule still catches any NEW @tauri-apps import added without a comment.
+// eslint-disable-next-line no-restricted-imports
 import { invoke } from "@tauri-apps/api/core";
+// eslint-disable-next-line no-restricted-imports
 import { listen } from "@tauri-apps/api/event";
+// eslint-disable-next-line no-restricted-imports
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { createDesktopApi } from "./backend/client";

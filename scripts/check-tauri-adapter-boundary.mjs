@@ -32,22 +32,26 @@ const repoRoot = join(__dirname, "..");
 const tauriSrcDir = join(repoRoot, "apps", "desktop", "src-tauri", "src");
 
 /**
- * Patterns that indicate a direct matrix_desktop_sdk call or use statement.
+ * Patterns that indicate a direct matrix_desktop_sdk reference.
  *
- * We look for:
- * - `use matrix_desktop_sdk::...` — importing SDK types into scope
- * - `matrix_desktop_sdk::...` — direct qualified path calls
+ * We catch all of:
+ *   `use matrix_desktop_sdk::...`     — importing SDK types into scope
+ *   `matrix_desktop_sdk::...`         — direct qualified path / call
+ *   `use matrix_desktop_sdk as ...`   — aliased import
+ *   `extern crate matrix_desktop_sdk` — explicit extern crate declaration
+ *   `matrix_desktop_sdk` as a bare token in a use/path position
  *
- * We do NOT flag:
- * - Comments (lines starting with //, or inside block comments)
- * - The string literal in the docstring in commands.rs that says
- *   "No `matrix_desktop_sdk` calls" — that is an enforcement reminder comment.
+ * A single regex covers all forms by matching the bare identifier token
+ * `matrix_desktop_sdk` on any non-comment line.  The comment filter below
+ * excludes lines that are pure `//` comments (e.g., enforcement reminder
+ * in commands.rs: "No `matrix_desktop_sdk` calls").
  */
-const VIOLATION_PATTERN = /(?:^|\b)matrix_desktop_sdk\s*::/;
+const VIOLATION_PATTERN = /\bmatrix_desktop_sdk\b/;
 
 /**
- * Lines that are explicitly acknowledged as comments/docs (not real usages).
- * These are the currently known false-positive patterns in comments.
+ * Skip pure line comments (`//...`). Block comments (slash-star ... star-slash)
+ * spanning multiple lines are not filtered — a real use inside a block comment
+ * would be unusual and worth flagging for manual review.
  */
 const COMMENT_LINE_PATTERN = /^\s*\/\//;
 

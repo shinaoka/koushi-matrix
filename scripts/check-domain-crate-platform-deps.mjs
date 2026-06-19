@@ -3,7 +3,8 @@
  * check-domain-crate-platform-deps.mjs
  *
  * Verifies that the pure domain crate matrix-desktop-state does NOT directly
- * depend on platform/OS crates (keyring, windows-*, winapi, libc, tokio, etc.).
+ * depend on platform/OS crates (keyring, windows-*, winapi, libc, tokio, etc.)
+ * in ANY dependency table.
  *
  * Rule (from REPOSITORY_RULES.md and #87 Phase 0):
  *   matrix-desktop-state is the pure domain/serialization layer. It must
@@ -13,10 +14,20 @@
  *   matrix-desktop-core depends on keyring (apple-native, windows-native) —
  *   this is a known Phase 5 target for removal via SecretStore inversion.
  *   matrix-desktop-key also depends on keyring for the same reason.
- *   These are NOT checked here; only matrix-desktop-state's direct deps are.
+ *   These are NOT checked here; only matrix-desktop-state's deps are.
  *
- * This script reads crates/matrix-desktop-state/Cargo.toml and fails if any
- * of the banned platform crate names appear in [dependencies].
+ * Coverage: ALL dependency tables are scanned to prevent a platform crate from
+ * sneaking in through a target-specific or build dep:
+ *   [dependencies]
+ *   [dev-dependencies]
+ *   [build-dependencies]
+ *   [target.'cfg(...)'.dependencies]
+ *   [target.'cfg(...)'.dev-dependencies]
+ *   [target.'cfg(...)'.build-dependencies]
+ *
+ * Additionally, renamed packages are detected via the `package = "..."` key
+ * so that `foo = { package = "keyring" }` is caught even though the dep is
+ * declared under the alias `foo`.
  *
  * Usage:
  *   node scripts/check-domain-crate-platform-deps.mjs
@@ -49,11 +60,15 @@ const CARGO_TOML_PATH = join(
  *   tokio          — async runtime; confined to executor.rs in core per
  *                    Platform Portability rule 2. State must be sync/pure.
  *   libc           — C FFI for OS calls; not allowed in pure domain layer.
- *   windows-*      — Windows-only OS bindings.
+ *   windows-sys    — Windows-only OS bindings.
+ *   windows-core   — Windows-only OS bindings.
+ *   windows-targets — Windows-only OS bindings.
  *   winapi         — older Windows API binding.
  *   nix            — POSIX OS calls.
  *   arboard        — clipboard OS integration (#84).
  *   notify-rust    — OS notification integration (#10).
+ *   core-foundation — macOS/iOS OS bindings.
+ *   security-framework — macOS/iOS OS bindings.
  */
 const BANNED_PLATFORM_DEPS = [
   "keyring",
@@ -71,33 +86,74 @@ const BANNED_PLATFORM_DEPS = [
 ];
 
 const cargoToml = readFileSync(CARGO_TOML_PATH, "utf-8");
+const lines = cargoToml.split("\n");
 
-// Simple TOML line-based parse: look for lines like `keyring = ...` or
-// `keyring = { ... }` in the [dependencies] section.
-const depSectionPattern = /^\[dependencies\]/m;
-const nextSectionPattern = /^\[/m;
-
-const depSectionMatch = depSectionPattern.exec(cargoToml);
-if (!depSectionMatch) {
-  console.log(
-    "check-domain-crate-platform-deps: ok — no [dependencies] section found in matrix-desktop-state/Cargo.toml."
-  );
-  process.exit(0);
+/**
+ * Determine if a line is a dependency section header.
+ *
+ * Recognised forms:
+ *   [dependencies]
+ *   [dev-dependencies]
+ *   [build-dependencies]
+ *   [target.'cfg(...)'.dependencies]      (single-quoted)
+ *   [target."cfg(...)".dependencies]      (double-quoted)
+ *   [target.'cfg(...)'.dev-dependencies]
+ *   [target.'cfg(...)'.build-dependencies]
+ */
+function isDepSectionHeader(line) {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("[") || trimmed.startsWith("[[")) return false;
+  const inner = trimmed.replace(/^\[/, "").replace(/]$/, "").trim();
+  if (
+    inner === "dependencies" ||
+    inner === "dev-dependencies" ||
+    inner === "build-dependencies"
+  ) {
+    return true;
+  }
+  // target-conditional tables
+  if (/^target\s*\./.test(inner)) {
+    return /\.(dependencies|dev-dependencies|build-dependencies)$/.test(inner);
+  }
+  return false;
 }
 
-// Extract the text from [dependencies] to the next section (or end of file).
-const afterDeps = cargoToml.slice(depSectionMatch.index + depSectionMatch[0].length);
-const nextSectionMatch = nextSectionPattern.exec(afterDeps);
-const depBlock = nextSectionMatch
-  ? afterDeps.slice(0, nextSectionMatch.index)
-  : afterDeps;
+function isAnySectionHeader(line) {
+  const trimmed = line.trim();
+  return trimmed.startsWith("[") && !trimmed.startsWith("[[");
+}
 
 const violations = [];
-for (const bannedDep of BANNED_PLATFORM_DEPS) {
-  // Match `bannedDep =` or `bannedDep.workspace = true` at line start.
-  const linePattern = new RegExp(`^\\s*${bannedDep}\\s*[=.]`, "m");
-  if (linePattern.test(depBlock)) {
-    violations.push(bannedDep);
+let inDepSection = false;
+
+for (const line of lines) {
+  const trimmed = line.trim();
+  // Skip blank and comment lines.
+  if (trimmed === "" || trimmed.startsWith("#")) continue;
+
+  if (isAnySectionHeader(line)) {
+    inDepSection = isDepSectionHeader(line);
+    continue;
+  }
+
+  if (!inDepSection) continue;
+
+  // Check the declared dep name (the left-hand key before `=` or `.`).
+  const nameMatch = /^([A-Za-z0-9_-]+)\s*[=.]/.exec(trimmed);
+  if (nameMatch) {
+    const depName = nameMatch[1];
+    if (BANNED_PLATFORM_DEPS.includes(depName)) {
+      violations.push({ kind: "name", dep: depName, line: trimmed });
+    }
+  }
+
+  // Also catch renamed packages: `foo = { package = "keyring", ... }`.
+  const packageMatch = /package\s*=\s*["']([A-Za-z0-9_-]+)["']/.exec(trimmed);
+  if (packageMatch) {
+    const pkgName = packageMatch[1];
+    if (BANNED_PLATFORM_DEPS.includes(pkgName)) {
+      violations.push({ kind: "package-alias", dep: pkgName, line: trimmed });
+    }
   }
 }
 
@@ -116,9 +172,10 @@ if (violations.length === 0) {
   console.error(
     "See REPOSITORY_RULES.md and #87 Phase 5 for the SecretStore port plan.\n"
   );
-  console.error("Banned deps found in [dependencies]:");
+  console.error("Banned deps found (all dependency tables scanned):");
   for (const v of violations) {
-    console.error(`  - ${v}`);
+    const tag = v.kind === "package-alias" ? " (via package alias)" : "";
+    console.error(`  - ${v.dep}${tag}: ${v.line}`);
   }
   process.exit(1);
 }

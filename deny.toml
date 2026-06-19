@@ -77,19 +77,17 @@ name = "imbl-sized-chunks"
 # blocking on upstream version resolution churn in the vendored SDK).
 multiple-versions = "warn"
 
-# --- Domain-crate platform-dep ban (Phase 0, pre-seeds Phase 5) ---
+# cargo-deny bans are dependency-graph-wide and cannot selectively allow a
+# crate in one workspace member while denying it in another. The platform-dep
+# boundary for matrix-desktop-state (the pure domain layer) is therefore
+# enforced by scripts/check-domain-crate-platform-deps.mjs, which inspects
+# that crate's Cargo.toml directly. deny.toml provides license compliance,
+# advisory gating, and source integrity; per-crate layer enforcement is
+# the script's responsibility.
 #
-# Rule: matrix-desktop-state is the pure domain/serialization layer. It must
-# remain free of platform OS crates so it can target WASM and future mobile.
-# matrix-desktop-core and matrix-desktop-key currently depend on `keyring`
-# (a platform OS crate) — this is a known Phase 5 target for removal via
-# SecretStore dependency inversion. Both are grandfathered here with a
-# "remove in #87 Phase 5" note; the ban below will fail if state gains the
-# same dependency, catching accidental platform-dep creep in the pure layer.
-#
-# If a future PR adds a new OS/platform crate to matrix-desktop-state directly
-# (without going through core/key), this ban will fire and require explicit
-# justification + grandfathering.
+# Grandfathered platform deps (NOT banned here; tracked for Phase 5 removal):
+#   keyring in matrix-desktop-core and matrix-desktop-key — Phase 5 target for
+#   SecretStore dependency inversion (trait SecretStore, platform adapters).
 deny = []
 
 # Explicitly allow crates that are expected in the dependency graph.
