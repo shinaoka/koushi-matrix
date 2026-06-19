@@ -2,14 +2,14 @@
 //!
 //! This is the ONLY file in the workspace that imports `keyring`. It maps
 //! `keyring::Error` into `CredentialBackendErrorKind` (platform-free) so that
-//! `matrix-desktop-key` and `matrix-desktop-core` never depend on keyring.
+//! `koushi-key` and `koushi-core` never depend on keyring.
 //!
 //! Architecture: Phase 5 DI inversion — the platform binary (`src-tauri`)
 //! owns the OS adapter and injects it into `CoreRuntime` via
 //! `start_with_data_dir_and_os_backend`.
 
-use matrix_desktop_key::CredentialBackend;
-use matrix_desktop_key::CredentialBackendErrorKind;
+use koushi_key::CredentialBackend;
+use koushi_key::CredentialBackendErrorKind;
 
 #[derive(Clone, Debug)]
 pub struct KeyringCredentialBackend;
@@ -72,10 +72,10 @@ fn kind_from_keyring_error(error: keyring::Error) -> CredentialBackendErrorKind 
 #[doc(hidden)]
 pub fn map_delete_result(
     result: keyring::Result<()>,
-) -> Result<(), matrix_desktop_key::LocalSecretError> {
+) -> Result<(), koushi_key::LocalSecretError> {
     match result {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(matrix_desktop_key::LocalSecretError::CredentialBackend(
+        Err(error) => Err(koushi_key::LocalSecretError::CredentialBackend(
             kind_from_keyring_error(error),
         )),
     }

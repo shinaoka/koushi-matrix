@@ -1,7 +1,7 @@
 /**
  * TimelineView: the event-driven timeline message list.
  *
- * Pure transport client of matrix-desktop-core: renders ONLY from the
+ * Pure transport client of koushi-core: renders ONLY from the
  * timeline store fed by `matrix-desktop://event` CoreEvent payloads — never
  * from AppState timeline fields (Async rule 4).
  *

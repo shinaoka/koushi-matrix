@@ -4,9 +4,9 @@
 
 **Goal:** Build real room creation, space creation, and reply controls in the Linux desktop UI, verified only against disposable local homeservers until the final real-homeserver compatibility gate.
 
-**Architecture:** Matrix operation semantics stay in Rust: `matrix-desktop-state` owns serializable UI/product state, `matrix-desktop-core` owns command routing and SDK effects, and React renders controls plus ephemeral presentation state. GUI QA is the last layer: first prove Rust state, Tauri IPC, and headless UI behavior, then drive the real Tauri app under Xvfb against local Conduit/Tuwunel.
+**Architecture:** Matrix operation semantics stay in Rust: `koushi-state` owns serializable UI/product state, `koushi-core` owns command routing and SDK effects, and React renders controls plus ephemeral presentation state. GUI QA is the last layer: first prove Rust state, Tauri IPC, and headless UI behavior, then drive the real Tauri app under Xvfb against local Conduit/Tuwunel.
 
-**Tech Stack:** Rust `matrix-desktop-state`/`matrix-desktop-core`, Tauri v2 IPC, React/TypeScript/Vitest/Playwright, WebDriverIO + `tauri-driver`, local Conduit/Tuwunel homeservers.
+**Tech Stack:** Rust `koushi-state`/`koushi-core`, Tauri v2 IPC, React/TypeScript/Vitest/Playwright, WebDriverIO + `tauri-driver`, local Conduit/Tuwunel homeservers.
 
 ## Amendments
 
@@ -25,7 +25,7 @@
   new Engineering Rules item plus the AGENTS.md docs-sync gate require reducer
   state machines to stay in sync with their diagrams. The Task 2/Task 3 code
   blocks below show the original shape; the redesigned types/actions in
-  `matrix-desktop-state` are the source of truth.
+  `koushi-state` are the source of truth.
 
 ---
 
@@ -61,14 +61,14 @@
 
 - `AGENTS.md`: operational guardrails for all agents.
 - `docs/qa/headless-basic-operations.md`: QA lane contract and local-only GUI policy.
-- `crates/matrix-desktop-state/src/state.rs`: serializable product state for composer mode and pending basic operations.
-- `crates/matrix-desktop-state/src/action.rs`: reducer actions for composer target and operation status.
-- `crates/matrix-desktop-state/src/reducer.rs`: state transitions and UI events.
-- `crates/matrix-desktop-state/tests/basic_operation_state.rs`: Rust reducer contract for create/reply state.
-- `crates/matrix-desktop-core/src/command.rs`: public command boundary additions.
-- `crates/matrix-desktop-core/src/runtime.rs`: `AppCommand` handling for UI-semantic state.
-- `crates/matrix-desktop-core/src/room.rs`: create/link success/failure status projection.
-- `crates/matrix-desktop-core/src/timeline.rs`: reply send status projection if the existing send completion signal is not enough for the UI.
+- `crates/koushi-state/src/state.rs`: serializable product state for composer mode and pending basic operations.
+- `crates/koushi-state/src/action.rs`: reducer actions for composer target and operation status.
+- `crates/koushi-state/src/reducer.rs`: state transitions and UI events.
+- `crates/koushi-state/tests/basic_operation_state.rs`: Rust reducer contract for create/reply state.
+- `crates/koushi-core/src/command.rs`: public command boundary additions.
+- `crates/koushi-core/src/runtime.rs`: `AppCommand` handling for UI-semantic state.
+- `crates/koushi-core/src/room.rs`: create/link success/failure status projection.
+- `crates/koushi-core/src/timeline.rs`: reply send status projection if the existing send completion signal is not enough for the UI.
 - `apps/desktop/src-tauri/src/commands.rs`: transport-only Tauri commands and command builders.
 - `apps/desktop/src-tauri/src/lib.rs`: Tauri invoke handler registration.
 - `apps/desktop/src/domain/types.ts`: generated or hand-maintained snapshot types matching Rust state.
@@ -88,7 +88,7 @@
 - [x] **Step 1: Add Rust-owned product state rule**
 
 `AGENTS.md` now says that Matrix operation semantics belong in
-`matrix-desktop-state`/`matrix-desktop-core`; React may keep only ephemeral
+`koushi-state`/`koushi-core`; React may keep only ephemeral
 presentation state.
 
 - [x] **Step 2: Add local-only GUI operation policy**
@@ -110,18 +110,18 @@ Expected: exit 0.
 ## Task 2: Add Rust State For Composer Mode And Operation Status
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-state/src/lib.rs`
-- Create: `crates/matrix-desktop-state/tests/basic_operation_state.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-state/src/lib.rs`
+- Create: `crates/koushi-state/tests/basic_operation_state.rs`
 
 - [x] **Step 1: Write failing reducer tests**
 
-Create `crates/matrix-desktop-state/tests/basic_operation_state.rs`:
+Create `crates/koushi-state/tests/basic_operation_state.rs`:
 
 ```rust
-use matrix_desktop_state::{
+use koushi_state::{
     reduce, AppAction, AppState, BasicOperationState, ComposerMode,
     ComposerState, RoomSummary, SessionInfo, SessionState, TimelinePaneState,
 };
@@ -203,14 +203,14 @@ fn room_creation_status_is_rust_state() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test basic_operation_state
+cargo test -p koushi-state --test basic_operation_state
 ```
 
 Expected: fails because the types/actions do not exist.
 
 - [x] **Step 2: Add serializable Rust state**
 
-In `crates/matrix-desktop-state/src/state.rs`, extend `AppState` and
+In `crates/koushi-state/src/state.rs`, extend `AppState` and
 `ComposerState`:
 
 ```rust
@@ -263,7 +263,7 @@ Re-export `BasicOperationState` and `ComposerMode` from `src/lib.rs`.
 
 - [x] **Step 3: Add reducer actions**
 
-In `crates/matrix-desktop-state/src/action.rs`, import the new type and add:
+In `crates/koushi-state/src/action.rs`, import the new type and add:
 
 ```rust
 BasicOperationState,
@@ -281,7 +281,7 @@ ComposerReplyCancelled,
 
 - [x] **Step 4: Implement reducer transitions**
 
-In `crates/matrix-desktop-state/src/reducer.rs`, add match arms:
+In `crates/koushi-state/src/reducer.rs`, add match arms:
 
 ```rust
 AppAction::BasicOperationStarted { operation } => {
@@ -336,8 +336,8 @@ AppAction::ComposerReplyCancelled => {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test basic_operation_state
-cargo test -p matrix-desktop-state
+cargo test -p koushi-state --test basic_operation_state
+cargo test -p koushi-state
 ```
 
 Expected: both pass.
@@ -345,19 +345,19 @@ Expected: both pass.
 ## Task 3: Route UI-Semantic State Through Core
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Test: `crates/matrix-desktop-core/src/tests.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Test: `crates/koushi-core/src/tests.rs`
 
 - [x] **Step 1: Write failing core command tests**
 
-Add tests to `crates/matrix-desktop-core/src/tests.rs` proving that
+Add tests to `crates/koushi-core/src/tests.rs` proving that
 `AppCommand` updates composer reply state through the reducer:
 
 ```rust
 use std::time::Duration;
 
-use matrix_desktop_state::{
+use koushi_state::{
     AppAction, ComposerMode, RoomSummary, SessionInfo, SessionState,
 };
 
@@ -436,9 +436,9 @@ fn room_summary(room_id: &str) -> RoomSummary {
 async fn wait_for_state<F>(
     connection: &mut CoreConnection,
     predicate: F,
-) -> matrix_desktop_state::AppState
+) -> koushi_state::AppState
 where
-    F: Fn(&matrix_desktop_state::AppState) -> bool,
+    F: Fn(&koushi_state::AppState) -> bool,
 {
     for _ in 0..200 {
         let snapshot = connection.snapshot();
@@ -454,14 +454,14 @@ where
 Run:
 
 ```bash
-cargo test -p matrix-desktop-core app_command_sets_and_clears_reply_target
+cargo test -p koushi-core app_command_sets_and_clears_reply_target
 ```
 
 Expected: fails because the commands are missing.
 
 - [x] **Step 2: Add `AppCommand` variants**
 
-In `crates/matrix-desktop-core/src/command.rs`:
+In `crates/koushi-core/src/command.rs`:
 
 ```rust
 #[derive(Debug)]
@@ -480,7 +480,7 @@ Update `CoreCommand::request_id()` for the new variants.
 
 - [x] **Step 3: Reduce app commands in `AppActor`**
 
-In `crates/matrix-desktop-core/src/runtime.rs`, replace the current
+In `crates/koushi-core/src/runtime.rs`, replace the current
 `CoreCommand::App(_)` branch with:
 
 ```rust
@@ -509,8 +509,8 @@ CoreCommand::App(app_command) => match app_command {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-core app_command_sets_and_clears_reply_target
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-core app_command_sets_and_clears_reply_target
+cargo test -p koushi-core --lib
 ```
 
 Expected: both pass.
@@ -983,10 +983,10 @@ Expected: pass.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-state
+cargo test -p koushi-core --lib
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
+cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search
 ```
 
 Expected: all pass.
@@ -1074,8 +1074,8 @@ Main-agent audit checklist:
 Final acceptance for this plan:
 
 ```bash
-cargo test -p matrix-desktop-state
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-state
+cargo test -p koushi-core --lib
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test

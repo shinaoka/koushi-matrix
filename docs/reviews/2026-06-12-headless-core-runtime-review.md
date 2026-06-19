@@ -13,14 +13,14 @@ Scope: design review of `docs/superpowers/specs/2026-06-12-headless-core-runtime
 - `docs/architecture/state-machine.md`
 - `docs/architecture/desktop-foundation.md`
 - `docs/architecture/search-adapter.md`
-- `crates/matrix-desktop-sdk/src/lib.rs` (current SDK adapter)
-- `crates/matrix-desktop-state/src/` (pure state crate)
+- `crates/koushi-sdk/src/lib.rs` (current SDK adapter)
+- `crates/koushi-state/src/` (pure state crate)
 - `apps/desktop/src-tauri/src/commands.rs` (2038-line monolithic Tauri backend)
 - `vendor/matrix-rust-sdk/` (vendored SDK, 10 crates)
 
 ## Summary
 
-The spec defines an in-process actor system (`matrix-desktop-core`) with 7 actor
+The spec defines an in-process actor system (`koushi-core`) with 7 actor
 types, a `CoreCommand`/`CoreEvent` public boundary, and a state-projection
 pipeline. The direction is correct: the current 2038-line `commands.rs`
 monolith must be decomposed, and the security/QA boundaries need enforcement.
@@ -64,9 +64,9 @@ implementation.
 5. **`matrix-desktop-auth` naming is misleading.**
    The crate already does sync, room operations, timeline, and search beyond
    authentication. The spec acknowledges this ("can later be renamed to
-   `matrix-desktop-sdk`") but defers the rename. Renaming during Milestone A
+   `koushi-sdk`") but defers the rename. Renaming during Milestone A
    would reduce long-term confusion at minimal cost.
-   Resolved in Phase 9 cleanup: the crate is now `matrix-desktop-sdk`.
+   Resolved in Phase 9 cleanup: the crate is now `koushi-sdk`.
 
 6. **Concrete types and constants are missing.**
    `TimelineKey`, `RequestId`, channel capacities, and backpressure recovery
@@ -75,7 +75,7 @@ implementation.
 
 7. **Wasm portability path is aspirational, not concrete.**
    `overview.md` mandates executor abstraction and wasm-clean pure crates, but
-   the current `matrix-desktop-sdk` uses `tokio::runtime::Builder` and
+   the current `koushi-sdk` uses `tokio::runtime::Builder` and
    `block_on` extensively. The spec should acknowledge which parts of the
    migration will resolve this and which are deferred.
 
@@ -122,5 +122,5 @@ implementation:
 2. Reduce initial actor count to 4 (AppActor, AccountActor, SearchActor,
    StoreActor); split AccountActor later if needed.
 3. Define supervision strategy (panic recovery, hang detection).
-4. Rename `matrix-desktop-auth` to `matrix-desktop-sdk`.
+4. Rename `matrix-desktop-auth` to `koushi-sdk`.
 5. Define concrete types for `TimelineKey`, `RequestId`, and channel capacities.

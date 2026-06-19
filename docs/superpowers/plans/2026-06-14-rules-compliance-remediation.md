@@ -6,7 +6,7 @@
 
 **Architecture:** Product semantics move back into Rust state machines and core events. React renders snapshots/events and may keep only ephemeral presentation state. QA scripts enforce token/privacy contracts directly instead of relying on docs or process exit code.
 
-**Tech Stack:** Rust (`matrix-desktop-state`, `matrix-desktop-core`, Tauri command adapter), React/TypeScript, Vitest, Playwright, Node QA scripts.
+**Tech Stack:** Rust (`koushi-state`, `koushi-core`, Tauri command adapter), React/TypeScript, Vitest, Playwright, Node QA scripts.
 
 ---
 
@@ -29,13 +29,13 @@
 ## File Map
 
 - `docs/architecture/state-machine.md`: clarify the session guard and send/reply completion transitions.
-- `crates/matrix-desktop-state/src/reducer.rs`: clear reply mode on correlated successful send completion; preserve reply mode on failure for retry.
-- `crates/matrix-desktop-state/tests/timeline_thread_state.rs`: reducer regression tests.
-- `crates/matrix-desktop-core/src/command.rs`: add first-class app commands for thread open/close.
-- `crates/matrix-desktop-core/src/runtime.rs`: fail closed for default data dir; reduce app commands.
-- `crates/matrix-desktop-core/src/timeline.rs`: emit send submitted/finished/failed `AppAction`s from the production timeline path.
-- `crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs`: remove private identifiers from output and enforce cleanup.
-- `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`: replace fixed sleeps in cleanup paths.
+- `crates/koushi-state/src/reducer.rs`: clear reply mode on correlated successful send completion; preserve reply mode on failure for retry.
+- `crates/koushi-state/tests/timeline_thread_state.rs`: reducer regression tests.
+- `crates/koushi-core/src/command.rs`: add first-class app commands for thread open/close.
+- `crates/koushi-core/src/runtime.rs`: fail closed for default data dir; reduce app commands.
+- `crates/koushi-core/src/timeline.rs`: emit send submitted/finished/failed `AppAction`s from the production timeline path.
+- `crates/koushi-core/src/bin/real-homeserver-qa.rs`: remove private identifiers from output and enforce cleanup.
+- `crates/koushi-core/src/bin/headless-core-qa.rs`: replace fixed sleeps in cleanup paths.
 - `apps/desktop/src/App.tsx`: remove product-state repair, stop using legacy snapshot placeholders, route visible text through i18n.
 - `apps/desktop/src-tauri/src/commands.rs`: remove or promote placeholder commands.
 - `apps/desktop/src-tauri/src/dto.rs`: keep DTO completeness tests aligned with real production fields.
@@ -60,8 +60,8 @@
 
 **Files:**
 - Modify: `docs/architecture/state-machine.md`
-- Modify: `crates/matrix-desktop-state/tests/timeline_thread_state.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
+- Modify: `crates/koushi-state/tests/timeline_thread_state.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
 
 - [ ] **Step 1: Amend the session guard wording**
 
@@ -101,7 +101,7 @@ Replace the existing send-path bullet with:
 
 - [ ] **Step 2: Write failing reducer tests**
 
-Append these tests near the existing send-text tests in `crates/matrix-desktop-state/tests/timeline_thread_state.rs`:
+Append these tests near the existing send-text tests in `crates/koushi-state/tests/timeline_thread_state.rs`:
 
 ```rust
 #[test]
@@ -172,7 +172,7 @@ fn send_text_failed_preserves_reply_mode_for_retry() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test timeline_thread_state
+cargo test -p koushi-state --test timeline_thread_state
 ```
 
 Expected: the new `send_text_finished_clears_reply_mode_for_matching_reply_send`
@@ -180,7 +180,7 @@ test fails because `SendTextFinished` does not clear `ComposerMode::Reply`.
 
 - [ ] **Step 4: Implement reducer completion behavior**
 
-In `crates/matrix-desktop-state/src/reducer.rs`, update the matching `SendTextFinished` arm:
+In `crates/koushi-state/src/reducer.rs`, update the matching `SendTextFinished` arm:
 
 ```rust
 state.timeline.composer.pending_transaction_id = None;
@@ -195,7 +195,7 @@ Leave `SendTextFailed` preserving `state.timeline.composer.mode`.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test timeline_thread_state
+cargo test -p koushi-state --test timeline_thread_state
 ```
 
 Expected: all tests in `timeline_thread_state` pass.
@@ -205,9 +205,9 @@ Expected: all tests in `timeline_thread_state` pass.
 ### Task 2: Make Production Send/Reply Drive Rust AppState
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/timeline.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-core/src/tests.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/tests.rs`
 
 - [ ] **Step 1: Route send submission into the reducer**
 
@@ -291,7 +291,7 @@ Call it in `handle_send_text` and `handle_send_reply` before every return that e
 
 - [ ] **Step 5: Add a core runtime regression test**
 
-In `crates/matrix-desktop-core/src/tests.rs`, extend `app_command_sets_and_clears_reply_target` or add a new test that injects:
+In `crates/koushi-core/src/tests.rs`, extend `app_command_sets_and_clears_reply_target` or add a new test that injects:
 
 ```rust
 runtime.inject_actions(vec![
@@ -314,7 +314,7 @@ Assert the snapshot returns `ComposerMode::Plain`.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-core --features qa-bin,test-hooks
+cargo test -p koushi-core --features qa-bin,test-hooks
 ```
 
 Expected: core tests pass and send/reply completion updates snapshots without React repair.
@@ -404,8 +404,8 @@ Expected: Playwright and typecheck pass.
 ### Task 4: Promote Or Remove Tauri Placeholder Commands
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `apps/desktop/src/App.tsx`
 - Modify: `apps/desktop/src/domain/types.ts`
@@ -507,7 +507,7 @@ Expected: placeholder command behavior is gone or promoted to core, and UI tests
 **Files:**
 - Create: `scripts/lib/qa-token-contract.mjs`
 - Modify: `scripts/desktop-real-homeserver-qa.mjs`
-- Modify: `crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs`
+- Modify: `crates/koushi-core/src/bin/real-homeserver-qa.rs`
 - Modify: `apps/desktop/src/scripts/releaseScripts.test.ts`
 
 - [ ] **Step 1: Add shared token and private-data assertions**
@@ -632,7 +632,7 @@ Run:
 
 ```bash
 npm --prefix apps/desktop run test -- --run src/scripts/releaseScripts.test.ts
-cargo test -p matrix-desktop-core --features qa-bin,test-hooks --bin real-homeserver-qa -- --nocapture
+cargo test -p koushi-core --features qa-bin,test-hooks --bin real-homeserver-qa -- --nocapture
 ```
 
 Expected: script tests pass; binary unit tests pass without real credentials.
@@ -644,7 +644,7 @@ Expected: script tests pass; binary unit tests pass without real credentials.
 **Files:**
 - Modify: `apps/desktop/package.json`
 - Modify: `scripts/desktop-real-homeserver-qa.mjs`
-- Modify: `crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs`
+- Modify: `crates/koushi-core/src/bin/real-homeserver-qa.rs`
 - Modify: `docs/qa/headless-basic-operations.md`
 - Modify: `apps/desktop/src/scripts/releaseScripts.test.ts`
 
@@ -703,7 +703,7 @@ Run:
 
 ```bash
 npm --prefix apps/desktop run test -- --run src/scripts/releaseScripts.test.ts
-cargo test -p matrix-desktop-core --features qa-bin,test-hooks --bin real-homeserver-qa -- --nocapture
+cargo test -p koushi-core --features qa-bin,test-hooks --bin real-homeserver-qa -- --nocapture
 ```
 
 Expected: package script, runner default, Rust default, and docs agree.
@@ -713,7 +713,7 @@ Expected: package script, runner default, Rust default, and docs agree.
 ### Task 7: Add Real QA Cleanup Guards
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs`
+- Modify: `crates/koushi-core/src/bin/real-homeserver-qa.rs`
 - Modify: `scripts/desktop-mac-gui-smoke.mjs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
@@ -800,10 +800,10 @@ Expected: release gate tests prove QA control env is debug/test-only; script tes
 - Modify: `scripts/desktop-linux-gui-qa.mjs`
 - Modify: `scripts/desktop-mac-gui-smoke.mjs`
 - Modify: `apps/desktop/e2e/timeline-scrollback.spec.ts`
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
-- Modify: `crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/search.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
+- Modify: `crates/koushi-core/src/bin/real-homeserver-qa.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/search.rs`
 
 - [ ] **Step 1: Replace `tee` with direct FIFO writes**
 
@@ -883,8 +883,8 @@ Run:
 
 ```bash
 npm --prefix apps/desktop run test -- --run src/scripts/releaseScripts.test.ts
-cargo test -p matrix-desktop-core --features qa-bin,test-hooks --bin headless-core-qa -- --nocapture
-cargo test -p matrix-desktop-core --features qa-bin,test-hooks --bin real-homeserver-qa -- --nocapture
+cargo test -p koushi-core --features qa-bin,test-hooks --bin headless-core-qa -- --nocapture
+cargo test -p koushi-core --features qa-bin,test-hooks --bin real-homeserver-qa -- --nocapture
 ```
 
 Expected: no fixed-sleep structural checks fail; QA binaries still pass unit tests.
@@ -894,8 +894,8 @@ Expected: no fixed-sleep structural checks fail; QA binaries still pass unit tes
 ### Task 9: Fail Closed On Runtime Data Directory Resolution
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-core/src/tests.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/tests.rs`
 
 - [ ] **Step 1: Add a pure resolver**
 
@@ -942,7 +942,7 @@ fn default_data_dir_uses_xdg_like_user_data_path() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-core runtime
+cargo test -p koushi-core runtime
 ```
 
 Expected: runtime path tests pass and no CWD fallback remains.
@@ -1200,8 +1200,8 @@ Run:
 ```bash
 git diff --check
 npm --prefix apps/desktop run test -- --run src/scripts/releaseScripts.test.ts src/i18n/messages.test.ts
-cargo test -p matrix-desktop-state
-cargo test -p matrix-desktop-core --features qa-bin,test-hooks
+cargo test -p koushi-state
+cargo test -p koushi-core --features qa-bin,test-hooks
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
@@ -1244,8 +1244,8 @@ Verify:
 
 ```bash
 rg -n "cancelComposerReply\\(\\)" apps/desktop/src/App.tsx
-rg -n "waitForTimeout|sleep\\(" apps/desktop/e2e scripts crates/matrix-desktop-core/src/bin
-rg -n "event_id=|room_id=|space_id=|user_id=" crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs scripts/desktop-real-homeserver-qa.mjs
+rg -n "waitForTimeout|sleep\\(" apps/desktop/e2e scripts crates/koushi-core/src/bin
+rg -n "event_id=|room_id=|space_id=|user_id=" crates/koushi-core/src/bin/real-homeserver-qa.rs scripts/desktop-real-homeserver-qa.mjs
 rg -n "current_snapshot\\(state.inner\\(\\)\\).*compat|compatibility shim|discard" apps/desktop/src-tauri/src/commands.rs
 ```
 

@@ -149,8 +149,8 @@ main agent decides whether to adopt, escalate, or defer each proposal.
   close decisions. Cheap-agent output is a draft to verify, not accepted
   evidence by itself.
 - Do not let two agents edit shared hot files concurrently. Treat
-  `crates/matrix-desktop-state/src/{state.rs,action.rs,reducer.rs}`,
-  `crates/matrix-desktop-core/src/{command.rs,event.rs,runtime.rs}`,
+  `crates/koushi-state/src/{state.rs,action.rs,reducer.rs}`,
+  `crates/koushi-core/src/{command.rs,event.rs,runtime.rs}`,
   `apps/desktop/src-tauri/src/{dto.rs,commands.rs}`,
   `apps/desktop/src/{App.tsx,components/TimelineView.tsx,i18n/messages.ts,styles.css}`,
   browser-headless specs, and Linux GUI QA scripts as main-agent integration
@@ -189,7 +189,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   TypeScript fakes; updating only one side can leave a green browser tier and a
   crashing Tauri lane.
 - Focused checks for the shared skeleton are
-  `cargo test -p matrix-desktop-state --test core_batch_a_state`,
+  `cargo test -p koushi-state --test core_batch_a_state`,
   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact`,
   and `npm --prefix apps/desktop run typecheck`.
 
@@ -208,17 +208,17 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `apps/desktop/src/i18n/messages.test.ts`,
   `apps/desktop/src/styles.css`,
   `apps/desktop/e2e/basic-operations.spec.ts`,
-  `crates/matrix-desktop-state/src/locale_profile.rs`,
-  `crates/matrix-desktop-state/tests/locale_display_profile.rs`,
-  `crates/matrix-desktop-search/src/document.rs`,
-  `crates/matrix-desktop-search/src/verify.rs`,
-  `crates/matrix-desktop-search/tests/search_adapter.rs`, and
-  `crates/matrix-desktop-core/src/search.rs`.
+  `crates/koushi-state/src/locale_profile.rs`,
+  `crates/koushi-state/tests/locale_display_profile.rs`,
+  `crates/koushi-search/src/document.rs`,
+  `crates/koushi-search/src/verify.rs`,
+  `crates/koushi-search/tests/search_adapter.rs`, and
+  `crates/koushi-core/src/search.rs`.
 - Fast focused checks are:
   `npm --prefix apps/desktop run test -- --run src/i18n/messages.test.ts`,
   `npm --prefix apps/desktop exec -- playwright test e2e/basic-operations.spec.ts -g "Japanese locale renders shell labels and CJK text without clipping|thread and edit composers composing Enter" --workers=1`,
-  `cargo test -p matrix-desktop-search --test search_adapter`,
-  `cargo test -p matrix-desktop-state --test locale_display_profile`, and
+  `cargo test -p koushi-search --test search_adapter`,
+  `cargo test -p koushi-state --test locale_display_profile`, and
   `npm --prefix apps/desktop run typecheck`.
 
 ## Credential Health QA
@@ -237,11 +237,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `AccountActor`/`StoreActor`, clears current-account local persistence, and
   returns the app to a local signed-out snapshot.
 - Fast Tier 1 checks are:
-  `cargo test -p matrix-desktop-state --test local_encryption_state`,
-  `cargo test -p matrix-desktop-key credential_backend`,
-  `cargo test -p matrix-desktop-core store_actor_probe_maps_credential_backend_health_without_raw_errors`,
+  `cargo test -p koushi-state --test local_encryption_state`,
+  `cargo test -p koushi-key credential_backend`,
+  `cargo test -p koushi-core store_actor_probe_maps_credential_backend_health_without_raw_errors`,
   and
-  `cargo test -p matrix-desktop-core reset_local_data_clears_current_account_persistence_and_signs_out_locally`.
+  `cargo test -p koushi-core reset_local_data_clears_current_account_persistence_and_signs_out_locally`.
 - The local headless proof is
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000`.
   It runs under the debug/test file credential-store guard and must refuse to
@@ -254,7 +254,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `.github/workflows/` and re-enabled. Use a manual macOS session instead.
   Consent dialogs, Touch ID, locked login-keychain UX, and signed-build ACL
   behavior remain attended-only. Keep any future workflow key-crate-only: it
-  copies `crates/matrix-desktop-key` to `$RUNNER_TEMP` and runs
+  copies `crates/koushi-key` to `$RUNNER_TEMP` and runs
   `cargo test --manifest-path` there, so it must not require the private
   vendored Matrix SDK submodule. For a manual macOS session without an
   initialized vendor submodule, use the same temp-copy pattern before setting
@@ -318,7 +318,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Focused acceptance checks for adapter failure/clear behavior are
   `npm --prefix apps/desktop run test -- src/domain/desktopAttention.test.ts`
   and
-  `cargo test -p matrix-desktop-state --test session_state logout_clears_native_attention_state_and_notifies_ui`.
+  `cargo test -p koushi-state --test session_state logout_clears_native_attention_state_and_notifies_ui`.
 - Native attention platform capability profiles are Rust-owned and resolved from
   the shared `DisplayPlatform` model before reaching React. Add macOS/Linux/Win
   capability differences there; do not scatter platform branches through React
@@ -348,9 +348,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   transaction IDs, raw SDK errors, or tokens in snapshots, logs, Debug output,
   QA artifacts, or issue evidence.
 - Fast checks are:
-  `cargo test -p matrix-desktop-state --test attention_surface`,
-  `cargo test -p matrix-desktop-sdk --test attention_surface`, and
-  `cargo test -p matrix-desktop-core --features qa-bin --bin headless-core-qa`.
+  `cargo test -p koushi-state --test attention_surface`,
+  `cargo test -p koushi-sdk --test attention_surface`, and
+  `cargo test -p koushi-core --features qa-bin --bin headless-core-qa`.
 - The local headless proof is
   `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=native_attention --core --core-backend=both --timeout-ms=240000`.
   It prints only `notification_candidate=ok`, `badge_state=ok`,
@@ -525,8 +525,8 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `set_room_tag` / `remove_room_tag`, but it must not keep local tag membership
   or repair room-list sections after the fact.
 - Favourite and low-priority are mutually exclusive in
-  `matrix-desktop-state`. Keep this reducer rule in sync with the SDK wrappers:
-  use `matrix-desktop-sdk`'s `set_room_tag` / `remove_room_tag`, which delegate
+  `koushi-state`. Keep this reducer rule in sync with the SDK wrappers:
+  use `koushi-sdk`'s `set_room_tag` / `remove_room_tag`, which delegate
   to `Room::set_is_favourite` and `Room::set_is_low_priority`; do not patch the
   vendored SDK for this behavior.
 - Tag command success must not immediately request a room-list refresh. The SDK
@@ -535,8 +535,8 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   through `RoomTagSet` / `RoomTagRemoved` reducer actions, then let the next
   sync snapshot become canonical.
 - When adding fields to `RoomSummary`, update every projection and fake snapshot
-  in the same change: `matrix-desktop-core::room::normalize_rooms`,
-  `matrix-desktop-state::sidebar::RoomListItem`, `apps/desktop/src-tauri/src/dto.rs`,
+  in the same change: `koushi-core::room::normalize_rooms`,
+  `koushi-state::sidebar::RoomListItem`, `apps/desktop/src-tauri/src/dto.rs`,
   `apps/desktop/src/domain/types.ts`, `browserFakeApi.ts`,
   `appHarnessMain.tsx`, and any Rust/TS fixtures that construct `RoomSummary`.
 - Sidebar shell affordances (section counts, unread badges, mention dots) render
@@ -739,7 +739,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 
 - Device verification SDK handles are actor-private resources. Keep
   `VerificationRequest` and `SasVerification` wrapped in
-  `matrix-desktop-sdk` opaque handles and store them only inside
+  `koushi-sdk` opaque handles and store them only inside
   `AccountActor`; snapshots, Tauri DTOs, TypeScript types, and React state get
   only `VerificationFlowState` plus private-data-free SAS emoji DTOs.
 - Verification progress is Rust-owned. `AccountActor` listens to SDK
@@ -870,12 +870,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 
 ## Rust-Owned Settings Notes
 
-- Settings product state lives in `matrix-desktop-state::AppState.settings`.
+- Settings product state lives in `koushi-state::AppState.settings`.
   GUI work may render it and dispatch `update_settings`, but must not make
   locale, theme, font/emoji, or composer-send shortcut preferences a React or
   localStorage source of truth.
 - Locale/display behavior is resolved by
-  `matrix_desktop_state::resolve_locale_display_profile`. GUI components may
+  `koushi_state::resolve_locale_display_profile`. GUI components may
   consume the resulting `lang`, `dir`, catalog locale, pseudo-locale mode,
   platform, and modifier labels, but must not parse raw language tags or own
   fallback locale rules.
@@ -907,7 +907,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   should fail the catalog gate unless they are reviewed structured registry
   data or synthetic fixture content.
 - Composer key behavior belongs to the Rust-owned resolver in
-  `matrix-desktop-state`, shared by main, thread, and edit composer surfaces.
+  `koushi-state`, shared by main, thread, and edit composer surfaces.
   GUI code normalizes DOM/native key input into typed resolver facts and then
   dispatches/renders the returned action.
 - Composer send semantics also stay Rust-owned. `MentionIntent`,
@@ -923,7 +923,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `snapshot.state.timeline.composer.draft` or the open thread composer, then
   dispatches `set_composer_draft` / `set_thread_composer_draft`; do not add a
   React-local per-room/per-thread draft map. The backing store is encrypted,
-  debounced, and account-scoped in `matrix-desktop-core`; it is not serialized as
+  debounced, and account-scoped in `koushi-core`; it is not serialized as
   a full draft map to the webview snapshot.
 - Scheduled/send-later state follows the same boundary. The full queue and
   local fallback timer are Rust/core-owned; React may render only
@@ -1336,9 +1336,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   through the reducer before `AccountActor` routing. If this is skipped, the
   GUI can only infer pending trust state locally, violating the Rust-owned state
   machine rule.
-- `matrix-desktop-sdk` is the SDK-facing boundary for E2EE trust operations.
+- `koushi-sdk` is the SDK-facing boundary for E2EE trust operations.
   It maps SDK cross-signing/backup states into private-data-free
-  `matrix-desktop-state` DTOs and redacts SDK error details in `Debug`. Do not
+  `koushi-state` DTOs and redacts SDK error details in `Debug`. Do not
   let raw SDK trust errors, account keys, verification targets, or backup
   version identifiers leak through normal core events or QA output.
 - Matrix identity reset can complete immediately or return an SDK auth

@@ -88,7 +88,7 @@ async function run() {
       "run",
       "--quiet",
       "-p",
-      "matrix-desktop-core",
+      "koushi-core",
       "--features",
       "qa-bin",
       "--bin",

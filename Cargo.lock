@@ -1882,6 +1882,99 @@ dependencies = [
 ]
 
 [[package]]
+name = "koushi-backend"
+version = "0.1.0"
+dependencies = [
+ "koushi-key",
+ "koushi-sdk",
+ "koushi-search",
+ "koushi-state",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "koushi-core"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chacha20poly1305",
+ "eyeball",
+ "eyeball-im",
+ "futures-util",
+ "koushi-core",
+ "koushi-key",
+ "koushi-sdk",
+ "koushi-search",
+ "koushi-state",
+ "matrix-sdk",
+ "matrix-sdk-base",
+ "matrix-sdk-ui",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "koushi-key"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "hkdf",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "koushi-sdk"
+version = "0.1.0"
+dependencies = [
+ "eyeball-im",
+ "futures-util",
+ "koushi-state",
+ "matrix-sdk",
+ "matrix-sdk-ui",
+ "mime",
+ "reqwest",
+ "rpassword",
+ "ruma",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "koushi-search"
+version = "0.1.0"
+dependencies = [
+ "koushi-state",
+ "serde",
+ "thiserror 2.0.18",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "koushi-state"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "zeroize",
+]
+
+[[package]]
 name = "language-tags"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2054,99 +2147,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
-]
-
-[[package]]
-name = "matrix-desktop-backend"
-version = "0.1.0"
-dependencies = [
- "matrix-desktop-key",
- "matrix-desktop-sdk",
- "matrix-desktop-search",
- "matrix-desktop-state",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "matrix-desktop-core"
-version = "0.1.0"
-dependencies = [
- "base64",
- "chacha20poly1305",
- "eyeball",
- "eyeball-im",
- "futures-util",
- "matrix-desktop-core",
- "matrix-desktop-key",
- "matrix-desktop-sdk",
- "matrix-desktop-search",
- "matrix-desktop-state",
- "matrix-sdk",
- "matrix-sdk-base",
- "matrix-sdk-ui",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "matrix-desktop-key"
-version = "0.1.0"
-dependencies = [
- "base64",
- "hkdf",
- "rand 0.9.4",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "zeroize",
-]
-
-[[package]]
-name = "matrix-desktop-sdk"
-version = "0.1.0"
-dependencies = [
- "eyeball-im",
- "futures-util",
- "matrix-desktop-state",
- "matrix-sdk",
- "matrix-sdk-ui",
- "mime",
- "reqwest",
- "rpassword",
- "ruma",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "url",
- "zeroize",
-]
-
-[[package]]
-name = "matrix-desktop-search"
-version = "0.1.0"
-dependencies = [
- "matrix-desktop-state",
- "serde",
- "thiserror 2.0.18",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "matrix-desktop-state"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "unicode-normalization",
- "zeroize",
 ]
 
 [[package]]

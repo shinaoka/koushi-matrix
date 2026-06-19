@@ -47,8 +47,8 @@ redaction/search smoke, synthetic QA room leave/forget cleanup, and logout.
 - [x] Run:
 
 ```bash
-cargo test -p matrix-desktop-sdk e2ee_recovery
-cargo test -p matrix-desktop-backend sdk_state_recovery_mode_does_not_prompt_before_sdk_reports_incomplete --test fake_backend
+cargo test -p koushi-sdk e2ee_recovery
+cargo test -p koushi-backend sdk_state_recovery_mode_does_not_prompt_before_sdk_reports_incomplete --test fake_backend
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml deferred_recovery_request_only_returns_request_while_recovering
 ```
 
@@ -66,8 +66,8 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml deferred_recovery_r
 - [x] Run:
 
 ```bash
-cargo test -p matrix-desktop-key
-cargo test -p matrix-desktop-sdk session
+cargo test -p koushi-key
+cargo test -p koushi-sdk session
 cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-search/Cargo.toml encrypted
 ```
 
@@ -81,7 +81,7 @@ cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-search/Cargo
 - [x] Run:
 
 ```bash
-cargo test -p matrix-desktop-backend session
+cargo test -p koushi-backend session
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml session
 ```
 
@@ -101,7 +101,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml session
 - [x] Run:
 
 ```bash
-cargo test -p matrix-desktop-backend room
+cargo test -p koushi-backend room
 npm --prefix apps/desktop test
 npm --prefix apps/desktop run typecheck
 ```
@@ -121,8 +121,8 @@ npm --prefix apps/desktop run typecheck
 - [x] Run:
 
 ```bash
-cargo test -p matrix-desktop-state timeline
-cargo test -p matrix-desktop-backend timeline
+cargo test -p koushi-state timeline
+cargo test -p koushi-backend timeline
 npm --prefix apps/desktop test
 ```
 
@@ -141,7 +141,7 @@ npm --prefix apps/desktop test
 - [x] Run:
 
 ```bash
-cargo test -p matrix-desktop-search
+cargo test -p koushi-search
 cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-search/Cargo.toml ngram
 cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk/Cargo.toml search_index --features experimental-search,sqlite,e2e-encryption
 ```
@@ -248,7 +248,7 @@ npm --prefix apps/desktop run qa:secret-scan
 - [ ] Run:
 
 ```bash
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-core --lib
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 npm --prefix apps/desktop run qa:headless-local -- --server=both
 npm --prefix apps/desktop run qa:real-homeserver

@@ -67,22 +67,22 @@ conflict is being resolved.
 ## Architecture And Ownership
 
 - New Matrix behavior is headless-first and local-server-first. It lands in
-  `matrix-desktop-core` / `matrix-desktop-state`, is verified through
+  `koushi-core` / `koushi-state`, is verified through
   `CoreCommand` / `CoreEvent` against disposable local Conduit/Tuwunel QA,
   and only then is wired to Tauri/React. GUI-first Matrix behavior is
   prohibited.
 - This headless-first rule is operationalized as two phases per work item.
   **Phase A (headless contract):** model the feature as serializable
   `AppState` / reducers and `CoreCommand` / `CoreEvent` in
-  `matrix-desktop-state` / `matrix-desktop-core`, proven against disposable
+  `koushi-state` / `koushi-core`, proven against disposable
   local Conduit/Tuwunel homeserver QA; exit when the relevant local core QA
   scenario is green. **Phase B (GUI wiring):** a thin Tauri/React view over
   that same Rust state; exit when the browser-headless and, where that gate
   applies, Linux virtual-display GUI tests are green. Issues are split along
   this A/B boundary, and QA tokens stay private-data-free.
 - Product logic and state that decide Matrix operation semantics live in Rust:
-  `matrix-desktop-state` for serializable state/reducers and
-  `matrix-desktop-core` for actors, commands, events, and runtime ownership.
+  `koushi-state` for serializable state/reducers and
+  `koushi-core` for actors, commands, events, and runtime ownership.
 - React may own ephemeral presentation state only: focus, popovers, unsent form
   text, viewport measurements, virtual-list cache, and scroll anchors. If UI
   state affects a Matrix command shape, selected target, pending operation,
@@ -91,13 +91,13 @@ conflict is being resolved.
 - `apps/desktop/src-tauri` is a transport adapter. It holds `CoreRuntime`,
   sends commands, forwards events/snapshots, and does not call Matrix SDK
   wrapper APIs directly.
-- `matrix-desktop-sdk` is the low-level Matrix SDK adapter crate. It owns
+- `koushi-sdk` is the low-level Matrix SDK adapter crate. It owns
   SDK-facing primitives only; app state, actor lifecycle, QA orchestration,
-  and product opinions stay in `matrix-desktop-core` and
-  `matrix-desktop-state`.
+  and product opinions stay in `koushi-core` and
+  `koushi-state`.
 - UI code must not import SDK types. SDK data is mapped to app-owned Rust DTOs
   before it crosses the command/event/snapshot boundary.
-- `matrix-desktop-backend` is fixture/demo only. Production Tauri paths must
+- `koushi-backend` is fixture/demo only. Production Tauri paths must
   not execute fixture-backend behavior.
 
 ## State-Machine Discipline
@@ -366,7 +366,7 @@ consistent.
   `#[cfg(test)] mod tests`. When a unit test file grows beyond one screen or
   begins to assert cross-module projection, move it to `tests/`.
 - **Do not add new tests to existing monolithic test files such as
-  `crates/matrix-desktop-core/src/tests.rs`.** Add a new `tests/<feature>.rs`
+  `crates/koushi-core/src/tests.rs`.** Add a new `tests/<feature>.rs`
   file instead. Existing monolithic files may be split opportunistically when
   they are touched for a new feature.
 - **Test fixtures and fakes belong near their consumer.** A fake used by a
@@ -378,8 +378,8 @@ consistent.
 The main agent owns integration of the following shared surfaces. Subagents may
 read them but must not append to them without main-agent coordination:
 
-- `crates/matrix-desktop-state/src/{state.rs,action.rs,reducer.rs}`
-- `crates/matrix-desktop-core/src/{command.rs,event.rs,runtime.rs}`
+- `crates/koushi-state/src/{state.rs,action.rs,reducer.rs}`
+- `crates/koushi-core/src/{command.rs,event.rs,runtime.rs}`
 - `apps/desktop/src-tauri/src/{dto.rs,commands.rs}`
 - `apps/desktop/src/{App.tsx,components/TimelineView.tsx,i18n/messages.ts,styles.css}`
 - `apps/desktop/src/domain/{types.ts,coreEvents.ts,coreEvents.generated.json}`

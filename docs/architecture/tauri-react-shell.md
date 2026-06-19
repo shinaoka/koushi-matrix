@@ -26,7 +26,7 @@ src-tauri commands
   Mutex<FakeDesktopBackend>  historical shell backend
         |
         v
-matrix-desktop-backend
+koushi-backend
 ```
 
 The React layer does not import Matrix SDK types and does not own Matrix state

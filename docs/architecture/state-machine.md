@@ -225,7 +225,7 @@ stateDiagram-v2
   (Favourites / People / Rooms / Low priority) are derived from this Rust-owned
   snapshot, not from React-local menu state.
 - `RoomActor` routes `RoomCommand::SetTag` / `RemoveTag` through
-  `matrix-desktop-sdk` tag wrappers, emits `RoomEvent::RoomTagSet` /
+  `koushi-sdk` tag wrappers, emits `RoomEvent::RoomTagSet` /
   `RoomTagRemoved`, reliably dispatches the reducer action that updates
   `RoomSummary.tags`, and does not immediately refresh the room list. The SDK
   tag calls send account-data changes to the homeserver, so the next sync
@@ -474,7 +474,7 @@ reaction counts, ownership, target eligibility, or toggle semantics.
 
 Reply quote previews and pinned-event state are Rust-owned message-interaction
 projections. `TimelineItem.reply_quote` is projected in
-`matrix-desktop-core` from SDK reply details; React renders that DTO and must
+`koushi-core` from SDK reply details; React renders that DTO and must
 not resolve reply bodies, classify redactions, or repair missing quote state.
 
 Message action affordances are also Rust-owned timeline projections.
@@ -554,7 +554,7 @@ stateDiagram-v2
   private-data-free `AppError`; raw SDK errors, room ids, event ids, and
   message bodies must not appear in ordinary logs or QA output.
 - `RoomCommand::PinEvent` and `RoomCommand::UnpinEvent` route through
-  `RoomActor` and `matrix-desktop-sdk`; successful commands emit typed
+  `RoomActor` and `koushi-sdk`; successful commands emit typed
   completion events and then refresh the Rust pinned-event projection. The
   completion action settles `Pending` before the follow-up pinned-state reload:
   if that reload fails, the command is still no longer pending and the failure
@@ -568,7 +568,7 @@ stateDiagram-v2
 ## Timeline Media
 
 Timeline media is a core-owned operation/effect state, not React-local logic.
-`TimelineItem.media` is projected in `matrix-desktop-core` from SDK
+`TimelineItem.media` is projected in `koushi-core` from SDK
 `m.image`/`m.file` message content and flows to the UI as ordinary timeline
 diff data. React renders the metadata and dispatches typed commands; it must
 not parse Matrix media event content, infer encryption state, or synthesize
@@ -1168,7 +1168,7 @@ stateDiagram-v2
   recoverable `basic_operation_failed` error.
 - Event vs. state: `BasicOperationRequest` describes intent; the reducer derives
   the resulting `BasicOperationState`. An action never carries the target state.
-- Producer: in production `matrix-desktop-core`'s `RoomActor` dispatches these
+- Producer: in production `koushi-core`'s `RoomActor` dispatches these
   events around the `CreateRoom` / `CreateSpace` / `SetSpaceChild` SDK calls,
   using the command's `request_id` (its `sequence`) as the correlation id.
 
@@ -1702,7 +1702,7 @@ stateDiagram-v2
   event payload is structured for UI consumption; event `Debug` redacts account
   keys and verification targets so QA output remains private-data-free.
 - Device verification SDK handles are not reducer state. `AccountActor` owns
-  the opaque `matrix-desktop-sdk` verification-request and SAS handles, observes
+  the opaque `koushi-sdk` verification-request and SAS handles, observes
   their SDK state streams, and projects only reducer actions / typed
   `CoreEvent::E2eeTrust` updates. The frontend receives SAS emoji DTOs only
   after Rust observes `KeysExchanged`; React must not decide SAS readiness,
@@ -2241,12 +2241,12 @@ stateDiagram-v2
   persistence completes, records the latest saving request id, and ignores stale
   persist completions.
 - Composer send shortcut behavior is resolved by the pure Rust-owned
-  `matrix-desktop-state` composer resolver for main, thread, and edit composer
+  `koushi-state` composer resolver for main, thread, and edit composer
   surfaces. GUI code may normalize DOM/native key input into the resolver's
   typed key facts; it must not reimplement Enter, Shift+Enter, Mod+Enter,
   autocomplete acceptance, or cancel semantics as product logic.
 - Font and emoji display behavior is resolved by
-  `matrix_desktop_state::resolve_typography_display_profile`. GUI code may
+  `koushi_state::resolve_typography_display_profile`. GUI code may
   apply the resulting `TypographyDisplayProfile` tokens to root attributes and
   CSS variables, but it must not choose Inter/Twemoji/system fallback semantics
   locally or branch per component/OS.

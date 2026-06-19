@@ -209,12 +209,12 @@ state updates in a controlled pass.
 
 These files are serialization points:
 
-- `crates/matrix-desktop-state/src/state.rs`
-- `crates/matrix-desktop-state/src/action.rs`
-- `crates/matrix-desktop-state/src/reducer.rs`
-- `crates/matrix-desktop-core/src/command.rs`
-- `crates/matrix-desktop-core/src/event.rs`
-- `crates/matrix-desktop-core/src/runtime.rs`
+- `crates/koushi-state/src/state.rs`
+- `crates/koushi-state/src/action.rs`
+- `crates/koushi-state/src/reducer.rs`
+- `crates/koushi-core/src/command.rs`
+- `crates/koushi-core/src/event.rs`
+- `crates/koushi-core/src/runtime.rs`
 - `apps/desktop/src-tauri/src/dto.rs`
 - `apps/desktop/src/domain/coreEvents.ts`
 - `apps/desktop/src/domain/coreEvents.generated.json`

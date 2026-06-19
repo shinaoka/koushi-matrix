@@ -8,7 +8,7 @@ work before the headless core runtime.
 
 **Goal:** Build a pure Rust application state machine that defines the Matrix desktop client's session, sync, navigation, timeline, thread, and search transitions before adding Tauri or React integration.
 
-**Architecture:** Add a production Rust crate, `matrix-desktop-state`, with no Matrix SDK or Tauri dependency. The crate exposes serializable state DTOs, user/SDK actions, and effect requests; a pure reducer maps `AppAction` into mutated `AppState` plus `AppEffect` values that the planned Tauri backend would execute. Sidebar composition and key-management spike findings are folded into the state model without copying SDK objects into UI state.
+**Architecture:** Add a production Rust crate, `koushi-state`, with no Matrix SDK or Tauri dependency. The crate exposes serializable state DTOs, user/SDK actions, and effect requests; a pure reducer maps `AppAction` into mutated `AppState` plus `AppEffect` values that the planned Tauri backend would execute. Sidebar composition and key-management spike findings are folded into the state model without copying SDK objects into UI state.
 
 **Tech Stack:** Rust 2024, Cargo workspace, serde, table-driven reducer tests, Mermaid state-machine documentation.
 
@@ -32,7 +32,7 @@ The reducer must stay deterministic and testable without network access or OS cr
 matrix-desktop/
   Cargo.toml
   crates/
-    matrix-desktop-state/
+    koushi-state/
       Cargo.toml
       src/
         action.rs
@@ -57,8 +57,8 @@ matrix-desktop/
 
 **Files:**
 - Modify: `Cargo.toml`
-- Create: `crates/matrix-desktop-state/Cargo.toml`
-- Create: `crates/matrix-desktop-state/src/lib.rs`
+- Create: `crates/koushi-state/Cargo.toml`
+- Create: `crates/koushi-state/src/lib.rs`
 
 - [ ] **Step 1: Add the production crate to the workspace**
 
@@ -67,7 +67,7 @@ Modify the root `Cargo.toml`:
 ```toml
 [workspace]
 members = [
-    "crates/matrix-desktop-state",
+    "crates/koushi-state",
     "spikes/sidebar-composition",
     "spikes/key-management",
 ]
@@ -76,11 +76,11 @@ resolver = "2"
 
 - [ ] **Step 2: Create the crate manifest**
 
-Create `crates/matrix-desktop-state/Cargo.toml`:
+Create `crates/koushi-state/Cargo.toml`:
 
 ```toml
 [package]
-name = "matrix-desktop-state"
+name = "koushi-state"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
@@ -91,10 +91,10 @@ serde = { version = "1", features = ["derive"] }
 
 - [ ] **Step 3: Create the initial crate root**
 
-Create `crates/matrix-desktop-state/src/lib.rs`:
+Create `crates/koushi-state/src/lib.rs`:
 
 ```rust
-pub const CRATE_NAME: &str = "matrix-desktop-state";
+pub const CRATE_NAME: &str = "koushi-state";
 ```
 
 - [ ] **Step 4: Run check**
@@ -102,7 +102,7 @@ pub const CRATE_NAME: &str = "matrix-desktop-state";
 Run:
 
 ```bash
-cargo check -p matrix-desktop-state
+cargo check -p koushi-state
 ```
 
 Expected: PASS.
@@ -112,7 +112,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add Cargo.toml crates/matrix-desktop-state/Cargo.toml crates/matrix-desktop-state/src/lib.rs
+git add Cargo.toml crates/koushi-state/Cargo.toml crates/koushi-state/src/lib.rs
 git commit -m "Add state machine crate scaffold"
 ```
 
@@ -121,16 +121,16 @@ Expected: commit succeeds.
 ## Task 2: Define State, Actions, Effects, and Sidebar Composition
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/lib.rs`
-- Create: `crates/matrix-desktop-state/src/state.rs`
-- Create: `crates/matrix-desktop-state/src/action.rs`
-- Create: `crates/matrix-desktop-state/src/effect.rs`
-- Create: `crates/matrix-desktop-state/src/sidebar.rs`
-- Create: `crates/matrix-desktop-state/src/reducer.rs`
+- Modify: `crates/koushi-state/src/lib.rs`
+- Create: `crates/koushi-state/src/state.rs`
+- Create: `crates/koushi-state/src/action.rs`
+- Create: `crates/koushi-state/src/effect.rs`
+- Create: `crates/koushi-state/src/sidebar.rs`
+- Create: `crates/koushi-state/src/reducer.rs`
 
 - [ ] **Step 1: Replace the crate root with public modules**
 
-Replace `crates/matrix-desktop-state/src/lib.rs`:
+Replace `crates/koushi-state/src/lib.rs`:
 
 ```rust
 pub mod action;
@@ -152,7 +152,7 @@ pub use state::{
 
 - [ ] **Step 2: Create state types**
 
-Create `crates/matrix-desktop-state/src/state.rs`:
+Create `crates/koushi-state/src/state.rs`:
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -310,7 +310,7 @@ pub struct AppError {
 
 - [ ] **Step 3: Create action types**
 
-Create `crates/matrix-desktop-state/src/action.rs`:
+Create `crates/koushi-state/src/action.rs`:
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -360,7 +360,7 @@ pub enum AppAction {
 
 - [ ] **Step 4: Create effect types**
 
-Create `crates/matrix-desktop-state/src/effect.rs`:
+Create `crates/koushi-state/src/effect.rs`:
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -403,7 +403,7 @@ pub enum UiEvent {
 
 - [ ] **Step 5: Create sidebar composition**
 
-Create `crates/matrix-desktop-state/src/sidebar.rs`:
+Create `crates/koushi-state/src/sidebar.rs`:
 
 ```rust
 use std::collections::HashMap;
@@ -511,7 +511,7 @@ fn unread_count(rooms: &[RoomListItem]) -> u64 {
 
 - [ ] **Step 6: Create a reducer stub**
 
-Create `crates/matrix-desktop-state/src/reducer.rs`:
+Create `crates/koushi-state/src/reducer.rs`:
 
 ```rust
 use crate::{action::AppAction, effect::AppEffect, state::AppState};
@@ -526,7 +526,7 @@ pub fn reduce(_state: &mut AppState, _action: AppAction) -> Vec<AppEffect> {
 Run:
 
 ```bash
-cargo check -p matrix-desktop-state
+cargo check -p koushi-state
 ```
 
 Expected: PASS.
@@ -536,7 +536,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state/src
+git add crates/koushi-state/src
 git commit -m "Define desktop state machine types"
 ```
 
@@ -545,15 +545,15 @@ Expected: commit succeeds.
 ## Task 3: Implement Session and Sync Transitions
 
 **Files:**
-- Create: `crates/matrix-desktop-state/tests/session_state.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
+- Create: `crates/koushi-state/tests/session_state.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
 
 - [ ] **Step 1: Write session reducer tests**
 
-Create `crates/matrix-desktop-state/tests/session_state.rs`:
+Create `crates/koushi-state/tests/session_state.rs`:
 
 ```rust
-use matrix_desktop_state::{
+use koushi_state::{
     AppAction, AppEffect, AppState, SessionInfo, SessionState, SyncState, UiEvent, reduce,
 };
 
@@ -664,14 +664,14 @@ fn sync_failure_enters_recovering_state() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test session_state
+cargo test -p koushi-state --test session_state
 ```
 
 Expected: FAIL because the reducer currently returns no effects and does not mutate state.
 
 - [ ] **Step 3: Implement session and sync reducer branches**
 
-Replace `crates/matrix-desktop-state/src/reducer.rs` with:
+Replace `crates/koushi-state/src/reducer.rs` with:
 
 ```rust
 use crate::{
@@ -770,7 +770,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test session_state
+cargo test -p koushi-state --test session_state
 ```
 
 Expected: PASS.
@@ -780,7 +780,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state/src/reducer.rs crates/matrix-desktop-state/tests/session_state.rs
+git add crates/koushi-state/src/reducer.rs crates/koushi-state/tests/session_state.rs
 git commit -m "Add session state transitions"
 ```
 
@@ -789,15 +789,15 @@ Expected: commit succeeds.
 ## Task 4: Implement Navigation and Sidebar Transitions
 
 **Files:**
-- Create: `crates/matrix-desktop-state/tests/navigation_state.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
+- Create: `crates/koushi-state/tests/navigation_state.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
 
 - [ ] **Step 1: Write navigation tests**
 
-Create `crates/matrix-desktop-state/tests/navigation_state.rs`:
+Create `crates/koushi-state/tests/navigation_state.rs`:
 
 ```rust
-use matrix_desktop_state::{
+use koushi_state::{
     AppAction, AppEffect, AppState, RoomSummary, SpaceSummary, UiEvent, compose_sidebar, reduce,
 };
 
@@ -913,14 +913,14 @@ fn selecting_room_subscribes_timeline_and_clears_thread() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test navigation_state
+cargo test -p koushi-state --test navigation_state
 ```
 
 Expected: FAIL because navigation branches are not implemented.
 
 - [ ] **Step 3: Implement navigation branches**
 
-In `crates/matrix-desktop-state/src/reducer.rs`, add imports:
+In `crates/koushi-state/src/reducer.rs`, add imports:
 
 ```rust
 use crate::state::TimelinePaneState;
@@ -961,7 +961,7 @@ Add these match arms before the final `_ => Vec::new()` arm:
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test navigation_state
+cargo test -p koushi-state --test navigation_state
 ```
 
 Expected: PASS.
@@ -971,7 +971,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state/src/reducer.rs crates/matrix-desktop-state/tests/navigation_state.rs
+git add crates/koushi-state/src/reducer.rs crates/koushi-state/tests/navigation_state.rs
 git commit -m "Add navigation state transitions"
 ```
 
@@ -980,15 +980,15 @@ Expected: commit succeeds.
 ## Task 5: Implement Timeline and Thread Transitions
 
 **Files:**
-- Create: `crates/matrix-desktop-state/tests/timeline_thread_state.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
+- Create: `crates/koushi-state/tests/timeline_thread_state.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
 
 - [ ] **Step 1: Write timeline and thread tests**
 
-Create `crates/matrix-desktop-state/tests/timeline_thread_state.rs`:
+Create `crates/koushi-state/tests/timeline_thread_state.rs`:
 
 ```rust
-use matrix_desktop_state::{
+use koushi_state::{
     AppAction, AppEffect, AppState, ComposerState, ThreadPaneState, UiEvent, reduce,
 };
 
@@ -1132,14 +1132,14 @@ fn opening_thread_requests_thread_timeline_and_subscription_success_opens_pane()
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test timeline_thread_state
+cargo test -p koushi-state --test timeline_thread_state
 ```
 
 Expected: FAIL because timeline and thread branches are not implemented.
 
 - [ ] **Step 3: Implement timeline and thread branches**
 
-In `crates/matrix-desktop-state/src/reducer.rs`, add these match arms before `_ => Vec::new()`:
+In `crates/koushi-state/src/reducer.rs`, add these match arms before `_ => Vec::new()`:
 
 ```rust
         AppAction::TimelineSubscribed { room_id } => {
@@ -1226,7 +1226,7 @@ In `crates/matrix-desktop-state/src/reducer.rs`, add these match arms before `_ 
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test timeline_thread_state
+cargo test -p koushi-state --test timeline_thread_state
 ```
 
 Expected: PASS.
@@ -1236,7 +1236,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state/src/reducer.rs crates/matrix-desktop-state/tests/timeline_thread_state.rs
+git add crates/koushi-state/src/reducer.rs crates/koushi-state/tests/timeline_thread_state.rs
 git commit -m "Add timeline and thread state transitions"
 ```
 
@@ -1245,15 +1245,15 @@ Expected: commit succeeds.
 ## Task 6: Implement Search Transitions
 
 **Files:**
-- Create: `crates/matrix-desktop-state/tests/search_state.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
+- Create: `crates/koushi-state/tests/search_state.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
 
 - [ ] **Step 1: Write search tests**
 
-Create `crates/matrix-desktop-state/tests/search_state.rs`:
+Create `crates/koushi-state/tests/search_state.rs`:
 
 ```rust
-use matrix_desktop_state::{
+use koushi_state::{
     AppAction, AppEffect, AppState, SearchResult, SearchScope, SearchState, UiEvent, reduce,
 };
 
@@ -1394,14 +1394,14 @@ fn matching_search_result_updates_results() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test search_state
+cargo test -p koushi-state --test search_state
 ```
 
 Expected: FAIL because search branches are not implemented.
 
 - [ ] **Step 3: Implement search branches**
 
-In `crates/matrix-desktop-state/src/reducer.rs`, add these match arms before `_ => Vec::new()`:
+In `crates/koushi-state/src/reducer.rs`, add these match arms before `_ => Vec::new()`:
 
 ```rust
         AppAction::SearchEdited { query, scope } => {
@@ -1481,7 +1481,7 @@ In `crates/matrix-desktop-state/src/reducer.rs`, add these match arms before `_ 
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test search_state
+cargo test -p koushi-state --test search_state
 ```
 
 Expected: PASS.
@@ -1491,7 +1491,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state/src/reducer.rs crates/matrix-desktop-state/tests/search_state.rs
+git add crates/koushi-state/src/reducer.rs crates/koushi-state/tests/search_state.rs
 git commit -m "Add search state transitions"
 ```
 
@@ -1590,7 +1590,7 @@ Expected: commit succeeds.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state
+cargo test -p koushi-state
 ```
 
 Expected: PASS.

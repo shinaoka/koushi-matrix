@@ -31,7 +31,7 @@ command/event surface that later AccountActor and GUI work must consume.
 
 The follow-up SDK bridge slice keeps the same Phase A boundary: production
 `CoreCommand::Account` trust commands project reducer pending state before
-`AccountActor` routing, and `AccountActor` calls `matrix-desktop-sdk`
+`AccountActor` routing, and `AccountActor` calls `koushi-sdk`
 private-data-free wrappers for cross-signing bootstrap and key-backup enable.
 Identity reset now calls the SDK wrapper and projects immediate completion or a
 typed `AwaitingAuth` state with only UIAA/OAuth/unknown auth kind; the SDK
@@ -51,7 +51,7 @@ backup-wide restore remains a later SDK API/patch decision and must be proven
 with local homeserver QA before #13 closure.
 
 The device-verification bridge slice wires outgoing device verification to
-public matrix-rust-sdk APIs without GUI changes. `matrix-desktop-sdk` exposes
+public matrix-rust-sdk APIs without GUI changes. `koushi-sdk` exposes
 opaque verification-request and SAS handles plus private-data-free state/emoji
 DTO mapping; `AccountActor` owns those handles, observes SDK request/SAS state
 streams, and projects reducer actions / `CoreEvent::E2eeTrust` updates. The
@@ -92,10 +92,10 @@ reviewed vendored patch before the product can claim exhaustive restore.
 Run at minimum:
 
 ```bash
-cargo test -p matrix-desktop-state --test e2ee_trust_state
-cargo test -p matrix-desktop-sdk e2ee_trust_tests
-cargo test -p matrix-desktop-core
-cargo test -p matrix-desktop-core --features qa-bin --bin headless-core-qa
+cargo test -p koushi-state --test e2ee_trust_state
+cargo test -p koushi-sdk e2ee_trust_tests
+cargo test -p koushi-core
+cargo test -p koushi-core --features qa-bin --bin headless-core-qa
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --core --core-backend=probed --scenario=e2ee_trust --timeout-ms=240000
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml dto::tests
 ```

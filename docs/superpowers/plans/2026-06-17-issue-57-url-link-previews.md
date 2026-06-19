@@ -6,7 +6,7 @@
 
 **Architecture:** Rust core extracts URLs, applies the global/per-room/encryption policy, fetches OpenGraph metadata and image thumbnails through the homeserver, and owns the viewer-local hidden-event set. React renders only the projected `link_previews` DTO and dispatches typed `load_link_previews`/`hide_link_preview` commands. Per-room overrides are persisted with the settings store; encryption state flows from the SDK room summary into the timeline projection.
 
-**Tech Stack:** Rust (matrix-desktop-state / matrix-desktop-core / matrix-desktop-sdk), Tauri, TypeScript/React, Playwright, local Conduit/Tuwunel headless QA.
+**Tech Stack:** Rust (koushi-state / koushi-core / koushi-sdk), Tauri, TypeScript/React, Playwright, local Conduit/Tuwunel headless QA.
 
 ---
 
@@ -14,18 +14,18 @@
 
 | Responsibility | Path |
 |---|---|
-| Settings product state (global + per-room override) | `crates/matrix-desktop-state/src/state.rs` |
-| Settings reducer / test fixtures | `crates/matrix-desktop-state/src/reducer.rs`, `crates/matrix-desktop-state/tests/link_preview_state.rs` |
-| SDK room encryption exposure | `crates/matrix-desktop-sdk/src/lib.rs` |
-| Room normalization (encryption flag) | `crates/matrix-desktop-core/src/room.rs` |
-| Core command variants | `crates/matrix-desktop-core/src/command.rs` |
-| Timeline event / item DTOs | `crates/matrix-desktop-core/src/event.rs` |
-| URL extraction, policy, preview helpers | `crates/matrix-desktop-core/src/link_preview.rs` |
-| Timeline actor fetch / hide / policy wiring | `crates/matrix-desktop-core/src/timeline.rs` |
-| Runtime policy broadcast to timelines | `crates/matrix-desktop-core/src/runtime.rs` |
-| Store data-dir accessor | `crates/matrix-desktop-core/src/store.rs` |
-| Account actor → timeline manager data-dir plumbing | `crates/matrix-desktop-core/src/account.rs` |
-| Core crate exports / dependencies | `crates/matrix-desktop-core/src/lib.rs`, `crates/matrix-desktop-core/Cargo.toml` |
+| Settings product state (global + per-room override) | `crates/koushi-state/src/state.rs` |
+| Settings reducer / test fixtures | `crates/koushi-state/src/reducer.rs`, `crates/koushi-state/tests/link_preview_state.rs` |
+| SDK room encryption exposure | `crates/koushi-sdk/src/lib.rs` |
+| Room normalization (encryption flag) | `crates/koushi-core/src/room.rs` |
+| Core command variants | `crates/koushi-core/src/command.rs` |
+| Timeline event / item DTOs | `crates/koushi-core/src/event.rs` |
+| URL extraction, policy, preview helpers | `crates/koushi-core/src/link_preview.rs` |
+| Timeline actor fetch / hide / policy wiring | `crates/koushi-core/src/timeline.rs` |
+| Runtime policy broadcast to timelines | `crates/koushi-core/src/runtime.rs` |
+| Store data-dir accessor | `crates/koushi-core/src/store.rs` |
+| Account actor → timeline manager data-dir plumbing | `crates/koushi-core/src/account.rs` |
+| Core crate exports / dependencies | `crates/koushi-core/src/lib.rs`, `crates/koushi-core/Cargo.toml` |
 | Tauri command builders / registration | `apps/desktop/src-tauri/src/commands.rs`, `apps/desktop/src-tauri/src/lib.rs` |
 | TypeScript domain types | `apps/desktop/src/domain/types.ts` |
 | TypeScript core event contract | `apps/desktop/src/domain/coreEvents.ts`, `apps/desktop/src/domain/coreEvents.generated.json` |
@@ -36,7 +36,7 @@
 | Timeline preview rendering | `apps/desktop/src/components/TimelineView.tsx`, `apps/desktop/src/styles.css` |
 | Transport / panel wiring | `apps/desktop/src/App.tsx` |
 | Browser-headless GUI contract tests | `apps/desktop/e2e/basic-operations.spec.ts` |
-| Headless core QA scenario | `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`, `scripts/desktop-headless-local-qa.mjs` |
+| Headless core QA scenario | `crates/koushi-core/src/bin/headless-core-qa.rs`, `scripts/desktop-headless-local-qa.mjs` |
 
 ---
 
@@ -45,7 +45,7 @@
 ### Task 1: Add global + per-room URL-preview settings state
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs:341-360`, `:414-423`, `:127-179`
+- Modify: `crates/koushi-state/src/state.rs:341-360`, `:414-423`, `:127-179`
 
 - [ ] **Step 1: Extend `DisplaySettings` with the global toggle**
 
@@ -199,7 +199,7 @@ Add `is_encrypted` to the `fmt::Debug` impl with value `self.is_encrypted`.
 - [ ] **Step 6: Run focused state tests**
 
 ```bash
-cargo test -p matrix-desktop-state --test settings_state
+cargo test -p koushi-state --test settings_state
 ```
 
 Expected: PASS after updating any struct-literal tests that construct `SettingsValues` to include `room_url_previews: RoomUrlPreviews::new()`.
@@ -209,20 +209,20 @@ Expected: PASS after updating any struct-literal tests that construct `SettingsV
 ### Task 2: Write reducer-level settings tests
 
 **Files:**
-- Create: `crates/matrix-desktop-state/tests/link_preview_state.rs`
+- Create: `crates/koushi-state/tests/link_preview_state.rs`
 
 - [ ] **Step 1: Write the test file**
 
 ```rust
 use std::collections::BTreeMap;
 
-use matrix_desktop_state::{
+use koushi_state::{
     AppAction, AppEffect, AppState, DisplaySettings, SettingsPatch, SettingsValues, UiEvent,
     reduce,
 };
 
 fn ready_state_with_room(room_id: &str) -> AppState {
-    use matrix_desktop_state::{RoomSummary, RoomTags, SessionInfo, SessionState};
+    use koushi_state::{RoomSummary, RoomTags, SessionInfo, SessionState};
 
     AppState {
         session: SessionState::Ready(SessionInfo {
@@ -343,7 +343,7 @@ fn false_override_removes_room_entry() {
 - [ ] **Step 2: Run the new test file**
 
 ```bash
-cargo test -p matrix-desktop-state --test link_preview_state
+cargo test -p koushi-state --test link_preview_state
 ```
 
 Expected: PASS.
@@ -353,8 +353,8 @@ Expected: PASS.
 ### Task 3: Expose room encryption state from the SDK
 
 **Files:**
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs:2003-2016`, `:4217-4245`, `:4121-4134`
-- Modify: `crates/matrix-desktop-core/src/room.rs:1831-1846`
+- Modify: `crates/koushi-sdk/src/lib.rs:2003-2016`, `:4217-4245`, `:4121-4134`
+- Modify: `crates/koushi-core/src/room.rs:1831-1846`
 
 - [ ] **Step 1: Add `is_encrypted` to `MatrixRoomListRoom`**
 
@@ -443,7 +443,7 @@ snapshot.rooms.push(matrix_room_list_room_from_counts(
 
 - [ ] **Step 4: Update SDK unit tests for the new argument**
 
-Update every call to `matrix_room_list_room_from_counts` in `crates/matrix-desktop-sdk/src/lib.rs` tests to pass a trailing `false` (or `true` for an encrypted-room test). For example:
+Update every call to `matrix_room_list_room_from_counts` in `crates/koushi-sdk/src/lib.rs` tests to pass a trailing `false` (or `true` for an encrypted-room test). For example:
 
 ```rust
 let room = matrix_room_list_room_from_counts(
@@ -465,7 +465,7 @@ let room = matrix_room_list_room_from_counts(
 
 - [ ] **Step 5: Propagate `is_encrypted` to `RoomSummary`**
 
-In `crates/matrix-desktop-core/src/room.rs` `normalize_rooms`, add:
+In `crates/koushi-core/src/room.rs` `normalize_rooms`, add:
 
 ```rust
 RoomSummary {
@@ -490,7 +490,7 @@ RoomSummary {
 - [ ] **Step 6: Run SDK/core tests**
 
 ```bash
-cargo test -p matrix-desktop-sdk -p matrix-desktop-core --lib
+cargo test -p koushi-sdk -p koushi-core --lib
 ```
 
 Expected: PASS.
@@ -500,8 +500,8 @@ Expected: PASS.
 ### Task 4: Define link-preview DTOs on the core event boundary
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/lib.rs:34-42`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/lib.rs:34-42`
 
 - [ ] **Step 1: Add `LinkPreview` types**
 
@@ -566,7 +566,7 @@ pub struct TimelineItem {
 
 - [ ] **Step 4: Re-export the new types**
 
-In `crates/matrix-desktop-core/src/lib.rs` `pub use event::{...}` block, add:
+In `crates/koushi-core/src/lib.rs` `pub use event::{...}` block, add:
 
 ```rust
 LinkPreview, LinkPreviewImage, LinkPreviewState,
@@ -577,7 +577,7 @@ LinkPreview, LinkPreviewImage, LinkPreviewState,
 ### Task 5: Add timeline command variants
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/command.rs:1732-1846`, `:1851-1950`
+- Modify: `crates/koushi-core/src/command.rs:1732-1846`, `:1851-1950`
 
 - [ ] **Step 1: Add variants**
 
@@ -639,13 +639,13 @@ Self::BroadcastLinkPreviewPolicy {
 ### Task 6: Create URL extraction and preview-policy module
 
 **Files:**
-- Create: `crates/matrix-desktop-core/src/link_preview.rs`
-- Modify: `crates/matrix-desktop-core/src/lib.rs:23`
-- Modify: `crates/matrix-desktop-core/Cargo.toml:22-34`
+- Create: `crates/koushi-core/src/link_preview.rs`
+- Modify: `crates/koushi-core/src/lib.rs:23`
+- Modify: `crates/koushi-core/Cargo.toml:22-34`
 
 - [ ] **Step 1: Add dependencies**
 
-In `crates/matrix-desktop-core/Cargo.toml`:
+In `crates/koushi-core/Cargo.toml`:
 
 ```toml
 regex = "1"
@@ -655,13 +655,13 @@ reqwest = "0.13"
 
 - [ ] **Step 2: Declare the module**
 
-In `crates/matrix-desktop-core/src/lib.rs`:
+In `crates/koushi-core/src/lib.rs`:
 
 ```rust
 pub(crate) mod link_preview;
 ```
 
-- [ ] **Step 3: Write `crates/matrix-desktop-core/src/link_preview.rs`**
+- [ ] **Step 3: Write `crates/koushi-core/src/link_preview.rs`**
 
 ```rust
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -895,7 +895,7 @@ mod tests {
 - [ ] **Step 4: Run the module tests**
 
 ```bash
-cargo test -p matrix-desktop-core link_preview
+cargo test -p koushi-core link_preview
 ```
 
 Expected: PASS.
@@ -905,7 +905,7 @@ Expected: PASS.
 ### Task 7: Wire link previews into the timeline actor
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/timeline.rs:115-200`, `:1235-1260`, `:2408-2450`, `:2825-2874`, `:2990-3010`, `:3632-3800`, `:4565-4662`
+- Modify: `crates/koushi-core/src/timeline.rs:115-200`, `:1235-1260`, `:2408-2450`, `:2825-2874`, `:2990-3010`, `:3632-3800`, `:4565-4662`
 
 - [ ] **Step 1: Add actor fields**
 
@@ -956,9 +956,9 @@ Update `spawn_with_session` signature and struct init to accept and store `data_
 
 - [ ] **Step 3: Update account actor plumbing**
 
-In `crates/matrix-desktop-core/src/account.rs`:
+In `crates/koushi-core/src/account.rs`:
 
-1. Expose `StoreActor::data_dir` by adding in `crates/matrix-desktop-core/src/store.rs`:
+1. Expose `StoreActor::data_dir` by adding in `crates/koushi-core/src/store.rs`:
 
 ```rust
 impl StoreActor {
@@ -1379,7 +1379,7 @@ async fn handle_link_preview_policy_changed(
 - [ ] **Step 10: Compile core**
 
 ```bash
-cargo check -p matrix-desktop-core
+cargo check -p koushi-core
 ```
 
 Expected: no errors after all call-site updates.
@@ -1389,7 +1389,7 @@ Expected: no errors after all call-site updates.
 ### Task 8: Broadcast settings policy from the runtime
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/runtime.rs:1519-1540`, `:1330-1342`
+- Modify: `crates/koushi-core/src/runtime.rs:1519-1540`, `:1330-1342`
 
 - [ ] **Step 1: Broadcast on settings change**
 
@@ -1412,7 +1412,7 @@ In `handle_app_effects`, when handling `EmitUiEvent(UiEvent::SettingsChanged)`, 
 - [ ] **Step 2: Run runtime tests**
 
 ```bash
-cargo test -p matrix-desktop-core --test runtime_settings
+cargo test -p koushi-core --test runtime_settings
 ```
 
 Expected: PASS.
@@ -1431,7 +1431,7 @@ After `build_load_message_source_command`:
 
 ```rust
 pub(crate) fn build_load_link_previews_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1447,7 +1447,7 @@ pub(crate) fn build_load_link_previews_command(
 }
 
 pub(crate) fn build_hide_link_preview_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1563,7 +1563,7 @@ Expected: PASS.
 ### Task 10: Add headless core QA scenario
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs:107-153`, `:399-470`, `:546-718`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs:107-153`, `:399-470`, `:546-718`
 - Modify: `scripts/desktop-headless-local-qa.mjs:22-41`
 
 - [ ] **Step 1: Add scenario and stage**
@@ -1641,13 +1641,13 @@ async fn run_link_preview_stage(
     // 2. Wait for B to see the message and a pending preview.
     let item = wait_for_timeline_item_with_body(conn_b, key_b, URL_MESSAGE_BODY, "B sees URL message").await?;
     let event_id = match &item.id {
-        matrix_desktop_core::event::TimelineItemId::Event { event_id } => event_id.clone(),
+        koushi_core::event::TimelineItemId::Event { event_id } => event_id.clone(),
         _ => return Err("link preview item was not event-backed".to_owned()),
     };
     let previews = item.link_previews.as_ref().ok_or("missing link_previews")?;
     assert_eq!(previews.len(), 1);
     assert_eq!(previews[0].url, "https://example.invalid/page");
-    assert!(matches!(previews[0].state, matrix_desktop_core::event::LinkPreviewState::Pending));
+    assert!(matches!(previews[0].state, koushi_core::event::LinkPreviewState::Pending));
     println!("link_preview_global=ok");
 
     // 3. Disable previews globally and confirm the projection drops them.
@@ -1731,7 +1731,7 @@ In `scripts/desktop-headless-local-qa.mjs`, insert after `"scenario reply"`:
 - [ ] **Step 6: Compile and run the scenario locally**
 
 ```bash
-cargo build -p matrix-desktop-core --bin headless-core-qa --features qa-bin
+cargo build -p koushi-core --bin headless-core-qa --features qa-bin
 mkdir -p /tmp/matrix-desktop-local-qa-bin
 cp target/debug/headless-core-qa /tmp/matrix-desktop-local-qa-bin/
 PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=link_preview --core --core-backend=both --timeout-ms=240000
@@ -2455,14 +2455,14 @@ Run the full verification stack after all tasks:
 
 ```bash
 # Rust unit + integration tests
-cargo test -p matrix-desktop-state --test link_preview_state
-cargo test -p matrix-desktop-core --lib
-cargo test -p matrix-desktop-core --bin headless-core-qa --features qa-bin
-cargo test -p matrix-desktop-sdk -p matrix-desktop-state -p matrix-desktop-search -p matrix-desktop-key
+cargo test -p koushi-state --test link_preview_state
+cargo test -p koushi-core --lib
+cargo test -p koushi-core --bin headless-core-qa --features qa-bin
+cargo test -p koushi-sdk -p koushi-state -p koushi-search -p koushi-key
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 # WASM compile check
-cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
+cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search
 
 # TypeScript
 cd apps/desktop

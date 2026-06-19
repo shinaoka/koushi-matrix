@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use matrix_desktop_state::{
+use koushi_state::{
     AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
     AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
     DeviceSessionListState, DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState,
@@ -43,7 +43,7 @@ pub struct FrontendDesktopSnapshot {
 
 impl From<AppState> for FrontendDesktopSnapshot {
     fn from(state: AppState) -> Self {
-        let sidebar = matrix_desktop_state::compose_sidebar(
+        let sidebar = koushi_state::compose_sidebar(
             state.navigation.active_space_id.as_deref(),
             &state.spaces,
             &state.rooms,
@@ -436,7 +436,7 @@ pub struct FrontendSearchResult {
     pub score_millis: u32,
     pub snippet: String,
     pub match_field: FrontendSearchMatchField,
-    pub highlights: Vec<matrix_desktop_state::TextRange>,
+    pub highlights: Vec<koushi_state::TextRange>,
     pub match_kind: FrontendSearchMatchKind,
 }
 
@@ -491,7 +491,7 @@ mod tests {
     use serde_json::json;
 
     use super::{FrontendDesktopSnapshot, FrontendSyncState, frontend_display_platform};
-    use matrix_desktop_state::{
+    use koushi_state::{
         AppState, AvatarImage, AvatarThumbnailState, EmojiPreference, FontPreference,
         InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod, RoomSummary, RoomTags,
         SessionInfo, SessionState, SpaceSummary, SyncState, TextDirectionPreference,
@@ -1003,7 +1003,7 @@ mod tests {
     #[test]
     fn frontend_app_state_golden_matches_maximally_populated_state() {
         use std::collections::BTreeMap;
-        use matrix_desktop_state::{
+        use koushi_state::{
             ActivityMarkReadState, ActivityRow, ActivityState, ActivityStream, ActivityTab,
             AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope, AttachmentSort,
             AvatarImage, AvatarThumbnailState, BasicOperationState,
@@ -1195,7 +1195,7 @@ mod tests {
             room_id: Some("!room:example.invalid".to_owned()),
             is_subscribed: true,
             is_paginating_backwards: false,
-            composer: matrix_desktop_state::ComposerState::default(),
+            composer: koushi_state::ComposerState::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
@@ -1230,7 +1230,7 @@ mod tests {
                 let mut m = BTreeMap::new();
                 m.insert(
                     "@fixture:example.invalid".to_owned(),
-                    matrix_desktop_state::PresenceKind::Online,
+                    koushi_state::PresenceKind::Online,
                 );
                 m
             },

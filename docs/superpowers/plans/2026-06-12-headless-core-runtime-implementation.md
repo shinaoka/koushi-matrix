@@ -59,11 +59,11 @@ Protocol:
 
 Goal: enforcement exists before the code it must constrain.
 
-- Create the `matrix-desktop-core` crate skeleton in the workspace.
+- Create the `koushi-core` crate skeleton in the workspace.
 - Wire the secret scan gate (pre-commit and CI; excludes `vendor/`,
   `.local-secrets/`, generated artifacts).
-- Add `wasm32-unknown-unknown` check for `matrix-desktop-state` and
-  `matrix-desktop-search` (Platform Portability rule 4).
+- Add `wasm32-unknown-unknown` check for `koushi-state` and
+  `koushi-search` (Platform Portability rule 4).
 - Add the release-build check that debug/test credential injection paths are
   compiled out.
 
@@ -234,7 +234,7 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   now survives fast successful exits.
 
 - 2026-06-13: Phase 9 cleanup follow-up completed. The SDK adapter is now
-  `matrix-desktop-sdk`, runtime IPC drift is checked by a JSON artifact and
+  `koushi-sdk`, runtime IPC drift is checked by a JSON artifact and
   Rust contract test, room lifecycle cleanup commands are implemented, and the
   optional AppCommand shims are documented as shims. Upstream SDK deltas remain
   managed on the shinaoka submodule branch with local comments at the patch
@@ -284,7 +284,7 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   orphaned DesktopCredentialStore/QaFileCredentialStore/session-persistence
   cluster in src-tauri lib.rs was deleted (≈700 lines + 10 tests whose
   coverage lives in core store.rs/account.rs); src-tauri now builds with 0
-  warnings and never imports matrix-desktop-sdk/key types. The
+  warnings and never imports koushi-sdk/key types. The
   file-credential-store release-gate regression test was rewritten to point
   at core store.rs and to assert the adapter contains no credential-store
   references at all. headless-core-qa: post-logout RestoreLastSession →
@@ -361,7 +361,7 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   Flash/plugins.  No devtools flag found in tauri.conf.json — devtools
   control is in Tauri's capability system; release builds default to no
   devtools unless explicitly enabled.
-  Gates executed: cargo test -p matrix-desktop-core (65 ok), cargo test in
+  Gates executed: cargo test -p koushi-core (65 ok), cargo test in
   src-tauri (29 ok), npm test (109 ok, 31 new), typecheck ok, secret scan ok,
   release gate structural ok, qa:headless-core Tuwunel both legs green (Conduit
   probed-SyncService leg hit the Phase 4 room-list wait timeout on this run —
@@ -467,7 +467,7 @@ Exit gate: `qa:real-homeserver` green; release preflight documented.
   (1) **SyncService handoff design gap resolved without escalation**: the
   original design implied RoomActor would hold an `Arc<SyncService>` from
   SyncActor to do room-list snapshots. This was over-engineered; the simpler
-  approach is `matrix_desktop_sdk::room_list_snapshot(session)` which creates
+  approach is `koushi_sdk::room_list_snapshot(session)` which creates
   a short-lived `RoomListService` internally and falls back to
   `client.joined_rooms()` for LegacySync — `RoomActor` needs only the session
   reference. `RoomMessage::SyncStarted { session }` carries only the session.

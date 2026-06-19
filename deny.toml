@@ -79,14 +79,14 @@ multiple-versions = "warn"
 
 # cargo-deny bans are dependency-graph-wide and cannot selectively allow a
 # crate in one workspace member while denying it in another. The platform-dep
-# boundary for matrix-desktop-state (the pure domain layer) is therefore
+# boundary for koushi-state (the pure domain layer) is therefore
 # enforced by scripts/check-domain-crate-platform-deps.mjs, which inspects
 # that crate's Cargo.toml directly. deny.toml provides license compliance,
 # advisory gating, and source integrity; per-crate layer enforcement is
 # the script's responsibility.
 #
 # Grandfathered platform deps (NOT banned here; tracked for Phase 5 removal):
-#   keyring in matrix-desktop-core and matrix-desktop-key — Phase 5 target for
+#   keyring in koushi-core and koushi-key — Phase 5 target for
 #   SecretStore dependency inversion (trait SecretStore, platform adapters).
 deny = []
 

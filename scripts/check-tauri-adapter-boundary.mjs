@@ -3,7 +3,7 @@
  * check-tauri-adapter-boundary.mjs
  *
  * Verifies that apps/desktop/src-tauri/src/** does NOT directly call or import
- * matrix_desktop_sdk wrapper APIs. The Tauri adapter is a transport layer: it
+ * koushi_sdk wrapper APIs. The Tauri adapter is a transport layer: it
  * routes CoreCommand/CoreEvent through CoreRuntime and must not reach the SDK
  * wrapper directly.
  *
@@ -12,10 +12,10 @@
  *    sends commands, forwards events/snapshots, and does not call Matrix SDK
  *    wrapper APIs directly."
  *
- * What "matrix_desktop_sdk" means in this context: the crate at
- * crates/matrix-desktop-sdk, which is the low-level SDK adapter. The adapter
+ * What "koushi_sdk" means in this context: the crate at
+ * crates/koushi-sdk, which is the low-level SDK adapter. The adapter
  * layer (src-tauri) must not call functions on that crate directly; all SDK
- * operations must go through CoreRuntime/CoreCommand in matrix-desktop-core.
+ * operations must go through CoreRuntime/CoreCommand in koushi-core.
  *
  * Usage:
  *   node scripts/check-tauri-adapter-boundary.mjs
@@ -32,21 +32,21 @@ const repoRoot = join(__dirname, "..");
 const tauriSrcDir = join(repoRoot, "apps", "desktop", "src-tauri", "src");
 
 /**
- * Patterns that indicate a direct matrix_desktop_sdk reference.
+ * Patterns that indicate a direct koushi_sdk reference.
  *
  * We catch all of:
- *   `use matrix_desktop_sdk::...`     — importing SDK types into scope
- *   `matrix_desktop_sdk::...`         — direct qualified path / call
- *   `use matrix_desktop_sdk as ...`   — aliased import
- *   `extern crate matrix_desktop_sdk` — explicit extern crate declaration
- *   `matrix_desktop_sdk` as a bare token in a use/path position
+ *   `use koushi_sdk::...`     — importing SDK types into scope
+ *   `koushi_sdk::...`         — direct qualified path / call
+ *   `use koushi_sdk as ...`   — aliased import
+ *   `extern crate koushi_sdk` — explicit extern crate declaration
+ *   `koushi_sdk` as a bare token in a use/path position
  *
  * A single regex covers all forms by matching the bare identifier token
- * `matrix_desktop_sdk` on any non-comment line.  The comment filter below
+ * `koushi_sdk` on any non-comment line.  The comment filter below
  * excludes lines that are pure `//` comments (e.g., enforcement reminder
- * in commands.rs: "No `matrix_desktop_sdk` calls").
+ * in commands.rs: "No `koushi_sdk` calls").
  */
-const VIOLATION_PATTERN = /\bmatrix_desktop_sdk\b/;
+const VIOLATION_PATTERN = /\bkoushi_sdk\b/;
 
 /**
  * Skip pure line comments (`//...`). Block comments (slash-star ... star-slash)
@@ -96,15 +96,15 @@ for (const filePath of rsFiles) {
 
 if (violations.length === 0) {
   console.log(
-    "check-tauri-adapter-boundary: ok — src-tauri does not call matrix_desktop_sdk directly."
+    "check-tauri-adapter-boundary: ok — src-tauri does not call koushi_sdk directly."
   );
   process.exit(0);
 } else {
   console.error(
-    "check-tauri-adapter-boundary: FAILED — src-tauri must not call matrix_desktop_sdk wrapper APIs directly."
+    "check-tauri-adapter-boundary: FAILED — src-tauri must not call koushi_sdk wrapper APIs directly."
   );
   console.error(
-    "The Tauri adapter routes operations through CoreRuntime/CoreCommand (matrix-desktop-core)."
+    "The Tauri adapter routes operations through CoreRuntime/CoreCommand (koushi-core)."
   );
   console.error("See REPOSITORY_RULES.md 'Architecture And Ownership'.\n");
   for (const v of violations) {

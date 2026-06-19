@@ -31,18 +31,18 @@ React UI (apps/desktop)                     presentation only
         |  typed client calls / snapshots / events
 Tauri adapter (apps/desktop/src-tauri)      transport only
         |  CoreCommand -> / <- CoreEvent, AppStateSnapshot
-matrix-desktop-core                         the ONLY production runtime owner
+koushi-core                         the ONLY production runtime owner
         |  actors own SDK handles, tasks, projection
-matrix-desktop-sdk                         thin matrix-rust-sdk adapter
-matrix-desktop-state                        pure reducer + snapshot DTOs
-matrix-desktop-search / matrix-desktop-key  search verification / credential store
+koushi-sdk                         thin matrix-rust-sdk adapter
+koushi-state                        pure reducer + snapshot DTOs
+koushi-search / koushi-key  search verification / credential store
         |
 matrix-rust-sdk (vendored)                  sync, timeline, send queue, crypto
 ```
 
 Crate responsibilities:
 
-- `matrix-desktop-state` — pure. `AppState`, `AppAction`, `reduce()`,
+- `koushi-state` — pure. `AppState`, `AppAction`, `reduce()`,
   serializable snapshot DTOs. No SDK handles, no Tauri, no async.
   E2EE trust, verification, cross-signing, key-backup, and identity-reset UI
   state is modeled here as guarded, request-correlated state. GUI code renders
@@ -57,14 +57,14 @@ Crate responsibilities:
   commands only; it must not maintain a separate alias cache or write aliases to
   Matrix profile/events.
 - `SettingsState` is serializable Rust product state owned by
-  `matrix-desktop-state` and persisted by `matrix-desktop-core` through a
+  `koushi-state` and persisted by `koushi-core` through a
   non-secret settings store. React may apply settings to presentation, but it
   must not be the source of truth for locale, theme, font/emoji choice, or
   composer send shortcut semantics. Locale/display profile resolution is also
   Rust-owned; GUI code consumes the resolved profile and catalog selector
   defined in `docs/architecture/i18n.md` rather than parsing raw language tags.
   Font/emoji display profile resolution is likewise Rust-owned:
-  `matrix-desktop-state` resolves `TypographyDisplayProfile` from
+  `koushi-state` resolves `TypographyDisplayProfile` from
   `SettingsValues.typography` and the platform profile, and the frontend may
   only apply the resulting font, emoji, and asset-status tokens to root
   attributes/CSS. Inter and Twemoji COLR are bundled-preferred choices with
@@ -73,7 +73,7 @@ Crate responsibilities:
   `SettingsValues.display`; React may map the snapshot value to presentation
   CSS but must not keep an independent display-policy store.
   Composer key handling uses the pure Rust-owned resolver in
-  `matrix-desktop-state`; GUI code supplies typed key facts and
+  `koushi-state`; GUI code supplies typed key facts and
   renders/dispatches the resolved action. Because the resolver may cross an
   async transport boundary, GUI code captures key facts and textarea selection
   synchronously, prevents default only for resolver-owned keys, and applies
@@ -107,7 +107,7 @@ Crate responsibilities:
   dispatches typed commands; it does not decide credential health, notification
   eligibility, CJK collation/normalization, IME send-vs-commit behavior, or
   whether key-backup restore is complete.
-- `matrix-desktop-sdk` — low-level SDK adapter (login, restore, recovery,
+- `koushi-sdk` — low-level SDK adapter (login, restore, recovery,
   sync, room, timeline, search primitives). No app state, no QA orchestration.
   E2EE key-backup restore wrappers consume recovery secrets internally and
   return private-data-free restore summaries whose scope is explicitly
@@ -117,18 +117,18 @@ Crate responsibilities:
   public SDK APIs. Product state, QA evidence, and UI copy must not claim
   exhaustive backup-wide restore until a public SDK API or reviewed vendored
   patch proves that broader scope.
-- `matrix-desktop-core` — actor lifecycle, command routing, event emission,
+- `koushi-core` — actor lifecycle, command routing, event emission,
   SDK session handles, background tasks, AppState projection, headless QA
   binaries. Production Matrix behavior lives here and nowhere else. Scheduled
   send uses this layer for MSC4140 capability detection and SDK/Ruma delayed
   event requests, and for the local fallback timer that routes due Local-handle
   items back through the normal outbound send queue; the GUI never owns
   delayed-send timers or Matrix delayed-event API calls.
-- `matrix-desktop-backend` — fixture/demo data only. Never on a production
+- `koushi-backend` — fixture/demo data only. Never on a production
   Matrix path.
-- `matrix-desktop-key` — OS credential store, key derivation (HKDF from the
+- `koushi-key` — OS credential store, key derivation (HKDF from the
   local unlock secret), zeroizing secret wrappers.
-- `matrix-desktop-search` — candidate verification, document store, index
+- `koushi-search` — candidate verification, document store, index
   maintenance queue.
 - `apps/desktop/src-tauri` — transport adapter. Holds a `CoreRuntime`, sends
   commands, forwards events/snapshots. No direct SDK wrapper calls.
@@ -164,7 +164,7 @@ rewriting the runtime.
    `postMessage` / wasm-bindgen bridge must be addable as another without
    touching core types.
 2. **Core logic uses executor abstractions, not tokio directly.** Task spawn,
-   timers, and timeouts in `matrix-desktop-core` go through the SDK's
+   timers, and timeouts in `koushi-core` go through the SDK's
    executor layer (`matrix_sdk_common::executor`) or a thin core-owned
    wrapper. No `tokio::spawn`/`tokio::time` calls scattered through actor
    logic; no thread-blocking (`block_on`, blocking locks held across await)
@@ -178,9 +178,9 @@ rewriting the runtime.
    platform-conditional code. The fail-closed local-encryption rule still
    applies on every platform: a weaker browser at-rest story must be an
    explicit, surfaced property, never a silent fallback.
-4. **Pure crates stay wasm-clean.** `matrix-desktop-state` and
-   `matrix-desktop-search` must compile for `wasm32-unknown-unknown`; a CI
-   check target should enforce this once wired. `matrix-desktop-core`'s
+4. **Pure crates stay wasm-clean.** `koushi-state` and
+   `koushi-search` must compile for `wasm32-unknown-unknown`; a CI
+   check target should enforce this once wired. `koushi-core`'s
    portability is enforced structurally by rules 1–3 until a web spike makes
    a wasm CI check for it practical.
 5. **Known open items for a web target** (recorded, not designed): ngram
@@ -190,7 +190,7 @@ rewriting the runtime.
 
 ## Runtime Model
 
-An in-process actor system in `matrix-desktop-core`:
+An in-process actor system in `koushi-core`:
 
 - `AppActor` — command entry point, routing, active account, ordered event
   broadcast and snapshots. It also owns the account-wide Activity projection
@@ -565,7 +565,7 @@ only the active composer into the snapshot; React may render and dispatch typed
 draft changes, but it must not own cross-room or cross-thread draft survival.
 The backing draft store is not sent to the webview because unsent message
 content for non-visible rooms should not be exposed as snapshot data.
-`matrix-desktop-core` persists that store as account-scoped encrypted local data
+`koushi-core` persists that store as account-scoped encrypted local data
 derived from the local unlock secret through a dedicated HKDF domain. Persistence
 is debounced and size-bounded; empty stores remove the encrypted draft file.
 Tauri exposes only typed draft commands (`set_composer_draft`,
@@ -700,7 +700,7 @@ architectural invariants:
   state before routing to `AccountActor`, so GUI work observes Rust-owned
   progress rather than inventing pending/settle semantics. SDK-backed actor
   slices wire cross-signing bootstrap, key-backup enable/restore, identity
-  reset, and outgoing device verification through `matrix-desktop-sdk`
+  reset, and outgoing device verification through `koushi-sdk`
   private-data-free wrappers. Identity reset and verification continuation
   handles are held only by `AccountActor`; SDK request/SAS streams settle the
   reducer with typed actions and expose only private-data-free DTOs such as SAS
@@ -757,7 +757,7 @@ primary correctness gate.
    option.
 
 **Implementation workflow: headless-first, local-server-first.** New Matrix
-behavior lands in `matrix-desktop-core`, is exercised through
+behavior lands in `koushi-core`, is exercised through
 `CoreCommand`/`CoreEvent` against disposable local Conduit/Tuwunel homeservers
 (and real homeserver QA where that gate applies), and only then is wired through
 Tauri into React. Matrix behavior must not be introduced first in GUI or Tauri

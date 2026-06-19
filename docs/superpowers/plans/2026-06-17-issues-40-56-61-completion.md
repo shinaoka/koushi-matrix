@@ -197,9 +197,9 @@ Add sections:
 ### Task 7: Enrich attachment document model
 
 **Files:**
-- Modify: `crates/matrix-desktop-search/src/document.rs`
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-core/src/search.rs`
+- Modify: `crates/koushi-search/src/document.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-core/src/search.rs`
 
 Add to `AttachmentDocument`:
 
@@ -215,13 +215,13 @@ pub is_edited: bool,
 Add corresponding fields to `AttachmentResult` in `state.rs` and projection in `search.rs`.
 
 - [ ] Step 1: Extend document/result types
-- [ ] Step 2: Run `cargo test -p matrix-desktop-search --test attachment_query`
+- [ ] Step 2: Run `cargo test -p koushi-search --test attachment_query`
 - [ ] Step 3: Commit
 
 ### Task 8: Feed metadata from timeline indexer
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
 
 In the timeline diff handler that builds `SearchIndexMessage::Upsert`, include:
 
@@ -236,15 +236,15 @@ is_edited: item.is_edited,
 
 - [ ] Step 1: Map fields into SearchIndexMessage
 - [ ] Step 2: Add/update timeline tests
-- [ ] Step 3: Run `cargo test -p matrix-desktop-core --lib timeline`
+- [ ] Step 3: Run `cargo test -p koushi-core --lib timeline`
 - [ ] Step 4: Commit
 
 ### Task 9: Wire files-view command boundary
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-core/src/search.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/search.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 
@@ -274,7 +274,7 @@ Add Tauri command builders following existing patterns.
 - Modify: `apps/desktop/src/backend/browserFakeApi.ts`
 - Modify: `apps/desktop/src/test/tauriIpcMock.ts`
 - Modify: `apps/desktop/src/test/appHarnessMain.tsx`
-- Modify: `crates/matrix-desktop-state/tests/attachment_files_view_state.rs`
+- Modify: `crates/koushi-state/tests/attachment_files_view_state.rs`
 
 Add `threadRoot`, `encrypted`, `encryptionVersion`, `width`, `height`, `isEdited` to TypeScript `AttachmentResult`. Update browser fake, harness, and IPC mock snapshots. Update Tauri DTO tests if shape changes.
 
@@ -328,10 +328,10 @@ Add browser-headless scenario: open room Files → list reflects Rust projection
 ### Task 13: Threads-list state machine
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-state/src/effect.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-state/src/effect.rs`
 
 Add:
 
@@ -370,16 +370,16 @@ Reducer rules:
 
 - [ ] Step 1: Add state/actions/effects
 - [ ] Step 2: Implement reducer transitions
-- [ ] Step 3: Add `crates/matrix-desktop-state/tests/threads_list_state.rs`
+- [ ] Step 3: Add `crates/koushi-state/tests/threads_list_state.rs`
 - [ ] Step 4: Run state tests
 - [ ] Step 5: Commit
 
 ### Task 14: ThreadsListActor SDK wrapper
 
 **Files:**
-- Create: `crates/matrix-desktop-core/src/threads_list.rs`
-- Modify: `crates/matrix-desktop-core/src/account.rs`
-- Modify: `crates/matrix-desktop-core/src/lib.rs`
+- Create: `crates/koushi-core/src/threads_list.rs`
+- Modify: `crates/koushi-core/src/account.rs`
+- Modify: `crates/koushi-core/src/lib.rs`
 
 Create `ThreadsListActor` that:
 - Gets `Room` via `session.client().get_room(...)`.
@@ -399,9 +399,9 @@ Projection to `ThreadsListItem` reuses existing display-label resolution.
 ### Task 15: Core commands/events and Tauri DTOs
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
 - Modify: `apps/desktop/src-tauri/src/dto.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
@@ -467,7 +467,7 @@ Run:
 
 ```bash
 cargo fmt --check
-cargo test -p matrix-desktop-state -p matrix-desktop-core -p matrix-desktop-sdk -p matrix-desktop-key -p matrix-desktop-search
+cargo test -p koushi-state -p koushi-core -p koushi-sdk -p koushi-key -p koushi-search
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test

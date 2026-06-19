@@ -17,10 +17,10 @@ failing test before each production change.
 
 Files to inspect first:
 
-- `crates/matrix-desktop-state/src/lib.rs`
-- `crates/matrix-desktop-state/tests/navigation_state.rs`
-- `crates/matrix-desktop-sdk/src/lib.rs`
-- `crates/matrix-desktop-sdk/tests/password_login.rs`
+- `crates/koushi-state/src/lib.rs`
+- `crates/koushi-state/tests/navigation_state.rs`
+- `crates/koushi-sdk/src/lib.rs`
+- `crates/koushi-sdk/tests/password_login.rs`
 - `apps/desktop/src-tauri/src/commands.rs`
 
 Steps:
@@ -29,15 +29,15 @@ Steps:
    an equivalent serializable DTO that preserves the canon payload limits.
 2. Map SDK unread counts (`notification_count`, `highlight_count`, and existing
    unread message fallback) into that DTO.
-3. Keep `matrix-desktop-state` pure and wasm-clean.
+3. Keep `koushi-state` pure and wasm-clean.
 4. Add reducer/serialization tests that prove mention/DM/message precedence can
    be derived without message bodies or raw IDs in the attention payload.
 
 Verification:
 
-- `cargo test -p matrix-desktop-state`
-- `cargo test -p matrix-desktop-sdk`
-- `cargo check --target wasm32-unknown-unknown -p matrix-desktop-state`
+- `cargo test -p koushi-state`
+- `cargo test -p koushi-sdk`
+- `cargo check --target wasm32-unknown-unknown -p koushi-state`
 
 ## Task B — Frontend Attention Adapter
 
@@ -137,10 +137,10 @@ Verification:
 Reviewer-run gates:
 
 ```bash
-cargo test -p matrix-desktop-core --lib
-cargo test -p matrix-desktop-sdk -p matrix-desktop-state -p matrix-desktop-search -p matrix-desktop-key
+cargo test -p koushi-core --lib
+cargo test -p koushi-sdk -p koushi-state -p koushi-search -p koushi-key
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
+cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search
 npm --prefix apps/desktop run typecheck && npm --prefix apps/desktop run test
 npm --prefix apps/desktop run test:ui-headless
 npm --prefix apps/desktop run test:ipc-contract

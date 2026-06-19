@@ -1,0 +1,45 @@
+[package]
+name = "koushi-sdk"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+smoke = ["rpassword"]
+
+[[bin]]
+name = "password-login-smoke"
+path = "src/bin/password-login-smoke.rs"
+required-features = ["smoke"]
+
+[[bin]]
+name = "headless-local-qa"
+path = "src/bin/headless-local-qa.rs"
+required-features = ["smoke"]
+
+[dependencies]
+eyeball-im = "0.8"
+futures-util = "0.3"
+koushi-state = { path = "../koushi-state" }
+matrix-sdk = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk", default-features = false, features = ["e2e-encryption", "experimental-search", "sqlite"] }
+matrix-sdk-ui = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-ui", default-features = false }
+mime = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+rpassword = { version = "7", optional = true }
+ruma = "0.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+url = "2"
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+# cargo-machete ignore list: ruma types are accessed through matrix_sdk::ruma
+# re-exports, so cargo-machete reports the direct ruma dep as unused.
+# The explicit dep pins the ruma version to avoid accidental version drift with
+# the vendored SDK's internal ruma dependency.
+[package.metadata.cargo-machete]
+ignored = ["ruma"]

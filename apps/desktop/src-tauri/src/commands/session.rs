@@ -70,13 +70,13 @@ pub async fn list_saved_sessions(
             .await
             .map_err(|_| "saved sessions could not be loaded".to_owned())?;
         match event {
-            Ok(matrix_desktop_core::CoreEvent::Account(
-                matrix_desktop_core::AccountEvent::SavedSessionsListed {
+            Ok(koushi_core::CoreEvent::Account(
+                koushi_core::AccountEvent::SavedSessionsListed {
                     request_id: ev_id,
                     sessions,
                 },
             )) if ev_id == request_id => return Ok(sessions),
-            Ok(matrix_desktop_core::CoreEvent::OperationFailed {
+            Ok(koushi_core::CoreEvent::OperationFailed {
                 request_id: ev_id, ..
             }) if ev_id == request_id => {
                 return Err("saved sessions could not be loaded".to_owned());

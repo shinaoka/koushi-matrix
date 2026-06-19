@@ -18,16 +18,16 @@ apps/desktop
   Tauri v2 + React shell over the same snapshot DTOs
         |
         v
-crates/matrix-desktop-backend
+crates/koushi-backend
   fake effect runner around reducer/search/key contracts
         |
-        +--> crates/matrix-desktop-sdk
-        +--> crates/matrix-desktop-state
-        +--> crates/matrix-desktop-search
-        +--> crates/matrix-desktop-key
+        +--> crates/koushi-sdk
+        +--> crates/koushi-state
+        +--> crates/koushi-search
+        +--> crates/koushi-key
 ```
 
-`matrix-desktop-backend` executed the same loop the real backend would use in
+`koushi-backend` executed the same loop the real backend would use in
 that foundation stage:
 
 ```text
@@ -42,7 +42,7 @@ homeserver and perform password login through Matrix Rust SDK. That was the
 foundation step; current production behavior now lives in `overview.md` and
 uses `CoreCommand` / `CoreEvent`.
 
-`matrix-desktop-sdk` owns Matrix authentication discovery and password login.
+`koushi-sdk` owns Matrix authentication discovery and password login.
 It normalizes homeserver URLs to HTTPS by default, permits plain HTTP only for
 localhost or loopback development servers, builds `GET /_matrix/client/v3/login`,
 parses the response into app DTOs, calls Matrix Rust SDK for password login, and
@@ -70,16 +70,16 @@ points:
    `AppState`, frontend snapshots, debug output, logs, or persisted stores.
 4. Successful login dispatched `AppAction::LoginSucceeded(SessionInfo)` and
    kept the SDK client in memory for the current process.
-5. `matrix-desktop-sdk` could extract a redacted
+5. `koushi-sdk` could extract a redacted
    `PersistableMatrixSession` from the SDK client and restore a fresh SDK client
    from that payload. The serialized JSON contains access/refresh tokens and is
    therefore a secret; it must go only to an approved secure store.
-6. `matrix-desktop-key` had a redacted `StoredMatrixSession` wrapper and
+6. `koushi-key` had a redacted `StoredMatrixSession` wrapper and
    account-name separation for Matrix session JSON in the OS credential store.
    The next persistence step must connect `AppEffect::PersistSession` to that
    store and add a restore pointer/index for finding the last account/device at
    app startup.
-7. `matrix-desktop-key` loaded or created the local unlock secret through the OS
+7. `koushi-key` loaded or created the local unlock secret through the OS
    credential store.
 8. The SDK store key and search index key were derived from that local unlock
    secret.
@@ -155,8 +155,8 @@ Before typing live credentials into the native shell, the SDK password-login pat
 can be smoke-tested from a terminal without storing secrets:
 
 ```bash
-cargo run -p matrix-desktop-sdk --features smoke --bin password-login-smoke
-cargo run -p matrix-desktop-sdk --features smoke --bin password-login-smoke -- --real-account-qa
+cargo run -p koushi-sdk --features smoke --bin password-login-smoke
+cargo run -p koushi-sdk --features smoke --bin password-login-smoke -- --real-account-qa
 ```
 
 The smoke command prompts interactively, hides the password, prints no access
@@ -173,10 +173,10 @@ snapshot DTOs.
 
 ## Search Boundary
 
-`matrix-desktop-backend` passes broad candidate events into `matrix-desktop-search`. This mirrors the intended `matrix-sdk-search` contract:
+`koushi-backend` passes broad candidate events into `koushi-search`. This mirrors the intended `matrix-sdk-search` contract:
 
 - the SDK search layer owns encrypted Tantivy indexes and ngram candidate retrieval;
-- `matrix-desktop-search` owns exact verification against the resolved visible event body or attachment filename;
+- `koushi-search` owns exact verification against the resolved visible event body or attachment filename;
 - edits are resolved before highlighting;
 - redacted events are removed before verification;
 - false positives are dropped when no exact span exists.

@@ -20,17 +20,17 @@ use tauri::{
 
 use serde::{Deserialize, Serialize};
 
-// matrix-desktop-core: the production runtime host. All session, credential,
+// koushi-core: the production runtime host. All session, credential,
 // and Matrix operations go through CoreCommand/CoreEvent — the adapter never
 // touches the credential store or the SDK directly.
-use matrix_desktop_core::{
+use koushi_core::{
     AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, TimelineEvent,
     event::AppStateSnapshot,
 };
 
-// matrix-desktop-backend: fixture/demo preview only; never on a production
+// koushi-backend: fixture/demo preview only; never on a production
 // Matrix path (overview.md: "fixture/demo data only").
-use matrix_desktop_backend::{
+use koushi_backend::{
     E2eeRecoveryMode, FakeDesktopBackend, FakeDesktopBackendConfig, LoginDiscoveryMode, LoginMode,
     SyncMode,
 };
@@ -637,18 +637,18 @@ fn forwarded_webview_events_for_core_event(
     forwarded
 }
 
-fn diffs_net_count_change(diffs: &[matrix_desktop_core::TimelineDiff]) -> i64 {
+fn diffs_net_count_change(diffs: &[koushi_core::TimelineDiff]) -> i64 {
     diffs
         .iter()
         .map(|diff| match diff {
-            matrix_desktop_core::TimelineDiff::PushFront { .. }
-            | matrix_desktop_core::TimelineDiff::PushBack { .. }
-            | matrix_desktop_core::TimelineDiff::Insert { .. } => 1_i64,
-            matrix_desktop_core::TimelineDiff::Remove { .. } => -1_i64,
-            matrix_desktop_core::TimelineDiff::Truncate { .. }
-            | matrix_desktop_core::TimelineDiff::Clear
-            | matrix_desktop_core::TimelineDiff::Reset { .. }
-            | matrix_desktop_core::TimelineDiff::Set { .. } => 0_i64,
+            koushi_core::TimelineDiff::PushFront { .. }
+            | koushi_core::TimelineDiff::PushBack { .. }
+            | koushi_core::TimelineDiff::Insert { .. } => 1_i64,
+            koushi_core::TimelineDiff::Remove { .. } => -1_i64,
+            koushi_core::TimelineDiff::Truncate { .. }
+            | koushi_core::TimelineDiff::Clear
+            | koushi_core::TimelineDiff::Reset { .. }
+            | koushi_core::TimelineDiff::Set { .. } => 0_i64,
         })
         .sum()
 }
@@ -1081,7 +1081,7 @@ mod tests {
 
     #[test]
     fn timeline_items_updated_forwarding_emits_core_event_name_and_all_diffs() {
-        use matrix_desktop_core::{
+        use koushi_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineEvent, TimelineKey,
             ids::{TimelineBatchId, TimelineGeneration},
         };
@@ -1117,8 +1117,8 @@ mod tests {
 
     #[test]
     fn state_changed_forwarding_emits_state_event_only() {
-        use matrix_desktop_core::CoreEvent;
-        use matrix_desktop_state::AppState;
+        use koushi_core::CoreEvent;
+        use koushi_state::AppState;
         use serde_json::Value;
 
         let timeline_items_count = AtomicUsize::new(17);
@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn lag_resync_forwarding_emits_state_then_resync_marker() {
-        use matrix_desktop_state::AppState;
+        use koushi_state::AppState;
         use serde_json::json;
 
         let forwarded = forwarded_webview_events_for_lag_resync(&AppState::default());
@@ -1323,7 +1323,7 @@ mod tests {
     /// coreEvents.ts and coreEvents.generated.json must change with it.
     #[test]
     fn core_event_wire_format_matches_checked_in_contract_artifact() {
-        use matrix_desktop_core::{
+        use koushi_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey,
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LinkPreview,
@@ -1340,7 +1340,7 @@ mod tests {
             failure::{CoreFailure, TimelineFailureKind},
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
-        use matrix_desktop_state::{
+        use koushi_state::{
             ActivityRow, ActivityStream, ActivityTab, AttachmentKind, AttachmentResult,
             AvatarThumbnailState, DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType,
             IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt,
@@ -1941,7 +1941,7 @@ mod tests {
         // Account events are externally tagged under the Account envelope
         let listed = serialize_core_event(&CoreEvent::Account(AccountEvent::SavedSessionsListed {
             request_id,
-            sessions: vec![matrix_desktop_state::SessionInfo {
+            sessions: vec![koushi_state::SessionInfo {
                 homeserver: "https://example.test".to_owned(),
                 user_id: "@u:example.test".to_owned(),
                 device_id: "DEV".to_owned(),
@@ -1963,7 +1963,7 @@ mod tests {
         let account_report_completed =
             serialize_core_event(&CoreEvent::Account(AccountEvent::ReportCompleted {
                 request_id,
-                kind: matrix_desktop_core::event::ReportKind::User,
+                kind: koushi_core::event::ReportKind::User,
             }))
             .expect("serialize account report completed event");
 
@@ -2032,7 +2032,7 @@ mod tests {
         let room_report_completed =
             serialize_core_event(&CoreEvent::Room(RoomEvent::ReportCompleted {
                 request_id,
-                kind: matrix_desktop_core::event::ReportKind::Event,
+                kind: koushi_core::event::ReportKind::Event,
             }))
             .expect("serialize room report completed event");
         let sync_mode_changed = serialize_core_event(&CoreEvent::Sync(SyncEvent::ModeChanged {
@@ -2075,7 +2075,7 @@ mod tests {
                 can_ban: true,
                 can_unban: true,
             },
-            members: vec![matrix_desktop_state::RoomMemberSummary {
+            members: vec![koushi_state::RoomMemberSummary {
                 user_id: "@member:example.test".to_owned(),
                 display_name: Some("Synthetic Member".to_owned()),
                 display_label: "Synthetic Member".to_owned(),

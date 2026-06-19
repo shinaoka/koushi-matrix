@@ -4,7 +4,7 @@
 
 **Goal:** Complete the post-headless cleanup items deferred from Phase 9 before starting Phase 10 GUI design work.
 
-**Architecture:** Keep behavior owned by `matrix-desktop-core` and low-level SDK calls in the renamed `matrix-desktop-sdk` adapter. Preserve the frontend import surface while making IPC drift fail locally through a generated contract artifact.
+**Architecture:** Keep behavior owned by `koushi-core` and low-level SDK calls in the renamed `koushi-sdk` adapter. Preserve the frontend import surface while making IPC drift fail locally through a generated contract artifact.
 
 **Tech Stack:** Rust 2024, Cargo workspace, Tauri v2, React/TypeScript, serde JSON contract fixtures.
 
@@ -15,27 +15,27 @@ Status: completed.
 ## Task 1: SDK Adapter Rename
 
 **Files:**
-- Move: `crates/matrix-desktop-auth/` -> `crates/matrix-desktop-sdk/`
+- Move: `crates/matrix-desktop-auth/` -> `crates/koushi-sdk/`
 - Modify: `Cargo.toml`
-- Modify: `crates/matrix-desktop-core/Cargo.toml`
-- Modify: `crates/matrix-desktop-backend/Cargo.toml`
+- Modify: `crates/koushi-core/Cargo.toml`
+- Modify: `crates/koushi-backend/Cargo.toml`
 - Modify: `apps/desktop/src-tauri/Cargo.toml`
-- Modify: Rust imports from `matrix_desktop_auth` to `matrix_desktop_sdk`
+- Modify: Rust imports from `matrix_desktop_auth` to `koushi_sdk`
 - Modify: docs and scripts that refer to package `matrix-desktop-auth`
 
 - [x] Run a search for `matrix-desktop-auth` and `matrix_desktop_auth`.
 - [x] Move the crate directory with `git mv`.
-- [x] Update package names, dependency names, imports, scripts, and docs to `matrix-desktop-sdk` / `matrix_desktop_sdk`.
-- [x] Run `cargo check -p matrix-desktop-core` and `cargo test -p matrix-desktop-sdk`.
+- [x] Update package names, dependency names, imports, scripts, and docs to `koushi-sdk` / `koushi_sdk`.
+- [x] Run `cargo check -p koushi-core` and `cargo test -p koushi-sdk`.
 
 ## Task 2: Room Lifecycle Commands
 
 **Files:**
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/room.rs`
-- Modify: `crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/room.rs`
+- Modify: `crates/koushi-core/src/bin/real-homeserver-qa.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs` if frontend commands are needed
 
 - [x] Write failing core tests proving `LeaveRoom`/`ForgetRoom` without a session emit `SessionRequired`.
@@ -71,11 +71,11 @@ Status: completed.
 
 ## Verification
 
-- [x] `cargo check -p matrix-desktop-core`
+- [x] `cargo check -p koushi-core`
 - [x] `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`
-- [x] `cargo test -p matrix-desktop-sdk`
-- [x] `cargo test -p matrix-desktop-core --lib`
-- [x] `cargo test -p matrix-desktop-core --features qa-bin,test-hooks --bin real-homeserver-qa -- --nocapture`
+- [x] `cargo test -p koushi-sdk`
+- [x] `cargo test -p koushi-core --lib`
+- [x] `cargo test -p koushi-core --features qa-bin,test-hooks --bin real-homeserver-qa -- --nocapture`
 - [x] `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`
 - [x] `npm --prefix apps/desktop run typecheck`
 - [x] `npm --prefix apps/desktop run test`

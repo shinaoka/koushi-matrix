@@ -10,10 +10,10 @@ as Rust-owned state-machine data before any GUI affordance owns the behavior.
 
 ## Scope
 
-- `matrix-desktop-state` owns `AppState.live_signals` and reducer actions for
+- `koushi-state` owns `AppState.live_signals` and reducer actions for
   full room signal replacement, partial receipt merge, fully-read marker update,
   typing user replacement, and presence update.
-- `matrix-desktop-core` owns typed `CoreCommand` and `CoreEvent` surfaces for
+- `koushi-core` owns typed `CoreCommand` and `CoreEvent` surfaces for
   read receipt send, fully-read marker send, typing notice, and presence set.
 - `TimelineActor` relays SDK receipt, fully-read, and typing signals into
   reducer actions. `AccountActor` owns the Phase A presence command/event/state
@@ -34,9 +34,9 @@ as Rust-owned state-machine data before any GUI affordance owns the behavior.
 ## Phase A Exit Gates
 
 ```bash
-cargo test -p matrix-desktop-state live_signal -- --nocapture
-cargo test -p matrix-desktop-core live_signal -- --nocapture
-cargo test -p matrix-desktop-core --features qa-bin --bin headless-core-qa -- --nocapture
+cargo test -p koushi-state live_signal -- --nocapture
+cargo test -p koushi-core live_signal -- --nocapture
+cargo test -p koushi-core --features qa-bin --bin headless-core-qa -- --nocapture
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run qa:secret-scan

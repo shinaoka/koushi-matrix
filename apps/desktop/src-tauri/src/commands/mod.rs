@@ -5,7 +5,7 @@
 //! diffs) flow back to the webview as Tauri events — not as command return
 //! values.
 //!
-//! No Matrix semantics live here. No SDK types. No `matrix_desktop_sdk` calls.
+//! No Matrix semantics live here. No SDK types. No `koushi_sdk` calls.
 //! (Secret-bearing QA helpers remain behind `#[cfg(any(debug_assertions, test))]`.)
 
 use std::{
@@ -13,7 +13,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use matrix_desktop_core::{
+use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
     ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
     ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
@@ -22,7 +22,7 @@ use matrix_desktop_core::{
     TimelineCommand, TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind,
     UploadMediaRequest, UploadMediaThumbnail,
 };
-use matrix_desktop_state::{
+use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
     ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
     DirectoryQuery, FilesViewScope, FocusedContextState, IdentityResetAuthRequest,
@@ -83,7 +83,7 @@ pub(crate) async fn submit_core_command(
 }
 
 /// Allocate a `RequestId` from the command-dispatch connection.
-async fn next_request_id(state: &CoreRuntimeState) -> matrix_desktop_core::RequestId {
+async fn next_request_id(state: &CoreRuntimeState) -> koushi_core::RequestId {
     state.connection.lock().await.next_request_id()
 }
 
@@ -119,7 +119,7 @@ async fn update_qa_window_title_from_state(app: &AppHandle, state: &CoreRuntimeS
 }
 
 pub(crate) fn qa_window_title_string(
-    snapshot: &matrix_desktop_state::AppState,
+    snapshot: &koushi_state::AppState,
     timeline_items: usize,
 ) -> String {
     [
@@ -139,8 +139,8 @@ pub(crate) fn qa_window_title_string(
     .join(" ")
 }
 
-fn qa_session_label(session: &matrix_desktop_state::SessionState) -> &'static str {
-    use matrix_desktop_state::SessionState;
+fn qa_session_label(session: &koushi_state::SessionState) -> &'static str {
+    use koushi_state::SessionState;
     match session {
         SessionState::SignedOut => "signedOut",
         SessionState::Restoring => "restoring",
@@ -154,13 +154,13 @@ fn qa_session_label(session: &matrix_desktop_state::SessionState) -> &'static st
     }
 }
 
-fn qa_sync_label(sync: &matrix_desktop_state::SyncState) -> &'static str {
+fn qa_sync_label(sync: &koushi_state::SyncState) -> &'static str {
     match sync {
-        matrix_desktop_state::SyncState::Stopped => "stopped",
-        matrix_desktop_state::SyncState::Starting => "starting",
-        matrix_desktop_state::SyncState::Running => "running",
-        matrix_desktop_state::SyncState::Failed { .. } => "failed",
-        matrix_desktop_state::SyncState::Reconnecting { .. } => "reconnecting",
+        koushi_state::SyncState::Stopped => "stopped",
+        koushi_state::SyncState::Starting => "starting",
+        koushi_state::SyncState::Running => "running",
+        koushi_state::SyncState::Failed { .. } => "failed",
+        koushi_state::SyncState::Reconnecting { .. } => "reconnecting",
     }
 }
 
@@ -255,8 +255,8 @@ async fn wait_for_auth_changed(
             Ok(CoreEvent::StateChanged(snapshot))
                 if matches!(
                     snapshot.auth,
-                    matrix_desktop_state::AuthDiscoveryState::Ready { .. }
-                        | matrix_desktop_state::AuthDiscoveryState::Failed { .. }
+                    koushi_state::AuthDiscoveryState::Ready { .. }
+                        | koushi_state::AuthDiscoveryState::Failed { .. }
                 ) =>
             {
                 return Ok(());
@@ -267,14 +267,14 @@ async fn wait_for_auth_changed(
     }
 }
 
-fn snapshot_has_ready_session(snapshot: &matrix_desktop_state::AppState) -> bool {
+fn snapshot_has_ready_session(snapshot: &koushi_state::AppState) -> bool {
     matches!(
         snapshot.session,
-        matrix_desktop_state::SessionState::Ready(_)
+        koushi_state::SessionState::Ready(_)
     )
 }
 
-fn snapshot_has_focused_context(snapshot: &matrix_desktop_state::AppState, room_id: &str) -> bool {
+fn snapshot_has_focused_context(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
     match &snapshot.focused_context {
         FocusedContextState::Opening {
             room_id: focused_room_id,
@@ -361,14 +361,14 @@ async fn wait_for_selected_room(
     }
 }
 
-fn snapshot_has_active_room(snapshot: &matrix_desktop_state::AppState, room_id: &str) -> bool {
+fn snapshot_has_active_room(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
     snapshot.navigation.active_room_id.as_deref() == Some(room_id)
 }
 
 async fn wait_for_upload_staging_snapshot(
     event_conn: &mut CoreConnection,
     request_id: RequestId,
-    predicate: impl Fn(&matrix_desktop_state::AppState) -> bool,
+    predicate: impl Fn(&koushi_state::AppState) -> bool,
     description: &str,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + UPLOAD_STAGING_EVENT_TIMEOUT;
@@ -655,7 +655,7 @@ async fn wait_for_room_joined(
 // ---- Helpers ----
 
 pub(crate) fn build_submit_login_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     login_request: LoginRequest,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::LoginPassword {
@@ -665,7 +665,7 @@ pub(crate) fn build_submit_login_command(
 }
 
 pub(crate) fn build_discover_login_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     homeserver: String,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::DiscoverLogin {
@@ -675,7 +675,7 @@ pub(crate) fn build_discover_login_command(
 }
 
 pub(crate) fn build_switch_account_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     user_id: String,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::SwitchAccount {
@@ -685,7 +685,7 @@ pub(crate) fn build_switch_account_command(
 }
 
 pub(crate) fn build_submit_recovery_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     secret: AuthSecret,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::SubmitRecovery {
@@ -694,25 +694,25 @@ pub(crate) fn build_submit_recovery_command(
     })
 }
 
-pub(crate) fn build_logout_command(request_id: matrix_desktop_core::RequestId) -> CoreCommand {
+pub(crate) fn build_logout_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::Account(AccountCommand::Logout { request_id })
 }
 
 pub(crate) fn build_restart_sync_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::Sync(SyncCommand::Restart { request_id })
 }
 
 pub(crate) fn build_update_settings_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     patch: SettingsPatch,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::UpdateSettings { request_id, patch })
 }
 
 pub(crate) fn build_set_room_url_preview_override_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     enabled: bool,
 ) -> CoreCommand {
@@ -724,38 +724,38 @@ pub(crate) fn build_set_room_url_preview_override_command(
 }
 
 pub(crate) fn build_probe_local_encryption_health_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::ProbeLocalEncryptionHealth { request_id })
 }
 
 pub(crate) fn build_reset_local_data_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::ResetLocalData { request_id })
 }
 
 pub(crate) fn build_open_activity_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::OpenActivity { request_id })
 }
 
 pub(crate) fn build_close_activity_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::CloseActivity { request_id })
 }
 
 pub(crate) fn build_set_activity_tab_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     tab: ActivityTab,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::SetActivityTab { request_id, tab })
 }
 
 pub(crate) fn build_paginate_activity_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     tab: ActivityTab,
     cursor: Option<String>,
 ) -> CoreCommand {
@@ -767,14 +767,14 @@ pub(crate) fn build_paginate_activity_command(
 }
 
 pub(crate) fn build_mark_activity_read_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     target: ActivityMarkReadTarget,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::MarkActivityRead { request_id, target })
 }
 
 pub(crate) fn build_open_files_view_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     scope: FilesViewScope,
     filter: AttachmentFilter,
     sort: AttachmentSort,
@@ -788,13 +788,13 @@ pub(crate) fn build_open_files_view_command(
 }
 
 pub(crate) fn build_close_files_view_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::CloseFilesView { request_id })
 }
 
 pub(crate) fn build_open_threads_list_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::OpenThreadsList {
@@ -804,13 +804,13 @@ pub(crate) fn build_open_threads_list_command(
 }
 
 pub(crate) fn build_close_threads_list_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::CloseThreadsList { request_id })
 }
 
 pub(crate) fn build_paginate_threads_list_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::PaginateThreadsList {
@@ -820,14 +820,14 @@ pub(crate) fn build_paginate_threads_list_command(
 }
 
 pub(crate) fn build_bootstrap_cross_signing_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     auth: Option<AuthSecret>,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::BootstrapCrossSigning { request_id, auth })
 }
 
 pub(crate) fn build_enable_key_backup_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::EnableKeyBackup {
         request_id,
@@ -836,7 +836,7 @@ pub(crate) fn build_enable_key_backup_command(
 }
 
 pub(crate) fn build_bootstrap_secure_backup_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     passphrase: Option<AuthSecret>,
     recovery_key_destination_path: Option<String>,
 ) -> CoreCommand {
@@ -850,7 +850,7 @@ pub(crate) fn build_bootstrap_secure_backup_command(
 }
 
 pub(crate) fn build_change_secure_backup_passphrase_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     old_secret: AuthSecret,
     new_passphrase: AuthSecret,
     recovery_key_destination_path: Option<String>,
@@ -866,7 +866,7 @@ pub(crate) fn build_change_secure_backup_passphrase_command(
 }
 
 pub(crate) fn build_export_room_keys_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     destination_path: String,
     passphrase: AuthSecret,
 ) -> CoreCommand {
@@ -880,7 +880,7 @@ pub(crate) fn build_export_room_keys_command(
 }
 
 pub(crate) fn build_import_room_keys_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     source_path: String,
     passphrase: AuthSecret,
 ) -> CoreCommand {
@@ -894,7 +894,7 @@ pub(crate) fn build_import_room_keys_command(
 }
 
 pub(crate) fn build_accept_verification_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     flow_id: u64,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::AcceptVerification {
@@ -904,7 +904,7 @@ pub(crate) fn build_accept_verification_command(
 }
 
 pub(crate) fn build_confirm_sas_verification_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     flow_id: u64,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::ConfirmSasVerification {
@@ -914,7 +914,7 @@ pub(crate) fn build_confirm_sas_verification_command(
 }
 
 pub(crate) fn build_cancel_verification_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     flow_id: u64,
     reason: VerificationCancelReason,
 ) -> CoreCommand {
@@ -926,13 +926,13 @@ pub(crate) fn build_cancel_verification_command(
 }
 
 pub(crate) fn build_reset_identity_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::ResetIdentity { request_id })
 }
 
 pub(crate) fn build_submit_identity_reset_password_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     flow_id: u64,
     password: AuthSecret,
 ) -> CoreCommand {
@@ -944,7 +944,7 @@ pub(crate) fn build_submit_identity_reset_password_command(
 }
 
 pub(crate) fn build_submit_identity_reset_oauth_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     flow_id: u64,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
@@ -955,13 +955,13 @@ pub(crate) fn build_submit_identity_reset_oauth_command(
 }
 
 pub(crate) fn build_load_account_management_capabilities_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id })
 }
 
 pub(crate) fn build_change_password_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     new_password: AuthSecret,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::ChangePassword {
@@ -971,7 +971,7 @@ pub(crate) fn build_change_password_command(
 }
 
 pub(crate) fn build_deactivate_account_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     erase_data: bool,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::DeactivateAccount {
@@ -981,7 +981,7 @@ pub(crate) fn build_deactivate_account_command(
 }
 
 pub(crate) fn build_submit_account_management_uia_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     flow_id: u64,
     password: AuthSecret,
 ) -> CoreCommand {
@@ -992,12 +992,12 @@ pub(crate) fn build_submit_account_management_uia_command(
     })
 }
 
-pub(crate) fn build_start_sync_command(request_id: matrix_desktop_core::RequestId) -> CoreCommand {
+pub(crate) fn build_start_sync_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::Sync(SyncCommand::Start { request_id })
 }
 
 pub(crate) fn build_select_space_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     space_id: Option<String>,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::SelectSpace {
@@ -1007,7 +1007,7 @@ pub(crate) fn build_select_space_command(
 }
 
 pub(crate) fn build_reorder_spaces_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     space_ids: Vec<String>,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::ReorderSpaces {
@@ -1017,7 +1017,7 @@ pub(crate) fn build_reorder_spaces_command(
 }
 
 pub(crate) fn build_select_room_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::SelectRoom {
@@ -1034,7 +1034,7 @@ fn build_timeline_key(account_key: AccountKey, room_id: String) -> TimelineKey {
 }
 
 pub(crate) fn build_subscribe_timeline_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
 ) -> CoreCommand {
@@ -1046,7 +1046,7 @@ pub(crate) fn build_subscribe_timeline_command(
 
 #[cfg(test)]
 pub(crate) fn build_subscribe_focused_timeline_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1061,7 +1061,7 @@ pub(crate) fn build_subscribe_focused_timeline_command(
 }
 
 pub(crate) fn build_paginate_timeline_backwards_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
 ) -> CoreCommand {
@@ -1074,7 +1074,7 @@ pub(crate) fn build_paginate_timeline_backwards_command(
 }
 
 pub(crate) fn build_paginate_thread_timeline_backwards_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     root_event_id: String,
@@ -1094,7 +1094,7 @@ pub(crate) fn build_paginate_thread_timeline_backwards_command(
 }
 
 pub(crate) fn build_open_timeline_at_timestamp_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     timestamp_ms: u64,
 ) -> CoreCommand {
@@ -1106,7 +1106,7 @@ pub(crate) fn build_open_timeline_at_timestamp_command(
 }
 
 pub(crate) fn build_observe_timeline_viewport_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     first_visible_event_id: Option<String>,
@@ -1125,12 +1125,12 @@ pub(crate) fn build_observe_timeline_viewport_command(
 }
 
 pub(crate) fn build_send_text_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     transaction_id: String,
     body: String,
-    mentions: matrix_desktop_state::MentionIntent,
+    mentions: koushi_state::MentionIntent,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -1145,7 +1145,7 @@ pub(crate) fn build_send_text_command(
 }
 
 pub(crate) fn build_schedule_send_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     body: String,
     send_at_ms: u64,
@@ -1162,7 +1162,7 @@ pub(crate) fn build_schedule_send_command(
 }
 
 pub(crate) fn build_set_upload_staging_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     items: Vec<StageUploadInputItem>,
 ) -> CoreCommand {
@@ -1196,7 +1196,7 @@ pub(crate) fn build_set_upload_staging_command(
 }
 
 pub(crate) fn build_cancel_scheduled_send_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     scheduled_id: String,
 ) -> Option<CoreCommand> {
     if scheduled_id.trim().is_empty() {
@@ -1209,7 +1209,7 @@ pub(crate) fn build_cancel_scheduled_send_command(
 }
 
 pub(crate) fn build_reschedule_scheduled_send_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     scheduled_id: String,
     send_at_ms: u64,
 ) -> Option<CoreCommand> {
@@ -1224,7 +1224,7 @@ pub(crate) fn build_reschedule_scheduled_send_command(
 }
 
 pub(crate) fn build_retry_send_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     transaction_id: String,
@@ -1240,7 +1240,7 @@ pub(crate) fn build_retry_send_command(
 }
 
 pub(crate) fn build_cancel_send_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     transaction_id: String,
@@ -1256,7 +1256,7 @@ pub(crate) fn build_cancel_send_command(
 }
 
 pub(crate) fn build_upload_media_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     transaction_id: String,
@@ -1372,7 +1372,7 @@ fn normalize_image_upload_compression(
 
 fn media_caption_from_composer_body(
     caption: Option<String>,
-) -> Option<matrix_desktop_state::FormattedMessageDraft> {
+) -> Option<koushi_state::FormattedMessageDraft> {
     let caption = caption?.trim().to_owned();
     if caption.is_empty() {
         return None;
@@ -1384,7 +1384,7 @@ fn media_caption_from_composer_body(
 }
 
 pub(crate) fn build_download_media_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1401,7 +1401,7 @@ pub(crate) fn build_download_media_command(
 }
 
 pub(crate) fn build_load_message_source_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1417,7 +1417,7 @@ pub(crate) fn build_load_message_source_command(
 }
 
 pub(crate) fn build_load_link_previews_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1433,7 +1433,7 @@ pub(crate) fn build_load_link_previews_command(
 }
 
 pub(crate) fn build_hide_link_preview_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1449,7 +1449,7 @@ pub(crate) fn build_hide_link_preview_command(
 }
 
 pub(crate) fn build_forward_message_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     source_event_id: String,
@@ -1472,7 +1472,7 @@ pub(crate) fn build_forward_message_command(
 }
 
 pub(crate) fn build_edit_message_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1490,7 +1490,7 @@ pub(crate) fn build_edit_message_command(
 }
 
 pub(crate) fn build_redact_message_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1503,7 +1503,7 @@ pub(crate) fn build_redact_message_command(
 }
 
 pub(crate) fn build_toggle_reaction_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1521,7 +1521,7 @@ pub(crate) fn build_toggle_reaction_command(
 }
 
 pub(crate) fn build_send_reaction_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1539,7 +1539,7 @@ pub(crate) fn build_send_reaction_command(
 }
 
 pub(crate) fn build_redact_reaction_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1562,7 +1562,7 @@ pub(crate) fn build_redact_reaction_command(
 }
 
 pub(crate) fn build_send_read_receipt_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1578,7 +1578,7 @@ pub(crate) fn build_send_read_receipt_command(
 }
 
 pub(crate) fn build_set_fully_read_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     event_id: String,
@@ -1594,7 +1594,7 @@ pub(crate) fn build_set_fully_read_command(
 }
 
 pub(crate) fn build_set_typing_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     is_typing: bool,
@@ -1607,7 +1607,7 @@ pub(crate) fn build_set_typing_command(
 }
 
 pub(crate) fn build_set_presence_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     presence: PresenceKind,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::SetPresence {
@@ -1617,7 +1617,7 @@ pub(crate) fn build_set_presence_command(
 }
 
 pub(crate) fn build_set_display_name_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     display_name: Option<String>,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::SetDisplayName {
@@ -1627,7 +1627,7 @@ pub(crate) fn build_set_display_name_command(
 }
 
 pub(crate) fn build_set_local_user_alias_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     user_id: String,
     alias: Option<String>,
 ) -> CoreCommand {
@@ -1639,7 +1639,7 @@ pub(crate) fn build_set_local_user_alias_command(
 }
 
 pub(crate) fn build_ignore_user_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     user_id: String,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::IgnoreUser {
@@ -1649,7 +1649,7 @@ pub(crate) fn build_ignore_user_command(
 }
 
 pub(crate) fn build_unignore_user_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     user_id: String,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::UnignoreUser {
@@ -1659,7 +1659,7 @@ pub(crate) fn build_unignore_user_command(
 }
 
 pub(crate) fn build_report_user_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     user_id: String,
     reason: Option<String>,
 ) -> CoreCommand {
@@ -1671,7 +1671,7 @@ pub(crate) fn build_report_user_command(
 }
 
 pub(crate) fn build_report_content_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     event_id: String,
     reason: Option<String>,
@@ -1685,7 +1685,7 @@ pub(crate) fn build_report_content_command(
 }
 
 pub(crate) fn build_report_room_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     reason: Option<String>,
 ) -> CoreCommand {
@@ -1697,7 +1697,7 @@ pub(crate) fn build_report_room_command(
 }
 
 pub(crate) fn build_set_avatar_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     mime_type: String,
     bytes: Vec<u8>,
 ) -> CoreCommand {
@@ -1708,7 +1708,7 @@ pub(crate) fn build_set_avatar_command(
 }
 
 pub(crate) fn build_leave_room_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::LeaveRoom {
@@ -1718,7 +1718,7 @@ pub(crate) fn build_leave_room_command(
 }
 
 pub(crate) fn build_forget_room_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::ForgetRoom {
@@ -1728,7 +1728,7 @@ pub(crate) fn build_forget_room_command(
 }
 
 pub(crate) fn build_set_room_tag_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     tag: RoomTagKind,
     order: Option<f64>,
@@ -1742,7 +1742,7 @@ pub(crate) fn build_set_room_tag_command(
 }
 
 pub(crate) fn build_remove_room_tag_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     tag: RoomTagKind,
 ) -> CoreCommand {
@@ -1754,7 +1754,7 @@ pub(crate) fn build_remove_room_tag_command(
 }
 
 pub(crate) fn build_pin_event_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     event_id: String,
 ) -> CoreCommand {
@@ -1766,7 +1766,7 @@ pub(crate) fn build_pin_event_command(
 }
 
 pub(crate) fn build_unpin_event_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     event_id: String,
 ) -> CoreCommand {
@@ -1778,7 +1778,7 @@ pub(crate) fn build_unpin_event_command(
 }
 
 pub(crate) fn build_load_room_settings_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::LoadRoomSettings {
@@ -1788,7 +1788,7 @@ pub(crate) fn build_load_room_settings_command(
 }
 
 pub(crate) fn build_update_room_setting_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     change: RoomSettingChange,
 ) -> CoreCommand {
@@ -1800,7 +1800,7 @@ pub(crate) fn build_update_room_setting_command(
 }
 
 pub(crate) fn build_moderate_room_member_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     target_user_id: String,
     action: RoomModerationAction,
@@ -1816,7 +1816,7 @@ pub(crate) fn build_moderate_room_member_command(
 }
 
 pub(crate) fn build_update_room_member_role_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     target_user_id: String,
     power_level: i64,
@@ -1830,7 +1830,7 @@ pub(crate) fn build_update_room_member_role_command(
 }
 
 pub(crate) fn build_submit_search_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     query: String,
     scope: SearchScope,
 ) -> CoreCommand {
@@ -1842,7 +1842,7 @@ pub(crate) fn build_submit_search_command(
 }
 
 pub(crate) fn build_create_room_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     name: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::CreateRoom {
@@ -1853,14 +1853,14 @@ pub(crate) fn build_create_room_command(
 }
 
 pub(crate) fn build_create_space_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     name: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::CreateSpace { request_id, name })
 }
 
 pub(crate) fn build_query_directory_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     term: Option<String>,
     server_name: Option<String>,
     limit: Option<u32>,
@@ -1878,7 +1878,7 @@ pub(crate) fn build_query_directory_command(
 }
 
 pub(crate) fn build_join_directory_room_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     alias: String,
     via_server: Option<String>,
 ) -> Option<CoreCommand> {
@@ -1901,7 +1901,7 @@ fn optional_non_blank(value: Option<String>) -> Option<String> {
 }
 
 pub(crate) fn build_set_space_child_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     space_id: String,
     child_room_id: String,
     via_server: String,
@@ -1915,7 +1915,7 @@ pub(crate) fn build_set_space_child_command(
 }
 
 pub(crate) fn build_accept_invite_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::AcceptInvite {
@@ -1925,7 +1925,7 @@ pub(crate) fn build_accept_invite_command(
 }
 
 pub(crate) fn build_decline_invite_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::DeclineInvite {
@@ -1935,7 +1935,7 @@ pub(crate) fn build_decline_invite_command(
 }
 
 pub(crate) fn build_start_direct_message_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     user_id: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::StartDirectMessage {
@@ -1945,7 +1945,7 @@ pub(crate) fn build_start_direct_message_command(
 }
 
 pub(crate) fn build_invite_user_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     user_id: String,
 ) -> CoreCommand {
@@ -1957,13 +1957,13 @@ pub(crate) fn build_invite_user_command(
 }
 
 pub(crate) fn build_send_reply_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     transaction_id: String,
     in_reply_to_event_id: String,
     body: String,
-    mentions: matrix_desktop_state::MentionIntent,
+    mentions: koushi_state::MentionIntent,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -1979,7 +1979,7 @@ pub(crate) fn build_send_reply_command(
 }
 
 pub(crate) fn build_set_thread_composer_draft_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     root_event_id: String,
     draft: String,
@@ -1993,7 +1993,7 @@ pub(crate) fn build_set_thread_composer_draft_command(
 }
 
 pub(crate) fn build_set_composer_draft_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     room_id: String,
     draft: String,
 ) -> CoreCommand {
@@ -2005,7 +2005,7 @@ pub(crate) fn build_set_composer_draft_command(
 }
 
 pub(crate) fn build_send_thread_reply_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
     root_event_id: String,
@@ -2027,7 +2027,7 @@ pub(crate) fn build_send_thread_reply_command(
         transaction_id,
         in_reply_to_event_id: root_event_id,
         body,
-        mentions: matrix_desktop_state::MentionIntent::default(),
+        mentions: koushi_state::MentionIntent::default(),
     }))
 }
 
@@ -2038,11 +2038,11 @@ pub(crate) fn build_send_thread_reply_command(
 async fn account_key_from_snapshot(state: &CoreRuntimeState) -> AccountKey {
     let snapshot = state.connection.lock().await.snapshot();
     match &snapshot.session {
-        matrix_desktop_state::SessionState::Ready(info)
-        | matrix_desktop_state::SessionState::NeedsRecovery { info, .. }
-        | matrix_desktop_state::SessionState::Recovering { info, .. }
-        | matrix_desktop_state::SessionState::Locked(info)
-        | matrix_desktop_state::SessionState::SwitchingAccount { info } => {
+        koushi_state::SessionState::Ready(info)
+        | koushi_state::SessionState::NeedsRecovery { info, .. }
+        | koushi_state::SessionState::Recovering { info, .. }
+        | koushi_state::SessionState::Locked(info)
+        | koushi_state::SessionState::SwitchingAccount { info } => {
             AccountKey(info.user_id.clone())
         }
         _ => AccountKey(String::new()),
@@ -2087,7 +2087,7 @@ fn resolve_search_scope_from_active_room(
 async fn resolve_search_scope(
     scope: SearchScopeKind,
     state: &CoreRuntimeState,
-) -> matrix_desktop_core::SearchScope {
+) -> koushi_core::SearchScope {
     let snapshot = state.connection.lock().await.snapshot();
     resolve_search_scope_from_active_room(scope, snapshot.navigation.active_room_id)
 }
@@ -2222,10 +2222,10 @@ async fn wait_for_qa_recovery_prompt(
 }
 
 #[cfg(any(debug_assertions, test))]
-pub(crate) fn qa_recovery_prompt_is_available(state: &matrix_desktop_state::AppState) -> bool {
+pub(crate) fn qa_recovery_prompt_is_available(state: &koushi_state::AppState) -> bool {
     matches!(
         state.session,
-        matrix_desktop_state::SessionState::NeedsRecovery { .. }
+        koushi_state::SessionState::NeedsRecovery { .. }
     )
 }
 
@@ -2346,19 +2346,19 @@ mod tests {
         ]
         .concat()
     }
-    use matrix_desktop_core::AccountKey;
-    use matrix_desktop_core::{
+    use koushi_core::AccountKey;
+    use koushi_core::{
         AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
         ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
         ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RoomCommand,
         SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
         UploadMediaThumbnail,
     };
-    use matrix_desktop_state::{
+    use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
         LocaleSettings, SettingsPatch, TextDirectionPreference, ThemePreference,
     };
-    use matrix_desktop_state::{
+    use koushi_state::{
         AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent, MentionTarget,
         SessionInfo, SessionState, VerificationCancelReason,
     };
@@ -2409,7 +2409,7 @@ mod tests {
         qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
-    use matrix_desktop_state::{
+    use koushi_state::{
         PresenceKind, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
         RoomSummary, RoomTagKind, RoomTags,
     };
@@ -2530,9 +2530,9 @@ mod tests {
         assert!(title.contains("timeline_items=42"));
     }
 
-    fn fake_request_id(sequence: u64) -> matrix_desktop_core::RequestId {
-        matrix_desktop_core::RequestId {
-            connection_id: matrix_desktop_core::RuntimeConnectionId(7),
+    fn fake_request_id(sequence: u64) -> koushi_core::RequestId {
+        koushi_core::RequestId {
+            connection_id: koushi_core::RuntimeConnectionId(7),
             sequence,
         }
     }
@@ -2590,7 +2590,7 @@ mod tests {
                 assert_eq!(request_id, fake_request_id(2));
                 assert_eq!(
                     account_key,
-                    matrix_desktop_core::AccountKey("@bob:example.org".to_owned())
+                    koushi_core::AccountKey("@bob:example.org".to_owned())
                 );
             }
             other => panic!("unexpected command: {other:?}"),
@@ -2765,7 +2765,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -2788,7 +2788,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -2833,7 +2833,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -2914,7 +2914,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -2940,7 +2940,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -2970,7 +2970,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -2998,7 +2998,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3053,7 +3053,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3118,7 +3118,7 @@ mod tests {
                 height: 900,
             }),
             Some(ImageUploadCompressionState {
-                mode: matrix_desktop_state::ImageUploadCompressionMode::Always,
+                mode: koushi_state::ImageUploadCompressionMode::Always,
                 policy: ImageUploadCompressionPolicy::default(),
                 original: ImageUploadVariantInfo {
                     mime_type: "image/jpeg".to_owned(),
@@ -3201,7 +3201,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3230,7 +3230,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3255,7 +3255,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3283,7 +3283,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3323,7 +3323,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3354,7 +3354,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3382,7 +3382,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3408,7 +3408,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3434,7 +3434,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -3483,7 +3483,7 @@ mod tests {
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -4070,11 +4070,11 @@ mod tests {
                 mentions,
             }) => {
                 assert_eq!(request_id, fake_request_id(23));
-                assert_eq!(mentions, matrix_desktop_state::MentionIntent::default());
+                assert_eq!(mentions, koushi_state::MentionIntent::default());
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
                     }
                 );
@@ -4104,11 +4104,11 @@ mod tests {
                 mentions,
             }) => {
                 assert_eq!(request_id, fake_request_id(24));
-                assert_eq!(mentions, matrix_desktop_state::MentionIntent::default());
+                assert_eq!(mentions, koushi_state::MentionIntent::default());
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Thread {
+                    koushi_core::TimelineKind::Thread {
                         room_id: room_id.clone(),
                         root_event_id: "$root".to_owned(),
                     }
@@ -4220,18 +4220,18 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
-        let files_scope = matrix_desktop_state::FilesViewScope::Room {
+        let files_scope = koushi_state::FilesViewScope::Room {
             room_id: "!room:example.org".to_owned(),
         };
-        let files_filter = matrix_desktop_state::AttachmentFilter {
-            kinds: vec![matrix_desktop_state::AttachmentKind::Image],
+        let files_filter = koushi_state::AttachmentFilter {
+            kinds: vec![koushi_state::AttachmentKind::Image],
             filename_query: Some("cat".to_owned()),
         };
         match build_open_files_view_command(
             fake_request_id(65),
             files_scope.clone(),
             files_filter.clone(),
-            matrix_desktop_state::AttachmentSort::Filename,
+            koushi_state::AttachmentSort::Filename,
         ) {
             CoreCommand::App(AppCommand::OpenFilesView {
                 request_id,
@@ -4244,7 +4244,7 @@ mod tests {
                 assert_eq!(filter, files_filter);
                 assert!(matches!(
                     sort,
-                    matrix_desktop_state::AttachmentSort::Filename
+                    koushi_state::AttachmentSort::Filename
                 ));
             }
             other => panic!("unexpected command: {other:?}"),
@@ -4280,8 +4280,8 @@ mod tests {
 
     #[test]
     fn load_link_previews_tauri_command_contract_is_present() {
-        let request_id = matrix_desktop_core::RequestId {
-            connection_id: matrix_desktop_core::RuntimeConnectionId(1),
+        let request_id = koushi_core::RequestId {
+            connection_id: koushi_core::RuntimeConnectionId(1),
             sequence: 1,
         };
         let command = build_load_link_previews_command(
@@ -4300,8 +4300,8 @@ mod tests {
 
     #[test]
     fn hide_link_preview_tauri_command_contract_is_present() {
-        let request_id = matrix_desktop_core::RequestId {
-            connection_id: matrix_desktop_core::RuntimeConnectionId(1),
+        let request_id = koushi_core::RequestId {
+            connection_id: koushi_core::RuntimeConnectionId(1),
             sequence: 1,
         };
         let command = build_hide_link_preview_command(
@@ -4406,7 +4406,7 @@ mod tests {
                 assert_eq!(key.account_key, account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Thread {
+                    koushi_core::TimelineKind::Thread {
                         room_id,
                         root_event_id,
                     }
@@ -5024,7 +5024,7 @@ mod tests {
         let commands_source = commands_source();
         let lib_source = include_str!("../lib.rs");
         let command_name = "pub async fn resolve_composer_key_action";
-        let route_name = "matrix_desktop_state::resolve_composer_key_action";
+        let route_name = "koushi_state::resolve_composer_key_action";
         let settings_token = "settings.values.keyboard.composer_send_shortcut";
         let registration_name = "commands::timeline::resolve_composer_key_action";
 
@@ -5249,7 +5249,7 @@ mod tests {
                 assert_eq!(key.account_key, account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Room {
+                    koushi_core::TimelineKind::Room {
                         room_id: "!room:example.org".to_owned()
                     }
                 );
@@ -5319,7 +5319,7 @@ mod tests {
                 assert_eq!(key.account_key, account_key);
                 assert_eq!(
                     key.kind,
-                    matrix_desktop_core::TimelineKind::Focused {
+                    koushi_core::TimelineKind::Focused {
                         room_id: "!room:example.org".to_owned(),
                         event_id: "$event".to_owned(),
                     }

@@ -9,7 +9,7 @@ pub async fn resolve_composer_key_action(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<ComposerResolvedAction, String> {
     let snapshot = state.connection.lock().await.snapshot();
-    Ok(matrix_desktop_state::resolve_composer_key_action(
+    Ok(koushi_state::resolve_composer_key_action(
         key_event,
         ComposerResolverContext {
             surface,
@@ -64,7 +64,7 @@ pub async fn paginate_thread_timeline_backwards(
 pub async fn send_text(
     room_id: String,
     body: String,
-    mentions: Option<matrix_desktop_state::MentionIntent>,
+    mentions: Option<koushi_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -704,7 +704,7 @@ pub async fn send_reply(
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
-    mentions: Option<matrix_desktop_state::MentionIntent>,
+    mentions: Option<koushi_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {

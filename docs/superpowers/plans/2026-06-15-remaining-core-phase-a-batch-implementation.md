@@ -6,7 +6,7 @@
 
 **Architecture:** Feature issues remain the acceptance units, but implementation is grouped by layer. Core Batch A adds Rust state, reducers, commands, actors, DTOs, Tauri contracts, headless QA tokens, and canon updates before React surfaces. GUI Batch B renders Rust-owned state and dispatches typed commands only. QA Batch Z closes the umbrella after feature checks and integration matrix evidence exist.
 
-**Tech Stack:** Rust workspace (`matrix-desktop-state`, `matrix-desktop-core`, `matrix-desktop-sdk`, `matrix-desktop-search`, `matrix-desktop-key`), Tauri v2 adapter, React/TypeScript frontend, Vitest, Playwright browser-headless tests, local Conduit/Tuwunel headless QA, Linux virtual-display GUI QA.
+**Tech Stack:** Rust workspace (`koushi-state`, `koushi-core`, `koushi-sdk`, `koushi-search`, `koushi-key`), Tauri v2 adapter, React/TypeScript frontend, Vitest, Playwright browser-headless tests, local Conduit/Tuwunel headless QA, Linux virtual-display GUI QA.
 
 ---
 
@@ -32,12 +32,12 @@
 
 Main agent integrates changes to these files:
 
-- `crates/matrix-desktop-state/src/state.rs`
-- `crates/matrix-desktop-state/src/action.rs`
-- `crates/matrix-desktop-state/src/reducer.rs`
-- `crates/matrix-desktop-core/src/command.rs`
-- `crates/matrix-desktop-core/src/event.rs`
-- `crates/matrix-desktop-core/src/runtime.rs`
+- `crates/koushi-state/src/state.rs`
+- `crates/koushi-state/src/action.rs`
+- `crates/koushi-state/src/reducer.rs`
+- `crates/koushi-core/src/command.rs`
+- `crates/koushi-core/src/event.rs`
+- `crates/koushi-core/src/runtime.rs`
 - `apps/desktop/src-tauri/src/dto.rs`
 - `apps/desktop/src-tauri/src/commands.rs`
 - `apps/desktop/src/domain/coreEvents.ts`
@@ -123,7 +123,7 @@ items were #65, #64, #63/#62, and #7. Reconcile them as follows:
 - Read: `REPOSITORY_RULES.md`
 - Read: `AGENTS.md`
 - Read: `docs/superpowers/specs/2026-06-15-remaining-core-phase-a-batch-design.md`
-- Create outside repo: `/tmp/matrix-desktop-core-batch-a/issues.json`
+- Create outside repo: `/tmp/koushi-core-batch-a/issues.json`
 
 - [ ] **Step 1: Fetch and verify clean baseline**
 
@@ -160,13 +160,13 @@ Expected: batch branch is current with `origin/main`.
 Run:
 
 ```bash
-mkdir -p /tmp/matrix-desktop-core-batch-a
+mkdir -p /tmp/koushi-core-batch-a
 gh issue list --state open --limit 200 \
   --json number,title,body,labels,assignees,milestone,createdAt,updatedAt,url \
-  > /tmp/matrix-desktop-core-batch-a/issues.json
+  > /tmp/koushi-core-batch-a/issues.json
 for n in 7 9 10 11 12 18 19 20 21 22 23 30 31 32; do
   gh issue view "$n" --json number,title,body,comments,labels,state,url,updatedAt \
-    > "/tmp/matrix-desktop-core-batch-a/issue-$n.json"
+    > "/tmp/koushi-core-batch-a/issue-$n.json"
 done
 ```
 
@@ -244,21 +244,21 @@ not changed, omit it from `git add`.
 ## Task 3: Shared State And Command Skeleton Integration
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
 - Modify: `apps/desktop/src-tauri/src/dto.rs`
 - Modify: `apps/desktop/src/domain/coreEvents.ts`
 - Modify: `apps/desktop/src/domain/coreEvents.generated.json`
-- Test: `crates/matrix-desktop-state/tests/core_batch_a_state.rs`
+- Test: `crates/koushi-state/tests/core_batch_a_state.rs`
 - Test: `apps/desktop/src-tauri/src/dto.rs`
 
 - [ ] **Step 1: Add failing reducer snapshot test**
 
-Create `crates/matrix-desktop-state/tests/core_batch_a_state.rs` with tests
+Create `crates/koushi-state/tests/core_batch_a_state.rs` with tests
 that construct `AppState::default()` and assert default empty/idle state for:
 
 ```rust
@@ -275,7 +275,7 @@ Expected now: test fails because the fields do not exist.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test core_batch_a_state
+cargo test -p koushi-state --test core_batch_a_state
 ```
 
 Expected: compile failure naming missing fields.
@@ -336,7 +336,7 @@ Run the Rust contract artifact test that regenerates or verifies
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test core_batch_a_state
+cargo test -p koushi-state --test core_batch_a_state
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact
 npm --prefix apps/desktop run typecheck
 ```
@@ -348,7 +348,7 @@ Expected: all commands exit 0.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state apps/desktop/src-tauri apps/desktop/src/domain apps/desktop/src/test
+git add crates/koushi-state apps/desktop/src-tauri apps/desktop/src/domain apps/desktop/src/test
 git commit -m "Add core batch A shared state contracts"
 ```
 
@@ -357,18 +357,18 @@ Expected: commit succeeds.
 ## Task 4: Core Batch A1 - #19 Reply Quotes And Pinned Events
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-core/src/timeline.rs`
-- Modify: `crates/matrix-desktop-core/src/room.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
-- Test: `crates/matrix-desktop-state/tests/message_interactions_state.rs`
-- Test: `crates/matrix-desktop-core/src/tests.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/room.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
+- Test: `crates/koushi-state/tests/message_interactions_state.rs`
+- Test: `crates/koushi-core/src/tests.rs`
 
 - [ ] **Step 1: Write failing state tests**
 
@@ -386,7 +386,7 @@ reply_quote is absent for non-reply timeline items
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test message_interactions_state
+cargo test -p koushi-state --test message_interactions_state
 ```
 
 Expected: compile failure or failing assertions before implementation.
@@ -399,7 +399,7 @@ Implement `ReplyQuote`, `ReplyQuoteState`, `PinnedEvent`,
 
 - [ ] **Step 3: Add SDK wrappers**
 
-In `matrix-desktop-sdk`, add wrappers around public SDK pin/unpin support. Keep
+In `koushi-sdk`, add wrappers around public SDK pin/unpin support. Keep
 the wrapper narrow:
 
 ```rust
@@ -440,10 +440,10 @@ unpin_event=ok
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test message_interactions_state
-cargo test -p matrix-desktop-sdk pin
-cargo test -p matrix-desktop-core message_interactions
-cargo test -p matrix-desktop-core --features qa-bin --bin headless-core-qa
+cargo test -p koushi-state --test message_interactions_state
+cargo test -p koushi-sdk pin
+cargo test -p koushi-core message_interactions
+cargo test -p koushi-core --features qa-bin --bin headless-core-qa
 ```
 
 Expected: tests exit 0. If the local homeserver binaries are available, also
@@ -454,7 +454,7 @@ run the matching `qa:headless-local` scenario.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-sdk apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
+git add crates/koushi-state crates/koushi-core crates/koushi-sdk apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
 git commit -m "Implement message interactions core phase A1"
 gh issue comment 19 --body "Phase A1 core implementation landed on branch \`codex/core-batch-a\`: reply quote projection, Rust-owned pinned-event state, pin/unpin command path, and private-data-free headless tokens. #19 remains open for Phase B GUI and deferred message-interaction slices."
 ```
@@ -462,17 +462,17 @@ gh issue comment 19 --body "Phase A1 core implementation landed on branch \`code
 ## Task 5: Core Batch A1 - #18 Composer Semantics And #32 IME Contract
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-state/src/composer_shortcuts.rs`
-- Modify: `crates/matrix-desktop-core/src/timeline.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-state/src/composer_shortcuts.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
 - Modify: `apps/desktop/src/domain/composerKeyEvents.ts`
-- Test: `crates/matrix-desktop-state/tests/composer_semantics_state.rs`
-- Test: `crates/matrix-desktop-state/tests/composer_shortcut_resolver.rs`
+- Test: `crates/koushi-state/tests/composer_semantics_state.rs`
+- Test: `crates/koushi-state/tests/composer_shortcut_resolver.rs`
 - Test: `apps/desktop/src/domain/composerKeyEvents.test.ts`
 
 - [ ] **Step 1: Write failing composer tests**
@@ -490,7 +490,7 @@ unknown slash command returns structured local failure
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state composer
+cargo test -p koushi-state composer
 ```
 
 Expected: failing tests before implementation.
@@ -538,8 +538,8 @@ ime_guard=ok
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state composer
-cargo test -p matrix-desktop-core composer
+cargo test -p koushi-state composer
+cargo test -p koushi-core composer
 npm --prefix apps/desktop run test -- --run src/domain/composerKeyEvents.test.ts
 npm --prefix apps/desktop run typecheck
 ```
@@ -551,7 +551,7 @@ Expected: all commands exit 0.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-sdk apps/desktop/src/domain apps/desktop/src-tauri docs AGENTS.md
+git add crates/koushi-state crates/koushi-core crates/koushi-sdk apps/desktop/src/domain apps/desktop/src-tauri docs AGENTS.md
 git commit -m "Implement composer core semantics"
 gh issue comment 18 --body "Phase A core work landed on branch \`codex/core-batch-a\`: Rust-owned mention intent, markdown/formatted send semantics, slash-command parsing, and shared IME-aware composer resolver. #18 remains open for GUI autocomplete, toolbar, pill rendering, and browser-headless checks."
 gh issue comment 32 --body "Core IME contract slice landed on branch \`codex/core-batch-a\`: main/thread/edit/autocomplete composer key facts now preserve composing-enter as Rust-owned commit/no-send behavior. #32 remains open for Japanese catalog, CJK normalization/collation, and GUI checks."
@@ -560,16 +560,16 @@ gh issue comment 32 --body "Core IME contract slice landed on branch \`codex/cor
 ## Task 6: Core Batch A2 - #20 Public Directory And Explore Core
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-core/src/room.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
-- Test: `crates/matrix-desktop-state/tests/directory_state.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-core/src/room.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
+- Test: `crates/koushi-state/tests/directory_state.rs`
 
 - [ ] **Step 1: Write failing directory state tests**
 
@@ -587,7 +587,7 @@ logout clears directory state
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test directory_state
+cargo test -p koushi-state --test directory_state
 ```
 
 Expected: failing tests before implementation.
@@ -624,9 +624,9 @@ directory_join=ok
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test directory_state
-cargo test -p matrix-desktop-sdk directory
-cargo test -p matrix-desktop-core directory
+cargo test -p koushi-state --test directory_state
+cargo test -p koushi-sdk directory
+cargo test -p koushi-core directory
 ```
 
 Expected: all commands exit 0.
@@ -636,7 +636,7 @@ Expected: all commands exit 0.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-sdk apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
+git add crates/koushi-state crates/koushi-core crates/koushi-sdk apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
 git commit -m "Implement public directory core contract"
 gh issue comment 20 --body "Phase A core directory contract landed on branch \`codex/core-batch-a\`: Rust-owned directory query/results/join state, SDK wrapper, typed command/event path, and private-data-free headless tokens. #20 remains open for Explore GUI and browser-headless operation checks."
 ```
@@ -644,15 +644,15 @@ gh issue comment 20 --body "Phase A core directory contract landed on branch \`c
 ## Task 7: Core Batch A2 - #21 Room Settings And Moderation Core
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-core/src/room.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
-- Test: `crates/matrix-desktop-state/tests/room_management_state.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-core/src/room.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
+- Test: `crates/koushi-state/tests/room_management_state.rs`
 
 - [ ] **Step 1: Write failing permission and settings tests**
 
@@ -670,7 +670,7 @@ logout clears room management state
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test room_management_state
+cargo test -p koushi-state --test room_management_state
 ```
 
 Expected: failing tests before implementation.
@@ -711,9 +711,9 @@ permission_guard=ok
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test room_management_state
-cargo test -p matrix-desktop-sdk room
-cargo test -p matrix-desktop-core room_management
+cargo test -p koushi-state --test room_management_state
+cargo test -p koushi-sdk room
+cargo test -p koushi-core room_management
 ```
 
 Expected: all commands exit 0.
@@ -723,7 +723,7 @@ Expected: all commands exit 0.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-sdk apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
+git add crates/koushi-state crates/koushi-core crates/koushi-sdk apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
 git commit -m "Implement room management core contract"
 gh issue comment 21 --body "Phase A room management core landed on branch \`codex/core-batch-a\`: Rust-owned settings snapshots, permission facts, guarded mutation/moderation commands, and private-data-free headless tokens. #21 remains open for GUI panels and browser-headless operation checks."
 ```
@@ -731,16 +731,16 @@ gh issue comment 21 --body "Phase A room management core landed on branch \`code
 ## Task 8: Core Batch A2 - #23 Activity Recent And Unread Core
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-core/src/room.rs`
-- Modify: `crates/matrix-desktop-core/src/timeline.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
-- Test: `crates/matrix-desktop-state/tests/activity_state.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/room.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
+- Test: `crates/koushi-state/tests/activity_state.rs`
 
 - [x] **Step 1: Write failing activity state tests**
 
@@ -759,7 +759,7 @@ pagination preserves separate Recent and Unread bounds
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test activity_state
+cargo test -p koushi-state --test activity_state
 ```
 
 Expected: failing tests before implementation.
@@ -808,8 +808,8 @@ Include a stale-unread room in the scenario.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test activity_state
-cargo test -p matrix-desktop-core activity
+cargo test -p koushi-state --test activity_state
+cargo test -p koushi-core activity
 ```
 
 Expected: all commands exit 0.
@@ -819,7 +819,7 @@ Expected: all commands exit 0.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
+git add crates/koushi-state crates/koushi-core apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
 git commit -m "Implement activity view core contract"
 gh issue comment 23 --body "Phase A Activity core landed on branch \`codex/core-batch-a\`: Rust-owned Recent/Unread projection, separate bounds, focused-context jump contract, mark-read commands, and private-data-free headless tokens. #23 remains open for GUI tabs and browser-headless operation checks."
 ```
@@ -827,18 +827,18 @@ gh issue comment 23 --body "Phase A Activity core landed on branch \`codex/core-
 ## Task 9: Core Batch A3 - #7 Credential-Store Health
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-core/src/store.rs`
-- Modify: `crates/matrix-desktop-core/src/account.rs`
-- Modify: `crates/matrix-desktop-core/src/failure.rs`
-- Modify: `crates/matrix-desktop-key/src/lib.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-core/src/store.rs`
+- Modify: `crates/koushi-core/src/account.rs`
+- Modify: `crates/koushi-core/src/failure.rs`
+- Modify: `crates/koushi-key/src/lib.rs`
 - Modify: `docs/policies/engineering-rules.md`
 - Modify: `docs/qa/macos-attended-smoke.md`
-- Test: `crates/matrix-desktop-state/tests/local_encryption_state.rs`
-- Test: `crates/matrix-desktop-key/tests/key_management.rs`
-- Test: `crates/matrix-desktop-key/tests/credential_backend.rs`
+- Test: `crates/koushi-state/tests/local_encryption_state.rs`
+- Test: `crates/koushi-key/tests/key_management.rs`
+- Test: `crates/koushi-key/tests/credential_backend.rs`
 
 - [ ] **Step 1: Write failing health state tests**
 
@@ -856,7 +856,7 @@ logout clears account-specific health details
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test local_encryption_state
+cargo test -p koushi-state --test local_encryption_state
 ```
 
 Expected: failing tests before implementation.
@@ -877,7 +877,7 @@ macOS temporary keychain test is ignored unless MATRIX_DESKTOP_MACOS_KEYCHAIN_QA
 Run:
 
 ```bash
-cargo test -p matrix-desktop-key credential_backend
+cargo test -p koushi-key credential_backend
 ```
 
 Expected: failing tests before implementation on the generic fake backend.
@@ -904,7 +904,7 @@ tokens, store keys, or recovery material.
 
 - [ ] **Step 4: Add credential backend trait and fake implementation**
 
-Keep the public `matrix-desktop-key` API secret-safe while routing OS keyring
+Keep the public `koushi-key` API secret-safe while routing OS keyring
 calls through a trait that can be replaced by an in-memory fake in tests. The
 trait result surface must be coarse enough for #7:
 
@@ -945,10 +945,10 @@ The docs must state that macOS has no Xvfb-equivalent lane and that
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test local_encryption_state
-cargo test -p matrix-desktop-key credential_backend
-cargo test -p matrix-desktop-key
-cargo test -p matrix-desktop-core store
+cargo test -p koushi-state --test local_encryption_state
+cargo test -p koushi-key credential_backend
+cargo test -p koushi-key
+cargo test -p koushi-core store
 node scripts/desktop-release-gate-check.mjs --no-compile
 ```
 
@@ -959,7 +959,7 @@ Expected: all commands exit 0.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-key apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md scripts
+git add crates/koushi-state crates/koushi-core crates/koushi-key apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md scripts
 git commit -m "Implement credential-store health state"
 gh issue comment 7 --body "Phase A credential-store health landed on branch \`codex/core-batch-a\`: Rust-owned local-encryption status, StoreActor-fed coarse failure kinds, fail-closed release behavior evidence, and private-data-free snapshot contract. #7 remains open for Settings/Security GUI and native prompt/status smoke."
 ```
@@ -967,15 +967,15 @@ gh issue comment 7 --body "Phase A credential-store health landed on branch \`co
 ## Task 10: Core Batch A3 - #10 Native Attention And Notification Core
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Test: `crates/matrix-desktop-state/tests/attention_surface.rs`
-- Test: `crates/matrix-desktop-sdk/tests/attention_surface.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Test: `crates/koushi-state/tests/attention_surface.rs`
+- Test: `crates/koushi-sdk/tests/attention_surface.rs`
 
 - [ ] **Step 1: Extend failing attention tests**
 
@@ -995,8 +995,8 @@ candidate dedupe prevents duplicate notifications
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test attention_surface
-cargo test -p matrix-desktop-sdk --test attention_surface
+cargo test -p koushi-state --test attention_surface
+cargo test -p koushi-sdk --test attention_surface
 ```
 
 Expected: failing tests for missing states.
@@ -1038,9 +1038,9 @@ clear_badge=ok
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test attention_surface
-cargo test -p matrix-desktop-sdk --test attention_surface
-cargo test -p matrix-desktop-core attention
+cargo test -p koushi-state --test attention_surface
+cargo test -p koushi-sdk --test attention_surface
+cargo test -p koushi-core attention
 ```
 
 Expected: all commands exit 0.
@@ -1050,7 +1050,7 @@ Expected: all commands exit 0.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-sdk apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
+git add crates/koushi-state crates/koushi-core crates/koushi-sdk apps/desktop/src-tauri apps/desktop/src/domain docs AGENTS.md
 git commit -m "Implement native attention core state"
 gh issue comment 10 --body "Phase A native attention core landed on branch \`codex/core-batch-a\`: Rust-owned notification candidates, badge/attention summaries, suppression/dedupe policy, capability DTOs, and private-data-free headless tokens. #10 remains open for GUI/native adapter smoke."
 ```
@@ -1062,8 +1062,8 @@ gh issue comment 10 --body "Phase A native attention core landed on branch \`cod
 - Modify: `docs/architecture/state-machine.md`
 - Modify: `docs/qa/headless-basic-operations.md`
 - Modify: `docs/upstream/matrix-rust-sdk-feedback.md`
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs` only if wording or summaries need to expose joined-room semantics more clearly
-- Test: `crates/matrix-desktop-state/tests/e2ee_trust_state.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs` only if wording or summaries need to expose joined-room semantics more clearly
+- Test: `crates/koushi-state/tests/e2ee_trust_state.rs`
 
 - [ ] **Step 1: Add restore-scope assertions**
 
@@ -1073,7 +1073,7 @@ summary wording never claim exhaustive backup-wide restore.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test e2ee_trust_state
+cargo test -p koushi-state --test e2ee_trust_state
 ```
 
 Expected: failing assertion before wording/state update if existing semantics
@@ -1094,9 +1094,9 @@ Add rejected-option rationale: no vendored SDK patch for convenience.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test e2ee_trust_state
-cargo test -p matrix-desktop-sdk e2ee
-cargo test -p matrix-desktop-core e2ee
+cargo test -p koushi-state --test e2ee_trust_state
+cargo test -p koushi-sdk e2ee
+cargo test -p koushi-core e2ee
 git diff --check
 ```
 
@@ -1107,7 +1107,7 @@ Expected: all commands exit 0.
 Run:
 
 ```bash
-git add docs/architecture docs/qa docs/upstream crates/matrix-desktop-state crates/matrix-desktop-sdk crates/matrix-desktop-core
+git add docs/architecture docs/qa docs/upstream crates/koushi-state crates/koushi-sdk crates/koushi-core
 git commit -m "Document backup restore scope decision"
 gh issue comment 30 --body "Decision landed on branch \`codex/core-batch-a\`: MVP restore scope is recovery secret import plus joined-room key hydration using public SDK APIs. Exhaustive backup-wide restore is not claimed, and no vendored SDK accessor is added. Verification is recorded in the commit."
 ```
@@ -1122,13 +1122,13 @@ gh issue close 30 --comment "Closed by backup restore scope decision: joined-roo
 
 **Files:**
 - Modify: `docs/architecture/i18n.md`
-- Modify: `crates/matrix-desktop-state/src/locale_profile.rs`
-- Modify: `crates/matrix-desktop-search/src/verify.rs`
-- Modify: `crates/matrix-desktop-search/src/document.rs`
-- Modify: `crates/matrix-desktop-core/src/search.rs`
+- Modify: `crates/koushi-state/src/locale_profile.rs`
+- Modify: `crates/koushi-search/src/verify.rs`
+- Modify: `crates/koushi-search/src/document.rs`
+- Modify: `crates/koushi-core/src/search.rs`
 - Modify: `apps/desktop/src/i18n/messages.ts`
-- Test: `crates/matrix-desktop-state/tests/locale_display_profile.rs`
-- Test: `crates/matrix-desktop-search/tests/search_adapter.rs`
+- Test: `crates/koushi-state/tests/locale_display_profile.rs`
+- Test: `crates/koushi-search/tests/search_adapter.rs`
 - Test: `apps/desktop/src/i18n/messages.test.ts`
 
 - [ ] **Step 1: Write failing Japanese catalog tests**
@@ -1163,8 +1163,8 @@ room/person sort keys are deterministic for kana/kanji/Latin mixed names
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search --test search_adapter
-cargo test -p matrix-desktop-state --test locale_display_profile
+cargo test -p koushi-search --test search_adapter
+cargo test -p koushi-state --test locale_display_profile
 ```
 
 Expected: failing tests before implementation.
@@ -1181,8 +1181,8 @@ Run:
 
 ```bash
 npm --prefix apps/desktop run test -- --run src/i18n/messages.test.ts
-cargo test -p matrix-desktop-search --test search_adapter
-cargo test -p matrix-desktop-state --test locale_display_profile
+cargo test -p koushi-search --test search_adapter
+cargo test -p koushi-state --test locale_display_profile
 npm --prefix apps/desktop run typecheck
 ```
 
@@ -1193,7 +1193,7 @@ Expected: all commands exit 0.
 Run:
 
 ```bash
-git add docs/architecture crates/matrix-desktop-state crates/matrix-desktop-search crates/matrix-desktop-core apps/desktop/src/i18n apps/desktop/src/domain docs AGENTS.md
+git add docs/architecture crates/koushi-state crates/koushi-search crates/koushi-core apps/desktop/src/i18n apps/desktop/src/domain docs AGENTS.md
 git commit -m "Implement Japanese and CJK core contracts"
 gh issue comment 32 --body "Phase A Japanese/CJK core landed on branch \`codex/core-batch-a\`: real Japanese catalog gate, Rust-owned CJK normalization/collation policy, and search/display matching evidence. #32 remains open for GUI line-breaking/truncation and Linux virtual-display checks."
 ```
@@ -1211,9 +1211,9 @@ Run:
 
 ```bash
 cargo fmt --check
-cargo test -p matrix-desktop-state -p matrix-desktop-sdk -p matrix-desktop-core -p matrix-desktop-search -p matrix-desktop-key
+cargo test -p koushi-state -p koushi-sdk -p koushi-core -p koushi-search -p koushi-key
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
+cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- --run
 npm --prefix apps/desktop run test:ipc-contract
@@ -1618,9 +1618,9 @@ Run:
 
 ```bash
 cargo fmt --check
-cargo test -p matrix-desktop-state -p matrix-desktop-sdk -p matrix-desktop-core -p matrix-desktop-search -p matrix-desktop-key
+cargo test -p koushi-state -p koushi-sdk -p koushi-core -p koushi-search -p koushi-key
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
+cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- --run
 npx --prefix apps/desktop playwright test --workers=1
@@ -1696,7 +1696,7 @@ If PR workflow is used:
 
 ```bash
 git push origin codex/core-batch-a
-gh pr create --draft --title "Complete remaining roadmap core and GUI batches" --body-file /tmp/matrix-desktop-core-batch-a/pr-body.md
+gh pr create --draft --title "Complete remaining roadmap core and GUI batches" --body-file /tmp/koushi-core-batch-a/pr-body.md
 ```
 
 If direct merge is approved by the user and repository policy allows it:

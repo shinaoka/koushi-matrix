@@ -165,7 +165,7 @@ Rules:
    remediation hints. Raw OS/keyring errors, local paths, account identifiers,
    key labels, local unlock secrets, SDK/search keys, and recovery material must
    stay inside `StoreActor`/adapter diagnostics gated for debug/test. OS
-   credential calls go through the `matrix-desktop-key` credential backend
+   credential calls go through the `koushi-key` credential backend
    abstraction and the StoreActor path; GUI code may only dispatch typed probe
    or reset commands and render `AppState.local_encryption`. Debug/test file
    credential stores remain behind debug/test-only cfg, and release builds must
@@ -441,7 +441,7 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
 ## Build, Dependencies, QA Gates
 
 0. New Matrix behavior is implemented and verified headless-first: it lands
-   in `matrix-desktop-core`, is exercised via `CoreCommand`/`CoreEvent`
+   in `koushi-core`, is exercised via `CoreCommand`/`CoreEvent`
    against local Conduit/Tuwunel homeserver QA, and only then is wired into
    Tauri/React. GUI-first Matrix behavior is prohibited.
 1. The vendored `matrix-rust-sdk` is consumed via path/`[patch]`
@@ -462,7 +462,7 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
 2. Local homeserver toolchain caveats (Conduit/Tuwunel install flags such as
    `RUMA_UNSTABLE_EXHAUSTIVE_TYPES=1`, macOS `--no-default-features`) are
    tracked in `AGENTS.md` and the QA scripts, not hand-run.
-3. Required local gates before merge: crate tests (`matrix-desktop-state`,
+3. Required local gates before merge: crate tests (`koushi-state`,
    `-auth`, `-core`), frontend tests + typecheck, and
    `qa:headless-local -- --server=both`.
 4. Real homeserver QA is a release/preflight gate (network + approved
@@ -471,20 +471,20 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    that affect login, recovery, sync, encrypted restore, search, room cleanup,
    or logout.
 5. Production Tauri paths must not execute fixture-backend behavior;
-   `matrix-desktop-backend` is dev/demo only.
+   `koushi-backend` is dev/demo only.
 6. Core crates stay platform-portable (a future browser/wasm target must not
    be precluded): no Tauri/OS/filesystem types in `CoreCommand`/`CoreEvent`/
    `AppStateSnapshot`; task spawn and timers via executor abstractions, not
    direct `tokio::spawn`/`tokio::time` in actor logic; `keyring`, paths, and
    store config only behind `StoreActor`/adapter ports;
-   `matrix-desktop-state` and `matrix-desktop-search` must compile for
+   `koushi-state` and `koushi-search` must compile for
    `wasm32-unknown-unknown`. See Platform Portability in
    `docs/architecture/overview.md`.
 7. Japanese/CJK product semantics remain Rust-owned and platform-portable.
    Catalog completeness is tested in `apps/desktop/src/i18n`, but CJK
    normalization, display sort keys, search query variants, and highlight
-   offsets live in `matrix-desktop-state`, `matrix-desktop-search`, and
-   `matrix-desktop-core`. React may render the resolved catalog and Rust-owned
+   offsets live in `koushi-state`, `koushi-search`, and
+   `koushi-core`. React may render the resolved catalog and Rust-owned
    ordering only; it must not compute local CJK normalization, collation, or
    highlight repair.
 8. CJK GUI fitting is CSS-owned presentation. Shell/timeline/search surfaces

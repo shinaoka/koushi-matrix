@@ -20,7 +20,7 @@ backend shell stage before the headless core runtime.
 - [x] Write failing TypeScript tests for visible room grouping and exact search behavior against the fake API.
 - [x] Implement shared TypeScript DTOs, fallback fixture data, and the `DesktopApi` abstraction.
 - [x] Build the React Slack-like shell over snapshot DTOs with Space rail, sidebar, timeline, thread pane, composer, and search results.
-- [x] Add `apps/desktop/src-tauri` with Tauri v2 commands wrapping `matrix-desktop-backend`.
+- [x] Add `apps/desktop/src-tauri` with Tauri v2 commands wrapping `koushi-backend`.
 - [x] Wire Tauri config to Vite using `devUrl` and `frontendDist`.
 - [x] Document app run commands and keep `apps/desktop-shell` as the zero-dependency reference shell.
 - [x] Verify with `npm test`, `npm run typecheck`, `npm run build`, `cargo check` for `src-tauri`, and browser layout checks.

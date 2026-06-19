@@ -6,7 +6,7 @@
 
 **Architecture:** Reuse the existing Rust-owned Phase A contracts where they already exist (#38 and #39), add the missing Rust contract for #44, then wire Tauri transport, TypeScript client, React components, browser fakes, and browser-headless GUI-operation tests. Product semantics stay Rust-owned; React renders snapshots and dispatches typed commands only.
 
-**Tech Stack:** Rust workspace (`matrix-desktop-state`, `matrix-desktop-core`, `matrix-desktop-sdk`), Tauri v2 adapter, React/TypeScript frontend, Vitest, Playwright browser-headless tests, Linux virtual-display GUI QA.
+**Tech Stack:** Rust workspace (`koushi-state`, `koushi-core`, `koushi-sdk`), Tauri v2 adapter, React/TypeScript frontend, Vitest, Playwright browser-headless tests, Linux virtual-display GUI QA.
 
 ---
 
@@ -396,8 +396,8 @@ Run the focused gate set:
 ```bash
 cargo fmt --check
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-cargo test -p matrix-desktop-state
-cargo test -p matrix-desktop-core
+cargo test -p koushi-state
+cargo test -p koushi-core
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- --run
 npm --prefix apps/desktop exec -- playwright test e2e/basic-operations.spec.ts -g "device session manager" --workers=1
@@ -482,7 +482,7 @@ pub async fn mark_room_as_unread(
 }
 ```
 
-`RoomListFilter` is already imported from `matrix_desktop_state`; use the serde DTO enum, not a string.
+`RoomListFilter` is already imported from `koushi_state`; use the serde DTO enum, not a string.
 
 Run:
 
@@ -729,8 +729,8 @@ Run the focused gate set:
 ```bash
 cargo fmt --check
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-cargo test -p matrix-desktop-state
-cargo test -p matrix-desktop-core
+cargo test -p koushi-state
+cargo test -p koushi-core
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- --run
 npm --prefix apps/desktop exec -- playwright test e2e/basic-operations.spec.ts -g "room list filter and mark unread" --workers=1
@@ -755,16 +755,16 @@ Expected: commit succeeds; comment posted. Close #39 only if all acceptance crit
 #44 requires a full Phase A contract before any React work. Do not start Step 10 until Steps 1-9 pass.
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-state/src/effect.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-core/src/account.rs`
-- Modify: `crates/matrix-desktop-core/src/timeline.rs`
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-state/src/effect.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/account.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
 - Modify: `apps/desktop/src-tauri/src/dto.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
@@ -780,15 +780,15 @@ Expected: commit succeeds; comment posted. Close #39 only if all acceptance crit
 - Modify: `apps/desktop/src/App.tsx`
 - Modify: `apps/desktop/src/i18n/messages.ts`
 - Modify: `apps/desktop/src/styles.css`
-- Test: `crates/matrix-desktop-state/tests/notification_settings_state.rs`
-- Test: `crates/matrix-desktop-core/tests/runtime_notification_settings.rs`
+- Test: `crates/koushi-state/tests/notification_settings_state.rs`
+- Test: `crates/koushi-core/tests/runtime_notification_settings.rs`
 - Test: `apps/desktop/src/components/RoomInfoPanel.test.tsx`
 - Test: `apps/desktop/src/components/UserSettingsPanel.test.tsx`
 - Test: `apps/desktop/e2e/basic-operations.spec.ts`
 
 ### Step 1: Define the Rust state contract
 
-Add to `crates/matrix-desktop-state/src/state.rs`:
+Add to `crates/koushi-state/src/state.rs`:
 
 ```rust
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -851,7 +851,7 @@ Update `SettingsPatch` to include the same notification fields.
 
 ### Step 2: Add reducer actions and guards
 
-In `crates/matrix-desktop-state/src/action.rs`:
+In `crates/koushi-state/src/action.rs`:
 
 ```rust
 RoomNotificationModeSet {
@@ -874,7 +874,7 @@ SettingsNotificationPrivacyChanged {
 }
 ```
 
-In `crates/matrix-desktop-state/src/reducer.rs`:
+In `crates/koushi-state/src/reducer.rs`:
 
 - `RoomNotificationModeSet` updates `state.room_notification_settings[room_id].mode` only if `room_id` is in `state.rooms` or `state.invites` (known-room guard). It also sets `operation` to `Pending { request_id }`, clearing any prior failed state for that room.
 - `RoomNotificationModeCompleted` sets `operation` to `Idle` for the matching `(request_id, room_id)`.
@@ -884,7 +884,7 @@ In `crates/matrix-desktop-state/src/reducer.rs`:
 
 ### Step 3: Write reducer tests
 
-Create `crates/matrix-desktop-state/tests/notification_settings_state.rs`:
+Create `crates/koushi-state/tests/notification_settings_state.rs`:
 
 ```rust
 #[test]
@@ -915,7 +915,7 @@ fn logout_clears_room_notification_settings() { ... }
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test notification_settings_state
+cargo test -p koushi-state --test notification_settings_state
 ```
 
 Expected: passes after implementation.
@@ -935,7 +935,7 @@ Use Matrix push-rule overrides scoped to the room. Rule IDs owned by Kagome are 
 
 ### Step 5: Add SDK push-rule wrappers
 
-In `crates/matrix-desktop-sdk/src/lib.rs`, add:
+In `crates/koushi-sdk/src/lib.rs`, add:
 
 ```rust
 pub async fn set_room_notification_mode(
@@ -950,14 +950,14 @@ Implementation uses the documented push-rule override IDs. Errors map to `SdkErr
 Run:
 
 ```bash
-cargo test -p matrix-desktop-sdk notification
+cargo test -p koushi-sdk notification
 ```
 
 Expected: passes.
 
 ### Step 6: Add core command and runtime handler
 
-In `crates/matrix-desktop-core/src/command.rs`, add to `RoomCommand`:
+In `crates/koushi-core/src/command.rs`, add to `RoomCommand`:
 
 ```rust
 SetRoomNotificationMode {
@@ -967,7 +967,7 @@ SetRoomNotificationMode {
 }
 ```
 
-In `crates/matrix-desktop-core/src/runtime.rs`, route to `RoomActor`. The actor:
+In `crates/koushi-core/src/runtime.rs`, route to `RoomActor`. The actor:
 
 1. Validates the room is known.
 2. Emits `AppAction::RoomNotificationModeSet` optimistically (sets `mode` and `operation: Pending`).
@@ -975,27 +975,27 @@ In `crates/matrix-desktop-core/src/runtime.rs`, route to `RoomActor`. The actor:
 4. On success, emits `AppAction::RoomNotificationModeCompleted` (sets `operation: Idle`).
 5. On failure, emits `AppAction::RoomNotificationModeFailed` (sets `operation: Failed`).
 
-In `crates/matrix-desktop-core/src/account.rs` and `timeline.rs`, gate `send_read_receipt` and `set_typing` by `state.settings.values.notifications.send_read_receipts` / `send_typing_notifications`. If disabled, skip the SDK call and return success without emitting a live-signal event.
+In `crates/koushi-core/src/account.rs` and `timeline.rs`, gate `send_read_receipt` and `set_typing` by `state.settings.values.notifications.send_read_receipts` / `send_typing_notifications`. If disabled, skip the SDK call and return success without emitting a live-signal event.
 
 Run:
 
 ```bash
-cargo test -p matrix-desktop-core notification
+cargo test -p koushi-core notification
 ```
 
 Expected: passes.
 
 ### Step 7: Integrate notification modes into native attention
 
-In `crates/matrix-desktop-core/src/runtime.rs` or the attention projector, suppress notification candidates for rooms whose mode is `Mute`. For `Mentions`, allow only highlight candidates. Keep the candidate private-data-minimized.
+In `crates/koushi-core/src/runtime.rs` or the attention projector, suppress notification candidates for rooms whose mode is `Mute`. For `Mentions`, allow only highlight candidates. Keep the candidate private-data-minimized.
 
 Add reducer/core tests proving the integration.
 
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test attention_surface
-cargo test -p matrix-desktop-core attention
+cargo test -p koushi-state --test attention_surface
+cargo test -p koushi-core attention
 ```
 
 Expected: passes.
@@ -1177,7 +1177,7 @@ Expected: passes.
 
 ### Step 15: Add Rust core tests
 
-Create `crates/matrix-desktop-core/tests/runtime_notification_settings.rs` with tests that:
+Create `crates/koushi-core/tests/runtime_notification_settings.rs` with tests that:
 
 - `set_room_notification_mode` for a known room emits the expected action.
 - `set_room_notification_mode` for an unknown room is ignored.
@@ -1187,7 +1187,7 @@ Create `crates/matrix-desktop-core/tests/runtime_notification_settings.rs` with 
 Run:
 
 ```bash
-cargo test -p matrix-desktop-core notification
+cargo test -p koushi-core notification
 ```
 
 Expected: passes.
@@ -1218,9 +1218,9 @@ Run the focused gate set:
 
 ```bash
 cargo fmt --check
-cargo test -p matrix-desktop-state
-cargo test -p matrix-desktop-core
-cargo test -p matrix-desktop-sdk
+cargo test -p koushi-state
+cargo test -p koushi-core
+cargo test -p koushi-sdk
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- --run
@@ -1232,7 +1232,7 @@ Expected: all exit 0.
 Then commit and comment:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-sdk apps/desktop/src-tauri apps/desktop/src/backend apps/desktop/src/components apps/desktop/src/domain apps/desktop/src/test apps/desktop/src/App.tsx apps/desktop/src/i18n/messages.ts apps/desktop/src/styles.css apps/desktop/e2e/basic-operations.spec.ts docs/superpowers/plans/2026-06-17-umbrella-12-non-mac-completion.md docs/superpowers/specs/2026-06-17-room-notification-mode-contract.md
+git add crates/koushi-state crates/koushi-core crates/koushi-sdk apps/desktop/src-tauri apps/desktop/src/backend apps/desktop/src/components apps/desktop/src/domain apps/desktop/src/test apps/desktop/src/App.tsx apps/desktop/src/i18n/messages.ts apps/desktop/src/styles.css apps/desktop/e2e/basic-operations.spec.ts docs/superpowers/plans/2026-06-17-umbrella-12-non-mac-completion.md docs/superpowers/specs/2026-06-17-room-notification-mode-contract.md
 git commit -m "feat: #44 per-room notification mode and privacy opt-out"
 gh issue comment 44 --body "Phase A and Phase B landed on main: Rust-owned per-room notification modes with known-room guard and push-rule contract, account-wide read-receipt/typing privacy toggles via existing settings path, native-attention integration, SDK wrapper, Tauri/TS contracts, React settings UI, and browser-headless GUI-operation tests. Verification gate passed; closing if acceptance criteria are satisfied."
 ```

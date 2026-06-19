@@ -6,7 +6,7 @@
 
 **Architecture:** Product state lives in Rust reducers and account actors. React renders snapshots and dispatches typed commands only. Secret-bearing values cross only command/native adapter boundaries and never enter reducer state, DTO snapshots, logs, QA output, or issue comments.
 
-**Tech Stack:** Rust workspace (`matrix-desktop-state`, `matrix-desktop-core`, `matrix-desktop-sdk`), Tauri v2 commands/DTOs, React/TypeScript frontend, Vitest, Playwright browser-headless tests, local Conduit/Tuwunel headless QA, Linux virtual-display GUI QA.
+**Tech Stack:** Rust workspace (`koushi-state`, `koushi-core`, `koushi-sdk`), Tauri v2 commands/DTOs, React/TypeScript frontend, Vitest, Playwright browser-headless tests, local Conduit/Tuwunel headless QA, Linux virtual-display GUI QA.
 
 ---
 
@@ -30,14 +30,14 @@ Package A is reviewed or explicitly paused.
 - Keep commits scoped. Do not add issue-closing keywords until a child issue is
   fully complete and verified.
 - Main agent owns shared files:
-  `crates/matrix-desktop-state/src/state.rs`,
-  `crates/matrix-desktop-state/src/action.rs`,
-  `crates/matrix-desktop-state/src/reducer.rs`,
-  `crates/matrix-desktop-state/src/effect.rs`,
-  `crates/matrix-desktop-core/src/command.rs`,
-  `crates/matrix-desktop-core/src/event.rs`,
-  `crates/matrix-desktop-core/src/runtime.rs`,
-  `crates/matrix-desktop-core/src/account.rs`,
+  `crates/koushi-state/src/state.rs`,
+  `crates/koushi-state/src/action.rs`,
+  `crates/koushi-state/src/reducer.rs`,
+  `crates/koushi-state/src/effect.rs`,
+  `crates/koushi-core/src/command.rs`,
+  `crates/koushi-core/src/event.rs`,
+  `crates/koushi-core/src/runtime.rs`,
+  `crates/koushi-core/src/account.rs`,
   `apps/desktop/src-tauri/src/dto.rs`,
   `apps/desktop/src-tauri/src/commands.rs`,
   `apps/desktop/src/domain/types.ts`,
@@ -116,20 +116,20 @@ Expected: #12 has a start marker.
 ## Task 1: Shared Package A State Skeleton
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-state/src/effect.rs`
-- Modify: `crates/matrix-desktop-state/src/lib.rs`
-- Test: `crates/matrix-desktop-state/tests/package_a_state.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-state/src/effect.rs`
+- Modify: `crates/koushi-state/src/lib.rs`
+- Test: `crates/koushi-state/tests/package_a_state.rs`
 - Modify docs: `docs/architecture/state-machine.md`
 
 - [ ] **Step 1: Write failing state skeleton tests**
 
-Create `crates/matrix-desktop-state/tests/package_a_state.rs` with:
+Create `crates/koushi-state/tests/package_a_state.rs` with:
 
 ```rust
-use matrix_desktop_state::{
+use koushi_state::{
     reduce, AccountManagementState, AppAction, AppState, AuthDiscoveryState,
     AuthFailureKind, DelegatedAuthLinks, DeviceSessionListState, E2eeKeyManagementState,
     LoginFlow, LoginFlowKind, QrLoginState, SecureBackupSetupState,
@@ -157,8 +157,8 @@ fn auth_discovery_can_store_oidc_and_delegated_links_without_tokens() {
     assert!(effects.iter().any(|effect| {
         matches!(
             effect,
-            matrix_desktop_state::AppEffect::EmitUiEvent(
-                matrix_desktop_state::UiEvent::AuthChanged
+            koushi_state::AppEffect::EmitUiEvent(
+                koushi_state::UiEvent::AuthChanged
             )
         )
     }));
@@ -185,10 +185,10 @@ fn package_a_substates_start_secret_free_and_idle() {
     assert!(matches!(
         state.e2ee_trust.key_management,
         E2eeKeyManagementState {
-            room_key_export: matrix_desktop_state::RoomKeyExportState::Idle,
-            room_key_import: matrix_desktop_state::RoomKeyImportState::Idle,
+            room_key_export: koushi_state::RoomKeyExportState::Idle,
+            room_key_import: koushi_state::RoomKeyImportState::Idle,
             secure_backup_setup: SecureBackupSetupState::Idle,
-            passphrase_change: matrix_desktop_state::SecureBackupPassphraseChangeState::Idle,
+            passphrase_change: koushi_state::SecureBackupPassphraseChangeState::Idle,
         }
     ));
     assert_eq!(state.device_sessions, DeviceSessionListState::Idle);
@@ -208,7 +208,7 @@ fn auth_failure_kind_is_coarse() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test package_a_state
+cargo test -p koushi-state --test package_a_state
 ```
 
 Expected: FAIL because Package A types and new `LoginDiscoverySucceeded`
@@ -216,7 +216,7 @@ fields do not exist.
 
 - [ ] **Step 3: Add state types**
 
-In `crates/matrix-desktop-state/src/state.rs`, change `AuthDiscoveryState` and
+In `crates/koushi-state/src/state.rs`, change `AuthDiscoveryState` and
 `LoginFlow`, and add Package A states:
 
 ```rust
@@ -442,7 +442,7 @@ running.
 
 - [ ] **Step 5: Export new types**
 
-In `crates/matrix-desktop-state/src/lib.rs`, export the new public types used
+In `crates/koushi-state/src/lib.rs`, export the new public types used
 by Tauri and TypeScript contract tests.
 
 - [ ] **Step 6: Run state tests**
@@ -450,8 +450,8 @@ by Tauri and TypeScript contract tests.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test package_a_state
-cargo test -p matrix-desktop-state --lib
+cargo test -p koushi-state --test package_a_state
+cargo test -p koushi-state --lib
 ```
 
 Expected: both commands PASS.
@@ -480,7 +480,7 @@ login.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state docs/architecture/state-machine.md
+git add crates/koushi-state docs/architecture/state-machine.md
 git commit -m "feat: add package A state skeleton"
 ```
 
@@ -489,32 +489,32 @@ Expected: commit succeeds.
 ## Task 2: Auth Discovery And OIDC/MAS Phase A
 
 **Files:**
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/account.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/account.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `apps/desktop/src-tauri/src/dto.rs`
 - Modify: `apps/desktop/src/domain/types.ts`
 - Modify: `apps/desktop/src/backend/client.ts`
 - Modify: `apps/desktop/src/backend/client.test.ts`
-- Test: `crates/matrix-desktop-sdk/tests/login_discovery.rs`
-- Test: `crates/matrix-desktop-core/src/tests.rs`
+- Test: `crates/koushi-sdk/tests/login_discovery.rs`
+- Test: `crates/koushi-core/src/tests.rs`
 
 - [ ] **Step 1: Add failing SDK discovery tests**
 
-Extend `crates/matrix-desktop-sdk/tests/login_discovery.rs` with:
+Extend `crates/koushi-sdk/tests/login_discovery.rs` with:
 
 ```rust
 #[test]
 fn oidc_login_flow_maps_to_desktop_oidc_without_tokens() {
-    let flows = vec![matrix_desktop_sdk::MatrixLoginFlow {
-        kind: matrix_desktop_sdk::MatrixLoginFlowKind::Oidc,
+    let flows = vec![koushi_sdk::MatrixLoginFlow {
+        kind: koushi_sdk::MatrixLoginFlowKind::Oidc,
         delegated_oidc_compatibility: true,
         display_name: Some("Provider".to_owned()),
     }];
-    let mapped = matrix_desktop_sdk::map_login_flows_to_desktop(flows);
-    assert_eq!(mapped[0].kind, matrix_desktop_state::LoginFlowKind::Oidc);
+    let mapped = koushi_sdk::map_login_flows_to_desktop(flows);
+    assert_eq!(mapped[0].kind, koushi_state::LoginFlowKind::Oidc);
     assert!(mapped[0].delegated_oidc_compatibility);
     assert_eq!(mapped[0].display_name.as_deref(), Some("Provider"));
 }
@@ -523,21 +523,21 @@ fn oidc_login_flow_maps_to_desktop_oidc_without_tokens() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-sdk --test login_discovery oidc_login_flow_maps_to_desktop_oidc_without_tokens
+cargo test -p koushi-sdk --test login_discovery oidc_login_flow_maps_to_desktop_oidc_without_tokens
 ```
 
 Expected: FAIL because the SDK DTOs and mapper are not yet present.
 
 - [ ] **Step 2: Add SDK DTOs and mapper**
 
-In `crates/matrix-desktop-sdk/src/lib.rs`, add:
+In `crates/koushi-sdk/src/lib.rs`, add:
 
 ```rust
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatrixLoginDiscovery {
     pub homeserver: String,
     pub flows: Vec<MatrixLoginFlow>,
-    pub delegated: matrix_desktop_state::DelegatedAuthLinks,
+    pub delegated: koushi_state::DelegatedAuthLinks,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -556,16 +556,16 @@ pub enum MatrixLoginFlowKind {
     Unknown(String),
 }
 
-pub fn map_login_flows_to_desktop(flows: Vec<MatrixLoginFlow>) -> Vec<matrix_desktop_state::LoginFlow> {
+pub fn map_login_flows_to_desktop(flows: Vec<MatrixLoginFlow>) -> Vec<koushi_state::LoginFlow> {
     flows
         .into_iter()
-        .map(|flow| matrix_desktop_state::LoginFlow {
+        .map(|flow| koushi_state::LoginFlow {
             kind: match flow.kind {
-                MatrixLoginFlowKind::Password => matrix_desktop_state::LoginFlowKind::Password,
-                MatrixLoginFlowKind::Sso => matrix_desktop_state::LoginFlowKind::Sso,
-                MatrixLoginFlowKind::Oidc => matrix_desktop_state::LoginFlowKind::Oidc,
-                MatrixLoginFlowKind::Token => matrix_desktop_state::LoginFlowKind::Token,
-                MatrixLoginFlowKind::Unknown(value) => matrix_desktop_state::LoginFlowKind::Unknown(value),
+                MatrixLoginFlowKind::Password => koushi_state::LoginFlowKind::Password,
+                MatrixLoginFlowKind::Sso => koushi_state::LoginFlowKind::Sso,
+                MatrixLoginFlowKind::Oidc => koushi_state::LoginFlowKind::Oidc,
+                MatrixLoginFlowKind::Token => koushi_state::LoginFlowKind::Token,
+                MatrixLoginFlowKind::Unknown(value) => koushi_state::LoginFlowKind::Unknown(value),
             },
             delegated_oidc_compatibility: flow.delegated_oidc_compatibility,
             display_name: flow.display_name,
@@ -642,7 +642,7 @@ Add:
 
 ```rust
 pub(crate) fn build_discover_login_command(
-    request_id: matrix_desktop_core::RequestId,
+    request_id: koushi_core::RequestId,
     homeserver: String,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::DiscoverLogin { request_id, homeserver })
@@ -674,8 +674,8 @@ it("discovers login methods through typed Tauri command", async () => {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-sdk --test login_discovery
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-sdk --test login_discovery
+cargo test -p koushi-core --lib
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- src/backend/client.test.ts
@@ -688,7 +688,7 @@ Expected: all commands PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-sdk crates/matrix-desktop-core apps/desktop/src-tauri apps/desktop/src/domain apps/desktop/src/backend docs/upstream
+git add crates/koushi-sdk crates/koushi-core apps/desktop/src-tauri apps/desktop/src/domain apps/desktop/src/backend docs/upstream
 git commit -m "feat: route login discovery through core"
 ```
 
@@ -697,14 +697,14 @@ Expected: commit succeeds.
 ## Task 3: Shared UIA And Device Session Manager Phase A
 
 **Files:**
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/account.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Test: `crates/matrix-desktop-state/tests/package_a_state.rs`
-- Test: `crates/matrix-desktop-core/src/tests.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/account.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Test: `crates/koushi-state/tests/package_a_state.rs`
+- Test: `crates/koushi-core/src/tests.rs`
 - Modify docs: `docs/architecture/state-machine.md`
 
 - [ ] **Step 1: Add failing reducer tests**
@@ -715,7 +715,7 @@ Extend `package_a_state.rs` with:
 #[test]
 fn device_session_query_sets_loading_and_emits_ui_event() {
     let mut state = AppState {
-        session: matrix_desktop_state::SessionState::Ready(matrix_desktop_state::SessionInfo {
+        session: koushi_state::SessionState::Ready(koushi_state::SessionInfo {
             homeserver: "https://example.test".to_owned(),
             user_id: "@user:example.test".to_owned(),
             device_id: "DEVICE".to_owned(),
@@ -727,8 +727,8 @@ fn device_session_query_sets_loading_and_emits_ui_event() {
     assert!(effects.iter().any(|effect| {
         matches!(
             effect,
-            matrix_desktop_state::AppEffect::EmitUiEvent(
-                matrix_desktop_state::UiEvent::DeviceSessionsChanged
+            koushi_state::AppEffect::EmitUiEvent(
+                koushi_state::UiEvent::DeviceSessionsChanged
             )
         )
     }));
@@ -738,7 +738,7 @@ fn device_session_query_sets_loading_and_emits_ui_event() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test package_a_state device_session_query_sets_loading_and_emits_ui_event
+cargo test -p koushi-state --test package_a_state device_session_query_sets_loading_and_emits_ui_event
 ```
 
 Expected: FAIL until actions and reducer transitions exist.
@@ -750,8 +750,8 @@ In `command.rs`, add:
 ```rust
 QueryDevices { request_id: RequestId },
 RenameDevice { request_id: RequestId, device_ordinal: u64, display_name: String },
-DeleteDevices { request_id: RequestId, device_ordinals: Vec<u64>, auth: Option<matrix_desktop_state::IdentityResetAuthRequest> },
-SoftLogoutReauth { request_id: RequestId, password: matrix_desktop_state::AuthSecret },
+DeleteDevices { request_id: RequestId, device_ordinals: Vec<u64>, auth: Option<koushi_state::IdentityResetAuthRequest> },
+SoftLogoutReauth { request_id: RequestId, password: koushi_state::AuthSecret },
 ```
 
 Use ordinals in UI/core state. Map ordinals to raw device IDs inside
@@ -759,7 +759,7 @@ Use ordinals in UI/core state. Map ordinals to raw device IDs inside
 
 - [ ] **Step 3: Add SDK wrappers**
 
-In `matrix-desktop-sdk/src/lib.rs`, add:
+In `koushi-sdk/src/lib.rs`, add:
 
 ```rust
 pub struct MatrixDeviceSessionSummary {
@@ -794,9 +794,9 @@ Clear it on logout, account switch, and actor shutdown.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test package_a_state
-cargo test -p matrix-desktop-core --lib
-cargo test -p matrix-desktop-sdk --lib
+cargo test -p koushi-state --test package_a_state
+cargo test -p koushi-core --lib
+cargo test -p koushi-sdk --lib
 ```
 
 Expected: all commands PASS.
@@ -806,7 +806,7 @@ Expected: all commands PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-sdk docs/architecture/state-machine.md
+git add crates/koushi-state crates/koushi-core crates/koushi-sdk docs/architecture/state-machine.md
 git commit -m "feat: add device session manager core"
 ```
 
@@ -815,19 +815,19 @@ Expected: commit succeeds.
 ## Task 4: #46 Room-Key Export/Import Phase A
 
 **Files:**
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/account.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/account.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
-- Test: `crates/matrix-desktop-state/tests/e2ee_trust_state.rs`
-- Test: `crates/matrix-desktop-core/src/tests.rs`
+- Test: `crates/koushi-state/tests/e2ee_trust_state.rs`
+- Test: `crates/koushi-core/src/tests.rs`
 
 - [ ] **Step 1: Add failing key-management reducer tests**
 
-Add to `crates/matrix-desktop-state/tests/e2ee_trust_state.rs`:
+Add to `crates/koushi-state/tests/e2ee_trust_state.rs`:
 
 ```rust
 #[test]
@@ -836,13 +836,13 @@ fn room_key_export_request_sets_secret_free_pending_state() {
     let effects = reduce(&mut state, AppAction::RoomKeyExportRequested { request_id: 10 });
     assert_eq!(
         state.e2ee_trust.key_management.room_key_export,
-        matrix_desktop_state::RoomKeyExportState::Exporting { request_id: 10 }
+        koushi_state::RoomKeyExportState::Exporting { request_id: 10 }
     );
     assert!(effects.iter().any(|effect| {
         matches!(
             effect,
-            matrix_desktop_state::AppEffect::EmitUiEvent(
-                matrix_desktop_state::UiEvent::E2eeKeyManagementChanged
+            koushi_state::AppEffect::EmitUiEvent(
+                koushi_state::UiEvent::E2eeKeyManagementChanged
             )
         )
     }));
@@ -852,7 +852,7 @@ fn room_key_export_request_sets_secret_free_pending_state() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test e2ee_trust_state room_key_export_request_sets_secret_free_pending_state
+cargo test -p koushi-state --test e2ee_trust_state room_key_export_request_sets_secret_free_pending_state
 ```
 
 Expected: FAIL until actions/reducer transitions exist.
@@ -864,12 +864,12 @@ In `command.rs`, add:
 ```rust
 pub struct RoomKeyExportRequest {
     pub destination_path: PathBuf,
-    pub passphrase: matrix_desktop_state::AuthSecret,
+    pub passphrase: koushi_state::AuthSecret,
 }
 
 pub struct RoomKeyImportRequest {
     pub source_path: PathBuf,
-    pub passphrase: matrix_desktop_state::AuthSecret,
+    pub passphrase: koushi_state::AuthSecret,
 }
 ```
 
@@ -885,7 +885,7 @@ ImportRoomKeys { request_id: RequestId, request: RoomKeyImportRequest },
 
 - [ ] **Step 3: Add SDK wrappers**
 
-In `matrix-desktop-sdk/src/lib.rs`, add:
+In `koushi-sdk/src/lib.rs`, add:
 
 ```rust
 pub struct RoomKeyExportSummary {
@@ -967,8 +967,8 @@ arguments are native/Tauri boundary values. They must not be logged.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test e2ee_trust_state
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-state --test e2ee_trust_state
+cargo test -p koushi-core --lib
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
 ```
 
@@ -984,7 +984,7 @@ contents.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-sdk apps/desktop/src-tauri docs/architecture
+git add crates/koushi-state crates/koushi-core crates/koushi-sdk apps/desktop/src-tauri docs/architecture
 git commit -m "feat: add room key file transfer core"
 gh issue comment 46 --body 'Phase A1 progress: room-key export/import state, commands, SDK wrappers, and Tauri command boundaries landed. Secrets and file contents remain command-boundary only; reducer state carries request ids, counts, and coarse failure kinds. #46 remains open for secure-backup setup/passphrase change and GUI evidence.'
 ```
@@ -994,14 +994,14 @@ Expected: commit succeeds and #46 has a Phase A1 comment.
 ## Task 5: #46 Secure Backup Setup And Passphrase Change Phase A
 
 **Files:**
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/account.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/account.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
-- Test: `crates/matrix-desktop-state/tests/e2ee_trust_state.rs`
-- Test: `crates/matrix-desktop-core/src/tests.rs`
+- Test: `crates/koushi-state/tests/e2ee_trust_state.rs`
+- Test: `crates/koushi-core/src/tests.rs`
 - Modify docs: `AGENTS.md`
 - Modify docs: `docs/policies/engineering-rules.md`
 
@@ -1018,14 +1018,14 @@ fn secure_backup_setup_recovery_key_ready_has_no_key_material() {
         &mut state,
         AppAction::SecureBackupRecoveryKeyReady {
             request_id: 33,
-            delivery: matrix_desktop_state::RecoveryKeyDeliveryState::Written,
+            delivery: koushi_state::RecoveryKeyDeliveryState::Written,
         },
     );
     assert_eq!(
         state.e2ee_trust.key_management.secure_backup_setup,
-        matrix_desktop_state::SecureBackupSetupState::RecoveryKeyReady {
+        koushi_state::SecureBackupSetupState::RecoveryKeyReady {
             request_id: 33,
-            delivery: matrix_desktop_state::RecoveryKeyDeliveryState::Written,
+            delivery: koushi_state::RecoveryKeyDeliveryState::Written,
         }
     );
 }
@@ -1034,7 +1034,7 @@ fn secure_backup_setup_recovery_key_ready_has_no_key_material() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test e2ee_trust_state secure_backup_setup_recovery_key_ready_has_no_key_material
+cargo test -p koushi-state --test e2ee_trust_state secure_backup_setup_recovery_key_ready_has_no_key_material
 ```
 
 Expected: FAIL until secure-backup setup actions exist.
@@ -1045,13 +1045,13 @@ In `command.rs`, add:
 
 ```rust
 pub struct SecureBackupSetupRequest {
-    pub passphrase: Option<matrix_desktop_state::AuthSecret>,
+    pub passphrase: Option<koushi_state::AuthSecret>,
     pub recovery_key_destination_path: Option<PathBuf>,
 }
 
 pub struct SecureBackupPassphraseChangeRequest {
-    pub old_secret: matrix_desktop_state::AuthSecret,
-    pub new_passphrase: matrix_desktop_state::AuthSecret,
+    pub old_secret: koushi_state::AuthSecret,
+    pub new_passphrase: koushi_state::AuthSecret,
     pub recovery_key_destination_path: Option<PathBuf>,
 }
 ```
@@ -1072,7 +1072,7 @@ ChangeSecureBackupPassphrase { request_id: RequestId, request: SecureBackupPassp
 
 - [x] **Step 3: Add SDK functions**
 
-In `matrix-desktop-sdk/src/lib.rs`, add:
+In `koushi-sdk/src/lib.rs`, add:
 
 ```rust
 pub struct SecureBackupSetupSummary {
@@ -1135,8 +1135,8 @@ In `AGENTS.md` and `docs/policies/engineering-rules.md`, add:
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test e2ee_trust_state
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-state --test e2ee_trust_state
+cargo test -p koushi-core --lib
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
 npm --prefix apps/desktop run qa:secret-scan
 ```
@@ -1148,7 +1148,7 @@ Expected: all commands PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core crates/matrix-desktop-sdk apps/desktop/src-tauri AGENTS.md docs/policies docs/architecture
+git add crates/koushi-state crates/koushi-core crates/koushi-sdk apps/desktop/src-tauri AGENTS.md docs/policies docs/architecture
 git commit -m "feat: add secure backup setup core"
 gh issue comment 46 --body 'Phase A2 progress: secure-backup setup and passphrase-change state/commands landed. Recovery-key delivery is one-shot Rust/Tauri artifact handling; snapshots, DTOs, logs, React state, and QA tokens carry only request ids and delivery status. #46 remains open for GUI and Linux evidence.'
 ```
@@ -1359,12 +1359,12 @@ Expected: commit succeeds; #46 closes only if evidence is present.
 ## Task 8: #47 Account Management Phase A/B
 
 **Files:**
-- Modify: `crates/matrix-desktop-sdk/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/account.rs`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/account.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `apps/desktop/src/components/UserSettingsPanel.tsx`
-- Test: `crates/matrix-desktop-core/src/tests.rs`
+- Test: `crates/koushi-core/src/tests.rs`
 - Test: `apps/desktop/src/components/UserSettingsPanel.test.tsx`
 
 - [ ] **Step 1: Add account-management commands**
@@ -1398,7 +1398,7 @@ Password homeservers render native password/3PID/deactivation controls.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-core --lib
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- src/components/UserSettingsPanel.test.tsx
@@ -1411,7 +1411,7 @@ Expected: all commands PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-core crates/matrix-desktop-sdk apps/desktop/src-tauri apps/desktop/src/components apps/desktop/src/i18n
+git add crates/koushi-core crates/koushi-sdk apps/desktop/src-tauri apps/desktop/src/components apps/desktop/src/i18n
 git commit -m "feat: add account management state and commands"
 gh issue comment 47 --body 'Account management Phase A/B progress landed: password-account commands are Rust-owned and OIDC accounts delegate to the account-management URL. Secrets are command-boundary only. Issue remains open if 3PID or identity-server Linux evidence is not yet present.'
 ```
@@ -1421,13 +1421,13 @@ Expected: commit succeeds.
 ## Task 9: #45 QR Login Contract
 
 **Files:**
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/account.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/account.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `apps/desktop/src/components/UserSettingsPanel.tsx`
-- Test: `crates/matrix-desktop-state/tests/package_a_state.rs`
-- Test: `crates/matrix-desktop-core/src/tests.rs`
+- Test: `crates/koushi-state/tests/package_a_state.rs`
+- Test: `crates/koushi-core/src/tests.rs`
 - Test: `apps/desktop/e2e/basic-operations.spec.ts`
 
 - [ ] **Step 1: Implement mockable QR state machine**
@@ -1473,8 +1473,8 @@ rendezvous secrets are native/actor-private and never logged.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test package_a_state
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-state --test package_a_state
+cargo test -p koushi-core --lib
 npm --prefix apps/desktop run test:ui-headless -- e2e/basic-operations.spec.ts --grep "QR login"
 ```
 
@@ -1485,7 +1485,7 @@ Expected: all commands PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-state crates/matrix-desktop-core apps/desktop/src-tauri apps/desktop/src/components apps/desktop/e2e docs/architecture
+git add crates/koushi-state crates/koushi-core apps/desktop/src-tauri apps/desktop/src/components apps/desktop/e2e docs/architecture
 git commit -m "feat: add QR login state contract"
 gh issue comment 45 --body 'QR login state contract and GUI proof landed with a mockable Rust-owned rendezvous state machine. Real MSC4108 transport remains capability-gated and private-data-free. Issue remains open until real transport or approved unavailable-state acceptance is recorded.'
 ```
@@ -1506,12 +1506,12 @@ Expected: commit succeeds.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --lib
-cargo test -p matrix-desktop-state --test package_a_state
-cargo test -p matrix-desktop-state --test e2ee_trust_state
-cargo test -p matrix-desktop-core --lib
-cargo test -p matrix-desktop-sdk --lib
-cargo test -p matrix-desktop-sdk --test login_discovery
+cargo test -p koushi-state --lib
+cargo test -p koushi-state --test package_a_state
+cargo test -p koushi-state --test e2ee_trust_state
+cargo test -p koushi-core --lib
+cargo test -p koushi-sdk --lib
+cargo test -p koushi-sdk --test login_discovery
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- src/backend/client.test.ts src/backend/browserFakeApi.test.ts src/components/UserSettingsPanel.test.tsx

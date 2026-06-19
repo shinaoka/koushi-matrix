@@ -167,7 +167,7 @@
   - `npm --prefix apps/desktop run typecheck` — PASS
   - `npm --prefix apps/desktop run test` — PASS (343 tests)
   - `npm --prefix apps/desktop run build` — PASS
-  - `cargo test -p matrix-desktop-key credential_backend` — PASS
+  - `cargo test -p koushi-key credential_backend` — PASS
   - `npm --prefix apps/desktop run test:ipc-contract` — PASS
 
 - [x] **Step 4: Close #82**
