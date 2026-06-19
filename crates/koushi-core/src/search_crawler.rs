@@ -16,6 +16,7 @@ use matrix_sdk::ruma::api::Direction;
 use serde_json::Value;
 
 use crate::executor;
+use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
 
 const BATCH_SIZE_FAST: u32 = 200;
@@ -68,13 +69,19 @@ pub(crate) enum HistoryCrawlPageResult {
 
 pub(crate) fn spawn_history_crawl_page(
     session: Arc<koushi_sdk::MatrixClientSession>,
+    messages_backpressure: MessagesBackpressure,
     checkpoint: HistoryCrawlCheckpoint,
 ) -> executor::JoinHandle<HistoryCrawlPageResult> {
-    executor::spawn(run_history_crawl_page(session, checkpoint))
+    executor::spawn(run_history_crawl_page(
+        session,
+        messages_backpressure,
+        checkpoint,
+    ))
 }
 
 async fn run_history_crawl_page(
     session: Arc<koushi_sdk::MatrixClientSession>,
+    messages_backpressure: MessagesBackpressure,
     mut checkpoint: HistoryCrawlCheckpoint,
 ) -> HistoryCrawlPageResult {
     if checkpoint.settings.speed == SearchCrawlerSpeed::Paused {
@@ -110,13 +117,16 @@ async fn run_history_crawl_page(
     options.limit = batch_size.into();
     options.from = checkpoint.from_token.clone();
 
-    let messages = match room.messages(options).await {
-        Ok(messages) => messages,
-        Err(_) => {
-            return HistoryCrawlPageResult::Failed {
-                checkpoint,
-                kind: SearchCrawlerFailureKind::Sdk,
-            };
+    let messages = {
+        let _permit = messages_backpressure.acquire_crawler().await;
+        match room.messages(options).await {
+            Ok(messages) => messages,
+            Err(_) => {
+                return HistoryCrawlPageResult::Failed {
+                    checkpoint,
+                    kind: SearchCrawlerFailureKind::Sdk,
+                };
+            }
         }
     };
 
@@ -590,6 +600,30 @@ mod tests {
         assert!(
             !page_runner.contains("loop {"),
             "page runner must not loop through an entire room history"
+        );
+    }
+
+    #[test]
+    fn history_crawler_page_runner_acquires_crawler_messages_backpressure() {
+        let source = include_str!("search_crawler.rs");
+        let page_runner = source
+            .split(concat!("async fn run", "_history", "_crawl", "_page"))
+            .nth(1)
+            .and_then(|tail| {
+                tail.split(concat!("fn crawl", "_batch", "_and", "_delay"))
+                    .next()
+            })
+            .expect("bounded page runner should exist");
+        let acquire_offset = page_runner
+            .find("acquire_crawler")
+            .expect("crawler page runner must acquire crawler /messages backpressure");
+        let messages_offset = page_runner
+            .find(concat!("room", ".", "messages", "(", "options", ")", ".", "await"))
+            .expect("page runner must fetch one /messages page");
+
+        assert!(
+            acquire_offset < messages_offset,
+            "crawler page runner must acquire /messages backpressure before room.messages"
         );
     }
 

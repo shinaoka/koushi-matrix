@@ -166,11 +166,15 @@ restart a room already `Running` or `Completed`. Manual `StartHistoryCrawl` /
 `StopHistoryCrawl` remain for explicit control; `Paused` disables it.
 
 Default: `speed = Standard` (auto-on). The **load-safety mechanism is the rate
-limit**, exactly as in Element: each room is paged in bounded batches with an
-enforced inter-batch delay (see Behavior), so background backfill never bursts
-the homeserver. This is the confirmed intended behavior; codex's suggestion to
-default `Paused` is **not adopted** — the throttle is the durable safeguard and
-is a persisted, tested setting (issue #77 requires the throttle be persisted and
+limit plus account-wide `/messages` backpressure**, exactly as in Element's
+bounded crawler but adapted to this app's separate timeline actor: each room is
+paged in bounded batches with an enforced inter-batch delay (see Behavior), and
+the crawler shares one account-scoped `/messages` gate with timeline
+pagination. Timeline pagination has priority, so background backfill never
+bursts the homeserver or competes with user scrollback. This is the confirmed
+intended behavior; codex's suggestion to default `Paused` is **not adopted** —
+the throttle/backpressure pair is the durable safeguard and the speed is a
+persisted, tested setting (issue #77 requires the throttle be persisted and
 honored). The default `Standard` keeps a real, non-zero inter-batch delay;
 `Fast` (0 ms) is reserved for explicit user choice / QA only.
 

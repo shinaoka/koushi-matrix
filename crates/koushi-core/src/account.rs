@@ -213,6 +213,9 @@ pub struct AccountActor {
     /// TimelineManagerActor handle (Phase 5). Spawned once at actor creation;
     /// session reference is updated when a store-backed session is established.
     timeline_manager: TimelineManagerHandle,
+    /// Account-wide gate for `/rooms/{roomId}/messages` requests. Timeline
+    /// pagination has priority over background search-history crawling.
+    messages_backpressure: crate::messages_backpressure::MessagesBackpressure,
     /// Application data directory for cached preview images.
     data_dir: std::path::PathBuf,
     /// Latest link-preview policy snapshot from AppState, kept current so a
@@ -271,12 +274,14 @@ impl AccountActor {
         // Spawn RoomActor once at AccountActor creation. It starts with no
         // session and waits for RoomMessage::SyncStarted.
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
+        let messages_backpressure = crate::messages_backpressure::MessagesBackpressure::default();
         // Spawn TimelineManagerActor. It starts with no session; the session
         // is injected when a store-backed session is established.
         let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
             action_tx.clone(),
             event_tx.clone(),
             Some(data_dir.clone()),
+            messages_backpressure.clone(),
         );
         let actor = AccountActor {
             session: None,
@@ -289,6 +294,7 @@ impl AccountActor {
             sync_actor: None,
             room_actor,
             timeline_manager,
+            messages_backpressure,
             data_dir,
             link_preview_policy: initial_link_preview_policy,
             search_actor: None,
@@ -897,6 +903,7 @@ impl AccountActor {
             session.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
+            self.messages_backpressure.clone(),
         );
         let search_index_tx = search_handle.index_sender();
 
@@ -919,6 +926,7 @@ impl AccountActor {
             search_index_tx,
             Some(self.data_dir.clone()),
             self.link_preview_policy.clone(),
+            self.messages_backpressure.clone(),
         );
 
         let handle = crate::sync::SyncActor::spawn(
@@ -4575,10 +4583,12 @@ mod tests {
         let (self_tx, command_rx) = mpsc::channel(16);
         let data_dir_path = store.data_dir().to_path_buf();
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
+        let messages_backpressure = crate::messages_backpressure::MessagesBackpressure::default();
         let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
             action_tx.clone(),
             event_tx.clone(),
             Some(data_dir_path.clone()),
+            messages_backpressure.clone(),
         );
         let mut actor = AccountActor {
             session: None,
@@ -4591,6 +4601,7 @@ mod tests {
             sync_actor: None,
             room_actor,
             timeline_manager,
+            messages_backpressure,
             data_dir: data_dir_path,
             link_preview_policy: LinkPreviewContext::default(),
             search_actor: None,

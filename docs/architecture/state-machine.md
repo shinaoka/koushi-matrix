@@ -2128,8 +2128,11 @@ stateDiagram-v2
   checkpoint queue: it skips rooms already queued, actively paging, or
   completed, fetches one bounded `/messages` page at a time, and pushes an
   unfinished checkpoint to the back of the queue. This round-robin shape avoids
-  one room monopolizing historical backfill and avoids concurrent `/messages`
-  bursts across large accounts.
+  one room monopolizing historical backfill. Every crawler page also passes
+  through the account-wide `/messages` backpressure gate shared with
+  `TimelineActor` pagination. The gate allows only one `/messages` page fetch
+  per account at a time, and timeline pagination has priority over background
+  crawler work.
 - **Paused → active**: When `SettingsUpdateRequested` changes speed from
   `Paused` to any active value, the reducer emits
   `NotifySearchCrawlerRoomsAvailable` with all known rooms so previously-paused

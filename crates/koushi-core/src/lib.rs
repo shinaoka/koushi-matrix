@@ -14,6 +14,7 @@ pub mod executor;
 pub mod failure;
 pub mod ids;
 pub(crate) mod link_preview;
+pub(crate) mod messages_backpressure;
 pub mod room;
 pub mod runtime;
 pub(crate) mod scheduled_send;

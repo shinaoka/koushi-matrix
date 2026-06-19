@@ -100,6 +100,7 @@ use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind};
 use crate::link_preview::LinkPreviewContext;
+use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
@@ -161,13 +162,15 @@ pub struct TimelineManagerActor {
     data_dir: Option<std::path::PathBuf>,
     /// URL preview policy broadcast from AppState.
     link_preview_policy: LinkPreviewContext,
+    messages_backpressure: MessagesBackpressure,
 }
 
 impl TimelineManagerActor {
-    pub fn spawn(
+    pub(crate) fn spawn(
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         data_dir: Option<std::path::PathBuf>,
+        messages_backpressure: MessagesBackpressure,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let actor = TimelineManagerActor {
@@ -181,6 +184,7 @@ impl TimelineManagerActor {
             ignored_user_ids: std::collections::BTreeSet::new(),
             data_dir,
             link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure,
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -188,13 +192,14 @@ impl TimelineManagerActor {
 
     /// Spawn with a session and a search index mutation sender.
     /// Called by `AccountActor::spawn_sync_actor` (Phase 6 wiring).
-    pub fn spawn_with_session(
+    pub(crate) fn spawn_with_session(
         session: Arc<MatrixClientSession>,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         search_index_tx: mpsc::Sender<SearchIndexMessage>,
         data_dir: Option<std::path::PathBuf>,
         link_preview_policy: LinkPreviewContext,
+        messages_backpressure: MessagesBackpressure,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let actor = TimelineManagerActor {
@@ -208,6 +213,7 @@ impl TimelineManagerActor {
             ignored_user_ids: std::collections::BTreeSet::new(),
             data_dir,
             link_preview_policy,
+            messages_backpressure,
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -798,6 +804,7 @@ impl TimelineManagerActor {
             self.ignored_user_ids.clone(),
             self.data_dir.clone(),
             self.link_preview_policy.for_room(key.room_id()),
+            self.messages_backpressure.clone(),
         )
         .await;
 
@@ -1304,6 +1311,7 @@ struct TimelineActor {
     link_preview_policy: LinkPreviewContext,
     /// Application data directory for cached preview images.
     data_dir: Option<std::path::PathBuf>,
+    messages_backpressure: MessagesBackpressure,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1326,6 +1334,7 @@ impl TimelineActor {
         ignored_user_ids: std::collections::BTreeSet<String>,
         data_dir: Option<std::path::PathBuf>,
         link_preview_policy: LinkPreviewContext,
+        messages_backpressure: MessagesBackpressure,
     ) -> TimelineActorHandle {
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
@@ -1451,6 +1460,7 @@ impl TimelineActor {
             ignored_user_ids,
             link_preview_policy,
             data_dir,
+            messages_backpressure,
         };
 
         executor::spawn(actor.run());
@@ -1676,9 +1686,14 @@ impl TimelineActor {
             state: PaginationState::Paginating,
         }));
 
-        let result = match direction {
-            PaginationDirection::Backward => self.timeline.paginate_backwards(event_count).await,
-            PaginationDirection::Forward => self.timeline.paginate_forwards(event_count).await,
+        let result = {
+            let _permit = self.messages_backpressure.acquire_timeline().await;
+            match direction {
+                PaginationDirection::Backward => {
+                    self.timeline.paginate_backwards(event_count).await
+                }
+                PaginationDirection::Forward => self.timeline.paginate_forwards(event_count).await,
+            }
         };
 
         let next_state = match result {
@@ -6023,6 +6038,31 @@ mod tests {
         assert!(
             room_focus.contains("hide_threaded_events: true"),
             "room live timelines must hide threaded replies"
+        );
+    }
+
+    #[test]
+    fn timeline_pagination_uses_account_wide_messages_backpressure() {
+        let source = include_str!("timeline.rs");
+        let pagination_source = source
+            .split("async fn handle_paginate")
+            .nth(1)
+            .and_then(|section| section.split("async fn handle_send_text").next())
+            .expect("pagination handler should exist");
+        let acquire_offset = pagination_source
+            .find("acquire_timeline")
+            .expect("timeline pagination must acquire the shared /messages backpressure permit");
+        let paginate_offset = pagination_source
+            .find("paginate_backwards")
+            .expect("timeline pagination must still call SDK pagination");
+
+        assert!(
+            source.contains("MessagesBackpressure"),
+            "Timeline actors must carry the shared account-wide /messages backpressure handle"
+        );
+        assert!(
+            acquire_offset < paginate_offset,
+            "timeline pagination must acquire account-wide /messages backpressure before SDK pagination"
         );
     }
 

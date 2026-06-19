@@ -62,6 +62,7 @@ use crate::event::{CoreEvent, SearchEvent, SearchResultItem};
 use crate::executor;
 use crate::failure::{CoreFailure, SearchFailureKind};
 use crate::ids::RequestId;
+use crate::messages_backpressure::MessagesBackpressure;
 use crate::search_crawler::{HistoryCrawlCheckpoint, HistoryCrawlPageResult};
 
 /// Maximum number of candidates requested from the SDK ngram index.
@@ -346,6 +347,7 @@ pub(crate) struct SearchActor {
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<SearchActorMessage>,
+    messages_backpressure: MessagesBackpressure,
     /// Element-style checkpoint queue for history crawling. The actor starts
     /// exactly one bounded `/messages` page at a time; unfinished rooms are
     /// pushed to the back so other rooms get a turn before the next page.
@@ -379,6 +381,7 @@ impl SearchActor {
         session: Arc<MatrixClientSession>,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
+        messages_backpressure: MessagesBackpressure,
     ) -> SearchActorHandle {
         let (tx, msg_rx) = mpsc::channel(64);
         let (index_tx, index_rx) = mpsc::channel(SEARCH_INDEX_MUTATION_QUEUE);
@@ -390,6 +393,7 @@ impl SearchActor {
             action_tx,
             event_tx,
             msg_rx,
+            messages_backpressure,
             crawl_queue: VecDeque::new(),
             queued_crawl_rooms: HashSet::new(),
             available_crawl_rooms: HashSet::new(),
@@ -790,6 +794,7 @@ impl SearchActor {
         }
         let handle = crate::search_crawler::spawn_history_crawl_page(
             self.session.clone(),
+            self.messages_backpressure.clone(),
             checkpoint.clone(),
         );
         self.active_crawl_checkpoint = Some(checkpoint);
@@ -1284,6 +1289,35 @@ mod tests {
                 "abort", "_active", "_history", "_crawl", "_if", "_retired"
             )),
             "an in-flight page for a room that disappeared must be aborted before it can reinsert state"
+        );
+    }
+
+    #[test]
+    fn search_actor_history_crawler_uses_account_wide_messages_backpressure() {
+        let source = include_str!("search.rs");
+        let start_page_source = source
+            .split(concat!("fn start", "_next", "_history", "_crawl", "_page"))
+            .nth(1)
+            .and_then(|section| {
+                section
+                    .split(concat!(
+                        "async fn handle",
+                        "_history",
+                        "_crawl",
+                        "_page",
+                        "_result"
+                    ))
+                    .next()
+            })
+            .expect("crawler page starter should exist");
+
+        assert!(
+            source.contains("MessagesBackpressure"),
+            "SearchActor must carry the shared account-wide /messages backpressure handle"
+        );
+        assert!(
+            start_page_source.contains("messages_backpressure.clone()"),
+            "each search crawler page must receive the shared /messages backpressure handle"
         );
     }
 }

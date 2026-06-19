@@ -274,7 +274,11 @@ An in-process actor system in `koushi-core`:
   setter. Do not move presence semantics into React while that SDK/API decision
   remains open.
 - `SearchActor` — ngram candidates, canonical-text verification,
-  document-level index mutations for edits/redactions/late decryptions.
+  document-level index mutations for edits/redactions/late decryptions, and
+  Element-style background history crawling. Historical `/messages` requests
+  are account-wide backpressured: `TimelineActor` pagination and
+  `SearchActor` crawler pages share one gate per account, and user-visible
+  timeline pagination has priority over background crawler work.
 - `StoreActor` — credential store access, store/search keys, per-account
   paths, cleanup, debug/test secret injection policy.
 
