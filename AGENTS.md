@@ -1000,6 +1000,21 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   the reply lifecycle (or have the App refresh from owned state, not a static
   mock). The `reply send does not repair product state by cancelling reply mode`
   regression added in that remediation passes deterministically in isolation.
+- `e2e/desktop-shell-a11y.spec.ts:18` ("the three-pane shell exposes landmarks
+  and reachable keyboard focus stops") is a PRE-EXISTING failure: the
+  `complementary` landmark named "Context panel" is not found/visible at the
+  default `/` harness state. It fails identically on a clean checkout of the
+  pre-#77-83 base commit, so it is not introduced by the #77-83 dogfood work.
+  There is no hosted CI, so this a11y spec had been silently red. Track a
+  separate fix for the default right-panel landmark; do not treat it as a
+  #77-83 regression.
+- `e2e/basic-operations.spec.ts:2811` ("pin and unpin actions render the Tauri
+  snapshot response without a manual state event") is flaky in the FULL parallel
+  Playwright run but passes deterministically in isolation
+  (`npx playwright test basic-operations.spec.ts:2811 --workers=1`). Same class
+  as the reply-spec flake above: a shared Vite-harness snapshot-timing race under
+  parallel-file worker contention, not a product bug. Run pinned/snapshot specs
+  isolated or with `--workers=1` to confirm.
 - For i18n headless tests that first push a locale/profile snapshot and then
   mutate the event-driven timeline, prefer updating the already-seeded room row
   with `ItemsUpdated.Set` at generation `1`. A one-off `InitialItems` emitted
