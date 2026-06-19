@@ -1,8 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use matrix_desktop_key::{
-    CredentialBackendErrorKind, CredentialStore, LocalSecretError, LocalUnlockSecret,
-    SavedSessionIndex, SessionKeyId, StoredMatrixSession, is_missing_credential_error,
-    map_delete_result,
+    CredentialBackendErrorKind, CredentialStore, InMemoryCredentialBackend, LocalSecretError,
+    LocalUnlockSecret, SavedSessionIndex, SessionKeyId, StoredMatrixSession,
+    is_missing_credential_error, last_session_account_name, saved_sessions_account_name,
 };
 
 fn secret_from_test_byte(byte: u8) -> LocalUnlockSecret {
@@ -88,7 +88,7 @@ fn matrix_session_account_name_is_separate_from_local_unlock_secret() {
 #[test]
 fn last_session_pointer_account_name_is_global_and_versioned() {
     assert_eq!(
-        CredentialStore::last_session_account_name(),
+        last_session_account_name(),
         "matrix-desktop:last-session:v1"
     );
 }
@@ -126,7 +126,7 @@ fn saved_session_index_tracks_unique_sessions_and_redacts_debug() {
 #[test]
 fn saved_session_index_account_name_is_global_and_versioned() {
     assert_eq!(
-        CredentialStore::saved_sessions_account_name(),
+        saved_sessions_account_name(),
         "matrix-desktop:saved-sessions:v1"
     );
 }
@@ -189,10 +189,9 @@ fn stored_secret_rejects_invalid_length() {
     ));
 }
 
-#[test]
-fn delete_missing_credential_is_success() {
-    assert!(map_delete_result(Err(keyring::Error::NoEntry)).is_ok());
-}
+/// delete_missing_credential_is_success tests `map_delete_result` which was a
+/// keyring-specific helper moved to `apps/desktop/src-tauri/tests/keyring_backend.rs`.
+/// It is removed from this crate because matrix-desktop-key is now keyring-free.
 
 #[test]
 fn missing_credential_error_is_classified_for_fail_closed_store_restore() {
@@ -204,7 +203,10 @@ fn missing_credential_error_is_classified_for_fail_closed_store_restore() {
 #[test]
 #[ignore = "uses the live operating-system credential store"]
 fn credential_store_last_session_pointer_round_trip() {
-    let store = CredentialStore::new("matrix-desktop-key-test");
+    let store = CredentialStore::with_backend(
+        "matrix-desktop-key-test",
+        InMemoryCredentialBackend::default(),
+    );
     let id = SessionKeyId {
         homeserver: "https://matrix.example".into(),
         user_id: "@user-a:example.invalid".into(),
@@ -224,7 +226,10 @@ fn credential_store_last_session_pointer_round_trip() {
 #[test]
 #[ignore = "uses the live operating-system credential store"]
 fn credential_store_matrix_session_round_trip() {
-    let store = CredentialStore::new("matrix-desktop-key-test");
+    let store = CredentialStore::with_backend(
+        "matrix-desktop-key-test",
+        InMemoryCredentialBackend::default(),
+    );
     let id = SessionKeyId {
         homeserver: "https://matrix.example".into(),
         user_id: "@user-a:example.invalid".into(),
@@ -249,7 +254,10 @@ fn credential_store_matrix_session_round_trip() {
 #[test]
 #[ignore = "uses the live operating-system credential store"]
 fn credential_store_round_trip() {
-    let store = CredentialStore::new("matrix-desktop-key-test");
+    let store = CredentialStore::with_backend(
+        "matrix-desktop-key-test",
+        InMemoryCredentialBackend::default(),
+    );
     let id = SessionKeyId {
         homeserver: "https://matrix.example".into(),
         user_id: "@user-a:example.invalid".into(),

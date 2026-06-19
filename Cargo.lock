@@ -2099,7 +2099,6 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "hkdf",
- "keyring",
  "rand 0.9.4",
  "serde",
  "serde_json",

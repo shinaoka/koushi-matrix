@@ -89,6 +89,23 @@ impl CoreRuntime {
         )
     }
 
+    /// Start with a custom data directory and an injected OS credential store
+    /// backend. Used by the production Tauri binary to inject the real keyring
+    /// adapter (`KeyringCredentialBackend`).
+    pub fn start_with_data_dir_and_os_backend(
+        data_dir: PathBuf,
+        os_backend: std::sync::Arc<dyn matrix_desktop_key::CredentialBackend>,
+    ) -> Self {
+        let account_store_actor = StoreActor::with_os_backend(data_dir.clone(), os_backend.clone());
+        let composer_draft_store_actor = StoreActor::with_os_backend(data_dir.clone(), os_backend);
+        Self::start_inner(
+            EVENT_QUEUE_CAPACITY,
+            data_dir,
+            account_store_actor,
+            composer_draft_store_actor,
+        )
+    }
+
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn start_with_event_capacity(event_capacity: usize) -> Self {
         let data_dir = default_data_dir();
@@ -1548,10 +1565,12 @@ impl AppActor {
             {
                 let _ = self
                     .account_actor
-                    .send(crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
-                        room_ids,
-                        settings,
-                    })
+                    .send(
+                        crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
+                            room_ids,
+                            settings,
+                        },
+                    )
                     .await;
             } else if let AppEffect::InvalidateSearchCrawlerCache = effect {
                 let _ = self
@@ -1603,10 +1622,12 @@ impl AppActor {
                 // AccountActor (fire-and-forget, idempotent).
                 let _ = self
                     .account_actor
-                    .send(crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
-                        room_ids: room_ids.clone(),
-                        settings: settings.clone(),
-                    })
+                    .send(
+                        crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
+                            room_ids: room_ids.clone(),
+                            settings: settings.clone(),
+                        },
+                    )
                     .await;
             } else if let AppEffect::InvalidateSearchCrawlerCache = effect {
                 let _ = self

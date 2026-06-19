@@ -83,12 +83,15 @@ const BANNED_PLATFORM_DEPS = [
 
 // Pure domain crates and the platform deps each forbids. State is sync/pure and
 // forbids everything; core may use tokio (executor.rs only) but nothing else.
+// matrix-desktop-key is now a pure port crate (keyring-free) and forbids the
+// full list including keyring.
 const DOMAIN_CRATES = [
   { name: "matrix-desktop-state", banned: BANNED_PLATFORM_DEPS },
   {
     name: "matrix-desktop-core",
     banned: BANNED_PLATFORM_DEPS.filter((dep) => dep !== "tokio"),
   },
+  { name: "matrix-desktop-key", banned: BANNED_PLATFORM_DEPS },
 ];
 
 /**
