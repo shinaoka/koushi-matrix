@@ -1,5 +1,9 @@
 # Koushi (光子・格子)
 
+<p align="center">
+  <img src="assets/branding/koushi-wordmark.svg" alt="Koushi logo: a bright photon node on a lattice with light running through the grid" width="372">
+</p>
+
 Desktop Matrix client prototype built toward Tauri, React, and matrix-rust-sdk.
 
 **Koushi** (コウシ) is a deliberate double pun in Japanese:

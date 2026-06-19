@@ -1280,9 +1280,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - `--skip-build` reuses an existing debug binary, but the QA window-title
   tokens (`matrix-desktop qa session=...`) are baked into the frontend at build
   time behind `VITE_MATRIX_DESKTOP_QA_TITLE=1`. A binary built without that env
-  shows the normal product title (e.g. `matrix-desktop · 1 unread`) instead, so
+  shows the normal product title (e.g. `Koushi · 1 unread`) instead, so
   the lane's `waitForLocalLoginReady` times out with "local GUI login did not
-  reach a ready state. Last title: matrix-desktop · 1 unread". The runner's own
+  reach a ready state. Last title: Koushi · 1 unread". The runner's own
   build sets this env; when pre-building manually for `--skip-build`
   (`npm --prefix apps/desktop run tauri build -- --debug --no-bundle`), also set
   `VITE_MATRIX_DESKTOP_QA_TITLE=1`, or run one lane without `--skip-build` first
@@ -1473,7 +1473,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - If screenshot capture is blocked, also grant Screen Recording permission to
   the app running the agent.
 - In Tauri dev mode the macOS process name can be `matrix-desktop-app`, while
-  the product/window title is `matrix-desktop`. GUI automation must check both
+  the product/window title is `Koushi`. GUI automation must check both
   names.
 - Failed GUI smoke runs must clean up the full process group. A stale Vite
   process leaves port `5173` occupied and makes the next `tauri dev` fail.

@@ -330,9 +330,10 @@ conflict is being resolved.
 ## Product Identity And Migration
 
 - The shipped product name is **Koushi**. User-facing strings, window titles,
-  installer metadata, docs, and QA artifacts must use Koushi. The repository
-  codename remains `matrix-desktop`.
+  installer metadata, docs, and QA artifacts must use Koushi. The GitHub
+  repository is `shinaoka/koushi-matrix`.
 - Current internal identifiers are:
+  - Internal crate/module prefix: `matrix-desktop-*`
   - Tauri bundle identifier: `chat.koushi.desktop`
   - npm/Cargo package name: `koushi-desktop`
   - keychain / file credential-store service name: `koushi-desktop`
