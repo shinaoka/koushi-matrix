@@ -269,12 +269,16 @@ impl SyncActor {
         if self.lifecycle == SyncLifecycle::Running {
             let backend = self.current_backend_kind();
             let mode = sync_mode_from_backend(backend, false);
-            self.reduce(vec![AppAction::SyncModeChanged { mode }]);
+            self.reduce(vec![
+                AppAction::SyncModeChanged { mode },
+                AppAction::SyncStarted,
+            ]);
             self.emit(CoreEvent::Sync(SyncEvent::Started {
                 request_id: Some(request_id),
                 backend,
             }));
             self.emit(CoreEvent::Sync(SyncEvent::ModeChanged { mode }));
+            self.emit(CoreEvent::Sync(SyncEvent::Running));
             return;
         }
 
@@ -823,6 +827,27 @@ pub mod tests {
                 }
             ),
             "event shape wrong: {event:?}"
+        );
+    }
+
+    #[test]
+    fn idempotent_start_must_reproject_running_state() {
+        let source = include_str!("sync.rs");
+        let idempotent_start_arm = source
+            .split("if self.lifecycle == SyncLifecycle::Running")
+            .nth(1)
+            .expect("idempotent Start branch should exist")
+            .split("return;")
+            .next()
+            .expect("idempotent Start branch should return");
+
+        assert!(
+            idempotent_start_arm.contains("SyncEvent::Running"),
+            "a repeated Start while lifecycle is Running must re-emit Running for waiters"
+        );
+        assert!(
+            idempotent_start_arm.contains("AppAction::SyncStarted"),
+            "a repeated Start must reproject AppState.sync=Running after recovery reducers reset it to Starting"
         );
     }
 

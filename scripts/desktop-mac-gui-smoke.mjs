@@ -24,13 +24,16 @@ const checks = [
 
 const args = new Set(process.argv.slice(2));
 const artifactDir = optionValue("--artifact-dir") ?? join(repoRoot, "artifacts", "mac-gui-smoke");
-const timeoutMs = Number(optionValue("--timeout-ms") ?? "120000");
+const timeoutMs = Number(optionValue("--timeout-ms") ?? "30000");
+const sendTimeoutMs = Number(optionValue("--send-timeout-ms") ?? "30000");
 const realLoginFromStdin = args.has("--real-login-from-stdin");
 const keepSession = args.has("--keep-session");
 const allowEmptyTimeline = args.has("--allow-empty-timeline");
 const allowPrivateScreenshots = args.has("--allow-private-screenshots");
+const verbose = args.has("--verbose");
 const qaProfile = optionValue("--qa-profile");
 const sendSmokeMessageOption = optionValue("--send-smoke-message");
+const sendSmokeUserId = sendSmokeUserIdFromOption(optionValue("--send-smoke-user-id"));
 const sendSmokeMessage =
   args.has("--send-smoke-message") || sendSmokeMessageOption !== undefined
     ? sendSmokeMessageFromOption(sendSmokeMessageOption)
@@ -138,12 +141,18 @@ async function run() {
   const screenshotDir = join(runDir, "screenshots");
   const dataDir = qaDataDirForRun(runDir);
   const logPath = join(runDir, "tauri-dev.log");
+  const diagnosticsPath = join(runDir, "qa-diagnostics.log");
   const qaLoginPipePath = realLogin ? join(runDir, "qa-login.pipe") : null;
   // Second FIFO: a debug/test-only control channel the harness uses to drive a
   // clean logout after a real login so no stale device survives the run.
   const qaControlPipePath = realLogin ? join(runDir, "qa-control.pipe") : null;
   mkdirSync(screenshotDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
+  const diagnostics = createQaDiagnostics(diagnosticsPath);
+  diagnostics.record(
+    "config",
+    `real_login=${Boolean(realLogin)} qa_profile=${qaProfile !== undefined} send_smoke=${sendSmokeMessage !== null} allow_empty_timeline=${allowEmptyTimeline} timeout_ms=${timeoutMs} send_timeout_ms=${sendTimeoutMs}`
+  );
   if (qaLoginPipePath) {
     createNamedPipe(qaLoginPipePath);
   }
@@ -158,16 +167,17 @@ async function run() {
     stdio: ["ignore", "pipe", "pipe"]
   });
 
-  // Tracks whether a real login reached the ready room/timeline state, so the
-  // teardown only attempts a logout cleanup when there is a session to clear.
-  let realLoginReachedReady = false;
+  // Tracks whether credentials were handed to the app. After that point a
+  // partial login may have created a device, so teardown must attempt logout
+  // even if the ready gate later fails.
+  let realLoginCleanupRequired = false;
 
   const output = [];
   child.stdout.on("data", (chunk) => recordOutput(output, logPath, chunk));
   child.stderr.on("data", (chunk) => recordOutput(output, logPath, chunk));
 
   try {
-    const windowInfo = await waitForWindow(timeoutMs);
+    const windowInfo = await waitForWindow(timeoutMs, diagnostics);
     console.log(`ok verify main window: ${formatWindowInfo(windowInfo)}`);
 
     const initialWindowScreenshotIsAllowed = qaProfile === undefined || allowPrivateScreenshots;
@@ -183,25 +193,26 @@ async function run() {
 
     if (realLogin) {
       await writeRealLoginPipe(qaLoginPipePath, realLogin);
+      realLoginCleanupRequired = true;
       const qaTitle = await waitForQaTitle(
         timeoutMs,
         Boolean(realLogin.recoverySecret),
-        allowEmptyTimeline
+        allowEmptyTimeline,
+        diagnostics
       );
-      realLoginReachedReady = true;
       console.log(`ok real login QA: ${qaTitle}`);
       console.log("skip real login screenshot: post-login windows can contain private room data");
     } else if (qaProfile !== undefined) {
-      const qaTitle = await waitForQaTitle(timeoutMs, false, allowEmptyTimeline);
+      const qaTitle = await waitForQaTitle(timeoutMs, false, allowEmptyTimeline, diagnostics);
       console.log(`ok restored session QA: ${qaTitle}`);
     }
     if (sendSmokeMessage !== null) {
-      const qaSendTitle = await waitForQaSend(timeoutMs);
+      const qaSendTitle = await waitForQaSend(sendTimeoutMs, diagnostics);
       console.log(`ok send smoke QA: ${qaSendTitle}`);
     }
 
     await keyChord("/");
-    const keyboardTitle = await waitForQaPanel(timeoutMs, "keyboardSettings");
+    const keyboardTitle = await waitForQaPanel(timeoutMs, "keyboardSettings", diagnostics);
     console.log(`ok keyboard settings QA: ${keyboardTitle}`);
     if (postLoginScreenshotsAreAllowed) {
       const keyboardScreenshot = join(screenshotDir, "02-keyboard-settings.png");
@@ -210,7 +221,7 @@ async function run() {
     }
 
     await keyChord(",");
-    const userSettingsTitle = await waitForQaPanel(timeoutMs, "userSettings");
+    const userSettingsTitle = await waitForQaPanel(timeoutMs, "userSettings", diagnostics);
     console.log(`ok user settings QA: ${userSettingsTitle}`);
     if (postLoginScreenshotsAreAllowed) {
       const userSettingsScreenshot = join(screenshotDir, "03-user-settings.png");
@@ -219,8 +230,12 @@ async function run() {
     }
 
     console.log(`mac GUI smoke passed: ${runDir}`);
+    if (verbose) {
+      console.log(`diagnostics path: ${diagnosticsPath}`);
+    }
   } catch (error) {
     console.error(`mac GUI smoke failed. Artifacts: ${runDir}`);
+    console.error(`diagnostics path: ${diagnosticsPath}`);
     console.error(tail(output.join(""), 40));
     throw error;
   } finally {
@@ -228,10 +243,10 @@ async function run() {
     // did not ask to keep the session, drive a logout through the QA control
     // pipe and wait for `session=signedOut` so no stale device survives the
     // run. Best-effort: a cleanup failure is logged, never thrown.
-    if (qaControlPipePath && realLoginReachedReady && !keepSession) {
+    if (qaControlPipePath && realLoginCleanupRequired && !keepSession) {
       try {
         await requestQaLogout(qaControlPipePath);
-        const signedOutTitle = await waitForQaSignedOut(timeoutMs);
+        const signedOutTitle = await waitForQaSignedOut(timeoutMs, diagnostics);
         console.log(`ok real login logout cleanup: ${signedOutTitle}`);
       } catch (cleanupError) {
         console.error(`real login logout cleanup failed: ${cleanupError.message}`);
@@ -299,7 +314,10 @@ function childEnvironment(dataDir, qaLoginPipePath = null, qaControlPipePath = n
   if (sendSmokeMessage !== null) {
     env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE = sendSmokeMessage;
   }
-  if (qaProfile !== undefined) {
+  if (sendSmokeUserId !== null) {
+    env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_USER_ID = sendSmokeUserId;
+  }
+  if (qaProfile !== undefined || realLoginFromStdin) {
     env.MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR = join(dataDir, "qa-credential-store");
   }
   if (realLoginFromStdin && qaProfile === undefined) {
@@ -335,6 +353,14 @@ function sendSmokeMessageFromOption(value) {
     throw new Error("send smoke message must be a single line");
   }
   return message;
+}
+
+function sendSmokeUserIdFromOption(value) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.startsWith("@") ? trimmed : `@${trimmed}`;
 }
 
 function readRealLoginCredentials() {
@@ -394,12 +420,13 @@ function realLoginCredentialsFromInput(input) {
   };
 }
 
-async function waitForWindow(timeout) {
+async function waitForWindow(timeout, diagnostics = null) {
   const startedAt = Date.now();
   let lastError = "";
   while (Date.now() - startedAt < timeout) {
     try {
       const value = await appleScript(windowQueryScript());
+      recordQaPoll(diagnostics, "window", value);
       if (value !== "missing" && !value.endsWith("|no-window")) {
         const windowInfo = parseWindowInfo(value);
         activeProcessName = windowInfo.processName;
@@ -407,6 +434,7 @@ async function waitForWindow(timeout) {
       }
       lastError = value;
     } catch (error) {
+      recordQaPoll(diagnostics, "window", error.message);
       if (error.message.includes("AppleScript timed out")) {
         throw new Error(
           `${error.message}. Grant Accessibility permission to the terminal running this script, then rerun qa:mac-gui.`
@@ -534,51 +562,59 @@ async function writeSensitivePayloadToPath(path, payload, timeout) {
   }
 }
 
-async function waitForQaTitle(timeout, requireRecovered, allowEmptyTimeline) {
+async function waitForQaTitle(timeout, requireRecovered, allowEmptyTimeline, diagnostics = null) {
   const startedAt = Date.now();
   let lastTitle = "";
   while (Date.now() - startedAt < timeout) {
     try {
       const windowInfo = await currentWindowInfo();
       lastTitle = windowInfo.windowName;
+      recordQaPoll(diagnostics, "ready", lastTitle);
       const status = parseQaTitle(lastTitle);
+      if (qaStatusHasBlockingError(status)) {
+        throw new Error(`QA reported an error before ready. Last title: ${lastTitle}`);
+      }
       if (qaStatusIsReady(status, requireRecovered, allowEmptyTimeline)) {
         return summarizeQaStatus(status);
       }
     } catch (error) {
       lastTitle = error.message;
+      recordQaPoll(diagnostics, "ready", lastTitle);
     }
     await sleep(1000);
   }
   throw new Error(`real login QA did not reach ready room/timeline state. Last title: ${lastTitle}`);
 }
 
-async function waitForQaPanel(timeout, requiredPanel) {
+async function waitForQaPanel(timeout, requiredPanel, diagnostics = null) {
   const startedAt = Date.now();
   let lastTitle = "";
   while (Date.now() - startedAt < timeout) {
     try {
       const windowInfo = await currentWindowInfo();
       lastTitle = windowInfo.windowName;
+      recordQaPoll(diagnostics, `panel:${requiredPanel}`, lastTitle);
       const status = parseQaTitle(lastTitle);
       if (qaStatusHasRequiredPanel(status, requiredPanel)) {
         return summarizeQaStatus(status);
       }
     } catch (error) {
       lastTitle = error.message;
+      recordQaPoll(diagnostics, `panel:${requiredPanel}`, lastTitle);
     }
     await sleep(1000);
   }
   throw new Error(`real login QA did not report panel=${requiredPanel}. Last title: ${lastTitle}`);
 }
 
-async function waitForQaSend(timeout) {
+async function waitForQaSend(timeout, diagnostics = null) {
   const startedAt = Date.now();
   let lastTitle = "";
   while (Date.now() - startedAt < timeout) {
     try {
       const windowInfo = await currentWindowInfo();
       lastTitle = windowInfo.windowName;
+      recordQaPoll(diagnostics, "send", lastTitle);
       const status = parseQaTitle(lastTitle);
       if (status.send === "failed") {
         throw new Error(`send smoke failed. Last title: ${lastTitle}`);
@@ -588,6 +624,7 @@ async function waitForQaSend(timeout) {
       }
     } catch (error) {
       lastTitle = error.message;
+      recordQaPoll(diagnostics, "send", lastTitle);
       if (lastTitle.includes("send smoke failed")) {
         throw error;
       }
@@ -597,19 +634,21 @@ async function waitForQaSend(timeout) {
   throw new Error(`send smoke QA did not reach send=sent. Last title: ${lastTitle}`);
 }
 
-async function waitForQaSignedOut(timeout) {
+async function waitForQaSignedOut(timeout, diagnostics = null) {
   const startedAt = Date.now();
   let lastTitle = "";
   while (Date.now() - startedAt < timeout) {
     try {
       const windowInfo = await currentWindowInfo();
       lastTitle = windowInfo.windowName;
+      recordQaPoll(diagnostics, "logout", lastTitle);
       const status = parseQaTitle(lastTitle);
       if (qaStatusIsSignedOut(status)) {
         return summarizeQaStatus(status);
       }
     } catch (error) {
       lastTitle = error.message;
+      recordQaPoll(diagnostics, "logout", lastTitle);
     }
     await sleep(1000);
   }
@@ -651,6 +690,10 @@ function qaStatusHasSendSuccess(status) {
   return status.errors === 0 && status.send === "sent";
 }
 
+function qaStatusHasBlockingError(status) {
+  return status.errors > 0 || status.send === "failed";
+}
+
 function qaStatusIsSignedOut(status) {
   return status.session === "signedOut";
 }
@@ -682,7 +725,8 @@ function summarizeQaStatus(status) {
     `active_room=${status.active_room}`,
     `timeline_subscribed=${status.timeline_subscribed}`,
     `timeline_items=${status.timeline_items}`,
-    `errors=${status.errors}`
+    `errors=${status.errors}`,
+    `error_code=${status.error_code ?? "none"}`
   ];
   if (status.panel !== undefined) {
     values.push(`panel=${status.panel}`);
@@ -690,7 +734,42 @@ function summarizeQaStatus(status) {
   if (status.send !== undefined) {
     values.push(`send=${status.send}`);
   }
+  for (const key of ["target_dm", "target_selected", "target_members"]) {
+    if (status[key] !== undefined) {
+      values.push(`${key}=${status[key]}`);
+    }
+  }
   return values.join(" ");
+}
+
+function createQaDiagnostics(path) {
+  const startedAt = Date.now();
+  return {
+    record(phase, message) {
+      const elapsed = Date.now() - startedAt;
+      const line = `+${elapsed}ms ${phase} ${message}\n`;
+      appendFileSync(path, line);
+      if (verbose) {
+        console.log(`[qa] ${line.trimEnd()}`);
+      }
+    }
+  };
+}
+
+function recordQaPoll(diagnostics, phase, value) {
+  diagnostics?.record(phase, summarizeQaDiagnosticValue(value));
+}
+
+function summarizeQaDiagnosticValue(value) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  const status = parseQaTitle(text);
+  if (status.session !== undefined || status.sync !== undefined || status.errors !== undefined) {
+    return summarizeQaStatus(status);
+  }
+  if (text === "missing" || text.endsWith("|no-window")) {
+    return text;
+  }
+  return text.slice(0, 240);
 }
 
 async function captureAppWindowScreenshot(path) {
@@ -813,6 +892,6 @@ function tail(value, lines) {
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--keep-session] [--qa-profile=NAME] [--send-smoke-message[=BODY]] [--allow-empty-timeline] [--allow-private-screenshots] [--artifact-dir=PATH] [--timeout-ms=MS]"
+    "Usage: node scripts/desktop-mac-gui-smoke.mjs --list|--check-tools|--child-env|--child-env-keys|--print-window-query-script|--print-screenshot-args|--print-real-login-transport|--qa-title-panel=TITLE|--qa-title-panel-ready=TITLE [--required-panel=PANEL]|--qa-title-ready=TITLE|--qa-title-send-ready=TITLE|--qa-title-ready-require-recovered=TITLE|--run [--real-login-from-stdin] [--keep-session] [--qa-profile=NAME] [--send-smoke-message[=BODY]] [--send-smoke-user-id=USER_ID] [--allow-empty-timeline] [--allow-private-screenshots] [--verbose] [--artifact-dir=PATH] [--timeout-ms=MS] [--send-timeout-ms=MS]"
   );
 }

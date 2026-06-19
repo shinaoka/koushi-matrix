@@ -180,6 +180,23 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("send=sent");
   });
 
+  test("includes optional private-data-free diagnostic tokens", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+
+    const title = qaWindowTitle(snapshot, "closed", "pending", [
+      "target_dm=encrypted",
+      "target_selected=true",
+      "target_members=2"
+    ]);
+
+    expect(title).toContain("target_dm=encrypted");
+    expect(title).toContain("target_selected=true");
+    expect(title).toContain("target_members=2");
+    expect(title).not.toContain("@");
+    expect(title).not.toContain("!");
+  });
+
   test("includes the local send QA statuses when provided", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();
@@ -189,5 +206,31 @@ describe("qaWindowTitle", () => {
 
     expect(idleTitle).toContain("send=idle");
     expect(pendingTitle).toContain("send=pending");
+  });
+
+  test("includes only a coarse latest error code for QA diagnostics", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const title = qaWindowTitle({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        ui: {
+          ...snapshot.state.ui,
+          errors: [
+            {
+              code: "send_text_failed",
+              message: "private room or SDK detail",
+              recoverable: true
+            }
+          ]
+        }
+      }
+    });
+
+    expect(title).toContain("errors=1");
+    expect(title).toContain("error_code=send_text_failed");
+    expect(title).not.toContain("private room");
+    expect(title).not.toContain("SDK detail");
   });
 });

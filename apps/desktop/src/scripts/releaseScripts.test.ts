@@ -1011,6 +1011,18 @@ describe("desktop release scripts", () => {
     expect(source).toContain("setQaSendStatus(eventStatus)");
   });
 
+  test("app lets Tauri snapshot errors fail the QA send title token", () => {
+    const source = readFileSync(
+      new URL("../../../../apps/desktop/src/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain('completionStatus !== "failed"');
+    expect(source).toMatch(
+      /isTauriRuntime\(\) &&\s*completionStatus !== "failed"[\s\S]*return;/
+    );
+  });
+
   test("app keeps Tauri send completion listener mounted and gates events with a pending ref", () => {
     const source = readFileSync(
       new URL("../../../../apps/desktop/src/App.tsx", import.meta.url),
@@ -1264,13 +1276,15 @@ describe("desktop release scripts", () => {
     expect(capability).toContain("core:window:allow-set-title");
   });
 
-  test("mac GUI smoke real login disables keychain persistence for unattended QA", () => {
+  test("mac GUI smoke real login uses the QA file store instead of macOS Keychain", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--child-env-keys",
+      "--child-env",
       "--real-login-from-stdin"
     ]);
 
-    expect(output).toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE");
+    expect(output).toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1");
+    expect(output).toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR=");
+    expect(output).toContain("qa-credential-store");
   });
 
   test("mac GUI smoke drives a logout cleanup over the QA control pipe for real login", () => {
@@ -1288,9 +1302,10 @@ describe("desktop release scripts", () => {
     expect(source).toContain("requestQaLogout");
     expect(source).toContain("waitForQaSignedOut");
     expect(source).toContain("--keep-session");
-    // The cleanup runs in teardown only after a real login reached ready.
+    // The cleanup runs in teardown after credentials were handed to the app:
+    // a failed ready gate can still leave a real device/session behind.
     expect(source).toMatch(
-      /finally \{[\s\S]*if \(qaControlPipePath && realLoginReachedReady && !keepSession\)[\s\S]*requestQaLogout\(qaControlPipePath\);[\s\S]*waitForQaSignedOut\(timeoutMs\);[\s\S]*terminateProcessGroup\(child, "SIGTERM"\);/
+      /finally \{[\s\S]*if \(qaControlPipePath && realLoginCleanupRequired && !keepSession\)[\s\S]*requestQaLogout\(qaControlPipePath\);[\s\S]*waitForQaSignedOut\(timeoutMs, diagnostics\);[\s\S]*terminateProcessGroup\(child, "SIGTERM"\);/
     );
   });
 
@@ -1340,6 +1355,80 @@ describe("desktop release scripts", () => {
       "VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE=Koushi synthetic QA send"
     );
     expect(sendLine).not.toContain("password");
+  });
+
+  test("mac GUI smoke can target a real DM user for synthetic send smoke", () => {
+    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--child-env",
+      "--send-smoke-message=Koushi synthetic QA send",
+      "--send-smoke-user-id=@hiroshi.shinaoka:matrix.org"
+    ]);
+    const source = readFileSync(
+      new URL("../../../../apps/desktop/src/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    expect(output).toContain(
+      "VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_USER_ID=@hiroshi.shinaoka:matrix.org"
+    );
+    expect(source).toContain("qaSendSmokeTargetUserId");
+    expect(source).toContain("api.startDirectMessage(targetUserId)");
+    expect(source).toContain("api.selectRoom(targetRoom.room_id)");
+  });
+
+  test("mac GUI smoke send smoke uses a bounded send timeout separate from login", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("const sendTimeoutMs");
+    expect(source).toContain('optionValue("--send-timeout-ms") ?? "30000"');
+    expect(source).toContain("waitForQaSend(sendTimeoutMs, diagnostics)");
+  });
+
+  test("mac GUI smoke defaults the real-login wait to thirty seconds", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain('optionValue("--timeout-ms") ?? "30000"');
+  });
+
+  test("mac GUI smoke fails fast when QA title reports errors during ready wait", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("qaStatusHasBlockingError");
+    expect(source).toContain("QA reported an error before ready");
+  });
+
+  test("mac GUI smoke verbose mode records private-data-free QA diagnostics", () => {
+    const usage = runScript("scripts/desktop-mac-gui-smoke.mjs");
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(usage).toContain("--verbose");
+    expect(source).toContain("const verbose = args.has(\"--verbose\")");
+    expect(source).toContain("qa-diagnostics.log");
+    expect(source).toContain("recordQaPoll");
+    expect(source).toContain("diagnostics path:");
+  });
+
+  test("mac GUI smoke keeps target DM encryption diagnostics in summaries", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("\"target_dm\"");
+    expect(source).toContain("\"target_selected\"");
+    expect(source).toContain("\"target_members\"");
   });
 
   test("QA file credential store is gated to debug and test builds in core", () => {

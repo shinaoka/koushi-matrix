@@ -5,7 +5,10 @@ import {
   qaSendCompletionStatusFromCoreEvent,
   qaSendSmokeCanStart,
   qaSendSmokeCompletionStatus,
-  qaSendSmokeMessageFromEnv
+  qaSendSmokeMessageFromEnv,
+  qaSendSmokeTargetDiagnosticTokens,
+  qaSendSmokeTargetRoom,
+  qaSendSmokeTargetUserIdFromEnv
 } from "./qaSendSmoke";
 
 describe("qaSendSmoke", () => {
@@ -13,6 +16,57 @@ describe("qaSendSmoke", () => {
     expect(qaSendSmokeMessageFromEnv("  Synthetic QA message  ")).toBe("Synthetic QA message");
     expect(qaSendSmokeMessageFromEnv("   ")).toBeNull();
     expect(qaSendSmokeMessageFromEnv(undefined)).toBeNull();
+  });
+
+  test("normalizes an optional synthetic send target user id", () => {
+    expect(qaSendSmokeTargetUserIdFromEnv("  @hiroshi.shinaoka:matrix.org  ")).toBe(
+      "@hiroshi.shinaoka:matrix.org"
+    );
+    expect(qaSendSmokeTargetUserIdFromEnv("hiroshi.shinaoka:matrix.org")).toBe(
+      "@hiroshi.shinaoka:matrix.org"
+    );
+    expect(qaSendSmokeTargetUserIdFromEnv("   ")).toBeNull();
+    expect(qaSendSmokeTargetUserIdFromEnv(undefined)).toBeNull();
+  });
+
+  test("finds the DM room for a synthetic send target without exposing room names", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.startDirectMessage("@hiroshi.shinaoka:matrix.org");
+
+    const room = qaSendSmokeTargetRoom(snapshot, "@hiroshi.shinaoka:matrix.org");
+
+    expect(room?.is_dm).toBe(true);
+    expect(room?.dm_user_ids).toContain("@hiroshi.shinaoka:matrix.org");
+  });
+
+  test("summarizes target DM encryption without exposing identifiers", async () => {
+    const api = createBrowserFakeApi();
+    const started = await api.startDirectMessage("@hiroshi.shinaoka:matrix.org");
+    const room = qaSendSmokeTargetRoom(started, "@hiroshi.shinaoka:matrix.org");
+    expect(room).not.toBeNull();
+    const encryptedSnapshot = {
+      ...started,
+      state: {
+        ...started.state,
+        domain: {
+          ...started.state.domain,
+          rooms: started.state.domain.rooms.map((candidate) =>
+            candidate.room_id === room?.room_id
+              ? { ...candidate, is_encrypted: true, joined_members: 2 }
+              : candidate
+          )
+        }
+      }
+    };
+
+    const tokens = qaSendSmokeTargetDiagnosticTokens(
+      encryptedSnapshot,
+      "@hiroshi.shinaoka:matrix.org"
+    );
+
+    expect(tokens).toEqual(["target_dm=encrypted", "target_selected=true", "target_members=2"]);
+    expect(tokens.join(" ")).not.toContain("@");
+    expect(tokens.join(" ")).not.toContain("!");
   });
 
   test("starts only after a ready synced active timeline without errors", async () => {

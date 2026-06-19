@@ -24,7 +24,8 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::account::{AccountActorHandle, AccountMessage};
 use crate::command::{
-    AccountCommand, AppCommand, CoreCommand, SearchCommand, SearchScope, TimelineCommand,
+    AccountCommand, AppCommand, CoreCommand, SearchCommand, SearchScope, SyncCommand,
+    TimelineCommand,
 };
 use crate::event::{
     ActivityEvent, AppStateSnapshot, CoreEvent, TimelineEvent, project_room_event_display_labels,
@@ -604,7 +605,7 @@ impl AppActor {
                         // AppActor owns AppCommand effects above; replaying
                         // actor-projection effects here would double-execute
                         // login, restore, sync, or recovery work.
-                        let _post_projection_effects = self.reduce_app_action(action).await;
+                        let post_projection_effects = self.reduce_app_action(action).await;
                         if let Some(activity_update) = self
                             .activity_projection
                             .update_action_for_open_state(&self.state)
@@ -612,7 +613,9 @@ impl AppActor {
                             let _activity_effects =
                                 self.reduce_app_action(activity_update).await;
                         }
-                        self.handle_ui_event_effects(&_post_projection_effects).await;
+                        self.handle_post_projection_effects(&post_projection_effects)
+                            .await;
+                        self.handle_ui_event_effects(&post_projection_effects).await;
                         self.load_composer_drafts_for_current_session().await;
                         self.load_scheduled_sends_for_current_session().await;
                         state_changed = true;
@@ -1473,7 +1476,33 @@ impl AppActor {
 
     async fn handle_app_effects(&mut self, request_id: RequestId, effects: Vec<AppEffect>) {
         for effect in effects {
-            if let AppEffect::OpenThreadTimeline {
+            if let AppEffect::StartSync = effect {
+                let _ = self
+                    .account_actor
+                    .send(AccountMessage::SyncCommand(SyncCommand::Start {
+                        request_id,
+                    }))
+                    .await;
+            } else if let AppEffect::SubscribeTimeline { room_id } = effect {
+                let Some(account_key) = self.current_account_key() else {
+                    self.emit(CoreEvent::OperationFailed {
+                        request_id,
+                        failure: CoreFailure::SessionRequired,
+                    });
+                    continue;
+                };
+                self.send_timeline_command_or_fail(
+                    request_id,
+                    TimelineCommand::Subscribe {
+                        request_id,
+                        key: TimelineKey {
+                            account_key,
+                            kind: TimelineKind::Room { room_id },
+                        },
+                    },
+                )
+                .await;
+            } else if let AppEffect::OpenThreadTimeline {
                 room_id,
                 root_event_id,
             } = effect
@@ -1636,6 +1665,42 @@ impl AppActor {
                 let _ = self.reduce_app_action(action).await;
             } else if let AppEffect::EmitUiEvent(ui_event) = effect {
                 self.handle_ui_event_effect(&ui_event, &[]).await;
+            }
+        }
+    }
+
+    async fn handle_post_projection_effects(&mut self, effects: &[AppEffect]) {
+        for effect in effects {
+            if let AppEffect::StartSync = effect {
+                let request_id = self.next_internal_request_id();
+                let _ = self
+                    .account_actor
+                    .send(AccountMessage::SyncCommand(SyncCommand::Start {
+                        request_id,
+                    }))
+                    .await;
+            } else if let AppEffect::SubscribeTimeline { room_id } = effect {
+                let request_id = self.next_internal_request_id();
+                let Some(account_key) = self.current_account_key() else {
+                    self.emit(CoreEvent::OperationFailed {
+                        request_id,
+                        failure: CoreFailure::SessionRequired,
+                    });
+                    continue;
+                };
+                self.send_timeline_command_or_fail(
+                    request_id,
+                    TimelineCommand::Subscribe {
+                        request_id,
+                        key: TimelineKey {
+                            account_key,
+                            kind: TimelineKind::Room {
+                                room_id: room_id.clone(),
+                            },
+                        },
+                    },
+                )
+                .await;
             }
         }
     }
@@ -2548,6 +2613,59 @@ mod tests {
             open_thread_arm.contains("handle_app_effects")
                 || open_thread_arm.contains("TimelineCommand::Subscribe"),
             "OpenThread must execute the OpenThreadTimeline effect through the timeline actor"
+        );
+    }
+
+    #[test]
+    fn runtime_must_execute_start_sync_effects_from_session_reducer() {
+        let source = include_str!("runtime.rs");
+        let effects_helper = source
+            .split("async fn handle_app_effects")
+            .nth(1)
+            .expect("handle_app_effects should exist");
+
+        assert!(
+            effects_helper.contains("AppEffect::StartSync"),
+            "login, restore, and E2EE recovery reducers emit StartSync; runtime must execute it"
+        );
+        assert!(
+            effects_helper.contains("SyncCommand::Start"),
+            "StartSync effects must route the canonical SyncCommand::Start path"
+        );
+    }
+
+    #[test]
+    fn runtime_must_execute_subscribe_timeline_effects_from_navigation_reducers() {
+        let source = include_str!("runtime.rs");
+        let effects_helper = source
+            .split("async fn handle_app_effects")
+            .nth(1)
+            .expect("handle_app_effects should exist");
+
+        assert!(
+            effects_helper.contains("AppEffect::SubscribeTimeline"),
+            "room-list and navigation reducers emit SubscribeTimeline; runtime must execute it"
+        );
+        assert!(
+            effects_helper.contains("TimelineKind::Room"),
+            "SubscribeTimeline effects must route the canonical room timeline subscription"
+        );
+    }
+
+    #[test]
+    fn actor_projection_start_sync_effects_must_not_be_discarded() {
+        let source = include_str!("runtime.rs");
+        let action_rx_arm = source
+            .split("actions = self.action_rx.recv()")
+            .nth(1)
+            .expect("action_rx arm should exist")
+            .split("command = self.command_rx.recv()")
+            .next()
+            .expect("action_rx arm should be bounded");
+
+        assert!(
+            action_rx_arm.contains("handle_post_projection_effects"),
+            "actor-originated LoginSucceeded/RecoverySucceeded actions emit StartSync; action_rx must execute that follow-up effect"
         );
     }
 

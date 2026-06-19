@@ -37,7 +37,9 @@ design change, amend `architecture/overview.md` first.
   `desktop-foundation.md`.
 - `spikes/` — spike results.
 - `reviews/` — review records.
-- `qa/` — QA audit records.
+- `qa/` — QA audit records, including
+  [`qa/known-issues.md`](qa/known-issues.md) for open QA/product blockers that
+  must be checked before claiming release readiness.
 - `upstream/` — upstream SDK feedback notes.
 
 ## Operational notes

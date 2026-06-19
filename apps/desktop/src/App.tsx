@@ -67,7 +67,10 @@ import {
   qaSendCompletionStatusFromCoreEvent,
   qaSendSmokeCanStart,
   qaSendSmokeCompletionStatus,
-  qaSendSmokeMessageFromEnv
+  qaSendSmokeMessageFromEnv,
+  qaSendSmokeTargetDiagnosticTokens,
+  qaSendSmokeTargetRoom,
+  qaSendSmokeTargetUserIdFromEnv
 } from "./domain/qaSendSmoke";
 import type {
   ActivityMarkReadTarget,
@@ -654,6 +657,12 @@ function qaSendSmokeMessage(): string | null {
   return qaSendSmokeMessageFromEnv(import.meta.env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE);
 }
 
+function qaSendSmokeTargetUserId(): string | null {
+  return qaSendSmokeTargetUserIdFromEnv(
+    import.meta.env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_USER_ID
+  );
+}
+
 export function App() {
   const [snapshot, setSnapshotState] = useState<DesktopSnapshot | null>(null);
   const [schemaMismatchVersion, setSchemaMismatchVersion] = useState<number | null>(null);
@@ -710,6 +719,8 @@ export function App() {
   const searchTimer = useRef<number | null>(null);
   const qaSendStarted = useRef(false);
   const qaSendPending = useRef(false);
+  const qaSendTargetRequested = useRef(false);
+  const qaSendTargetSelectionRequested = useRef<string | null>(null);
   const qaSendBaselineErrorCount = useRef(0);
   const qaSendBaselineTimelineItems = useRef(0);
   const typingSignalRef = useRef<{ roomId: string | null; isTyping: boolean }>({
@@ -913,7 +924,8 @@ export function App() {
         ? qaWindowTitle(
             snapshot,
             effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot),
-            qaSendStatus
+            qaSendStatus,
+            qaSendSmokeTargetDiagnosticTokens(snapshot, qaSendSmokeTargetUserId())
           )
         : desktopAttentionWindowTitle("Koushi", safeAttentionSummary)
       : qaTitleEnabled()
@@ -971,7 +983,47 @@ export function App() {
 
   useEffect(() => {
     const message = qaSendSmokeMessage();
-    if (!message || !snapshot || qaSendStarted.current || !qaSendSmokeCanStart(snapshot)) {
+    const targetUserId = qaSendSmokeTargetUserId();
+    const targetRoom =
+      targetUserId && snapshot ? qaSendSmokeTargetRoom(snapshot, targetUserId) : null;
+    const targetRoomIsSelected =
+      !targetUserId ||
+      (targetRoom !== null && snapshot?.state.ui.timeline.room_id === targetRoom.room_id);
+    if (
+      !message ||
+      !snapshot ||
+      qaSendStarted.current ||
+      !targetRoomIsSelected ||
+      !qaSendSmokeCanStart(snapshot)
+    ) {
+      if (
+        message &&
+        targetUserId &&
+        snapshot &&
+        !qaSendStarted.current &&
+        snapshot.state.domain.session.kind === "ready" &&
+        snapshot.state.ui.errors.length === 0
+      ) {
+        if (!targetRoom && !qaSendTargetRequested.current) {
+          qaSendTargetRequested.current = true;
+          void api.startDirectMessage(targetUserId).then(setSnapshot).catch(() => {
+            qaSendPending.current = false;
+            setQaSendStatus("failed");
+          });
+          return;
+        }
+        if (
+          targetRoom &&
+          snapshot.state.ui.timeline.room_id !== targetRoom.room_id &&
+          qaSendTargetSelectionRequested.current !== targetRoom.room_id
+        ) {
+          qaSendTargetSelectionRequested.current = targetRoom.room_id;
+          void api.selectRoom(targetRoom.room_id).then(setSnapshot).catch(() => {
+            qaSendPending.current = false;
+            setQaSendStatus("failed");
+          });
+        }
+      }
       return;
     }
     const roomId = snapshot.state.ui.timeline.room_id;
@@ -1008,8 +1060,7 @@ export function App() {
     if (
       !snapshot ||
       !qaSendStarted.current ||
-      qaSendStatus !== "pending" ||
-      isTauriRuntime()
+      qaSendStatus !== "pending"
     ) {
       return;
     }
@@ -1018,6 +1069,9 @@ export function App() {
       qaSendBaselineErrorCount.current,
       qaSendBaselineTimelineItems.current
     );
+    if (isTauriRuntime() && completionStatus !== "failed") {
+      return;
+    }
     qaSendPending.current = completionStatus === "pending";
     setQaSendStatus(completionStatus);
   }, [snapshot, qaSendStatus]);

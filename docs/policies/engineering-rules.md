@@ -430,7 +430,8 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    the product title (`Koushi`).
 4. First-run GUI smoke sets `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1`;
    real-login smoke additionally sets
-   `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`.
+   `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1` and
+   `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR`.
 5. Keep the strict `timeline_items > 0` release signal; use
    `--allow-empty-timeline` only for sparse test accounts validating
    login/room-list/panel automation.

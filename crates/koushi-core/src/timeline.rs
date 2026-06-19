@@ -1774,14 +1774,10 @@ impl TimelineActor {
                     }));
                 }
             }
-            Err(_) => {
+            Err(err) => {
+                let kind = classify_timeline_send_error(&err);
                 self.emit_send_failed_action(&client_txn_id);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
         // On success: local echo appears via diff (Transaction id = SDK txn_id).
@@ -1896,14 +1892,10 @@ impl TimelineActor {
                     }));
                 }
             }
-            Err(_) => {
+            Err(err) => {
+                let kind = classify_timeline_send_error(&err);
                 self.emit_send_failed_action(&client_txn_id);
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
     }
@@ -5180,6 +5172,15 @@ fn classify_reaction_error(err: &matrix_sdk_ui::timeline::Error) -> TimelineFail
     }
 }
 
+fn classify_timeline_send_error(err: &matrix_sdk_ui::timeline::Error) -> TimelineFailureKind {
+    match err {
+        matrix_sdk_ui::timeline::Error::SendQueueError(send_queue_error) => {
+            classify_send_queue_error(send_queue_error)
+        }
+        _ => TimelineFailureKind::Sdk,
+    }
+}
+
 fn classify_send_queue_error(
     err: &matrix_sdk::send_queue::RoomSendQueueError,
 ) -> TimelineFailureKind {
@@ -6558,6 +6559,18 @@ mod tests {
         assert_eq!(
             tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
             Some((client_txn, request_id, event_id, false))
+        );
+    }
+
+    #[test]
+    fn timeline_send_error_classifies_not_joined_as_forbidden() {
+        let error = matrix_sdk_ui::timeline::Error::SendQueueError(
+            matrix_sdk::send_queue::RoomSendQueueError::RoomNotJoined,
+        );
+
+        assert_eq!(
+            classify_timeline_send_error(&error),
+            TimelineFailureKind::Forbidden
         );
     }
 

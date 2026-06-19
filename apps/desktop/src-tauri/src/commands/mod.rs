@@ -174,7 +174,7 @@ pub(crate) async fn submit_login_request(
     state: &CoreRuntimeState,
     login_request: LoginRequest,
 ) -> Result<(), String> {
-    submit_login_and_start_sync(app, state, login_request).await?;
+    submit_login_and_wait_for_authenticated(app, state, login_request).await?;
     Ok(())
 }
 
@@ -184,7 +184,7 @@ const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::
 const ROOM_OPERATION_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const UPLOAD_STAGING_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-async fn submit_login_and_start_sync(
+async fn submit_login_and_wait_for_authenticated(
     app: AppHandle,
     state: &CoreRuntimeState,
     login_request: LoginRequest,
@@ -199,18 +199,13 @@ async fn submit_login_and_start_sync(
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
 
-    wait_for_logged_in_ready(&mut event_conn, login_request_id, LOGIN_EVENT_TIMEOUT).await?;
-
-    let sync_request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_start_sync_command(sync_request_id))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_logged_in_authenticated(&mut event_conn, login_request_id, LOGIN_EVENT_TIMEOUT)
+        .await?;
     update_qa_window_title_from_state(&app, state).await;
     Ok(())
 }
 
-async fn wait_for_logged_in_ready(
+async fn wait_for_logged_in_authenticated(
     event_conn: &mut CoreConnection,
     login_request_id: RequestId,
     timeout: std::time::Duration,
@@ -219,7 +214,7 @@ async fn wait_for_logged_in_ready(
     let mut logged_in = false;
 
     loop {
-        if logged_in && snapshot_has_ready_session(&event_conn.snapshot()) {
+        if logged_in && snapshot_has_authenticated_session(&event_conn.snapshot()) {
             return Ok(());
         }
 
@@ -267,10 +262,12 @@ async fn wait_for_auth_changed(
     }
 }
 
-fn snapshot_has_ready_session(snapshot: &koushi_state::AppState) -> bool {
+fn snapshot_has_authenticated_session(snapshot: &koushi_state::AppState) -> bool {
     matches!(
         snapshot.session,
         koushi_state::SessionState::Ready(_)
+            | koushi_state::SessionState::NeedsRecovery { .. }
+            | koushi_state::SessionState::Recovering { .. }
     )
 }
 
@@ -990,10 +987,6 @@ pub(crate) fn build_submit_account_management_uia_command(
         flow_id,
         auth: IdentityResetAuthRequest::UiaaPassword { password },
     })
-}
-
-pub(crate) fn build_start_sync_command(request_id: koushi_core::RequestId) -> CoreCommand {
-    CoreCommand::Sync(SyncCommand::Start { request_id })
 }
 
 pub(crate) fn build_select_space_command(
@@ -5494,10 +5487,10 @@ mod tests {
     }
 
     #[test]
-    fn submit_login_request_waits_for_logged_in_then_starts_sync() {
+    fn submit_login_request_waits_for_authenticated_session_and_leaves_sync_to_runtime_effects() {
         let source = commands_source();
-        let helper_name = concat!("async fn submit_login", "_and_start_sync");
-        let wait_call_token = concat!("wait_for_logged", "_in_ready");
+        let helper_name = concat!("async fn submit_login", "_and_wait_for_authenticated");
+        let wait_call_token = concat!("wait_for_logged", "_in_authenticated");
         let logged_in_token = concat!("AccountEvent::", "LoggedIn");
         let start_sync_token = concat!("build_start", "_sync_command");
         let failed_token = concat!("Operation", "Failed");
@@ -5506,24 +5499,50 @@ mod tests {
             .find(helper_name)
             .expect("shared login helper should exist");
         let helper_source = &source[helper_offset..];
+        let helper_source = helper_source
+            .split(concat!("async fn wait_for_logged", "_in_authenticated"))
+            .next()
+            .expect("login wait helper should follow shared helper");
         let wait_call_offset = helper_source
             .find(wait_call_token)
-            .expect("helper should wait for login before sync");
-        let start_sync_offset = helper_source
-            .find(start_sync_token)
-            .expect("helper should submit SyncCommand::Start");
+            .expect("helper should wait for an authenticated session");
 
+        assert!(wait_call_offset > 0);
         assert!(
-            wait_call_offset < start_sync_offset,
-            "sync start must be submitted only after login success"
+            !helper_source.contains(start_sync_token),
+            "sync startup belongs to AppEffect::StartSync in core runtime, not the Tauri adapter"
         );
         assert!(helper_source.contains(timeout_token));
         let wait_helper_offset = source
-            .find(concat!("async fn wait_for_logged", "_in_ready"))
+            .find(concat!("async fn wait_for_logged", "_in_authenticated"))
             .expect("login wait helper should exist");
         let wait_helper_source = &source[wait_helper_offset..];
         assert!(wait_helper_source.contains(logged_in_token));
         assert!(wait_helper_source.contains(failed_token));
         assert!(wait_helper_source.contains("timeout_at"));
+    }
+
+    #[test]
+    fn login_wait_treats_recovery_states_as_authenticated_sessions() {
+        let mut state = AppState::default();
+        assert!(!super::snapshot_has_authenticated_session(&state));
+
+        let info = SessionInfo {
+            homeserver: "https://matrix.example.org".to_owned(),
+            user_id: "@user:example.org".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        };
+
+        state.session = SessionState::NeedsRecovery {
+            info: info.clone(),
+            methods: vec![],
+        };
+        assert!(super::snapshot_has_authenticated_session(&state));
+
+        state.session = SessionState::Recovering {
+            info,
+            methods: vec![],
+        };
+        assert!(super::snapshot_has_authenticated_session(&state));
     }
 }

@@ -40,6 +40,9 @@ cache.
 
 ## Verify
 
+Before claiming a real-account or GUI gate is green, check
+[`docs/qa/known-issues.md`](docs/qa/known-issues.md).
+
 ```bash
 cargo test -p koushi-state
 cargo test -p koushi-search

@@ -91,6 +91,7 @@ const ENV_PASSWORD_B: &str = "MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B";
 /// differs. Valid values: "SyncService" | "LegacySync".
 const ENV_EXPECT_SYNC_BACKEND: &str = "MATRIX_DESKTOP_LOCAL_QA_EXPECT_SYNC_BACKEND";
 const ENV_QA_SCENARIO: &str = "MATRIX_DESKTOP_QA_SCENARIO";
+const ENV_ALLOW_IDENTITY_RESET: &str = "MATRIX_DESKTOP_QA_ALLOW_IDENTITY_RESET";
 #[cfg(any(debug_assertions, test))]
 const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR";
 
@@ -1294,14 +1295,18 @@ async fn run_e2ee_trust_stage(
 
     cleanup_e2ee_secondary_device(conn_a2, runtime_a2, account_key_a2).await?;
 
-    reset_identity_for_qa(
-        conn_a,
-        account_key_a,
-        config.password_a.clone(),
-        "reset identity A",
-    )
-    .await?;
-    println!("e2ee_identity_reset=ok");
+    if config.allow_identity_reset {
+        reset_identity_for_qa(
+            conn_a,
+            account_key_a,
+            config.password_a.clone(),
+            "reset identity A",
+        )
+        .await?;
+        println!("e2ee_identity_reset=ok");
+    } else {
+        println!("e2ee_identity_reset=skipped");
+    }
     println!("e2ee_trust=ok");
 
     Ok(())
@@ -5921,6 +5926,9 @@ struct QaConfig {
     /// Expected sync backend ("SyncService" | "LegacySync"); QA fails on
     /// mismatch when set. Plain assertion input, not a credential.
     expect_sync_backend: Option<String>,
+    /// Identity reset changes cross-signing identity for the account. Keep it
+    /// opt-in so real-account QA cannot accidentally invalidate other devices.
+    allow_identity_reset: bool,
 }
 
 impl QaConfig {
@@ -5934,8 +5942,26 @@ impl QaConfig {
             user_b: env_required(ENV_USER_B)?,
             password_b: env_required(ENV_PASSWORD_B)?,
             expect_sync_backend: std::env::var(ENV_EXPECT_SYNC_BACKEND).ok(),
+            allow_identity_reset: env_flag_enabled(ENV_ALLOW_IDENTITY_RESET)?,
         })
     }
+}
+
+fn env_flag_enabled(name: &str) -> Result<bool, String> {
+    match std::env::var(name) {
+        Ok(value) => parse_env_flag(name, &value),
+        Err(_) => Ok(false),
+    }
+}
+
+fn parse_env_flag(name: &str, value: &str) -> Result<bool, String> {
+    if value == "1" || value.eq_ignore_ascii_case("true") {
+        return Ok(true);
+    }
+    if value == "0" || value.eq_ignore_ascii_case("false") || value.is_empty() {
+        return Ok(false);
+    }
+    Err(format!("{name} must be 1, true, 0, false, or unset; got {value}"))
 }
 
 struct QaTcpProxy {
@@ -9921,6 +9947,32 @@ mod tests {
 
         assert!(source.contains("println!(\"joined_room_restore=ok\")"));
         assert!(!source.contains(legacy_token));
+    }
+
+    #[test]
+    fn e2ee_trust_stage_makes_identity_reset_explicitly_opt_in() {
+        let source = include_str!("headless-core-qa.rs");
+
+        assert!(source.contains("MATRIX_DESKTOP_QA_ALLOW_IDENTITY_RESET"));
+        assert!(source.contains("if config.allow_identity_reset"));
+        assert!(source.contains("println!(\"e2ee_identity_reset=skipped\")"));
+    }
+
+    #[test]
+    fn parse_env_flag_accepts_only_explicit_boolean_values() {
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("TRUE", true),
+            ("0", false),
+            ("false", false),
+            ("FALSE", false),
+            ("", false),
+        ] {
+            assert_eq!(parse_env_flag("QA_FLAG", value), Ok(expected));
+        }
+
+        assert!(parse_env_flag("QA_FLAG", "yes").is_err());
     }
 
     #[test]

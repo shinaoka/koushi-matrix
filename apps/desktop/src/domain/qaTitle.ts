@@ -6,7 +6,8 @@ import { desktopAttentionSummary } from "./desktopAttention";
 export function qaWindowTitle(
   snapshot: DesktopSnapshot,
   panelMode?: RightPanelMode,
-  sendStatus?: QaSendSmokeStatus
+  sendStatus?: QaSendSmokeStatus,
+  diagnosticTokens: string[] = []
 ): string {
   const attention = desktopAttentionSummary(snapshot.state.domain.native_attention);
   const roomInteractions = Object.values(snapshot.state.domain.room_interactions);
@@ -30,6 +31,7 @@ export function qaWindowTitle(
     `pinned=${pinnedCount}`,
     `pin_ops=${pinOperationCount}`,
     `errors=${snapshot.state.ui.errors.length}`,
+    `error_code=${latestErrorCode(snapshot)}`,
     `focused=${snapshot.state.ui.focused_context.kind}`,
     attention.qaTitleToken
   ];
@@ -39,7 +41,12 @@ export function qaWindowTitle(
   if (sendStatus !== undefined) {
     title.push(`send=${sendStatus}`);
   }
+  title.push(...diagnosticTokens);
   return title.join(" ");
+}
+
+function latestErrorCode(snapshot: DesktopSnapshot): string {
+  return snapshot.state.ui.errors.at(-1)?.code ?? "none";
 }
 
 function syncStateLabel(sync: SyncState): string {
