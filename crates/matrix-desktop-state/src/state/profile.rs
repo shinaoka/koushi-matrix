@@ -2,7 +2,7 @@ use std::{collections::{BTreeMap, BTreeSet}, fmt};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AvatarImage {
     pub mxc_uri: String,
     pub thumbnail: AvatarThumbnailState,
@@ -320,7 +320,7 @@ fn projected_room_summary_display_labels(
     (display_label.clone(), display_label)
 }
 
-pub fn resolve_user_display_name_from_parts(
+pub(crate) fn resolve_user_display_name_from_parts(
     local_aliases: &BTreeMap<String, String>,
     own_display_name: Option<&str>,
     user_id: &str,
@@ -348,7 +348,7 @@ pub fn resolve_user_display_name_from_parts(
         .unwrap_or_else(|| user_id.to_owned())
 }
 
-pub fn original_user_display_name_from_parts(
+pub(crate) fn original_user_display_name_from_parts(
     own_display_name: Option<&str>,
     user_id: &str,
     upstream_display_name: Option<&str>,

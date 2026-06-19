@@ -7,27 +7,27 @@ pub mod media_download;
 pub mod search_crawler;
 
 // ── New per-feature submodules (#87 Phase 2) ────────────────────────────────
-pub mod activity;
-pub mod basic_operation;
-pub mod cjk;
-pub mod directory;
-pub mod e2ee;
-pub mod errors;
-pub mod files_view;
-pub mod live_signals;
-pub mod local_encryption;
-pub mod native_attention;
-pub mod navigation;
-pub mod profile;
-pub mod room;
-pub mod room_interactions;
-pub mod room_management;
-pub mod search;
-pub mod session;
-pub mod settings;
-pub mod sync;
-pub mod thread;
-pub mod timeline;
+mod activity;
+mod basic_operation;
+mod cjk;
+mod directory;
+mod e2ee;
+mod errors;
+mod files_view;
+mod live_signals;
+mod local_encryption;
+mod native_attention;
+mod navigation;
+mod profile;
+mod room;
+mod room_interactions;
+mod room_management;
+mod search;
+mod session;
+mod settings;
+mod sync;
+mod thread;
+mod timeline;
 
 // ── Re-exports: media_download ──────────────────────────────────────────────
 pub use media_download::{MediaTransferProgress, TimelineMediaDownloadState};
@@ -66,9 +66,9 @@ pub use settings::{
 pub use profile::{
     AvatarImage, AvatarThumbnailFailureKind, AvatarThumbnailState, IgnoredUserUpdateState,
     LocalUserAliasUpdateState, OwnProfile, ProfileState, ProfileUpdateRequest, ProfileUpdateState,
-    UserProfile, is_ignored_user, normalize_local_user_alias, refresh_profile_user_display_projection,
-    refresh_room_settings_member_display_projection, refresh_room_summary_display_projection,
-    resolve_user_display_name,
+    UserProfile, is_ignored_user, normalize_local_user_alias, original_user_display_name,
+    refresh_profile_user_display_projection, refresh_room_settings_member_display_projection,
+    refresh_room_summary_display_projection, resolve_user_display_name,
 };
 
 // ── Re-exports: room ────────────────────────────────────────────────────────
