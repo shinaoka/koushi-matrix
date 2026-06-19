@@ -3,6 +3,7 @@ import {
   type CSSProperties,
   type MouseEvent,
   type PointerEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -654,18 +655,28 @@ function qaSendSmokeMessage(): string | null {
 }
 
 export function App() {
-  const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
-  // #87 Phase 4 IPC contract guard (diagnostics): log the precise versions on a stale
-  // flat (v1) snapshot or a mismatched Rust/TS build. The fail-closed enforcement is the
-  // render gate below (we refuse to render the normal UI against an incompatible shape).
-  useEffect(() => {
-    if (snapshot && snapshot.state.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
+  const [snapshot, setSnapshotState] = useState<DesktopSnapshot | null>(null);
+  const [schemaMismatchVersion, setSchemaMismatchVersion] = useState<number | null>(null);
+  // #87 Phase 4 IPC contract guard (fail-closed at the data boundary): every snapshot enters
+  // render state through this setter, so we reject one whose schema_version does not match the
+  // renderer's SNAPSHOT_SCHEMA_VERSION — a stale flat (v1) snapshot or a mismatched Rust/TS
+  // build. Such a snapshot may be missing the `domain`/`ui` sections entirely, so it must never
+  // reach the render body's `snapshot.state.domain|ui.*` reads (which would throw before any
+  // render gate could run); instead it records the offending version, which drives an explicit
+  // recovery screen below. A later compatible snapshot clears the mismatch, so the guard is
+  // self-healing rather than latching the app into the recovery screen.
+  const setSnapshot = useCallback((next: DesktopSnapshot | null) => {
+    if (next && next.state.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
       console.error(
-        `Koushi snapshot schema_version ${snapshot.state.schema_version} != expected ` +
+        `Koushi snapshot schema_version ${next.state.schema_version} != expected ` +
           `${SNAPSHOT_SCHEMA_VERSION}: stale or mismatched IPC contract.`
       );
+      setSchemaMismatchVersion(next.state.schema_version ?? -1);
+      return;
     }
-  }, [snapshot]);
+    setSchemaMismatchVersion(null);
+    setSnapshotState(next);
+  }, []);
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
@@ -2158,16 +2169,12 @@ export function App() {
     }
   }
 
-  if (!snapshot) {
-    return <div className="boot-screen">{t("app.title")}</div>;
-  }
-
-  // #87 Phase 4 IPC contract guard (fail-closed): a stale flat (v1) snapshot or a
-  // mismatched Rust/TS build has an incompatible shape. Rendering the normal UI from here
-  // would read `undefined` domain/ui sections or silently misproject, so we refuse the
-  // snapshot and show an explicit recovery screen instead. Precise versions are logged by
-  // the diagnostics effect above.
-  if (snapshot.state.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
+  // #87 Phase 4 IPC contract guard (fail-closed): an incompatible snapshot (a stale flat v1
+  // snapshot or a mismatched Rust/TS build) was rejected at the setSnapshot boundary above, so
+  // it never reached the render body's domain/ui reads. Show an explicit recovery screen
+  // instead of the normal shell. This gate runs before the `!snapshot` check so a mismatch on
+  // the very first snapshot still surfaces the recovery screen rather than the bare boot screen.
+  if (schemaMismatchVersion !== null) {
     return (
       <div className="boot-screen" role="alert">
         <div className="boot-screen__notice">
@@ -2176,6 +2183,10 @@ export function App() {
         </div>
       </div>
     );
+  }
+
+  if (!snapshot) {
+    return <div className="boot-screen">{t("app.title")}</div>;
   }
 
   const sessionKind = snapshot.state.domain.session.kind;
