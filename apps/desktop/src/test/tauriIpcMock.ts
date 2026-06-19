@@ -148,8 +148,10 @@ function sanitiseArgs(args: Record<string, any>): Record<string, any> {
 // ---------------------------------------------------------------------------
 
 function defaultSnapshotResponse() {
-  return {
-    state: {
+  // #87 Phase 4: this fixture is returned via an `as unknown as T` cast (so typecheck
+  // cannot see its shape). Keep the field values flat here, then partition into the
+  // domain/ui sections at runtime so the mock matches the nested IPC contract.
+  const flatState: Record<string, unknown> = {
       session: { kind: "signedOut" },
       auth: { kind: "unknown" },
       settings: {
@@ -303,7 +305,24 @@ function defaultSnapshotResponse() {
           case_first: null
         }
       }
-    },
+  };
+  const DOMAIN_KEYS = new Set([
+    "session", "auth", "device_sessions", "account_management",
+    "account_management_capabilities", "soft_logout_reauth", "qr_login", "settings",
+    "link_preview_settings", "locale_profile", "typography_profile", "profile", "sync",
+    "sync_mode", "spaces", "rooms", "invites", "room_notification_settings",
+    "room_interactions", "directory", "room_management", "activity", "thread_attention",
+    "search", "search_crawler", "live_signals", "e2ee_trust", "local_encryption",
+    "native_attention", "cjk_text_policy"
+  ]);
+  const domain: Record<string, unknown> = {};
+  const ui: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(flatState)) {
+    if (DOMAIN_KEYS.has(key)) domain[key] = value;
+    else ui[key] = value;
+  }
+  return {
+    state: { schema_version: 2, domain, ui },
     sidebar: {
       active_space_id: null,
       account_home: { display_name: "Home", unread_count: 0, highlight_count: 0, is_active: true },
