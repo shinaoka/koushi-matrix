@@ -2885,8 +2885,10 @@ name = "koushi-desktop"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "keyring",
  "matrix-desktop-backend",
  "matrix-desktop-core",
+ "matrix-desktop-key",
  "matrix-desktop-state",
  "serde",
  "serde_json",
@@ -3170,7 +3172,6 @@ dependencies = [
  "eyeball",
  "eyeball-im",
  "futures-util",
- "keyring",
  "matrix-desktop-key",
  "matrix-desktop-sdk",
  "matrix-desktop-search",
@@ -3190,7 +3191,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "hkdf",
- "keyring",
  "rand 0.9.4",
  "serde",
  "serde_json",

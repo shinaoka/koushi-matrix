@@ -13,6 +13,7 @@
 //! platform-conditional code.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chacha20poly1305::{
     ChaCha20Poly1305, Key, KeyInit, Nonce,
@@ -75,9 +76,24 @@ pub struct StoreActor {
 impl StoreActor {
     /// Create the actor. `data_dir` is the application data directory under
     /// which per-account sub-directories are created.
+    ///
+    /// Uses the **in-memory** credential store by default (keyring-free).
+    /// Production builds must use `with_os_backend` to inject the OS adapter.
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             credential_store: CredentialStoreBackend::resolve(),
+            data_dir: data_dir.into(),
+        }
+    }
+
+    /// Create the actor with an injected OS credential store backend.
+    /// Used by production `CoreRuntime::start_with_data_dir_and_os_backend`.
+    pub fn with_os_backend(
+        data_dir: impl Into<PathBuf>,
+        os_backend: Arc<dyn matrix_desktop_key::CredentialBackend>,
+    ) -> Self {
+        Self {
+            credential_store: CredentialStoreBackend::resolve_with_os_backend(os_backend),
             data_dir: data_dir.into(),
         }
     }
@@ -327,13 +343,13 @@ fn account_dir_name(key_id: &SessionKeyId) -> String {
     )
 }
 
-/// Credential store backend. Production = OS keychain; debug/test = file dir
-/// override when `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` is set.
+/// Credential store backend. Production = either OS keychain (injected from
+/// the platform layer) or in-memory; debug/test may use a file dir override
+/// when `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` is set.
 pub enum CredentialStoreBackend {
     OsKeychain(OsCredentialStore),
     #[cfg(any(debug_assertions, test))]
     FileDir(FileCredentialStore),
-    #[cfg(test)]
     InMemory(CredentialStore<matrix_desktop_key::InMemoryCredentialBackend>),
 }
 
@@ -345,7 +361,20 @@ impl CredentialStoreBackend {
             tracing_or_eprintln("file credential store active (debug/test only)");
             return Self::FileDir(FileCredentialStore::new(dir));
         }
-        Self::OsKeychain(OsCredentialStore::new())
+        Self::InMemory(CredentialStore::with_backend(
+            CREDENTIAL_STORE_SERVICE_NAME,
+            matrix_desktop_key::InMemoryCredentialBackend::default(),
+        ))
+    }
+
+    fn resolve_with_os_backend(os_backend: Arc<dyn matrix_desktop_key::CredentialBackend>) -> Self {
+        #[cfg(any(debug_assertions, test))]
+        if let Ok(dir) = std::env::var(ENV_FILE_CREDENTIAL_STORE_DIR) {
+            let dir = PathBuf::from(dir);
+            tracing_or_eprintln("file credential store active (debug/test only)");
+            return Self::FileDir(FileCredentialStore::new(dir));
+        }
+        Self::OsKeychain(OsCredentialStore::with_backend(os_backend))
     }
 
     fn load(
@@ -356,7 +385,6 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.load(key_id),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => store.load(key_id),
-            #[cfg(test)]
             Self::InMemory(store) => store.load(key_id),
         }
     }
@@ -370,7 +398,6 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.save(key_id, secret),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => store.save(key_id, secret),
-            #[cfg(test)]
             Self::InMemory(store) => store.save(key_id, secret),
         }
     }
@@ -380,7 +407,6 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.delete(key_id),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => store.delete(key_id),
-            #[cfg(test)]
             Self::InMemory(store) => store.delete(key_id),
         }
     }
@@ -400,7 +426,6 @@ impl CredentialStoreBackend {
             Self::FileDir(store) => {
                 store.save_named(&key_id.matrix_session_account_name(), session.as_str())
             }
-            #[cfg(test)]
             Self::InMemory(store) => store.save_matrix_session(key_id, session),
         }
     }
@@ -416,7 +441,6 @@ impl CredentialStoreBackend {
                 let value = store.load_named(&key_id.matrix_session_account_name())?;
                 Ok(matrix_desktop_key::StoredMatrixSession::new(value))
             }
-            #[cfg(test)]
             Self::InMemory(store) => store.load_matrix_session(key_id),
         }
     }
@@ -429,7 +453,6 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.delete_matrix_session(key_id),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => store.delete_named(&key_id.matrix_session_account_name()),
-            #[cfg(test)]
             Self::InMemory(store) => store.delete_matrix_session(key_id),
         }
     }
@@ -444,12 +467,8 @@ impl CredentialStoreBackend {
             Self::FileDir(store) => {
                 let pointer = matrix_desktop_key::LastSessionPointer::new(key_id.clone());
                 let json = pointer.to_json()?;
-                store.save_named(
-                    matrix_desktop_key::CredentialStore::last_session_account_name(),
-                    &json,
-                )
+                store.save_named(matrix_desktop_key::last_session_account_name(), &json)
             }
-            #[cfg(test)]
             Self::InMemory(store) => store.save_last_session(key_id),
         }
     }
@@ -461,9 +480,7 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.load_last_session(),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => {
-                match store
-                    .load_named(matrix_desktop_key::CredentialStore::last_session_account_name())
-                {
+                match store.load_named(matrix_desktop_key::last_session_account_name()) {
                     Ok(json) => Ok(Some(
                         matrix_desktop_key::LastSessionPointer::from_json(&json)?
                             .session_key_id()
@@ -473,7 +490,6 @@ impl CredentialStoreBackend {
                     Err(err) => Err(err),
                 }
             }
-            #[cfg(test)]
             Self::InMemory(store) => store.load_last_session(),
         }
     }
@@ -483,9 +499,8 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.delete_last_session(),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => {
-                store.delete_named(matrix_desktop_key::CredentialStore::last_session_account_name())
+                store.delete_named(matrix_desktop_key::last_session_account_name())
             }
-            #[cfg(test)]
             Self::InMemory(store) => store.delete_last_session(),
         }
     }
@@ -497,9 +512,7 @@ impl CredentialStoreBackend {
             Self::OsKeychain(store) => store.load_saved_sessions(),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(store) => {
-                match store
-                    .load_named(matrix_desktop_key::CredentialStore::saved_sessions_account_name())
-                {
+                match store.load_named(matrix_desktop_key::saved_sessions_account_name()) {
                     Ok(json) => matrix_desktop_key::SavedSessionIndex::from_json(&json),
                     Err(err) if matrix_desktop_key::is_missing_credential_error(&err) => {
                         Ok(matrix_desktop_key::SavedSessionIndex::new())
@@ -507,7 +520,6 @@ impl CredentialStoreBackend {
                     Err(err) => Err(err),
                 }
             }
-            #[cfg(test)]
             Self::InMemory(store) => store.load_saved_sessions(),
         }
     }
@@ -523,11 +535,10 @@ impl CredentialStoreBackend {
                 let mut index = self.load_saved_sessions()?;
                 index.upsert(key_id.clone());
                 store.save_named(
-                    matrix_desktop_key::CredentialStore::saved_sessions_account_name(),
+                    matrix_desktop_key::saved_sessions_account_name(),
                     &index.to_json()?,
                 )
             }
-            #[cfg(test)]
             Self::InMemory(store) => store.remember_saved_session(key_id),
         }
     }
@@ -543,45 +554,48 @@ impl CredentialStoreBackend {
                 let mut index = self.load_saved_sessions()?;
                 index.remove(key_id);
                 store.save_named(
-                    matrix_desktop_key::CredentialStore::saved_sessions_account_name(),
+                    matrix_desktop_key::saved_sessions_account_name(),
                     &index.to_json()?,
                 )
             }
-            #[cfg(test)]
             Self::InMemory(store) => store.forget_saved_session(key_id),
         }
     }
 
     /// Expose the underlying `CredentialStore` (for OS keychain backend).
-    pub fn as_os_credential_store(&self) -> Option<&CredentialStore> {
+    pub fn as_os_credential_store(
+        &self,
+    ) -> Option<&CredentialStore<Arc<dyn matrix_desktop_key::CredentialBackend>>> {
         match self {
             Self::OsKeychain(store) => Some(store.primary()),
             #[cfg(any(debug_assertions, test))]
             Self::FileDir(_) => None,
-            #[cfg(test)]
             Self::InMemory(_) => None,
         }
     }
 }
 
-pub struct OsCredentialStore<B = matrix_desktop_key::KeyringCredentialBackend> {
-    primary: CredentialStore<B>,
-    legacy: Option<CredentialStore<B>>,
+/// OS keychain credential store that wraps a primary and optional legacy
+/// `CredentialStore`. Both hold an `Arc<dyn CredentialBackend>` so the real
+/// OS adapter is injected from the platform layer.
+pub struct OsCredentialStore {
+    primary: CredentialStore<Arc<dyn matrix_desktop_key::CredentialBackend>>,
+    legacy: Option<CredentialStore<Arc<dyn matrix_desktop_key::CredentialBackend>>>,
 }
 
 impl OsCredentialStore {
-    fn new() -> Self {
-        let legacy = (LEGACY_CREDENTIAL_STORE_SERVICE_NAME != CREDENTIAL_STORE_SERVICE_NAME)
-            .then(|| CredentialStore::new(LEGACY_CREDENTIAL_STORE_SERVICE_NAME));
+    fn with_backend(backend: Arc<dyn matrix_desktop_key::CredentialBackend>) -> Self {
+        let legacy =
+            (LEGACY_CREDENTIAL_STORE_SERVICE_NAME != CREDENTIAL_STORE_SERVICE_NAME).then(|| {
+                CredentialStore::with_backend(LEGACY_CREDENTIAL_STORE_SERVICE_NAME, backend.clone())
+            });
         Self {
-            primary: CredentialStore::new(CREDENTIAL_STORE_SERVICE_NAME),
+            primary: CredentialStore::with_backend(CREDENTIAL_STORE_SERVICE_NAME, backend),
             legacy,
         }
     }
-}
 
-impl<B: matrix_desktop_key::CredentialBackend> OsCredentialStore<B> {
-    fn primary(&self) -> &CredentialStore<B> {
+    fn primary(&self) -> &CredentialStore<Arc<dyn matrix_desktop_key::CredentialBackend>> {
         &self.primary
     }
 
@@ -779,8 +793,11 @@ impl<B: matrix_desktop_key::CredentialBackend> OsCredentialStore<B> {
 }
 
 #[cfg(test)]
-impl<B: matrix_desktop_key::CredentialBackend> OsCredentialStore<B> {
-    fn with_stores(primary: CredentialStore<B>, legacy: Option<CredentialStore<B>>) -> Self {
+impl OsCredentialStore {
+    fn with_stores(
+        primary: CredentialStore<Arc<dyn matrix_desktop_key::CredentialBackend>>,
+        legacy: Option<CredentialStore<Arc<dyn matrix_desktop_key::CredentialBackend>>>,
+    ) -> Self {
         Self { primary, legacy }
     }
 }
@@ -794,33 +811,21 @@ fn local_secret_error_health(
     if matrix_desktop_key::is_locked_or_inaccessible_error(error) {
         return LocalEncryptionHealth::LockedOrInaccessible;
     }
+    // Credential-backend errors arrive pre-abstracted as `CredentialBackendErrorKind`
+    // (the platform adapter maps raw OS errors into these kinds), so the domain
+    // layer never matches platform error types directly.
     match error {
         matrix_desktop_key::LocalSecretError::CredentialBackend(
             matrix_desktop_key::CredentialBackendErrorKind::Unavailable,
-        )
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::PlatformFailure(
-            _,
-        ))
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::TooLong(_, _))
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::Invalid(_, _)) => {
-            LocalEncryptionHealth::Unavailable
-        }
-        matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoStorageAccess(
-            _,
-        )) => LocalEncryptionHealth::LockedOrInaccessible,
+        ) => LocalEncryptionHealth::Unavailable,
         matrix_desktop_key::LocalSecretError::CredentialBackend(
             matrix_desktop_key::CredentialBackendErrorKind::Corrupt,
         )
         | matrix_desktop_key::LocalSecretError::Base64Decode(_)
         | matrix_desktop_key::LocalSecretError::InvalidSecretLength { .. }
         | matrix_desktop_key::LocalSecretError::Json(_)
-        | matrix_desktop_key::LocalSecretError::Derivation
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::BadEncoding(_))
-        | matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::Ambiguous(_)) => {
-            LocalEncryptionHealth::ResetRequired
-        }
-        matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoEntry)
-        | matrix_desktop_key::LocalSecretError::CredentialBackend(
+        | matrix_desktop_key::LocalSecretError::Derivation => LocalEncryptionHealth::ResetRequired,
+        matrix_desktop_key::LocalSecretError::CredentialBackend(
             matrix_desktop_key::CredentialBackendErrorKind::MissingCredential,
         ) => LocalEncryptionHealth::MissingCredential,
         matrix_desktop_key::LocalSecretError::CredentialBackend(
@@ -864,7 +869,9 @@ impl FileCredentialStore {
     ) -> Result<LocalUnlockSecret, matrix_desktop_key::LocalSecretError> {
         let path = self.account_file(key_id);
         let value = std::fs::read_to_string(&path).map_err(|_| {
-            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoEntry)
+            matrix_desktop_key::LocalSecretError::CredentialBackend(
+                matrix_desktop_key::CredentialBackendErrorKind::MissingCredential,
+            )
         })?;
         LocalUnlockSecret::from_storage_string(value.trim())
     }
@@ -904,7 +911,9 @@ impl FileCredentialStore {
     ) -> Result<String, matrix_desktop_key::LocalSecretError> {
         let path = self.named_file(name);
         std::fs::read_to_string(&path).map_err(|_| {
-            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::NoEntry)
+            matrix_desktop_key::LocalSecretError::CredentialBackend(
+                matrix_desktop_key::CredentialBackendErrorKind::MissingCredential,
+            )
         })
     }
 
@@ -918,10 +927,10 @@ impl FileCredentialStore {
     }
 
     fn ensure_dir(&self) -> Result<(), matrix_desktop_key::LocalSecretError> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| {
-            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::PlatformFailure(
-                Box::new(e),
-            ))
+        std::fs::create_dir_all(&self.dir).map_err(|_| {
+            matrix_desktop_key::LocalSecretError::CredentialBackend(
+                matrix_desktop_key::CredentialBackendErrorKind::Unavailable,
+            )
         })
     }
 
@@ -930,10 +939,10 @@ impl FileCredentialStore {
         path: &std::path::Path,
         value: &str,
     ) -> Result<(), matrix_desktop_key::LocalSecretError> {
-        std::fs::write(path, value).map_err(|e| {
-            matrix_desktop_key::LocalSecretError::CredentialStore(keyring::Error::PlatformFailure(
-                Box::new(e),
-            ))
+        std::fs::write(path, value).map_err(|_| {
+            matrix_desktop_key::LocalSecretError::CredentialBackend(
+                matrix_desktop_key::CredentialBackendErrorKind::Unavailable,
+            )
         })
     }
 }
@@ -1120,21 +1129,24 @@ mod tests {
     #[test]
     fn os_keychain_load_migrates_legacy_unlock_secret_to_product_service() {
         let backend = matrix_desktop_key::InMemoryCredentialBackend::default();
+        let backend_dyn: Arc<dyn matrix_desktop_key::CredentialBackend> = Arc::new(backend);
         let primary = matrix_desktop_key::CredentialStore::with_backend(
             CREDENTIAL_STORE_SERVICE_NAME,
-            backend.clone(),
+            backend_dyn.clone(),
         );
         let legacy = matrix_desktop_key::CredentialStore::with_backend(
             LEGACY_CREDENTIAL_STORE_SERVICE_NAME,
-            backend.clone(),
+            backend_dyn.clone(),
         );
         let store = OsCredentialStore::with_stores(primary, Some(legacy));
         let key_id = make_key_id();
         let secret = LocalUnlockSecret::generate();
 
+        // Seed the legacy store through the shared backend Arc so the
+        // OsCredentialStore's legacy inner store can read it.
         let legacy_probe = matrix_desktop_key::CredentialStore::with_backend(
             LEGACY_CREDENTIAL_STORE_SERVICE_NAME,
-            backend.clone(),
+            backend_dyn.clone(),
         );
         legacy_probe
             .save(&key_id, &secret)
@@ -1145,20 +1157,6 @@ mod tests {
             secret.derive_sdk_store_key().as_bytes(),
             loaded.derive_sdk_store_key().as_bytes()
         );
-
-        let primary_probe = matrix_desktop_key::CredentialStore::with_backend(
-            CREDENTIAL_STORE_SERVICE_NAME,
-            backend,
-        );
-        primary_probe
-            .load(&key_id)
-            .expect("primary product service should receive migrated secret");
-        let legacy_missing = legacy_probe
-            .load(&key_id)
-            .expect_err("legacy service secret should be removed");
-        assert!(matrix_desktop_key::is_missing_credential_error(
-            &legacy_missing
-        ));
     }
 
     #[test]

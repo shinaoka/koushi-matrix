@@ -15,8 +15,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 dirs = "6"
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 matrix-desktop-backend = { path = "../../../crates/matrix-desktop-backend" }
 matrix-desktop-core = { path = "../../../crates/matrix-desktop-core" }
+matrix-desktop-key = { path = "../../../crates/matrix-desktop-key" }
 matrix-desktop-state = { path = "../../../crates/matrix-desktop-state" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

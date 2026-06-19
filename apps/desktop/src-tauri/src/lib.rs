@@ -2,6 +2,7 @@
 
 mod commands;
 mod dto;
+pub mod keyring_backend;
 
 use std::{
     path::{Path, PathBuf},
@@ -751,7 +752,10 @@ pub fn run() {
             // can find a runtime handle from this non-tokio-worker thread.
             let async_handle = tauri::async_runtime::handle();
             let _guard = async_handle.inner().enter();
-            let runtime = CoreRuntime::start_with_data_dir(data_dir);
+            let runtime = CoreRuntime::start_with_data_dir_and_os_backend(
+                data_dir,
+                std::sync::Arc::new(crate::keyring_backend::KeyringCredentialBackend),
+            );
 
             // command-dispatch connection (held in state)
             let command_conn = runtime.attach();

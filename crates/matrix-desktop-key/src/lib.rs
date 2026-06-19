@@ -9,7 +9,6 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use hkdf::Hkdf;
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
@@ -23,10 +22,20 @@ const COMPOSER_DRAFTS_INFO: &[u8] = b"matrix-desktop:composer-drafts";
 const LAST_SESSION_ACCOUNT_NAME: &str = "matrix-desktop:last-session:v1";
 const SAVED_SESSIONS_ACCOUNT_NAME: &str = "matrix-desktop:saved-sessions:v1";
 
+pub fn last_session_account_name() -> &'static str {
+    LAST_SESSION_ACCOUNT_NAME
+}
+
+pub fn saved_sessions_account_name() -> &'static str {
+    SAVED_SESSIONS_ACCOUNT_NAME
+}
+
 #[derive(Debug, Error)]
 pub enum LocalSecretError {
-    #[error("credential store error: {0}")]
-    CredentialStore(#[from] keyring::Error),
+    // Credential-backend failures are carried as the platform-free
+    // `CredentialBackendErrorKind`; the platform adapter maps raw OS errors
+    // into a kind so consumers (e.g. matrix-desktop-core) never see platform
+    // error types.
     #[error("credential backend error: {0}")]
     CredentialBackend(CredentialBackendErrorKind),
     #[error("key derivation failed")]
@@ -47,20 +56,6 @@ pub enum CredentialBackendErrorKind {
     Corrupt,
 }
 
-impl CredentialBackendErrorKind {
-    fn from_keyring_error(error: keyring::Error) -> Self {
-        match error {
-            keyring::Error::NoEntry => Self::MissingCredential,
-            keyring::Error::NoStorageAccess(_) => Self::LockedOrInaccessible,
-            keyring::Error::BadEncoding(_) | keyring::Error::Ambiguous(_) => Self::Corrupt,
-            keyring::Error::PlatformFailure(_)
-            | keyring::Error::TooLong(_, _)
-            | keyring::Error::Invalid(_, _) => Self::Unavailable,
-            _ => Self::Unavailable,
-        }
-    }
-}
-
 impl fmt::Display for CredentialBackendErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -72,7 +67,11 @@ impl fmt::Display for CredentialBackendErrorKind {
     }
 }
 
-pub trait CredentialBackend: Clone + fmt::Debug + Send + Sync + 'static {
+/// Platform-independent credential store port.
+///
+/// Implementations provide OS-specific or test credential storage. The trait
+/// is **object-safe** so callers can use `Arc<dyn CredentialBackend>`.
+pub trait CredentialBackend: fmt::Debug + Send + Sync + 'static {
     fn set_password(
         &self,
         service_name: &str,
@@ -93,20 +92,17 @@ pub trait CredentialBackend: Clone + fmt::Debug + Send + Sync + 'static {
     ) -> Result<(), CredentialBackendErrorKind>;
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct KeyringCredentialBackend;
-
-impl CredentialBackend for KeyringCredentialBackend {
+/// Forwarding blanket impl so `Arc<dyn CredentialBackend>` is itself a
+/// `CredentialBackend`. This lets callers hold an `Arc<dyn>` as the backend
+/// type and inject the real OS adapter from the platform layer.
+impl<T: CredentialBackend + ?Sized> CredentialBackend for Arc<T> {
     fn set_password(
         &self,
         service_name: &str,
         account_name: &str,
         value: &str,
     ) -> Result<(), CredentialBackendErrorKind> {
-        Entry::new(service_name, account_name)
-            .map_err(CredentialBackendErrorKind::from_keyring_error)?
-            .set_password(value)
-            .map_err(CredentialBackendErrorKind::from_keyring_error)
+        (**self).set_password(service_name, account_name, value)
     }
 
     fn get_password(
@@ -114,10 +110,7 @@ impl CredentialBackend for KeyringCredentialBackend {
         service_name: &str,
         account_name: &str,
     ) -> Result<String, CredentialBackendErrorKind> {
-        Entry::new(service_name, account_name)
-            .map_err(CredentialBackendErrorKind::from_keyring_error)?
-            .get_password()
-            .map_err(CredentialBackendErrorKind::from_keyring_error)
+        (**self).get_password(service_name, account_name)
     }
 
     fn delete_password(
@@ -125,10 +118,7 @@ impl CredentialBackend for KeyringCredentialBackend {
         service_name: &str,
         account_name: &str,
     ) -> Result<(), CredentialBackendErrorKind> {
-        Entry::new(service_name, account_name)
-            .map_err(CredentialBackendErrorKind::from_keyring_error)?
-            .delete_credential()
-            .map_err(CredentialBackendErrorKind::from_keyring_error)
+        (**self).delete_password(service_name, account_name)
     }
 }
 
@@ -500,23 +490,9 @@ impl LocalUnlockSecret {
 }
 
 #[derive(Clone, Debug)]
-pub struct CredentialStore<B = KeyringCredentialBackend> {
+pub struct CredentialStore<B> {
     service_name: String,
     backend: B,
-}
-
-impl CredentialStore<KeyringCredentialBackend> {
-    pub fn new(service_name: impl Into<String>) -> Self {
-        Self::with_backend(service_name, KeyringCredentialBackend)
-    }
-
-    pub fn last_session_account_name() -> &'static str {
-        LAST_SESSION_ACCOUNT_NAME
-    }
-
-    pub fn saved_sessions_account_name() -> &'static str {
-        SAVED_SESSIONS_ACCOUNT_NAME
-    }
 }
 
 impl<B: CredentialBackend> CredentialStore<B> {
@@ -653,18 +629,10 @@ impl<B: CredentialBackend> CredentialStore<B> {
     }
 }
 
-pub fn map_delete_result(result: keyring::Result<()>) -> Result<(), LocalSecretError> {
-    match result {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(LocalSecretError::CredentialStore(error)),
-    }
-}
-
 pub fn is_missing_credential_error(error: &LocalSecretError) -> bool {
     matches!(
         error,
-        LocalSecretError::CredentialStore(keyring::Error::NoEntry)
-            | LocalSecretError::CredentialBackend(CredentialBackendErrorKind::MissingCredential)
+        LocalSecretError::CredentialBackend(CredentialBackendErrorKind::MissingCredential)
     )
 }
 
