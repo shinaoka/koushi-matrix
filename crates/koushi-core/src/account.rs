@@ -26,7 +26,7 @@
 //!   stop timeline subscriptions → stop search → stop sync → drop SDK handles.
 //! SDK handles dropped inside the Tokio runtime context.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
 use koushi_key::{SessionKeyId, StoredMatrixSession};
@@ -62,6 +62,7 @@ use crate::timeline::{TimelineManagerHandle, TimelineMessage};
 /// during restore/switch (canon: `CoreFailure::SessionNotFound`).
 const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::SessionNotFound;
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
+const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Redacted message used in reducer error projections (never raw SDK text).
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
@@ -838,6 +839,20 @@ impl AccountActor {
         }
     }
 
+    async fn stop_current_session_runtime(&mut self) {
+        self.stop_recovery_observer().await;
+        self.stop_incoming_verification_observer().await;
+        self.stop_timeline_actor().await;
+        self.stop_threads_list_actor().await;
+        self.stop_search_actor().await;
+        self.stop_sync_actor().await;
+        self.clear_room_actor_session().await;
+        self.cancel_verification_handles().await;
+        self.cancel_identity_reset_handle().await;
+        self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
+    }
+
     /// Ordered shutdown of the ThreadsListActor. Dropping the handle cancels
     /// the actor and its SDK subscriptions.
     async fn stop_threads_list_actor(&mut self) {
@@ -1005,8 +1020,7 @@ impl AccountActor {
     /// Ordered shutdown of the SyncActor (step 4 of the shutdown sequence).
     async fn stop_sync_actor(&mut self) {
         if let Some(handle) = self.sync_actor.take() {
-            let _ = handle.send(SyncMessage::Shutdown).await;
-            handle.join().await;
+            let _ = handle.shutdown().await;
         }
     }
 
@@ -1060,6 +1074,10 @@ impl AccountActor {
     /// we send Shutdown and the task finishes on its own after processing it.
     async fn stop_room_actor(&mut self) {
         let _ = self.room_actor.send(RoomMessage::Shutdown).await;
+    }
+
+    async fn clear_room_actor_session(&mut self) {
+        let _ = self.room_actor.send(RoomMessage::SessionCleared).await;
     }
 
     async fn handle_command(&mut self, command: AccountCommand) {
@@ -3364,15 +3382,7 @@ impl AccountActor {
     async fn handle_switch_account(&mut self, request_id: RequestId, account_key: AccountKey) {
         // Ordered shutdown of the current account runtime WITHOUT clearing
         // credentials or stores.
-        // Phase 3: stop recovery/incoming observers and sync. Phases 4-6 add
-        // their children here.
-        self.stop_recovery_observer().await;
-        self.stop_incoming_verification_observer().await;
-        self.stop_sync_actor().await;
-        self.cancel_verification_handles().await;
-        self.cancel_identity_reset_handle().await;
-        self.device_session_ordinals.clear();
-        self.pending_uia_operations.clear();
+        self.stop_current_session_runtime().await;
         // Drop the SDK handle inside the runtime context (Async rule 11).
         drop(self.session.take());
         self.session_key_id = None;
@@ -3556,18 +3566,10 @@ impl AccountActor {
         };
         let key_id = self.session_key_id.take();
 
-        self.stop_recovery_observer().await;
-        self.stop_incoming_verification_observer().await;
-        // Ordered shutdown step 4: stop sync before dropping the session.
-        self.stop_sync_actor().await;
-        self.cancel_verification_handles().await;
-        self.cancel_identity_reset_handle().await;
-        self.device_session_ordinals.clear();
-        self.pending_uia_operations.clear();
+        self.stop_current_session_runtime().await;
 
         if server_logout {
-            // Attempt server-side logout (best-effort; local cleanup always happens).
-            let _ = koushi_sdk::logout(&session).await;
+            let _ = logout_server_best_effort(&session).await;
         }
 
         // Drop the SDK handle inside the Tokio runtime context (Async rule 11).
@@ -3756,15 +3758,7 @@ impl AccountActor {
             return;
         };
 
-        self.stop_recovery_observer().await;
-        self.stop_incoming_verification_observer().await;
-        self.stop_timeline_actor().await;
-        self.stop_search_actor().await;
-        self.stop_sync_actor().await;
-        self.cancel_verification_handles().await;
-        self.cancel_identity_reset_handle().await;
-        self.device_session_ordinals.clear();
-        self.pending_uia_operations.clear();
+        self.stop_current_session_runtime().await;
 
         drop(self.session.take());
         self.clear_account_persistence(&key_id);
@@ -3782,6 +3776,28 @@ impl AccountActor {
 
     async fn send_actions(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.send(actions).await;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ServerLogoutOutcome {
+    Completed,
+    Failed,
+    TimedOut,
+}
+
+async fn logout_server_best_effort(session: &MatrixClientSession) -> ServerLogoutOutcome {
+    wait_for_server_logout_best_effort(SERVER_LOGOUT_TIMEOUT, koushi_sdk::logout(session)).await
+}
+
+async fn wait_for_server_logout_best_effort<F>(timeout: Duration, request: F) -> ServerLogoutOutcome
+where
+    F: Future<Output = Result<(), koushi_sdk::PasswordLoginError>>,
+{
+    match tokio::time::timeout(timeout, request).await {
+        Ok(Ok(())) => ServerLogoutOutcome::Completed,
+        Ok(Err(_)) => ServerLogoutOutcome::Failed,
+        Err(_) => ServerLogoutOutcome::TimedOut,
     }
 }
 
@@ -4327,6 +4343,68 @@ mod tests {
             connection_id: crate::ids::RuntimeConnectionId(1),
             sequence: 1,
         }
+    }
+
+    #[test]
+    fn logout_cleanup_is_bounded_and_ordered_before_persistence_removal() {
+        let source = include_str!("account.rs");
+        let body = source
+            .split("    async fn perform_logout")
+            .nth(1)
+            .and_then(|rest| rest.split("    async fn handle_logout").next())
+            .expect("perform_logout body");
+
+        let shutdown = body
+            .find("self.stop_current_session_runtime().await")
+            .expect("logout must stop child actors before cleanup");
+        let server_logout = body
+            .find("logout_server_best_effort(&session).await")
+            .expect("server logout must be bounded best-effort");
+        let drop_session = body.find("drop(session)").expect("session drop");
+        let clear_persistence = body
+            .find("self.clear_account_persistence(key_id)")
+            .expect("clear account persistence");
+
+        assert!(
+            shutdown < server_logout,
+            "child actors must release SDK handles before the server logout request"
+        );
+        assert!(
+            server_logout < drop_session,
+            "server logout uses the live session but must not replace local cleanup"
+        );
+        assert!(
+            drop_session < clear_persistence,
+            "SDK handles must be dropped before deleting local persistence"
+        );
+        assert!(
+            !body.contains("koushi_sdk::logout(&session).await"),
+            "logout must not await the network request without a product timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_logout_best_effort_returns_on_timeout() {
+        let outcome = wait_for_server_logout_best_effort(
+            std::time::Duration::from_millis(1),
+            futures_util::future::pending(),
+        )
+        .await;
+
+        assert_eq!(outcome, ServerLogoutOutcome::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn server_logout_best_effort_treats_network_failure_as_settled() {
+        let outcome =
+            wait_for_server_logout_best_effort(std::time::Duration::from_secs(1), async {
+                Err(koushi_sdk::PasswordLoginError::Sdk(
+                    "synthetic network failure".to_owned(),
+                ))
+            })
+            .await;
+
+        assert_eq!(outcome, ServerLogoutOutcome::Failed);
     }
 
     fn spawn_actor_with_dirs(

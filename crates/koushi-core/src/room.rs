@@ -105,6 +105,9 @@ pub enum RoomMessage {
     },
     /// Sync stopped: tear down any active room list subscription.
     SyncStopped,
+    /// The active account is logging out/switching/resetting while the
+    /// RoomActor stays alive for future sessions.
+    SessionCleared,
     /// Ordered shutdown.
     Shutdown,
 }
@@ -217,6 +220,11 @@ impl RoomActor {
                 }
                 RoomMessage::SyncStopped => {
                     self.stop_observation().await;
+                    self.clear_known_rooms();
+                }
+                RoomMessage::SessionCleared => {
+                    self.stop_observation().await;
+                    self.session = None;
                     self.clear_known_rooms();
                 }
             }
@@ -3053,7 +3061,7 @@ pub mod tests {
     // --- Observation lifecycle messages without a session are safe ---
 
     #[tokio::test]
-    async fn sync_stopped_and_shutdown_without_session_complete_cleanly() {
+    async fn session_lifecycle_messages_without_session_complete_cleanly() {
         let (action_tx, _action_rx) = mpsc::channel(16);
         let (event_tx, _event_rx) = broadcast::channel(16);
         let handle = RoomActor::spawn(action_tx, event_tx);
@@ -3061,6 +3069,7 @@ pub mod tests {
         // No session, no observation loop: both must be no-ops, and the
         // actor task must still exit on Shutdown.
         assert!(handle.send(RoomMessage::SyncStopped).await);
+        assert!(handle.send(RoomMessage::SessionCleared).await);
         assert!(handle.send(RoomMessage::Shutdown).await);
         tokio::time::timeout(std::time::Duration::from_secs(5), handle.join())
             .await

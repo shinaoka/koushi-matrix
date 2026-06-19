@@ -64,6 +64,9 @@ use crate::room::RoomMessage;
 /// ignored and the probe runs normally.
 #[cfg(any(debug_assertions, test))]
 const ENV_FORCE_SYNC_BACKEND: &str = "MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND";
+const SYNC_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
+const SYNC_ACTOR_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
+const SYNC_SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Messages sent to the SyncActor from AccountActor.
 pub enum SyncMessage {
@@ -82,6 +85,27 @@ pub struct SyncActorHandle {
 impl SyncActorHandle {
     pub async fn send(&self, msg: SyncMessage) -> bool {
         self.tx.send(msg).await.is_ok()
+    }
+
+    pub async fn shutdown(self) -> bool {
+        self.shutdown_with_timeout(SYNC_ACTOR_SHUTDOWN_JOIN_TIMEOUT)
+            .await
+    }
+
+    async fn shutdown_with_timeout(mut self, timeout: Duration) -> bool {
+        let _ = executor::timeout(
+            SYNC_ACTOR_SHUTDOWN_SEND_TIMEOUT,
+            self.tx.send(SyncMessage::Shutdown),
+        )
+        .await;
+        match executor::timeout(timeout, &mut self.task).await {
+            Ok(_) => true,
+            Err(_) => {
+                self.task.abort();
+                let _ = self.task.await;
+                false
+            }
+        }
     }
 
     /// Wait for the actor task to complete (used in ordered shutdown).
@@ -407,10 +431,10 @@ impl SyncActor {
         // Tear down the RoomActor's room-list observation first: on the
         // SyncService backend it consumes the live RoomListService that is
         // about to stop. Harmless no-op when nothing is running.
-        let _ = self.room_tx.send(RoomMessage::SyncStopped).await;
+        let _ = self.room_tx.try_send(RoomMessage::SyncStopped);
         // Signal stop to whichever backend is running.
         if let Some(svc) = self.sync_service.take() {
-            svc.stop().await;
+            let _ = executor::timeout(SYNC_SERVICE_STOP_TIMEOUT, svc.stop()).await;
         }
         if let Some(tx) = self.legacy_stop_tx.take() {
             let _ = tx.send(());
@@ -704,6 +728,46 @@ pub mod tests {
     use super::*;
     use crate::event::{CoreEvent, SyncBackendKind, SyncEvent};
     use crate::failure::SyncFailureKind;
+
+    #[tokio::test]
+    async fn sync_actor_handle_shutdown_aborts_stuck_actor_task() {
+        let (tx, _rx) = mpsc::channel(1);
+        let task = executor::spawn(async {
+            futures_util::future::pending::<()>().await;
+        });
+        let handle = SyncActorHandle { tx, task };
+
+        let clean = handle.shutdown_with_timeout(Duration::from_millis(1)).await;
+
+        assert!(!clean, "stuck actor task must be aborted after timeout");
+    }
+
+    #[test]
+    fn sync_stop_path_bounds_nonessential_shutdown_awaits() {
+        let source = include_str!("sync.rs");
+        let body = source
+            .split("    async fn do_stop")
+            .nth(1)
+            .and_then(|rest| rest.split("    async fn handle_sync_once").next())
+            .expect("do_stop body");
+
+        assert!(
+            body.contains("self.room_tx.try_send(RoomMessage::SyncStopped)"),
+            "room observation teardown notification must not block sync shutdown"
+        );
+        assert!(
+            body.contains("executor::timeout(SYNC_SERVICE_STOP_TIMEOUT, svc.stop()).await"),
+            "SyncService::stop must be bounded"
+        );
+        assert!(
+            !body.contains("self.room_tx.send(RoomMessage::SyncStopped).await"),
+            "room notification send must not be awaited unbounded"
+        );
+        assert!(
+            !body.contains("svc.stop().await"),
+            "SyncService::stop must not be awaited unbounded"
+        );
+    }
 
     // --- classify_sdk_sync_error ---
 
