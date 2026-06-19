@@ -2138,12 +2138,18 @@ stateDiagram-v2
   emitted for a pure speed change.
 - **Content-setting toggle**: Changing `include_media_captions` or
   `include_filenames` does three things atomically: resets all `Completed` rooms
-  to `Idle` in the reducer, emits `InvalidateSearchCrawlerCache` (actor drops
-  its `completed_rooms` set), and emits `NotifySearchCrawlerRoomsAvailable` with
-  all current joined rooms so fresh crawls start with the new settings. Stale
-  captions/filenames must not remain searchable after the user opts out (privacy
-  rule). Running rooms are not interrupted; they will restart from the next
-  `RoomsAvailable` notification after their current task ends.
+  to `Idle` in the reducer, emits `InvalidateSearchCrawlerCache` (actor bumps
+  its `crawl_settings_generation` counter and clears `completed_rooms`), and
+  emits `NotifySearchCrawlerRoomsAvailable` with all current joined rooms so
+  fresh crawls start with the new settings. Stale captions/filenames must not
+  remain searchable after the user opts out (privacy rule).
+  Running rooms are not interrupted by the reducer. However, the actor records
+  a `crawl_settings_generation` counter (u64, monotonically increasing) at the
+  time each crawl is spawned. When a crawl sends `CrawlFinished`, the actor
+  only adds the room to `completed_rooms` if the crawl's recorded generation
+  matches the current counter. A crawl that started before the toggle (stale
+  generation) is rejected: the room stays out of `completed_rooms` and is
+  re-crawled by the next `RoomsAvailable` notification.
 - **Index backpressure → failure**: The crawler sends index messages with
   `channel.send(...).await` (not `try_send`). If the channel is closed
   (e.g. actor shutdown during crawl), the crawler emits `HistoryCrawlFailed`
@@ -2181,7 +2187,15 @@ stateDiagram-v2
   (`Ordering::Relaxed`) and every `JoinHandle` is awaited before the actor loop
   exits. This prevents stale crawl tasks from emitting `HistoryCrawl*` actions
   into the next account's reducer (ordered-shutdown rule, overview.md Async
-  rule 12). Completed rooms are NOT persisted across restarts; the actor uses an
+  rule 12).
+  **Drain-while-await (deadlock prevention)**: Crawler tasks send
+  `CrawlFinished` via `actor_tx.send(...).await` and index messages via
+  `index_tx.send(...).await`. If the actor stopped draining its receivers
+  before awaiting handles, those sends would block indefinitely. The Shutdown
+  arm therefore uses a `tokio::select!` loop that drains both `msg_rx` and
+  `index_rx` concurrently while awaiting each handle, so cancellation and
+  completion can proceed without backpressure stalls.
+  Completed rooms are NOT persisted across restarts; the actor uses an
   in-memory `completed_rooms: HashSet<String>` seeded fresh each session.
 
 ## Appearance / Theme Ownership

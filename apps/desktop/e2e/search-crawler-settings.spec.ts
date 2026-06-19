@@ -650,3 +650,55 @@ test("clicking Stop dispatches stop_room_crawl with the correct roomId and row u
   // the Stop button must still be visible — state didn't change in React.
   await expect(stopButton).toBeVisible();
 });
+
+test("stop_room_crawl transitions room to idle: Start button appears, Stop button disappears", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  // Seed a running room
+  await page.evaluate((roomId) => {
+    const snap = (
+      window as unknown as {
+        __harness: {
+          currentSnapshot(): DesktopSnapshot;
+          setSnapshot(s: DesktopSnapshot): void;
+        };
+      }
+    ).__harness.currentSnapshot();
+    (
+      window as unknown as {
+        __harness: { setSnapshot(s: DesktopSnapshot): void };
+      }
+    ).__harness.setSnapshot({
+      ...snap,
+      state: {
+        ...snap.state,
+        search_crawler: {
+          rooms: {
+            [roomId]: { kind: "running", processed: 5, indexed: 3 }
+          }
+        }
+      }
+    });
+  }, HARNESS_ROOM_ID);
+
+  await openUserSettings(page);
+
+  const statusSection = page.getByRole("region", { name: t("settings.searchHistoryRoomStatus") });
+  const stopButton = statusSection.getByRole("button", {
+    name: t("settings.searchHistoryStopRoom")
+  });
+  await expect(stopButton).toBeVisible();
+
+  // Click Stop — the harness default handler returns idle state
+  await stopButton.click();
+
+  // After the Rust-shaped snapshot returns idle, the Stop button is gone and
+  // the Start button appears (row is still present, not deleted).
+  const startButton = statusSection.getByRole("button", {
+    name: t("settings.searchHistoryStartRoom")
+  });
+  await expect(startButton).toBeVisible();
+  await expect(stopButton).not.toBeVisible();
+});

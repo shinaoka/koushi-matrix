@@ -1440,11 +1440,19 @@ mock.setCommandResponse("start_room_crawl", ({ roomId }: { roomId: string }) => 
   });
 });
 mock.setCommandResponse("stop_room_crawl", ({ roomId }: { roomId: string }) => {
-  const rooms = { ...currentSnapshot.state.search_crawler.rooms };
-  delete rooms[roomId];
+  // Transition to idle (matching Rust contract) so the status row stays visible
+  // with a Start button instead of disappearing from the list.
   return setCurrentSnapshot({
     ...currentSnapshot,
-    state: { ...currentSnapshot.state, search_crawler: { rooms } }
+    state: {
+      ...currentSnapshot.state,
+      search_crawler: {
+        rooms: {
+          ...currentSnapshot.state.search_crawler.rooms,
+          [roomId]: { kind: "idle" }
+        }
+      }
+    }
   });
 });
 mock.setCommandResponse("update_room_setting", () => currentSnapshot);

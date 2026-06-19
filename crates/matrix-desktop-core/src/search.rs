@@ -175,9 +175,14 @@ pub(crate) enum SearchActorMessage {
     },
     /// Sent by a crawler task when it finishes (either completed or failed).
     /// Lets the actor remove the cancellation entry and record completed rooms.
+    /// `settings_generation` is the generation value at the time the crawl was
+    /// started; the actor only adds the room to `completed_rooms` when the
+    /// generation matches the current value, ensuring that a crawl which ran
+    /// under stale content-indexing settings is not recorded as completed.
     CrawlFinished {
         room_id: String,
         completed: bool,
+        settings_generation: u64,
     },
     /// Content-indexing settings changed (include_media_captions or
     /// include_filenames toggled). The actor must drop all rooms from
@@ -231,10 +236,11 @@ impl std::fmt::Debug for SearchActorMessage {
                 .field("room_count", &room_ids.len())
                 .field("settings", settings)
                 .finish(),
-            Self::CrawlFinished { completed, .. } => f
+            Self::CrawlFinished { completed, settings_generation, .. } => f
                 .debug_struct("SearchActorMessage::CrawlFinished")
                 .field("room_id", &"RoomId(..)")
                 .field("completed", completed)
+                .field("settings_generation", settings_generation)
                 .finish(),
             Self::InvalidateCrawlerCache => {
                 write!(f, "SearchActorMessage::InvalidateCrawlerCache")
@@ -371,6 +377,12 @@ pub(crate) struct SearchActor {
     /// `handle_rooms_available` to skip idempotent auto-start for rooms that
     /// have already reached the `Completed` state.
     completed_rooms: std::collections::HashSet<String>,
+    /// Monotonically increasing generation counter.  Incremented each time
+    /// content-indexing settings change (via `InvalidateCrawlerCache`).  Every
+    /// spawned crawl task records the current generation; `CrawlFinished`
+    /// carries it back so the actor can discard completions from tasks that ran
+    /// under stale settings (P1-A: running-room recrawl correctness).
+    crawl_settings_generation: u64,
 }
 
 impl SearchActor {
@@ -395,6 +407,7 @@ impl SearchActor {
             crawl_cancels: HashMap::new(),
             crawl_handles: HashMap::new(),
             completed_rooms: std::collections::HashSet::new(),
+            crawl_settings_generation: 0,
         };
 
         // Spawn the actor task.
@@ -411,16 +424,39 @@ impl SearchActor {
                     let Some(msg) = msg else { break };
                     match msg {
                         SearchActorMessage::Shutdown => {
-                            // Set all cancel flags so crawl tasks exit their
-                            // inner loop, then await every handle so no task
-                            // emits `HistoryCrawl*` actions into the next
-                            // account's reducer (ordered-shutdown rule, canon
-                            // overview.md Async rule 12).
+                            // Signal all running crawls to stop.
                             for cancel in self.crawl_cancels.values() {
                                 cancel.store(true, Ordering::Relaxed);
                             }
-                            for (_, handle) in self.crawl_handles.drain() {
-                                let _ = handle.await;
+                            // Drain both channels while awaiting every crawl
+                            // handle.  This prevents a deadlock: crawler tasks
+                            // do `actor_tx.send(CrawlFinished).await` and
+                            // `index_tx.send(...).await`; if we simply stopped
+                            // the select loop and then awaited their handles,
+                            // those sends would block forever on full channels
+                            // (P1-B shutdown deadlock fix).
+                            let handles: Vec<_> = self.crawl_handles.drain().map(|(_, h)| h).collect();
+                            for handle in handles {
+                                // Pin the handle so it can be polled across
+                                // multiple select! iterations (JoinHandle is
+                                // Unpin but tokio::select! requires a stable
+                                // address when the future is not consumed in
+                                // one shot).
+                                tokio::pin!(handle);
+                                loop {
+                                    tokio::select! {
+                                        biased;
+                                        _ = &mut handle => {
+                                            break;
+                                        }
+                                        // Drain actor messages so CrawlFinished
+                                        // sends from tasks don't block.
+                                        _ = self.msg_rx.recv() => {}
+                                        // Drain index messages so index_tx
+                                        // sends from tasks don't block.
+                                        _ = index_rx.recv() => {}
+                                    }
+                                }
                             }
                             break;
                         }
@@ -444,19 +480,30 @@ impl SearchActor {
                         SearchActorMessage::RoomsAvailable { room_ids, settings } => {
                             self.handle_rooms_available(room_ids, settings).await;
                         }
-                        SearchActorMessage::CrawlFinished { room_id, completed } => {
+                        SearchActorMessage::CrawlFinished { room_id, completed, settings_generation } => {
                             self.crawl_cancels.remove(&room_id);
                             self.crawl_handles.remove(&room_id);
-                            if completed {
+                            // Only record completion when the crawl ran under
+                            // the current settings generation.  A stale
+                            // generation means settings changed (e.g.
+                            // include_media_captions toggled) while the crawl
+                            // was running; the room must be left out of
+                            // `completed_rooms` so the next `RoomsAvailable`
+                            // notification re-crawls it with the new settings
+                            // (P1-A: running-room recrawl correctness).
+                            if completed && settings_generation == self.crawl_settings_generation {
                                 self.completed_rooms.insert(room_id);
                             }
                         }
                         SearchActorMessage::InvalidateCrawlerCache => {
-                            // Content-indexing settings changed — clear the
-                            // completed-room cache so the next RoomsAvailable
-                            // notification re-crawls all rooms with the new
-                            // settings.  Running crawls will complete first and
-                            // then be re-started on the next notify.
+                            // Content-indexing settings changed — bump the
+                            // generation so any currently-running crawl's
+                            // `CrawlFinished` is rejected as stale.  Also
+                            // clear the completed-room cache so the next
+                            // `RoomsAvailable` notification re-crawls all
+                            // rooms with the new settings (P1-A fix).
+                            self.crawl_settings_generation =
+                                self.crawl_settings_generation.wrapping_add(1);
                             self.completed_rooms.clear();
                         }
                     }
@@ -704,6 +751,7 @@ impl SearchActor {
 
         let cancel = Arc::new(AtomicBool::new(false));
         self.crawl_cancels.insert(room_id.clone(), cancel.clone());
+        let generation = self.crawl_settings_generation;
         let handle = crate::search_crawler::spawn_history_crawl(
             self.session.clone(),
             room_id.clone(),
@@ -714,6 +762,7 @@ impl SearchActor {
             self.event_tx.clone(),
             cancel,
             self.msg_tx.clone(),
+            generation,
         );
         self.crawl_handles.insert(room_id, handle);
     }
@@ -738,21 +787,16 @@ impl SearchActor {
         if settings.speed == SearchCrawlerSpeed::Paused {
             return;
         }
+        let generation = self.crawl_settings_generation;
         for room_id in room_ids {
             // Skip if a crawl is already running for this room.
             if self.crawl_cancels.contains_key(&room_id) {
                 continue;
             }
             // Skip if this room's content has already been fully indexed
-            // (the crawler emits AppAction::HistoryCrawlCompleted when done).
-            // We proxy that check through `indexed_rooms`, which is keyed by
-            // event_id, not room_id — so we can't directly check it here.
-            // Instead we rely on the reducer's `SearchCrawlerRoomState::Completed`
-            // guard: re-starting a completed room is harmless because
-            // `handle_start_history_crawl` cancels the old entry and the
-            // crawler will exit quickly when the cursor is already exhausted,
-            // but it wastes resources.  A clean solution is to track completed
-            // room ids in a dedicated set inside the actor.
+            // at the current settings generation.  `completed_rooms` is
+            // cleared on `InvalidateCrawlerCache`, so a settings change
+            // naturally re-queues all rooms here.
             if self.completed_rooms.contains(&room_id) {
                 continue;
             }
@@ -769,6 +813,7 @@ impl SearchActor {
                 self.event_tx.clone(),
                 cancel,
                 self.msg_tx.clone(),
+                generation,
             );
             self.crawl_handles.insert(room_id, handle);
         }

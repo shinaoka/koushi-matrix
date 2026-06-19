@@ -553,6 +553,81 @@ fn fresh_state_has_empty_crawler_rooms() {
 }
 
 // ---------------------------------------------------------------------------
+// P1-A: Running room must be re-crawled after content-setting toggle
+// ---------------------------------------------------------------------------
+
+/// When `include_media_captions` or `include_filenames` is toggled while a
+/// room's crawl is RUNNING, the reducer leaves the room in `Running` state
+/// (it does not reset it to Idle — that would interrupt the current crawl)
+/// and emits `InvalidateSearchCrawlerCache` + `NotifySearchCrawlerRoomsAvailable`.
+///
+/// The actor side uses the generation counter to reject `CrawlFinished` from
+/// the stale running crawl, so the room is never added to `completed_rooms`
+/// at the old settings; the follow-up `RoomsAvailable` then re-crawls it.
+#[test]
+fn running_room_is_left_running_and_recrawl_effects_are_emitted_on_content_toggle() {
+    let mut state = ready_state_with_rooms(&["room-a", "room-b"]);
+    // room-a is Running (in-progress crawl).
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Running { processed: 50, indexed: 30 },
+    );
+    // room-b is Completed under the old settings.
+    state.search_crawler.rooms.insert(
+        "room-b".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 100 },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 1,
+            patch: SettingsPatch {
+                search_crawler: Some(settings_no_media_captions()),
+                ..Default::default()
+            },
+        },
+    );
+
+    // The Running room must stay Running (reducer does not interrupt it).
+    assert_eq!(
+        state.search_crawler.rooms.get("room-a"),
+        Some(&SearchCrawlerRoomState::Running { processed: 50, indexed: 30 }),
+        "Running room must not be reset by the reducer on content-setting toggle"
+    );
+    // The Completed room must be reset to Idle so the next RoomsAvailable re-crawls it.
+    assert_eq!(
+        state.search_crawler.rooms.get("room-b"),
+        Some(&SearchCrawlerRoomState::Idle),
+        "Completed room must be reset to Idle on content-setting toggle"
+    );
+
+    // The actor uses the generation bump (InvalidateSearchCrawlerCache) to
+    // reject the stale running crawl's CrawlFinished, preventing the Running
+    // room from being silently recorded as Completed at the old settings.
+    let has_invalidate = effects
+        .iter()
+        .any(|e| matches!(e, AppEffect::InvalidateSearchCrawlerCache));
+    assert!(
+        has_invalidate,
+        "InvalidateSearchCrawlerCache must be emitted so the actor bumps its generation \
+         and rejects the stale running crawl's CrawlFinished; got {effects:?}"
+    );
+
+    // RoomsAvailable must be emitted so both rooms can be re-crawled
+    // (room-a after its stale crawl finishes, room-b immediately).
+    let has_notify = effects.iter().any(|e| {
+        matches!(e, AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, .. }
+            if !room_ids.is_empty())
+    });
+    assert!(
+        has_notify,
+        "NotifySearchCrawlerRoomsAvailable must be emitted for re-crawl after \
+         content-setting toggle; got {effects:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // SearchCrawlerState serializes without private data
 // ---------------------------------------------------------------------------
 

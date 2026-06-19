@@ -2269,13 +2269,17 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async stopRoomCrawl(roomId: string): Promise<DesktopSnapshot> {
-    // Browser fake: transition the room back to idle state so tests can observe state changes.
+    // Browser fake: transition the room to idle (matching the Rust contract) so
+    // the status row stays visible with a Start button instead of disappearing.
     if (!this.canUseSyncedViews() || !roomId.trim()) {
       return this.getSnapshot();
     }
-    const rooms = { ...this.snapshot.state.search_crawler.rooms };
-    delete rooms[roomId];
-    this.snapshot.state.search_crawler = { rooms };
+    this.snapshot.state.search_crawler = {
+      rooms: {
+        ...this.snapshot.state.search_crawler.rooms,
+        [roomId]: { kind: "idle" }
+      }
+    };
     return this.getSnapshot();
   }
 

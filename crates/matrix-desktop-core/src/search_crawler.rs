@@ -31,6 +31,11 @@ const BATCH_SIZE_SLOW: u32 = 50;
 /// Returns the `JoinHandle` for the spawned task. Callers (SearchActor) store
 /// this handle so they can await it on shutdown and prevent stale crawl tasks
 /// from emitting actions into the next account's reducer (P4 fix).
+///
+/// `settings_generation` is the actor's current generation counter at the time
+/// of spawn.  It is forwarded in `CrawlFinished` so the actor can discard
+/// completions from crawls that ran under stale content-indexing settings
+/// (P1-A: running-room recrawl correctness).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_history_crawl(
     session: Arc<matrix_desktop_sdk::MatrixClientSession>,
@@ -42,6 +47,7 @@ pub fn spawn_history_crawl(
     event_tx: broadcast::Sender<CoreEvent>,
     cancel: Arc<AtomicBool>,
     actor_tx: mpsc::Sender<SearchActorMessage>,
+    settings_generation: u64,
 ) -> executor::JoinHandle<bool> {
     executor::spawn(run_history_crawl(
         session,
@@ -53,6 +59,7 @@ pub fn spawn_history_crawl(
         event_tx,
         cancel,
         actor_tx,
+        settings_generation,
     ))
 }
 
@@ -66,6 +73,7 @@ async fn run_history_crawl(
     event_tx: broadcast::Sender<CoreEvent>,
     cancel: Arc<AtomicBool>,
     actor_tx: mpsc::Sender<SearchActorMessage>,
+    settings_generation: u64,
 ) -> bool {
     let completed = run_history_crawl_inner(
         &session,
@@ -86,7 +94,7 @@ async fn run_history_crawl(
     // a dropped state-machine transition is prohibited by the repository
     // reliability rules (REPOSITORY_RULES L124-128).
     let _ = actor_tx
-        .send(SearchActorMessage::CrawlFinished { room_id, completed })
+        .send(SearchActorMessage::CrawlFinished { room_id, completed, settings_generation })
         .await;
     completed
 }
@@ -725,5 +733,66 @@ mod tests {
             other => panic!("expected Redact, got {other:?}"),
         }
         assert!(pending.contains("$original2:test"));
+    }
+
+    // -----------------------------------------------------------------------
+    // P1-B: Shutdown drain — channel backpressure must not cause deadlock
+    // -----------------------------------------------------------------------
+
+    /// Verifies the drain-while-await pattern used in `SearchActor::run`'s
+    /// Shutdown arm.  A task that is blocked on `channel.send().await` must
+    /// be able to complete after the receiver resumes draining, and the whole
+    /// sequence must finish within a bounded time (no deadlock).
+    ///
+    /// This is a pure channel-level test; it does not require the full
+    /// SDK/actor infrastructure and runs without a network connection.
+    #[tokio::test]
+    async fn shutdown_drain_completes_within_bounded_time_when_channel_was_full() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::mpsc;
+
+        // Capacity 2: the task can queue 2 messages without blocking, but
+        // the 3rd send will block until the receiver drains one slot.
+        let (tx, mut rx) = mpsc::channel::<u32>(2);
+        let done = Arc::new(AtomicBool::new(false));
+        let done_clone = done.clone();
+
+        let tx_clone = tx.clone();
+        let task = tokio::spawn(async move {
+            // Fill to capacity without blocking.
+            tx_clone.send(1).await.ok();
+            tx_clone.send(2).await.ok();
+            // This send blocks until the receiver drains at least one slot.
+            let _ = tx_clone.send(3).await;
+            done_clone.store(true, Ordering::Relaxed);
+        });
+        tokio::pin!(task);
+
+        // Simulate the actor's Shutdown drain loop: drain the receiver while
+        // awaiting the task handle.  Without draining, the task would be
+        // stuck on the blocked send forever.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            async {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut task => break,
+                        _ = rx.recv() => {}
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "shutdown drain must complete within 5 s — timed out (deadlock regression)"
+        );
+        assert!(
+            done.load(Ordering::Relaxed),
+            "task must have signalled completion after drain unblocked it"
+        );
     }
 }
