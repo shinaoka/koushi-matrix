@@ -17,7 +17,10 @@ pub(crate) fn handle_settings_loaded(
     vec![AppEffect::EmitUiEvent(UiEvent::SettingsChanged)]
 }
 
-pub(crate) fn handle_settings_load_failed(state: &mut AppState, _message: String) -> Vec<AppEffect> {
+pub(crate) fn handle_settings_load_failed(
+    state: &mut AppState,
+    _message: String,
+) -> Vec<AppEffect> {
     state.settings.persistence = SettingsPersistenceState::Idle;
     state.errors.push(AppError {
         code: "settings_load_failed".to_owned(),
@@ -55,12 +58,14 @@ pub(crate) fn handle_settings_update_requested(
     // reducer state AND the actor's completed-room cache so rooms are
     // re-crawled with the new settings.  Stale captions/filenames must
     // not stay searchable after the user opts out (privacy rule).
-    let content_changed = prev_crawler.include_media_captions
-        != new_crawler.include_media_captions
+    let content_changed = prev_crawler.include_media_captions != new_crawler.include_media_captions
         || prev_crawler.include_filenames != new_crawler.include_filenames;
     if content_changed {
         for room_state in state.search_crawler.rooms.values_mut() {
-            if matches!(room_state, crate::state::SearchCrawlerRoomState::Completed { .. }) {
+            if matches!(
+                room_state,
+                crate::state::SearchCrawlerRoomState::Completed { .. }
+            ) {
                 *room_state = crate::state::SearchCrawlerRoomState::Idle;
             }
         }
@@ -70,8 +75,7 @@ pub(crate) fn handle_settings_update_requested(
         effects.push(AppEffect::InvalidateSearchCrawlerCache);
         // Re-enqueue all currently-known joined rooms so the actor
         // starts fresh crawls with the new content settings.
-        let room_ids: Vec<String> =
-            state.rooms.iter().map(|r| r.room_id.clone()).collect();
+        let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
         if !room_ids.is_empty() {
             effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
                 room_ids,
@@ -94,14 +98,20 @@ pub(crate) fn handle_settings_update_requested(
             });
         }
     }
+    if prev_crawler.speed != SearchCrawlerSpeed::Paused
+        && new_crawler.speed == SearchCrawlerSpeed::Paused
+    {
+        let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
+        effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+            room_ids,
+            settings: new_crawler.clone(),
+        });
+    }
 
     effects
 }
 
-pub(crate) fn handle_settings_persisted(
-    state: &mut AppState,
-    request_id: u64,
-) -> Vec<AppEffect> {
+pub(crate) fn handle_settings_persisted(state: &mut AppState, request_id: u64) -> Vec<AppEffect> {
     if state.settings.persistence != (SettingsPersistenceState::Saving { request_id }) {
         return Vec::new();
     }

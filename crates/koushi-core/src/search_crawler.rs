@@ -5,316 +5,175 @@
 //! metadata are indexed. This keeps the crawler a text-only backfill worker.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::{
-    AppAction, AttachmentKind, SearchCrawlerFailureKind, SearchCrawlerSettings, SearchCrawlerSpeed,
+    AttachmentKind, SearchCrawlerFailureKind, SearchCrawlerSettings, SearchCrawlerSpeed,
 };
 use matrix_sdk::room::MessagesOptions;
 use matrix_sdk::ruma::api::Direction;
 use serde_json::Value;
-use tokio::sync::{broadcast, mpsc};
 
-use crate::event::{CoreEvent, SearchEvent};
 use crate::executor;
-use crate::ids::RequestId;
-use crate::search::{SearchActorMessage, SearchIndexMessage};
+use crate::search::SearchIndexMessage;
 
 const BATCH_SIZE_FAST: u32 = 200;
 const BATCH_SIZE_STANDARD: u32 = 100;
 const BATCH_SIZE_SLOW: u32 = 50;
 
-/// Start a background crawl for the given room.
-///
-/// Returns the `JoinHandle` for the spawned task. Callers (SearchActor) store
-/// this handle so they can await it on shutdown and prevent stale crawl tasks
-/// from emitting actions into the next account's reducer (P4 fix).
-///
-/// `settings_generation` is the actor's current generation counter at the time
-/// of spawn.  It is forwarded in `CrawlFinished` so the actor can discard
-/// completions from crawls that ran under stale content-indexing settings
-/// (P1-A: running-room recrawl correctness).
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_history_crawl(
-    session: Arc<koushi_sdk::MatrixClientSession>,
-    room_id: String,
-    request_id: RequestId,
-    settings: SearchCrawlerSettings,
-    index_tx: mpsc::Sender<SearchIndexMessage>,
-    action_tx: mpsc::Sender<Vec<AppAction>>,
-    event_tx: broadcast::Sender<CoreEvent>,
-    cancel: Arc<AtomicBool>,
-    actor_tx: mpsc::Sender<SearchActorMessage>,
-    settings_generation: u64,
-) -> executor::JoinHandle<bool> {
-    executor::spawn(run_history_crawl(
-        session,
-        room_id,
-        request_id,
-        settings,
-        index_tx,
-        action_tx,
-        event_tx,
-        cancel,
-        actor_tx,
-        settings_generation,
-    ))
+#[derive(Clone)]
+pub(crate) struct HistoryCrawlCheckpoint {
+    pub room_id: String,
+    pub from_token: Option<String>,
+    pub processed: u64,
+    pub indexed: u64,
+    pub pending_redactions: HashSet<String>,
+    pub settings: SearchCrawlerSettings,
+    pub settings_generation: u64,
+    pub manual: bool,
 }
 
-async fn run_history_crawl(
-    session: Arc<koushi_sdk::MatrixClientSession>,
-    room_id: String,
-    request_id: RequestId,
-    settings: SearchCrawlerSettings,
-    index_tx: mpsc::Sender<SearchIndexMessage>,
-    action_tx: mpsc::Sender<Vec<AppAction>>,
-    event_tx: broadcast::Sender<CoreEvent>,
-    cancel: Arc<AtomicBool>,
-    actor_tx: mpsc::Sender<SearchActorMessage>,
-    settings_generation: u64,
-) -> bool {
-    let completed = run_history_crawl_inner(
-        &session,
-        &room_id,
-        request_id,
-        &settings,
-        &index_tx,
-        &action_tx,
-        &event_tx,
-        &cancel,
-    )
-    .await;
-
-    // Notify the SearchActor that this crawl is done so it can clean up
-    // `crawl_cancels` and, if it completed successfully, record the room in
-    // `completed_rooms` to prevent duplicate auto-start crawls.
-    // Use `send` (not `try_send`) so CrawlFinished is reliably delivered:
-    // a dropped state-machine transition is prohibited by the repository
-    // reliability rules (REPOSITORY_RULES L124-128).
-    let _ = actor_tx
-        .send(SearchActorMessage::CrawlFinished { room_id, completed, settings_generation })
-        .await;
-    completed
+impl HistoryCrawlCheckpoint {
+    pub fn new(
+        room_id: String,
+        settings: SearchCrawlerSettings,
+        settings_generation: u64,
+        manual: bool,
+    ) -> Self {
+        Self {
+            room_id,
+            from_token: None,
+            processed: 0,
+            indexed: 0,
+            pending_redactions: HashSet::new(),
+            settings,
+            settings_generation,
+            manual,
+        }
+    }
 }
 
-/// Core crawl logic.  Returns `true` if the room history was fully crawled
-/// (completed or already paused), or `false` if it failed.
-async fn run_history_crawl_inner(
-    session: &koushi_sdk::MatrixClientSession,
-    room_id: &str,
-    request_id: RequestId,
-    settings: &SearchCrawlerSettings,
-    index_tx: &mpsc::Sender<SearchIndexMessage>,
-    action_tx: &mpsc::Sender<Vec<AppAction>>,
-    event_tx: &broadcast::Sender<CoreEvent>,
-    cancel: &Arc<AtomicBool>,
-) -> bool {
-    send_action(
-        action_tx,
-        AppAction::HistoryCrawlStarted {
-            request_id: request_id.sequence,
-            room_id: room_id.to_owned(),
-        },
-    )
-    .await;
+pub(crate) enum HistoryCrawlPageResult {
+    Success {
+        checkpoint: HistoryCrawlCheckpoint,
+        messages: Vec<SearchIndexMessage>,
+        completed: bool,
+    },
+    Failed {
+        checkpoint: HistoryCrawlCheckpoint,
+        kind: SearchCrawlerFailureKind,
+    },
+}
 
-    if settings.speed == SearchCrawlerSpeed::Paused {
-        send_action(
-            action_tx,
-            AppAction::HistoryCrawlCompleted {
-                room_id: room_id.to_owned(),
-                indexed: 0,
-            },
-        )
-        .await;
-        return true;
+pub(crate) fn spawn_history_crawl_page(
+    session: Arc<koushi_sdk::MatrixClientSession>,
+    checkpoint: HistoryCrawlCheckpoint,
+) -> executor::JoinHandle<HistoryCrawlPageResult> {
+    executor::spawn(run_history_crawl_page(session, checkpoint))
+}
+
+async fn run_history_crawl_page(
+    session: Arc<koushi_sdk::MatrixClientSession>,
+    mut checkpoint: HistoryCrawlCheckpoint,
+) -> HistoryCrawlPageResult {
+    if checkpoint.settings.speed == SearchCrawlerSpeed::Paused {
+        return HistoryCrawlPageResult::Success {
+            checkpoint,
+            messages: Vec::new(),
+            completed: true,
+        };
     }
 
-    let parsed_room_id = match room_id.parse::<matrix_sdk::ruma::OwnedRoomId>() {
+    let parsed_room_id = match checkpoint.room_id.parse::<matrix_sdk::ruma::OwnedRoomId>() {
         Ok(id) => id,
         Err(_) => {
-            send_failure(
-                action_tx,
-                room_id,
-                SearchCrawlerFailureKind::RoomNotFound,
-                "invalid room id",
-            )
-            .await;
-            return false;
+            return HistoryCrawlPageResult::Failed {
+                checkpoint,
+                kind: SearchCrawlerFailureKind::RoomNotFound,
+            };
         }
     };
 
     let room = match session.client().get_room(&parsed_room_id) {
         Some(room) => room,
         None => {
-            send_failure(
-                action_tx,
-                room_id,
-                SearchCrawlerFailureKind::RoomNotFound,
-                "room not found",
-            )
-            .await;
-            return false;
+            return HistoryCrawlPageResult::Failed {
+                checkpoint,
+                kind: SearchCrawlerFailureKind::RoomNotFound,
+            };
         }
     };
 
-    let (batch_size, delay_ms) = match settings.speed {
-        SearchCrawlerSpeed::Fast => (BATCH_SIZE_FAST, 0),
-        SearchCrawlerSpeed::Slow => (BATCH_SIZE_SLOW, 500),
-        _ => (BATCH_SIZE_STANDARD, 100),
+    let (batch_size, delay_ms) = crawl_batch_and_delay(checkpoint.settings.speed);
+    let mut options = MessagesOptions::new(Direction::Backward);
+    options.limit = batch_size.into();
+    options.from = checkpoint.from_token.clone();
+
+    let messages = match room.messages(options).await {
+        Ok(messages) => messages,
+        Err(_) => {
+            return HistoryCrawlPageResult::Failed {
+                checkpoint,
+                kind: SearchCrawlerFailureKind::Sdk,
+            };
+        }
     };
 
-    let mut from_token: Option<String> = None;
-    let mut processed: u64 = 0;
-    let mut indexed: u64 = 0;
-    // Track event ids that were redacted so a later-crawled (older) original
-    // is not indexed after its redaction.  This is a backward crawl, so
-    // redaction events arrive before the original message they target.
-    let mut pending_redactions: HashSet<String> = HashSet::new();
+    let chunk_len = messages.chunk.len() as u64;
+    checkpoint.processed += chunk_len;
 
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            // Cancelled: report as completed so the room can be re-crawled
-            // later from the start without being counted as failed.
-            send_action(
-                action_tx,
-                AppAction::HistoryCrawlCompleted {
-                    room_id: room_id.to_owned(),
-                    indexed,
-                },
-            )
-            .await;
-            // Return false so the actor does NOT add this room to
-            // `completed_rooms` — a cancelled crawl is retryable.
-            return false;
+    let mut index_messages = Vec::new();
+    for timeline_event in &messages.chunk {
+        if timeline_event.kind.is_utd() {
+            continue;
         }
 
-        // Build a fresh MessagesOptions per page (MessagesOptions is not Clone).
-        let mut options = MessagesOptions::new(Direction::Backward);
-        options.limit = batch_size.into();
-        options.from = from_token.clone();
-
-        let messages = match room.messages(options).await {
-            Ok(messages) => messages,
-            Err(_) => {
-                send_failure(
-                    action_tx,
-                    room_id,
-                    SearchCrawlerFailureKind::Sdk,
-                    "messages request failed",
-                )
-                .await;
-                return false;
-            }
+        let raw = timeline_event.kind.raw();
+        let json = raw.json().get();
+        let Some(message) = event_json_to_index_message(
+            &checkpoint.room_id,
+            json,
+            &checkpoint.settings,
+            &mut checkpoint.pending_redactions,
+        ) else {
+            continue;
         };
 
-        let chunk_len = messages.chunk.len() as u64;
-        processed += chunk_len;
-
-        for timeline_event in &messages.chunk {
-            if timeline_event.kind.is_utd() {
-                continue;
+        let already_redacted = match &message {
+            SearchIndexMessage::Upsert { event_id, .. } => {
+                checkpoint.pending_redactions.contains(event_id)
             }
-
-            let raw = timeline_event.kind.raw();
-            let json = raw.json().get();
-            let Some(message) =
-                event_json_to_index_message(room_id, json, settings, &mut pending_redactions)
-            else {
-                continue;
-            };
-
-            // If this upsert targets an event that was already redacted
-            // (seen earlier in this backward crawl), skip it.
-            let already_redacted = match &message {
-                SearchIndexMessage::Upsert { event_id, .. } => {
-                    pending_redactions.contains(event_id)
-                }
-                _ => false,
-            };
-            if already_redacted {
-                continue;
-            }
-
-            // Use `send(...).await` (not `try_send`) so dropped index updates
-            // are not silently counted as indexed and do not produce a
-            // spurious `Completed` state with missing terms.  On backpressure
-            // emit a coarse `IndexUnavailable` failure so the room is
-            // retryable (P3 fix; REPOSITORY_RULES L124-128).
-            if index_tx.send(message).await.is_err() {
-                send_failure(
-                    action_tx,
-                    room_id,
-                    SearchCrawlerFailureKind::IndexUnavailable,
-                    "index channel closed",
-                )
-                .await;
-                return false;
-            }
-            indexed += 1;
+            _ => false,
+        };
+        if already_redacted {
+            continue;
         }
 
-        send_action(
-            action_tx,
-            AppAction::HistoryCrawlProgress {
-                room_id: room_id.to_owned(),
-                processed,
-                indexed,
-            },
-        )
-        .await;
-
-        if chunk_len == 0 {
-            break;
-        }
-
-        if delay_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        }
-
-        match messages.end {
-            Some(next_token) => from_token = Some(next_token),
-            None => break,
-        }
+        checkpoint.indexed += 1;
+        index_messages.push(message);
     }
 
-    send_action(
-        action_tx,
-        AppAction::HistoryCrawlCompleted {
-            room_id: room_id.to_owned(),
-            indexed,
-        },
-    )
-    .await;
-    let _ = event_tx.send(CoreEvent::Search(SearchEvent::HistoryCrawlCompleted {
-        room_id: room_id.to_owned(),
-        indexed,
-    }));
-    true
+    let completed = chunk_len == 0 || messages.end.is_none();
+    checkpoint.from_token = messages.end;
+
+    if !completed && delay_ms > 0 {
+        executor::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
+
+    HistoryCrawlPageResult::Success {
+        checkpoint,
+        messages: index_messages,
+        completed,
+    }
 }
 
-async fn send_action(action_tx: &mpsc::Sender<Vec<AppAction>>, action: AppAction) {
-    let _ = action_tx.send(vec![action]).await;
-}
-
-async fn send_failure(
-    action_tx: &mpsc::Sender<Vec<AppAction>>,
-    room_id: &str,
-    kind: SearchCrawlerFailureKind,
-    _detail: &str,
-) {
-    // _detail is logged internally only; the coarse kind is what crosses the
-    // Tauri/TypeScript boundary (privacy rule: no raw SDK errors in state).
-    send_action(
-        action_tx,
-        AppAction::HistoryCrawlFailed {
-            room_id: room_id.to_owned(),
-            kind,
-        },
-    )
-    .await;
+fn crawl_batch_and_delay(speed: SearchCrawlerSpeed) -> (u32, u64) {
+    match speed {
+        SearchCrawlerSpeed::Fast => (BATCH_SIZE_FAST, 0),
+        SearchCrawlerSpeed::Slow => (BATCH_SIZE_SLOW, 500),
+        SearchCrawlerSpeed::Paused | SearchCrawlerSpeed::Standard => (BATCH_SIZE_STANDARD, 100),
+    }
 }
 
 fn event_json_to_index_message(
@@ -347,12 +206,31 @@ fn event_json_to_index_message(
                 })
                 .map(|s| s.to_owned())?;
             pending_redactions.insert(target_id.clone());
-            Some(SearchIndexMessage::Redact { event_id: target_id })
+            Some(SearchIndexMessage::Redact {
+                event_id: target_id,
+            })
         }
         "m.room.message" => {
             let content = value.get("content")?;
             if is_edit_event(content) {
-                return None;
+                let target_event_id = edit_target_event_id(content)?;
+                let replacement_content = content.get("m.new_content")?;
+                let msgtype = replacement_content.get("msgtype")?.as_str()?;
+                let body = replacement_content.get("body")?.as_str()?;
+                let (text_body, attachment_filename, attachment) =
+                    project_message_content(msgtype, body, replacement_content, settings)?;
+                if text_body.is_none() && attachment_filename.is_none() {
+                    return None;
+                }
+                return Some(SearchIndexMessage::Edit {
+                    edit_event_id: event_id,
+                    target_event_id,
+                    sender,
+                    timestamp_ms,
+                    body: text_body,
+                    attachment_filename,
+                    attachment,
+                });
             }
             let msgtype = content.get("msgtype")?.as_str()?;
             let body = content.get("body")?.as_str()?;
@@ -374,12 +252,8 @@ fn event_json_to_index_message(
         "m.sticker" => {
             let content = value.get("content")?;
             let body = content.get("body")?.as_str()?;
-            let text_body = settings
-                .include_media_captions
-                .then(|| body.to_owned());
-            let attachment_filename = settings
-                .include_filenames
-                .then(|| body.to_owned());
+            let text_body = settings.include_media_captions.then(|| body.to_owned());
+            let attachment_filename = settings.include_filenames.then(|| body.to_owned());
             let attachment = settings
                 .include_filenames
                 .then(|| build_attachment_document("m.sticker", content))
@@ -410,6 +284,15 @@ fn is_edit_event(content: &Value) -> bool {
         == Some("m.replace")
 }
 
+fn edit_target_event_id(content: &Value) -> Option<String> {
+    content
+        .get("m.relates_to")
+        .or_else(|| content.get("relates_to"))
+        .and_then(|rel| rel.get("event_id"))
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned)
+}
+
 fn project_message_content(
     msgtype: &str,
     body: &str,
@@ -417,9 +300,7 @@ fn project_message_content(
     settings: &SearchCrawlerSettings,
 ) -> Option<(Option<String>, Option<String>, Option<AttachmentDocument>)> {
     match msgtype {
-        "m.text" | "m.emote" | "m.notice" => {
-            Some((Some(body.to_owned()), None, None))
-        }
+        "m.text" | "m.emote" | "m.notice" => Some((Some(body.to_owned()), None, None)),
         "m.image" | "m.video" | "m.audio" | "m.file" => {
             let filename = if msgtype == "m.file" {
                 content
@@ -430,12 +311,8 @@ fn project_message_content(
             } else {
                 body.to_owned()
             };
-            let text_body = settings
-                .include_media_captions
-                .then(|| body.to_owned());
-            let attachment_filename = settings
-                .include_filenames
-                .then(|| filename);
+            let text_body = settings.include_media_captions.then(|| body.to_owned());
+            let attachment_filename = settings.include_filenames.then(|| filename);
             let attachment = settings
                 .include_filenames
                 .then(|| build_attachment_document(msgtype, content))
@@ -451,10 +328,19 @@ fn build_attachment_document(msgtype: &str, content: &Value) -> Option<Attachmen
     let kind = attachment_kind(msgtype)?;
     let (source_url, encrypted, encryption_version) = media_source(content);
     let thumbnail_url = thumbnail_source(&info);
-    let mimetype = info.get("mimetype").and_then(|v| v.as_str()).map(ToOwned::to_owned);
+    let mimetype = info
+        .get("mimetype")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
     let size = info.get("size").and_then(|v| v.as_u64());
-    let width = info.get("w").and_then(|v| v.as_u64()).and_then(|w| u32::try_from(w).ok());
-    let height = info.get("h").and_then(|v| v.as_u64()).and_then(|h| u32::try_from(h).ok());
+    let width = info
+        .get("w")
+        .and_then(|v| v.as_u64())
+        .and_then(|w| u32::try_from(w).ok());
+    let height = info
+        .get("h")
+        .and_then(|v| v.as_u64())
+        .and_then(|h| u32::try_from(h).ok());
 
     Some(AttachmentDocument {
         kind,
@@ -493,7 +379,11 @@ fn attachment_kind(msgtype: &str) -> Option<AttachmentKind> {
 
 fn media_source(content: &Value) -> (String, bool, Option<String>) {
     if let Some(file) = content.get("file") {
-        let url = file.get("url").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let url = file
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
         let version = file
             .get("v")
             .or_else(|| file.get("version"))
@@ -544,7 +434,14 @@ mod tests {
         let message =
             event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
         match message {
-            SearchIndexMessage::Upsert { room_id, event_id, sender, body, attachment, .. } => {
+            SearchIndexMessage::Upsert {
+                room_id,
+                event_id,
+                sender,
+                body,
+                attachment,
+                ..
+            } => {
                 assert_eq!(room_id, "!r:test");
                 assert_eq!(event_id, "$e1:test");
                 assert_eq!(sender, "@alice:test");
@@ -580,7 +477,12 @@ mod tests {
         let message =
             event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
         match message {
-            SearchIndexMessage::Upsert { body, attachment_filename, attachment, .. } => {
+            SearchIndexMessage::Upsert {
+                body,
+                attachment_filename,
+                attachment,
+                ..
+            } => {
                 assert_eq!(body.as_deref(), Some("sunset.png"));
                 assert_eq!(attachment_filename.as_deref(), Some("sunset.png"));
                 let attachment = attachment.expect("attachment metadata should be indexed");
@@ -596,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn crawler_skips_edit_events() {
+    fn crawler_does_not_index_edit_wrapper_as_standalone_message() {
         let json = r#"{
             "event_id": "$edit:test",
             "sender": "@alice:test",
@@ -604,7 +506,11 @@ mod tests {
             "type": "m.room.message",
             "content": {
                 "msgtype": "m.text",
-                "body": "* edited",
+                "body": "* wrapper body",
+                "m.new_content": {
+                    "msgtype": "m.text",
+                    "body": "edited body"
+                },
                 "m.relates_to": {
                     "rel_type": "m.replace",
                     "event_id": "$e1:test"
@@ -613,7 +519,78 @@ mod tests {
         }"#;
         let settings = SearchCrawlerSettings::default();
         let mut pending = HashSet::new();
-        assert!(event_json_to_index_message("!r:test", json, &settings, &mut pending).is_none());
+        let message =
+            event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
+        assert!(
+            matches!(message, SearchIndexMessage::Edit { .. }),
+            "edit wrapper must become a target mutation, not an Upsert"
+        );
+    }
+
+    #[test]
+    fn crawler_indexes_edit_events_as_replacement_mutations() {
+        let json = r#"{
+            "event_id": "$edit:test",
+            "sender": "@alice:test",
+            "origin_server_ts": 3000,
+            "type": "m.room.message",
+            "content": {
+                "msgtype": "m.text",
+                "body": "* wrapper body must not be indexed",
+                "m.new_content": {
+                    "msgtype": "m.text",
+                    "body": "edited historical body"
+                },
+                "m.relates_to": {
+                    "rel_type": "m.replace",
+                    "event_id": "$e1:test"
+                }
+            }
+        }"#;
+        let settings = SearchCrawlerSettings::default();
+        let mut pending = HashSet::new();
+        let message =
+            event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
+
+        match message {
+            SearchIndexMessage::Edit {
+                edit_event_id,
+                target_event_id,
+                sender,
+                body,
+                ..
+            } => {
+                assert_eq!(edit_event_id, "$edit:test");
+                assert_eq!(target_event_id, "$e1:test");
+                assert_eq!(sender, "@alice:test");
+                assert_eq!(body.as_deref(), Some("edited historical body"));
+            }
+            other => panic!("expected Edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn history_crawler_page_runner_fetches_only_one_messages_page() {
+        let source = include_str!("search_crawler.rs");
+        let page_runner = source
+            .split(concat!("async fn run", "_history", "_crawl", "_page"))
+            .nth(1)
+            .and_then(|tail| {
+                tail.split(concat!("fn crawl", "_batch", "_and", "_delay"))
+                    .next()
+            })
+            .expect("bounded page runner should exist");
+
+        assert!(
+            page_runner.contains(concat!(
+                "room", ".", "messages", "(", "options", ")", ".", "await"
+            )),
+            "page runner must fetch exactly one /messages page"
+        );
+        assert!(
+            !page_runner.contains("loop {"),
+            "page runner must not loop through an entire room history"
+        );
     }
 
     #[test]
@@ -637,7 +614,11 @@ mod tests {
         let message =
             event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
         match message {
-            SearchIndexMessage::Upsert { body, attachment_filename, .. } => {
+            SearchIndexMessage::Upsert {
+                body,
+                attachment_filename,
+                ..
+            } => {
                 assert!(body.is_none());
                 assert_eq!(attachment_filename.as_deref(), Some("image.png"));
             }
@@ -666,7 +647,12 @@ mod tests {
         let message =
             event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
         match message {
-            SearchIndexMessage::Upsert { body, attachment_filename, attachment, .. } => {
+            SearchIndexMessage::Upsert {
+                body,
+                attachment_filename,
+                attachment,
+                ..
+            } => {
                 assert_eq!(body.as_deref(), Some("image.png"));
                 assert!(attachment_filename.is_none());
                 assert!(attachment.is_none());
@@ -690,22 +676,27 @@ mod tests {
         }"#;
         let settings = SearchCrawlerSettings::default();
         let mut pending = HashSet::new();
-        let msg =
-            event_json_to_index_message("!r:test", redaction_json, &settings, &mut pending)
-                .unwrap();
+        let msg = event_json_to_index_message("!r:test", redaction_json, &settings, &mut pending)
+            .unwrap();
         // Must Redact the TARGET, not the redaction event itself.
         match msg {
             SearchIndexMessage::Redact { event_id } => {
-                assert_eq!(event_id, "$original:test",
-                    "Redact must target the original event, not the redaction event");
+                assert_eq!(
+                    event_id, "$original:test",
+                    "Redact must target the original event, not the redaction event"
+                );
             }
             other => panic!("expected Redact, got {other:?}"),
         }
         // The target must be in pending_redactions so a later Upsert is skipped.
-        assert!(pending.contains("$original:test"),
-            "target should be in pending_redactions set");
-        assert!(!pending.contains("$redact:test"),
-            "redaction event id itself must not be in pending_redactions");
+        assert!(
+            pending.contains("$original:test"),
+            "target should be in pending_redactions set"
+        );
+        assert!(
+            !pending.contains("$redact:test"),
+            "redaction event id itself must not be in pending_redactions"
+        );
     }
 
     #[test]
@@ -723,9 +714,8 @@ mod tests {
         }"#;
         let settings = SearchCrawlerSettings::default();
         let mut pending = HashSet::new();
-        let msg =
-            event_json_to_index_message("!r:test", redaction_json, &settings, &mut pending)
-                .unwrap();
+        let msg = event_json_to_index_message("!r:test", redaction_json, &settings, &mut pending)
+            .unwrap();
         match msg {
             SearchIndexMessage::Redact { event_id } => {
                 assert_eq!(event_id, "$original2:test");
@@ -748,8 +738,8 @@ mod tests {
     /// SDK/actor infrastructure and runs without a network connection.
     #[tokio::test]
     async fn shutdown_drain_completes_within_bounded_time_when_channel_was_full() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::sync::mpsc;
 
         // Capacity 2: the task can queue 2 messages without blocking, but
@@ -772,18 +762,15 @@ mod tests {
         // Simulate the actor's Shutdown drain loop: drain the receiver while
         // awaiting the task handle.  Without draining, the task would be
         // stuck on the blocked send forever.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            async {
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = &mut task => break,
-                        _ = rx.recv() => {}
-                    }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut task => break,
+                    _ = rx.recv() => {}
                 }
-            },
-        )
+            }
+        })
         .await;
 
         assert!(

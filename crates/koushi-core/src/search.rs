@@ -43,8 +43,7 @@
 //! (they can appear in `SearchEvent::Results` payloads — those are visible UI
 //! state). `SearchActorMessage::Query` redacts the query in Debug.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use koushi_sdk::MatrixClientSession;
@@ -52,14 +51,18 @@ use koushi_search::{
     AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent,
     SensitiveString, cjk_search_query_variants,
 };
-use koushi_state::{AppAction, AttachmentFilter, AttachmentScope, AttachmentSort, SearchCrawlerSettings, SearchCrawlerSpeed};
+use koushi_state::{
+    AppAction, AttachmentFilter, AttachmentScope, AttachmentSort, SearchCrawlerSettings,
+    SearchCrawlerSpeed,
+};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::{SearchCommand, SearchScope};
 use crate::event::{CoreEvent, SearchEvent, SearchResultItem};
 use crate::executor;
 use crate::failure::{CoreFailure, SearchFailureKind};
-use crate::ids::{RequestId, RuntimeConnectionId};
+use crate::ids::RequestId;
+use crate::search_crawler::{HistoryCrawlCheckpoint, HistoryCrawlPageResult};
 
 /// Maximum number of candidates requested from the SDK ngram index.
 /// Verification filters this down; the final result set may be smaller.
@@ -173,17 +176,6 @@ pub(crate) enum SearchActorMessage {
         room_ids: Vec<String>,
         settings: SearchCrawlerSettings,
     },
-    /// Sent by a crawler task when it finishes (either completed or failed).
-    /// Lets the actor remove the cancellation entry and record completed rooms.
-    /// `settings_generation` is the generation value at the time the crawl was
-    /// started; the actor only adds the room to `completed_rooms` when the
-    /// generation matches the current value, ensuring that a crawl which ran
-    /// under stale content-indexing settings is not recorded as completed.
-    CrawlFinished {
-        room_id: String,
-        completed: bool,
-        settings_generation: u64,
-    },
     /// Content-indexing settings changed (include_media_captions or
     /// include_filenames toggled). The actor must drop all rooms from
     /// `completed_rooms` so the next `RoomsAvailable` notification re-crawls
@@ -226,7 +218,10 @@ impl std::fmt::Debug for SearchActorMessage {
                 .field("room_id", &"RoomId(..)")
                 .field("settings", settings)
                 .finish(),
-            Self::StopHistoryCrawl { request_id, room_id: _ } => f
+            Self::StopHistoryCrawl {
+                request_id,
+                room_id: _,
+            } => f
                 .debug_struct("SearchActorMessage::StopHistoryCrawl")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
@@ -235,12 +230,6 @@ impl std::fmt::Debug for SearchActorMessage {
                 .debug_struct("SearchActorMessage::RoomsAvailable")
                 .field("room_count", &room_ids.len())
                 .field("settings", settings)
-                .finish(),
-            Self::CrawlFinished { completed, settings_generation, .. } => f
-                .debug_struct("SearchActorMessage::CrawlFinished")
-                .field("room_id", &"RoomId(..)")
-                .field("completed", completed)
-                .field("settings_generation", settings_generation)
                 .finish(),
             Self::InvalidateCrawlerCache => {
                 write!(f, "SearchActorMessage::InvalidateCrawlerCache")
@@ -290,9 +279,13 @@ impl SearchActorHandle {
                 room_id,
                 settings,
             },
-            SearchCommand::StopHistoryCrawl { request_id, room_id } => {
-                SearchActorMessage::StopHistoryCrawl { request_id, room_id }
-            }
+            SearchCommand::StopHistoryCrawl {
+                request_id,
+                room_id,
+            } => SearchActorMessage::StopHistoryCrawl {
+                request_id,
+                room_id,
+            },
         };
         self.tx.send(msg).await.is_ok()
     }
@@ -353,29 +346,30 @@ pub(crate) struct SearchActor {
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<SearchActorMessage>,
-    /// A clone of the actor's own sender, passed to spawned crawler tasks so
-    /// they can send `CrawlFinished` notifications back to the actor.
-    msg_tx: mpsc::Sender<SearchActorMessage>,
-    /// Sender for feeding the actor's own document store from the history
-    /// crawler. The crawler runs in a separate task so the actor stays
-    /// responsive to queries while backfilling.
-    index_tx: mpsc::Sender<SearchIndexMessage>,
-    /// Active per-room crawl cancellation flags.
-    crawl_cancels: HashMap<String, Arc<AtomicBool>>,
-    /// JoinHandles for active crawl tasks, keyed by room id.
-    /// Retained so `shutdown` can await each task after setting its cancel flag,
-    /// preventing stale crawls from emitting actions into a signed-out reducer
-    /// (REPOSITORY_RULES: ordered shutdown — timelines → search → sync).
-    crawl_handles: HashMap<String, executor::JoinHandle<bool>>,
-    /// Room ids whose history has been fully crawled at least once.  Used by
-    /// `handle_rooms_available` to skip idempotent auto-start for rooms that
-    /// have already reached the `Completed` state.
-    completed_rooms: std::collections::HashSet<String>,
-    /// Monotonically increasing generation counter.  Incremented each time
-    /// content-indexing settings change (via `InvalidateCrawlerCache`).  Every
-    /// spawned crawl task records the current generation; `CrawlFinished`
-    /// carries it back so the actor can discard completions from tasks that ran
-    /// under stale settings (P1-A: running-room recrawl correctness).
+    /// Element-style checkpoint queue for history crawling. The actor starts
+    /// exactly one bounded `/messages` page at a time; unfinished rooms are
+    /// pushed to the back so other rooms get a turn before the next page.
+    crawl_queue: VecDeque<HistoryCrawlCheckpoint>,
+    /// Room ids currently present in `crawl_queue`.
+    queued_crawl_rooms: HashSet<String>,
+    /// Current joined-room set from the latest `RoomsAvailable` notification.
+    /// Manual probes are allowed outside this set; auto crawls are pruned
+    /// against it whenever room membership changes.
+    available_crawl_rooms: HashSet<String>,
+    /// Active one-page crawl task.
+    active_crawl_page: Option<executor::JoinHandle<HistoryCrawlPageResult>>,
+    /// Checkpoint currently owned by `active_crawl_page`. Kept separately so a
+    /// room-list update can abort a page whose room disappeared before the task
+    /// returns stale progress.
+    active_crawl_checkpoint: Option<HistoryCrawlCheckpoint>,
+    /// Room ids whose history has been fully crawled at least once. Used by
+    /// `handle_rooms_available` to skip idempotent auto-start for completed
+    /// rooms.
+    completed_rooms: HashSet<String>,
+    /// Monotonically increasing generation counter. Incremented each time
+    /// content-indexing settings change (via `InvalidateCrawlerCache`). Every
+    /// queued checkpoint records the current generation, and stale page results
+    /// are discarded before they can update the index or reducer state.
     crawl_settings_generation: u64,
 }
 
@@ -396,11 +390,12 @@ impl SearchActor {
             action_tx,
             event_tx,
             msg_rx,
-            msg_tx: tx.clone(),
-            index_tx: index_tx.clone(),
-            crawl_cancels: HashMap::new(),
-            crawl_handles: HashMap::new(),
-            completed_rooms: std::collections::HashSet::new(),
+            crawl_queue: VecDeque::new(),
+            queued_crawl_rooms: HashSet::new(),
+            available_crawl_rooms: HashSet::new(),
+            active_crawl_page: None,
+            active_crawl_checkpoint: None,
+            completed_rooms: HashSet::new(),
             crawl_settings_generation: 0,
         };
 
@@ -414,44 +409,21 @@ impl SearchActor {
         loop {
             tokio::select! {
                 biased;
+                crawl_result = async {
+                    self.active_crawl_page.as_mut().unwrap().await
+                }, if self.active_crawl_page.is_some() => {
+                    self.active_crawl_page = None;
+                    self.active_crawl_checkpoint = None;
+                    if let Ok(result) = crawl_result {
+                        self.handle_history_crawl_page_result(result).await;
+                    }
+                    self.start_next_history_crawl_page();
+                }
                 msg = self.msg_rx.recv() => {
                     let Some(msg) = msg else { break };
                     match msg {
                         SearchActorMessage::Shutdown => {
-                            // Signal all running crawls to stop.
-                            for cancel in self.crawl_cancels.values() {
-                                cancel.store(true, Ordering::Relaxed);
-                            }
-                            // Drain both channels while awaiting every crawl
-                            // handle.  This prevents a deadlock: crawler tasks
-                            // do `actor_tx.send(CrawlFinished).await` and
-                            // `index_tx.send(...).await`; if we simply stopped
-                            // the select loop and then awaited their handles,
-                            // those sends would block forever on full channels
-                            // (P1-B shutdown deadlock fix).
-                            let handles: Vec<_> = self.crawl_handles.drain().map(|(_, h)| h).collect();
-                            for handle in handles {
-                                // Pin the handle so it can be polled across
-                                // multiple select! iterations (JoinHandle is
-                                // Unpin but tokio::select! requires a stable
-                                // address when the future is not consumed in
-                                // one shot).
-                                tokio::pin!(handle);
-                                loop {
-                                    tokio::select! {
-                                        biased;
-                                        _ = &mut handle => {
-                                            break;
-                                        }
-                                        // Drain actor messages so CrawlFinished
-                                        // sends from tasks don't block.
-                                        _ = self.msg_rx.recv() => {}
-                                        // Drain index messages so index_tx
-                                        // sends from tasks don't block.
-                                        _ = index_rx.recv() => {}
-                                    }
-                                }
-                            }
+                            self.stop_all_history_crawls();
                             break;
                         }
                         SearchActorMessage::Query { request_id, query, scope } => {
@@ -474,31 +446,14 @@ impl SearchActor {
                         SearchActorMessage::RoomsAvailable { room_ids, settings } => {
                             self.handle_rooms_available(room_ids, settings).await;
                         }
-                        SearchActorMessage::CrawlFinished { room_id, completed, settings_generation } => {
-                            self.crawl_cancels.remove(&room_id);
-                            self.crawl_handles.remove(&room_id);
-                            // Only record completion when the crawl ran under
-                            // the current settings generation.  A stale
-                            // generation means settings changed (e.g.
-                            // include_media_captions toggled) while the crawl
-                            // was running; the room must be left out of
-                            // `completed_rooms` so the next `RoomsAvailable`
-                            // notification re-crawls it with the new settings
-                            // (P1-A: running-room recrawl correctness).
-                            if completed && settings_generation == self.crawl_settings_generation {
-                                self.completed_rooms.insert(room_id);
-                            }
-                        }
                         SearchActorMessage::InvalidateCrawlerCache => {
                             // Content-indexing settings changed — bump the
-                            // generation so any currently-running crawl's
-                            // `CrawlFinished` is rejected as stale.  Also
-                            // clear the completed-room cache so the next
-                            // `RoomsAvailable` notification re-crawls all
-                            // rooms with the new settings (P1-A fix).
+                            // generation and drop queued/in-flight checkpoints
+                            // so the next `RoomsAvailable` notification
+                            // re-crawls all rooms with the new settings.
                             self.crawl_settings_generation =
                                 self.crawl_settings_generation.wrapping_add(1);
-                            self.completed_rooms.clear();
+                            self.invalidate_history_crawler_cache();
                         }
                     }
                 }
@@ -524,10 +479,8 @@ impl SearchActor {
             return;
         }
 
-        let mut candidates_by_key: HashMap<
-            (String, String),
-            koushi_sdk::MatrixSearchCandidate,
-        > = HashMap::new();
+        let mut candidates_by_key: HashMap<(String, String), koushi_sdk::MatrixSearchCandidate> =
+            HashMap::new();
         for query_variant in cjk_search_query_variants(query) {
             let candidates = koushi_sdk::search_message_candidates(
                 &self.session,
@@ -738,79 +691,230 @@ impl SearchActor {
         room_id: String,
         settings: SearchCrawlerSettings,
     ) {
-        // Cancel any existing crawl for this room before starting a new one.
-        if let Some(existing) = self.crawl_cancels.get(&room_id) {
-            existing.store(true, Ordering::Relaxed);
+        self.remove_history_crawl_room(&room_id);
+        self.completed_rooms.remove(&room_id);
+        self.enqueue_history_crawl(
+            HistoryCrawlCheckpoint::new(
+                room_id,
+                settings.clone(),
+                self.crawl_settings_generation,
+                true,
+            ),
+            request_id.sequence,
+        )
+        .await;
+        if settings.speed != SearchCrawlerSpeed::Paused {
+            self.start_next_history_crawl_page();
         }
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.crawl_cancels.insert(room_id.clone(), cancel.clone());
-        let generation = self.crawl_settings_generation;
-        let handle = crate::search_crawler::spawn_history_crawl(
-            self.session.clone(),
-            room_id.clone(),
-            request_id,
-            settings,
-            self.index_tx.clone(),
-            self.action_tx.clone(),
-            self.event_tx.clone(),
-            cancel,
-            self.msg_tx.clone(),
-            generation,
-        );
-        self.crawl_handles.insert(room_id, handle);
     }
 
     async fn handle_stop_history_crawl(&mut self, _request_id: RequestId, room_id: String) {
-        if let Some(cancel) = self.crawl_cancels.get(&room_id) {
-            cancel.store(true, Ordering::Relaxed);
-        }
+        self.remove_history_crawl_room(&room_id);
     }
 
     /// Auto-start idempotent background crawls when the account observes a new
-    /// set of joined rooms.  Only called when `speed != Paused`.
+    /// set of joined rooms.
     ///
-    /// Rooms that are already Running (`crawl_cancels` entry present) or already
-    /// fully indexed (`indexed_rooms` entry present) are skipped so a repeated
-    /// room-list snapshot does not spawn duplicate crawl tasks.
+    /// This mirrors Element's Seshat crawler shape: maintain a checkpoint queue
+    /// and process one `/messages` page at a time. If a page has a continuation
+    /// token, push_back(next_checkpoint) so other rooms get a turn first.
     async fn handle_rooms_available(
         &mut self,
         room_ids: Vec<String>,
         settings: SearchCrawlerSettings,
     ) {
+        self.available_crawl_rooms = room_ids.iter().cloned().collect();
+
         if settings.speed == SearchCrawlerSpeed::Paused {
+            self.stop_all_history_crawls();
             return;
         }
-        let generation = self.crawl_settings_generation;
+
+        self.retain_history_crawl_rooms();
+        self.abort_active_history_crawl_if_retired();
+
         for room_id in room_ids {
-            // Skip if a crawl is already running for this room.
-            if self.crawl_cancels.contains_key(&room_id) {
+            if self.history_crawl_room_is_known(&room_id) {
                 continue;
             }
-            // Skip if this room's content has already been fully indexed
-            // at the current settings generation.  `completed_rooms` is
-            // cleared on `InvalidateCrawlerCache`, so a settings change
-            // naturally re-queues all rooms here.
-            if self.completed_rooms.contains(&room_id) {
-                continue;
-            }
-            // Enqueue the crawl with a synthetic request id (0 = auto-start).
-            let cancel = Arc::new(AtomicBool::new(false));
-            self.crawl_cancels.insert(room_id.clone(), cancel.clone());
-            let handle = crate::search_crawler::spawn_history_crawl(
-                self.session.clone(),
-                room_id.clone(),
-                RequestId { connection_id: RuntimeConnectionId(0), sequence: 0 },
-                settings.clone(),
-                self.index_tx.clone(),
-                self.action_tx.clone(),
-                self.event_tx.clone(),
-                cancel,
-                self.msg_tx.clone(),
-                generation,
-            );
-            self.crawl_handles.insert(room_id, handle);
+            self.enqueue_history_crawl(
+                HistoryCrawlCheckpoint::new(
+                    room_id,
+                    settings.clone(),
+                    self.crawl_settings_generation,
+                    false,
+                ),
+                0,
+            )
+            .await;
         }
+        self.start_next_history_crawl_page();
+    }
+
+    async fn enqueue_history_crawl(&mut self, checkpoint: HistoryCrawlCheckpoint, request_id: u64) {
+        if self.queued_crawl_rooms.insert(checkpoint.room_id.clone()) {
+            self.crawl_queue.push_back(checkpoint);
+            let Some(queued) = self.crawl_queue.back() else {
+                return;
+            };
+            let _ = self
+                .action_tx
+                .send(vec![AppAction::HistoryCrawlStarted {
+                    request_id,
+                    room_id: queued.room_id.clone(),
+                }])
+                .await;
+        }
+    }
+
+    fn history_crawl_room_is_known(&self, room_id: &str) -> bool {
+        self.completed_rooms.contains(room_id)
+            || self.queued_crawl_rooms.contains(room_id)
+            || self
+                .active_crawl_checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint.room_id == room_id)
+    }
+
+    fn start_next_history_crawl_page(&mut self) {
+        if self.active_crawl_page.is_some() {
+            return;
+        }
+        let Some(checkpoint) = self.crawl_queue.pop_front() else {
+            return;
+        };
+        self.queued_crawl_rooms.remove(&checkpoint.room_id);
+        if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
+            self.start_next_history_crawl_page();
+            return;
+        }
+        let handle = crate::search_crawler::spawn_history_crawl_page(
+            self.session.clone(),
+            checkpoint.clone(),
+        );
+        self.active_crawl_checkpoint = Some(checkpoint);
+        self.active_crawl_page = Some(handle);
+    }
+
+    async fn handle_history_crawl_page_result(&mut self, result: HistoryCrawlPageResult) {
+        match result {
+            HistoryCrawlPageResult::Success {
+                checkpoint,
+                messages,
+                completed,
+            } => {
+                if checkpoint.settings_generation != self.crawl_settings_generation {
+                    return;
+                }
+                if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
+                    return;
+                }
+                for message in messages {
+                    self.handle_index(message);
+                }
+                let _ = self
+                    .action_tx
+                    .send(vec![AppAction::HistoryCrawlProgress {
+                        room_id: checkpoint.room_id.clone(),
+                        processed: checkpoint.processed,
+                        indexed: checkpoint.indexed,
+                    }])
+                    .await;
+                if completed {
+                    self.completed_rooms.insert(checkpoint.room_id.clone());
+                    let _ = self
+                        .action_tx
+                        .send(vec![AppAction::HistoryCrawlCompleted {
+                            room_id: checkpoint.room_id.clone(),
+                            indexed: checkpoint.indexed,
+                        }])
+                        .await;
+                    self.emit(CoreEvent::Search(SearchEvent::HistoryCrawlCompleted {
+                        room_id: checkpoint.room_id,
+                        indexed: checkpoint.indexed,
+                    }));
+                } else {
+                    let next_checkpoint = checkpoint;
+                    self.queued_crawl_rooms
+                        .insert(next_checkpoint.room_id.clone());
+                    self.crawl_queue.push_back(next_checkpoint);
+                }
+            }
+            HistoryCrawlPageResult::Failed { checkpoint, kind } => {
+                if checkpoint.settings_generation != self.crawl_settings_generation {
+                    return;
+                }
+                if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
+                    return;
+                }
+                let _ = self
+                    .action_tx
+                    .send(vec![AppAction::HistoryCrawlFailed {
+                        room_id: checkpoint.room_id,
+                        kind,
+                    }])
+                    .await;
+            }
+        }
+    }
+
+    fn retain_history_crawl_rooms(&mut self) {
+        self.completed_rooms
+            .retain(|room_id| self.available_crawl_rooms.contains(room_id));
+        self.crawl_queue.retain(|checkpoint| {
+            checkpoint.manual || self.available_crawl_rooms.contains(&checkpoint.room_id)
+        });
+        self.queued_crawl_rooms = self
+            .crawl_queue
+            .iter()
+            .map(|checkpoint| checkpoint.room_id.clone())
+            .collect();
+    }
+
+    fn abort_active_history_crawl_if_retired(&mut self) {
+        let retired = self
+            .active_crawl_checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| {
+                !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id)
+            });
+        if retired {
+            if let Some(handle) = self.active_crawl_page.take() {
+                handle.abort();
+            }
+            self.active_crawl_checkpoint = None;
+        }
+    }
+
+    fn remove_history_crawl_room(&mut self, room_id: &str) {
+        self.crawl_queue
+            .retain(|checkpoint| checkpoint.room_id != room_id);
+        self.queued_crawl_rooms.remove(room_id);
+        self.completed_rooms.remove(room_id);
+        let active_matches = self
+            .active_crawl_checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.room_id == room_id);
+        if active_matches {
+            if let Some(handle) = self.active_crawl_page.take() {
+                handle.abort();
+            }
+            self.active_crawl_checkpoint = None;
+        }
+    }
+
+    fn stop_all_history_crawls(&mut self) {
+        self.crawl_queue.clear();
+        self.queued_crawl_rooms.clear();
+        if let Some(handle) = self.active_crawl_page.take() {
+            handle.abort();
+        }
+        self.active_crawl_checkpoint = None;
+    }
+
+    fn invalidate_history_crawler_cache(&mut self) {
+        self.completed_rooms.clear();
+        self.stop_all_history_crawls();
     }
 
     fn emit(&self, event: CoreEvent) {
@@ -1146,6 +1250,40 @@ mod tests {
         assert!(
             search_source.contains("CoreEvent::Search(SearchEvent::Results"),
             "search actor should still emit search results events"
+        );
+    }
+
+    #[test]
+    fn search_actor_crawler_uses_element_style_round_robin_checkpoints() {
+        let source = include_str!("search.rs");
+
+        assert!(
+            source.contains(concat!("VecDeque", "<", "HistoryCrawlCheckpoint", ">")),
+            "crawler must keep an actor-owned checkpoint queue"
+        );
+        assert!(
+            source.contains(concat!("start", "_next", "_history", "_crawl", "_page")),
+            "crawler must start one bounded /messages page at a time"
+        );
+        assert!(
+            source.contains(concat!("push", "_back", "(", "next", "_checkpoint", ")")),
+            "unfinished rooms must be requeued behind other checkpoints"
+        );
+    }
+
+    #[test]
+    fn search_actor_prunes_crawler_queue_when_joined_rooms_change() {
+        let source = include_str!("search.rs");
+
+        assert!(
+            source.contains(concat!("retain", "_history", "_crawl", "_rooms")),
+            "RoomsAvailable must prune queued/completed rooms against the current joined set"
+        );
+        assert!(
+            source.contains(concat!(
+                "abort", "_active", "_history", "_crawl", "_if", "_retired"
+            )),
+            "an in-flight page for a room that disappeared must be aborted before it can reinsert state"
         );
     }
 }

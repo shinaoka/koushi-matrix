@@ -197,7 +197,10 @@ fn crawl_failed_carries_only_coarse_kind_and_emits_event() {
         // Failed state carries ONLY the coarse kind — no raw SDK errors, room IDs,
         // event IDs, or message bodies are stored.
         let debug_output = format!("{:?}", s.search_crawler.rooms.get("room-a"));
-        assert!(!debug_output.contains("room-a"), "room id must not appear in Failed debug output");
+        assert!(
+            !debug_output.contains("room-a"),
+            "room id must not appear in Failed debug output"
+        );
         assert_eq!(
             effects,
             vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
@@ -267,28 +270,67 @@ fn enable_from_paused_with_no_rooms_does_not_enqueue() {
         },
     );
 
-    let has_notify = effects.iter().any(|e| {
-        matches!(e, AppEffect::NotifySearchCrawlerRoomsAvailable { .. })
-    });
+    let has_notify = effects
+        .iter()
+        .any(|e| matches!(e, AppEffect::NotifySearchCrawlerRoomsAvailable { .. }));
     assert!(!has_notify, "no rooms to enqueue, effect must be absent");
 }
 
 // ---------------------------------------------------------------------------
-// Active → Paused: no invalidation
+// Active speed changes
 // ---------------------------------------------------------------------------
+
+#[test]
+fn pause_from_active_notifies_actor_without_invalidating_completed_rooms() {
+    let mut state = ready_state_with_rooms(&["room-a", "room-b"]);
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 10 },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 1,
+            patch: SettingsPatch {
+                search_crawler: Some(settings_paused()),
+                ..Default::default()
+            },
+        },
+    );
+
+    assert_eq!(
+        state.search_crawler.rooms.get("room-a"),
+        Some(&SearchCrawlerRoomState::Completed { indexed: 10 })
+    );
+
+    let notify = effects.iter().find(|effect| {
+        matches!(
+            effect,
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                settings,
+                ..
+            } if settings.speed == SearchCrawlerSpeed::Paused
+        )
+    });
+    assert!(
+        notify.is_some(),
+        "pausing must notify the actor so queued and active crawler pages stop; got {effects:?}"
+    );
+}
 
 #[test]
 fn pure_speed_change_does_not_invalidate_completed_rooms() {
     let mut state = ready_state_with_rooms(&["room-a", "room-b"]);
     // Mark both as Completed.
-    state
-        .search_crawler
-        .rooms
-        .insert("room-a".to_owned(), SearchCrawlerRoomState::Completed { indexed: 10 });
-    state
-        .search_crawler
-        .rooms
-        .insert("room-b".to_owned(), SearchCrawlerRoomState::Completed { indexed: 5 });
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 10 },
+    );
+    state.search_crawler.rooms.insert(
+        "room-b".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 5 },
+    );
 
     // Speed-only change: Standard → Slow.
     let effects = reduce(
@@ -335,14 +377,17 @@ fn pure_speed_change_does_not_invalidate_completed_rooms() {
 #[test]
 fn toggle_include_media_captions_resets_completed_to_idle() {
     let mut state = ready_state_with_rooms(&["room-a", "room-b"]);
-    state
-        .search_crawler
-        .rooms
-        .insert("room-a".to_owned(), SearchCrawlerRoomState::Completed { indexed: 10 });
-    state
-        .search_crawler
-        .rooms
-        .insert("room-b".to_owned(), SearchCrawlerRoomState::Running { processed: 3, indexed: 1 });
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 10 },
+    );
+    state.search_crawler.rooms.insert(
+        "room-b".to_owned(),
+        SearchCrawlerRoomState::Running {
+            processed: 3,
+            indexed: 1,
+        },
+    );
 
     let effects = reduce(
         &mut state,
@@ -362,7 +407,10 @@ fn toggle_include_media_captions_resets_completed_to_idle() {
     );
     assert_eq!(
         state.search_crawler.rooms.get("room-b"),
-        Some(&SearchCrawlerRoomState::Running { processed: 3, indexed: 1 })
+        Some(&SearchCrawlerRoomState::Running {
+            processed: 3,
+            indexed: 1
+        })
     );
 
     let has_crawler_changed = effects
@@ -393,10 +441,10 @@ fn toggle_include_media_captions_resets_completed_to_idle() {
 #[test]
 fn toggle_include_filenames_resets_completed_to_idle() {
     let mut state = ready_state_with_rooms(&["room-a"]);
-    state
-        .search_crawler
-        .rooms
-        .insert("room-a".to_owned(), SearchCrawlerRoomState::Completed { indexed: 7 });
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 7 },
+    );
 
     let effects = reduce(
         &mut state,
@@ -438,10 +486,10 @@ fn toggle_include_filenames_resets_completed_to_idle() {
 #[test]
 fn duplicate_completion_for_already_completed_room_is_idempotent() {
     let mut state = ready_state_with_rooms(&["room-a"]);
-    state
-        .search_crawler
-        .rooms
-        .insert("room-a".to_owned(), SearchCrawlerRoomState::Completed { indexed: 10 });
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 10 },
+    );
 
     // A second CrawlCompleted for the same room (stale).
     let effects = reduce(
@@ -466,10 +514,10 @@ fn duplicate_completion_for_already_completed_room_is_idempotent() {
 #[test]
 fn stale_failed_for_already_completed_room_updates_state() {
     let mut state = ready_state_with_rooms(&["room-a"]);
-    state
-        .search_crawler
-        .rooms
-        .insert("room-a".to_owned(), SearchCrawlerRoomState::Completed { indexed: 10 });
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 10 },
+    );
 
     reduce(
         &mut state,
@@ -520,7 +568,10 @@ fn sequential_crawl_lifecycle_idle_running_completed() {
     );
     assert!(matches!(
         state.search_crawler.rooms.get("room-a"),
-        Some(SearchCrawlerRoomState::Running { processed: 10, indexed: 8 })
+        Some(SearchCrawlerRoomState::Running {
+            processed: 10,
+            indexed: 8
+        })
     ));
 
     reduce(
@@ -570,7 +621,10 @@ fn running_room_is_left_running_and_recrawl_effects_are_emitted_on_content_toggl
     // room-a is Running (in-progress crawl).
     state.search_crawler.rooms.insert(
         "room-a".to_owned(),
-        SearchCrawlerRoomState::Running { processed: 50, indexed: 30 },
+        SearchCrawlerRoomState::Running {
+            processed: 50,
+            indexed: 30,
+        },
     );
     // room-b is Completed under the old settings.
     state.search_crawler.rooms.insert(
@@ -592,7 +646,10 @@ fn running_room_is_left_running_and_recrawl_effects_are_emitted_on_content_toggl
     // The Running room must stay Running (reducer does not interrupt it).
     assert_eq!(
         state.search_crawler.rooms.get("room-a"),
-        Some(&SearchCrawlerRoomState::Running { processed: 50, indexed: 30 }),
+        Some(&SearchCrawlerRoomState::Running {
+            processed: 50,
+            indexed: 30
+        }),
         "Running room must not be reset by the reducer on content-setting toggle"
     );
     // The Completed room must be reset to Idle so the next RoomsAvailable re-crawls it.
@@ -638,11 +695,16 @@ fn crawler_state_debug_output_does_not_contain_room_ids_or_sdk_errors() {
     let mut crawler = SearchCrawlerState::default();
     crawler.rooms.insert(
         "!secret-room:example.invalid".to_owned(),
-        SearchCrawlerRoomState::Running { processed: 10, indexed: 5 },
+        SearchCrawlerRoomState::Running {
+            processed: 10,
+            indexed: 5,
+        },
     );
     crawler.rooms.insert(
         "!another-room:example.invalid".to_owned(),
-        SearchCrawlerRoomState::Failed { kind: SearchCrawlerFailureKind::Sdk },
+        SearchCrawlerRoomState::Failed {
+            kind: SearchCrawlerFailureKind::Sdk,
+        },
     );
     crawler.rooms.insert(
         "!third-room:example.invalid".to_owned(),
@@ -664,11 +726,29 @@ fn crawler_state_debug_output_does_not_contain_room_ids_or_sdk_errors() {
         "room id leaked into crawler Debug: {debug}"
     );
     // Coarse counts MUST appear so the debug output is still useful.
-    assert!(debug.contains("running"), "running count absent from Debug: {debug}");
-    assert!(debug.contains("failed"), "failed count absent from Debug: {debug}");
-    assert!(debug.contains("completed"), "completed count absent from Debug: {debug}");
+    assert!(
+        debug.contains("running"),
+        "running count absent from Debug: {debug}"
+    );
+    assert!(
+        debug.contains("failed"),
+        "failed count absent from Debug: {debug}"
+    );
+    assert!(
+        debug.contains("completed"),
+        "completed count absent from Debug: {debug}"
+    );
     // No raw SDK error strings.
-    assert!(!debug.contains("error:"), "raw SDK error in crawler Debug: {debug}");
-    assert!(!debug.contains("@"), "Matrix user id in crawler Debug: {debug}");
-    assert!(!debug.contains("$"), "Matrix event id in crawler Debug: {debug}");
+    assert!(
+        !debug.contains("error:"),
+        "raw SDK error in crawler Debug: {debug}"
+    );
+    assert!(
+        !debug.contains("@"),
+        "Matrix user id in crawler Debug: {debug}"
+    );
+    assert!(
+        !debug.contains("$"),
+        "Matrix event id in crawler Debug: {debug}"
+    );
 }

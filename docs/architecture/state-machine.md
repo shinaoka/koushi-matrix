@@ -2124,14 +2124,21 @@ stateDiagram-v2
 
 - **Auto-start (idempotent)**: `RoomListUpdated` emits
   `AppEffect::NotifySearchCrawlerRoomsAvailable` with all current joined rooms
-  whenever `speed != Paused`. The `SearchActor` skips rooms already in
-  `crawl_cancels` (Running) or `completed_rooms` (Completed). The actor is
-  responsible for deduplication; the reducer emits on every update.
+  whenever `speed != Paused`. The `SearchActor` owns an Element-style
+  checkpoint queue: it skips rooms already queued, actively paging, or
+  completed, fetches one bounded `/messages` page at a time, and pushes an
+  unfinished checkpoint to the back of the queue. This round-robin shape avoids
+  one room monopolizing historical backfill and avoids concurrent `/messages`
+  bursts across large accounts.
 - **Paused → active**: When `SettingsUpdateRequested` changes speed from
   `Paused` to any active value, the reducer emits
   `NotifySearchCrawlerRoomsAvailable` with all known rooms so previously-paused
   rooms are enqueued. This is the only trigger that re-enqueues all rooms on a
   speed change.
+- **Pause**: Changing speed from active to `Paused` emits
+  `NotifySearchCrawlerRoomsAvailable` with `settings.speed = Paused` so the
+  actor clears queued checkpoints and aborts the active page task. Completed
+  markers are retained.
 - **Pure speed change**: Changing speed between two active values (e.g.
   `Standard → Slow`) does NOT invalidate `Completed` rooms and does NOT emit
   `NotifySearchCrawlerRoomsAvailable`. No `SearchCrawlerChanged` event is
@@ -2150,12 +2157,17 @@ stateDiagram-v2
   matches the current counter. A crawl that started before the toggle (stale
   generation) is rejected: the room stays out of `completed_rooms` and is
   re-crawled by the next `RoomsAvailable` notification.
-- **Index backpressure → failure**: The crawler sends index messages with
-  `channel.send(...).await` (not `try_send`). If the channel is closed
-  (e.g. actor shutdown during crawl), the crawler emits `HistoryCrawlFailed`
-  with `IndexUnavailable` and returns `false` so the room is NOT marked
-  `Completed`. A silently dropped index message producing a false `Completed`
-  is prohibited.
+- **Room churn**: Every `RoomsAvailable` notification is authoritative for
+  auto-crawled rooms. The actor prunes queued and completed auto checkpoints
+  whose rooms disappeared, and aborts the active page if its room disappeared
+  before the page result can reinsert stale state. Manual probe crawls are
+  allowed outside the joined-room set so failure-path QA can target a synthetic
+  absent room.
+- **Index application**: The page task returns parsed `SearchIndexMessage`
+  mutations to the actor. The actor first checks generation and room
+  eligibility, then applies the messages to the canonical document store and
+  emits progress/completion actions. Stale page results are discarded before
+  they can update search state.
 - **Reliable delivery**: `CrawlFinished`, `NotifySearchCrawlerRoomsAvailable`,
   and `InvalidateSearchCrawlerCache` are delivered via `async send` (not
   `try_send`) so state-machine transitions are never silently dropped
