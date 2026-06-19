@@ -55,6 +55,12 @@ jobs:
   rust:
     name: Rust (workspace / src-tauri / wasm)
     runs-on: ubuntu-latest
+    env:
+      # Share one target dir across the workspace and the separate src-tauri
+      # cargo project so the vendored Matrix SDK / matrix-desktop-core compile
+      # ONCE and are reused, instead of once per project (per
+      # tensor4all/tenferro-rs CI). See #93.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-ci
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,6 +72,14 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Hash both Cargo.lock files (workspace root + the separate src-tauri
+          # project) into the cache key and cache the shared CARGO_TARGET_DIR;
+          # shared-key keeps the cache warm across branches/PRs. See #93.
+          workspaces: |
+            .
+            apps/desktop/src-tauri
+          shared-key: koushi-rust-ci
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
