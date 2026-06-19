@@ -29,3 +29,18 @@ tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+# cargo-machete ignore list: these dependencies are not directly referenced in
+# source code but are required for correct link-time behavior or transitive
+# feature resolution. Do not remove them without verifying the build still
+# works end-to-end.
+#
+# futures-util: used transitively; cargo-machete reports false positive.
+# matrix-desktop-key: ensures key crate features are included in the final
+#   link. The transport adapter itself does not call key APIs directly
+#   (REPOSITORY_RULES boundary), but the linked runtime binary needs the key
+#   crate compiled in.
+# matrix-desktop-sdk: similarly, included for link completeness; the adapter
+#   uses CoreRuntime (from matrix-desktop-core) which internalizes SDK calls.
+[package.metadata.cargo-machete]
+ignored = ["futures-util", "matrix-desktop-key", "matrix-desktop-sdk"]

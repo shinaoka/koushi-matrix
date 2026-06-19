@@ -1,0 +1,104 @@
+# cargo-deny configuration for the matrix-desktop workspace.
+# See: https://embarkstudios.github.io/cargo-deny/
+#
+# Phase 0 (#87): encode current-correct boundaries. Rules here pass on the
+# current codebase and will catch future violations. Grandfathered exceptions
+# are documented inline.
+
+[advisories]
+# Audit database for known security vulnerabilities.
+# yanked = "deny"  # disabled: the vendored SDK pulls in several yanked crates
+#
+# Grandfathered advisories: these are known issues in transitive dependencies
+# (primarily the vendored Matrix Rust SDK) with no available fix. Each is
+# documented with why it is accepted.
+ignore = [
+    # RUSTSEC-2026-0173: proc-macro-error2 is unmaintained. This crate is a
+    # transitive dependency through aquamarine (used in matrix-sdk docs macros)
+    # and matrix-pickle-derive (used by vodozemac). There is no upstream fix
+    # available; the vendored SDK pins the version. This is a dev/proc-macro
+    # crate that does not run in production — it only affects compile-time
+    # macro expansion. Track upstream SDK upgrades to drop it.
+    "RUSTSEC-2026-0173",
+]
+
+[licenses]
+# Accept the OSI-approved / permissive licenses present in the workspace.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSD-1-Clause",
+    "ISC",
+    "0BSD",
+    "MIT-0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "MPL-2.0",
+    # Creative Commons permissive (used by webpki-roots data sets).
+    "CDLA-Permissive-2.0",
+    # zlib with acknowledgement (fastdivide).
+    "zlib-acknowledgement",
+]
+
+# LGPL 2.1+ is in the workspace via r-efi. r-efi is a UEFI binding used
+# transitively through some system crates. It is a library with LGPL 2.1+
+# static-link exception which is compatible with the product's MIT/Apache-2.0
+# dual license when linked as a library (the exception permits static linking
+# without triggering GPL copyleft). Allow it explicitly and review if the
+# version changes.
+[[licenses.exceptions]]
+allow = ["LGPL-2.1-or-later"]
+name = "r-efi"
+
+# imbl / bitmaps / imbl-sized-chunks declare "MPL-2.0+" which is not a
+# canonical SPDX identifier (no "+" operator exists in SPDX for MPL-2.0;
+# they intend "MPL-2.0 or later"). Accept these with explicit allowances since
+# MPL-2.0 is already in the allow list and the "+" is cosmetic.
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+name = "imbl"
+
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+name = "bitmaps"
+
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+name = "imbl-sized-chunks"
+
+[bans]
+# Check for duplicate versions of the same crate (warn, not deny, to avoid
+# blocking on upstream version resolution churn in the vendored SDK).
+multiple-versions = "warn"
+
+# --- Domain-crate platform-dep ban (Phase 0, pre-seeds Phase 5) ---
+#
+# Rule: matrix-desktop-state is the pure domain/serialization layer. It must
+# remain free of platform OS crates so it can target WASM and future mobile.
+# matrix-desktop-core and matrix-desktop-key currently depend on `keyring`
+# (a platform OS crate) — this is a known Phase 5 target for removal via
+# SecretStore dependency inversion. Both are grandfathered here with a
+# "remove in #87 Phase 5" note; the ban below will fail if state gains the
+# same dependency, catching accidental platform-dep creep in the pure layer.
+#
+# If a future PR adds a new OS/platform crate to matrix-desktop-state directly
+# (without going through core/key), this ban will fire and require explicit
+# justification + grandfathering.
+deny = []
+
+# Explicitly allow crates that are expected in the dependency graph.
+# This section is intentionally minimal for Phase 0.
+skip = []
+
+[sources]
+# Only allow crates from crates.io and local path deps (the vendored SDK).
+unknown-registry = "deny"
+unknown-git = "deny"
+# The vendored Matrix Rust SDK is a local path and is exempt.
+allow-git = []

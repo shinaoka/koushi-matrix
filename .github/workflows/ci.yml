@@ -37,6 +37,18 @@ jobs:
         run: npm run build
       - name: Secret scan
         run: npm run qa:secret-scan
+      # --- Boundary enforcement (#87 Phase 0) ---
+      # ESLint import-boundary rule: components must not import @tauri-apps
+      # directly; no file may path-escape into src-tauri.
+      - name: ESLint import boundaries
+        run: npm run lint
+      # Tauri adapter boundary: src-tauri must not call matrix_desktop_sdk directly.
+      - name: Tauri adapter boundary check
+        run: npm run lint:tauri-boundary
+      # Domain-crate platform-dep deny-list: matrix-desktop-state must not gain
+      # platform/OS deps (pre-seeds Phase 5 SecretStore port).
+      - name: Domain-crate platform-dep check
+        run: npm run lint:domain-deps
 
   rust:
     name: Rust (workspace / src-tauri / wasm)
@@ -65,3 +77,18 @@ jobs:
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: wasm build check (state + search)
         run: cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
+      # --- Dependency hygiene (#87 Phase 0) ---
+      # cargo-deny: license compliance + advisory check + bans.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+      - name: cargo-deny check
+        run: cargo deny check
+      # cargo-machete: detect unused Cargo.toml dependencies.
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete@0.9.2
+      - name: cargo-machete (unused deps)
+        run: cargo machete
