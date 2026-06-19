@@ -36,9 +36,12 @@ describe("qaWindowTitle", () => {
       ...snapshot,
       state: {
         ...snapshot.state,
-        timeline: {
-          ...snapshot.state.timeline,
-          room_id: null
+        ui: {
+          ...snapshot.state.ui,
+          timeline: {
+            ...snapshot.state.ui.timeline,
+            room_id: null
+          }
         }
       }
     });
@@ -54,33 +57,36 @@ describe("qaWindowTitle", () => {
       ...snapshot,
       state: {
         ...snapshot.state,
-        rooms: snapshot.state.rooms.map((room) => ({
-          ...room,
-          unread_count: 99,
-          notification_count: 99,
-          highlight_count: 99
-        })),
-        native_attention: {
-          summary: {
-            unread_count: 2,
-            highlight_count: 1,
-            badge_count: 2,
-            candidate: {
-              room_display_name: "Hidden QA Room",
-              kind: "mention",
+        domain: {
+          ...snapshot.state.domain,
+          rooms: snapshot.state.domain.rooms.map((room) => ({
+            ...room,
+            unread_count: 99,
+            notification_count: 99,
+            highlight_count: 99
+          })),
+          native_attention: {
+            summary: {
               unread_count: 2,
-              highlight_count: 1
+              highlight_count: 1,
+              badge_count: 2,
+              candidate: {
+                room_display_name: "Hidden QA Room",
+                kind: "mention",
+                unread_count: 2,
+                highlight_count: 1
+              },
+              capabilities: {
+                notifications: "available",
+                badge: "available",
+                overlay_icon: "unknown",
+                sound: "unknown",
+                tray: "unknown",
+                activation: "unknown"
+              }
             },
-            capabilities: {
-              notifications: "available",
-              badge: "available",
-              overlay_icon: "unknown",
-              sound: "unknown",
-              tray: "unknown",
-              activation: "unknown"
-            }
-          },
-          dispatch: { kind: "idle" }
+            dispatch: { kind: "idle" }
+          }
         }
       }
     });
@@ -107,11 +113,14 @@ describe("qaWindowTitle", () => {
       ...snapshot,
       state: {
         ...snapshot.state,
-        focused_context: {
-          kind: "open",
-          room_id: "!private-room:example.test",
-          event_id: "$private-event:example.test",
-          is_subscribed: true
+        ui: {
+          ...snapshot.state.ui,
+          focused_context: {
+            kind: "open",
+            room_id: "!private-room:example.test",
+            event_id: "$private-event:example.test",
+            is_subscribed: true
+          }
         }
       }
     });
@@ -128,22 +137,25 @@ describe("qaWindowTitle", () => {
       ...snapshot,
       state: {
         ...snapshot.state,
-        room_interactions: {
-          "!private-room:example.test": {
-            pinned_events: [
-              {
+        domain: {
+          ...snapshot.state.domain,
+          room_interactions: {
+            "!private-room:example.test": {
+              pinned_events: [
+                {
+                  event_id: "$private-event:example.test",
+                  sender: "@private-user:example.test",
+                  body_preview: "private body",
+                  redacted: false
+                }
+              ],
+              pin_operation: {
+                kind: "pending",
+                request_id: 1,
+                room_id: "!private-room:example.test",
                 event_id: "$private-event:example.test",
-                sender: "@private-user:example.test",
-                body_preview: "private body",
-                redacted: false
+                op: "pin"
               }
-            ],
-            pin_operation: {
-              kind: "pending",
-              request_id: 1,
-              room_id: "!private-room:example.test",
-              event_id: "$private-event:example.test",
-              op: "pin"
             }
           }
         }

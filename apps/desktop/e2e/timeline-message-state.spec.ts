@@ -228,27 +228,30 @@ test("single read receipt renders avatar initials and count", async ({ page }) =
         ...snap,
         state: {
           ...snap.state,
-          live_signals: {
-            ...snap.state.live_signals,
-            rooms: {
-              [roomId]: {
-                receipts_by_event: {
-                  [evId]: {
-                    readers: [
-                      {
-                        user_id: "@reader-a:example.invalid",
-                        display_name: "Alice Reader",
-                        original_display_label: "Alice Reader",
-                        avatar: null,
-                        timestamp_ms: null
-                      }
-                    ],
-                    total_count: 1,
-                    overflow_count: 0
-                  }
-                },
-                fully_read_event_id: null,
-                typing_user_ids: []
+          domain: {
+            ...snap.state.domain,
+            live_signals: {
+              ...snap.state.domain.live_signals,
+              rooms: {
+                [roomId]: {
+                  receipts_by_event: {
+                    [evId]: {
+                      readers: [
+                        {
+                          user_id: "@reader-a:example.invalid",
+                          display_name: "Alice Reader",
+                          original_display_label: "Alice Reader",
+                          avatar: null,
+                          timestamp_ms: null
+                        }
+                      ],
+                      total_count: 1,
+                      overflow_count: 0
+                    }
+                  },
+                  fully_read_event_id: null,
+                  typing_user_ids: []
+                }
               }
             }
           }
@@ -284,34 +287,37 @@ test("multiple read receipts render stacked avatars", async ({ page }) => {
         ...snap,
         state: {
           ...snap.state,
-          live_signals: {
-            ...snap.state.live_signals,
-            rooms: {
-              [roomId]: {
-                receipts_by_event: {
-                  [evId]: {
-                    readers: [
-                      {
-                        user_id: "@reader-b:example.invalid",
-                        display_name: "Bob",
-                        original_display_label: "Bob",
-                        avatar: null,
-                        timestamp_ms: null
-                      },
-                      {
-                        user_id: "@reader-c:example.invalid",
-                        display_name: "Carol",
-                        original_display_label: "Carol",
-                        avatar: null,
-                        timestamp_ms: null
-                      }
-                    ],
-                    total_count: 2,
-                    overflow_count: 0
-                  }
-                },
-                fully_read_event_id: null,
-                typing_user_ids: []
+          domain: {
+            ...snap.state.domain,
+            live_signals: {
+              ...snap.state.domain.live_signals,
+              rooms: {
+                [roomId]: {
+                  receipts_by_event: {
+                    [evId]: {
+                      readers: [
+                        {
+                          user_id: "@reader-b:example.invalid",
+                          display_name: "Bob",
+                          original_display_label: "Bob",
+                          avatar: null,
+                          timestamp_ms: null
+                        },
+                        {
+                          user_id: "@reader-c:example.invalid",
+                          display_name: "Carol",
+                          original_display_label: "Carol",
+                          avatar: null,
+                          timestamp_ms: null
+                        }
+                      ],
+                      total_count: 2,
+                      overflow_count: 0
+                    }
+                  },
+                  fully_read_event_id: null,
+                  typing_user_ids: []
+                }
               }
             }
           }
@@ -346,27 +352,30 @@ test("overflow count is shown when overflow_count > 0", async ({ page }) => {
         ...snap,
         state: {
           ...snap.state,
-          live_signals: {
-            ...snap.state.live_signals,
-            rooms: {
-              [roomId]: {
-                receipts_by_event: {
-                  [evId]: {
-                    readers: [
-                      {
-                        user_id: "@reader-d:example.invalid",
-                        display_name: "Diana",
-                        original_display_label: "Diana",
-                        avatar: null,
-                        timestamp_ms: null
-                      }
-                    ],
-                    total_count: 6,
-                    overflow_count: 5
-                  }
-                },
-                fully_read_event_id: null,
-                typing_user_ids: []
+          domain: {
+            ...snap.state.domain,
+            live_signals: {
+              ...snap.state.domain.live_signals,
+              rooms: {
+                [roomId]: {
+                  receipts_by_event: {
+                    [evId]: {
+                      readers: [
+                        {
+                          user_id: "@reader-d:example.invalid",
+                          display_name: "Diana",
+                          original_display_label: "Diana",
+                          avatar: null,
+                          timestamp_ms: null
+                        }
+                      ],
+                      total_count: 6,
+                      overflow_count: 5
+                    }
+                  },
+                  fully_read_event_id: null,
+                  typing_user_ids: []
+                }
               }
             }
           }

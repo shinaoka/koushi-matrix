@@ -8,8 +8,8 @@ export function qaWindowTitle(
   panelMode?: RightPanelMode,
   sendStatus?: QaSendSmokeStatus
 ): string {
-  const attention = desktopAttentionSummary(snapshot.state.native_attention);
-  const roomInteractions = Object.values(snapshot.state.room_interactions);
+  const attention = desktopAttentionSummary(snapshot.state.domain.native_attention);
+  const roomInteractions = Object.values(snapshot.state.domain.room_interactions);
   const pinnedCount = roomInteractions.reduce(
     (count, interaction) => count + interaction.pinned_events.length,
     0
@@ -19,18 +19,18 @@ export function qaWindowTitle(
   ).length;
   const title = [
     "matrix-desktop qa",
-    `session=${snapshot.state.session.kind}`,
-    `sync=${syncStateLabel(snapshot.state.sync)}`,
-    `rooms=${snapshot.state.rooms.length}`,
-    `spaces=${snapshot.state.spaces.length}`,
-    `active_room=${Boolean(snapshot.state.navigation.active_room_id)}`,
-    `timeline_room=${Boolean(snapshot.state.timeline.room_id)}`,
-    `timeline_subscribed=${snapshot.state.timeline.is_subscribed}`,
+    `session=${snapshot.state.domain.session.kind}`,
+    `sync=${syncStateLabel(snapshot.state.domain.sync)}`,
+    `rooms=${snapshot.state.domain.rooms.length}`,
+    `spaces=${snapshot.state.domain.spaces.length}`,
+    `active_room=${Boolean(snapshot.state.ui.navigation.active_room_id)}`,
+    `timeline_room=${Boolean(snapshot.state.ui.timeline.room_id)}`,
+    `timeline_subscribed=${snapshot.state.ui.timeline.is_subscribed}`,
     `timeline_items=${snapshot.timeline.length}`,
     `pinned=${pinnedCount}`,
     `pin_ops=${pinOperationCount}`,
-    `errors=${snapshot.state.errors.length}`,
-    `focused=${snapshot.state.focused_context.kind}`,
+    `errors=${snapshot.state.ui.errors.length}`,
+    `focused=${snapshot.state.ui.focused_context.kind}`,
     attention.qaTitleToken
   ];
   if (panelMode !== undefined) {

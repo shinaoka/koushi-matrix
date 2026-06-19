@@ -245,8 +245,8 @@ export function ExplorePane({
   onQueryChange: (value: string) => void;
   onSearch: () => void;
 }) {
-  const queryState = snapshot.state.directory.query;
-  const joinState = snapshot.state.directory.join;
+  const queryState = snapshot.state.domain.directory.query;
+  const joinState = snapshot.state.domain.directory.join;
   const rooms = queryState.kind === "results" ? queryState.rooms : [];
   const searchDisabled = isBusy || queryState.kind === "querying";
 
@@ -370,7 +370,7 @@ export function InvitesPane({
   onDeclineInvite: (roomId: string) => void;
   onNewDm: () => void;
 }) {
-  const invites = snapshot.state.invites;
+  const invites = snapshot.state.domain.invites;
   const [selectedInviteId, setSelectedInviteId] = useState<string | null>(null);
   const selectedInvite =
     invites.find((invite) => invite.room_id === selectedInviteId) ?? invites[0] ?? null;
@@ -579,16 +579,16 @@ export function TimelinePane({
   onOpenRoomInfo: () => void;
   onOpenThreadsList: () => void;
 }) {
-  const timelineRoomId = snapshot.state.timeline.room_id;
-  const currentUserId = snapshot.state.session.user_id ?? null;
+  const timelineRoomId = snapshot.state.ui.timeline.room_id;
+  const currentUserId = snapshot.state.domain.session.user_id ?? null;
   const activeRoom = timelineRoomId
-    ? snapshot.state.rooms.find((room) => room.room_id === timelineRoomId) ?? null
+    ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
   const pinnedEvents = pinnedEventsForRoom(snapshot, timelineRoomId);
   const pinnedEventIds = pinnedEvents.map((event) => event.event_id);
-  const stagedUploads = snapshot.state.timeline.staged_uploads ?? [];
-  const mediaGallery = snapshot.state.timeline.media_gallery ?? [];
-  const mediaDownloads = snapshot.state.timeline.media_downloads ?? {};
+  const stagedUploads = snapshot.state.ui.timeline.staged_uploads ?? [];
+  const mediaGallery = snapshot.state.ui.timeline.media_gallery ?? [];
+  const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
@@ -623,7 +623,7 @@ export function TimelinePane({
             <ImageIcon size={ICON_SIZE.panel} />
           </button>
           <button className="icon-button" type="button" aria-label={t("room.rightPanelToggle")} onClick={onToggleThread}>
-            {snapshot.state.thread.kind !== "closed" ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
+            {snapshot.state.ui.thread.kind !== "closed" ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
           </button>
           <button
             className="icon-button"
@@ -662,7 +662,7 @@ export function TimelinePane({
           <SearchResults
             query={searchQuery}
             results={searchResults}
-            rooms={snapshot.state.rooms}
+            rooms={snapshot.state.domain.rooms}
             onResultSelect={onResultSelect}
           />
         ) : null}
@@ -671,7 +671,7 @@ export function TimelinePane({
             <button
               className="load-more-button"
               type="button"
-              disabled={!timelineRoomId || snapshot.state.timeline.is_paginating_backwards}
+              disabled={!timelineRoomId || snapshot.state.ui.timeline.is_paginating_backwards}
               onClick={() => {
                 if (timelineRoomId) {
                   onPaginateBackwards(timelineRoomId);
@@ -680,7 +680,7 @@ export function TimelinePane({
             >
               <Clock3 size={ICON_SIZE.compact} />
               <span>
-                {snapshot.state.timeline.is_paginating_backwards
+                {snapshot.state.ui.timeline.is_paginating_backwards
                   ? t("timeline.loading")
                   : t("timeline.olderMessages")}
               </span>
@@ -697,16 +697,16 @@ export function TimelinePane({
               onReply={onReply}
               onOpenThread={onOpenThread}
               resolveComposerKeyAction={resolveComposerKeyAction}
-              liveSignals={snapshot.state.live_signals}
-              profileUsers={snapshot.state.profile.users}
+              liveSignals={snapshot.state.domain.live_signals}
+              profileUsers={snapshot.state.domain.profile.users}
               pinnedEventIds={pinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
               onSetLocalUserAlias={onSetLocalUserAlias}
               onOpenContextMenu={onOpenContextMenu}
               currentUserId={currentUserId}
-              ignoredUserIds={snapshot.state.profile.ignored_user_ids}
-              autoLoadOlderMessages={snapshot.state.settings.values.timeline.auto_load_older_messages}
-              codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
+              ignoredUserIds={snapshot.state.domain.profile.ignored_user_ids}
+              autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
+              codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
             />
@@ -723,8 +723,8 @@ export function TimelinePane({
                   onEditMessage={onEditMessage}
                   onOpenThread={onOpenThread}
                   onRedactMessage={onRedactMessage}
-                  profileUsers={snapshot.state.profile.users}
-                  isIgnored={snapshot.state.profile.ignored_user_ids.includes(message.sender)}
+                  profileUsers={snapshot.state.domain.profile.users}
+                  isIgnored={snapshot.state.domain.profile.ignored_user_ids.includes(message.sender)}
                 />
               ))}
             </div>
@@ -732,8 +732,8 @@ export function TimelinePane({
         </div>
       </section>
       <ScheduledMessagesList
-        capability={snapshot.state.timeline.scheduled_send_capability}
-        items={snapshot.state.timeline.scheduled_sends}
+        capability={snapshot.state.ui.timeline.scheduled_send_capability}
+        items={snapshot.state.ui.timeline.scheduled_sends}
         onCancel={onCancelScheduledSend}
         onReschedule={onRescheduleScheduledSend}
       />
@@ -748,7 +748,7 @@ export function TimelinePane({
       <Composer
         composerMode={composerMode}
         hasStagedUploads={stagedUploads.length > 0}
-        isSending={Boolean(snapshot.state.timeline.composer.pending_transaction_id)}
+        isSending={Boolean(snapshot.state.ui.timeline.composer.pending_transaction_id)}
         mentionCandidates={mentionCandidatesFromSnapshot(snapshot)}
         mentionIntent={mentionIntent}
         resolveComposerKeyAction={resolveComposerKeyAction}

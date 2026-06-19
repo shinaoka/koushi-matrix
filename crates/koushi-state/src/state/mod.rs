@@ -66,7 +66,7 @@ pub use settings::{
 pub use profile::{
     AvatarImage, AvatarThumbnailFailureKind, AvatarThumbnailState, IgnoredUserUpdateState,
     LocalUserAliasUpdateState, OwnProfile, ProfileState, ProfileUpdateRequest, ProfileUpdateState,
-    UserProfile, is_ignored_user, normalize_local_user_alias, original_user_display_name,
+    UserProfile, is_ignored_user, normalize_local_user_alias,
     refresh_profile_user_display_projection, refresh_room_settings_member_display_projection,
     refresh_room_summary_display_projection, resolve_user_display_name,
 };
@@ -159,8 +159,8 @@ pub use basic_operation::{BasicOperationRequest, BasicOperationState};
 
 // ── Re-exports: live_signals ────────────────────────────────────────────────
 pub use live_signals::{
-    LIVE_READ_RECEIPT_READER_CAP, LiveEventReceipts, LiveEventReceiptSummary, LiveReadReceipt,
-    LiveRoomSignalUpdate, LiveSignalsState, PresenceKind, RoomLiveSignals,
+    LiveEventReceiptSummary, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
+    LiveSignalsState, PresenceKind, RoomLiveSignals,
 };
 
 // ── Helper used by search_crawler submodule via crate::state::default_true ──

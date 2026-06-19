@@ -23,7 +23,7 @@ import type { CoreEventPayload } from "../domain/coreEvents";
 
 export interface IpcInvocation {
   command: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   args: Record<string, any>;
 }
 
@@ -64,7 +64,7 @@ export class TauriIpcMock {
 
   // ---- The fake invoke function ----
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   invoke<T>(command: string, args: Record<string, any> = {}): Promise<T> {
     // Strip password/secret fields from log (security: do not trace secrets).
     const safeArgs = sanitiseArgs(args);
@@ -118,7 +118,7 @@ export class TauriIpcMock {
 // Security: strip secret-bearing fields from recorded args
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function sanitiseArgs(args: Record<string, any>): Record<string, any> {
   const REDACTED = "[REDACTED]";
   const SECRET_KEYS = new Set([
@@ -135,7 +135,7 @@ function sanitiseArgs(args: Record<string, any>): Record<string, any> {
     "store_key",
     "search_index_key"
   ]);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const result: Record<string, any> = {};
   for (const [key, value] of Object.entries(args)) {
     result[key] = SECRET_KEYS.has(key) ? REDACTED : value;

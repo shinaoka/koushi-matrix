@@ -68,7 +68,7 @@ interface AppHarnessControl {
   invocations(): readonly IpcInvocation[];
   invocationsOf(command: string): IpcInvocation[];
   clearInvocations(): void;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   setCommandResponse(command: string, response: any): void;
   setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
@@ -88,9 +88,9 @@ interface AppHarnessControl {
 function readySnapshot(
   overrides: {
     composerMode?: ComposerMode;
-    basicOperation?: DesktopSnapshot["state"]["basic_operation"];
+    basicOperation?: DesktopSnapshot["state"]["ui"]["basic_operation"];
     e2eeTrust?: E2eeTrustState;
-    extraSpaces?: DesktopSnapshot["state"]["spaces"];
+    extraSpaces?: DesktopSnapshot["state"]["domain"]["spaces"];
     extraRailItems?: DesktopSnapshot["sidebar"]["space_rail"];
   } = {}
 ): DesktopSnapshot {
@@ -134,111 +134,49 @@ function readySnapshot(
       joined_members: 8
     }
   ];
-  return {
-    state: {
-      session: {
-        kind: "ready",
-        homeserver: HOMESERVER,
-        user_id: USER_ID,
-        device_id: DEVICE_ID
-      },
-      auth: { kind: "unknown" },
-      settings: defaultSettingsState(),
-      link_preview_settings: { room_overrides: {} },
-      locale_profile: defaultLocaleDisplayProfile(),
-      typography_profile: defaultTypographyDisplayProfile(),
-      profile: {
-        own: { display_name: "Harness User", avatar: null },
-        users: {},
-        local_aliases: {},
-        local_alias_update: { kind: "idle" },
-        ignored_user_ids: [],
-        ignored_user_update: { kind: "idle" },
-        update: { kind: "idle" }
-      },
-      sync: "running",
-      sync_mode: { kind: "unsupported" },
-      navigation: {
-        active_space_id: null,
-        active_room_id: ROOM_ID,
-        space_order: spaces.map((space) => space.space_id),
-        last_room_by_space_id: {}
-      },
-      spaces,
-      rooms,
-      invites: [],
-      room_list: computeBrowserRoomListProjection(
-        { kind: "rooms" },
-        { kind: "activity" },
-        rooms,
-        []
-      ),
-      room_notification_settings: {},
-      room_interactions: {},
-      device_sessions: { kind: "idle" },
-      account_management: { kind: "idle" },
-      account_management_capabilities: { change_password: { kind: "unknown" } },
-      soft_logout_reauth: { kind: "idle" },
-      qr_login: { kind: "idle" },
-      directory: { query: { kind: "closed" }, join: { kind: "idle" } },
-      room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
-      activity: { kind: "closed" },
-      timeline: {
-        room_id: ROOM_ID,
-        is_subscribed: true,
-        is_paginating_backwards: false,
-        composer: {
-          pending_transaction_id: null,
-          draft: "",
-          mode: composerMode
+      return {
+      state: {
+        schema_version: 2,
+        domain: {
+          session: { kind: "ready", homeserver: HOMESERVER, user_id: USER_ID, device_id: DEVICE_ID },
+          auth: { kind: "unknown" },
+          settings: defaultSettingsState(),
+          link_preview_settings: { room_overrides: {} },
+          locale_profile: defaultLocaleDisplayProfile(),
+          typography_profile: defaultTypographyDisplayProfile(),
+          profile: { own: { display_name: "Harness User", avatar: null }, users: {}, local_aliases: {}, local_alias_update: { kind: "idle" }, ignored_user_ids: [], ignored_user_update: { kind: "idle" }, update: { kind: "idle" } },
+          sync: "running",
+          sync_mode: { kind: "unsupported" },
+          spaces, rooms, invites: [],
+          room_notification_settings: {}, room_interactions: {},
+          device_sessions: { kind: "idle" },
+          account_management: { kind: "idle" },
+          account_management_capabilities: { change_password: { kind: "unknown" } },
+          soft_logout_reauth: { kind: "idle" }, qr_login: { kind: "idle" },
+          directory: { query: { kind: "closed" }, join: { kind: "idle" } },
+          room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
+          activity: { kind: "closed" }, thread_attention: { kind: "closed" },
+          search: { kind: "closed" }, search_crawler: { rooms: {} },
+          live_signals: defaultLiveSignalsState(),
+          e2ee_trust: overrides.e2eeTrust ?? defaultE2eeTrustState(),
+          local_encryption: { kind: "unknown" },
+          native_attention: defaultNativeAttentionState(),
+          cjk_text_policy: defaultCjkTextPolicyState()
         },
-        scheduled_send_capability: "unknown",
-        scheduled_sends: [],
-        staged_uploads: [],
-        media_gallery: [],
-        media_downloads: {}
-      },
-      thread: { kind: "closed" },
-      thread_attention: { kind: "closed" },
-      threads_list: { kind: "closed" },
-      focused_context: { kind: "closed" },
-      search: { kind: "closed" },
-      search_crawler: { rooms: {} },
-      files_view: { kind: "closed" },
-      errors: [],
-      basic_operation: basicOperation,
-      live_signals: defaultLiveSignalsState(),
-      e2ee_trust: overrides.e2eeTrust ?? defaultE2eeTrustState(),
-      local_encryption: { kind: "unknown" },
-      native_attention: defaultNativeAttentionState(),
-      cjk_text_policy: defaultCjkTextPolicyState()
-    },
-    sidebar: {
-      active_space_id: null,
-      account_home: { display_name: "Home", unread_count: 0, highlight_count: 0, is_active: true },
-      space_rail: railItems,
-      space_rooms: [
-        {
-          room_id: ROOM_ID,
-          display_name: ROOM_NAME,
-          avatar: null,
-          tags: { favourite: null, low_priority: null },
-          unread_count: 0,
-          highlight_count: 0
+        ui: {
+          navigation: { active_space_id: null, active_room_id: ROOM_ID, space_order: spaces.map((space) => space.space_id), last_room_by_space_id: {} },
+          room_list: computeBrowserRoomListProjection({ kind: "rooms" }, { kind: "activity" }, rooms, []),
+          timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { pending_transaction_id: null, draft: "", mode: composerMode }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {} },
+          thread: { kind: "closed" }, threads_list: { kind: "closed" }, focused_context: { kind: "closed" },
+          files_view: { kind: "closed" }, errors: [], basic_operation: basicOperation
         }
-      ],
-      global_dms: [],
-      space_unread_count: 0,
-      dm_unread_count: 0,
-      space_highlight_count: 0,
-      dm_highlight_count: 0
-    },
-    timeline: [],
-    thread: null
-  };
+      },
+      sidebar: { active_space_id: null, account_home: { display_name: "Home", unread_count: 0, highlight_count: 0, is_active: true }, space_rail: railItems, space_rooms: [{ room_id: ROOM_ID, display_name: ROOM_NAME, avatar: null, tags: { favourite: null, low_priority: null }, unread_count: 0, highlight_count: 0 }], global_dms: [], space_unread_count: 0, dm_unread_count: 0, space_highlight_count: 0, dm_highlight_count: 0 },
+      timeline: [], thread: null
+    };
 }
 
-function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
+function defaultSettingsState(): DesktopSnapshot["state"]["domain"]["settings"] {
   return {
     values: {
       locale: { language_tag: null, text_direction: "auto" },
@@ -280,7 +218,7 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
   };
 }
 
-function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
+function defaultE2eeTrustState(): DesktopSnapshot["state"]["domain"]["e2ee_trust"] {
   return {
     verification: { kind: "idle" },
     cross_signing: { kind: "unknown" },
@@ -291,7 +229,7 @@ function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
   };
 }
 
-function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["e2ee_trust"]["key_management"] {
+function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["domain"]["e2ee_trust"]["key_management"] {
   return {
     room_key_export: { kind: "idle" },
     room_key_import: { kind: "idle" },
@@ -300,14 +238,14 @@ function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["e2ee_trust"]
   };
 }
 
-function defaultLiveSignalsState(): DesktopSnapshot["state"]["live_signals"] {
+function defaultLiveSignalsState(): DesktopSnapshot["state"]["domain"]["live_signals"] {
   return {
     rooms: {},
     presence: {}
   };
 }
 
-function defaultNativeAttentionState(): DesktopSnapshot["state"]["native_attention"] {
+function defaultNativeAttentionState(): DesktopSnapshot["state"]["domain"]["native_attention"] {
   return {
     summary: {
       unread_count: 0,
@@ -327,7 +265,7 @@ function defaultNativeAttentionState(): DesktopSnapshot["state"]["native_attenti
   };
 }
 
-function defaultCjkTextPolicyState(): DesktopSnapshot["state"]["cjk_text_policy"] {
+function defaultCjkTextPolicyState(): DesktopSnapshot["state"]["domain"]["cjk_text_policy"] {
   return {
     japanese_catalog: {
       catalog_locale: "en",
@@ -348,9 +286,9 @@ function defaultCjkTextPolicyState(): DesktopSnapshot["state"]["cjk_text_policy"
 }
 
 function applySettingsPatch(
-  values: DesktopSnapshot["state"]["settings"]["values"],
+  values: DesktopSnapshot["state"]["domain"]["settings"]["values"],
   patch: SettingsPatch
-): DesktopSnapshot["state"]["settings"]["values"] {
+): DesktopSnapshot["state"]["domain"]["settings"]["values"] {
   return {
     locale: patch.locale ?? values.locale,
     appearance: patch.appearance ?? values.appearance,
@@ -368,13 +306,13 @@ function defaultLocaleDisplayProfile(): LocaleDisplayProfile {
   return resolveLocaleDisplayProfile({ language_tag: null, text_direction: "auto" });
 }
 
-function defaultTypographyDisplayProfile(): DesktopSnapshot["state"]["typography_profile"] {
+function defaultTypographyDisplayProfile(): DesktopSnapshot["state"]["domain"]["typography_profile"] {
   return resolveTypographyDisplayProfile({ font: "system", emoji: "system" });
 }
 
 function resolveTypographyDisplayProfile(
-  typography: DesktopSnapshot["state"]["settings"]["values"]["typography"]
-): DesktopSnapshot["state"]["typography_profile"] {
+  typography: DesktopSnapshot["state"]["domain"]["settings"]["values"]["typography"]
+): DesktopSnapshot["state"]["domain"]["typography_profile"] {
   return {
     font: typography.font,
     emoji: typography.emoji,
@@ -460,7 +398,7 @@ function parseLocale(
 }
 
 function resolveComposerKeyActionFromSettings(
-  sendShortcut: DesktopSnapshot["state"]["settings"]["values"]["keyboard"]["composer_send_shortcut"],
+  sendShortcut: DesktopSnapshot["state"]["domain"]["settings"]["values"]["keyboard"]["composer_send_shortcut"],
   surface: ComposerSurface,
   keyEvent: ComposerKeyEvent,
   options: ComposerResolverOptions
@@ -537,7 +475,7 @@ function e2eeTrustSnapshot(): DesktopSnapshot {
 function afterCreateRoomSnapshot(): DesktopSnapshot {
   const snapshot = readySnapshot();
   const newRoomId = "!created-room:example.invalid";
-  snapshot.state.rooms.push({
+  snapshot.state.domain.rooms.push({
     room_id: newRoomId,
     display_name: "Created Room",
     display_label: "Created Room",
@@ -552,8 +490,8 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     parent_space_ids: [],
     is_encrypted: false
   });
-  snapshot.state.navigation.active_room_id = newRoomId;
-  snapshot.state.timeline.room_id = newRoomId;
+  snapshot.state.ui.navigation.active_room_id = newRoomId;
+  snapshot.state.ui.timeline.room_id = newRoomId;
   snapshot.sidebar.space_rooms.push({
     room_id: newRoomId,
     display_name: "Created Room",
@@ -562,11 +500,11 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     unread_count: 0,
     highlight_count: 0
   });
-  snapshot.state.room_list = computeBrowserRoomListProjection(
-    snapshot.state.room_list.active_filter,
-    snapshot.state.room_list.sort,
-    snapshot.state.rooms,
-    snapshot.state.invites
+  snapshot.state.ui.room_list = computeBrowserRoomListProjection(
+    snapshot.state.ui.room_list.active_filter,
+    snapshot.state.ui.room_list.sort,
+    snapshot.state.domain.rooms,
+    snapshot.state.domain.invites
   );
   return snapshot;
 }
@@ -574,13 +512,13 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
 function afterCreateSpaceSnapshot(): DesktopSnapshot {
   const snapshot = readySnapshot();
   const newSpaceId = "!created-space:example.invalid";
-  snapshot.state.spaces.push({
+  snapshot.state.domain.spaces.push({
     space_id: newSpaceId,
     display_name: "Created Space",
     avatar: null,
     child_room_ids: []
   });
-  snapshot.state.navigation.active_space_id = newSpaceId;
+  snapshot.state.ui.navigation.active_space_id = newSpaceId;
   snapshot.sidebar.active_space_id = newSpaceId;
   snapshot.sidebar.space_rail.push({
     space_id: newSpaceId,
@@ -605,12 +543,15 @@ function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
     ...next,
     state: {
       ...next.state,
+      ui: {
+        ...next.state.ui,
       room_list: computeBrowserRoomListProjection(
-        next.state.room_list.active_filter,
-        next.state.room_list.sort,
-        next.state.rooms,
-        next.state.invites
+        next.state.ui.room_list.active_filter,
+        next.state.ui.room_list.sort,
+        next.state.domain.rooms,
+        next.state.domain.invites
       )
+      },
     }
   };
   return currentSnapshot;
@@ -626,15 +567,21 @@ mock.setCommandResponse("reorder_spaces", ({ spaceIds }: { spaceIds: string[] })
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
-      navigation: {
-        ...currentSnapshot.state.navigation,
-        space_order: [...spaceIds]
+      ui: {
+        ...currentSnapshot.state.ui,
+        navigation: {
+          ...currentSnapshot.state.ui.navigation,
+          space_order: [...spaceIds]
+        }
       },
-      spaces: [...currentSnapshot.state.spaces].sort(
-        (left, right) =>
-          (positionBySpaceId.get(left.space_id) ?? Number.MAX_SAFE_INTEGER) -
-          (positionBySpaceId.get(right.space_id) ?? Number.MAX_SAFE_INTEGER)
-      )
+      domain: {
+        ...currentSnapshot.state.domain,
+        spaces: [...currentSnapshot.state.domain.spaces].sort(
+          (left, right) =>
+            (positionBySpaceId.get(left.space_id) ?? Number.MAX_SAFE_INTEGER) -
+            (positionBySpaceId.get(right.space_id) ?? Number.MAX_SAFE_INTEGER)
+        )
+      }
     },
     sidebar: {
       ...currentSnapshot.sidebar,
@@ -647,32 +594,35 @@ mock.setCommandResponse("reorder_spaces", ({ spaceIds }: { spaceIds: string[] })
   });
 });
 mock.setCommandResponse("update_settings", ({ patch }: { patch: SettingsPatch }) => {
-  const values = applySettingsPatch(currentSnapshot.state.settings.values, patch);
+  const values = applySettingsPatch(currentSnapshot.state.domain.settings.values, patch);
   return setCurrentSnapshot({
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       settings: {
-        ...currentSnapshot.state.settings,
+        ...currentSnapshot.state.domain.settings,
         values,
         persistence: { kind: "idle" }
       },
       locale_profile: resolveLocaleDisplayProfile(values.locale),
       typography_profile: resolveTypographyDisplayProfile(values.typography)
+      },
     }
   });
 });
 mock.setCommandResponse(
   "set_room_url_preview_override",
   ({ roomId, enabled }: { roomId: string; enabled: boolean }) => {
-    const room = currentSnapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+    const room = currentSnapshot.state.domain.rooms.find((candidate) => candidate.room_id === roomId);
     if (!room) {
       return currentSnapshot;
     }
-    const roomOverrides = { ...currentSnapshot.state.link_preview_settings.room_overrides };
+    const roomOverrides = { ...currentSnapshot.state.domain.link_preview_settings.room_overrides };
     const defaultEnabled = room.is_encrypted
-      ? currentSnapshot.state.settings.values.display.encrypted_url_previews_enabled
-      : currentSnapshot.state.settings.values.display.url_previews_enabled;
+      ? currentSnapshot.state.domain.settings.values.display.encrypted_url_previews_enabled
+      : currentSnapshot.state.domain.settings.values.display.url_previews_enabled;
     if (enabled === defaultEnabled) {
       delete roomOverrides[roomId];
     } else {
@@ -682,72 +632,84 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         link_preview_settings: {
           room_overrides: roomOverrides
         }
+        },
       }
     });
   }
 );
 mock.setCommandResponse(
   "select_room_list_filter",
-  ({ filter }: { filter: DesktopSnapshot["state"]["room_list"]["active_filter"] }) =>
+  ({ filter }: { filter: DesktopSnapshot["state"]["ui"]["room_list"]["active_filter"] }) =>
     setCurrentSnapshot({
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        ui: {
+          ...currentSnapshot.state.ui,
         room_list: computeBrowserRoomListProjection(
           filter,
-          currentSnapshot.state.room_list.sort,
-          currentSnapshot.state.rooms,
-          currentSnapshot.state.invites
+          currentSnapshot.state.ui.room_list.sort,
+          currentSnapshot.state.domain.rooms,
+          currentSnapshot.state.domain.invites
         )
+        },
       }
     })
 );
 mock.setCommandResponse("mark_room_as_read", () => currentSnapshot);
 mock.setCommandResponse("mark_room_as_unread", () => currentSnapshot);
 mock.setCommandResponse("leave_room", ({ roomId }: { roomId: string }) => {
-  const removedSpace = currentSnapshot.state.spaces.find((space) => space.space_id === roomId);
-  const nextSpaces = currentSnapshot.state.spaces.filter((space) => space.space_id !== roomId);
+  const removedSpace = currentSnapshot.state.domain.spaces.find((space) => space.space_id === roomId);
+  const nextSpaces = currentSnapshot.state.domain.spaces.filter((space) => space.space_id !== roomId);
   const nextRooms = removedSpace
-    ? currentSnapshot.state.rooms.map((room) => ({
+    ? currentSnapshot.state.domain.rooms.map((room) => ({
         ...room,
         parent_space_ids: room.parent_space_ids.filter((spaceId) => spaceId !== roomId)
       }))
-    : currentSnapshot.state.rooms.filter((room) => room.room_id !== roomId);
+    : currentSnapshot.state.domain.rooms.filter((room) => room.room_id !== roomId);
   const nextActiveSpaceId =
-    currentSnapshot.state.navigation.active_space_id === roomId
+    currentSnapshot.state.ui.navigation.active_space_id === roomId
       ? null
-      : currentSnapshot.state.navigation.active_space_id;
+      : currentSnapshot.state.ui.navigation.active_space_id;
   const nextLastRoomBySpaceId = {
-    ...(currentSnapshot.state.navigation.last_room_by_space_id ?? {})
+    ...(currentSnapshot.state.ui.navigation.last_room_by_space_id ?? {})
   };
   delete nextLastRoomBySpaceId[roomId];
   return setCurrentSnapshot({
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
-      navigation: {
-        ...currentSnapshot.state.navigation,
-        active_space_id: nextActiveSpaceId,
-        active_room_id:
-          removedSpace || currentSnapshot.state.navigation.active_room_id !== roomId
-            ? currentSnapshot.state.navigation.active_room_id
-            : null,
-        space_order:
-          currentSnapshot.state.navigation.space_order?.filter((spaceId) => spaceId !== roomId) ??
-          [],
-        last_room_by_space_id: nextLastRoomBySpaceId
+      ui: {
+        ...currentSnapshot.state.ui,
+        navigation: {
+          ...currentSnapshot.state.ui.navigation,
+          active_space_id: nextActiveSpaceId,
+          active_room_id:
+            removedSpace || currentSnapshot.state.ui.navigation.active_room_id !== roomId
+              ? currentSnapshot.state.ui.navigation.active_room_id
+              : null,
+          space_order:
+            currentSnapshot.state.ui.navigation.space_order?.filter((spaceId) => spaceId !== roomId) ??
+            [],
+          last_room_by_space_id: nextLastRoomBySpaceId
+        },
+        room_list: computeBrowserRoomListProjection(
+          currentSnapshot.state.ui.room_list.active_filter,
+          currentSnapshot.state.ui.room_list.sort,
+          nextRooms,
+          currentSnapshot.state.domain.invites
+        )
       },
-      spaces: nextSpaces,
-      rooms: nextRooms,
-      room_list: computeBrowserRoomListProjection(
-        currentSnapshot.state.room_list.active_filter,
-        currentSnapshot.state.room_list.sort,
-        nextRooms,
-        currentSnapshot.state.invites
-      )
+      domain: {
+        ...currentSnapshot.state.domain,
+        spaces: nextSpaces,
+        rooms: nextRooms
+      }
     },
     sidebar: {
       ...currentSnapshot.sidebar,
@@ -763,20 +725,23 @@ mock.setCommandResponse(
   "set_room_notification_mode",
   ({ roomId, mode }: { roomId: string; mode: RoomNotificationMode }) => {
     const known =
-      currentSnapshot.state.rooms.some((room) => room.room_id === roomId) ||
-      currentSnapshot.state.invites.some((invite) => invite.room_id === roomId);
+      currentSnapshot.state.domain.rooms.some((room) => room.room_id === roomId) ||
+      currentSnapshot.state.domain.invites.some((invite) => invite.room_id === roomId);
     if (!known) {
       return currentSnapshot;
     }
     const next: Record<string, RoomNotificationSettings> = {
-      ...currentSnapshot.state.room_notification_settings,
+      ...currentSnapshot.state.domain.room_notification_settings,
       [roomId]: { mode, operation: { kind: "idle" } }
     };
     return setCurrentSnapshot({
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         room_notification_settings: next
+        },
       }
     });
   }
@@ -786,6 +751,8 @@ mock.setCommandResponse("query_devices", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       device_sessions: {
         kind: "loaded",
         devices: [
@@ -805,27 +772,31 @@ mock.setCommandResponse("query_devices", () =>
           }
         ]
       }
+      },
     }
   })
 );
 mock.setCommandResponse(
   "rename_device",
   ({ deviceOrdinal, displayName }: { deviceOrdinal: number; displayName: string }) => {
-    if (currentSnapshot.state.device_sessions.kind !== "loaded") {
+    if (currentSnapshot.state.domain.device_sessions.kind !== "loaded") {
       return currentSnapshot;
     }
     return setCurrentSnapshot({
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         device_sessions: {
-          ...currentSnapshot.state.device_sessions,
-          devices: currentSnapshot.state.device_sessions.devices.map((device) =>
+          ...currentSnapshot.state.domain.device_sessions,
+          devices: currentSnapshot.state.domain.device_sessions.devices.map((device) =>
             device.device_ordinal === deviceOrdinal
               ? { ...device, display_name: displayName }
               : device
           )
         }
+        },
       }
     });
   }
@@ -833,19 +804,22 @@ mock.setCommandResponse(
 mock.setCommandResponse(
   "delete_devices",
   ({ deviceOrdinals }: { deviceOrdinals: number[] }) => {
-    if (currentSnapshot.state.device_sessions.kind !== "loaded") {
+    if (currentSnapshot.state.domain.device_sessions.kind !== "loaded") {
       return currentSnapshot;
     }
     return setCurrentSnapshot({
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         device_sessions: {
-          ...currentSnapshot.state.device_sessions,
-          devices: currentSnapshot.state.device_sessions.devices.filter(
+          ...currentSnapshot.state.domain.device_sessions,
+          devices: currentSnapshot.state.domain.device_sessions.devices.filter(
             (device) => !deviceOrdinals.includes(device.device_ordinal)
           )
         }
+        },
       }
     });
   }
@@ -858,7 +832,10 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         account_management: { kind: "idle" }
+        },
       }
     });
   }
@@ -868,9 +845,12 @@ mock.setCommandResponse("load_account_management_capabilities", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       account_management_capabilities: {
         change_password: { kind: "enabled" }
       }
+      },
     }
   })
 );
@@ -882,11 +862,14 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         account_management: {
           kind: "succeeded",
           request_id: 1,
           operation: "changePassword"
         }
+        },
       }
     });
   }
@@ -899,11 +882,14 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         account_management: {
           kind: "succeeded",
           request_id: 2,
           operation: "deactivateAccount"
         }
+        },
       }
     });
   }
@@ -913,7 +899,10 @@ mock.setCommandResponse("probe_local_encryption_health", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       local_encryption: { kind: "healthy" }
+      },
     }
   })
 );
@@ -922,9 +911,12 @@ mock.setCommandResponse("reset_local_data", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       session: { kind: "signedOut" },
       sync: "stopped",
       local_encryption: { kind: "unknown" }
+      },
     }
   })
 );
@@ -933,10 +925,13 @@ mock.setCommandResponse("bootstrap_cross_signing", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       e2ee_trust: {
-        ...currentSnapshot.state.e2ee_trust,
+        ...currentSnapshot.state.domain.e2ee_trust,
         cross_signing: { kind: "trusted" }
       }
+      },
     }
   })
 );
@@ -945,10 +940,13 @@ mock.setCommandResponse("enable_key_backup", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       e2ee_trust: {
-        ...currentSnapshot.state.e2ee_trust,
+        ...currentSnapshot.state.domain.e2ee_trust,
         key_backup: { kind: "enabled", version: "harness-backup" }
       }
+      },
     }
   })
 );
@@ -957,10 +955,12 @@ mock.setCommandResponse("export_room_keys", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       e2ee_trust: {
-        ...currentSnapshot.state.e2ee_trust,
+        ...currentSnapshot.state.domain.e2ee_trust,
         key_management: {
-          ...currentSnapshot.state.e2ee_trust.key_management,
+          ...currentSnapshot.state.domain.e2ee_trust.key_management,
           room_key_export: {
             kind: "exported",
             request_id: 9_200,
@@ -968,6 +968,7 @@ mock.setCommandResponse("export_room_keys", () =>
           }
         }
       }
+      },
     }
   })
 );
@@ -976,10 +977,12 @@ mock.setCommandResponse("import_room_keys", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       e2ee_trust: {
-        ...currentSnapshot.state.e2ee_trust,
+        ...currentSnapshot.state.domain.e2ee_trust,
         key_management: {
-          ...currentSnapshot.state.e2ee_trust.key_management,
+          ...currentSnapshot.state.domain.e2ee_trust.key_management,
           room_key_import: {
             kind: "imported",
             request_id: 9_201,
@@ -988,6 +991,7 @@ mock.setCommandResponse("import_room_keys", () =>
           }
         }
       }
+      },
     }
   })
 );
@@ -998,10 +1002,12 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         e2ee_trust: {
-          ...currentSnapshot.state.e2ee_trust,
+          ...currentSnapshot.state.domain.e2ee_trust,
           key_management: {
-            ...currentSnapshot.state.e2ee_trust.key_management,
+            ...currentSnapshot.state.domain.e2ee_trust.key_management,
             secure_backup_setup: {
               kind: "recoveryKeyReady",
               request_id: 9_202,
@@ -1011,6 +1017,7 @@ mock.setCommandResponse(
             }
           }
         }
+        },
       }
     })
 );
@@ -1021,10 +1028,12 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         e2ee_trust: {
-          ...currentSnapshot.state.e2ee_trust,
+          ...currentSnapshot.state.domain.e2ee_trust,
           key_management: {
-            ...currentSnapshot.state.e2ee_trust.key_management,
+            ...currentSnapshot.state.domain.e2ee_trust.key_management,
             passphrase_change: {
               kind: "changed",
               request_id: 9_203,
@@ -1034,11 +1043,12 @@ mock.setCommandResponse(
             }
           }
         }
+        },
       }
     })
 );
 mock.setCommandResponse("accept_verification", ({ flowId }: { flowId: number }) => {
-  const verification = currentSnapshot.state.e2ee_trust.verification;
+  const verification = currentSnapshot.state.domain.e2ee_trust.verification;
   if (verification.kind !== "requested" || verification.request_id !== flowId) {
     return currentSnapshot;
   }
@@ -1046,19 +1056,22 @@ mock.setCommandResponse("accept_verification", ({ flowId }: { flowId: number }) 
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       e2ee_trust: {
-        ...currentSnapshot.state.e2ee_trust,
+        ...currentSnapshot.state.domain.e2ee_trust,
         verification: {
           kind: "accepted",
           request_id: flowId,
           target: verification.target
         }
       }
+      },
     }
   });
 });
 mock.setCommandResponse("confirm_sas_verification", ({ flowId }: { flowId: number }) => {
-  const verification = currentSnapshot.state.e2ee_trust.verification;
+  const verification = currentSnapshot.state.domain.e2ee_trust.verification;
   if (
     (verification.kind !== "sasPresented" && verification.kind !== "confirming") ||
     verification.request_id !== flowId
@@ -1069,19 +1082,22 @@ mock.setCommandResponse("confirm_sas_verification", ({ flowId }: { flowId: numbe
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       e2ee_trust: {
-        ...currentSnapshot.state.e2ee_trust,
+        ...currentSnapshot.state.domain.e2ee_trust,
         verification: {
           kind: "done",
           request_id: flowId,
           target: verification.target
         }
       }
+      },
     }
   });
 });
 mock.setCommandResponse("cancel_verification", ({ flowId }: { flowId: number }) => {
-  const verification = currentSnapshot.state.e2ee_trust.verification;
+  const verification = currentSnapshot.state.domain.e2ee_trust.verification;
   if (verification.kind === "idle" || verification.request_id !== flowId) {
     return currentSnapshot;
   }
@@ -1089,10 +1105,13 @@ mock.setCommandResponse("cancel_verification", ({ flowId }: { flowId: number }) 
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       e2ee_trust: {
-        ...currentSnapshot.state.e2ee_trust,
+        ...currentSnapshot.state.domain.e2ee_trust,
         verification: { kind: "idle" }
       }
+      },
     }
   });
 });
@@ -1101,21 +1120,24 @@ mock.setCommandResponse("reset_identity", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       e2ee_trust: {
-        ...currentSnapshot.state.e2ee_trust,
+        ...currentSnapshot.state.domain.e2ee_trust,
         identity_reset: {
           kind: "awaitingAuth",
           request_id: 9_100,
           auth_type: "uiaa"
         }
       }
+      },
     }
   })
 );
 mock.setCommandResponse(
   "submit_identity_reset_password",
   ({ flowId }: { flowId: number; password: string }) => {
-    const identityReset = currentSnapshot.state.e2ee_trust.identity_reset;
+    const identityReset = currentSnapshot.state.domain.e2ee_trust.identity_reset;
     if (identityReset.kind !== "awaitingAuth" || identityReset.request_id !== flowId) {
       return currentSnapshot;
     }
@@ -1123,22 +1145,25 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        domain: {
+          ...currentSnapshot.state.domain,
         e2ee_trust: {
-          ...currentSnapshot.state.e2ee_trust,
+          ...currentSnapshot.state.domain.e2ee_trust,
           cross_signing: { kind: "missing" },
           key_backup: { kind: "disabled" },
           identity_reset: { kind: "idle" },
-          devices: currentSnapshot.state.e2ee_trust.devices.map((device) => ({
+          devices: currentSnapshot.state.domain.e2ee_trust.devices.map((device) => ({
             ...device,
             trust_level: "unverified"
           }))
         }
+        },
       }
     });
   }
 );
 mock.setCommandResponse("submit_identity_reset_oauth", ({ flowId }: { flowId: number }) => {
-  const identityReset = currentSnapshot.state.e2ee_trust.identity_reset;
+  const identityReset = currentSnapshot.state.domain.e2ee_trust.identity_reset;
   if (identityReset.kind !== "awaitingAuth" || identityReset.request_id !== flowId) {
     return currentSnapshot;
   }
@@ -1146,16 +1171,19 @@ mock.setCommandResponse("submit_identity_reset_oauth", ({ flowId }: { flowId: nu
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       e2ee_trust: {
-        ...currentSnapshot.state.e2ee_trust,
+        ...currentSnapshot.state.domain.e2ee_trust,
         cross_signing: { kind: "missing" },
         key_backup: { kind: "disabled" },
         identity_reset: { kind: "idle" },
-        devices: currentSnapshot.state.e2ee_trust.devices.map((device) => ({
+        devices: currentSnapshot.state.domain.e2ee_trust.devices.map((device) => ({
           ...device,
           trust_level: "unverified"
         }))
       }
+      },
     }
   });
 });
@@ -1173,7 +1201,7 @@ mock.setCommandResponse(
     sendEnabled: boolean;
   }) =>
     resolveComposerKeyActionFromSettings(
-      currentSnapshot.state.settings.values.keyboard.composer_send_shortcut,
+      currentSnapshot.state.domain.settings.values.keyboard.composer_send_shortcut,
       surface,
       keyEvent,
       {
@@ -1189,20 +1217,23 @@ mock.setCommandResponse("decline_invite", () => currentSnapshot);
 mock.setCommandResponse("start_direct_message", () => currentSnapshot);
 mock.setCommandResponse("invite_user", () => currentSnapshot);
 mock.setCommandResponse("set_composer_draft", ({ roomId, draft }: { roomId: string; draft: string }) => {
-  if (currentSnapshot.state.timeline.room_id !== roomId) {
+  if (currentSnapshot.state.ui.timeline.room_id !== roomId) {
     return currentSnapshot;
   }
   return setCurrentSnapshot({
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      ui: {
+        ...currentSnapshot.state.ui,
       timeline: {
-        ...currentSnapshot.state.timeline,
+        ...currentSnapshot.state.ui.timeline,
         composer: {
-          ...currentSnapshot.state.timeline.composer,
+          ...currentSnapshot.state.ui.timeline.composer,
           draft
         }
       }
+      },
     }
   });
 });
@@ -1222,24 +1253,30 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
-        thread: {
-          kind: "open",
-          room_id: roomId,
-          root_event_id: rootEventId,
-          is_subscribed: true,
-          composer: {
-            pending_transaction_id: null,
-            draft: "",
-            mode: "Plain"
+        ui: {
+          ...currentSnapshot.state.ui,
+          thread: {
+            kind: "open",
+            room_id: roomId,
+            root_event_id: rootEventId,
+            is_subscribed: true,
+            composer: {
+              pending_transaction_id: null,
+              draft: "",
+              mode: "Plain"
+            }
           }
         },
-        thread_attention: {
-          kind: "tracking",
-          room_id: roomId,
-          root_event_id: rootEventId,
-          notification_count: 0,
-          highlight_count: 0,
-          live_event_marker_count: 0
+        domain: {
+          ...currentSnapshot.state.domain,
+          thread_attention: {
+            kind: "tracking",
+            room_id: roomId,
+            root_event_id: rootEventId,
+            notification_count: 0,
+            highlight_count: 0,
+            live_event_marker_count: 0
+          }
         }
       },
       thread: null
@@ -1250,7 +1287,7 @@ mock.setCommandResponse(
 mock.setCommandResponse(
   "set_thread_composer_draft",
   ({ roomId, rootEventId, draft }: { roomId: string; rootEventId: string; draft: string }) => {
-    const thread = currentSnapshot.state.thread;
+    const thread = currentSnapshot.state.ui.thread;
     if (
       thread.kind !== "open" ||
       thread.room_id !== roomId ||
@@ -1263,6 +1300,8 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        ui: {
+          ...currentSnapshot.state.ui,
         thread: {
           ...thread,
           composer: {
@@ -1270,6 +1309,7 @@ mock.setCommandResponse(
             draft
           }
         }
+        },
       }
     };
     return setCurrentSnapshot(next);
@@ -1278,7 +1318,7 @@ mock.setCommandResponse(
 mock.setCommandResponse(
   "send_thread_reply",
   ({ roomId, rootEventId, body }: { roomId: string; rootEventId: string; body: string }) => {
-    const thread = currentSnapshot.state.thread;
+    const thread = currentSnapshot.state.ui.thread;
     if (
       thread.kind !== "open" ||
       thread.room_id !== roomId ||
@@ -1293,6 +1333,8 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
+        ui: {
+          ...currentSnapshot.state.ui,
         thread: {
           ...thread,
           composer: {
@@ -1301,6 +1343,7 @@ mock.setCommandResponse(
             pending_transaction_id: null
           }
         }
+        },
       }
     };
     return setCurrentSnapshot(next);
@@ -1311,8 +1354,14 @@ mock.setCommandResponse("close_thread", () => {
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
-      thread: { kind: "closed" },
-      thread_attention: { kind: "closed" }
+      ui: {
+        ...currentSnapshot.state.ui,
+        thread: { kind: "closed" }
+      },
+      domain: {
+        ...currentSnapshot.state.domain,
+        thread_attention: { kind: "closed" }
+      }
     },
     thread: null
   };
@@ -1320,7 +1369,7 @@ mock.setCommandResponse("close_thread", () => {
 });
 mock.setCommandResponse("submit_search", ({ query }: { query?: string }) => {
   const next = readySnapshot();
-  next.state.search = {
+  next.state.domain.search = {
     kind: "results",
     request_id: 1,
     query: String(query ?? "Alpha"),
@@ -1348,21 +1397,27 @@ mock.setCommandResponse(
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
-        navigation: {
-          ...currentSnapshot.state.navigation,
-          active_room_id: roomId
+        ui: {
+          ...currentSnapshot.state.ui,
+          navigation: {
+            ...currentSnapshot.state.ui.navigation,
+            active_room_id: roomId
+          },
+          timeline: {
+            ...currentSnapshot.state.ui.timeline,
+            room_id: roomId,
+            is_subscribed: true
+          },
+          thread: { kind: "closed" },
+          focused_context: {
+            kind: "opening",
+            room_id: roomId,
+            event_id: eventId
+          }
         },
-        timeline: {
-          ...currentSnapshot.state.timeline,
-          room_id: roomId,
-          is_subscribed: true
-        },
-        thread: { kind: "closed" },
-        thread_attention: { kind: "closed" },
-        focused_context: {
-          kind: "opening",
-          room_id: roomId,
-          event_id: eventId
+        domain: {
+          ...currentSnapshot.state.domain,
+          thread_attention: { kind: "closed" }
         }
       }
     };
@@ -1374,7 +1429,10 @@ mock.setCommandResponse("close_focused_context", () => {
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      ui: {
+        ...currentSnapshot.state.ui,
       focused_context: { kind: "closed" }
+      },
     }
   };
   return setCurrentSnapshot(next);
@@ -1386,11 +1444,13 @@ mock.setCommandResponse("redact_message", () => currentSnapshot);
 mock.setCommandResponse("set_room_tag", () => currentSnapshot);
 mock.setCommandResponse("remove_room_tag", () => currentSnapshot);
 mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) => {
-  const room = currentSnapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+  const room = currentSnapshot.state.domain.rooms.find((candidate) => candidate.room_id === roomId);
   const next: DesktopSnapshot = {
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       room_management: {
         selected_room_id: roomId,
         settings: {
@@ -1421,6 +1481,7 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
         },
         operation: { kind: "idle" }
       }
+      },
     }
   };
   return setCurrentSnapshot(next);
@@ -1430,12 +1491,15 @@ mock.setCommandResponse("start_room_crawl", ({ roomId }: { roomId: string }) => 
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       search_crawler: {
         rooms: {
-          ...currentSnapshot.state.search_crawler.rooms,
+          ...currentSnapshot.state.domain.search_crawler.rooms,
           [roomId]: { kind: "running", processed: 0, indexed: 0 }
         }
       }
+      },
     }
   });
 });
@@ -1446,12 +1510,15 @@ mock.setCommandResponse("stop_room_crawl", ({ roomId }: { roomId: string }) => {
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       search_crawler: {
         rooms: {
-          ...currentSnapshot.state.search_crawler.rooms,
+          ...currentSnapshot.state.domain.search_crawler.rooms,
           [roomId]: { kind: "idle" }
         }
       }
+      },
     }
   });
 });
@@ -1478,10 +1545,13 @@ mock.setCommandResponse(
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      ui: {
+        ...currentSnapshot.state.ui,
       timeline: {
-        ...currentSnapshot.state.timeline,
+        ...currentSnapshot.state.ui.timeline,
         staged_uploads: stagedUploads
       }
+      },
     }
   });
 });
@@ -1494,9 +1564,11 @@ mock.setCommandResponse("update_staged_upload_caption", ({ stagedId, caption }: 
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      ui: {
+        ...currentSnapshot.state.ui,
       timeline: {
-        ...currentSnapshot.state.timeline,
-        staged_uploads: currentSnapshot.state.timeline.staged_uploads.map((item) =>
+        ...currentSnapshot.state.ui.timeline,
+        staged_uploads: currentSnapshot.state.ui.timeline.staged_uploads.map((item) =>
           item.staged_id === stagedId
             ? {
                 ...item,
@@ -1507,6 +1579,7 @@ mock.setCommandResponse("update_staged_upload_caption", ({ stagedId, caption }: 
             : item
         )
       }
+      },
     }
   });
 });
@@ -1518,12 +1591,15 @@ mock.setCommandResponse("update_staged_upload_compression", ({ stagedId, compres
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      ui: {
+        ...currentSnapshot.state.ui,
       timeline: {
-        ...currentSnapshot.state.timeline,
-        staged_uploads: currentSnapshot.state.timeline.staged_uploads.map((item) =>
+        ...currentSnapshot.state.ui.timeline,
+        staged_uploads: currentSnapshot.state.ui.timeline.staged_uploads.map((item) =>
           item.staged_id === stagedId ? { ...item, compression_choice: compressionChoice } : item
         )
       }
+      },
     }
   })
 );
@@ -1532,10 +1608,13 @@ mock.setCommandResponse("clear_upload_staging", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      ui: {
+        ...currentSnapshot.state.ui,
       timeline: {
-        ...currentSnapshot.state.timeline,
+        ...currentSnapshot.state.ui.timeline,
         staged_uploads: []
       }
+      },
     }
   })
 );
@@ -1553,14 +1632,17 @@ mock.setCommandResponse("set_display_name", ({ displayName }: { displayName: str
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       profile: {
-        ...currentSnapshot.state.profile,
+        ...currentSnapshot.state.domain.profile,
         own: {
-          ...currentSnapshot.state.profile.own,
+          ...currentSnapshot.state.domain.profile.own,
           display_name: normalized
         },
         update: { kind: "idle" }
       }
+      },
     }
   });
 });
@@ -1580,10 +1662,12 @@ mock.setCommandResponse("set_avatar", () =>
     ...currentSnapshot,
     state: {
       ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
       profile: {
-        ...currentSnapshot.state.profile,
+        ...currentSnapshot.state.domain.profile,
         own: {
-          ...currentSnapshot.state.profile.own,
+          ...currentSnapshot.state.domain.profile.own,
           avatar: {
             mxc_uri: "mxc://harness/avatar",
             thumbnail: { kind: "notRequested" }
@@ -1591,6 +1675,7 @@ mock.setCommandResponse("set_avatar", () =>
         },
         update: { kind: "idle" }
       }
+      },
     }
   })
 );
@@ -1602,8 +1687,8 @@ function projectAliasSnapshot(
   userId: string,
   alias: string | null
 ): DesktopSnapshot {
-  const existingProfile = snapshot.state.profile.users[userId];
-  const dmRoom = snapshot.state.rooms.find(
+  const existingProfile = snapshot.state.domain.profile.users[userId];
+  const dmRoom = snapshot.state.domain.rooms.find(
     (room) => room.is_dm && room.dm_user_ids.includes(userId)
   );
   const originalDisplayLabel =
@@ -1613,7 +1698,7 @@ function projectAliasSnapshot(
     dmRoom?.display_name.trim() ||
     userId;
   const displayLabel = alias ?? originalDisplayLabel;
-  const localAliases = { ...snapshot.state.profile.local_aliases };
+  const localAliases = { ...snapshot.state.domain.profile.local_aliases };
   if (alias) {
     localAliases[userId] = alias;
   } else {
@@ -1633,16 +1718,18 @@ function projectAliasSnapshot(
     ...snapshot,
     state: {
       ...snapshot.state,
+      domain: {
+        ...snapshot.state.domain,
       profile: {
-        ...snapshot.state.profile,
+        ...snapshot.state.domain.profile,
         users: {
-          ...snapshot.state.profile.users,
+          ...snapshot.state.domain.profile.users,
           [userId]: profile
         },
         local_aliases: localAliases,
         local_alias_update: { kind: "idle" }
       },
-      rooms: snapshot.state.rooms.map((room) =>
+      rooms: snapshot.state.domain.rooms.map((room) =>
         room.is_dm && room.dm_user_ids.includes(userId)
           ? {
               ...room,
@@ -1652,13 +1739,13 @@ function projectAliasSnapshot(
           : room
       ),
       room_management:
-        snapshot.state.room_management.settings === null
-          ? snapshot.state.room_management
+        snapshot.state.domain.room_management.settings === null
+          ? snapshot.state.domain.room_management
           : {
-              ...snapshot.state.room_management,
+              ...snapshot.state.domain.room_management,
               settings: {
-                ...snapshot.state.room_management.settings,
-                members: snapshot.state.room_management.settings.members.map((member) =>
+                ...snapshot.state.domain.room_management.settings,
+                members: snapshot.state.domain.room_management.settings.members.map((member) =>
                   member.user_id === userId
                     ? {
                         ...member,
@@ -1669,6 +1756,7 @@ function projectAliasSnapshot(
                 )
               }
             }
+      },
     },
     sidebar: {
       ...snapshot.sidebar,

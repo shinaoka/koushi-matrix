@@ -831,7 +831,6 @@ fn local_secret_error_health(
         koushi_key::LocalSecretError::CredentialBackend(
             koushi_key::CredentialBackendErrorKind::LockedOrInaccessible,
         ) => LocalEncryptionHealth::LockedOrInaccessible,
-        _ => LocalEncryptionHealth::Unavailable,
     }
 }
 

@@ -5,7 +5,6 @@ use crate::{
 
 use super::{
     apply_space_order, first_default_room_id, is_session_ready, preferred_room_id_in_space,
-    reconcile_space_order, retain_navigation_room_memory, room_exists,
     select_active_room_for_navigation, clear_active_room_for_navigation,
     remember_active_room_for_current_space, is_complete_space_order,
     compute_room_list_projection, visible_invites_for_ignored_users,

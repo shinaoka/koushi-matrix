@@ -92,6 +92,7 @@ import type {
   StagedUploadItem,
   UploadStagingRequestItem
 } from "./domain/types";
+import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
 
 import {
   EMPTY_MENTION_INTENT,
@@ -654,6 +655,16 @@ function qaSendSmokeMessage(): string | null {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
+  // #87 Phase 4 IPC contract guard: fail loudly on a stale flat (v1) snapshot or a
+  // mismatched Rust/TS build instead of silently reading `undefined` domain/ui sections.
+  useEffect(() => {
+    if (snapshot && snapshot.state.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
+      console.error(
+        `Koushi snapshot schema_version ${snapshot.state.schema_version} != expected ` +
+          `${SNAPSHOT_SCHEMA_VERSION}: stale or mismatched IPC contract.`
+      );
+    }
+  }, [snapshot]);
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
@@ -719,7 +730,7 @@ export function App() {
     };
   }, []);
   const attentionSummary = snapshot
-    ? desktopAttentionSummary(snapshot.state.native_attention)
+    ? desktopAttentionSummary(snapshot.state.domain.native_attention)
     : null;
   const safeAttentionSummary =
     attentionSummary ?? {
@@ -729,8 +740,8 @@ export function App() {
       titleHint: null,
       qaTitleToken: "unread=0 badge=0 notify=none"
     };
-  const composerDraft = snapshot?.state.timeline.composer.draft ?? "";
-  const stagedUploads = snapshot?.state.timeline.staged_uploads ?? [];
+  const composerDraft = snapshot?.state.ui.timeline.composer.draft ?? "";
+  const stagedUploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
   const stagedUploadIdKey = stagedUploads.map((item) => item.staged_id).join("\n");
 
   useEffect(() => {
@@ -798,7 +809,7 @@ export function App() {
   }, [rightPanelMode]);
 
   useEffect(() => {
-    const roomId = snapshot?.state.timeline.room_id ?? null;
+    const roomId = snapshot?.state.ui.timeline.room_id ?? null;
     const isTyping = Boolean(roomId && composerDraft.trim());
     const previous = typingSignalRef.current;
 
@@ -814,32 +825,32 @@ export function App() {
       return;
     }
     void api.setTyping(roomId, isTyping).catch(() => undefined);
-  }, [composerDraft, snapshot?.state.timeline.room_id]);
+  }, [composerDraft, snapshot?.state.ui.timeline.room_id]);
 
   useEffect(() => {
-    const theme = snapshot?.state.settings.values.appearance.theme ?? "system";
+    const theme = snapshot?.state.domain.settings.values.appearance.theme ?? "system";
     if (theme === "system") {
       delete document.documentElement.dataset.theme;
       return;
     }
     document.documentElement.dataset.theme = theme;
-  }, [snapshot?.state.settings.values.appearance.theme]);
+  }, [snapshot?.state.domain.settings.values.appearance.theme]);
 
   useEffect(() => {
     if (!snapshot) {
       return;
     }
 
-    const profile = snapshot.state.locale_profile;
+    const profile = snapshot.state.domain.locale_profile;
     document.documentElement.lang = profile.lang;
     document.documentElement.dir = profile.dir;
     document.documentElement.dataset.catalogLocale = profile.catalog_locale;
     document.documentElement.dataset.pseudoLocale = profile.pseudo_locale;
   }, [
-    snapshot?.state.locale_profile.lang,
-    snapshot?.state.locale_profile.dir,
-    snapshot?.state.locale_profile.catalog_locale,
-    snapshot?.state.locale_profile.pseudo_locale
+    snapshot?.state.domain.locale_profile.lang,
+    snapshot?.state.domain.locale_profile.dir,
+    snapshot?.state.domain.locale_profile.catalog_locale,
+    snapshot?.state.domain.locale_profile.pseudo_locale
   ]);
 
   useEffect(() => {
@@ -847,16 +858,16 @@ export function App() {
       return;
     }
 
-    const profile = snapshot.state.typography_profile;
+    const profile = snapshot.state.domain.typography_profile;
     document.documentElement.dataset.uiFont = profile.font;
     document.documentElement.dataset.emojiFont = profile.emoji;
     document.documentElement.dataset.fontAsset = profile.font_asset;
     document.documentElement.dataset.emojiAsset = profile.emoji_asset;
   }, [
-    snapshot?.state.typography_profile.font,
-    snapshot?.state.typography_profile.emoji,
-    snapshot?.state.typography_profile.font_asset,
-    snapshot?.state.typography_profile.emoji_asset
+    snapshot?.state.domain.typography_profile.font,
+    snapshot?.state.domain.typography_profile.emoji,
+    snapshot?.state.domain.typography_profile.font_asset,
+    snapshot?.state.domain.typography_profile.emoji_asset
   ]);
 
   useEffect(() => {
@@ -880,8 +891,8 @@ export function App() {
   }, [
     searchQuery,
     searchScope,
-    snapshot?.state.navigation.active_room_id,
-    snapshot?.state.navigation.active_space_id
+    snapshot?.state.ui.navigation.active_room_id,
+    snapshot?.state.ui.navigation.active_space_id
   ]);
 
   useEffect(() => {
@@ -906,7 +917,7 @@ export function App() {
       getCurrentWindow(),
       title,
       safeAttentionSummary.badgeCount,
-      snapshot?.state.native_attention.summary.capabilities
+      snapshot?.state.domain.native_attention.summary.capabilities
     );
   }, [snapshot, rightPanelMode, qaSendStatus, safeAttentionSummary.badgeCount, safeAttentionSummary.qaTitleToken]);
 
@@ -916,7 +927,7 @@ export function App() {
     }
 
     const candidate = desktopAttentionNotificationCandidate(
-      snapshot.state.native_attention
+      snapshot.state.domain.native_attention
     );
 
     if (!candidate || !tauriNotificationTransport) {
@@ -926,16 +937,16 @@ export function App() {
     void dispatchDesktopAttentionTransientEffects(
       getCurrentWindow(),
       candidate,
-      snapshot.state.native_attention.summary.capabilities,
-      snapshot.state.settings.values.notifications
+      snapshot.state.domain.native_attention.summary.capabilities,
+      snapshot.state.domain.settings.values.notifications
     );
     void sendDesktopAttentionNotification(candidate, tauriNotificationTransport);
   }, [
-    snapshot?.state.native_attention.dispatch.kind,
-    snapshot?.state.native_attention.summary.candidate?.room_display_name,
-    snapshot?.state.native_attention.summary.candidate?.kind,
-    snapshot?.state.native_attention.summary.candidate?.unread_count,
-    snapshot?.state.native_attention.summary.candidate?.highlight_count
+    snapshot?.state.domain.native_attention.dispatch.kind,
+    snapshot?.state.domain.native_attention.summary.candidate?.room_display_name,
+    snapshot?.state.domain.native_attention.summary.candidate?.kind,
+    snapshot?.state.domain.native_attention.summary.candidate?.unread_count,
+    snapshot?.state.domain.native_attention.summary.candidate?.highlight_count
   ]);
 
   useEffect(() => {
@@ -951,13 +962,13 @@ export function App() {
     if (!message || !snapshot || qaSendStarted.current || !qaSendSmokeCanStart(snapshot)) {
       return;
     }
-    const roomId = snapshot.state.timeline.room_id;
+    const roomId = snapshot.state.ui.timeline.room_id;
     if (!roomId) {
       return;
     }
 
     qaSendStarted.current = true;
-    qaSendBaselineErrorCount.current = snapshot.state.errors.length;
+    qaSendBaselineErrorCount.current = snapshot.state.ui.errors.length;
     qaSendBaselineTimelineItems.current = snapshot.timeline.length;
     qaSendPending.current = true;
     setQaSendStatus("pending");
@@ -1101,11 +1112,11 @@ export function App() {
     if (!snapshot || rightPanelMode !== "roomInfo") {
       return;
     }
-    const activeRoomId = snapshot.state.navigation.active_room_id;
+    const activeRoomId = snapshot.state.ui.navigation.active_room_id;
     if (!activeRoomId) {
       return;
     }
-    const roomManagement = snapshot.state.room_management;
+    const roomManagement = snapshot.state.domain.room_management;
     if (
       roomManagement.selected_room_id === activeRoomId &&
       roomManagement.settings
@@ -1126,21 +1137,21 @@ export function App() {
     void api.loadRoomSettings(activeRoomId).then(setSnapshot);
   }, [
     rightPanelMode,
-    snapshot?.state.navigation.active_room_id,
-    snapshot?.state.room_management.operation,
-    snapshot?.state.room_management.selected_room_id,
-    snapshot?.state.room_management.settings
+    snapshot?.state.ui.navigation.active_room_id,
+    snapshot?.state.domain.room_management.operation,
+    snapshot?.state.domain.room_management.selected_room_id,
+    snapshot?.state.domain.room_management.settings
   ]);
 
   useEffect(() => {
     if (!snapshot || rightPanelMode !== "spaceInfo") {
       return;
     }
-    const activeSpaceId = snapshot.state.navigation.active_space_id;
+    const activeSpaceId = snapshot.state.ui.navigation.active_space_id;
     if (!activeSpaceId) {
       return;
     }
-    const roomManagement = snapshot.state.room_management;
+    const roomManagement = snapshot.state.domain.room_management;
     if (
       roomManagement.selected_room_id === activeSpaceId &&
       roomManagement.settings
@@ -1161,10 +1172,10 @@ export function App() {
     void api.loadRoomSettings(activeSpaceId).then(setSnapshot);
   }, [
     rightPanelMode,
-    snapshot?.state.navigation.active_space_id,
-    snapshot?.state.room_management.operation,
-    snapshot?.state.room_management.selected_room_id,
-    snapshot?.state.room_management.settings
+    snapshot?.state.ui.navigation.active_space_id,
+    snapshot?.state.domain.room_management.operation,
+    snapshot?.state.domain.room_management.selected_room_id,
+    snapshot?.state.domain.room_management.settings
   ]);
 
   async function refresh() {
@@ -1489,7 +1500,7 @@ export function App() {
 
   async function joinDirectoryRoom(room: DirectoryRoomSummary) {
     const alias = room.canonical_alias?.trim();
-    if (!alias || isBusy || snapshot?.state.directory.join.kind === "joining") {
+    if (!alias || isBusy || snapshot?.state.domain.directory.join.kind === "joining") {
       return;
     }
     const nextSnapshot = await api.joinDirectoryRoom(alias, serverNameFromAlias(alias));
@@ -1534,7 +1545,7 @@ export function App() {
     setIsBusy(true);
     try {
       let nextSnapshot = await api.acceptInvite(roomId);
-      if (nextSnapshot.state.rooms.some((room) => room.room_id === roomId)) {
+      if (nextSnapshot.state.domain.rooms.some((room) => room.room_id === roomId)) {
         nextSnapshot = await api.selectRoom(roomId);
       }
       setSnapshot(nextSnapshot);
@@ -1590,14 +1601,14 @@ export function App() {
     const kind = createDialog;
     const name = createDraftName.trim();
     const activeSpaceIdForCreatedRoom =
-      kind === "room" ? snapshot?.state.navigation.active_space_id ?? null : null;
+      kind === "room" ? snapshot?.state.ui.navigation.active_space_id ?? null : null;
     // Guard against double-submit: a create already in flight (isBusy) or a
     // pending basic_operation (Rust-owned) must block re-entry.
     if (
       !kind ||
       !name ||
       isBusy ||
-      (snapshot && snapshot.state.basic_operation.kind !== "idle")
+      (snapshot && snapshot.state.ui.basic_operation.kind !== "idle")
     ) {
       return;
     }
@@ -1605,7 +1616,7 @@ export function App() {
     try {
       let nextSnapshot =
         kind === "space" ? await api.createSpace(name) : await api.createRoom(name);
-      const createdRoomId = nextSnapshot.state.navigation.active_room_id;
+      const createdRoomId = nextSnapshot.state.ui.navigation.active_room_id;
       const viaServer = createdRoomId ? serverNameFromRoomId(createdRoomId) : null;
       if (kind === "room" && activeSpaceIdForCreatedRoom && createdRoomId && viaServer) {
         nextSnapshot = await api.setSpaceChild(
@@ -1638,9 +1649,9 @@ export function App() {
   }
 
   async function sendText() {
-    const roomId = snapshot?.state.timeline.room_id;
+    const roomId = snapshot?.state.ui.timeline.room_id;
     const body = composerDraft;
-    const uploads = snapshot?.state.timeline.staged_uploads ?? [];
+    const uploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
     if (!roomId || (!body.trim() && uploads.length === 0)) {
       return;
     }
@@ -1663,10 +1674,10 @@ export function App() {
     }
     // Reply semantics are Rust-owned: dispatch sendReply when the composer is
     // in reply mode, otherwise plain sendText.
-    const composerMode = snapshot?.state.timeline.composer.mode ?? "Plain";
+    const composerMode = snapshot?.state.ui.timeline.composer.mode ?? "Plain";
 
     qaSendStarted.current = true;
-    qaSendBaselineErrorCount.current = snapshot?.state.errors.length ?? 0;
+    qaSendBaselineErrorCount.current = snapshot?.state.ui.errors.length ?? 0;
     qaSendBaselineTimelineItems.current = snapshot?.timeline.length ?? 0;
     qaSendPending.current = true;
     setQaSendStatus("pending");
@@ -1699,7 +1710,7 @@ export function App() {
   }
 
   async function scheduleSend(sendAtMs: number) {
-    const roomId = snapshot?.state.timeline.room_id;
+    const roomId = snapshot?.state.ui.timeline.room_id;
     const body = composerDraft;
     if (!roomId || !body.trim() || stagedUploads.length > 0) {
       return;
@@ -1730,7 +1741,7 @@ export function App() {
   }
 
   async function updateComposerDraft(value: string) {
-    const roomId = snapshot?.state.timeline.room_id;
+    const roomId = snapshot?.state.ui.timeline.room_id;
     setComposerMentions((mentions) => pruneMentionIntentForDraft(mentions, value));
     if (!roomId) {
       return;
@@ -1743,12 +1754,12 @@ export function App() {
   }
 
   async function stageUploadFiles(files: File[]): Promise<void> {
-    const roomId = snapshot?.state.timeline.room_id;
+    const roomId = snapshot?.state.ui.timeline.room_id;
     if (!roomId || files.length === 0) {
       return;
     }
     const startPosition = stagedUploads.length;
-    const mediaSettings = snapshot.state.settings.values.media;
+    const mediaSettings = snapshot.state.domain.settings.values.media;
     const existingItems: UploadStagingRequestItem[] = stagedUploads.map((item) => ({
       stagedId: item.staged_id,
       position: item.position,
@@ -1796,7 +1807,7 @@ export function App() {
   }
 
   async function clearUploadStaging(): Promise<void> {
-    const roomId = snapshot?.state.timeline.room_id;
+    const roomId = snapshot?.state.ui.timeline.room_id;
     if (!roomId) {
       return;
     }
@@ -1809,12 +1820,12 @@ export function App() {
     caption = "",
     compressionChoice?: StagedUploadCompressionChoice
   ): Promise<boolean> {
-    const roomId = snapshot?.state.timeline.room_id;
+    const roomId = snapshot?.state.ui.timeline.room_id;
     if (!roomId || !isTauriRuntime()) {
       return false;
     }
 
-    const mediaSettings = snapshot.state.settings.values.media;
+    const mediaSettings = snapshot.state.domain.settings.values.media;
     const prepared = await prepareMediaUpload(
       file,
       forcedUploadMode(compressionChoice, mediaSettings.image_upload_compression),
@@ -1858,7 +1869,7 @@ export function App() {
       if (choice !== "cancel" && saveDefault && snapshot) {
         await updateSettings({
           media: {
-            ...snapshot.state.settings.values.media,
+            ...snapshot.state.domain.settings.values.media,
             image_upload_compression: choice === "Compressed" ? "always" : "never"
           }
         });
@@ -1974,7 +1985,7 @@ export function App() {
   }
 
   function hasActiveFocusedContext(): boolean {
-    const focusedContext = snapshot?.state.focused_context;
+    const focusedContext = snapshot?.state.ui.focused_context;
     return focusedContext?.kind === "opening" || focusedContext?.kind === "open";
   }
 
@@ -2068,7 +2079,7 @@ export function App() {
           void api.removeRoomTag(target.roomId, "lowPriority").then(setSnapshot);
           return;
         case "markRoomAsRead": {
-          const eventId = snapshot?.state.live_signals.rooms[target.roomId]?.fully_read_event_id ?? "";
+          const eventId = snapshot?.state.domain.live_signals.rooms[target.roomId]?.fully_read_event_id ?? "";
           void api.markRoomAsRead(target.roomId, eventId).then(setSnapshot);
           return;
         }
@@ -2150,7 +2161,7 @@ export function App() {
     return <div className="boot-screen">{t("app.title")}</div>;
   }
 
-  const sessionKind = snapshot.state.session.kind;
+  const sessionKind = snapshot.state.domain.session.kind;
   const recoveryRequired = sessionKind === "needsRecovery" || sessionKind === "recovering";
 
   if (sessionKind === "restoring" || sessionKind === "loggingOut") {
@@ -2158,8 +2169,8 @@ export function App() {
   }
 
   setActiveLocaleProfile(
-    snapshot.state.locale_profile.catalog_locale,
-    snapshot.state.locale_profile.pseudo_locale
+    snapshot.state.domain.locale_profile.catalog_locale,
+    snapshot.state.domain.locale_profile.pseudo_locale
   );
 
   if (sessionKind !== "ready" && !recoveryRequired) {
@@ -2182,13 +2193,13 @@ export function App() {
     );
   }
 
-  const activeRoom = snapshot.state.rooms.find(
-    (room) => room.room_id === snapshot.state.navigation.active_room_id
+  const activeRoom = snapshot.state.domain.rooms.find(
+    (room) => room.room_id === snapshot.state.ui.navigation.active_room_id
   );
-  const activeSpace = snapshot.state.spaces.find(
-    (space) => space.space_id === snapshot.state.navigation.active_space_id
+  const activeSpace = snapshot.state.domain.spaces.find(
+    (space) => space.space_id === snapshot.state.ui.navigation.active_space_id
   );
-  const searchResults = snapshot.state.search.kind === "results" ? snapshot.state.search.results : [];
+  const searchResults = snapshot.state.domain.search.kind === "results" ? snapshot.state.domain.search.results : [];
   const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const rightPanelOpen = effectiveRightPanelMode !== "closed";
   const appGridStyle = {
@@ -2221,7 +2232,7 @@ export function App() {
         searchInputRef={searchInputRef}
         searchQuery={searchQuery}
         searchScope={searchScope}
-        sync={snapshot.state.sync}
+        sync={snapshot.state.domain.sync}
         onOpenKeyboardSettings={() => {
           void setRightPanelModeClosingFocusedContext("keyboardSettings");
         }}
@@ -2250,7 +2261,7 @@ export function App() {
           onSelectSpace={selectSpace}
         />
         <Sidebar
-          activeRoomId={snapshot.state.navigation.active_room_id}
+          activeRoomId={snapshot.state.ui.navigation.active_room_id}
           activeView={primaryView}
           snapshot={snapshot}
           onCreateRoom={() => openCreateDialog("room")}
@@ -2269,7 +2280,7 @@ export function App() {
             void setRightPanelModeClosingFocusedContext("spaceInfo");
           }}
           onOpenThreads={() => {
-            const roomId = snapshot.state.navigation.active_room_id;
+            const roomId = snapshot.state.ui.navigation.active_room_id;
             if (roomId) {
               void openThreadsListPanel(roomId);
             }
@@ -2285,7 +2296,7 @@ export function App() {
         />
         {primaryView === "activity" ? (
           <ActivityPane
-            activity={snapshot.state.activity}
+            activity={snapshot.state.domain.activity}
             onClose={() => {
               void closeActivityView();
             }}
@@ -2331,7 +2342,7 @@ export function App() {
           <TimelinePane
             activeRoomName={activeRoom?.display_label ?? t("room.noRoomSelected")}
             composerDraft={composerDraft}
-            composerMode={composerModeProp(snapshot.state.timeline.composer.mode)}
+            composerMode={composerModeProp(snapshot.state.ui.timeline.composer.mode)}
             mentionIntent={composerMentions}
             resolveComposerKeyAction={resolveComposerKeyAction}
             searchQuery={searchQuery}
@@ -2398,7 +2409,7 @@ export function App() {
               void setRightPanelModeClosingFocusedContext("roomInfo");
             }}
             onOpenThreadsList={() => {
-              const roomId = snapshot.state.navigation.active_room_id;
+              const roomId = snapshot.state.ui.navigation.active_room_id;
               if (roomId) {
                 void openThreadsListPanel(roomId);
               }
@@ -2593,7 +2604,7 @@ export function App() {
       ) : null}
       {createDialog ? (
         <CreateEntityDialog
-          isBusy={isBusy || snapshot.state.basic_operation.kind !== "idle"}
+          isBusy={isBusy || snapshot.state.ui.basic_operation.kind !== "idle"}
           kind={createDialog}
           value={createDraftName}
           onCancel={closeCreateDialog}

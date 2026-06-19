@@ -218,7 +218,7 @@ impl std::fmt::Debug for SearchActorMessage {
                 .finish(),
             Self::StartHistoryCrawl {
                 request_id,
-                room_id,
+                room_id: _,
                 settings,
             } => f
                 .debug_struct("SearchActorMessage::StartHistoryCrawl")
@@ -226,7 +226,7 @@ impl std::fmt::Debug for SearchActorMessage {
                 .field("room_id", &"RoomId(..)")
                 .field("settings", settings)
                 .finish(),
-            Self::StopHistoryCrawl { request_id, room_id } => f
+            Self::StopHistoryCrawl { request_id, room_id: _ } => f
                 .debug_struct("SearchActorMessage::StopHistoryCrawl")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
@@ -335,12 +335,6 @@ impl SearchActorHandle {
     /// The `TimelineManagerActor` holds this sender and forwards diffs here.
     pub fn index_sender(&self) -> mpsc::Sender<SearchIndexMessage> {
         self.index_tx.clone()
-    }
-
-    /// Return a cloned actor-message sender so crawler tasks can notify the
-    /// actor when they finish (via `SearchActorMessage::CrawlFinished`).
-    pub(crate) fn msg_sender(&self) -> mpsc::Sender<SearchActorMessage> {
-        self.tx.clone()
     }
 }
 

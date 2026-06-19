@@ -111,8 +111,8 @@ export function ContextualRightPanel({
   onThreadComposerDraftChange,
   onThreadReplySend
 }: {
-  activeRoom: DesktopSnapshot["state"]["rooms"][number] | null;
-  activeSpace: DesktopSnapshot["state"]["spaces"][number] | null;
+  activeRoom: DesktopSnapshot["state"]["domain"]["rooms"][number] | null;
+  activeSpace: DesktopSnapshot["state"]["domain"]["spaces"][number] | null;
   activeSpaceName: string;
   isRecoveryBusy: boolean;
   mode: RightPanelMode;
@@ -193,7 +193,7 @@ export function ContextualRightPanel({
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
   onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
 }) {
-  const mediaDownloads = snapshot.state.timeline.media_downloads ?? {};
+  const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
 
   if (mode === "closed") {
     return <aside className="thread-pane" aria-label={t("panel.context")} />;
@@ -220,8 +220,8 @@ export function ContextualRightPanel({
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("panel.keyboard")} onClose={onClosePanel} />
         <KeyboardSettingsPanel
-          labelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.locale_profile)}
-          settings={snapshot.state.settings}
+          labelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.domain.locale_profile)}
+          settings={snapshot.state.domain.settings}
           onUpdateSettings={onUpdateSettings}
         />
       </aside>
@@ -234,14 +234,14 @@ export function ContextualRightPanel({
         <PanelHeader title={t("panel.userSettings")} onClose={onClosePanel} />
         <UserSettingsPanel
           currentSession={currentSavedSession(snapshot)}
-          e2eeTrust={snapshot.state.e2ee_trust}
-          localEncryption={snapshot.state.local_encryption}
-          keyboardLabelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.locale_profile)}
-          platform={snapshot.state.locale_profile.platform}
-          profile={snapshot.state.profile}
+          e2eeTrust={snapshot.state.domain.e2ee_trust}
+          localEncryption={snapshot.state.domain.local_encryption}
+          keyboardLabelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.domain.locale_profile)}
+          platform={snapshot.state.domain.locale_profile.platform}
+          profile={snapshot.state.domain.profile}
           savedSessions={savedSessions}
-          searchCrawlerState={snapshot.state.search_crawler}
-          settings={snapshot.state.settings}
+          searchCrawlerState={snapshot.state.domain.search_crawler}
+          settings={snapshot.state.domain.settings}
           onAcceptVerification={onAcceptVerification}
           onBootstrapCrossSigning={onBootstrapCrossSigning}
           onCancelVerification={onCancelVerification}
@@ -262,9 +262,9 @@ export function ContextualRightPanel({
           onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
           onUpdateSettings={onUpdateSettings}
           onSwitchAccount={onSwitchAccount}
-          deviceSessions={snapshot.state.device_sessions}
-          accountManagement={snapshot.state.account_management}
-          accountManagementCapabilities={snapshot.state.account_management_capabilities}
+          deviceSessions={snapshot.state.domain.device_sessions}
+          accountManagement={snapshot.state.domain.account_management}
+          accountManagementCapabilities={snapshot.state.domain.account_management_capabilities}
           onQueryDevices={onQueryDevices ?? (() => undefined)}
           onRenameDevice={onRenameDevice ?? (() => undefined)}
           onDeleteDevices={onDeleteDevices ?? (() => undefined)}
@@ -276,7 +276,7 @@ export function ContextualRightPanel({
           onSubmitAccountManagementUia={onSubmitAccountManagementUia ?? (() => undefined)}
           onStartCrawlRoom={onStartCrawlRoom}
           onStopCrawlRoom={onStopCrawlRoom}
-          rooms={snapshot.state.rooms}
+          rooms={snapshot.state.domain.rooms}
         />
       </aside>
     );
@@ -287,16 +287,16 @@ export function ContextualRightPanel({
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("panel.roomInfo")} onClose={onClosePanel} />
         <RoomInfoPanel
-          currentUserId={snapshot.state.session.user_id ?? null}
-          ignoredUserIds={snapshot.state.profile.ignored_user_ids}
+          currentUserId={snapshot.state.domain.session.user_id ?? null}
+          ignoredUserIds={snapshot.state.domain.profile.ignored_user_ids}
           room={activeRoom}
-          roomManagement={snapshot.state.room_management}
+          roomManagement={snapshot.state.domain.room_management}
           roomNotificationSettings={
-            activeRoom ? snapshot.state.room_notification_settings[activeRoom.room_id] : undefined
+            activeRoom ? snapshot.state.domain.room_notification_settings[activeRoom.room_id] : undefined
           }
-          appSettings={snapshot.state.settings}
-          linkPreviewSettings={snapshot.state.link_preview_settings}
-          spaces={snapshot.state.spaces}
+          appSettings={snapshot.state.domain.settings}
+          linkPreviewSettings={snapshot.state.domain.link_preview_settings}
+          spaces={snapshot.state.domain.spaces}
           onInvitePeople={
             activeRoom
               ? () =>
@@ -333,8 +333,8 @@ export function ContextualRightPanel({
         <PanelHeader title={t("panel.spaceInfo")} onClose={onClosePanel} />
         <SpaceInfoPanel
           fallbackName={activeSpaceName}
-          roomManagement={snapshot.state.room_management}
-          rooms={snapshot.state.rooms}
+          roomManagement={snapshot.state.domain.room_management}
+          rooms={snapshot.state.domain.rooms}
           space={activeSpace}
           onInvitePeople={
             activeSpace
@@ -365,7 +365,7 @@ export function ContextualRightPanel({
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("files.title")} onClose={onClosePanel} />
         <FilesView
-          filesView={snapshot.state.files_view}
+          filesView={snapshot.state.ui.files_view}
           onChangeFilterSort={onRefreshFilesView}
         />
       </aside>
@@ -377,7 +377,7 @@ export function ContextualRightPanel({
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("threads.title")} onClose={onClosePanel} />
         <ThreadsListView
-          threadsList={snapshot.state.threads_list}
+          threadsList={snapshot.state.ui.threads_list}
           roomId={activeRoom?.room_id ?? null}
           onClose={onClosePanel}
           onOpenThread={onOpenThread}
@@ -388,8 +388,8 @@ export function ContextualRightPanel({
   }
 
   if (mode === "search" || mode === "focusedContext") {
-    const focusedContext = snapshot.state.focused_context;
-    const currentUserId = snapshot.state.session.user_id ?? null;
+    const focusedContext = snapshot.state.ui.focused_context;
+    const currentUserId = snapshot.state.domain.session.user_id ?? null;
     const focusedTimelineKeyValue =
       currentUserId &&
       timelineTransport &&
@@ -425,13 +425,13 @@ export function ContextualRightPanel({
               suppressPaginationUi={true}
               onReply={onReply}
               resolveComposerKeyAction={onResolveComposerKeyAction}
-              liveSignals={snapshot.state.live_signals}
-              profileUsers={snapshot.state.profile.users}
+              liveSignals={snapshot.state.domain.live_signals}
+              profileUsers={snapshot.state.domain.profile.users}
               pinnedEventIds={focusedPinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
               onSetLocalUserAlias={onSetLocalUserAlias}
-              autoLoadOlderMessages={snapshot.state.settings.values.timeline.auto_load_older_messages}
-              codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
+              autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
+              codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
             />
@@ -441,7 +441,7 @@ export function ContextualRightPanel({
           <SearchResults
             query={searchQuery}
             results={searchResults}
-            rooms={snapshot.state.rooms}
+            rooms={snapshot.state.domain.rooms}
             onResultSelect={onResultSelect}
           />
         ) : null}
@@ -449,12 +449,12 @@ export function ContextualRightPanel({
     );
   }
 
-  const threadState = snapshot.state.thread;
+  const threadState = snapshot.state.ui.thread;
   if (threadState.kind !== "opening" && threadState.kind !== "open") {
     return <aside className="thread-pane" aria-label={t("panel.context")} />;
   }
 
-  const currentUserId = snapshot.state.session.user_id ?? null;
+  const currentUserId = snapshot.state.domain.session.user_id ?? null;
   const threadRoomId = threadState.room_id;
   const rootEventId = threadState.root_event_id;
   const threadComposer = threadState.kind === "open" ? threadState.composer : undefined;
@@ -489,13 +489,13 @@ export function ContextualRightPanel({
             onReply={onReply}
             onOpenThread={() => undefined}
             resolveComposerKeyAction={onResolveComposerKeyAction}
-            liveSignals={snapshot.state.live_signals}
-            profileUsers={snapshot.state.profile.users}
+            liveSignals={snapshot.state.domain.live_signals}
+            profileUsers={snapshot.state.domain.profile.users}
             pinnedEventIds={threadPinnedEventIds}
             forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
             onSetLocalUserAlias={onSetLocalUserAlias}
-            autoLoadOlderMessages={snapshot.state.settings.values.timeline.auto_load_older_messages}
-            codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
+            autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
+            codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
             searchQuery={searchQuery}
             mediaDownloads={mediaDownloads}
           />
@@ -510,8 +510,8 @@ export function ContextualRightPanel({
                 onEditMessage={() => undefined}
                 onOpenThread={() => undefined}
                 onRedactMessage={() => undefined}
-                profileUsers={snapshot.state.profile.users}
-                isIgnored={snapshot.state.profile.ignored_user_ids.includes(reply.sender)}
+                profileUsers={snapshot.state.domain.profile.users}
+                isIgnored={snapshot.state.domain.profile.ignored_user_ids.includes(reply.sender)}
               />
             ))}
           </div>
