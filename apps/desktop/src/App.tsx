@@ -655,8 +655,9 @@ function qaSendSmokeMessage(): string | null {
 
 export function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
-  // #87 Phase 4 IPC contract guard: fail loudly on a stale flat (v1) snapshot or a
-  // mismatched Rust/TS build instead of silently reading `undefined` domain/ui sections.
+  // #87 Phase 4 IPC contract guard (diagnostics): log the precise versions on a stale
+  // flat (v1) snapshot or a mismatched Rust/TS build. The fail-closed enforcement is the
+  // render gate below (we refuse to render the normal UI against an incompatible shape).
   useEffect(() => {
     if (snapshot && snapshot.state.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
       console.error(
@@ -2159,6 +2160,22 @@ export function App() {
 
   if (!snapshot) {
     return <div className="boot-screen">{t("app.title")}</div>;
+  }
+
+  // #87 Phase 4 IPC contract guard (fail-closed): a stale flat (v1) snapshot or a
+  // mismatched Rust/TS build has an incompatible shape. Rendering the normal UI from here
+  // would read `undefined` domain/ui sections or silently misproject, so we refuse the
+  // snapshot and show an explicit recovery screen instead. Precise versions are logged by
+  // the diagnostics effect above.
+  if (snapshot.state.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
+    return (
+      <div className="boot-screen" role="alert">
+        <div className="boot-screen__notice">
+          <span>{t("app.versionMismatch.title")}</span>
+          <span className="boot-screen__notice-detail">{t("app.versionMismatch.detail")}</span>
+        </div>
+      </div>
+    );
   }
 
   const sessionKind = snapshot.state.domain.session.kind;

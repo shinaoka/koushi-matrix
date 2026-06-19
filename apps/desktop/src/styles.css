@@ -240,6 +240,19 @@ button {
   font-weight: 800;
 }
 
+.boot-screen__notice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-inline-size: 32rem;
+  padding-inline: 1.5rem;
+  text-align: center;
+}
+
+.boot-screen__notice-detail {
+  font-weight: 400;
+}
+
 .auth-screen {
   display: grid;
   place-items: center;
