@@ -1,4 +1,4 @@
-use matrix_desktop_state::state::compute_room_list_projection;
+use matrix_desktop_state::compute_room_list_projection;
 use matrix_desktop_state::{
     AccountManagementOperation, AccountManagementState, AppAction, AppEffect, AppState,
     AuthDiscoveryState, AuthFailureKind, DelegatedAuthLinks, DeviceSessionListState,

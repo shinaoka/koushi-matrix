@@ -1256,14 +1256,12 @@ mod tests {
         let key_id = make_key_id();
         let actor = file_store_actor(&data_dir, &cred_dir);
         let mut drafts = ComposerDraftStore::default();
-        let oversized =
-            "x".repeat(matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES + 64);
+        let oversized = "x".repeat(matrix_desktop_state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES + 64);
 
-        for index in 0..(matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT + 8) {
+        for index in 0..(matrix_desktop_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT + 8) {
             drafts.set_room_draft(format!("!room-{index}:test.example.com"), oversized.clone());
         }
-        for index in 0..(matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT + 8)
-        {
+        for index in 0..(matrix_desktop_state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT + 8) {
             drafts.set_thread_draft(
                 "!thread-room:test.example.com".to_owned(),
                 format!("$root-{index}"),
@@ -1279,28 +1277,27 @@ mod tests {
             .expect("load bounded drafts");
 
         assert!(
-            loaded.rooms.len()
-                <= matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT
+            loaded.rooms.len() <= matrix_desktop_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT
         );
         assert!(
-            loaded.rooms.values().all(|draft| draft.len()
-                <= matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES)
+            loaded.rooms.values().all(
+                |draft| draft.len() <= matrix_desktop_state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES
+            )
         );
         let thread_count = loaded
             .threads
             .values()
             .map(std::collections::BTreeMap::len)
             .sum::<usize>();
-        assert!(
-            thread_count <= matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT
-        );
+        assert!(thread_count <= matrix_desktop_state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT);
         assert!(
             loaded
                 .threads
                 .values()
                 .flat_map(|room_threads| room_threads.values())
-                .all(|draft| draft.len()
-                    <= matrix_desktop_state::state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES)
+                .all(
+                    |draft| draft.len() <= matrix_desktop_state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES
+                )
         );
     }
 }
