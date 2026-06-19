@@ -15,7 +15,25 @@ export interface SavedSessionInfo {
   device_id: string;
 }
 
+/**
+ * IPC snapshot contract version. Must match `dto.rs`'s `SNAPSHOT_SCHEMA_VERSION`.
+ * Bumped to 2 by #87 Phase 4 (domain/ui sectioning).
+ */
+export const SNAPSHOT_SCHEMA_VERSION = 2;
+
+/**
+ * Snapshot state. #87 Phase 4 sectioned this into domain (Matrix/product, Rust-owned,
+ * mobile-reusable) and ui (desktop presentation/view/navigation). `schema_version` is the
+ * IPC contract version (2 = sectioned); the App boundary asserts it so a stale flat (v1)
+ * snapshot or a mismatched build fails loudly.
+ */
 export interface AppState {
+  schema_version: number;
+  domain: AppDomainState;
+  ui: AppUiState;
+}
+
+export interface AppDomainState {
   session: SessionState;
   auth: AuthDiscoveryState;
   device_sessions: DeviceSessionListState;
@@ -30,31 +48,34 @@ export interface AppState {
   profile: ProfileState;
   sync: SyncState;
   sync_mode: SyncMode;
-  navigation: NavigationState;
   spaces: SpaceSummary[];
   rooms: RoomSummary[];
   invites: InvitePreview[];
-  room_list: RoomListProjection;
   room_notification_settings: Record<string, RoomNotificationSettings>;
   room_interactions: Record<string, RoomInteractionState>;
   directory: DirectoryState;
   room_management: RoomManagementState;
   activity: ActivityState;
-  timeline: TimelinePaneState;
-  thread: ThreadPaneState;
   thread_attention: ThreadAttentionState;
-  threads_list: ThreadsListState;
-  focused_context: FocusedContextState;
   search: SearchState;
   search_crawler: SearchCrawlerState;
-  files_view: FilesViewState;
-  errors: AppError[];
-  basic_operation: BasicOperationState;
   live_signals: LiveSignalsState;
   e2ee_trust: E2eeTrustState;
   local_encryption: LocalEncryptionState;
   native_attention: NativeAttentionState;
   cjk_text_policy: CjkTextPolicyState;
+}
+
+export interface AppUiState {
+  navigation: NavigationState;
+  room_list: RoomListProjection;
+  timeline: TimelinePaneState;
+  thread: ThreadPaneState;
+  focused_context: FocusedContextState;
+  files_view: FilesViewState;
+  threads_list: ThreadsListState;
+  basic_operation: BasicOperationState;
+  errors: AppError[];
 }
 
 export interface SettingsState {

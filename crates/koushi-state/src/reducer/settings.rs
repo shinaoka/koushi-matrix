@@ -1,6 +1,6 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppError, AppState, RoomListFilter, SettingsPersistenceState, compute_room_list_projection},
+    state::{AppError, AppState, SettingsPersistenceState},
 };
 
 use super::is_session_ready;

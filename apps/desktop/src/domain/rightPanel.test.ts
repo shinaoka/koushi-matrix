@@ -91,173 +91,178 @@ describe("right panel context menu routing", () => {
 });
 
 function snapshotForPanelMode(
-  sessionKind: DesktopSnapshot["state"]["session"]["kind"],
+  sessionKind: DesktopSnapshot["state"]["domain"]["session"]["kind"],
   hasThread: boolean
 ): Pick<DesktopSnapshot, "state" | "thread"> {
   return {
     state: {
-      session: { kind: sessionKind },
-      auth: { kind: "unknown" },
-      settings: {
-        values: {
-          locale: { language_tag: null, text_direction: "auto" },
-          appearance: { theme: "system" },
-          typography: { font: "system", emoji: "system" },
-          keyboard: { composer_send_shortcut: "enter" },
-          notifications: {
-            desktop_notifications: true,
-            sound: true,
-            badges: true,
-            send_read_receipts: true,
-            send_typing_notifications: true
-          },
-          display: {
-            code_block_wrap: true,
-            hide_redacted: false,
-            url_previews_enabled: true,
-            encrypted_url_previews_enabled: false
-          },
-          media: {
-            image_upload_compression: "never",
-            image_upload_compression_policy: {
-              threshold_bytes: 1048576,
-              threshold_long_edge: 2560,
-              target_long_edge: 2048,
-              quality_percent: 82
+      schema_version: 2,
+      domain: {
+        session: { kind: sessionKind },
+        auth: { kind: "unknown" },
+        settings: {
+          values: {
+            locale: { language_tag: null, text_direction: "auto" },
+            appearance: { theme: "system" },
+            typography: { font: "system", emoji: "system" },
+            keyboard: { composer_send_shortcut: "enter" },
+            notifications: {
+              desktop_notifications: true,
+              sound: true,
+              badges: true,
+              send_read_receipts: true,
+              send_typing_notifications: true
+            },
+            display: {
+              code_block_wrap: true,
+              hide_redacted: false,
+              url_previews_enabled: true,
+              encrypted_url_previews_enabled: false
+            },
+            media: {
+              image_upload_compression: "never",
+              image_upload_compression_policy: {
+                threshold_bytes: 1048576,
+                threshold_long_edge: 2560,
+                target_long_edge: 2048,
+                quality_percent: 82
+              }
+            },
+            timeline: {
+              auto_load_older_messages: false
+            },
+            search_crawler: {
+              speed: "standard",
+              include_media_captions: true,
+              include_filenames: true
             }
           },
-          timeline: {
-            auto_load_older_messages: false
-          },
-          search_crawler: {
-            speed: "standard",
-            include_media_captions: true,
-            include_filenames: true
-          }
+          persistence: { kind: "idle" }
         },
-        persistence: { kind: "idle" }
-      },
-      link_preview_settings: { room_overrides: {} },
-      locale_profile: {
-        lang: "en",
-        dir: "ltr",
-        catalog_locale: "en",
-        pseudo_locale: "none",
-        platform: "linux",
-        modifier_labels: { primary: "Ctrl" }
-      },
-      typography_profile: {
-        font: "system",
-        emoji: "system",
-        platform: "linux",
-        font_asset: "systemFallback",
-        emoji_asset: "systemFallback"
-      },
-      profile: {
-        own: { display_name: null, avatar: null },
-        users: {},
-        local_aliases: {},
-        local_alias_update: { kind: "idle" },
-        ignored_user_ids: [],
-        ignored_user_update: { kind: "idle" },
-        update: { kind: "idle" }
-      },
-      sync: "stopped",
-      sync_mode: { kind: "unsupported" },
-      navigation: { active_space_id: null, active_room_id: null },
-      spaces: [],
-      rooms: [],
-      invites: [],
-      room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
-      room_interactions: {},
-      room_notification_settings: {},
-      device_sessions: { kind: "idle" },
-      account_management: { kind: "idle" },
-      account_management_capabilities: { change_password: { kind: "unknown" } },
-      soft_logout_reauth: { kind: "idle" },
-      qr_login: { kind: "idle" },
-      directory: { query: { kind: "closed" }, join: { kind: "idle" } },
-      room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
-      activity: { kind: "closed" },
-      timeline: {
-        room_id: null,
-        is_subscribed: false,
-        is_paginating_backwards: false,
-        composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
-        scheduled_send_capability: "unknown",
-        scheduled_sends: [],
-        staged_uploads: [],
-        media_gallery: [],
-        media_downloads: {}
-      },
-      thread: hasThread
-        ? { kind: "open", room_id: "!room:example", root_event_id: "$event" }
-        : { kind: "closed" },
-      thread_attention: hasThread
-        ? {
-            kind: "tracking",
-            room_id: "!room:example",
-            root_event_id: "$event",
-            notification_count: 0,
-            highlight_count: 0,
-            live_event_marker_count: 0
-          }
-        : { kind: "closed" },
-      focused_context: { kind: "closed" },
-      search: { kind: "closed" },
-      search_crawler: { rooms: {} },
-      files_view: { kind: "closed" },
-      threads_list: { kind: "closed" },
-      errors: [],
-      basic_operation: { kind: "idle" },
-      live_signals: { rooms: {}, presence: {} },
-      e2ee_trust: {
-        verification: { kind: "idle" },
-        cross_signing: { kind: "unknown" },
-        key_backup: { kind: "unknown" },
-        identity_reset: { kind: "idle" },
-        key_management: {
-          room_key_export: { kind: "idle" },
-          room_key_import: { kind: "idle" },
-          secure_backup_setup: { kind: "idle" },
-          passphrase_change: { kind: "idle" }
-        },
-        devices: []
-      },
-      local_encryption: { kind: "unknown" },
-      native_attention: {
-        summary: {
-          unread_count: 0,
-          highlight_count: 0,
-          badge_count: 0,
-          candidate: null,
-          capabilities: {
-            notifications: "unknown",
-            badge: "unknown",
-            overlay_icon: "unknown",
-            sound: "unknown",
-            tray: "unknown",
-            activation: "unknown"
-          }
-        },
-        dispatch: { kind: "idle" }
-      },
-      cjk_text_policy: {
-        japanese_catalog: {
+        link_preview_settings: { room_overrides: {} },
+        locale_profile: {
+          lang: "en",
+          dir: "ltr",
           catalog_locale: "en",
-          complete: true,
-          missing_message_ids: []
+          pseudo_locale: "none",
+          platform: "linux",
+          modifier_labels: { primary: "Ctrl" }
         },
-        normalization: {
-          form: "nfkc",
-          width_fold: true,
-          kana_fold: true
+        typography_profile: {
+          font: "system",
+          emoji: "system",
+          platform: "linux",
+          font_asset: "systemFallback",
+          emoji_asset: "systemFallback"
         },
-        collation: {
-          locale: "ja",
-          numeric: true,
-          case_first: null
+        profile: {
+          own: { display_name: null, avatar: null },
+          users: {},
+          local_aliases: {},
+          local_alias_update: { kind: "idle" },
+          ignored_user_ids: [],
+          ignored_user_update: { kind: "idle" },
+          update: { kind: "idle" }
+        },
+        sync: "stopped",
+        sync_mode: { kind: "unsupported" },
+        spaces: [],
+        rooms: [],
+        invites: [],
+        room_interactions: {},
+        room_notification_settings: {},
+        device_sessions: { kind: "idle" },
+        account_management: { kind: "idle" },
+        account_management_capabilities: { change_password: { kind: "unknown" } },
+        soft_logout_reauth: { kind: "idle" },
+        qr_login: { kind: "idle" },
+        directory: { query: { kind: "closed" }, join: { kind: "idle" } },
+        room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
+        activity: { kind: "closed" },
+        thread_attention: hasThread
+          ? {
+              kind: "tracking",
+              room_id: "!room:example",
+              root_event_id: "$event",
+              notification_count: 0,
+              highlight_count: 0,
+              live_event_marker_count: 0
+            }
+          : { kind: "closed" },
+        search: { kind: "closed" },
+        search_crawler: { rooms: {} },
+        live_signals: { rooms: {}, presence: {} },
+        e2ee_trust: {
+          verification: { kind: "idle" },
+          cross_signing: { kind: "unknown" },
+          key_backup: { kind: "unknown" },
+          identity_reset: { kind: "idle" },
+          key_management: {
+            room_key_export: { kind: "idle" },
+            room_key_import: { kind: "idle" },
+            secure_backup_setup: { kind: "idle" },
+            passphrase_change: { kind: "idle" }
+          },
+          devices: []
+        },
+        local_encryption: { kind: "unknown" },
+        native_attention: {
+          summary: {
+            unread_count: 0,
+            highlight_count: 0,
+            badge_count: 0,
+            candidate: null,
+            capabilities: {
+              notifications: "unknown",
+              badge: "unknown",
+              overlay_icon: "unknown",
+              sound: "unknown",
+              tray: "unknown",
+              activation: "unknown"
+            }
+          },
+          dispatch: { kind: "idle" }
+        },
+        cjk_text_policy: {
+          japanese_catalog: {
+            catalog_locale: "en",
+            complete: true,
+            missing_message_ids: []
+          },
+          normalization: {
+            form: "nfkc",
+            width_fold: true,
+            kana_fold: true
+          },
+          collation: {
+            locale: "ja",
+            numeric: true,
+            case_first: null
+          }
         }
+      },
+      ui: {
+        navigation: { active_space_id: null, active_room_id: null },
+        room_list: { active_filter: { kind: "rooms" }, sort: { kind: "activity" }, items: [] },
+        timeline: {
+          room_id: null,
+          is_subscribed: false,
+          is_paginating_backwards: false,
+          composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
+          scheduled_send_capability: "unknown",
+          scheduled_sends: [],
+          staged_uploads: [],
+          media_gallery: [],
+          media_downloads: {}
+        },
+        thread: hasThread
+          ? { kind: "open", room_id: "!room:example", root_event_id: "$event" }
+          : { kind: "closed" },
+        focused_context: { kind: "closed" },
+        files_view: { kind: "closed" },
+        threads_list: { kind: "closed" },
+        errors: [],
+        basic_operation: { kind: "idle" }
       }
     },
     // Production always sends the legacy top-level thread as null; the open/closed

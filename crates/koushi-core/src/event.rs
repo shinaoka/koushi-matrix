@@ -1699,7 +1699,7 @@ impl fmt::Debug for SearchEvent {
                 .field("event_id", &"EventId(..)")
                 .finish(),
             SearchEvent::HistoryCrawlProgress {
-                room_id,
+                room_id: _,
                 processed,
                 indexed,
             } => formatter
@@ -1708,7 +1708,7 @@ impl fmt::Debug for SearchEvent {
                 .field("processed", processed)
                 .field("indexed", indexed)
                 .finish(),
-            SearchEvent::HistoryCrawlCompleted { room_id, indexed } => formatter
+            SearchEvent::HistoryCrawlCompleted { room_id: _, indexed } => formatter
                 .debug_struct("HistoryCrawlCompleted")
                 .field("room_id", &"RoomId(..)")
                 .field("indexed", indexed)

@@ -162,15 +162,15 @@ export function roomIsInScope(
 ): boolean {
   switch (scope) {
     case "currentRoom":
-      return snapshot.state.navigation.active_room_id === roomId;
+      return snapshot.state.ui.navigation.active_room_id === roomId;
     case "currentSpace": {
-      const activeSpace = snapshot.state.spaces.find(
-        (space) => space.space_id === snapshot.state.navigation.active_space_id
+      const activeSpace = snapshot.state.domain.spaces.find(
+        (space) => space.space_id === snapshot.state.ui.navigation.active_space_id
       );
       return Boolean(activeSpace?.child_room_ids.includes(roomId));
     }
     case "dms":
-      return snapshot.state.rooms.some((room) => room.room_id === roomId && room.is_dm);
+      return snapshot.state.domain.rooms.some((room) => room.room_id === roomId && room.is_dm);
     case "allRooms":
       return true;
   }

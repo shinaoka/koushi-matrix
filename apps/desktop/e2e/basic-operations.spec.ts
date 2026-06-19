@@ -157,24 +157,30 @@ async function gotoSignedOutAuth(page: Page): Promise<void> {
       ...snapshot,
       state: {
         ...snapshot.state,
-        session: { kind: "signedOut" },
-        auth: { kind: "unknown" },
-        sync: "stopped",
-        navigation: { active_space_id: null, active_room_id: null },
-        rooms: [],
-        spaces: [],
-        invites: [],
-        room_notification_settings: {},
-        room_interactions: {},
-        timeline: {
-          room_id: null,
-          is_subscribed: false,
-          is_paginating_backwards: false,
-          composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
-          scheduled_send_capability: "unknown",
-          scheduled_sends: [],
-          staged_uploads: [],
-          media_gallery: []
+        domain: {
+          ...snapshot.state.domain,
+          session: { kind: "signedOut" },
+          auth: { kind: "unknown" },
+          sync: "stopped",
+          rooms: [],
+          spaces: [],
+          invites: [],
+          room_notification_settings: {},
+          room_interactions: {}
+        },
+        ui: {
+          ...snapshot.state.ui,
+          navigation: { active_space_id: null, active_room_id: null },
+          timeline: {
+            room_id: null,
+            is_subscribed: false,
+            is_paginating_backwards: false,
+            composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
+            scheduled_send_capability: "unknown",
+            scheduled_sends: [],
+            staged_uploads: [],
+            media_gallery: []
+          }
         }
       },
       sidebar: {
@@ -207,13 +213,16 @@ async function setTimelineAutoLoadOlderMessages(page: Page, enabled: boolean): P
       ...snapshot,
       state: {
         ...snapshot.state,
-        settings: {
-          ...snapshot.state.settings,
-          values: {
-            ...snapshot.state.settings.values,
-            timeline: {
-              ...snapshot.state.settings.values.timeline,
-              auto_load_older_messages: value
+        domain: {
+          ...snapshot.state.domain,
+          settings: {
+            ...snapshot.state.domain.settings,
+            values: {
+              ...snapshot.state.domain.settings.values,
+              timeline: {
+                ...snapshot.state.domain.settings.values.timeline,
+                auto_load_older_messages: value
+              }
             }
           }
         }
@@ -382,14 +391,20 @@ test("space rail separates system buttons, reorders Spaces, and leaves a Space h
       ...snapshot,
       state: {
         ...snapshot.state,
-        navigation: {
-          ...snapshot.state.navigation,
-          space_order: [
-            ...snapshot.state.spaces.map((space) => space.space_id),
-            secondSpace.space_id
-          ]
+        ui: {
+          ...snapshot.state.ui,
+          navigation: {
+            ...snapshot.state.ui.navigation,
+            space_order: [
+              ...snapshot.state.domain.spaces.map((space) => space.space_id),
+              secondSpace.space_id
+            ]
+          }
         },
-        spaces: [...snapshot.state.spaces, secondSpace]
+        domain: {
+          ...snapshot.state.domain,
+          spaces: [...snapshot.state.domain.spaces, secondSpace]
+        }
       },
       sidebar: {
         ...snapshot.sidebar,
@@ -480,7 +495,10 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
       ...base,
       state: {
         ...base.state,
-        invites: [invite]
+        domain: {
+          ...base.state.domain,
+          invites: [invite]
+        }
       }
     });
     window.__harness.setCommandResponse("accept_invite", () => {
@@ -500,16 +518,22 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
         ...snapshot,
         state: {
           ...snapshot.state,
-          rooms: [...snapshot.state.rooms, joinedRoom],
-          invites: [],
-          navigation: {
-            ...snapshot.state.navigation,
-            active_room_id: joinedRoom.room_id
+          domain: {
+            ...snapshot.state.domain,
+            rooms: [...snapshot.state.domain.rooms, joinedRoom],
+            invites: []
           },
-          timeline: {
-            ...snapshot.state.timeline,
-            room_id: joinedRoom.room_id,
-            is_subscribed: true
+          ui: {
+            ...snapshot.state.ui,
+            navigation: {
+              ...snapshot.state.ui.navigation,
+              active_room_id: joinedRoom.room_id
+            },
+            timeline: {
+              ...snapshot.state.ui.timeline,
+              room_id: joinedRoom.room_id,
+              is_subscribed: true
+            }
           }
         },
         sidebar: {
@@ -547,15 +571,21 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
         ...snapshot,
         state: {
           ...snapshot.state,
-          rooms: [...snapshot.state.rooms, dmRoom],
-          navigation: {
-            ...snapshot.state.navigation,
-            active_room_id: dmRoom.room_id
+          domain: {
+            ...snapshot.state.domain,
+            rooms: [...snapshot.state.domain.rooms, dmRoom]
           },
-          timeline: {
-            ...snapshot.state.timeline,
-            room_id: dmRoom.room_id,
-            is_subscribed: true
+          ui: {
+            ...snapshot.state.ui,
+            navigation: {
+              ...snapshot.state.ui.navigation,
+              active_room_id: dmRoom.room_id
+            },
+            timeline: {
+              ...snapshot.state.ui.timeline,
+              room_id: dmRoom.room_id,
+              is_subscribed: true
+            }
           }
         },
         sidebar: {
@@ -582,17 +612,23 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
         ...snapshot,
         state: {
           ...snapshot.state,
-          navigation: {
-            ...snapshot.state.navigation,
-            active_room_id: String(roomId)
+          ui: {
+            ...snapshot.state.ui,
+            navigation: {
+              ...snapshot.state.ui.navigation,
+              active_room_id: String(roomId)
+            },
+            timeline: {
+              ...snapshot.state.ui.timeline,
+              room_id: String(roomId),
+              is_subscribed: true
+            },
+            thread: { kind: "closed" }
           },
-          timeline: {
-            ...snapshot.state.timeline,
-            room_id: String(roomId),
-            is_subscribed: true
-          },
-          thread: { kind: "closed" },
-          thread_attention: { kind: "closed" }
+          domain: {
+            ...snapshot.state.domain,
+            thread_attention: { kind: "closed" }
+          }
         },
         thread: null
       };
@@ -714,27 +750,30 @@ test("Explore searches public rooms and joins only after Rust snapshot updates",
       ...snapshot,
       state: {
         ...snapshot.state,
-        directory: {
-          ...snapshot.state.directory,
-          query: {
-            kind: "results",
-            request_id: 44,
-            query,
-            rooms: [
-              {
-                room_id: "!public-result:example.invalid",
-                canonical_alias: "#public-result:example.invalid",
-                name: "Public Search Result",
-                topic: "Rust-owned public directory result",
-                avatar_url: null,
-                joined_members: 12,
-                world_readable: true,
-                guest_can_join: false
-              }
-            ],
-            next_batch: null
-          },
-          join: { kind: "idle" }
+        domain: {
+          ...snapshot.state.domain,
+          directory: {
+            ...snapshot.state.domain.directory,
+            query: {
+              kind: "results",
+              request_id: 44,
+              query,
+              rooms: [
+                {
+                  room_id: "!public-result:example.invalid",
+                  canonical_alias: "#public-result:example.invalid",
+                  name: "Public Search Result",
+                  topic: "Rust-owned public directory result",
+                  avatar_url: null,
+                  joined_members: 12,
+                  world_readable: true,
+                  guest_can_join: false
+                }
+              ],
+              next_batch: null
+            },
+            join: { kind: "idle" }
+          }
         }
       }
     });
@@ -785,10 +824,13 @@ test("Explore searches public rooms and joins only after Rust snapshot updates",
       ...snapshot,
       state: {
         ...snapshot.state,
-        rooms: [...snapshot.state.rooms, joinedRoom],
-        directory: {
-          ...snapshot.state.directory,
-          join: { kind: "idle" }
+        domain: {
+          ...snapshot.state.domain,
+          rooms: [...snapshot.state.domain.rooms, joinedRoom],
+          directory: {
+            ...snapshot.state.domain.directory,
+            join: { kind: "idle" }
+          }
         }
       },
       sidebar: {
@@ -869,12 +911,15 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
         ...snapshot,
         state: {
           ...snapshot.state,
-          activity: {
-            kind: "open",
-            active_tab: activeTab,
-            recent: { rows: recentRows, next_batch: "activity-page-2" },
-            unread: { rows: nextUnreadRows, next_batch: null },
-            mark_read: { kind: "idle" }
+          domain: {
+            ...snapshot.state.domain,
+            activity: {
+              kind: "open",
+              active_tab: activeTab,
+              recent: { rows: recentRows, next_batch: "activity-page-2" },
+              unread: { rows: nextUnreadRows, next_batch: null },
+              mark_read: { kind: "idle" }
+            }
           }
         }
       };
@@ -891,10 +936,13 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
         ...snapshot,
         state: {
           ...snapshot.state,
-          activity:
-            snapshot.state.activity.kind === "open"
-              ? { ...snapshot.state.activity, active_tab: tab }
-              : snapshot.state.activity
+          domain: {
+            ...snapshot.state.domain,
+            activity:
+              snapshot.state.domain.activity.kind === "open"
+                ? { ...snapshot.state.domain.activity, active_tab: tab }
+                : snapshot.state.domain.activity
+          }
         }
       };
       window.__harness.setSnapshot(next);
@@ -912,21 +960,27 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
         ...snapshot,
         state: {
           ...snapshot.state,
-          navigation: {
-            ...snapshot.state.navigation,
-            active_room_id: String(roomId)
+          ui: {
+            ...snapshot.state.ui,
+            navigation: {
+              ...snapshot.state.ui.navigation,
+              active_room_id: String(roomId)
+            },
+            timeline: {
+              ...snapshot.state.ui.timeline,
+              room_id: String(roomId),
+              is_subscribed: true
+            },
+            thread: { kind: "closed" },
+            focused_context: {
+              kind: "opening",
+              room_id: String(roomId),
+              event_id: String(eventId)
+            }
           },
-          timeline: {
-            ...snapshot.state.timeline,
-            room_id: String(roomId),
-            is_subscribed: true
-          },
-          thread: { kind: "closed" },
-          thread_attention: { kind: "closed" },
-          focused_context: {
-            kind: "opening",
-            room_id: String(roomId),
-            event_id: String(eventId)
+          domain: {
+            ...snapshot.state.domain,
+            thread_attention: { kind: "closed" }
           }
         }
       };
@@ -1000,20 +1054,23 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    if (snapshot.state.activity.kind !== "open") {
+    if (snapshot.state.domain.activity.kind !== "open") {
       throw new Error("expected open Activity snapshot");
     }
     window.__harness.setSnapshot({
       ...snapshot,
       state: {
         ...snapshot.state,
-        activity: {
-          ...snapshot.state.activity,
-          unread: {
-            ...snapshot.state.activity.unread,
-            rows: snapshot.state.activity.unread.rows.filter(
-              (row) => row.room_id !== "!room-alpha:example.invalid"
-            )
+        domain: {
+          ...snapshot.state.domain,
+          activity: {
+            ...snapshot.state.domain.activity,
+            unread: {
+              ...snapshot.state.domain.activity.unread,
+              rows: snapshot.state.domain.activity.unread.rows.filter(
+                (row) => row.room_id !== "!room-alpha:example.invalid"
+              )
+            }
           }
         }
       }
@@ -1033,16 +1090,19 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    if (snapshot.state.activity.kind !== "open") {
+    if (snapshot.state.domain.activity.kind !== "open") {
       throw new Error("expected open Activity snapshot");
     }
     window.__harness.setSnapshot({
       ...snapshot,
       state: {
         ...snapshot.state,
-        activity: {
-          ...snapshot.state.activity,
-          unread: { rows: [], next_batch: null }
+        domain: {
+          ...snapshot.state.domain,
+          activity: {
+            ...snapshot.state.domain.activity,
+            unread: { rows: [], next_batch: null }
+          }
         }
       }
     });
@@ -1062,35 +1122,38 @@ test("room management panel updates settings, roles, and members from Rust state
       ...snapshot,
       state: {
         ...snapshot.state,
-        room_management: {
-          selected_room_id: roomId,
-          settings: {
-            room_id: roomId,
-            name: "Harness Room",
-            topic: "Original managed topic",
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: false,
-              can_unban: false
+        domain: {
+          ...snapshot.state.domain,
+          room_management: {
+            selected_room_id: roomId,
+            settings: {
+              room_id: roomId,
+              name: "Harness Room",
+              topic: "Original managed topic",
+              avatar_url: null,
+              join_rule: "invite",
+              history_visibility: "shared",
+              permissions: {
+                can_edit_settings: true,
+                can_edit_roles: true,
+                can_kick: true,
+                can_ban: false,
+                can_unban: false
+              },
+              members: [
+                {
+                  user_id: "@target-member:example.invalid",
+                  display_name: "Target Member",
+                  display_label: "Target Member",
+                  original_display_label: "Target Member",
+                  avatar_url: null,
+                  power_level: 0,
+                  role: "user"
+                }
+              ]
             },
-            members: [
-              {
-                user_id: "@target-member:example.invalid",
-                display_name: "Target Member",
-                display_label: "Target Member",
-                original_display_label: "Target Member",
-                avatar_url: null,
-                power_level: 0,
-                role: "user"
-              }
-            ]
-          },
-          operation: { kind: "idle" }
+            operation: { kind: "idle" }
+          }
         }
       }
     });
@@ -1131,17 +1194,20 @@ test("room management panel updates settings, roles, and members from Rust state
 
   await page.evaluate((roomId) => {
     const snapshot = window.__harness.currentSnapshot();
-    const settings = snapshot.state.room_management.settings;
+    const settings = snapshot.state.domain.room_management.settings;
     window.__harness.setSnapshot({
       ...snapshot,
       state: {
         ...snapshot.state,
-        room_management: {
-          selected_room_id: roomId,
-          settings: settings
-            ? { ...settings, topic: "Updated managed topic" }
-            : settings,
-          operation: { kind: "idle" }
+        domain: {
+          ...snapshot.state.domain,
+          room_management: {
+            selected_room_id: roomId,
+            settings: settings
+              ? { ...settings, topic: "Updated managed topic" }
+              : settings,
+            operation: { kind: "idle" }
+          }
         }
       }
     });
@@ -1172,17 +1238,20 @@ test("room management panel updates settings, roles, and members from Rust state
 
   await page.evaluate((roomId) => {
     const snapshot = window.__harness.currentSnapshot();
-    const settings = snapshot.state.room_management.settings;
+    const settings = snapshot.state.domain.room_management.settings;
     window.__harness.setSnapshot({
       ...snapshot,
       state: {
         ...snapshot.state,
-        room_management: {
-          selected_room_id: roomId,
-          settings: settings
-            ? { ...settings, avatar_url: "mxc://example.invalid/managed-avatar" }
-            : settings,
-          operation: { kind: "idle" }
+        domain: {
+          ...snapshot.state.domain,
+          room_management: {
+            selected_room_id: roomId,
+            settings: settings
+              ? { ...settings, avatar_url: "mxc://example.invalid/managed-avatar" }
+              : settings,
+            operation: { kind: "idle" }
+          }
         }
       }
     });
@@ -1221,19 +1290,22 @@ test("room management panel updates settings, roles, and members from Rust state
       ...snapshot,
       state: {
         ...snapshot.state,
-        room_management: {
-          selected_room_id: snapshot.state.room_management.selected_room_id,
-          settings: snapshot.state.room_management.settings
-            ? {
-                ...snapshot.state.room_management.settings,
-                members: snapshot.state.room_management.settings.members.map((member) =>
-                  member.user_id === "@target-member:example.invalid"
-                    ? { ...member, power_level: 50, role: "moderator" }
-                    : member
-                )
-              }
-            : null,
-          operation: { kind: "idle" }
+        domain: {
+          ...snapshot.state.domain,
+          room_management: {
+            selected_room_id: snapshot.state.domain.room_management.selected_room_id,
+            settings: snapshot.state.domain.room_management.settings
+              ? {
+                  ...snapshot.state.domain.room_management.settings,
+                  members: snapshot.state.domain.room_management.settings.members.map((member) =>
+                    member.user_id === "@target-member:example.invalid"
+                      ? { ...member, power_level: 50, role: "moderator" }
+                      : member
+                  )
+                }
+              : null,
+            operation: { kind: "idle" }
+          }
         }
       }
     });
@@ -1263,15 +1335,18 @@ test("room management panel updates settings, roles, and members from Rust state
       ...snapshot,
       state: {
         ...snapshot.state,
-        room_management: {
-          selected_room_id: snapshot.state.room_management.selected_room_id,
-          settings: snapshot.state.room_management.settings
-            ? {
-                ...snapshot.state.room_management.settings,
-                members: []
-              }
-            : null,
-          operation: { kind: "idle" }
+        domain: {
+          ...snapshot.state.domain,
+          room_management: {
+            selected_room_id: snapshot.state.domain.room_management.selected_room_id,
+            settings: snapshot.state.domain.room_management.settings
+              ? {
+                  ...snapshot.state.domain.room_management.settings,
+                  members: []
+                }
+              : null,
+            operation: { kind: "idle" }
+          }
         }
       }
     });
@@ -1306,50 +1381,53 @@ test("local aliases dispatch typed account command and render Rust-projected lab
       ...snapshot,
       state: {
         ...snapshot.state,
-        profile: {
-          ...snapshot.state.profile,
-          users: {
-            ...snapshot.state.profile.users,
-            [targetUserId]: {
-              user_id: targetUserId,
-              display_name: "Target Member",
-              display_label: "Target Member",
-              original_display_label: "Target Member",
-              mention_search_terms: ["Target Member", targetUserId],
-              avatar: null
-            }
-          }
-        },
-        rooms: [...snapshot.state.rooms, dmRoom],
-        room_management: {
-          selected_room_id: roomId,
-          settings: {
-            room_id: roomId,
-            name: "Harness Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: false,
-              can_unban: false
-            },
-            members: [
-              {
+        domain: {
+          ...snapshot.state.domain,
+          profile: {
+            ...snapshot.state.domain.profile,
+            users: {
+              ...snapshot.state.domain.profile.users,
+              [targetUserId]: {
                 user_id: targetUserId,
                 display_name: "Target Member",
                 display_label: "Target Member",
                 original_display_label: "Target Member",
-                avatar_url: null,
-                power_level: 0,
-                role: "user"
+                mention_search_terms: ["Target Member", targetUserId],
+                avatar: null
               }
-            ]
+            }
           },
-          operation: { kind: "idle" }
+          rooms: [...snapshot.state.domain.rooms, dmRoom],
+          room_management: {
+            selected_room_id: roomId,
+            settings: {
+              room_id: roomId,
+              name: "Harness Room",
+              topic: null,
+              avatar_url: null,
+              join_rule: "invite",
+              history_visibility: "shared",
+              permissions: {
+                can_edit_settings: true,
+                can_edit_roles: true,
+                can_kick: true,
+                can_ban: false,
+                can_unban: false
+              },
+              members: [
+                {
+                  user_id: targetUserId,
+                  display_name: "Target Member",
+                  display_label: "Target Member",
+                  original_display_label: "Target Member",
+                  avatar_url: null,
+                  power_level: 0,
+                  role: "user"
+                }
+              ]
+            },
+            operation: { kind: "idle" }
+          }
         }
       },
       sidebar: {
@@ -1524,9 +1602,12 @@ test("room tag context menu dispatches typed commands and waits for Rust section
       ...snapshot,
       state: {
         ...snapshot.state,
-        rooms: snapshot.state.rooms.map((room) =>
-          room.room_id === roomId ? { ...room, tags } : room
-        )
+        domain: {
+          ...snapshot.state.domain,
+          rooms: snapshot.state.domain.rooms.map((room) =>
+            room.room_id === roomId ? { ...room, tags } : room
+          )
+        }
       },
       sidebar: {
         ...snapshot.sidebar,
@@ -1564,9 +1645,12 @@ test("room tag context menu dispatches typed commands and waits for Rust section
       ...snapshot,
       state: {
         ...snapshot.state,
-        rooms: snapshot.state.rooms.map((room) =>
-          room.room_id === roomId ? { ...room, tags } : room
-        )
+        domain: {
+          ...snapshot.state.domain,
+          rooms: snapshot.state.domain.rooms.map((room) =>
+            room.room_id === roomId ? { ...room, tags } : room
+          )
+        }
       },
       sidebar: {
         ...snapshot.sidebar,
@@ -1652,14 +1736,20 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
       ...snapshot,
       state: {
         ...snapshot.state,
-        rooms,
-        navigation: {
-          ...snapshot.state.navigation,
-          active_room_id: "!plain-room:example.invalid"
+        domain: {
+          ...snapshot.state.domain,
+          rooms
         },
-        timeline: {
-          ...snapshot.state.timeline,
-          room_id: "!plain-room:example.invalid"
+        ui: {
+          ...snapshot.state.ui,
+          navigation: {
+            ...snapshot.state.ui.navigation,
+            active_room_id: "!plain-room:example.invalid"
+          },
+          timeline: {
+            ...snapshot.state.ui.timeline,
+            room_id: "!plain-room:example.invalid"
+          }
         }
       },
       sidebar: {
@@ -1761,54 +1851,60 @@ test("notification attention snapshot drives room, space, thread, and click rout
       ...snapshot,
       state: {
         ...snapshot.state,
-        navigation: {
-          ...snapshot.state.navigation,
-          active_room_id: "!quiet-low:example.invalid",
-          active_space_id: "!attention-space:example.invalid"
-        },
-        rooms,
-        spaces: [
-          {
-            space_id: "!attention-space:example.invalid",
-            display_name: "Attention Space",
-            avatar: null,
-            child_room_ids: rooms.map((room) => room.room_id)
-          }
-        ],
-        timeline: {
-          ...snapshot.state.timeline,
-          room_id: "!quiet-low:example.invalid",
-          is_subscribed: true
-        },
-        thread_attention: {
-          kind: "tracking",
-          room_id: "!attention-room:example.invalid",
-          root_event_id: "$attention-thread:example.invalid",
-          notification_count: 2,
-          highlight_count: 1,
-          live_event_marker_count: 3
-        },
-        native_attention: {
-          summary: {
-            unread_count: 4,
-            highlight_count: 1,
-            badge_count: 4,
-            candidate: {
-              room_display_name: "Attention Room",
-              kind: "mention",
-              unread_count: 4,
-              highlight_count: 1
-            },
-            capabilities: {
-              notifications: "available",
-              badge: "available",
-              overlay_icon: "unavailable",
-              sound: "available",
-              tray: "available",
-              activation: "available"
-            }
+        ui: {
+          ...snapshot.state.ui,
+          navigation: {
+            ...snapshot.state.ui.navigation,
+            active_room_id: "!quiet-low:example.invalid",
+            active_space_id: "!attention-space:example.invalid"
           },
-          dispatch: { kind: "idle" }
+          timeline: {
+            ...snapshot.state.ui.timeline,
+            room_id: "!quiet-low:example.invalid",
+            is_subscribed: true
+          }
+        },
+        domain: {
+          ...snapshot.state.domain,
+          rooms,
+          spaces: [
+            {
+              space_id: "!attention-space:example.invalid",
+              display_name: "Attention Space",
+              avatar: null,
+              child_room_ids: rooms.map((room) => room.room_id)
+            }
+          ],
+          thread_attention: {
+            kind: "tracking",
+            room_id: "!attention-room:example.invalid",
+            root_event_id: "$attention-thread:example.invalid",
+            notification_count: 2,
+            highlight_count: 1,
+            live_event_marker_count: 3
+          },
+          native_attention: {
+            summary: {
+              unread_count: 4,
+              highlight_count: 1,
+              badge_count: 4,
+              candidate: {
+                room_display_name: "Attention Room",
+                kind: "mention",
+                unread_count: 4,
+                highlight_count: 1
+              },
+              capabilities: {
+                notifications: "available",
+                badge: "available",
+                overlay_icon: "unavailable",
+                sound: "available",
+                tray: "available",
+                activation: "available"
+              }
+            },
+            dispatch: { kind: "idle" }
+          }
         }
       },
       sidebar: {
@@ -1843,14 +1939,17 @@ test("notification attention snapshot drives room, space, thread, and click rout
         ...current,
         state: {
           ...current.state,
-          navigation: {
-            ...current.state.navigation,
-            active_room_id: String(roomId)
-          },
-          timeline: {
-            ...current.state.timeline,
-            room_id: String(roomId),
-            is_subscribed: true
+          ui: {
+            ...current.state.ui,
+            navigation: {
+              ...current.state.ui.navigation,
+              active_room_id: String(roomId)
+            },
+            timeline: {
+              ...current.state.ui.timeline,
+              room_id: String(roomId),
+              is_subscribed: true
+            }
           }
         }
       };
@@ -1938,17 +2037,20 @@ test("mention autocomplete inserts a pill and sends typed mention intent", async
       ...snapshot,
       state: {
         ...snapshot.state,
-        profile: {
-          ...snapshot.state.profile,
-          users: {
-            ...snapshot.state.profile.users,
-            "@alice:example.invalid": {
-              user_id: "@alice:example.invalid",
-              display_name: "Alice",
-              display_label: "Alice",
-              original_display_label: "Alice",
-              mention_search_terms: ["Alice", "@alice:example.invalid"],
-              avatar: null
+        domain: {
+          ...snapshot.state.domain,
+          profile: {
+            ...snapshot.state.domain.profile,
+            users: {
+              ...snapshot.state.domain.profile.users,
+              "@alice:example.invalid": {
+                user_id: "@alice:example.invalid",
+                display_name: "Alice",
+                display_label: "Alice",
+                original_display_label: "Alice",
+                mention_search_terms: ["Alice", "@alice:example.invalid"],
+                avatar: null
+              }
             }
           }
         }
@@ -2062,7 +2164,7 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
     const draftByRoom: Record<string, string> = {};
     const base = window.__harness.currentSnapshot();
     const rooms = [
-      base.state.rooms[0],
+      base.state.domain.rooms[0],
       {
         room_id: secondaryRoomId,
         display_name: "Draft Room B",
@@ -2092,23 +2194,29 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
         ...current,
         state: {
           ...current.state,
-          navigation: {
-            ...current.state.navigation,
-            active_room_id: roomId
+          domain: {
+            ...current.state.domain,
+            rooms
           },
-          rooms,
-          timeline: {
-            ...current.state.timeline,
-            room_id: roomId,
-            is_subscribed: true,
-            composer: {
-              pending_transaction_id: null,
-              draft: draftByRoom[roomId] ?? "",
-              mode: "Plain"
-            }
-          },
-          thread: { kind: "closed" },
-          focused_context: { kind: "closed" }
+          ui: {
+            ...current.state.ui,
+            navigation: {
+              ...current.state.ui.navigation,
+              active_room_id: roomId
+            },
+            timeline: {
+              ...current.state.ui.timeline,
+              room_id: roomId,
+              is_subscribed: true,
+              composer: {
+                pending_transaction_id: null,
+                draft: draftByRoom[roomId] ?? "",
+                mode: "Plain"
+              }
+            },
+            thread: { kind: "closed" },
+            focused_context: { kind: "closed" }
+          }
         },
         sidebar: {
           ...current.sidebar,
@@ -2128,7 +2236,7 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
         } else {
           draftByRoom[normalizedRoomId] = draft;
         }
-        const next = projectRoom(window.__harness.currentSnapshot().state.timeline.room_id ?? primaryRoomId);
+        const next = projectRoom(window.__harness.currentSnapshot().state.ui.timeline.room_id ?? primaryRoomId);
         window.__harness.setSnapshot(next);
         return next;
       }
@@ -2180,20 +2288,23 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
           send_at_ms: number;
           handle: { kind: "local" } | { kind: "server"; delay_id: string };
         }>,
-        draft = window.__harness.currentSnapshot().state.timeline.composer.draft
+        draft = window.__harness.currentSnapshot().state.ui.timeline.composer.draft
       ) => {
         const current = window.__harness.currentSnapshot();
         return {
           ...current,
           state: {
             ...current.state,
-            timeline: {
-              ...current.state.timeline,
-              scheduled_send_capability: "localFallback",
-              scheduled_sends: items,
-              composer: {
-                ...current.state.timeline.composer,
-                draft
+            ui: {
+              ...current.state.ui,
+              timeline: {
+                ...current.state.ui.timeline,
+                scheduled_send_capability: "localFallback",
+                scheduled_sends: items,
+                composer: {
+                  ...current.state.ui.timeline.composer,
+                  draft
+                }
               }
             }
           }
@@ -2272,13 +2383,16 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
       ...current,
       state: {
         ...current.state,
-        timeline: {
-          ...current.state.timeline,
-          scheduled_sends: current.state.timeline.scheduled_sends.map((item) =>
-            item.scheduled_id === "scheduled-harness-1"
-              ? { ...item, send_at_ms: editedSendAt }
-              : item
-          )
+        ui: {
+          ...current.state.ui,
+          timeline: {
+            ...current.state.ui.timeline,
+            scheduled_sends: current.state.ui.timeline.scheduled_sends.map((item) =>
+              item.scheduled_id === "scheduled-harness-1"
+                ? { ...item, send_at_ms: editedSendAt }
+                : item
+            )
+          }
         }
       }
     });
@@ -2303,9 +2417,12 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
       ...current,
       state: {
         ...current.state,
-        timeline: {
-          ...current.state.timeline,
-          scheduled_sends: []
+        ui: {
+          ...current.state.ui,
+          timeline: {
+            ...current.state.ui.timeline,
+            scheduled_sends: []
+          }
         }
       }
     });
@@ -2324,16 +2441,19 @@ test("main composer composing Enter never sends or accepts mention autocomplete"
       ...snapshot,
       state: {
         ...snapshot.state,
-        profile: {
-          ...snapshot.state.profile,
-          users: {
-            "@alice:example.invalid": {
-              user_id: "@alice:example.invalid",
-              display_name: "Alice",
-              display_label: "Alice",
-              original_display_label: "Alice",
-              mention_search_terms: ["Alice", "@alice:example.invalid"],
-              avatar: null
+        domain: {
+          ...snapshot.state.domain,
+          profile: {
+            ...snapshot.state.domain.profile,
+            users: {
+              "@alice:example.invalid": {
+                user_id: "@alice:example.invalid",
+                display_name: "Alice",
+                display_label: "Alice",
+                original_display_label: "Alice",
+                mention_search_terms: ["Alice", "@alice:example.invalid"],
+                avatar: null
+              }
             }
           }
         }
@@ -2751,18 +2871,21 @@ test("pin and unpin actions dispatch typed commands and pinned banner waits for 
       ...snapshot,
       state: {
         ...snapshot.state,
-        room_interactions: {
-          ...snapshot.state.room_interactions,
-          [roomId]: {
-            pinned_events: [
-              {
-                event_id: "$seed-event:example.invalid",
-                sender: "@harness-user:example.invalid",
-                body_preview: "Pinned preview from Rust state",
-                redacted: false
-              }
-            ],
-            pin_operation: { kind: "idle" }
+        domain: {
+          ...snapshot.state.domain,
+          room_interactions: {
+            ...snapshot.state.domain.room_interactions,
+            [roomId]: {
+              pinned_events: [
+                {
+                  event_id: "$seed-event:example.invalid",
+                  sender: "@harness-user:example.invalid",
+                  body_preview: "Pinned preview from Rust state",
+                  redacted: false
+                }
+              ],
+              pin_operation: { kind: "idle" }
+            }
           }
         }
       }
@@ -2793,11 +2916,14 @@ test("pin and unpin actions dispatch typed commands and pinned banner waits for 
       ...snapshot,
       state: {
         ...snapshot.state,
-        room_interactions: {
-          ...snapshot.state.room_interactions,
-          [roomId]: {
-            pinned_events: [],
-            pin_operation: { kind: "idle" }
+        domain: {
+          ...snapshot.state.domain,
+          room_interactions: {
+            ...snapshot.state.domain.room_interactions,
+            [roomId]: {
+              pinned_events: [],
+              pin_operation: { kind: "idle" }
+            }
           }
         }
       }
@@ -2822,18 +2948,21 @@ test("pin and unpin actions render the Tauri snapshot response without a manual 
         ...snapshot,
         state: {
           ...snapshot.state,
-          room_interactions: {
-            ...snapshot.state.room_interactions,
-            [roomId]: {
-              pinned_events: [
-                {
-                  event_id: "$seed-event:example.invalid",
-                  sender: "@harness-user:example.invalid",
-                  body_preview: "Pinned from Tauri response",
-                  redacted: false
-                }
-              ],
-              pin_operation: { kind: "idle" }
+          domain: {
+            ...snapshot.state.domain,
+            room_interactions: {
+              ...snapshot.state.domain.room_interactions,
+              [roomId]: {
+                pinned_events: [
+                  {
+                    event_id: "$seed-event:example.invalid",
+                    sender: "@harness-user:example.invalid",
+                    body_preview: "Pinned from Tauri response",
+                    redacted: false
+                  }
+                ],
+                pin_operation: { kind: "idle" }
+              }
             }
           }
         }
@@ -2845,11 +2974,14 @@ test("pin and unpin actions render the Tauri snapshot response without a manual 
         ...snapshot,
         state: {
           ...snapshot.state,
-          room_interactions: {
-            ...snapshot.state.room_interactions,
-            [roomId]: {
-              pinned_events: [],
-              pin_operation: { kind: "idle" }
+          domain: {
+            ...snapshot.state.domain,
+            room_interactions: {
+              ...snapshot.state.domain.room_interactions,
+              [roomId]: {
+                pinned_events: [],
+                pin_operation: { kind: "idle" }
+              }
             }
           }
         }
@@ -3230,9 +3362,12 @@ test("paste/drop upload UX stages through Rust snapshot and sends dialog caption
         ...snapshot,
         state: {
           ...snapshot.state,
-          timeline: {
-            ...snapshot.state.timeline,
-            staged_uploads: stagedUploads
+          ui: {
+            ...snapshot.state.ui,
+            timeline: {
+              ...snapshot.state.ui.timeline,
+              staged_uploads: stagedUploads
+            }
           }
         }
       };
@@ -3247,18 +3382,21 @@ test("paste/drop upload UX stages through Rust snapshot and sends dialog caption
           ...snapshot,
           state: {
             ...snapshot.state,
-            timeline: {
-              ...snapshot.state.timeline,
-              staged_uploads: snapshot.state.timeline.staged_uploads.map((item: any) =>
-                item.staged_id === stagedId
-                  ? {
-                      ...item,
-                      caption: caption
-                        ? { plain_body: caption, formatted_body: null, mentions: { targets: [] } }
-                        : null
-                    }
-                  : item
-              )
+            ui: {
+              ...snapshot.state.ui,
+              timeline: {
+                ...snapshot.state.ui.timeline,
+                staged_uploads: snapshot.state.ui.timeline.staged_uploads.map((item: any) =>
+                  item.staged_id === stagedId
+                    ? {
+                        ...item,
+                        caption: caption
+                          ? { plain_body: caption, formatted_body: null, mentions: { targets: [] } }
+                          : null
+                      }
+                    : item
+                )
+              }
             }
           }
         };
@@ -3274,13 +3412,16 @@ test("paste/drop upload UX stages through Rust snapshot and sends dialog caption
           ...snapshot,
           state: {
             ...snapshot.state,
-            timeline: {
-              ...snapshot.state.timeline,
-              staged_uploads: snapshot.state.timeline.staged_uploads.map((item: any) =>
-                item.staged_id === stagedId
-                  ? { ...item, compression_choice: compressionChoice }
-                  : item
-              )
+            ui: {
+              ...snapshot.state.ui,
+              timeline: {
+                ...snapshot.state.ui.timeline,
+                staged_uploads: snapshot.state.ui.timeline.staged_uploads.map((item: any) =>
+                  item.staged_id === stagedId
+                    ? { ...item, compression_choice: compressionChoice }
+                    : item
+                )
+              }
             }
           }
         };
@@ -3294,9 +3435,12 @@ test("paste/drop upload UX stages through Rust snapshot and sends dialog caption
         ...snapshot,
         state: {
           ...snapshot.state,
-          timeline: {
-            ...snapshot.state.timeline,
-            staged_uploads: []
+          ui: {
+            ...snapshot.state.ui,
+            timeline: {
+              ...snapshot.state.ui.timeline,
+              staged_uploads: []
+            }
           }
         }
       };
@@ -3418,9 +3562,12 @@ test("room media gallery opens a viewer from Rust-owned gallery projection", asy
       ...snapshot,
       state: {
         ...snapshot.state,
-        timeline: {
-          ...snapshot.state.timeline,
-          media_gallery: mediaGallery
+        ui: {
+          ...snapshot.state.ui,
+          timeline: {
+            ...snapshot.state.ui.timeline,
+            media_gallery: mediaGallery
+          }
         }
       }
     });
@@ -3454,13 +3601,16 @@ test("image compression setting and dialog send selected Rust-owned variant meta
       ...snapshot,
       state: {
         ...snapshot.state,
-        settings: {
-          ...snapshot.state.settings,
-          values: {
-            ...snapshot.state.settings.values,
-            media: {
-              ...snapshot.state.settings.values.media,
-              image_upload_compression: "never"
+        domain: {
+          ...snapshot.state.domain,
+          settings: {
+            ...snapshot.state.domain.settings,
+            values: {
+              ...snapshot.state.domain.settings.values,
+              media: {
+                ...snapshot.state.domain.settings.values.media,
+                image_upload_compression: "never"
+              }
             }
           }
         }
@@ -3497,18 +3647,21 @@ test("image compression setting and dialog send selected Rust-owned variant meta
       ...snapshot,
       state: {
         ...snapshot.state,
-        settings: {
-          ...snapshot.state.settings,
-          values: {
-            ...snapshot.state.settings.values,
-            media: {
-              ...snapshot.state.settings.values.media,
-              image_upload_compression: "ask",
-              image_upload_compression_policy: {
-                threshold_bytes: 1,
-                threshold_long_edge: 1,
-                target_long_edge: 1,
-                quality_percent: 82
+        domain: {
+          ...snapshot.state.domain,
+          settings: {
+            ...snapshot.state.domain.settings,
+            values: {
+              ...snapshot.state.domain.settings.values,
+              media: {
+                ...snapshot.state.domain.settings.values.media,
+                image_upload_compression: "ask",
+                image_upload_compression_policy: {
+                  threshold_bytes: 1,
+                  threshold_long_edge: 1,
+                  target_long_edge: 1,
+                  quality_percent: 82
+                }
               }
             }
           }
@@ -3594,18 +3747,21 @@ test("image compression setting and dialog send selected Rust-owned variant meta
       ...snapshot,
       state: {
         ...snapshot.state,
-        settings: {
-          ...snapshot.state.settings,
-          values: {
-            ...snapshot.state.settings.values,
-            media: {
-              ...snapshot.state.settings.values.media,
-              image_upload_compression: "always",
-              image_upload_compression_policy: {
-                threshold_bytes: 1,
-                threshold_long_edge: 1,
-                target_long_edge: 1,
-                quality_percent: 82
+        domain: {
+          ...snapshot.state.domain,
+          settings: {
+            ...snapshot.state.domain.settings,
+            values: {
+              ...snapshot.state.domain.settings.values,
+              media: {
+                ...snapshot.state.domain.settings.values.media,
+                image_upload_compression: "always",
+                image_upload_compression_policy: {
+                  threshold_bytes: 1,
+                  threshold_long_edge: 1,
+                  target_long_edge: 1,
+                  quality_percent: 82
+                }
               }
             }
           }
@@ -3637,18 +3793,21 @@ test("image compression setting and dialog send selected Rust-owned variant meta
       ...snapshot,
       state: {
         ...snapshot.state,
-        settings: {
-          ...snapshot.state.settings,
-          values: {
-            ...snapshot.state.settings.values,
-            media: {
-              ...snapshot.state.settings.values.media,
-              image_upload_compression: "ask",
-              image_upload_compression_policy: {
-                threshold_bytes: 10_000_000,
-                threshold_long_edge: 5000,
-                target_long_edge: 2048,
-                quality_percent: 82
+        domain: {
+          ...snapshot.state.domain,
+          settings: {
+            ...snapshot.state.domain.settings,
+            values: {
+              ...snapshot.state.domain.settings.values,
+              media: {
+                ...snapshot.state.domain.settings.values.media,
+                image_upload_compression: "ask",
+                image_upload_compression_policy: {
+                  threshold_bytes: 10_000_000,
+                  threshold_long_edge: 5000,
+                  target_long_edge: 2048,
+                  quality_percent: 82
+                }
               }
             }
           }
@@ -3699,11 +3858,13 @@ test("live signals render from Rust state and dispatch read/typing commands", as
       ...snapshot,
       state: {
         ...snapshot.state,
-        live_signals: {
-          rooms: {
-            "!harness-room:example.invalid": {
-              receipts_by_event: {
-                "$seed-event:example.invalid": {
+        domain: {
+          ...snapshot.state.domain,
+          live_signals: {
+            rooms: {
+              "!harness-room:example.invalid": {
+                receipts_by_event: {
+                  "$seed-event:example.invalid": {
                   readers: [
                     {
                       user_id: "@reader:example.invalid",
@@ -3725,6 +3886,7 @@ test("live signals render from Rust state and dispatch read/typing commands", as
           }
         }
       }
+    }
     });
     window.__harness.pushStateChanged();
   });
@@ -3760,11 +3922,13 @@ test("read receipt avatars render from Rust projection with overflow and tooltip
       ...snapshot,
       state: {
         ...snapshot.state,
-        live_signals: {
-          rooms: {
-            "!harness-room:example.invalid": {
-              receipts_by_event: {
-                "$seed-event:example.invalid": {
+        domain: {
+          ...snapshot.state.domain,
+          live_signals: {
+            rooms: {
+              "!harness-room:example.invalid": {
+                receipts_by_event: {
+                  "$seed-event:example.invalid": {
                   readers: [
                     {
                       user_id: "@alice:example.invalid",
@@ -3806,6 +3970,7 @@ test("read receipt avatars render from Rust projection with overflow and tooltip
           presence: {}
         }
       }
+    }
     });
     window.__harness.pushStateChanged();
   });
@@ -4328,7 +4493,7 @@ test("Rust-owned locale profile applies root lang and dir", async ({ page }) => 
 
   await page.evaluate(() => {
     const snapshot = window.__harness.replyModeSnapshot();
-    snapshot.state.locale_profile = {
+    snapshot.state.domain.locale_profile = {
       lang: "ar-XB",
       dir: "rtl",
       catalog_locale: "pseudo",
@@ -4365,8 +4530,8 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
   await page.evaluate(({ workspaceName, roomNames }) => {
     const snapshot = window.__harness.currentSnapshot();
     const cjkRooms = roomNames.map((displayName, index) => ({
-      ...snapshot.state.rooms[0],
-      room_id: index === roomNames.length - 1 ? snapshot.state.rooms[0].room_id : `!cjk-order-${index}:example.invalid`,
+      ...snapshot.state.domain.rooms[0],
+      room_id: index === roomNames.length - 1 ? snapshot.state.domain.rooms[0].room_id : `!cjk-order-${index}:example.invalid`,
       display_name: displayName,
       display_label: displayName,
       original_display_label: displayName
@@ -4375,23 +4540,26 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
       ...snapshot,
       state: {
         ...snapshot.state,
-        locale_profile: {
-          lang: "ja",
-          dir: "ltr",
-          catalog_locale: "ja",
-          pseudo_locale: "none",
-          platform: "linux",
-          modifier_labels: { primary: "Ctrl" }
-        },
-        cjk_text_policy: {
-          ...snapshot.state.cjk_text_policy,
-          japanese_catalog: {
+        domain: {
+          ...snapshot.state.domain,
+          locale_profile: {
+            lang: "ja",
+            dir: "ltr",
             catalog_locale: "ja",
-            complete: true,
-            missing_message_ids: []
-          }
-        },
-        rooms: cjkRooms
+            pseudo_locale: "none",
+            platform: "linux",
+            modifier_labels: { primary: "Ctrl" }
+          },
+          cjk_text_policy: {
+            ...snapshot.state.domain.cjk_text_policy,
+            japanese_catalog: {
+              catalog_locale: "ja",
+              complete: true,
+              missing_message_ids: []
+            }
+          },
+          rooms: cjkRooms
+        }
       },
       sidebar: {
         ...snapshot.sidebar,
@@ -4441,34 +4609,37 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
           ...next,
           state: {
             ...next.state,
-            rooms: next.state.rooms.map((room) =>
-              room.room_id === "!harness-room:example.invalid"
-                ? {
-                    ...room,
-                    display_name: "かな先頭",
-                    display_label: "かな先頭",
-                    original_display_label: "かな先頭"
+            domain: {
+              ...next.state.domain,
+              rooms: next.state.domain.rooms.map((room) =>
+                room.room_id === "!harness-room:example.invalid"
+                  ? {
+                      ...room,
+                      display_name: "かな先頭",
+                      display_label: "かな先頭",
+                      original_display_label: "かな先頭"
+                    }
+                  : room
+              ),
+              search: {
+                kind: "results",
+                request_id: 32,
+                query: String(query ?? "ABC123"),
+                scope: "allRooms",
+                results: [
+                  {
+                    room_id: "!harness-room:example.invalid",
+                    event_id: "$cjk-gui-linebreak:example.invalid",
+                    sender: "@cjk-user:example.invalid",
+                    timestamp_ms: 1_800_000_003_000,
+                    score_millis: 990,
+                    snippet,
+                    match_field: "messageBody",
+                    highlights: [{ start_utf16: 0, end_utf16: 6 }],
+                    match_kind: "exact"
                   }
-                : room
-            ),
-            search: {
-              kind: "results",
-              request_id: 32,
-              query: String(query ?? "ABC123"),
-              scope: "allRooms",
-              results: [
-                {
-                  room_id: "!harness-room:example.invalid",
-                  event_id: "$cjk-gui-linebreak:example.invalid",
-                  sender: "@cjk-user:example.invalid",
-                  timestamp_ms: 1_800_000_003_000,
-                  score_millis: 990,
-                  snippet,
-                  match_field: "messageBody",
-                  highlights: [{ start_utf16: 0, end_utf16: 6 }],
-                  match_kind: "exact"
-                }
-              ]
+                ]
+              }
             }
           }
         };
@@ -4596,7 +4767,7 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
   );
   await page.evaluate((roomName) => {
     const snapshot = window.__harness.replyModeSnapshot();
-    snapshot.state.locale_profile = {
+    snapshot.state.domain.locale_profile = {
       lang: "ar-XB",
       dir: "rtl",
       catalog_locale: "pseudo",
@@ -4604,11 +4775,11 @@ test("pseudo RTL profile with CJK and combining samples does not overflow shell"
       platform: "linux",
       modifier_labels: { primary: "Ctrl" }
     };
-    snapshot.state.rooms[0].display_name = roomName;
-    snapshot.state.rooms[0].display_label = roomName;
-    snapshot.state.rooms[0].original_display_label = roomName;
+    snapshot.state.domain.rooms[0].display_name = roomName;
+    snapshot.state.domain.rooms[0].display_label = roomName;
+    snapshot.state.domain.rooms[0].original_display_label = roomName;
     snapshot.sidebar.space_rooms[0].display_name = roomName;
-    snapshot.state.spaces[0].display_name = "日本語 Space العربية";
+    snapshot.state.domain.spaces[0].display_name = "日本語 Space العربية";
     snapshot.sidebar.space_rail[0].display_name = "日本語 Space العربية";
     window.__harness.setSnapshot(snapshot);
     window.__harness.pushStateChanged();
@@ -4764,23 +4935,26 @@ test("typography profile applies bundled font and emoji tokens from Rust snapsho
   await page.evaluate(() => {
     const base = window.__harness.currentSnapshot();
     const values = {
-      ...base.state.settings.values,
+      ...base.state.domain.settings.values,
       typography: { font: "inter" as const, emoji: "twemojiColr" as const }
     };
     window.__harness.setSnapshot({
       ...base,
       state: {
         ...base.state,
-        settings: {
-          ...base.state.settings,
-          values
-        },
-        typography_profile: {
-          font: "inter",
-          emoji: "twemojiColr",
-          platform: "linux",
-          font_asset: "bundledPreferred",
-          emoji_asset: "bundledPreferred"
+        domain: {
+          ...base.state.domain,
+          settings: {
+            ...base.state.domain.settings,
+            values
+          },
+          typography_profile: {
+            font: "inter",
+            emoji: "twemojiColr",
+            platform: "linux",
+            font_asset: "bundledPreferred",
+            emoji_asset: "bundledPreferred"
+          }
         }
       }
     });
@@ -5030,13 +5204,16 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
       ...snapshot,
       state: {
         ...snapshot.state,
-        settings: {
-          ...snapshot.state.settings,
-          values: {
-            ...snapshot.state.settings.values,
-            display: {
-              ...snapshot.state.settings.values.display,
-              hide_redacted: false
+        domain: {
+          ...snapshot.state.domain,
+          settings: {
+            ...snapshot.state.domain.settings,
+            values: {
+              ...snapshot.state.domain.settings.values,
+              display: {
+                ...snapshot.state.domain.settings.values.display,
+                hide_redacted: false
+              }
             }
           }
         }
@@ -5166,23 +5343,26 @@ test("profile settings dispatch Rust-owned commands and avatars render from prof
       ...snapshot,
       state: {
         ...snapshot.state,
-        profile: {
-          ...snapshot.state.profile,
-          users: {
-            ...snapshot.state.profile.users,
-            "@avatar-user:example.invalid": {
-              user_id: "@avatar-user:example.invalid",
-              display_name: "Avatar User",
-              display_label: "Avatar User",
-              original_display_label: "Avatar User",
-              mention_search_terms: ["Avatar User", "@avatar-user:example.invalid"],
-              avatar
+        domain: {
+          ...snapshot.state.domain,
+          profile: {
+            ...snapshot.state.domain.profile,
+            users: {
+              ...snapshot.state.domain.profile.users,
+              "@avatar-user:example.invalid": {
+                user_id: "@avatar-user:example.invalid",
+                display_name: "Avatar User",
+                display_label: "Avatar User",
+                original_display_label: "Avatar User",
+                mention_search_terms: ["Avatar User", "@avatar-user:example.invalid"],
+                avatar
+              }
             }
-          }
-        },
-        rooms: snapshot.state.rooms.map((room) =>
-          room.room_id === "!harness-room:example.invalid" ? { ...room, avatar } : room
-        )
+          },
+          rooms: snapshot.state.domain.rooms.map((room) =>
+            room.room_id === "!harness-room:example.invalid" ? { ...room, avatar } : room
+          )
+        }
       },
       sidebar: {
         ...snapshot.sidebar,
@@ -5290,7 +5470,10 @@ test("Security settings render local encryption health and dispatch probe comman
         ...snapshot,
         state: {
           ...snapshot.state,
-          local_encryption: { kind: "healthy" as const }
+          domain: {
+            ...snapshot.state.domain,
+            local_encryption: { kind: "healthy" as const }
+          }
         }
       };
       window.__harness.setSnapshot(next);
@@ -5302,9 +5485,12 @@ test("Security settings render local encryption health and dispatch probe comman
       ...snapshot,
       state: {
         ...snapshot.state,
-        locale_profile: { ...snapshot.state.locale_profile, platform: "linux" },
-        typography_profile: { ...snapshot.state.typography_profile, platform: "linux" },
-        local_encryption: { kind: "healthy" }
+        domain: {
+          ...snapshot.state.domain,
+          locale_profile: { ...snapshot.state.domain.locale_profile, platform: "linux" },
+          typography_profile: { ...snapshot.state.domain.typography_profile, platform: "linux" },
+          local_encryption: { kind: "healthy" }
+        }
       }
     });
     window.__harness.pushStateChanged();
@@ -5322,9 +5508,12 @@ test("Security settings render local encryption health and dispatch probe comman
       ...snapshot,
       state: {
         ...snapshot.state,
-        locale_profile: { ...snapshot.state.locale_profile, platform: "macos" },
-        typography_profile: { ...snapshot.state.typography_profile, platform: "macos" },
-        local_encryption: { kind: "lockedOrInaccessible" }
+        domain: {
+          ...snapshot.state.domain,
+          locale_profile: { ...snapshot.state.domain.locale_profile, platform: "macos" },
+          typography_profile: { ...snapshot.state.domain.typography_profile, platform: "macos" },
+          local_encryption: { kind: "lockedOrInaccessible" }
+        }
       }
     });
     window.__harness.pushStateChanged();
@@ -5342,9 +5531,12 @@ test("Security settings render local encryption health and dispatch probe comman
       ...snapshot,
       state: {
         ...snapshot.state,
-        locale_profile: { ...snapshot.state.locale_profile, platform: "windows" },
-        typography_profile: { ...snapshot.state.typography_profile, platform: "windows" },
-        local_encryption: { kind: "resetRequired" }
+        domain: {
+          ...snapshot.state.domain,
+          locale_profile: { ...snapshot.state.domain.locale_profile, platform: "windows" },
+          typography_profile: { ...snapshot.state.domain.typography_profile, platform: "windows" },
+          local_encryption: { kind: "resetRequired" }
+        }
       }
     });
     window.__harness.pushStateChanged();
@@ -5360,7 +5552,10 @@ test("Security settings render local encryption health and dispatch probe comman
         ...snapshot,
         state: {
           ...snapshot.state,
-          local_encryption: { kind: "unknown" as const }
+          domain: {
+            ...snapshot.state.domain,
+            local_encryption: { kind: "unknown" as const }
+          }
         }
       };
       window.__harness.setSnapshot(next);
@@ -5398,7 +5593,7 @@ test("E2EE trust controls dispatch Rust-owned commands and render snapshot updat
     .toEqual({ flowId: 9001 });
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.currentSnapshot().state.e2ee_trust.verification.kind)
+      page.evaluate(() => window.__harness.currentSnapshot().state.domain.e2ee_trust.verification.kind)
     )
     .toBe("accepted");
   await expect(page.getByText("Accepted")).toBeVisible();
@@ -5407,7 +5602,7 @@ test("E2EE trust controls dispatch Rust-owned commands and render snapshot updat
   await expect.poll(() => invocationCount(page, "enable_key_backup")).toBe(1);
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.currentSnapshot().state.e2ee_trust.key_backup.kind)
+      page.evaluate(() => window.__harness.currentSnapshot().state.domain.e2ee_trust.key_backup.kind)
     )
     .toBe("enabled");
   await expect(page.getByText("Enabled")).toBeVisible();
@@ -5416,7 +5611,7 @@ test("E2EE trust controls dispatch Rust-owned commands and render snapshot updat
   await expect.poll(() => invocationCount(page, "bootstrap_cross_signing")).toBe(1);
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.currentSnapshot().state.e2ee_trust.cross_signing.kind)
+      page.evaluate(() => window.__harness.currentSnapshot().state.domain.e2ee_trust.cross_signing.kind)
     )
     .toBe("trusted");
 
@@ -5436,7 +5631,7 @@ test("E2EE trust controls dispatch Rust-owned commands and render snapshot updat
     .toEqual({ flowId: 9100, password: "[REDACTED]" });
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.currentSnapshot().state.e2ee_trust.identity_reset.kind)
+      page.evaluate(() => window.__harness.currentSnapshot().state.domain.e2ee_trust.identity_reset.kind)
     )
     .toBe("idle");
 });
@@ -5534,7 +5729,7 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
     });
 
   const serializedPrivateState = await page.evaluate(() =>
-    JSON.stringify(window.__harness.currentSnapshot().state.e2ee_trust.key_management)
+    JSON.stringify(window.__harness.currentSnapshot().state.domain.e2ee_trust.key_management)
   );
   expect(serializedPrivateState).not.toContain("synthetic-");
   expect(serializedPrivateState).not.toContain("/tmp/");
@@ -5672,59 +5867,65 @@ test("room list filter and mark unread dispatch Rust-owned commands", async ({ p
       ...snapshot,
       state: {
         ...snapshot.state,
-        rooms: [
-          ...snapshot.state.rooms,
-          {
-            room_id: "!room-alpha:example.invalid",
-            display_name: "Room Alpha",
-            display_label: "Room Alpha",
-            original_display_label: "Room Alpha",
-            avatar: null,
-            is_dm: false,
-            dm_user_ids: [],
-            tags: { favourite: null, low_priority: null },
-            unread_count: 3,
-            notification_count: 0,
-            highlight_count: 0,
-            parent_space_ids: []
-          },
-          {
-            room_id: "!room-beta:example.invalid",
-            display_name: "Room Beta",
-            display_label: "Room Beta",
-            original_display_label: "Room Beta",
-            avatar: null,
-            is_dm: false,
-            dm_user_ids: [],
-            tags: { favourite: null, low_priority: null },
-            unread_count: 0,
-            notification_count: 0,
-            highlight_count: 0,
-            parent_space_ids: []
-          },
-          {
-            room_id: "!dm-alpha:example.invalid",
-            display_name: "DM Alpha",
-            display_label: "DM Alpha",
-            original_display_label: "DM Alpha",
-            avatar: null,
-            is_dm: true,
-            dm_user_ids: ["@dm-alpha:example.invalid"],
-            tags: { favourite: null, low_priority: null },
-            unread_count: 0,
-            notification_count: 0,
-            highlight_count: 0,
-            parent_space_ids: []
-          }
-        ],
-        room_list: {
-          active_filter: { kind: "rooms" },
-          sort: { kind: "activity" },
-          items: [
-            { room_id: "!room-alpha:example.invalid", kind: "room" },
-            { room_id: "!room-beta:example.invalid", kind: "room" },
-            { room_id: "!dm-alpha:example.invalid", kind: "room" }
+        domain: {
+          ...snapshot.state.domain,
+          rooms: [
+            ...snapshot.state.domain.rooms,
+            {
+              room_id: "!room-alpha:example.invalid",
+              display_name: "Room Alpha",
+              display_label: "Room Alpha",
+              original_display_label: "Room Alpha",
+              avatar: null,
+              is_dm: false,
+              dm_user_ids: [],
+              tags: { favourite: null, low_priority: null },
+              unread_count: 3,
+              notification_count: 0,
+              highlight_count: 0,
+              parent_space_ids: []
+            },
+            {
+              room_id: "!room-beta:example.invalid",
+              display_name: "Room Beta",
+              display_label: "Room Beta",
+              original_display_label: "Room Beta",
+              avatar: null,
+              is_dm: false,
+              dm_user_ids: [],
+              tags: { favourite: null, low_priority: null },
+              unread_count: 0,
+              notification_count: 0,
+              highlight_count: 0,
+              parent_space_ids: []
+            },
+            {
+              room_id: "!dm-alpha:example.invalid",
+              display_name: "DM Alpha",
+              display_label: "DM Alpha",
+              original_display_label: "DM Alpha",
+              avatar: null,
+              is_dm: true,
+              dm_user_ids: ["@dm-alpha:example.invalid"],
+              tags: { favourite: null, low_priority: null },
+              unread_count: 0,
+              notification_count: 0,
+              highlight_count: 0,
+              parent_space_ids: []
+            }
           ]
+        },
+        ui: {
+          ...snapshot.state.ui,
+          room_list: {
+            active_filter: { kind: "rooms" },
+            sort: { kind: "activity" },
+            items: [
+              { room_id: "!room-alpha:example.invalid", kind: "room" },
+              { room_id: "!room-beta:example.invalid", kind: "room" },
+              { room_id: "!dm-alpha:example.invalid", kind: "room" }
+            ]
+          }
         }
       }
     });
@@ -5870,9 +6071,12 @@ test("message context menu ignores and unignores a user via typed commands", asy
         ...snapshot,
         state: {
           ...snapshot.state,
-          profile: {
-            ...snapshot.state.profile,
-            ignored_user_ids: [...snapshot.state.profile.ignored_user_ids, String(incomingUserId)]
+          domain: {
+            ...snapshot.state.domain,
+            profile: {
+              ...snapshot.state.domain.profile,
+              ignored_user_ids: [...snapshot.state.domain.profile.ignored_user_ids, String(incomingUserId)]
+            }
           }
         }
       };
@@ -5885,11 +6089,14 @@ test("message context menu ignores and unignores a user via typed commands", asy
         ...snapshot,
         state: {
           ...snapshot.state,
-          profile: {
-            ...snapshot.state.profile,
-            ignored_user_ids: snapshot.state.profile.ignored_user_ids.filter(
-              (id) => id !== String(incomingUserId)
-            )
+          domain: {
+            ...snapshot.state.domain,
+            profile: {
+              ...snapshot.state.domain.profile,
+              ignored_user_ids: snapshot.state.domain.profile.ignored_user_ids.filter(
+                (id) => id !== String(incomingUserId)
+              )
+            }
           }
         }
       };
@@ -5909,7 +6116,7 @@ test("message context menu ignores and unignores a user via typed commands", asy
     .toEqual({ userId: targetUserId });
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.currentSnapshot().state.profile.ignored_user_ids)
+      page.evaluate(() => window.__harness.currentSnapshot().state.domain.profile.ignored_user_ids)
     )
     .toContain(targetUserId);
 
@@ -5922,7 +6129,7 @@ test("message context menu ignores and unignores a user via typed commands", asy
     .toEqual({ userId: targetUserId });
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.currentSnapshot().state.profile.ignored_user_ids)
+      page.evaluate(() => window.__harness.currentSnapshot().state.domain.profile.ignored_user_ids)
     )
     .not.toContain(targetUserId);
 });
@@ -6015,35 +6222,38 @@ test("room member panel ignores, unignores, and reports a user", async ({ page }
           ...current,
           state: {
             ...current.state,
-            room_management: {
-              selected_room_id: String(incomingRoomId),
-              settings: {
-                room_id: String(incomingRoomId),
-                name: "Harness Room",
-                topic: null,
-                avatar_url: null,
-                join_rule: "invite",
-                history_visibility: "shared",
-                permissions: {
-                  can_edit_settings: true,
-                  can_edit_roles: true,
-                  can_kick: true,
-                  can_ban: false,
-                  can_unban: false
+            domain: {
+              ...current.state.domain,
+              room_management: {
+                selected_room_id: String(incomingRoomId),
+                settings: {
+                  room_id: String(incomingRoomId),
+                  name: "Harness Room",
+                  topic: null,
+                  avatar_url: null,
+                  join_rule: "invite",
+                  history_visibility: "shared",
+                  permissions: {
+                    can_edit_settings: true,
+                    can_edit_roles: true,
+                    can_kick: true,
+                    can_ban: false,
+                    can_unban: false
+                  },
+                  members: [
+                    {
+                      user_id: userId,
+                      display_name: "Target Member",
+                      display_label: "Target Member",
+                      original_display_label: "Target Member",
+                      avatar_url: null,
+                      power_level: 0,
+                      role: "user"
+                    }
+                  ]
                 },
-                members: [
-                  {
-                    user_id: userId,
-                    display_name: "Target Member",
-                    display_label: "Target Member",
-                    original_display_label: "Target Member",
-                    avatar_url: null,
-                    power_level: 0,
-                    role: "user"
-                  }
-                ]
-              },
-              operation: { kind: "idle" }
+                operation: { kind: "idle" }
+              }
             }
           }
         };
@@ -6056,9 +6266,12 @@ test("room member panel ignores, unignores, and reports a user", async ({ page }
           ...current,
           state: {
             ...current.state,
-            profile: {
-              ...current.state.profile,
-              ignored_user_ids: [...current.state.profile.ignored_user_ids, String(incomingUserId)]
+            domain: {
+              ...current.state.domain,
+              profile: {
+                ...current.state.domain.profile,
+                ignored_user_ids: [...current.state.domain.profile.ignored_user_ids, String(incomingUserId)]
+              }
             }
           }
         };
@@ -6071,11 +6284,14 @@ test("room member panel ignores, unignores, and reports a user", async ({ page }
           ...current,
           state: {
             ...current.state,
-            profile: {
-              ...current.state.profile,
-              ignored_user_ids: current.state.profile.ignored_user_ids.filter(
-                (id) => id !== String(incomingUserId)
-              )
+            domain: {
+              ...current.state.domain,
+              profile: {
+                ...current.state.domain.profile,
+                ignored_user_ids: current.state.domain.profile.ignored_user_ids.filter(
+                  (id) => id !== String(incomingUserId)
+                )
+              }
             }
           }
         };
@@ -6132,9 +6348,11 @@ test("room info Files entry opens the file browser with room scope", async ({ pa
         ...snapshot,
         state: {
           ...snapshot.state,
-          files_view: {
-            kind: "open",
-            request_id: 1,
+          ui: {
+            ...snapshot.state.ui,
+            files_view: {
+              kind: "open",
+              request_id: 1,
             scope: { kind: "room", room_id: "!harness-room:example.invalid" },
             filter: { kinds: ["image", "video", "audio", "file"], filename_query: null },
             sort: "newestFirst",
@@ -6161,6 +6379,7 @@ test("room info Files entry opens the file browser with room scope", async ({ pa
             selected_event_id: null
           }
         }
+      }
       };
       window.__harness.setSnapshot(next);
       return next;
@@ -6234,7 +6453,9 @@ test("timeline header Threads button opens the threads list and row opens a thre
       ...snapshot,
       state: {
         ...snapshot.state,
-        threads_list: {
+        ui: {
+          ...snapshot.state.ui,
+          threads_list: {
           kind: "open",
           room_id: "!harness-room:example.invalid",
           request_id: 1,
@@ -6257,6 +6478,7 @@ test("timeline header Threads button opens the threads list and row opens a thre
           end_reached: true
         }
       }
+    }
     });
     window.__harness.pushStateChanged();
   });
@@ -6422,8 +6644,8 @@ test("encrypted room suppresses link previews and shows privacy notice", async (
   await gotoReadyShell(page);
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    snapshot.state.rooms[0] = {
-      ...snapshot.state.rooms[0],
+    snapshot.state.domain.rooms[0] = {
+      ...snapshot.state.domain.rooms[0],
       is_encrypted: true
     };
     window.__harness.setSnapshot(snapshot);

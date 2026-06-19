@@ -85,11 +85,14 @@ async function pushMediaDownloadState(
         ...snap,
         state: {
           ...snap.state,
-          timeline: {
-            ...snap.state.timeline,
-            media_downloads: {
-              ...snap.state.timeline.media_downloads,
-              [evId]: state
+          ui: {
+            ...(snap.state as any).ui,
+            timeline: {
+              ...(snap.state as any).ui.timeline,
+              media_downloads: {
+                ...(snap.state as any).ui.timeline.media_downloads,
+                [evId]: state
+              }
             }
           }
         }

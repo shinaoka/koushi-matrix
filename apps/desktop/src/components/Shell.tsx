@@ -63,7 +63,7 @@ export function TopBar({
   searchInputRef: RefObject<HTMLInputElement | null>;
   searchQuery: string;
   searchScope: SearchScopeKind;
-  sync: DesktopSnapshot["state"]["sync"];
+  sync: DesktopSnapshot["state"]["domain"]["sync"];
   onOpenKeyboardSettings: () => void;
   onRestartSync: () => void;
   onSearchQueryChange: (value: string) => void;
@@ -372,15 +372,15 @@ export function Sidebar({
   onSelectRoomListFilter: (filter: RoomListFilter) => void;
 }) {
   const sections = roomListSections(
-    snapshot.state.room_list,
-    snapshot.state.navigation.active_space_id,
-    snapshot.state.spaces,
-    snapshot.state.rooms,
-    snapshot.state.invites
+    snapshot.state.ui.room_list,
+    snapshot.state.ui.navigation.active_space_id,
+    snapshot.state.domain.spaces,
+    snapshot.state.domain.rooms,
+    snapshot.state.domain.invites
   );
   const threadAttention =
-    snapshot.state.thread_attention.kind === "tracking"
-      ? snapshot.state.thread_attention
+    snapshot.state.domain.thread_attention.kind === "tracking"
+      ? snapshot.state.domain.thread_attention
       : null;
   return (
     <aside className="sidebar" aria-label={t("workspace.rooms")}>
@@ -415,7 +415,7 @@ export function Sidebar({
         </button>
       </div>
       <RoomListFilterTabs
-        activeFilter={snapshot.state.room_list.active_filter}
+        activeFilter={snapshot.state.ui.room_list.active_filter}
         onSelectFilter={onSelectRoomListFilter}
       />
       <div className="sidebar-scroll">
@@ -441,7 +441,7 @@ export function Sidebar({
         />
         <NavButton
           active={activeView === "invites"}
-          count={snapshot.state.invites.length}
+          count={snapshot.state.domain.invites.length}
           icon={<Bell size={ICON_SIZE.control} />}
           label={t("workspace.invites")}
           onClick={onOpenInvites}
@@ -452,7 +452,7 @@ export function Sidebar({
           kind="invite"
           label={t("workspace.invites")}
           rooms={sections.invites}
-          showWhenEmpty={snapshot.state.room_list.active_filter.kind === "invites"}
+          showWhenEmpty={snapshot.state.ui.room_list.active_filter.kind === "invites"}
           onOpenContextMenu={onOpenContextMenu}
           onSelectInvite={onOpenInvites}
           onSelectRoom={onSelectRoom}

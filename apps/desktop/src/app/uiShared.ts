@@ -50,7 +50,7 @@ export type PrimaryView = "timeline" | "invites" | "explore" | "activity";
 /**
  * React-local view of the composer mode. Matrix semantics (the reply target)
  * stay Rust-owned; this is a presentational mapping of the WIRE value
- * `snapshot.state.timeline.composer.mode` (externally tagged ComposerMode).
+ * `snapshot.state.ui.timeline.composer.mode` (externally tagged ComposerMode).
  */
 export type ComposerModeProp =
   | { kind: "plain" }
@@ -186,7 +186,7 @@ export function composerModeProp(mode: ComposerMode): ComposerModeProp {
 }
 
 export function syncStatePresentation(
-  sync: import("../domain/types").DesktopSnapshot["state"]["sync"]
+  sync: import("../domain/types").DesktopSnapshot["state"]["domain"]["sync"]
 ): SyncPresentation {
   if (typeof sync === "string") {
     switch (sync) {
@@ -342,14 +342,14 @@ export function scheduledSendCapabilityLabel(capability: import("../domain/types
 export function pinnedEventsForRoom(
   snapshot: import("../domain/types").DesktopSnapshot,
   roomId: string | null | undefined
-): import("../domain/types").DesktopSnapshot["state"]["room_interactions"][string]["pinned_events"] {
-  return roomId ? snapshot.state.room_interactions[roomId]?.pinned_events ?? [] : [];
+): import("../domain/types").DesktopSnapshot["state"]["domain"]["room_interactions"][string]["pinned_events"] {
+  return roomId ? snapshot.state.domain.room_interactions[roomId]?.pinned_events ?? [] : [];
 }
 
 export function forwardDestinationsFromSnapshot(
   snapshot: import("../domain/types").DesktopSnapshot
 ): import("../components/TimelineView").TimelineForwardDestination[] {
-  return snapshot.state.rooms.map((room) => ({
+  return snapshot.state.domain.rooms.map((room) => ({
     room_id: room.room_id,
     display_name: room.display_label
   }));
@@ -358,7 +358,7 @@ export function forwardDestinationsFromSnapshot(
 export function mentionCandidatesFromSnapshot(
   snapshot: import("../domain/types").DesktopSnapshot
 ): MentionCandidate[] {
-  return Object.values(snapshot.state.profile.users)
+  return Object.values(snapshot.state.domain.profile.users)
     .map((profile) => {
       const label = mentionLabel(profile);
       const target: MentionTarget = {
@@ -450,7 +450,7 @@ export function threadReplyToTimelineMessage(
 export function currentSavedSession(
   snapshot: import("../domain/types").DesktopSnapshot
 ): import("../domain/types").SavedSessionInfo | null {
-  const session = snapshot.state.session;
+  const session = snapshot.state.domain.session;
   if (!session.homeserver || !session.user_id || !session.device_id) {
     return null;
   }

@@ -740,8 +740,8 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
-        activeRoom={snapshot.state.rooms[0] ?? null}
-        activeSpace={snapshot.state.spaces[0] ?? null}
+        activeRoom={snapshot.state.domain.rooms[0] ?? null}
+        activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
         isRecoveryBusy={false}
         mode="search"
@@ -750,7 +750,7 @@ describe("ContextualRightPanel", () => {
         savedSessions={[]}
         searchQuery="Alpha"
         searchResults={
-          snapshot.state.search.kind === "results" ? snapshot.state.search.results : []
+          snapshot.state.domain.search.kind === "results" ? snapshot.state.domain.search.results : []
         }
         snapshot={snapshot}
         onClosePanel={() => undefined}
@@ -782,20 +782,20 @@ describe("ContextualRightPanel", () => {
     const { ContextualRightPanel } = await import("./App");
     const api = createBrowserFakeApi();
     const snapshot = await api.submitSearch("Alpha", "allRooms");
-    snapshot.state.focused_context = {
+    snapshot.state.ui.focused_context = {
       kind: "open",
-      room_id: snapshot.state.search.kind === "results" ? snapshot.state.search.results[0]?.room_id ?? "!room:example.invalid" : "!room:example.invalid",
+      room_id: snapshot.state.domain.search.kind === "results" ? snapshot.state.domain.search.results[0]?.room_id ?? "!room:example.invalid" : "!room:example.invalid",
       event_id:
-        snapshot.state.search.kind === "results"
-          ? snapshot.state.search.results[0]?.event_id ?? "$focused:example.invalid"
+        snapshot.state.domain.search.kind === "results"
+          ? snapshot.state.domain.search.results[0]?.event_id ?? "$focused:example.invalid"
           : "$focused:example.invalid",
       is_subscribed: true
     };
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
-        activeRoom={snapshot.state.rooms[0] ?? null}
-        activeSpace={snapshot.state.spaces[0] ?? null}
+        activeRoom={snapshot.state.domain.rooms[0] ?? null}
+        activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
         isRecoveryBusy={false}
         mode="search"
@@ -804,8 +804,8 @@ describe("ContextualRightPanel", () => {
         savedSessions={[]}
         searchQuery="Alpha"
         searchResults={
-          snapshot.state.search.kind === "results"
-            ? snapshot.state.search.results
+          snapshot.state.domain.search.kind === "results"
+            ? snapshot.state.domain.search.results
           : []
         }
         snapshot={snapshot}
@@ -860,7 +860,7 @@ describe("ContextualRightPanel", () => {
     const { ContextualRightPanel } = await import("./App");
     const api = createBrowserFakeApi();
     const snapshot = await api.submitSearch("Alpha", "allRooms");
-    snapshot.state.focused_context = {
+    snapshot.state.ui.focused_context = {
       kind: "open",
       room_id: "!room-alpha:example.invalid",
       event_id: "$focused:example.invalid",
@@ -869,8 +869,8 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
-        activeRoom={snapshot.state.rooms[0] ?? null}
-        activeSpace={snapshot.state.spaces[0] ?? null}
+        activeRoom={snapshot.state.domain.rooms[0] ?? null}
+        activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
         isRecoveryBusy={false}
         mode="focusedContext"
@@ -879,8 +879,8 @@ describe("ContextualRightPanel", () => {
         savedSessions={[]}
         searchQuery="Alpha"
         searchResults={
-          snapshot.state.search.kind === "results"
-            ? snapshot.state.search.results
+          snapshot.state.domain.search.kind === "results"
+            ? snapshot.state.domain.search.results
             : []
         }
         snapshot={snapshot}
@@ -936,16 +936,16 @@ describe("ContextualRightPanel", () => {
     const { ContextualRightPanel } = await import("./App");
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();
-    snapshot.state.thread = {
+    snapshot.state.ui.thread = {
       kind: "open",
-      room_id: snapshot.state.rooms[0]?.room_id,
+      room_id: snapshot.state.domain.rooms[0]?.room_id,
       root_event_id: "$root:example.invalid",
       is_subscribed: true,
       composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
     };
     snapshot.timeline = [
       {
-        room_id: snapshot.state.rooms[0]?.room_id ?? "!room:example.invalid",
+        room_id: snapshot.state.domain.rooms[0]?.room_id ?? "!room:example.invalid",
         event_id: "$root:example.invalid",
         sender: "@legacy:example.invalid",
         timestamp_ms: 1_800_000_000_000,
@@ -958,8 +958,8 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
-        activeRoom={snapshot.state.rooms[0] ?? null}
-        activeSpace={snapshot.state.spaces[0] ?? null}
+        activeRoom={snapshot.state.domain.rooms[0] ?? null}
+        activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
         isRecoveryBusy={false}
         mode="thread"
@@ -1022,9 +1022,9 @@ describe("ContextualRightPanel", () => {
     const { ContextualRightPanel } = await import("./App");
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();
-    snapshot.state.thread = {
+    snapshot.state.ui.thread = {
       kind: "open",
-      room_id: snapshot.state.rooms[0]?.room_id,
+      room_id: snapshot.state.domain.rooms[0]?.room_id,
       root_event_id: "$root:example.invalid",
       is_subscribed: true,
       composer: {
@@ -1036,8 +1036,8 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
-        activeRoom={snapshot.state.rooms[0] ?? null}
-        activeSpace={snapshot.state.spaces[0] ?? null}
+        activeRoom={snapshot.state.domain.rooms[0] ?? null}
+        activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
         isRecoveryBusy={false}
         mode="thread"
@@ -1076,9 +1076,9 @@ describe("ContextualRightPanel", () => {
     const { ContextualRightPanel } = await import("./App");
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();
-    snapshot.state.thread = {
+    snapshot.state.ui.thread = {
       kind: "open",
-      room_id: snapshot.state.rooms[0]?.room_id,
+      room_id: snapshot.state.domain.rooms[0]?.room_id,
       root_event_id: "$root:example.invalid",
       is_subscribed: true,
       composer: {
@@ -1090,8 +1090,8 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
-        activeRoom={snapshot.state.rooms[0] ?? null}
-        activeSpace={snapshot.state.spaces[0] ?? null}
+        activeRoom={snapshot.state.domain.rooms[0] ?? null}
+        activeSpace={snapshot.state.domain.spaces[0] ?? null}
         activeSpaceName="Home"
         isRecoveryBusy={false}
         mode="thread"
@@ -1125,7 +1125,7 @@ describe("ContextualRightPanel", () => {
 
   test("thread render path keeps Tauri transport ahead of browser fixture fallback", () => {
     const source = readFileSync(new URL("./components/rightPanel.tsx", import.meta.url), "utf8");
-    const threadBranchStart = source.indexOf("const threadState = snapshot.state.thread;");
+    const threadBranchStart = source.indexOf("const threadState = snapshot.state.ui.thread;");
     const threadBranchEnd = source.indexOf("function PanelHeader", threadBranchStart);
     const threadBranch = source.slice(threadBranchStart, threadBranchEnd);
     const transportOffset = threadBranch.indexOf("threadTimelineKeyValue && threadRoomId && timelineTransport");
@@ -1326,22 +1326,22 @@ describe("Tauri state refresh wiring", () => {
     const summaryStart = source.indexOf("const attentionSummary");
     const summaryEnd = source.indexOf("function handleShortcutAction", summaryStart);
     const summarySource = source.slice(summaryStart, summaryEnd);
-    expect(summarySource).toContain("desktopAttentionSummary(snapshot.state.native_attention)");
-    expect(summarySource).not.toContain("snapshot.state.rooms");
+    expect(summarySource).toContain("desktopAttentionSummary(snapshot.state.domain.native_attention)");
+    expect(summarySource).not.toContain("snapshot.state.domain.rooms");
     expect(summarySource).not.toContain("navigation.active_room_id");
 
     const notificationStart = source.indexOf("const candidate = desktopAttentionNotificationCandidate");
     const notificationEnd = source.indexOf("void sendDesktopAttentionNotification", notificationStart);
     const notificationSource = source.slice(notificationStart, notificationEnd);
-    expect(notificationSource).toContain("snapshot.state.native_attention");
+    expect(notificationSource).toContain("snapshot.state.domain.native_attention");
     expect(notificationSource).not.toContain("previousAttentionInput");
-    expect(notificationSource).not.toContain("snapshot.state.rooms");
+    expect(notificationSource).not.toContain("snapshot.state.domain.rooms");
 
     const notificationEffectEnd = source.indexOf("]);", notificationStart);
     const notificationEffectSource = source.slice(notificationStart, notificationEffectEnd);
     expect(notificationEffectSource).toContain("void dispatchDesktopAttentionTransientEffects");
-    expect(notificationEffectSource).toContain("snapshot.state.native_attention.summary.capabilities");
-    expect(notificationEffectSource).not.toContain("snapshot.state.rooms");
+    expect(notificationEffectSource).toContain("snapshot.state.domain.native_attention.summary.capabilities");
+    expect(notificationEffectSource).not.toContain("snapshot.state.domain.rooms");
 
     const clearStart = source.indexOf("safeAttentionSummary.badgeCount !== 0");
     const clearEnd = source.indexOf("const message = qaSendSmokeMessage", clearStart);
@@ -1359,7 +1359,7 @@ describe("Tauri state refresh wiring", () => {
     expect(source).toContain("rightPanelMode");
     expect(source).toContain("qaSendStatus");
     expect(source).toContain("getCurrentWindow()");
-    expect(source).toContain("snapshot?.state.native_attention.summary.capabilities");
+    expect(source).toContain("snapshot?.state.domain.native_attention.summary.capabilities");
     expect(source).toContain("document.title = title");
     expect(source).toContain("desktopAttentionWindowTitle");
   });
@@ -1387,7 +1387,7 @@ describe("TopBar sync state rendering", () => {
         sync={
           {
             reconnecting: "sync service is unavailable"
-          } as DesktopSnapshot["state"]["sync"]
+          } as DesktopSnapshot["state"]["domain"]["sync"]
         }
       />
     );
@@ -1401,7 +1401,7 @@ describe("TopBar sync state rendering", () => {
         sync={
           {
             failed: "transport error"
-          } as DesktopSnapshot["state"]["sync"]
+          } as DesktopSnapshot["state"]["domain"]["sync"]
         }
       />
     );

@@ -26,13 +26,16 @@ describe("qaSendSmoke", () => {
         ...snapshot,
         state: {
           ...snapshot.state,
-          errors: [
-            {
-              code: "synthetic_error",
-              message: "Synthetic error",
-              recoverable: true
-            }
-          ]
+          ui: {
+            ...snapshot.state.ui,
+            errors: [
+              {
+                code: "synthetic_error",
+                message: "Synthetic error",
+                recoverable: true
+              }
+            ]
+          }
         }
       })
     ).toBe(false);
@@ -46,11 +49,14 @@ describe("qaSendSmoke", () => {
       timeline: [],
       state: {
         ...snapshot.state,
-        timeline: {
-          ...snapshot.state.timeline,
-          composer: {
-            ...snapshot.state.timeline.composer,
-            pending_transaction_id: null
+        ui: {
+          ...snapshot.state.ui,
+          timeline: {
+            ...snapshot.state.ui.timeline,
+            composer: {
+              ...snapshot.state.ui.timeline.composer,
+              pending_transaction_id: null
+            }
           }
         }
       }
@@ -59,11 +65,14 @@ describe("qaSendSmoke", () => {
       ...snapshot,
       state: {
         ...snapshot.state,
-        timeline: {
-          ...snapshot.state.timeline,
-          composer: {
-            ...snapshot.state.timeline.composer,
-            pending_transaction_id: "txn1"
+        ui: {
+          ...snapshot.state.ui,
+          timeline: {
+            ...snapshot.state.ui.timeline,
+            composer: {
+              ...snapshot.state.ui.timeline.composer,
+              pending_transaction_id: "txn1"
+            }
           }
         }
       }
@@ -72,13 +81,16 @@ describe("qaSendSmoke", () => {
       ...snapshot,
       state: {
         ...snapshot.state,
-        errors: [
-          {
-            code: "send_text_failed",
-            message: "Matrix send failed",
-            recoverable: true
-          }
-        ]
+        ui: {
+          ...snapshot.state.ui,
+          errors: [
+            {
+              code: "send_text_failed",
+              message: "Matrix send failed",
+              recoverable: true
+            }
+          ]
+        }
       }
     };
 

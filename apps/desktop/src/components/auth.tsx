@@ -23,8 +23,8 @@ export function RecoveryPanel({
   onSecretPresenceChange: (value: boolean) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const primaryError = snapshot.state.errors.at(-1);
-  const session = snapshot.state.session;
+  const primaryError = snapshot.state.ui.errors.at(-1);
+  const session = snapshot.state.domain.session;
 
   return (
     <section className="recovery-panel-body" data-testid="recovery-panel">
@@ -101,8 +101,8 @@ export function AuthScreen({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onUsernameChange: (value: string) => void;
 }) {
-  const primaryError = snapshot.state.errors.at(-1);
-  const auth = snapshot.state.auth;
+  const primaryError = snapshot.state.ui.errors.at(-1);
+  const auth = snapshot.state.domain.auth;
   const passwordLoginAvailable =
     auth.kind !== "ready" || auth.flows.some((flow) => flow.kind === "password");
 
@@ -115,7 +115,7 @@ export function AuthScreen({
           </div>
           <div>
             <h1>{t("auth.matrixDesktop")}</h1>
-            <p>{sessionLabel(snapshot.state.session.kind)}</p>
+            <p>{sessionLabel(snapshot.state.domain.session.kind)}</p>
           </div>
         </div>
         <label className="auth-field">
@@ -193,7 +193,7 @@ export function AuthScreen({
   );
 }
 
-function authDiscoveryLabel(auth: DesktopSnapshot["state"]["auth"]) {
+function authDiscoveryLabel(auth: DesktopSnapshot["state"]["domain"]["auth"]) {
   switch (auth.kind) {
     case "discovering":
       return t("auth.checking");
@@ -245,7 +245,7 @@ function authFailureLabel(kind: AuthFailureKind): string {
   }
 }
 
-function sessionLabel(kind: DesktopSnapshot["state"]["session"]["kind"]) {
+function sessionLabel(kind: DesktopSnapshot["state"]["domain"]["session"]["kind"]) {
   switch (kind) {
     case "authenticating":
       return t("auth.connecting");
@@ -262,7 +262,7 @@ function sessionLabel(kind: DesktopSnapshot["state"]["session"]["kind"]) {
 }
 
 function recoveryMethodLabel(
-  method: NonNullable<DesktopSnapshot["state"]["session"]["recovery_methods"]>[number]
+  method: NonNullable<DesktopSnapshot["state"]["domain"]["session"]["recovery_methods"]>[number]
 ) {
   switch (method) {
     case "recoveryKey":

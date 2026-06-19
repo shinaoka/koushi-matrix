@@ -231,7 +231,7 @@ class BrowserFakeApi implements DesktopApi {
 
   async discoverLoginMethods(homeserver: string): Promise<DesktopSnapshot> {
     const normalizedHomeserver = normalizeHomeserver(homeserver);
-    this.snapshot.state.auth = {
+    this.snapshot.state.domain.auth = {
       kind: "ready",
       homeserver: normalizedHomeserver,
       flows: [
@@ -258,11 +258,11 @@ class BrowserFakeApi implements DesktopApi {
     password: string,
     deviceDisplayName: string
   ): Promise<DesktopSnapshot> {
-    this.snapshot.state.session = {
+    this.snapshot.state.domain.session = {
       kind: "authenticating",
       homeserver: normalizeHomeserver(homeserver)
     };
-    this.snapshot.state.errors = this.snapshot.state.errors.filter(
+    this.snapshot.state.ui.errors = this.snapshot.state.ui.errors.filter(
       (error) => error.code !== "login_failed"
     );
     this.clearSessionViews();
@@ -270,8 +270,8 @@ class BrowserFakeApi implements DesktopApi {
     void password;
     void deviceDisplayName;
 
-    this.snapshot.state.session = { kind: "signedOut" };
-    this.snapshot.state.errors.push({
+    this.snapshot.state.domain.session = { kind: "signedOut" };
+    this.snapshot.state.ui.errors.push({
       code: "login_failed",
       message: "real Matrix login is not wired in this pre-login foundation",
       recoverable: true
@@ -292,11 +292,11 @@ class BrowserFakeApi implements DesktopApi {
           candidate.user_id === session.user_id &&
           candidate.device_id === session.device_id
       ) ?? session;
-    this.snapshot.state.session = {
+    this.snapshot.state.domain.session = {
       ...knownSession,
       kind: "switchingAccount"
     };
-    this.snapshot.state.sync = "stopped";
+    this.snapshot.state.domain.sync = "stopped";
     this.clearSessionViews();
     this.snapshot = createReadySnapshot(knownSession);
     return this.getSnapshot();
@@ -304,17 +304,17 @@ class BrowserFakeApi implements DesktopApi {
 
   async submitRecovery(secret: string): Promise<DesktopSnapshot> {
     if (
-      this.snapshot.state.session.kind !== "needsRecovery" &&
-      this.snapshot.state.session.kind !== "recovering"
+      this.snapshot.state.domain.session.kind !== "needsRecovery" &&
+      this.snapshot.state.domain.session.kind !== "recovering"
     ) {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.session = {
-      ...this.snapshot.state.session,
+    this.snapshot.state.domain.session = {
+      ...this.snapshot.state.domain.session,
       kind: "recovering"
     };
-    this.snapshot.state.errors = this.snapshot.state.errors.filter(
+    this.snapshot.state.ui.errors = this.snapshot.state.ui.errors.filter(
       (error) => error.code !== "e2ee_recovery_failed"
     );
     void secret;
@@ -330,20 +330,20 @@ class BrowserFakeApi implements DesktopApi {
 
     this.rememberActiveRoomForCurrentSpace();
     const nextSpaceId =
-      spaceId && this.snapshot.state.spaces.some((space) => space.space_id === spaceId)
+      spaceId && this.snapshot.state.domain.spaces.some((space) => space.space_id === spaceId)
         ? spaceId
         : null;
-    this.snapshot.state.navigation.active_space_id = nextSpaceId;
+    this.snapshot.state.ui.navigation.active_space_id = nextSpaceId;
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
 
     const targetRoomId = nextSpaceId
       ? this.preferredRoomIdInSpace(nextSpaceId)
       : this.firstDefaultRoomId();
-    if (targetRoomId && targetRoomId !== this.snapshot.state.navigation.active_room_id) {
+    if (targetRoomId && targetRoomId !== this.snapshot.state.ui.navigation.active_room_id) {
       await this.selectRoom(targetRoomId);
     } else if (!targetRoomId) {
       this.clearActiveRoomSelection();
@@ -354,45 +354,45 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async reorderSpaces(spaceIds: string[]): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || !isCompleteSpaceOrder(this.snapshot.state.spaces, spaceIds)) {
+    if (!this.canUseSyncedViews() || !isCompleteSpaceOrder(this.snapshot.state.domain.spaces, spaceIds)) {
       return this.getSnapshot();
     }
 
     const positionBySpaceId = new Map(spaceIds.map((spaceId, index) => [spaceId, index]));
-    this.snapshot.state.navigation.space_order = [...spaceIds];
-    this.snapshot.state.spaces = [...this.snapshot.state.spaces].sort(
+    this.snapshot.state.ui.navigation.space_order = [...spaceIds];
+    this.snapshot.state.domain.spaces = [...this.snapshot.state.domain.spaces].sort(
       (left, right) =>
         (positionBySpaceId.get(left.space_id) ?? Number.MAX_SAFE_INTEGER) -
         (positionBySpaceId.get(right.space_id) ?? Number.MAX_SAFE_INTEGER)
     );
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     return this.getSnapshot();
   }
 
   async restartSync(): Promise<DesktopSnapshot> {
     if (this.canRestartSync()) {
-      this.snapshot.state.sync = "running";
+      this.snapshot.state.domain.sync = "running";
     }
 
     return this.getSnapshot();
   }
 
   async updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot> {
-    this.snapshot.state.settings.values = applySettingsPatch(
-      this.snapshot.state.settings.values,
+    this.snapshot.state.domain.settings.values = applySettingsPatch(
+      this.snapshot.state.domain.settings.values,
       patch
     );
-    this.snapshot.state.locale_profile = resolveLocaleDisplayProfile(
-      this.snapshot.state.settings.values.locale
+    this.snapshot.state.domain.locale_profile = resolveLocaleDisplayProfile(
+      this.snapshot.state.domain.settings.values.locale
     );
-    this.snapshot.state.typography_profile = resolveTypographyDisplayProfile(
-      this.snapshot.state.settings.values.typography
+    this.snapshot.state.domain.typography_profile = resolveTypographyDisplayProfile(
+      this.snapshot.state.domain.settings.values.typography
     );
-    this.snapshot.state.settings.persistence = { kind: "idle" };
+    this.snapshot.state.domain.settings.persistence = { kind: "idle" };
     return this.getSnapshot();
   }
 
@@ -400,17 +400,17 @@ class BrowserFakeApi implements DesktopApi {
     roomId: string,
     enabled: boolean
   ): Promise<DesktopSnapshot> {
-    const room = this.snapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+    const room = this.snapshot.state.domain.rooms.find((candidate) => candidate.room_id === roomId);
     if (!room || !this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
     const defaultEnabled = room.is_encrypted
-      ? this.snapshot.state.settings.values.display.encrypted_url_previews_enabled
-      : this.snapshot.state.settings.values.display.url_previews_enabled;
+      ? this.snapshot.state.domain.settings.values.display.encrypted_url_previews_enabled
+      : this.snapshot.state.domain.settings.values.display.url_previews_enabled;
     if (enabled === defaultEnabled) {
-      delete this.snapshot.state.link_preview_settings.room_overrides[roomId];
+      delete this.snapshot.state.domain.link_preview_settings.room_overrides[roomId];
     } else {
-      this.snapshot.state.link_preview_settings.room_overrides[roomId] = enabled;
+      this.snapshot.state.domain.link_preview_settings.room_overrides[roomId] = enabled;
     }
     return this.getSnapshot();
   }
@@ -445,12 +445,12 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
     const known =
-      this.snapshot.state.rooms.some((room) => room.room_id === roomId) ||
-      this.snapshot.state.invites.some((invite) => invite.room_id === roomId);
+      this.snapshot.state.domain.rooms.some((room) => room.room_id === roomId) ||
+      this.snapshot.state.domain.invites.some((invite) => invite.room_id === roomId);
     if (!known) {
       return this.getSnapshot();
     }
-    this.snapshot.state.room_notification_settings[roomId] = {
+    this.snapshot.state.domain.room_notification_settings[roomId] = {
       mode,
       operation: { kind: "idle" }
     };
@@ -458,15 +458,15 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   setRoomListProjection(projection: RoomListProjection): void {
-    this.snapshot.state.room_list = projection;
+    this.snapshot.state.ui.room_list = projection;
   }
 
-  private refreshRoomListProjection(filter = this.snapshot.state.room_list.active_filter): void {
-    this.snapshot.state.room_list = computeBrowserRoomListProjection(
+  private refreshRoomListProjection(filter = this.snapshot.state.ui.room_list.active_filter): void {
+    this.snapshot.state.ui.room_list = computeBrowserRoomListProjection(
       filter,
-      this.snapshot.state.room_list.sort,
-      this.snapshot.state.rooms,
-      this.snapshot.state.invites
+      this.snapshot.state.ui.room_list.sort,
+      this.snapshot.state.domain.rooms,
+      this.snapshot.state.domain.invites
     );
   }
 
@@ -474,7 +474,7 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    this.snapshot.state.device_sessions = {
+    this.snapshot.state.domain.device_sessions = {
       kind: "loaded",
       devices: [
         {
@@ -497,8 +497,8 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot> {
-    if (this.snapshot.state.device_sessions.kind === "loaded") {
-      for (const device of this.snapshot.state.device_sessions.devices) {
+    if (this.snapshot.state.domain.device_sessions.kind === "loaded") {
+      for (const device of this.snapshot.state.domain.device_sessions.devices) {
         if (device.device_ordinal === deviceOrdinal) {
           device.display_name = displayName;
         }
@@ -508,9 +508,9 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot> {
-    if (this.snapshot.state.device_sessions.kind === "loaded") {
-      this.snapshot.state.device_sessions.devices =
-        this.snapshot.state.device_sessions.devices.filter(
+    if (this.snapshot.state.domain.device_sessions.kind === "loaded") {
+      this.snapshot.state.domain.device_sessions.devices =
+        this.snapshot.state.domain.device_sessions.devices.filter(
           (d) => !deviceOrdinals.includes(d.device_ordinal)
         );
     }
@@ -523,7 +523,7 @@ class BrowserFakeApi implements DesktopApi {
     }
     void flowId;
     void password;
-    this.snapshot.state.account_management = { kind: "idle" };
+    this.snapshot.state.domain.account_management = { kind: "idle" };
     return this.getSnapshot();
   }
 
@@ -531,7 +531,7 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.isReady()) {
       return this.getSnapshot();
     }
-    this.snapshot.state.account_management_capabilities = {
+    this.snapshot.state.domain.account_management_capabilities = {
       change_password: { kind: "enabled" }
     };
     return this.getSnapshot();
@@ -542,7 +542,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
     void newPassword;
-    this.snapshot.state.account_management = {
+    this.snapshot.state.domain.account_management = {
       kind: "succeeded",
       request_id: this.nextRequestId(),
       operation: "changePassword"
@@ -555,7 +555,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
     void eraseData;
-    this.snapshot.state.account_management = {
+    this.snapshot.state.domain.account_management = {
       kind: "succeeded",
       request_id: this.nextRequestId(),
       operation: "deactivateAccount"
@@ -565,9 +565,9 @@ class BrowserFakeApi implements DesktopApi {
 
   async probeLocalEncryptionHealth(): Promise<DesktopSnapshot> {
     const requestId = this.nextRequestId();
-    this.snapshot.state.local_encryption = { kind: "probing", request_id: requestId };
+    this.snapshot.state.domain.local_encryption = { kind: "probing", request_id: requestId };
     await Promise.resolve();
-    this.snapshot.state.local_encryption = { kind: "healthy" };
+    this.snapshot.state.domain.local_encryption = { kind: "healthy" };
     return this.getSnapshot();
   }
 
@@ -576,14 +576,14 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.local_encryption = {
+    this.snapshot.state.domain.local_encryption = {
       kind: "resetting",
       request_id: this.nextRequestId()
     };
     await Promise.resolve();
-    this.snapshot.state.session = { kind: "signedOut" };
-    this.snapshot.state.sync = "stopped";
-    this.snapshot.state.local_encryption = { kind: "unknown" };
+    this.snapshot.state.domain.session = { kind: "signedOut" };
+    this.snapshot.state.domain.sync = "stopped";
+    this.snapshot.state.domain.local_encryption = { kind: "unknown" };
     this.clearSessionViews();
     return this.getSnapshot();
   }
@@ -593,7 +593,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.e2ee_trust.cross_signing = { kind: "trusted" };
+    this.snapshot.state.domain.e2ee_trust.cross_signing = { kind: "trusted" };
     return this.getSnapshot();
   }
 
@@ -602,7 +602,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.e2ee_trust.key_backup = {
+    this.snapshot.state.domain.e2ee_trust.key_backup = {
       kind: "enabled",
       version: "browser-preview"
     };
@@ -616,7 +616,7 @@ class BrowserFakeApi implements DesktopApi {
 
     void destinationPath;
     void passphrase;
-    this.snapshot.state.e2ee_trust.key_management.room_key_export = {
+    this.snapshot.state.domain.e2ee_trust.key_management.room_key_export = {
       kind: "exported",
       request_id: this.nextRequestId(),
       exported_sessions: null
@@ -631,7 +631,7 @@ class BrowserFakeApi implements DesktopApi {
 
     void sourcePath;
     void passphrase;
-    this.snapshot.state.e2ee_trust.key_management.room_key_import = {
+    this.snapshot.state.domain.e2ee_trust.key_management.room_key_import = {
       kind: "imported",
       request_id: this.nextRequestId(),
       imported_count: 1,
@@ -649,7 +649,7 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     void passphrase;
-    this.snapshot.state.e2ee_trust.key_management.secure_backup_setup = {
+    this.snapshot.state.domain.e2ee_trust.key_management.secure_backup_setup = {
       kind: "recoveryKeyReady",
       request_id: this.nextRequestId(),
       delivery: recoveryKeyDestinationPath?.trim() ? { kind: "written" } : { kind: "notWritten" }
@@ -668,7 +668,7 @@ class BrowserFakeApi implements DesktopApi {
 
     void oldSecret;
     void newPassphrase;
-    this.snapshot.state.e2ee_trust.key_management.passphrase_change = {
+    this.snapshot.state.domain.e2ee_trust.key_management.passphrase_change = {
       kind: "changed",
       request_id: this.nextRequestId(),
       delivery: recoveryKeyDestinationPath?.trim() ? { kind: "written" } : { kind: "notWritten" }
@@ -681,9 +681,9 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const verification = this.snapshot.state.e2ee_trust.verification;
+    const verification = this.snapshot.state.domain.e2ee_trust.verification;
     if (verification.kind === "requested" && verification.request_id === flowId) {
-      this.snapshot.state.e2ee_trust.verification = {
+      this.snapshot.state.domain.e2ee_trust.verification = {
         kind: "accepted",
         request_id: flowId,
         target: verification.target
@@ -697,12 +697,12 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const verification = this.snapshot.state.e2ee_trust.verification;
+    const verification = this.snapshot.state.domain.e2ee_trust.verification;
     if (
       (verification.kind === "sasPresented" || verification.kind === "confirming") &&
       verification.request_id === flowId
     ) {
-      this.snapshot.state.e2ee_trust.verification = {
+      this.snapshot.state.domain.e2ee_trust.verification = {
         kind: "done",
         request_id: flowId,
         target: verification.target
@@ -716,9 +716,9 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const verification = this.snapshot.state.e2ee_trust.verification;
+    const verification = this.snapshot.state.domain.e2ee_trust.verification;
     if (verification.kind !== "idle" && verification.request_id === flowId) {
-      this.snapshot.state.e2ee_trust.verification = { kind: "idle" };
+      this.snapshot.state.domain.e2ee_trust.verification = { kind: "idle" };
     }
     return this.getSnapshot();
   }
@@ -728,7 +728,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.e2ee_trust.identity_reset = {
+    this.snapshot.state.domain.e2ee_trust.identity_reset = {
       kind: "awaitingAuth",
       request_id: this.nextRequestId(),
       auth_type: "uiaa"
@@ -742,7 +742,7 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     void password;
-    const identityReset = this.snapshot.state.e2ee_trust.identity_reset;
+    const identityReset = this.snapshot.state.domain.e2ee_trust.identity_reset;
     if (identityReset.kind === "awaitingAuth" && identityReset.request_id === flowId) {
       this.completeIdentityReset();
     }
@@ -754,7 +754,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const identityReset = this.snapshot.state.e2ee_trust.identity_reset;
+    const identityReset = this.snapshot.state.domain.e2ee_trust.identity_reset;
     if (identityReset.kind === "awaitingAuth" && identityReset.request_id === flowId) {
       this.completeIdentityReset();
     }
@@ -768,7 +768,7 @@ class BrowserFakeApi implements DesktopApi {
   ): Promise<ComposerResolvedAction> {
     void surface;
     return resolveComposerKeyActionFromSettings(
-      this.snapshot.state.settings.values.keyboard.composer_send_shortcut,
+      this.snapshot.state.domain.settings.values.keyboard.composer_send_shortcut,
       keyEvent,
       options
     );
@@ -778,7 +778,7 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    const selectedRoom = this.snapshot.state.rooms.find((room) => room.room_id === roomId);
+    const selectedRoom = this.snapshot.state.domain.rooms.find((room) => room.room_id === roomId);
     if (!selectedRoom) {
       return this.getSnapshot();
     }
@@ -786,31 +786,31 @@ class BrowserFakeApi implements DesktopApi {
     this.rememberActiveRoomForCurrentSpace();
     if (!selectedRoom.is_dm) {
       const activeSpaceContainsSelectedRoom = Boolean(
-        this.snapshot.state.navigation.active_space_id &&
-          selectedRoom.parent_space_ids.includes(this.snapshot.state.navigation.active_space_id)
+        this.snapshot.state.ui.navigation.active_space_id &&
+          selectedRoom.parent_space_ids.includes(this.snapshot.state.ui.navigation.active_space_id)
       );
       if (!activeSpaceContainsSelectedRoom) {
-        this.snapshot.state.navigation.active_space_id =
+        this.snapshot.state.ui.navigation.active_space_id =
           selectedRoom.parent_space_ids[0] ?? null;
         this.snapshot.sidebar = composeSidebar(
-          this.snapshot.state.navigation.active_space_id,
-          this.snapshot.state.spaces,
-          this.snapshot.state.rooms
+          this.snapshot.state.ui.navigation.active_space_id,
+          this.snapshot.state.domain.spaces,
+          this.snapshot.state.domain.rooms
         );
       }
     }
-    this.snapshot.state.navigation.active_room_id = roomId;
-    this.snapshot.state.timeline.room_id = roomId;
-    this.snapshot.state.timeline.is_subscribed = true;
-    this.snapshot.state.timeline.composer = {
+    this.snapshot.state.ui.navigation.active_room_id = roomId;
+    this.snapshot.state.ui.timeline.room_id = roomId;
+    this.snapshot.state.ui.timeline.is_subscribed = true;
+    this.snapshot.state.ui.timeline.composer = {
       pending_transaction_id: null,
       draft: this.composerDrafts.get(roomId) ?? "",
       mode: "Plain"
     };
-    this.snapshot.state.thread = { kind: "closed" };
-    this.snapshot.state.thread_attention = { kind: "closed" };
-    this.snapshot.state.threads_list = { kind: "closed" };
-    this.snapshot.state.focused_context = { kind: "closed" };
+    this.snapshot.state.ui.thread = { kind: "closed" };
+    this.snapshot.state.domain.thread_attention = { kind: "closed" };
+    this.snapshot.state.ui.threads_list = { kind: "closed" };
+    this.snapshot.state.ui.focused_context = { kind: "closed" };
     this.snapshot.thread = null;
     this.snapshot.timeline = timelineMessages.filter((message) => message.room_id === roomId);
     this.rememberActiveRoomForCurrentSpace();
@@ -823,7 +823,7 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     await this.selectRoom(roomId);
-    this.snapshot.state.focused_context = {
+    this.snapshot.state.ui.focused_context = {
       kind: "opening",
       room_id: roomId,
       event_id: eventId
@@ -845,7 +845,7 @@ class BrowserFakeApi implements DesktopApi {
       roomMessages.find((message) => message.timestamp_ms >= timestampMs) ??
       roomMessages.at(-1);
     if (target) {
-      this.snapshot.state.focused_context = {
+      this.snapshot.state.ui.focused_context = {
         kind: "opening",
         room_id: roomId,
         event_id: target.event_id
@@ -859,26 +859,26 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.focused_context = { kind: "closed" };
+    this.snapshot.state.ui.focused_context = { kind: "closed" };
     return this.getSnapshot();
   }
 
   async paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot> {
     if (
       !this.canUseSyncedViews() ||
-      this.snapshot.state.timeline.room_id !== roomId ||
-      this.snapshot.state.timeline.is_paginating_backwards
+      this.snapshot.state.ui.timeline.room_id !== roomId ||
+      this.snapshot.state.ui.timeline.is_paginating_backwards
     ) {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.timeline.is_paginating_backwards = true;
+    this.snapshot.state.ui.timeline.is_paginating_backwards = true;
     const existingEventIds = new Set(this.snapshot.timeline.map((message) => message.event_id));
     const olderMessages = backwardTimelineMessages.filter(
       (message) => message.room_id === roomId && !existingEventIds.has(message.event_id)
     );
     this.snapshot.timeline = [...olderMessages, ...this.snapshot.timeline];
-    this.snapshot.state.timeline.is_paginating_backwards = false;
+    this.snapshot.state.ui.timeline.is_paginating_backwards = false;
     return this.getSnapshot();
   }
 
@@ -888,11 +888,11 @@ class BrowserFakeApi implements DesktopApi {
     mentions: MentionIntent = emptyMentionIntent()
   ): Promise<DesktopSnapshot> {
     void mentions;
-    const session = this.snapshot.state.session;
+    const session = this.snapshot.state.domain.session;
     if (
       session.kind !== "ready" ||
       !session.user_id ||
-      this.snapshot.state.timeline.room_id !== roomId ||
+      this.snapshot.state.ui.timeline.room_id !== roomId ||
       body.trim().length === 0
     ) {
       return this.getSnapshot();
@@ -911,8 +911,8 @@ class BrowserFakeApi implements DesktopApi {
         reply_count: 0
       }
     ];
-    this.snapshot.state.timeline.composer.pending_transaction_id = null;
-    this.snapshot.state.timeline.composer.draft = "";
+    this.snapshot.state.ui.timeline.composer.pending_transaction_id = null;
+    this.snapshot.state.ui.timeline.composer.draft = "";
     this.composerDrafts.delete(roomId);
     return this.getSnapshot();
   }
@@ -922,28 +922,28 @@ class BrowserFakeApi implements DesktopApi {
     body: string,
     sendAtMs: number
   ): Promise<DesktopSnapshot> {
-    const session = this.snapshot.state.session;
+    const session = this.snapshot.state.domain.session;
     if (
       session.kind !== "ready" ||
-      this.snapshot.state.timeline.room_id !== roomId ||
+      this.snapshot.state.ui.timeline.room_id !== roomId ||
       body.trim().length === 0 ||
       !Number.isFinite(sendAtMs)
     ) {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.timeline.scheduled_send_capability = "localFallback";
-    this.snapshot.state.timeline.scheduled_sends = [
-      ...this.snapshot.state.timeline.scheduled_sends,
+    this.snapshot.state.ui.timeline.scheduled_send_capability = "localFallback";
+    this.snapshot.state.ui.timeline.scheduled_sends = [
+      ...this.snapshot.state.ui.timeline.scheduled_sends,
       {
-        scheduled_id: `browser-scheduled-${this.snapshot.state.timeline.scheduled_sends.length + 1}`,
+        scheduled_id: `browser-scheduled-${this.snapshot.state.ui.timeline.scheduled_sends.length + 1}`,
         room_id: roomId,
         body,
         send_at_ms: sendAtMs,
         handle: { kind: "local" }
       }
     ];
-    this.snapshot.state.timeline.composer.draft = "";
+    this.snapshot.state.ui.timeline.composer.draft = "";
     this.composerDrafts.delete(roomId);
     return this.getSnapshot();
   }
@@ -952,10 +952,10 @@ class BrowserFakeApi implements DesktopApi {
     roomId: string,
     items: UploadStagingRequestItem[]
   ): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || this.snapshot.state.timeline.room_id !== roomId) {
+    if (!this.canUseSyncedViews() || this.snapshot.state.ui.timeline.room_id !== roomId) {
       return this.getSnapshot();
     }
-    this.snapshot.state.timeline.staged_uploads = items.map((item, index) => ({
+    this.snapshot.state.ui.timeline.staged_uploads = items.map((item, index) => ({
       staged_id: item.stagedId,
       room_id: roomId,
       position: item.position || index + 1,
@@ -977,7 +977,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
     const normalized = caption?.trim() ? caption : null;
-    this.snapshot.state.timeline.staged_uploads = this.snapshot.state.timeline.staged_uploads.map(
+    this.snapshot.state.ui.timeline.staged_uploads = this.snapshot.state.ui.timeline.staged_uploads.map(
       (item) =>
         item.staged_id === stagedId
           ? {
@@ -998,7 +998,7 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    this.snapshot.state.timeline.staged_uploads = this.snapshot.state.timeline.staged_uploads.map(
+    this.snapshot.state.ui.timeline.staged_uploads = this.snapshot.state.ui.timeline.staged_uploads.map(
       (item) =>
         item.staged_id === stagedId
           ? { ...item, compression_choice: compressionChoice }
@@ -1008,10 +1008,10 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async clearUploadStaging(roomId: string): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || this.snapshot.state.timeline.room_id !== roomId) {
+    if (!this.canUseSyncedViews() || this.snapshot.state.ui.timeline.room_id !== roomId) {
       return this.getSnapshot();
     }
-    this.snapshot.state.timeline.staged_uploads = [];
+    this.snapshot.state.ui.timeline.staged_uploads = [];
     return this.getSnapshot();
   }
 
@@ -1019,8 +1019,8 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    this.snapshot.state.timeline.scheduled_sends =
-      this.snapshot.state.timeline.scheduled_sends.filter(
+    this.snapshot.state.ui.timeline.scheduled_sends =
+      this.snapshot.state.ui.timeline.scheduled_sends.filter(
         (item) => item.scheduled_id !== scheduledId
       );
     return this.getSnapshot();
@@ -1033,8 +1033,8 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews() || !Number.isFinite(sendAtMs)) {
       return this.getSnapshot();
     }
-    this.snapshot.state.timeline.scheduled_sends =
-      this.snapshot.state.timeline.scheduled_sends.map((item) =>
+    this.snapshot.state.ui.timeline.scheduled_sends =
+      this.snapshot.state.ui.timeline.scheduled_sends.map((item) =>
         item.scheduled_id === scheduledId ? { ...item, send_at_ms: sendAtMs } : item
       );
     return this.getSnapshot();
@@ -1077,7 +1077,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async sendReadReceipt(roomId: string, eventId: string): Promise<DesktopSnapshot> {
-    const session = this.snapshot.state.session;
+    const session = this.snapshot.state.domain.session;
     if (!this.isReady() || !session.user_id || eventId.trim().length === 0) {
       return this.getSnapshot();
     }
@@ -1087,9 +1087,9 @@ class BrowserFakeApi implements DesktopApi {
       ...existing.filter((receipt) => receipt.user_id !== session.user_id),
       {
         user_id: session.user_id,
-        display_name: this.snapshot.state.profile.own.display_name,
-        original_display_label: this.snapshot.state.profile.own.display_name?.trim() || session.user_id,
-        avatar: this.snapshot.state.profile.own.avatar,
+        display_name: this.snapshot.state.domain.profile.own.display_name,
+        original_display_label: this.snapshot.state.domain.profile.own.display_name?.trim() || session.user_id,
+        avatar: this.snapshot.state.domain.profile.own.avatar,
         timestamp_ms: Date.now()
       }
     ]);
@@ -1105,7 +1105,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot> {
-    const session = this.snapshot.state.session;
+    const session = this.snapshot.state.domain.session;
     if (!this.isReady() || !session.user_id) {
       return this.getSnapshot();
     }
@@ -1116,11 +1116,11 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async setPresence(presence: PresenceKind): Promise<DesktopSnapshot> {
-    const session = this.snapshot.state.session;
+    const session = this.snapshot.state.domain.session;
     if (!this.isReady() || !session.user_id) {
       return this.getSnapshot();
     }
-    this.snapshot.state.live_signals.presence[session.user_id] = presence;
+    this.snapshot.state.domain.live_signals.presence[session.user_id] = presence;
     return this.getSnapshot();
   }
 
@@ -1130,13 +1130,13 @@ class BrowserFakeApi implements DesktopApi {
     }
     const normalized = displayName?.trim() ? displayName.trim() : null;
     const requestId = this.nextRequestId();
-    this.snapshot.state.profile.update = {
+    this.snapshot.state.domain.profile.update = {
       kind: "settingDisplayName",
       request_id: requestId,
       display_name: normalized
     };
-    this.snapshot.state.profile.own.display_name = normalized;
-    this.snapshot.state.profile.update = { kind: "idle" };
+    this.snapshot.state.domain.profile.own.display_name = normalized;
+    this.snapshot.state.domain.profile.update = { kind: "idle" };
     return this.getSnapshot();
   }
 
@@ -1148,7 +1148,7 @@ class BrowserFakeApi implements DesktopApi {
     const normalizedUserId = userId.trim();
     const normalizedAlias = alias?.trim() ? alias.trim() : null;
     const requestId = this.nextRequestId();
-    this.snapshot.state.profile.local_alias_update = {
+    this.snapshot.state.domain.profile.local_alias_update = {
       kind: "saving",
       request_id: requestId
     };
@@ -1156,12 +1156,12 @@ class BrowserFakeApi implements DesktopApi {
     await Promise.resolve();
 
     if (normalizedAlias) {
-      this.snapshot.state.profile.local_aliases[normalizedUserId] = normalizedAlias;
+      this.snapshot.state.domain.profile.local_aliases[normalizedUserId] = normalizedAlias;
     } else {
-      delete this.snapshot.state.profile.local_aliases[normalizedUserId];
+      delete this.snapshot.state.domain.profile.local_aliases[normalizedUserId];
     }
     this.refreshLocalAliasProjections(normalizedUserId);
-    this.snapshot.state.profile.local_alias_update = { kind: "idle" };
+    this.snapshot.state.domain.profile.local_alias_update = { kind: "idle" };
     return this.getSnapshot();
   }
 
@@ -1171,18 +1171,18 @@ class BrowserFakeApi implements DesktopApi {
     }
     const normalizedUserId = userId.trim();
     const requestId = this.nextRequestId();
-    this.snapshot.state.profile.ignored_user_update = {
+    this.snapshot.state.domain.profile.ignored_user_update = {
       kind: "saving",
       request_id: requestId
     };
     await Promise.resolve();
-    if (!this.snapshot.state.profile.ignored_user_ids.includes(normalizedUserId)) {
-      this.snapshot.state.profile.ignored_user_ids = [
-        ...this.snapshot.state.profile.ignored_user_ids,
+    if (!this.snapshot.state.domain.profile.ignored_user_ids.includes(normalizedUserId)) {
+      this.snapshot.state.domain.profile.ignored_user_ids = [
+        ...this.snapshot.state.domain.profile.ignored_user_ids,
         normalizedUserId
       ];
     }
-    this.snapshot.state.profile.ignored_user_update = { kind: "idle" };
+    this.snapshot.state.domain.profile.ignored_user_update = { kind: "idle" };
     return this.getSnapshot();
   }
 
@@ -1192,14 +1192,14 @@ class BrowserFakeApi implements DesktopApi {
     }
     const normalizedUserId = userId.trim();
     const requestId = this.nextRequestId();
-    this.snapshot.state.profile.ignored_user_update = {
+    this.snapshot.state.domain.profile.ignored_user_update = {
       kind: "saving",
       request_id: requestId
     };
     await Promise.resolve();
-    this.snapshot.state.profile.ignored_user_ids =
-      this.snapshot.state.profile.ignored_user_ids.filter((id) => id !== normalizedUserId);
-    this.snapshot.state.profile.ignored_user_update = { kind: "idle" };
+    this.snapshot.state.domain.profile.ignored_user_ids =
+      this.snapshot.state.domain.profile.ignored_user_ids.filter((id) => id !== normalizedUserId);
+    this.snapshot.state.domain.profile.ignored_user_update = { kind: "idle" };
     return this.getSnapshot();
   }
 
@@ -1236,17 +1236,17 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
     const requestId = this.nextRequestId();
-    this.snapshot.state.profile.update = {
+    this.snapshot.state.domain.profile.update = {
       kind: "settingAvatar",
       request_id: requestId,
       mime_type: mimeType,
       byte_count: bytes.length
     };
-    this.snapshot.state.profile.own.avatar = {
+    this.snapshot.state.domain.profile.own.avatar = {
       mxc_uri: "mxc://browser.fake/profile-avatar",
       thumbnail: { kind: "notRequested" }
     };
-    this.snapshot.state.profile.update = { kind: "idle" };
+    this.snapshot.state.domain.profile.update = { kind: "idle" };
     return this.getSnapshot();
   }
 
@@ -1328,7 +1328,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.thread = {
+    this.snapshot.state.ui.thread = {
       kind: "open",
       room_id: roomId,
       root_event_id: rootEventId,
@@ -1350,7 +1350,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.thread = { kind: "closed" };
+    this.snapshot.state.ui.thread = { kind: "closed" };
     this.snapshot.thread = null;
     return this.getSnapshot();
   }
@@ -1359,10 +1359,10 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    if (!this.snapshot.state.rooms.some((room) => room.room_id === roomId)) {
+    if (!this.snapshot.state.domain.rooms.some((room) => room.room_id === roomId)) {
       return this.getSnapshot();
     }
-    this.snapshot.state.threads_list = {
+    this.snapshot.state.ui.threads_list = {
       kind: "open",
       room_id: roomId,
       request_id: 0,
@@ -1377,7 +1377,7 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    this.snapshot.state.threads_list = { kind: "closed" };
+    this.snapshot.state.ui.threads_list = { kind: "closed" };
     return this.getSnapshot();
   }
 
@@ -1390,7 +1390,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
     const resolvedScope = this.resolveFilesViewScope(scope);
-    this.snapshot.state.files_view = {
+    this.snapshot.state.ui.files_view = {
       kind: "open",
       request_id: 0,
       scope: resolvedScope,
@@ -1406,13 +1406,13 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    this.snapshot.state.files_view = { kind: "closed" };
+    this.snapshot.state.ui.files_view = { kind: "closed" };
     return this.getSnapshot();
   }
 
   private resolveFilesViewScope(scope: FilesViewScope) {
     if (scope.kind === "space") {
-      const space = this.snapshot.state.spaces.find((s) => s.space_id === scope.space_id);
+      const space = this.snapshot.state.domain.spaces.find((s) => s.space_id === scope.space_id);
       return {
         kind: "space" as const,
         space_id: scope.space_id,
@@ -1426,7 +1426,7 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
-    const list = this.snapshot.state.threads_list;
+    const list = this.snapshot.state.ui.threads_list;
     if (
       list.kind === "open" &&
       list.room_id === roomId &&
@@ -1447,7 +1447,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const thread = this.snapshot.state.thread;
+    const thread = this.snapshot.state.ui.thread;
     if (
       thread.kind === "open" &&
       thread.room_id === roomId &&
@@ -1464,8 +1464,8 @@ class BrowserFakeApi implements DesktopApi {
     rootEventId: string,
     body: string
   ): Promise<DesktopSnapshot> {
-    const session = this.snapshot.state.session;
-    const thread = this.snapshot.state.thread;
+    const session = this.snapshot.state.domain.session;
+    const thread = this.snapshot.state.ui.thread;
     if (
       session.kind !== "ready" ||
       !session.user_id ||
@@ -1490,7 +1490,7 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     const results = search(query, scope, this.snapshot);
-    this.snapshot.state.search = {
+    this.snapshot.state.domain.search = {
       kind: "results",
       request_id: Date.now(),
       query,
@@ -1512,7 +1512,7 @@ class BrowserFakeApi implements DesktopApi {
       limit: query.limit,
       since: query.since?.trim() ? query.since.trim() : null
     };
-    this.snapshot.state.directory.query = {
+    this.snapshot.state.domain.directory.query = {
       kind: "querying",
       request_id: requestId,
       query: normalizedQuery
@@ -1521,7 +1521,7 @@ class BrowserFakeApi implements DesktopApi {
     await Promise.resolve();
 
     const alias = "#public-demo:fake.local";
-    this.snapshot.state.directory.query = {
+    this.snapshot.state.domain.directory.query = {
       kind: "results",
       request_id: requestId,
       query: normalizedQuery,
@@ -1550,7 +1550,7 @@ class BrowserFakeApi implements DesktopApi {
     const requestId = this.nextRequestId();
     const normalizedAlias = alias.trim();
     const normalizedViaServer = viaServer?.trim() ? viaServer.trim() : null;
-    this.snapshot.state.directory.join = {
+    this.snapshot.state.domain.directory.join = {
       kind: "joining",
       request_id: requestId,
       alias: normalizedAlias,
@@ -1559,7 +1559,7 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
-    const roomId = `!joined-${this.snapshot.state.rooms.length + 1}:fake.local`;
+    const roomId = `!joined-${this.snapshot.state.domain.rooms.length + 1}:fake.local`;
     const displayName = normalizedAlias.replace(/^#/, "").split(":")[0] || "Public Room";
     const joinedRoom: RoomSummary = {
       room_id: roomId,
@@ -1575,13 +1575,13 @@ class BrowserFakeApi implements DesktopApi {
       is_encrypted: false
     };
 
-    this.snapshot.state.rooms = [...this.snapshot.state.rooms, joinedRoom];
-    this.snapshot.state.directory.join = { kind: "idle" };
+    this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, joinedRoom];
+    this.snapshot.state.domain.directory.join = { kind: "idle" };
     this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     return this.selectRoom(roomId);
   }
@@ -1592,7 +1592,7 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     const normalizedRoomId = roomId.trim();
-    this.snapshot.state.room_management = {
+    this.snapshot.state.domain.room_management = {
       selected_room_id: normalizedRoomId,
       settings: this.roomSettingsSnapshot(normalizedRoomId),
       operation: { kind: "idle" }
@@ -1610,13 +1610,13 @@ class BrowserFakeApi implements DesktopApi {
 
     const normalizedRoomId = roomId.trim();
     const settings =
-      this.snapshot.state.room_management.settings?.room_id === normalizedRoomId
-        ? this.snapshot.state.room_management.settings
+      this.snapshot.state.domain.room_management.settings?.room_id === normalizedRoomId
+        ? this.snapshot.state.domain.room_management.settings
         : this.roomSettingsSnapshot(normalizedRoomId);
     const requestId = this.nextRequestId();
 
     if (!settings.permissions.can_edit_settings) {
-      this.snapshot.state.room_management = {
+      this.snapshot.state.domain.room_management = {
         selected_room_id: normalizedRoomId,
         settings,
         operation: {
@@ -1630,7 +1630,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.room_management = {
+    this.snapshot.state.domain.room_management = {
       selected_room_id: normalizedRoomId,
       settings,
       operation: {
@@ -1644,12 +1644,12 @@ class BrowserFakeApi implements DesktopApi {
     await Promise.resolve();
 
     const updated = applyRoomSettingChange(settings, change);
-    this.snapshot.state.room_management = {
+    this.snapshot.state.domain.room_management = {
       selected_room_id: normalizedRoomId,
       settings: updated,
       operation: { kind: "idle" }
     };
-    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+    this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) =>
       room.room_id === normalizedRoomId && "name" in change
         ? {
             ...room,
@@ -1660,9 +1660,9 @@ class BrowserFakeApi implements DesktopApi {
     );
     this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     return this.getSnapshot();
   }
@@ -1680,13 +1680,13 @@ class BrowserFakeApi implements DesktopApi {
 
     const normalizedRoomId = roomId.trim();
     const settings =
-      this.snapshot.state.room_management.settings?.room_id === normalizedRoomId
-        ? this.snapshot.state.room_management.settings
+      this.snapshot.state.domain.room_management.settings?.room_id === normalizedRoomId
+        ? this.snapshot.state.domain.room_management.settings
         : this.roomSettingsSnapshot(normalizedRoomId);
     const requestId = this.nextRequestId();
 
     if (!roomModerationAllowed(settings.permissions, action)) {
-      this.snapshot.state.room_management = {
+      this.snapshot.state.domain.room_management = {
         selected_room_id: normalizedRoomId,
         settings,
         operation: {
@@ -1700,7 +1700,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.room_management = {
+    this.snapshot.state.domain.room_management = {
       selected_room_id: normalizedRoomId,
       settings,
       operation: {
@@ -1720,7 +1720,7 @@ class BrowserFakeApi implements DesktopApi {
             ...settings,
             members: settings.members.filter((member) => member.user_id !== targetUserId.trim())
           };
-    this.snapshot.state.room_management = {
+    this.snapshot.state.domain.room_management = {
       selected_room_id: normalizedRoomId,
       settings: updatedSettings,
       operation: { kind: "idle" }
@@ -1740,13 +1740,13 @@ class BrowserFakeApi implements DesktopApi {
     const normalizedRoomId = roomId.trim();
     const normalizedTargetUserId = targetUserId.trim();
     const settings =
-      this.snapshot.state.room_management.settings?.room_id === normalizedRoomId
-        ? this.snapshot.state.room_management.settings
+      this.snapshot.state.domain.room_management.settings?.room_id === normalizedRoomId
+        ? this.snapshot.state.domain.room_management.settings
         : this.roomSettingsSnapshot(normalizedRoomId);
     const requestId = this.nextRequestId();
 
     if (!settings.permissions.can_edit_roles) {
-      this.snapshot.state.room_management = {
+      this.snapshot.state.domain.room_management = {
         selected_room_id: normalizedRoomId,
         settings,
         operation: {
@@ -1760,7 +1760,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.room_management = {
+    this.snapshot.state.domain.room_management = {
       selected_room_id: normalizedRoomId,
       settings,
       operation: {
@@ -1785,7 +1785,7 @@ class BrowserFakeApi implements DesktopApi {
           : member
       )
     };
-    this.snapshot.state.room_management = {
+    this.snapshot.state.domain.room_management = {
       selected_room_id: normalizedRoomId,
       settings: updatedSettings,
       operation: { kind: "idle" }
@@ -1798,7 +1798,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const count = this.snapshot.state.rooms.length + 1;
+    const count = this.snapshot.state.domain.rooms.length + 1;
     const newRoomId = `!local-room-${count}:fake.local`;
     const newRoom: RoomSummary = {
       room_id: newRoomId,
@@ -1813,12 +1813,12 @@ class BrowserFakeApi implements DesktopApi {
       parent_space_ids: [],
       is_encrypted: false
     };
-    this.snapshot.state.rooms = [...this.snapshot.state.rooms, newRoom];
+    this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, newRoom];
     this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     await this.selectRoom(newRoomId);
     return this.getSnapshot();
@@ -1829,7 +1829,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const count = this.snapshot.state.spaces.length + 1;
+    const count = this.snapshot.state.domain.spaces.length + 1;
     const newSpaceId = `!local-space-${count}:fake.local`;
     const newSpace: SpaceSummary = {
       space_id: newSpaceId,
@@ -1837,7 +1837,7 @@ class BrowserFakeApi implements DesktopApi {
       avatar: null,
       child_room_ids: []
     };
-    this.snapshot.state.spaces = [...this.snapshot.state.spaces, newSpace];
+    this.snapshot.state.domain.spaces = [...this.snapshot.state.domain.spaces, newSpace];
     await this.selectSpace(newSpaceId);
     return this.getSnapshot();
   }
@@ -1848,7 +1848,7 @@ class BrowserFakeApi implements DesktopApi {
     }
     void viaServer;
 
-    this.snapshot.state.spaces = this.snapshot.state.spaces.map((space) =>
+    this.snapshot.state.domain.spaces = this.snapshot.state.domain.spaces.map((space) =>
       space.space_id === spaceId
         ? {
             ...space,
@@ -1858,7 +1858,7 @@ class BrowserFakeApi implements DesktopApi {
           }
         : space
     );
-    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+    this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) =>
       room.room_id === childRoomId
         ? {
             ...room,
@@ -1870,9 +1870,9 @@ class BrowserFakeApi implements DesktopApi {
     );
     this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     return this.getSnapshot();
   }
@@ -1882,7 +1882,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const invite = this.snapshot.state.invites.find((candidate) => candidate.room_id === roomId);
+    const invite = this.snapshot.state.domain.invites.find((candidate) => candidate.room_id === roomId);
     if (!invite) {
       return this.getSnapshot();
     }
@@ -1900,15 +1900,15 @@ class BrowserFakeApi implements DesktopApi {
       parent_space_ids: [],
       is_encrypted: false
     };
-    this.snapshot.state.invites = this.snapshot.state.invites.filter(
+    this.snapshot.state.domain.invites = this.snapshot.state.domain.invites.filter(
       (candidate) => candidate.room_id !== roomId
     );
-    this.snapshot.state.rooms = [...this.snapshot.state.rooms, joinedRoom];
+    this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, joinedRoom];
     this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     await this.selectRoom(roomId);
     return this.getSnapshot();
@@ -1919,7 +1919,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.invites = this.snapshot.state.invites.filter(
+    this.snapshot.state.domain.invites = this.snapshot.state.domain.invites.filter(
       (candidate) => candidate.room_id !== roomId
     );
     this.refreshRoomListProjection();
@@ -1936,7 +1936,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const count = this.snapshot.state.rooms.filter((room) => room.is_dm).length + 1;
+    const count = this.snapshot.state.domain.rooms.filter((room) => room.is_dm).length + 1;
     const newRoomId = `!local-dm-${count}:fake.local`;
     const newRoom: RoomSummary = {
       room_id: newRoomId,
@@ -1951,12 +1951,12 @@ class BrowserFakeApi implements DesktopApi {
       parent_space_ids: [],
       is_encrypted: false
     };
-    this.snapshot.state.rooms = [...this.snapshot.state.rooms, newRoom];
+    this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, newRoom];
     this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     await this.selectRoom(newRoomId);
     return this.getSnapshot();
@@ -1979,7 +1979,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+    this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) =>
       room.room_id === roomId
         ? {
             ...room,
@@ -1998,9 +1998,9 @@ class BrowserFakeApi implements DesktopApi {
     );
     this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     return this.getSnapshot();
   }
@@ -2010,7 +2010,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+    this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) =>
       room.room_id === roomId
         ? {
             ...room,
@@ -2023,9 +2023,9 @@ class BrowserFakeApi implements DesktopApi {
     );
     this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     return this.getSnapshot();
   }
@@ -2035,13 +2035,13 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const entry = this.snapshot.state.room_interactions[roomId] ?? {
+    const entry = this.snapshot.state.domain.room_interactions[roomId] ?? {
       pinned_events: [],
       pin_operation: { kind: "idle" as const }
     };
     const alreadyPinned = entry.pinned_events.some((event) => event.event_id === eventId);
-    this.snapshot.state.room_interactions = {
-      ...this.snapshot.state.room_interactions,
+    this.snapshot.state.domain.room_interactions = {
+      ...this.snapshot.state.domain.room_interactions,
       [roomId]: {
         pinned_events: alreadyPinned
           ? entry.pinned_events
@@ -2060,12 +2060,12 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const entry = this.snapshot.state.room_interactions[roomId] ?? {
+    const entry = this.snapshot.state.domain.room_interactions[roomId] ?? {
       pinned_events: [],
       pin_operation: { kind: "idle" as const }
     };
-    this.snapshot.state.room_interactions = {
-      ...this.snapshot.state.room_interactions,
+    this.snapshot.state.domain.room_interactions = {
+      ...this.snapshot.state.domain.room_interactions,
       [roomId]: {
         pinned_events: entry.pinned_events.filter((event) => event.event_id !== eventId),
         pin_operation: { kind: "idle" }
@@ -2080,7 +2080,7 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     const requestId = this.nextRequestId();
-    this.snapshot.state.activity = {
+    this.snapshot.state.domain.activity = {
       kind: "opening",
       request_id: requestId,
       tab: "recent"
@@ -2089,7 +2089,7 @@ class BrowserFakeApi implements DesktopApi {
     await Promise.resolve();
 
     const streams = createActivityStreams(false);
-    this.snapshot.state.activity = {
+    this.snapshot.state.domain.activity = {
       kind: "open",
       active_tab: "recent",
       recent: streams.recent,
@@ -2104,16 +2104,16 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.activity = { kind: "closed" };
+    this.snapshot.state.domain.activity = { kind: "closed" };
     return this.getSnapshot();
   }
 
   async setActivityTab(tab: ActivityTab): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || this.snapshot.state.activity.kind !== "open") {
+    if (!this.canUseSyncedViews() || this.snapshot.state.domain.activity.kind !== "open") {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.activity.active_tab = tab;
+    this.snapshot.state.domain.activity.active_tab = tab;
     return this.getSnapshot();
   }
 
@@ -2121,7 +2121,7 @@ class BrowserFakeApi implements DesktopApi {
     tab: ActivityTab,
     cursor: string | null = null
   ): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || this.snapshot.state.activity.kind !== "open") {
+    if (!this.canUseSyncedViews() || this.snapshot.state.domain.activity.kind !== "open") {
       return this.getSnapshot();
     }
 
@@ -2131,25 +2131,25 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     const existingEventIds = new Set(
-      this.snapshot.state.activity.recent.rows.map((row) => row.event_id)
+      this.snapshot.state.domain.activity.recent.rows.map((row) => row.event_id)
     );
     const olderRows = activityRows(backwardTimelineMessages, new Set())
       .filter((row) => !existingEventIds.has(row.event_id))
       .map((row) => ({ ...row, unread: false, highlight: false }));
-    this.snapshot.state.activity.recent = {
-      rows: [...this.snapshot.state.activity.recent.rows, ...olderRows],
+    this.snapshot.state.domain.activity.recent = {
+      rows: [...this.snapshot.state.domain.activity.recent.rows, ...olderRows],
       next_batch: null
     };
     return this.getSnapshot();
   }
 
   async markActivityRead(target: ActivityMarkReadTarget): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || this.snapshot.state.activity.kind !== "open") {
+    if (!this.canUseSyncedViews() || this.snapshot.state.domain.activity.kind !== "open") {
       return this.getSnapshot();
     }
 
     const requestId = this.nextRequestId();
-    this.snapshot.state.activity.mark_read = {
+    this.snapshot.state.domain.activity.mark_read = {
       kind: "pending",
       request_id: requestId,
       target
@@ -2158,28 +2158,28 @@ class BrowserFakeApi implements DesktopApi {
     await Promise.resolve();
 
     if (target.kind === "all") {
-      this.snapshot.state.activity.unread = { rows: [], next_batch: null };
-      this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) => ({
+      this.snapshot.state.domain.activity.unread = { rows: [], next_batch: null };
+      this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) => ({
         ...room,
         unread_count: 0
       }));
     } else {
-      this.snapshot.state.activity.unread = {
-        ...this.snapshot.state.activity.unread,
-        rows: this.snapshot.state.activity.unread.rows.filter(
+      this.snapshot.state.domain.activity.unread = {
+        ...this.snapshot.state.domain.activity.unread,
+        rows: this.snapshot.state.domain.activity.unread.rows.filter(
           (row) => row.room_id !== target.room_id
         )
       };
-      this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+      this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) =>
         room.room_id === target.room_id ? { ...room, unread_count: 0 } : room
       );
     }
-    this.snapshot.state.activity.mark_read = { kind: "idle" };
+    this.snapshot.state.domain.activity.mark_read = { kind: "idle" };
     return this.getSnapshot();
   }
 
   async setComposerDraft(roomId: string, draft: string): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || this.snapshot.state.timeline.room_id !== roomId) {
+    if (!this.canUseSyncedViews() || this.snapshot.state.ui.timeline.room_id !== roomId) {
       return this.getSnapshot();
     }
 
@@ -2188,7 +2188,7 @@ class BrowserFakeApi implements DesktopApi {
     } else {
       this.composerDrafts.set(roomId, draft);
     }
-    this.snapshot.state.timeline.composer.draft = draft;
+    this.snapshot.state.ui.timeline.composer.draft = draft;
     return this.getSnapshot();
   }
 
@@ -2197,8 +2197,8 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    if (this.snapshot.state.timeline.room_id === roomId) {
-      this.snapshot.state.timeline.composer.mode = { Reply: { in_reply_to_event_id: eventId } };
+    if (this.snapshot.state.ui.timeline.room_id === roomId) {
+      this.snapshot.state.ui.timeline.composer.mode = { Reply: { in_reply_to_event_id: eventId } };
     }
     return this.getSnapshot();
   }
@@ -2208,7 +2208,7 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    this.snapshot.state.timeline.composer.mode = "Plain";
+    this.snapshot.state.ui.timeline.composer.mode = "Plain";
     return this.getSnapshot();
   }
 
@@ -2219,11 +2219,11 @@ class BrowserFakeApi implements DesktopApi {
     mentions: MentionIntent = emptyMentionIntent()
   ): Promise<DesktopSnapshot> {
     void mentions;
-    const session = this.snapshot.state.session;
+    const session = this.snapshot.state.domain.session;
     if (
       session.kind !== "ready" ||
       !session.user_id ||
-      this.snapshot.state.timeline.room_id !== roomId ||
+      this.snapshot.state.ui.timeline.room_id !== roomId ||
       body.trim().length === 0
     ) {
       return this.getSnapshot();
@@ -2247,9 +2247,9 @@ class BrowserFakeApi implements DesktopApi {
         ? { ...message, reply_count: message.reply_count + 1 }
         : message
     );
-    this.snapshot.state.timeline.composer.pending_transaction_id = null;
-    this.snapshot.state.timeline.composer.draft = "";
-    this.snapshot.state.timeline.composer.mode = "Plain";
+    this.snapshot.state.ui.timeline.composer.pending_transaction_id = null;
+    this.snapshot.state.ui.timeline.composer.draft = "";
+    this.snapshot.state.ui.timeline.composer.mode = "Plain";
     this.composerDrafts.delete(roomId);
     return this.getSnapshot();
   }
@@ -2259,9 +2259,9 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews() || !roomId.trim()) {
       return this.getSnapshot();
     }
-    this.snapshot.state.search_crawler = {
+    this.snapshot.state.domain.search_crawler = {
       rooms: {
-        ...this.snapshot.state.search_crawler.rooms,
+        ...this.snapshot.state.domain.search_crawler.rooms,
         [roomId]: { kind: "running", processed: 0, indexed: 0 }
       }
     };
@@ -2274,9 +2274,9 @@ class BrowserFakeApi implements DesktopApi {
     if (!this.canUseSyncedViews() || !roomId.trim()) {
       return this.getSnapshot();
     }
-    this.snapshot.state.search_crawler = {
+    this.snapshot.state.domain.search_crawler = {
       rooms: {
-        ...this.snapshot.state.search_crawler.rooms,
+        ...this.snapshot.state.domain.search_crawler.rooms,
         [roomId]: { kind: "idle" }
       }
     };
@@ -2284,11 +2284,11 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private isReady() {
-    return this.snapshot.state.session.kind === "ready";
+    return this.snapshot.state.domain.session.kind === "ready";
   }
 
   private canUseSyncedViews() {
-    const sessionKind = this.snapshot.state.session.kind;
+    const sessionKind = this.snapshot.state.domain.session.kind;
     return (
       sessionKind === "ready" ||
       sessionKind === "needsRecovery" ||
@@ -2297,11 +2297,11 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private hasRoom(roomId: string): boolean {
-    return this.snapshot.state.rooms.some((room) => room.room_id === roomId);
+    return this.snapshot.state.domain.rooms.some((room) => room.room_id === roomId);
   }
 
   private roomSettingsSnapshot(roomId: string): RoomSettingsSnapshot {
-    const room = this.snapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+    const room = this.snapshot.state.domain.rooms.find((candidate) => candidate.room_id === roomId);
     const permissions = roomId.includes("readonly")
       ? readonlyRoomPermissionFacts()
       : editableRoomPermissionFacts();
@@ -2318,7 +2318,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private roomMemberSnapshot(): RoomSettingsSnapshot["members"] {
-    const profiles = Object.values(this.snapshot.state.profile.users);
+    const profiles = Object.values(this.snapshot.state.domain.profile.users);
     const members = profiles.length
         ? profiles
         : [
@@ -2352,14 +2352,14 @@ class BrowserFakeApi implements DesktopApi {
     const profile = this.ensureUserProfile(userId);
     const originalDisplayLabel =
       profile.original_display_label.trim() || profile.display_name?.trim() || userId;
-    const displayLabel = this.snapshot.state.profile.local_aliases[userId] ?? originalDisplayLabel;
-    this.snapshot.state.profile.users[userId] = {
+    const displayLabel = this.snapshot.state.domain.profile.local_aliases[userId] ?? originalDisplayLabel;
+    this.snapshot.state.domain.profile.users[userId] = {
       ...profile,
       display_label: displayLabel,
       original_display_label: originalDisplayLabel,
       mention_search_terms: uniqueNonBlank([displayLabel, originalDisplayLabel, userId])
     };
-    this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) =>
+    this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) =>
       room.is_dm && room.dm_user_ids.includes(userId)
         ? {
             ...room,
@@ -2368,14 +2368,14 @@ class BrowserFakeApi implements DesktopApi {
           }
         : room
     );
-    this.snapshot.state.room_management =
-      this.snapshot.state.room_management.settings === null
-        ? this.snapshot.state.room_management
+    this.snapshot.state.domain.room_management =
+      this.snapshot.state.domain.room_management.settings === null
+        ? this.snapshot.state.domain.room_management
         : {
-            ...this.snapshot.state.room_management,
+            ...this.snapshot.state.domain.room_management,
             settings: {
-              ...this.snapshot.state.room_management.settings,
-              members: this.snapshot.state.room_management.settings.members.map((member) =>
+              ...this.snapshot.state.domain.room_management.settings,
+              members: this.snapshot.state.domain.room_management.settings.members.map((member) =>
                 member.user_id === userId
                   ? {
                       ...member,
@@ -2387,19 +2387,19 @@ class BrowserFakeApi implements DesktopApi {
             }
           };
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
   }
 
-  private ensureUserProfile(userId: string): DesktopSnapshot["state"]["profile"]["users"][string] {
-    const existing = this.snapshot.state.profile.users[userId];
+  private ensureUserProfile(userId: string): DesktopSnapshot["state"]["domain"]["profile"]["users"][string] {
+    const existing = this.snapshot.state.domain.profile.users[userId];
     if (existing) {
       return existing;
     }
     const originalDisplayLabel =
-      this.snapshot.state.rooms.find((room) => room.is_dm && room.dm_user_ids.includes(userId))
+      this.snapshot.state.domain.rooms.find((room) => room.is_dm && room.dm_user_ids.includes(userId))
         ?.original_display_label.trim() || userId;
     const profile = {
       user_id: userId,
@@ -2409,12 +2409,12 @@ class BrowserFakeApi implements DesktopApi {
       mention_search_terms: uniqueNonBlank([originalDisplayLabel, userId]),
       avatar: null
     };
-    this.snapshot.state.profile.users[userId] = profile;
+    this.snapshot.state.domain.profile.users[userId] = profile;
     return profile;
   }
 
   private canRestartSync() {
-    const sync = this.snapshot.state.sync;
+    const sync = this.snapshot.state.domain.sync;
     return (
       sync === "stopped" ||
       sync === "starting" ||
@@ -2423,46 +2423,46 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private roomBelongsToSpace(roomId: string, spaceId: string): boolean {
-    const room = this.snapshot.state.rooms.find((candidate) => candidate.room_id === roomId);
+    const room = this.snapshot.state.domain.rooms.find((candidate) => candidate.room_id === roomId);
     if (!room || room.is_dm) {
       return false;
     }
     return (
-      this.snapshot.state.spaces
+      this.snapshot.state.domain.spaces
         .find((space) => space.space_id === spaceId)
         ?.child_room_ids.includes(roomId) ?? false
     );
   }
 
   private rememberActiveRoomForCurrentSpace(): void {
-    const spaceId = this.snapshot.state.navigation.active_space_id;
-    const roomId = this.snapshot.state.navigation.active_room_id;
+    const spaceId = this.snapshot.state.ui.navigation.active_space_id;
+    const roomId = this.snapshot.state.ui.navigation.active_room_id;
     if (!spaceId || !roomId || !this.roomBelongsToSpace(roomId, spaceId)) {
       return;
     }
-    this.snapshot.state.navigation.last_room_by_space_id = {
-      ...(this.snapshot.state.navigation.last_room_by_space_id ?? {}),
+    this.snapshot.state.ui.navigation.last_room_by_space_id = {
+      ...(this.snapshot.state.ui.navigation.last_room_by_space_id ?? {}),
       [spaceId]: roomId
     };
   }
 
   private retainNavigationRoomMemory(): void {
     const rememberedRooms = Object.entries(
-      this.snapshot.state.navigation.last_room_by_space_id ?? {}
+      this.snapshot.state.ui.navigation.last_room_by_space_id ?? {}
     ).filter(([spaceId, roomId]) => this.roomBelongsToSpace(roomId, spaceId));
-    this.snapshot.state.navigation.last_room_by_space_id =
+    this.snapshot.state.ui.navigation.last_room_by_space_id =
       Object.fromEntries(rememberedRooms);
   }
 
   private firstRoomIdInSpace(spaceId: string): string | null {
-    const space = this.snapshot.state.spaces.find((candidate) => candidate.space_id === spaceId);
+    const space = this.snapshot.state.domain.spaces.find((candidate) => candidate.space_id === spaceId);
     return (
       space?.child_room_ids.find((roomId) => this.roomBelongsToSpace(roomId, spaceId)) ?? null
     );
   }
 
   private preferredRoomIdInSpace(spaceId: string): string | null {
-    const rememberedRoomId = this.snapshot.state.navigation.last_room_by_space_id?.[spaceId];
+    const rememberedRoomId = this.snapshot.state.ui.navigation.last_room_by_space_id?.[spaceId];
     if (rememberedRoomId && this.roomBelongsToSpace(rememberedRoomId, spaceId)) {
       return rememberedRoomId;
     }
@@ -2471,15 +2471,15 @@ class BrowserFakeApi implements DesktopApi {
 
   private firstDefaultRoomId(): string | null {
     return (
-      this.snapshot.state.rooms.find((room) => !room.is_dm)?.room_id ??
-      this.snapshot.state.rooms[0]?.room_id ??
+      this.snapshot.state.domain.rooms.find((room) => !room.is_dm)?.room_id ??
+      this.snapshot.state.domain.rooms[0]?.room_id ??
       null
     );
   }
 
   private clearActiveRoomSelection(): void {
-    this.snapshot.state.navigation.active_room_id = null;
-    this.snapshot.state.timeline = {
+    this.snapshot.state.ui.navigation.active_room_id = null;
+    this.snapshot.state.ui.timeline = {
       room_id: null,
       is_subscribed: false,
       is_paginating_backwards: false,
@@ -2488,16 +2488,16 @@ class BrowserFakeApi implements DesktopApi {
         draft: "",
         mode: "Plain"
       },
-      scheduled_send_capability: this.snapshot.state.timeline.scheduled_send_capability,
+      scheduled_send_capability: this.snapshot.state.ui.timeline.scheduled_send_capability,
       scheduled_sends: [],
       staged_uploads: [],
       media_gallery: [],
       media_downloads: {}
     };
-    this.snapshot.state.thread = { kind: "closed" };
-    this.snapshot.state.thread_attention = { kind: "closed" };
-    this.snapshot.state.threads_list = { kind: "closed" };
-    this.snapshot.state.focused_context = { kind: "closed" };
+    this.snapshot.state.ui.thread = { kind: "closed" };
+    this.snapshot.state.domain.thread_attention = { kind: "closed" };
+    this.snapshot.state.ui.threads_list = { kind: "closed" };
+    this.snapshot.state.ui.focused_context = { kind: "closed" };
     this.snapshot.thread = null;
     this.snapshot.timeline = [];
   }
@@ -2533,10 +2533,10 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private completeIdentityReset() {
-    this.snapshot.state.e2ee_trust.identity_reset = { kind: "idle" };
-    this.snapshot.state.e2ee_trust.cross_signing = { kind: "missing" };
-    this.snapshot.state.e2ee_trust.key_backup = { kind: "disabled" };
-    this.snapshot.state.e2ee_trust.devices = this.snapshot.state.e2ee_trust.devices.map(
+    this.snapshot.state.domain.e2ee_trust.identity_reset = { kind: "idle" };
+    this.snapshot.state.domain.e2ee_trust.cross_signing = { kind: "missing" };
+    this.snapshot.state.domain.e2ee_trust.key_backup = { kind: "disabled" };
+    this.snapshot.state.domain.e2ee_trust.devices = this.snapshot.state.domain.e2ee_trust.devices.map(
       (device) => ({
         ...device,
         trust_level: "unverified"
@@ -2546,22 +2546,22 @@ class BrowserFakeApi implements DesktopApi {
 
   private clearSessionViews() {
     this.composerDrafts.clear();
-    this.snapshot.state.sync = "stopped";
-    this.snapshot.state.sync_mode = { kind: "unsupported" };
-    this.snapshot.state.navigation = {
+    this.snapshot.state.domain.sync = "stopped";
+    this.snapshot.state.domain.sync_mode = { kind: "unsupported" };
+    this.snapshot.state.ui.navigation = {
       active_space_id: null,
       active_room_id: null,
       last_room_by_space_id: {}
     };
-    this.snapshot.state.spaces = [];
-    this.snapshot.state.rooms = [];
-    this.snapshot.state.invites = [];
-    this.snapshot.state.room_list = {
+    this.snapshot.state.domain.spaces = [];
+    this.snapshot.state.domain.rooms = [];
+    this.snapshot.state.domain.invites = [];
+    this.snapshot.state.ui.room_list = {
       active_filter: { kind: "rooms" },
       sort: { kind: "activity" },
       items: []
     };
-    this.snapshot.state.timeline = {
+    this.snapshot.state.ui.timeline = {
       room_id: null,
       is_subscribed: false,
       is_paginating_backwards: false,
@@ -2576,19 +2576,19 @@ class BrowserFakeApi implements DesktopApi {
         media_gallery: [],
       media_downloads: {}
     };
-    this.snapshot.state.thread = { kind: "closed" };
-    this.snapshot.state.focused_context = { kind: "closed" };
-    this.snapshot.state.search = { kind: "closed" };
-    this.snapshot.state.directory = defaultDirectoryState();
-    this.snapshot.state.room_management = defaultRoomManagementState();
-    this.snapshot.state.activity = { kind: "closed" };
-    this.snapshot.state.device_sessions = { kind: "idle" };
-    this.snapshot.state.account_management = { kind: "idle" };
-    this.snapshot.state.soft_logout_reauth = { kind: "idle" };
-    this.snapshot.state.qr_login = { kind: "idle" };
-    this.snapshot.state.basic_operation = { kind: "idle" };
-    this.snapshot.state.profile = defaultProfileState(null);
-    this.snapshot.state.e2ee_trust = defaultE2eeTrustState();
+    this.snapshot.state.ui.thread = { kind: "closed" };
+    this.snapshot.state.ui.focused_context = { kind: "closed" };
+    this.snapshot.state.domain.search = { kind: "closed" };
+    this.snapshot.state.domain.directory = defaultDirectoryState();
+    this.snapshot.state.domain.room_management = defaultRoomManagementState();
+    this.snapshot.state.domain.activity = { kind: "closed" };
+    this.snapshot.state.domain.device_sessions = { kind: "idle" };
+    this.snapshot.state.domain.account_management = { kind: "idle" };
+    this.snapshot.state.domain.soft_logout_reauth = { kind: "idle" };
+    this.snapshot.state.domain.qr_login = { kind: "idle" };
+    this.snapshot.state.ui.basic_operation = { kind: "idle" };
+    this.snapshot.state.domain.profile = defaultProfileState(null);
+    this.snapshot.state.domain.e2ee_trust = defaultE2eeTrustState();
     this.snapshot.sidebar = emptySidebar();
     this.snapshot.timeline = [];
     this.snapshot.thread = null;
@@ -2599,44 +2599,44 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    const removedSpace = this.snapshot.state.spaces.find((space) => space.space_id === roomId);
+    const removedSpace = this.snapshot.state.domain.spaces.find((space) => space.space_id === roomId);
     if (removedSpace) {
-      this.snapshot.state.spaces = this.snapshot.state.spaces.filter(
+      this.snapshot.state.domain.spaces = this.snapshot.state.domain.spaces.filter(
         (space) => space.space_id !== roomId
       );
-      this.snapshot.state.rooms = this.snapshot.state.rooms.map((room) => ({
+      this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) => ({
         ...room,
         parent_space_ids: room.parent_space_ids.filter((spaceId) => spaceId !== roomId)
       }));
-      this.snapshot.state.navigation.space_order =
-        this.snapshot.state.navigation.space_order?.filter((spaceId) => spaceId !== roomId) ?? [];
-      if (this.snapshot.state.navigation.last_room_by_space_id) {
-        delete this.snapshot.state.navigation.last_room_by_space_id[roomId];
+      this.snapshot.state.ui.navigation.space_order =
+        this.snapshot.state.ui.navigation.space_order?.filter((spaceId) => spaceId !== roomId) ?? [];
+      if (this.snapshot.state.ui.navigation.last_room_by_space_id) {
+        delete this.snapshot.state.ui.navigation.last_room_by_space_id[roomId];
       }
-      if (this.snapshot.state.navigation.active_space_id === roomId) {
-        this.snapshot.state.navigation.active_space_id = null;
+      if (this.snapshot.state.ui.navigation.active_space_id === roomId) {
+        this.snapshot.state.ui.navigation.active_space_id = null;
       }
     }
 
     this.composerDrafts.delete(roomId);
-    this.snapshot.state.rooms = this.snapshot.state.rooms.filter((room) => room.room_id !== roomId);
-    this.snapshot.state.spaces = this.snapshot.state.spaces.map((space) => ({
+    this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.filter((room) => room.room_id !== roomId);
+    this.snapshot.state.domain.spaces = this.snapshot.state.domain.spaces.map((space) => ({
       ...space,
       child_room_ids: space.child_room_ids.filter((childRoomId) => childRoomId !== roomId)
     }));
     this.retainNavigationRoomMemory();
-    if (this.snapshot.state.navigation.active_room_id === roomId) {
-      this.snapshot.state.navigation.active_room_id = null;
-      this.snapshot.state.timeline.room_id = null;
-      this.snapshot.state.timeline.is_subscribed = false;
+    if (this.snapshot.state.ui.navigation.active_room_id === roomId) {
+      this.snapshot.state.ui.navigation.active_room_id = null;
+      this.snapshot.state.ui.timeline.room_id = null;
+      this.snapshot.state.ui.timeline.is_subscribed = false;
       this.snapshot.timeline = [];
-      this.snapshot.state.thread = { kind: "closed" };
+      this.snapshot.state.ui.thread = { kind: "closed" };
       this.snapshot.thread = null;
     }
     this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.navigation.active_space_id,
-      this.snapshot.state.spaces,
-      this.snapshot.state.rooms
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
     this.refreshRoomListProjection();
     return this.getSnapshot();
@@ -2686,76 +2686,81 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
   const active_space_id = "!space-alpha:example.invalid";
   const active_room_id = "!room-alpha:example.invalid";
   const sidebar = composeSidebar(active_space_id, spaces, rooms);
-  const snapshot: DesktopSnapshot = {
+    const snapshot: DesktopSnapshot = {
     state: {
-      session: {
-        ...session,
-        kind: "ready"
-      },
-      auth: { kind: "unknown" },
-      device_sessions: { kind: "idle" },
-      account_management: { kind: "idle" },
-      account_management_capabilities: { change_password: { kind: "unknown" } },
-      soft_logout_reauth: { kind: "idle" },
-      qr_login: { kind: "idle" },
-      settings: defaultSettingsState(),
-      link_preview_settings: { room_overrides: {} },
-      locale_profile: defaultLocaleDisplayProfile(),
-      typography_profile: defaultTypographyDisplayProfile(),
-      profile: defaultProfileState(session.user_id),
-      sync: "running",
-      sync_mode: { kind: "unsupported" },
-      navigation: {
-        active_space_id,
-        active_room_id,
-        space_order: spaces.map((space) => space.space_id),
-        last_room_by_space_id: {
-          [active_space_id]: active_room_id
-        }
-      },
-      spaces,
-      rooms,
-      invites,
-      room_list: computeBrowserRoomListProjection(
-        { kind: "rooms" },
-        { kind: "activity" },
-        rooms,
-        invites
-      ),
-      room_notification_settings: {},
-      room_interactions: {},
-      directory: defaultDirectoryState(),
-      room_management: defaultRoomManagementState(),
-      activity: { kind: "closed" },
-      timeline: {
-        room_id: active_room_id,
-        is_subscribed: true,
-        is_paginating_backwards: false,
-        composer: {
-          pending_transaction_id: null,
-          draft: "",
-          mode: "Plain"
+      schema_version: 2,
+      domain: {
+        session: {
+          ...session,
+          kind: "ready"
         },
-        scheduled_send_capability: "unknown",
-        scheduled_sends: [],
-        staged_uploads: [],
-        media_gallery: [],
-        media_downloads: {}
+        auth: { kind: "unknown" },
+        device_sessions: { kind: "idle" },
+        account_management: { kind: "idle" },
+        account_management_capabilities: { change_password: { kind: "unknown" } },
+        soft_logout_reauth: { kind: "idle" },
+        qr_login: { kind: "idle" },
+        settings: defaultSettingsState(),
+        link_preview_settings: { room_overrides: {} },
+        locale_profile: defaultLocaleDisplayProfile(),
+        typography_profile: defaultTypographyDisplayProfile(),
+        profile: defaultProfileState(session.user_id),
+        sync: "running",
+        sync_mode: { kind: "unsupported" },
+        spaces,
+        rooms,
+        invites,
+        room_notification_settings: {},
+        room_interactions: {},
+        directory: defaultDirectoryState(),
+        room_management: defaultRoomManagementState(),
+        activity: { kind: "closed" },
+        thread_attention: { kind: "closed" },
+        search: { kind: "closed" },
+        search_crawler: { rooms: {} },
+        live_signals: defaultLiveSignalsState(),
+        e2ee_trust: defaultE2eeTrustState(),
+        local_encryption: { kind: "unknown" },
+        native_attention: defaultNativeAttentionState(),
+        cjk_text_policy: defaultCjkTextPolicyState()
       },
-      thread: { kind: "closed" },
-      thread_attention: { kind: "closed" },
-      focused_context: { kind: "closed" },
-      search: { kind: "closed" },
-      search_crawler: { rooms: {} },
-      files_view: { kind: "closed" },
-      threads_list: { kind: "closed" },
-      errors: [],
-      basic_operation: { kind: "idle" },
-      live_signals: defaultLiveSignalsState(),
-      e2ee_trust: defaultE2eeTrustState(),
-      local_encryption: { kind: "unknown" },
-      native_attention: defaultNativeAttentionState(),
-      cjk_text_policy: defaultCjkTextPolicyState()
+      ui: {
+        navigation: {
+          active_space_id,
+          active_room_id,
+          space_order: spaces.map((space) => space.space_id),
+          last_room_by_space_id: {
+            [active_space_id]: active_room_id
+          }
+        },
+        room_list: computeBrowserRoomListProjection(
+          { kind: "rooms" },
+          { kind: "activity" },
+          rooms,
+          invites
+        ),
+        timeline: {
+          room_id: active_room_id,
+          is_subscribed: true,
+          is_paginating_backwards: false,
+          composer: {
+            pending_transaction_id: null,
+            draft: "",
+            mode: "Plain"
+          },
+          scheduled_send_capability: "unknown",
+          scheduled_sends: [],
+          staged_uploads: [],
+          media_gallery: [],
+          media_downloads: {}
+        },
+        thread: { kind: "closed" },
+        focused_context: { kind: "closed" },
+        files_view: { kind: "closed" },
+        threads_list: { kind: "closed" },
+        errors: [],
+        basic_operation: { kind: "idle" }
+      }
     },
     sidebar,
     timeline: timelineMessages.filter((message) => message.room_id === active_room_id),
@@ -2780,7 +2785,7 @@ const savedSessions: SavedSessionInfo[] = [
 
 function createNeedsRecoverySnapshot(): DesktopSnapshot {
   const snapshot = createReadySnapshot();
-  snapshot.state.session = {
+  snapshot.state.domain.session = {
     ...savedSessions[0],
     kind: "needsRecovery",
     recovery_methods: ["recoveryKey", "securityPhrase"]
@@ -2791,69 +2796,74 @@ function createNeedsRecoverySnapshot(): DesktopSnapshot {
 function createSignedOutSnapshot(): DesktopSnapshot {
   return {
     state: {
-      session: { kind: "signedOut" },
-      auth: { kind: "unknown" },
-      device_sessions: { kind: "idle" },
-      account_management: { kind: "idle" },
-      account_management_capabilities: { change_password: { kind: "unknown" } },
-      soft_logout_reauth: { kind: "idle" },
-      qr_login: { kind: "idle" },
-      settings: defaultSettingsState(),
-      link_preview_settings: { room_overrides: {} },
-      locale_profile: defaultLocaleDisplayProfile(),
-      typography_profile: defaultTypographyDisplayProfile(),
-      profile: defaultProfileState(null),
-      sync: "stopped",
-      sync_mode: { kind: "unsupported" },
-      navigation: {
-        active_space_id: null,
-        active_room_id: null,
-        space_order: [],
-        last_room_by_space_id: {}
+      schema_version: 2,
+      domain: {
+        session: { kind: "signedOut" },
+        auth: { kind: "unknown" },
+        device_sessions: { kind: "idle" },
+        account_management: { kind: "idle" },
+        account_management_capabilities: { change_password: { kind: "unknown" } },
+        soft_logout_reauth: { kind: "idle" },
+        qr_login: { kind: "idle" },
+        settings: defaultSettingsState(),
+        link_preview_settings: { room_overrides: {} },
+        locale_profile: defaultLocaleDisplayProfile(),
+        typography_profile: defaultTypographyDisplayProfile(),
+        profile: defaultProfileState(null),
+        sync: "stopped",
+        sync_mode: { kind: "unsupported" },
+        spaces: [],
+        rooms: [],
+        invites: [],
+        room_notification_settings: {},
+        room_interactions: {},
+        directory: defaultDirectoryState(),
+        room_management: defaultRoomManagementState(),
+        activity: { kind: "closed" },
+        thread_attention: { kind: "closed" },
+        search: { kind: "closed" },
+        search_crawler: { rooms: {} },
+        live_signals: defaultLiveSignalsState(),
+        e2ee_trust: defaultE2eeTrustState(),
+        local_encryption: { kind: "unknown" },
+        native_attention: defaultNativeAttentionState(),
+        cjk_text_policy: defaultCjkTextPolicyState()
       },
-      spaces: [],
-      rooms: [],
-      invites: [],
-      room_list: computeBrowserRoomListProjection(
-        { kind: "rooms" },
-        { kind: "activity" },
-        [],
-        []
-      ),
-      room_notification_settings: {},
-      room_interactions: {},
-      directory: defaultDirectoryState(),
-      room_management: defaultRoomManagementState(),
-      activity: { kind: "closed" },
-      timeline: {
-        room_id: null,
-        is_subscribed: false,
-        is_paginating_backwards: false,
-        composer: {
-          pending_transaction_id: null,
-          draft: "",
-          mode: "Plain"
+      ui: {
+        navigation: {
+          active_space_id: null,
+          active_room_id: null,
+          space_order: [],
+          last_room_by_space_id: {}
         },
-        scheduled_send_capability: "unknown",
-        scheduled_sends: [],
-        staged_uploads: [],
-        media_gallery: [],
-        media_downloads: {}
-      },
-      thread: { kind: "closed" },
-      thread_attention: { kind: "closed" },
-      threads_list: { kind: "closed" },
-      focused_context: { kind: "closed" },
-      search: { kind: "closed" },
-      search_crawler: { rooms: {} },
-      files_view: { kind: "closed" },
-      errors: [],
-      basic_operation: { kind: "idle" },
-      live_signals: defaultLiveSignalsState(),
-      e2ee_trust: defaultE2eeTrustState(),
-      local_encryption: { kind: "unknown" },
-      native_attention: defaultNativeAttentionState(),
-      cjk_text_policy: defaultCjkTextPolicyState()
+        room_list: computeBrowserRoomListProjection(
+          { kind: "rooms" },
+          { kind: "activity" },
+          [],
+          []
+        ),
+        timeline: {
+          room_id: null,
+          is_subscribed: false,
+          is_paginating_backwards: false,
+          composer: {
+            pending_transaction_id: null,
+            draft: "",
+            mode: "Plain"
+          },
+          scheduled_send_capability: "unknown",
+          scheduled_sends: [],
+          staged_uploads: [],
+          media_gallery: [],
+          media_downloads: {}
+        },
+        thread: { kind: "closed" },
+        threads_list: { kind: "closed" },
+        focused_context: { kind: "closed" },
+        files_view: { kind: "closed" },
+        errors: [],
+        basic_operation: { kind: "idle" }
+      }
     },
     sidebar: emptySidebar(),
     timeline: [],
@@ -2861,7 +2871,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
   };
 }
 
-function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
+function defaultSettingsState(): DesktopSnapshot["state"]["domain"]["settings"] {
   return {
     values: {
       locale: { language_tag: null, text_direction: "auto" },
@@ -2903,14 +2913,14 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
   };
 }
 
-function defaultDirectoryState(): DesktopSnapshot["state"]["directory"] {
+function defaultDirectoryState(): DesktopSnapshot["state"]["domain"]["directory"] {
   return {
     query: { kind: "closed" },
     join: { kind: "idle" }
   };
 }
 
-function defaultRoomManagementState(): DesktopSnapshot["state"]["room_management"] {
+function defaultRoomManagementState(): DesktopSnapshot["state"]["domain"]["room_management"] {
   return {
     selected_room_id: null,
     settings: null,
@@ -2981,7 +2991,7 @@ function roomModerationAllowed(
   }
 }
 
-function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
+function defaultE2eeTrustState(): DesktopSnapshot["state"]["domain"]["e2ee_trust"] {
   return {
     verification: { kind: "idle" },
     cross_signing: { kind: "unknown" },
@@ -2993,7 +3003,7 @@ function defaultE2eeTrustState(): DesktopSnapshot["state"]["e2ee_trust"] {
 }
 
 function defaultDelegatedAuthLinks(): Extract<
-  DesktopSnapshot["state"]["auth"],
+  DesktopSnapshot["state"]["domain"]["auth"],
   { kind: "ready" }
 >["delegated"] {
   return {
@@ -3002,7 +3012,7 @@ function defaultDelegatedAuthLinks(): Extract<
   };
 }
 
-function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["e2ee_trust"]["key_management"] {
+function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["domain"]["e2ee_trust"]["key_management"] {
   return {
     room_key_export: { kind: "idle" },
     room_key_import: { kind: "idle" },
@@ -3011,14 +3021,14 @@ function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["e2ee_trust"]
   };
 }
 
-function defaultLiveSignalsState(): DesktopSnapshot["state"]["live_signals"] {
+function defaultLiveSignalsState(): DesktopSnapshot["state"]["domain"]["live_signals"] {
   return {
     rooms: {},
     presence: {}
   };
 }
 
-function defaultNativeAttentionState(): DesktopSnapshot["state"]["native_attention"] {
+function defaultNativeAttentionState(): DesktopSnapshot["state"]["domain"]["native_attention"] {
   return {
     summary: {
       unread_count: 0,
@@ -3038,7 +3048,7 @@ function defaultNativeAttentionState(): DesktopSnapshot["state"]["native_attenti
   };
 }
 
-function defaultCjkTextPolicyState(): DesktopSnapshot["state"]["cjk_text_policy"] {
+function defaultCjkTextPolicyState(): DesktopSnapshot["state"]["domain"]["cjk_text_policy"] {
   return {
     japanese_catalog: {
       catalog_locale: "en",
@@ -3058,7 +3068,7 @@ function defaultCjkTextPolicyState(): DesktopSnapshot["state"]["cjk_text_policy"
   };
 }
 
-function defaultProfileState(userId: string | null | undefined): DesktopSnapshot["state"]["profile"] {
+function defaultProfileState(userId: string | null | undefined): DesktopSnapshot["state"]["domain"]["profile"] {
   return {
     own: {
       display_name: userId ? "Demo User" : null,
@@ -3076,13 +3086,13 @@ function defaultProfileState(userId: string | null | undefined): DesktopSnapshot
 function ensureRoomLiveSignals(
   snapshot: DesktopSnapshot,
   roomId: string
-): DesktopSnapshot["state"]["live_signals"]["rooms"][string] {
-  snapshot.state.live_signals.rooms[roomId] ??= {
+): DesktopSnapshot["state"]["domain"]["live_signals"]["rooms"][string] {
+  snapshot.state.domain.live_signals.rooms[roomId] ??= {
     receipts_by_event: {},
     fully_read_event_id: null,
     typing_user_ids: []
   };
-  return snapshot.state.live_signals.rooms[roomId];
+  return snapshot.state.domain.live_signals.rooms[roomId];
 }
 
 function projectReceiptSummary(receipts: LiveReadReceipt[]): LiveEventReceiptSummary {
@@ -3102,13 +3112,13 @@ function defaultLocaleDisplayProfile(): LocaleDisplayProfile {
   return resolveLocaleDisplayProfile({ language_tag: null, text_direction: "auto" });
 }
 
-function defaultTypographyDisplayProfile(): DesktopSnapshot["state"]["typography_profile"] {
+function defaultTypographyDisplayProfile(): DesktopSnapshot["state"]["domain"]["typography_profile"] {
   return resolveTypographyDisplayProfile({ font: "system", emoji: "system" });
 }
 
 function resolveTypographyDisplayProfile(
-  typography: DesktopSnapshot["state"]["settings"]["values"]["typography"]
-): DesktopSnapshot["state"]["typography_profile"] {
+  typography: DesktopSnapshot["state"]["domain"]["settings"]["values"]["typography"]
+): DesktopSnapshot["state"]["domain"]["typography_profile"] {
   return {
     font: typography.font,
     emoji: typography.emoji,
@@ -3187,9 +3197,9 @@ function parseLocale(
 }
 
 function applySettingsPatch(
-  values: DesktopSnapshot["state"]["settings"]["values"],
+  values: DesktopSnapshot["state"]["domain"]["settings"]["values"],
   patch: SettingsPatch
-): DesktopSnapshot["state"]["settings"]["values"] {
+): DesktopSnapshot["state"]["domain"]["settings"]["values"] {
   return {
     locale: patch.locale ?? values.locale,
     appearance: patch.appearance ?? values.appearance,
@@ -3204,7 +3214,7 @@ function applySettingsPatch(
 }
 
 function resolveComposerKeyActionFromSettings(
-  sendShortcut: DesktopSnapshot["state"]["settings"]["values"]["keyboard"]["composer_send_shortcut"],
+  sendShortcut: DesktopSnapshot["state"]["domain"]["settings"]["values"]["keyboard"]["composer_send_shortcut"],
   keyEvent: ComposerKeyEvent,
   options: ComposerResolverOptions
 ): ComposerResolvedAction {

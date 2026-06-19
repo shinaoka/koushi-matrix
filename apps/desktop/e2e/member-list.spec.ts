@@ -41,15 +41,19 @@ async function activateSpace(page: import("@playwright/test").Page): Promise<voi
   await page.evaluate(() => {
     const snap = (window as unknown as { __harness: { currentSnapshot(): unknown; setSnapshot(s: unknown): void } }).__harness.currentSnapshot() as Record<string, unknown>;
     const state = snap.state as Record<string, unknown>;
-    const nav = state.navigation as Record<string, unknown>;
+    const ui = (state.ui ?? {}) as Record<string, unknown>;
+    const nav = (ui.navigation ?? {}) as Record<string, unknown>;
     const sidebar = snap.sidebar as Record<string, unknown>;
     (window as unknown as { __harness: { setSnapshot(s: unknown): void } }).__harness.setSnapshot({
       ...snap,
       state: {
         ...state,
-        navigation: {
-          ...nav,
-          active_space_id: "!harness-space:example.invalid"
+        ui: {
+          ...ui,
+          navigation: {
+            ...nav,
+            active_space_id: "!harness-space:example.invalid"
+          }
         }
       },
       sidebar: {

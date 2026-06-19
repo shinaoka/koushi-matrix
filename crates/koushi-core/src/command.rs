@@ -2185,7 +2185,7 @@ impl fmt::Debug for SearchCommand {
                 .finish(),
             Self::StartHistoryCrawl {
                 request_id,
-                room_id,
+                room_id: _,
                 settings,
             } => formatter
                 .debug_struct("StartHistoryCrawl")
@@ -2193,7 +2193,7 @@ impl fmt::Debug for SearchCommand {
                 .field("room_id", &"RoomId(..)")
                 .field("settings", settings)
                 .finish(),
-            Self::StopHistoryCrawl { request_id, room_id } => formatter
+            Self::StopHistoryCrawl { request_id, room_id: _ } => formatter
                 .debug_struct("StopHistoryCrawl")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")

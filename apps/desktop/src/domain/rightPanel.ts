@@ -78,29 +78,29 @@ export function effectiveRightPanelModeForSnapshot(
   requestedMode: RightPanelMode,
   snapshot: Pick<DesktopSnapshot, "state">
 ): RightPanelMode {
-  const sessionKind = snapshot.state.session.kind;
+  const sessionKind = snapshot.state.domain.session.kind;
   if (sessionKind === "needsRecovery" || sessionKind === "recovering") {
     return "recovery";
   }
 
   if (
     requestedMode === "focusedContext" &&
-    snapshot.state.focused_context.kind === "closed"
+    snapshot.state.ui.focused_context.kind === "closed"
   ) {
     return "closed";
   }
 
   // Thread open/closed is Rust-owned product state: read it from state.thread,
   // not the legacy top-level `thread` placeholder (always null in production).
-  if (requestedMode === "thread" && snapshot.state.thread.kind === "closed") {
+  if (requestedMode === "thread" && snapshot.state.ui.thread.kind === "closed") {
     return "closed";
   }
 
-  if (requestedMode === "files" && snapshot.state.files_view.kind === "closed") {
+  if (requestedMode === "files" && snapshot.state.ui.files_view.kind === "closed") {
     return "closed";
   }
 
-  if (requestedMode === "threads" && snapshot.state.threads_list.kind === "closed") {
+  if (requestedMode === "threads" && snapshot.state.ui.threads_list.kind === "closed") {
     return "closed";
   }
 

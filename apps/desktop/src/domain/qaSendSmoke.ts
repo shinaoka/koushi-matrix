@@ -10,12 +10,12 @@ export function qaSendSmokeMessageFromEnv(value: string | undefined): string | n
 
 export function qaSendSmokeCanStart(snapshot: DesktopSnapshot): boolean {
   return (
-    snapshot.state.session.kind === "ready" &&
-    syncStateLabel(snapshot.state.sync) === "running" &&
-    Boolean(snapshot.state.timeline.room_id) &&
-    snapshot.state.timeline.is_subscribed &&
-    snapshot.state.timeline.composer.pending_transaction_id === null &&
-    snapshot.state.errors.length === 0
+    snapshot.state.domain.session.kind === "ready" &&
+    syncStateLabel(snapshot.state.domain.sync) === "running" &&
+    Boolean(snapshot.state.ui.timeline.room_id) &&
+    snapshot.state.ui.timeline.is_subscribed &&
+    snapshot.state.ui.timeline.composer.pending_transaction_id === null &&
+    snapshot.state.ui.errors.length === 0
   );
 }
 
@@ -24,10 +24,10 @@ export function qaSendSmokeCompletionStatus(
   baselineErrorCount: number,
   baselineTimelineItems = 0
 ): QaSendSmokeStatus {
-  if (snapshot.state.errors.length > baselineErrorCount) {
+  if (snapshot.state.ui.errors.length > baselineErrorCount) {
     return "failed";
   }
-  if (snapshot.state.timeline.composer.pending_transaction_id !== null) {
+  if (snapshot.state.ui.timeline.composer.pending_transaction_id !== null) {
     return "pending";
   }
   if (snapshot.timeline.length > baselineTimelineItems) {

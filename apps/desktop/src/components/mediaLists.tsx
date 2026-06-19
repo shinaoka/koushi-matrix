@@ -322,7 +322,7 @@ function PinnedEventsList({
   onUnpin
 }: {
   roomId: string;
-  pinnedEvents: DesktopSnapshot["state"]["room_interactions"][string]["pinned_events"];
+  pinnedEvents: DesktopSnapshot["state"]["domain"]["room_interactions"][string]["pinned_events"];
   onUnpin: (roomId: string, eventId: string) => void;
 }) {
   return (
@@ -369,7 +369,7 @@ function SearchResults({
 }: {
   query: string;
   results: SearchResult[];
-  rooms: DesktopSnapshot["state"]["rooms"];
+  rooms: DesktopSnapshot["state"]["domain"]["rooms"];
   onResultSelect: (roomId: string, eventId: string) => void;
 }) {
   if (!query.trim()) {

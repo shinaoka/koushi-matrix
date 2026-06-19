@@ -36,11 +36,14 @@ test("explicit Rust-owned theme selection sets the root data-theme", async ({ pa
       ...snapshot,
       state: {
         ...snapshot.state,
-        settings: {
-          ...snapshot.state.settings,
-          values: {
-            ...snapshot.state.settings.values,
-            appearance: { theme: "dark" }
+        domain: {
+          ...snapshot.state.domain,
+          settings: {
+            ...snapshot.state.domain.settings,
+            values: {
+              ...snapshot.state.domain.settings.values,
+              appearance: { theme: "dark" }
+            }
           }
         }
       }
@@ -60,11 +63,14 @@ test("explicit Rust-owned theme selection sets the root data-theme", async ({ pa
       ...snapshot,
       state: {
         ...snapshot.state,
-        settings: {
-          ...snapshot.state.settings,
-          values: {
-            ...snapshot.state.settings.values,
-            appearance: { theme: "light" }
+        domain: {
+          ...snapshot.state.domain,
+          settings: {
+            ...snapshot.state.domain.settings,
+            values: {
+              ...snapshot.state.domain.settings.values,
+              appearance: { theme: "light" }
+            }
           }
         }
       }

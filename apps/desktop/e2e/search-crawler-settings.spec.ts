@@ -300,9 +300,12 @@ test("room in 'running' state shows Stop button and processed/indexed counts", a
       ...snap,
       state: {
         ...snap.state,
-        search_crawler: {
-          rooms: {
-            [roomId]: { kind: "running", processed: 10, indexed: 8 }
+        domain: {
+          ...snap.state.domain,
+          search_crawler: {
+            rooms: {
+              [roomId]: { kind: "running", processed: 10, indexed: 8 }
+            }
           }
         }
       }
@@ -347,9 +350,12 @@ test("room in 'idle' state shows Start button and no Stop button", async ({ page
       ...snap,
       state: {
         ...snap.state,
-        search_crawler: {
-          rooms: {
-            [roomId]: { kind: "idle" }
+        domain: {
+          ...snap.state.domain,
+          search_crawler: {
+            rooms: {
+              [roomId]: { kind: "idle" }
+            }
           }
         }
       }
@@ -389,9 +395,12 @@ test("room in 'completed' state shows neither Start nor Stop button", async ({ p
       ...snap,
       state: {
         ...snap.state,
-        search_crawler: {
-          rooms: {
-            [roomId]: { kind: "completed", indexed: 42 }
+        domain: {
+          ...snap.state.domain,
+          search_crawler: {
+            rooms: {
+              [roomId]: { kind: "completed", indexed: 42 }
+            }
           }
         }
       }
@@ -434,9 +443,12 @@ test("room in 'failed' state shows coarse kind label without raw SDK errors", as
       ...snap,
       state: {
         ...snap.state,
-        search_crawler: {
-          rooms: {
-            [roomId]: { kind: "failed", failureKind: "sdk" }
+        domain: {
+          ...snap.state.domain,
+          search_crawler: {
+            rooms: {
+              [roomId]: { kind: "failed", failureKind: "sdk" }
+            }
           }
         }
       }
@@ -504,9 +516,12 @@ test("clicking Start dispatches start_room_crawl with the correct roomId and row
       ...snap,
       state: {
         ...snap.state,
-        search_crawler: {
-          rooms: {
-            [roomId]: { kind: "idle" }
+        domain: {
+          ...snap.state.domain,
+          search_crawler: {
+            rooms: {
+              [roomId]: { kind: "idle" }
+            }
           }
         }
       }
@@ -590,9 +605,12 @@ test("clicking Stop dispatches stop_room_crawl with the correct roomId and row u
       ...snap,
       state: {
         ...snap.state,
-        search_crawler: {
-          rooms: {
-            [roomId]: { kind: "running", processed: 5, indexed: 3 }
+        domain: {
+          ...snap.state.domain,
+          search_crawler: {
+            rooms: {
+              [roomId]: { kind: "running", processed: 5, indexed: 3 }
+            }
           }
         }
       }
@@ -674,9 +692,12 @@ test("stop_room_crawl transitions room to idle: Start button appears, Stop butto
       ...snap,
       state: {
         ...snap.state,
-        search_crawler: {
-          rooms: {
-            [roomId]: { kind: "running", processed: 5, indexed: 3 }
+        domain: {
+          ...snap.state.domain,
+          search_crawler: {
+            rooms: {
+              [roomId]: { kind: "running", processed: 5, indexed: 3 }
+            }
           }
         }
       }

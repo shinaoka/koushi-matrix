@@ -11,9 +11,9 @@ describe("BrowserFakeApi settings preview", () => {
       keyboard: { composer_send_shortcut: "modEnter" }
     });
 
-    expect(snapshot.state.settings.values.appearance.theme).toBe("dark");
-    expect(snapshot.state.settings.values.keyboard.composer_send_shortcut).toBe("modEnter");
-    expect(snapshot.state.settings.persistence).toEqual({ kind: "idle" });
+    expect(snapshot.state.domain.settings.values.appearance.theme).toBe("dark");
+    expect(snapshot.state.domain.settings.values.keyboard.composer_send_shortcut).toBe("modEnter");
+    expect(snapshot.state.domain.settings.persistence).toEqual({ kind: "idle" });
   });
 
   test("stores room URL-preview overrides outside settings values", async () => {
@@ -21,31 +21,31 @@ describe("BrowserFakeApi settings preview", () => {
     const roomId = "!room-alpha:example.invalid";
 
     const disabled = await api.setRoomUrlPreviewOverride(roomId, false);
-    expect(disabled.state.link_preview_settings.room_overrides[roomId]).toBe(false);
-    expect("room_url_previews" in disabled.state.settings.values).toBe(false);
+    expect(disabled.state.domain.link_preview_settings.room_overrides[roomId]).toBe(false);
+    expect("room_url_previews" in disabled.state.domain.settings.values).toBe(false);
 
     const restored = await api.setRoomUrlPreviewOverride(roomId, true);
-    expect(restored.state.link_preview_settings.room_overrides[roomId]).toBeUndefined();
+    expect(restored.state.domain.link_preview_settings.room_overrides[roomId]).toBeUndefined();
   });
 
   test("projects room-list filters like the Rust reducer", async () => {
     const api = createBrowserFakeApi();
 
     const initial = await api.getSnapshot();
-    expect(initial.state.room_list.items?.map((item) => item.room_id)).toEqual([
+    expect(initial.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
       "!room-alpha:example.invalid",
       "!room-planning:example.invalid",
       "!room-search:example.invalid"
     ]);
 
     const people = await api.selectRoomListFilter({ kind: "people" });
-    expect(people.state.room_list.items).toEqual([
+    expect(people.state.ui.room_list.items).toEqual([
       { room_id: "!dm-member-1:example.invalid", kind: "room" },
       { room_id: "!dm-member-2:example.invalid", kind: "room" }
     ]);
 
     const unread = await api.selectRoomListFilter({ kind: "unread" });
-    expect(unread.state.room_list.items?.map((item) => item.room_id)).toEqual([
+    expect(unread.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
       "!dm-member-1:example.invalid",
       "!room-alpha:example.invalid",
       "!room-planning:example.invalid",
@@ -54,12 +54,12 @@ describe("BrowserFakeApi settings preview", () => {
 
     await api.setRoomTag("!room-planning:example.invalid", "favourite");
     const favourites = await api.selectRoomListFilter({ kind: "favourites" });
-    expect(favourites.state.room_list.items).toEqual([
+    expect(favourites.state.ui.room_list.items).toEqual([
       { room_id: "!room-planning:example.invalid", kind: "room" }
     ]);
 
     const invites = await api.selectRoomListFilter({ kind: "invites" });
-    expect(invites.state.room_list.items).toEqual([
+    expect(invites.state.ui.room_list.items).toEqual([
       { room_id: "!invite-design-review:example.invalid", kind: "invite" }
     ]);
   });
@@ -148,7 +148,7 @@ describe("BrowserFakeApi settings preview", () => {
       locale: { language_tag: "ar-XB", text_direction: "auto" }
     });
 
-    expect(snapshot.state.locale_profile).toMatchObject({
+    expect(snapshot.state.domain.locale_profile).toMatchObject({
       lang: "ar-XB",
       dir: "rtl",
       catalog_locale: "pseudo",
@@ -162,15 +162,15 @@ describe("BrowserFakeApi settings preview", () => {
     const api = createBrowserFakeApi();
 
     const named = await api.setDisplayName("Alice");
-    expect(named.state.profile.own.display_name).toBe("Alice");
-    expect(named.state.profile.update).toEqual({ kind: "idle" });
+    expect(named.state.domain.profile.own.display_name).toBe("Alice");
+    expect(named.state.domain.profile.update).toEqual({ kind: "idle" });
 
     const avatar = await api.setAvatar("image/png", [1, 2, 3, 4]);
-    expect(avatar.state.profile.own.avatar).toEqual({
+    expect(avatar.state.domain.profile.own.avatar).toEqual({
       mxc_uri: "mxc://browser.fake/profile-avatar",
       thumbnail: { kind: "notRequested" }
     });
-    expect(avatar.state.profile.update).toEqual({ kind: "idle" });
+    expect(avatar.state.domain.profile.update).toEqual({ kind: "idle" });
   });
 
   test("updates Rust-shaped local alias projections for profile, rooms, and room members", async () => {
@@ -179,17 +179,17 @@ describe("BrowserFakeApi settings preview", () => {
 
     const aliased = await api.setLocalUserAlias(targetUserId, "Desk Alias");
 
-    expect(aliased.state.profile.local_aliases[targetUserId]).toBe("Desk Alias");
-    expect(aliased.state.profile.local_alias_update).toEqual({ kind: "idle" });
-    expect(aliased.state.profile.users[targetUserId]).toMatchObject({
+    expect(aliased.state.domain.profile.local_aliases[targetUserId]).toBe("Desk Alias");
+    expect(aliased.state.domain.profile.local_alias_update).toEqual({ kind: "idle" });
+    expect(aliased.state.domain.profile.users[targetUserId]).toMatchObject({
       display_label: "Desk Alias",
       original_display_label: "Member 1"
     });
     expect(
-      aliased.state.profile.users[targetUserId]?.mention_search_terms
+      aliased.state.domain.profile.users[targetUserId]?.mention_search_terms
     ).toEqual(["Desk Alias", "Member 1", targetUserId]);
     expect(
-      aliased.state.rooms.find((room) => room.room_id === "!dm-member-1:example.invalid")
+      aliased.state.domain.rooms.find((room) => room.room_id === "!dm-member-1:example.invalid")
     ).toMatchObject({
       display_label: "Desk Alias",
       original_display_label: "Member 1"
@@ -197,7 +197,7 @@ describe("BrowserFakeApi settings preview", () => {
 
     const loaded = await api.loadRoomSettings("!room-alpha:example.invalid");
     expect(
-      loaded.state.room_management.settings?.members.find(
+      loaded.state.domain.room_management.settings?.members.find(
         (member) => member.user_id === targetUserId
       )
     ).toMatchObject({
@@ -206,13 +206,13 @@ describe("BrowserFakeApi settings preview", () => {
     });
 
     const cleared = await api.setLocalUserAlias(targetUserId, null);
-    expect(cleared.state.profile.local_aliases[targetUserId]).toBeUndefined();
-    expect(cleared.state.profile.users[targetUserId]).toMatchObject({
+    expect(cleared.state.domain.profile.local_aliases[targetUserId]).toBeUndefined();
+    expect(cleared.state.domain.profile.users[targetUserId]).toMatchObject({
       display_label: "Member 1",
       original_display_label: "Member 1"
     });
     expect(
-      cleared.state.rooms.find((room) => room.room_id === "!dm-member-1:example.invalid")
+      cleared.state.domain.rooms.find((room) => room.room_id === "!dm-member-1:example.invalid")
     ).toMatchObject({
       display_label: "Member 1",
       original_display_label: "Member 1"
@@ -224,34 +224,38 @@ describe("BrowserFakeApi settings preview", () => {
 
     await expect(api.bootstrapCrossSigning()).resolves.toMatchObject({
       state: {
-        e2ee_trust: {
-          cross_signing: { kind: "trusted" }
+        domain: {
+          e2ee_trust: {
+            cross_signing: { kind: "trusted" }
+          }
         }
       }
     });
 
     await expect(api.enableKeyBackup()).resolves.toMatchObject({
       state: {
-        e2ee_trust: {
-          key_backup: { kind: "enabled", version: "browser-preview" }
+        domain: {
+          e2ee_trust: {
+            key_backup: { kind: "enabled", version: "browser-preview" }
+          }
         }
       }
     });
 
     const awaitingAuth = await api.resetIdentity();
-    expect(awaitingAuth.state.e2ee_trust.identity_reset).toMatchObject({
+    expect(awaitingAuth.state.domain.e2ee_trust.identity_reset).toMatchObject({
       kind: "awaitingAuth",
       auth_type: "uiaa"
     });
 
     const flow =
-      awaitingAuth.state.e2ee_trust.identity_reset.kind === "awaitingAuth"
-        ? awaitingAuth.state.e2ee_trust.identity_reset.request_id
+      awaitingAuth.state.domain.e2ee_trust.identity_reset.kind === "awaitingAuth"
+        ? awaitingAuth.state.domain.e2ee_trust.identity_reset.request_id
         : 0;
     const reset = await api.submitIdentityResetPassword(flow, "synthetic-password");
-    expect(reset.state.e2ee_trust.identity_reset).toEqual({ kind: "idle" });
-    expect(reset.state.e2ee_trust.cross_signing).toEqual({ kind: "missing" });
-    expect(reset.state.e2ee_trust.key_backup).toEqual({ kind: "disabled" });
+    expect(reset.state.domain.e2ee_trust.identity_reset).toEqual({ kind: "idle" });
+    expect(reset.state.domain.e2ee_trust.cross_signing).toEqual({ kind: "missing" });
+    expect(reset.state.domain.e2ee_trust.key_backup).toEqual({ kind: "disabled" });
   });
 
   test("updates Rust-shaped key-management state without retaining secrets or paths", async () => {
@@ -261,7 +265,7 @@ describe("BrowserFakeApi settings preview", () => {
       "/tmp/private-export.txt",
       "private-room-key-passphrase"
     );
-    expect(exported.state.e2ee_trust.key_management.room_key_export).toMatchObject({
+    expect(exported.state.domain.e2ee_trust.key_management.room_key_export).toMatchObject({
       kind: "exported",
       exported_sessions: null
     });
@@ -270,7 +274,7 @@ describe("BrowserFakeApi settings preview", () => {
       "/tmp/private-import.txt",
       "private-room-key-passphrase"
     );
-    expect(imported.state.e2ee_trust.key_management.room_key_import).toMatchObject({
+    expect(imported.state.domain.e2ee_trust.key_management.room_key_import).toMatchObject({
       kind: "imported",
       imported_count: 1,
       total_count: 1
@@ -280,7 +284,7 @@ describe("BrowserFakeApi settings preview", () => {
       "private-secure-backup-passphrase",
       "/tmp/private-recovery.txt"
     );
-    expect(setup.state.e2ee_trust.key_management.secure_backup_setup).toMatchObject({
+    expect(setup.state.domain.e2ee_trust.key_management.secure_backup_setup).toMatchObject({
       kind: "recoveryKeyReady",
       delivery: { kind: "written" }
     });
@@ -290,12 +294,12 @@ describe("BrowserFakeApi settings preview", () => {
       "private-new-secure-backup-passphrase",
       null
     );
-    expect(changed.state.e2ee_trust.key_management.passphrase_change).toMatchObject({
+    expect(changed.state.domain.e2ee_trust.key_management.passphrase_change).toMatchObject({
       kind: "changed",
       delivery: { kind: "notWritten" }
     });
 
-    const serialized = JSON.stringify(changed.state.e2ee_trust.key_management);
+    const serialized = JSON.stringify(changed.state.domain.e2ee_trust.key_management);
     expect(serialized).not.toContain("private-room-key-passphrase");
     expect(serialized).not.toContain("private-secure-backup-passphrase");
     expect(serialized).not.toContain("private-recovery");
@@ -307,7 +311,7 @@ describe("BrowserFakeApi settings preview", () => {
     await api.pinEvent("!missing:browser.fake", "$event:browser.fake");
     const snapshot = await api.unpinEvent("!missing:browser.fake", "$event:browser.fake");
 
-    expect(snapshot.state.room_interactions["!missing:browser.fake"]).toBeUndefined();
+    expect(snapshot.state.domain.room_interactions["!missing:browser.fake"]).toBeUndefined();
   });
 
   test("selectRoom mirrors the Rust unknown-room guard", async () => {
@@ -316,10 +320,10 @@ describe("BrowserFakeApi settings preview", () => {
 
     const selected = await api.selectRoom("!missing:example.invalid");
 
-    expect(selected.state.navigation.active_room_id).toBe(
-      before.state.navigation.active_room_id
+    expect(selected.state.ui.navigation.active_room_id).toBe(
+      before.state.ui.navigation.active_room_id
     );
-    expect(selected.state.timeline.room_id).toBe(before.state.timeline.room_id);
+    expect(selected.state.ui.timeline.room_id).toBe(before.state.ui.timeline.room_id);
     expect(selected.timeline.map((message) => message.room_id)).toEqual(
       before.timeline.map((message) => message.room_id)
     );
@@ -331,11 +335,11 @@ describe("BrowserFakeApi settings preview", () => {
     await api.openThreadsList("!room-alpha:example.invalid");
     const selected = await api.selectRoom("!room-planning:example.invalid");
 
-    expect(selected.state.navigation.active_room_id).toBe("!room-planning:example.invalid");
-    expect(selected.state.thread).toEqual({ kind: "closed" });
-    expect(selected.state.thread_attention).toEqual({ kind: "closed" });
-    expect(selected.state.threads_list).toEqual({ kind: "closed" });
-    expect(selected.state.focused_context).toEqual({ kind: "closed" });
+    expect(selected.state.ui.navigation.active_room_id).toBe("!room-planning:example.invalid");
+    expect(selected.state.ui.thread).toEqual({ kind: "closed" });
+    expect(selected.state.domain.thread_attention).toEqual({ kind: "closed" });
+    expect(selected.state.ui.threads_list).toEqual({ kind: "closed" });
+    expect(selected.state.ui.focused_context).toEqual({ kind: "closed" });
     expect(selected.thread).toBeNull();
   });
 
@@ -346,10 +350,10 @@ describe("BrowserFakeApi settings preview", () => {
     await api.selectRoom("!room-search:example.invalid");
     const restored = await api.selectSpace("!space-alpha:example.invalid");
 
-    expect(restored.state.navigation.active_space_id).toBe("!space-alpha:example.invalid");
-    expect(restored.state.navigation.active_room_id).toBe("!room-planning:example.invalid");
-    expect(restored.state.timeline.room_id).toBe("!room-planning:example.invalid");
-    expect(restored.state.navigation.last_room_by_space_id).toMatchObject({
+    expect(restored.state.ui.navigation.active_space_id).toBe("!space-alpha:example.invalid");
+    expect(restored.state.ui.navigation.active_room_id).toBe("!room-planning:example.invalid");
+    expect(restored.state.ui.timeline.room_id).toBe("!room-planning:example.invalid");
+    expect(restored.state.ui.navigation.last_room_by_space_id).toMatchObject({
       "!space-alpha:example.invalid": "!room-planning:example.invalid",
       "!space-beta:example.invalid": "!room-search:example.invalid"
     });
@@ -363,11 +367,11 @@ describe("BrowserFakeApi settings preview", () => {
       "!space-alpha:example.invalid"
     ]);
 
-    expect(reordered.state.navigation.space_order).toEqual([
+    expect(reordered.state.ui.navigation.space_order).toEqual([
       "!space-beta:example.invalid",
       "!space-alpha:example.invalid"
     ]);
-    expect(reordered.state.spaces.map((space) => space.space_id)).toEqual([
+    expect(reordered.state.domain.spaces.map((space) => space.space_id)).toEqual([
       "!space-beta:example.invalid",
       "!space-alpha:example.invalid"
     ]);
@@ -382,15 +386,15 @@ describe("BrowserFakeApi settings preview", () => {
 
     const left = await api.leaveRoom("!space-alpha:example.invalid");
 
-    expect(left.state.spaces.map((space) => space.space_id)).toEqual([
+    expect(left.state.domain.spaces.map((space) => space.space_id)).toEqual([
       "!space-beta:example.invalid"
     ]);
-    expect(left.state.navigation.active_space_id).toBeNull();
-    expect(left.state.rooms.some((room) => room.room_id === "!room-alpha:example.invalid")).toBe(
+    expect(left.state.ui.navigation.active_space_id).toBeNull();
+    expect(left.state.domain.rooms.some((room) => room.room_id === "!room-alpha:example.invalid")).toBe(
       true
     );
     expect(
-      left.state.rooms
+      left.state.domain.rooms
         .find((room) => room.room_id === "!room-alpha:example.invalid")
         ?.parent_space_ids
     ).toEqual([]);
@@ -404,7 +408,7 @@ describe("BrowserFakeApi settings preview", () => {
 
     const opened = await api.openThreadsList("!room-alpha:example.invalid");
 
-    expect(opened.state.threads_list).toMatchObject({
+    expect(opened.state.ui.threads_list).toMatchObject({
       kind: "open",
       room_id: "!room-alpha:example.invalid",
       end_reached: true,
@@ -429,7 +433,7 @@ describe("BrowserFakeApi settings preview", () => {
       "newestFirst"
     );
 
-    expect(opened.state.files_view).toMatchObject({
+    expect(opened.state.ui.files_view).toMatchObject({
       kind: "open",
       items: [
         expect.objectContaining({
@@ -449,19 +453,19 @@ describe("BrowserFakeApi settings preview", () => {
       "!room-alpha:example.invalid",
       "$alpha-update"
     );
-    expect(focused.state.focused_context.kind).toBe("opening");
+    expect(focused.state.ui.focused_context.kind).toBe("opening");
 
     const selected = await api.selectRoom("!room-planning:example.invalid");
 
-    expect(selected.state.focused_context).toEqual({ kind: "closed" });
+    expect(selected.state.ui.focused_context).toEqual({ kind: "closed" });
   });
 
   test("initial browser fake snapshot starts with thread panel closed", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();
 
-    expect(snapshot.state.thread).toEqual({ kind: "closed" });
-    expect(snapshot.state.thread_attention).toEqual({ kind: "closed" });
+    expect(snapshot.state.ui.thread).toEqual({ kind: "closed" });
+    expect(snapshot.state.domain.thread_attention).toEqual({ kind: "closed" });
     expect(snapshot.thread).toBeNull();
   });
 
@@ -469,7 +473,7 @@ describe("BrowserFakeApi settings preview", () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();
 
-    expect(snapshot.state.invites.map((invite) => invite.room_id)).toContain(
+    expect(snapshot.state.domain.invites.map((invite) => invite.room_id)).toContain(
       "!invite-design-review:example.invalid"
     );
   });
@@ -480,12 +484,12 @@ describe("BrowserFakeApi settings preview", () => {
     const accepted = await api.acceptInvite("!invite-design-review:example.invalid");
 
     expect(
-      accepted.state.invites.some(
+      accepted.state.domain.invites.some(
         (invite) => invite.room_id === "!invite-design-review:example.invalid"
       )
     ).toBe(false);
     expect(
-      accepted.state.rooms.some(
+      accepted.state.domain.rooms.some(
         (room) => room.room_id === "!invite-design-review:example.invalid"
       )
     ).toBe(true);
@@ -497,7 +501,7 @@ describe("BrowserFakeApi settings preview", () => {
     const declined = await api.declineInvite("!invite-design-review:example.invalid");
 
     expect(
-      declined.state.invites.some(
+      declined.state.domain.invites.some(
         (invite) => invite.room_id === "!invite-design-review:example.invalid"
       )
     ).toBe(false);
@@ -512,7 +516,7 @@ describe("BrowserFakeApi settings preview", () => {
       limit: 20,
       since: null
     });
-    expect((await api.getSnapshot()).state.directory.query).toMatchObject({
+    expect((await api.getSnapshot()).state.domain.directory.query).toMatchObject({
       kind: "querying",
       query: {
         term: "public rooms",
@@ -523,23 +527,23 @@ describe("BrowserFakeApi settings preview", () => {
     });
 
     const queried = await queryPromise;
-    expect(queried.state.directory.query.kind).toBe("results");
+    expect(queried.state.domain.directory.query.kind).toBe("results");
 
     const joinPromise = api.joinDirectoryRoom("#public-demo:fake.local", "fake.local");
-    expect((await api.getSnapshot()).state.directory.join).toMatchObject({
+    expect((await api.getSnapshot()).state.domain.directory.join).toMatchObject({
       kind: "joining",
       alias: "#public-demo:fake.local",
       via_server: "fake.local"
     });
 
     const joined = await joinPromise;
-    expect(joined.state.directory.join).toEqual({ kind: "idle" });
-    expect(joined.state.navigation.active_space_id).toBeNull();
-    expect(joined.state.navigation.active_room_id).toMatch(/^!joined-/);
-    expect(joined.state.timeline.room_id).toBe(joined.state.navigation.active_room_id);
+    expect(joined.state.domain.directory.join).toEqual({ kind: "idle" });
+    expect(joined.state.ui.navigation.active_space_id).toBeNull();
+    expect(joined.state.ui.navigation.active_room_id).toMatch(/^!joined-/);
+    expect(joined.state.ui.timeline.room_id).toBe(joined.state.ui.navigation.active_room_id);
     expect(joined.sidebar.space_rooms).toContainEqual(
       expect.objectContaining({
-        room_id: joined.state.navigation.active_room_id,
+        room_id: joined.state.ui.navigation.active_room_id,
         display_name: "public-demo"
       })
     );
@@ -549,7 +553,7 @@ describe("BrowserFakeApi settings preview", () => {
     const api = createBrowserFakeApi();
 
     const loaded = await api.loadRoomSettings("!browser-room:browser.fake");
-    expect(loaded.state.room_management).toMatchObject({
+    expect(loaded.state.domain.room_management).toMatchObject({
       selected_room_id: "!browser-room:browser.fake",
       settings: {
         room_id: "!browser-room:browser.fake",
@@ -567,13 +571,13 @@ describe("BrowserFakeApi settings preview", () => {
     const updatePromise = api.updateRoomSetting("!browser-room:browser.fake", {
       topic: "Updated topic"
     });
-    expect((await api.getSnapshot()).state.room_management.operation).toMatchObject({
+    expect((await api.getSnapshot()).state.domain.room_management.operation).toMatchObject({
       kind: "pending",
       operation: "settings"
     });
     const updated = await updatePromise;
-    expect(updated.state.room_management.settings?.topic).toBe("Updated topic");
-    expect(updated.state.room_management.operation).toEqual({ kind: "idle" });
+    expect(updated.state.domain.room_management.settings?.topic).toBe("Updated topic");
+    expect(updated.state.domain.room_management.operation).toEqual({ kind: "idle" });
 
     const moderated = await api.moderateRoomMember(
       "!browser-room:browser.fake",
@@ -581,7 +585,7 @@ describe("BrowserFakeApi settings preview", () => {
       "kick",
       "Private reason"
     );
-    expect(moderated.state.room_management.operation).toEqual({ kind: "idle" });
+    expect(moderated.state.domain.room_management.operation).toEqual({ kind: "idle" });
 
     await api.loadRoomSettings("!readonly-room:browser.fake");
     const guarded = await api.moderateRoomMember(
@@ -590,7 +594,7 @@ describe("BrowserFakeApi settings preview", () => {
       "kick",
       null
     );
-    expect(guarded.state.room_management.operation).toMatchObject({
+    expect(guarded.state.domain.room_management.operation).toMatchObject({
       kind: "failed",
       operation: "moderation",
       failureKind: "forbidden"
@@ -601,9 +605,9 @@ describe("BrowserFakeApi settings preview", () => {
     const api = createBrowserFakeApi();
 
     const loaded = await api.loadRoomSettings("!browser-room:browser.fake");
-    const targetUserId = loaded.state.room_management.settings?.members[0]?.user_id ?? "";
+    const targetUserId = loaded.state.domain.room_management.settings?.members[0]?.user_id ?? "";
     expect(targetUserId).toBeTruthy();
-    expect(loaded.state.room_management.settings?.members[0]).toMatchObject({
+    expect(loaded.state.domain.room_management.settings?.members[0]).toMatchObject({
       power_level: 0,
       role: "user"
     });
@@ -613,14 +617,14 @@ describe("BrowserFakeApi settings preview", () => {
       targetUserId,
       50
     );
-    expect((await api.getSnapshot()).state.room_management.operation).toMatchObject({
+    expect((await api.getSnapshot()).state.domain.room_management.operation).toMatchObject({
       kind: "pending",
       operation: "roles"
     });
 
     const updated = await updatePromise;
-    expect(updated.state.room_management.operation).toEqual({ kind: "idle" });
-    expect(updated.state.room_management.settings?.members[0]).toMatchObject({
+    expect(updated.state.domain.room_management.operation).toEqual({ kind: "idle" });
+    expect(updated.state.domain.room_management.settings?.members[0]).toMatchObject({
       user_id: targetUserId,
       power_level: 50,
       role: "moderator"
@@ -632,7 +636,7 @@ describe("BrowserFakeApi settings preview", () => {
       targetUserId,
       100
     );
-    expect(guarded.state.room_management.operation).toMatchObject({
+    expect(guarded.state.domain.room_management.operation).toMatchObject({
       kind: "failed",
       operation: "roles",
       failureKind: "forbidden"
@@ -643,74 +647,74 @@ describe("BrowserFakeApi settings preview", () => {
     const api = createBrowserFakeApi();
 
     const opened = await api.openActivity();
-    expect(opened.state.activity.kind).toBe("open");
-    if (opened.state.activity.kind !== "open") {
+    expect(opened.state.domain.activity.kind).toBe("open");
+    if (opened.state.domain.activity.kind !== "open") {
       throw new Error("activity should be open");
     }
-    expect(opened.state.activity.active_tab).toBe("recent");
-    expect(opened.state.activity.recent.rows.map((row) => row.event_id).slice(0, 3)).toEqual([
+    expect(opened.state.domain.activity.active_tab).toBe("recent");
+    expect(opened.state.domain.activity.recent.rows.map((row) => row.event_id).slice(0, 3)).toEqual([
       "$search-dev-note",
       "$late-original",
       "$false-positive"
     ]);
-    expect(opened.state.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
+    expect(opened.state.domain.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
       true
     );
 
     const switched = await api.setActivityTab("unread");
-    expect(switched.state.activity.kind).toBe("open");
-    if (switched.state.activity.kind !== "open") {
+    expect(switched.state.domain.activity.kind).toBe("open");
+    if (switched.state.domain.activity.kind !== "open") {
       throw new Error("activity should stay open");
     }
-    expect(switched.state.activity.active_tab).toBe("unread");
-    expect(switched.state.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
+    expect(switched.state.domain.activity.active_tab).toBe("unread");
+    expect(switched.state.domain.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
       true
     );
 
-    const paged = await api.paginateActivity("recent", switched.state.activity.recent.next_batch);
-    expect(paged.state.activity.kind).toBe("open");
-    if (paged.state.activity.kind !== "open") {
+    const paged = await api.paginateActivity("recent", switched.state.domain.activity.recent.next_batch);
+    expect(paged.state.domain.activity.kind).toBe("open");
+    if (paged.state.domain.activity.kind !== "open") {
       throw new Error("activity should stay open after pagination");
     }
-    expect(paged.state.activity.recent.rows.at(-1)?.event_id).toBe("$alpha-history");
-    expect(paged.state.activity.recent.next_batch).toBeNull();
+    expect(paged.state.domain.activity.recent.rows.at(-1)?.event_id).toBe("$alpha-history");
+    expect(paged.state.domain.activity.recent.next_batch).toBeNull();
 
     const markedRoom = await api.markActivityRead({
       kind: "room",
       room_id: "!room-alpha:example.invalid",
       up_to_event_id: "$false-positive"
     });
-    expect(markedRoom.state.activity.kind).toBe("open");
-    if (markedRoom.state.activity.kind !== "open") {
+    expect(markedRoom.state.domain.activity.kind).toBe("open");
+    if (markedRoom.state.domain.activity.kind !== "open") {
       throw new Error("activity should stay open after mark-read");
     }
-    expect(markedRoom.state.activity.mark_read).toEqual({ kind: "idle" });
+    expect(markedRoom.state.domain.activity.mark_read).toEqual({ kind: "idle" });
     expect(
-      markedRoom.state.activity.unread.rows.some(
+      markedRoom.state.domain.activity.unread.rows.some(
         (row) => row.room_id === "!room-alpha:example.invalid"
       )
     ).toBe(false);
 
     const markedAll = await api.markActivityRead({ kind: "all" });
-    expect(markedAll.state.activity.kind).toBe("open");
-    if (markedAll.state.activity.kind !== "open") {
+    expect(markedAll.state.domain.activity.kind).toBe("open");
+    if (markedAll.state.domain.activity.kind !== "open") {
       throw new Error("activity should stay open after mark-all-read");
     }
-    expect(markedAll.state.activity.unread.rows).toEqual([]);
+    expect(markedAll.state.domain.activity.unread.rows).toEqual([]);
   });
 
   test("models local encryption health probe as Rust-owned state", async () => {
     const api = createBrowserFakeApi();
 
-    expect((await api.getSnapshot()).state.local_encryption).toEqual({ kind: "unknown" });
+    expect((await api.getSnapshot()).state.domain.local_encryption).toEqual({ kind: "unknown" });
 
     const probing = api.probeLocalEncryptionHealth();
-    expect((await api.getSnapshot()).state.local_encryption).toMatchObject({
+    expect((await api.getSnapshot()).state.domain.local_encryption).toMatchObject({
       kind: "probing",
       request_id: expect.any(Number)
     });
 
     const snapshot = await probing;
-    expect(snapshot.state.local_encryption).toEqual({ kind: "healthy" });
+    expect(snapshot.state.domain.local_encryption).toEqual({ kind: "healthy" });
   });
 });
