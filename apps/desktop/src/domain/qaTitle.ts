@@ -1,4 +1,4 @@
-import type { DesktopSnapshot, SyncState } from "./types";
+import type { DesktopSnapshot, SearchCrawlerRoomState, SyncState } from "./types";
 import type { RightPanelMode } from "./rightPanel";
 import type { QaSendSmokeStatus } from "./qaSendSmoke";
 import { desktopAttentionSummary } from "./desktopAttention";
@@ -28,6 +28,7 @@ export function qaWindowTitle(
     `timeline_room=${Boolean(snapshot.state.ui.timeline.room_id)}`,
     `timeline_subscribed=${snapshot.state.ui.timeline.is_subscribed}`,
     `timeline_items=${snapshot.timeline.length}`,
+    ...qaSearchCrawlerDiagnosticTokens(snapshot),
     `pinned=${pinnedCount}`,
     `pin_ops=${pinOperationCount}`,
     `errors=${snapshot.state.ui.errors.length}`,
@@ -43,6 +44,63 @@ export function qaWindowTitle(
   }
   title.push(...diagnosticTokens);
   return title.join(" ");
+}
+
+export interface QaTimelineDiagnostics {
+  visibleItems: number;
+  downloadedItems: number;
+  backfill: string;
+}
+
+export function qaTimelineDiagnosticTokens(diagnostics: QaTimelineDiagnostics): string[] {
+  return [
+    `timeline_visible=${diagnostics.visibleItems}`,
+    `timeline_dl=${diagnostics.downloadedItems}`,
+    `timeline_backfill=${diagnostics.backfill}`
+  ];
+}
+
+export function qaSearchCrawlerDiagnosticTokens(snapshot: DesktopSnapshot): string[] {
+  const summary = Object.values(snapshot.state.domain.search_crawler.rooms).reduce(
+    (current, roomState) => summarizeCrawlerRoomState(current, roomState),
+    {
+      running: 0,
+      completed: 0,
+      failed: 0,
+      processed: 0,
+      indexed: 0
+    }
+  );
+  return [
+    `crawler_running=${summary.running}`,
+    `crawler_completed=${summary.completed}`,
+    `crawler_failed=${summary.failed}`,
+    `crawler_processed=${summary.processed}`,
+    `crawler_indexed=${summary.indexed}`
+  ];
+}
+
+function summarizeCrawlerRoomState(
+  current: {
+    running: number;
+    completed: number;
+    failed: number;
+    processed: number;
+    indexed: number;
+  },
+  roomState: SearchCrawlerRoomState
+) {
+  if (roomState.kind === "running") {
+    current.running += 1;
+    current.processed += roomState.processed;
+    current.indexed += roomState.indexed;
+  } else if (roomState.kind === "completed") {
+    current.completed += 1;
+    current.indexed += roomState.indexed;
+  } else if (roomState.kind === "failed") {
+    current.failed += 1;
+  }
+  return current;
 }
 
 function latestErrorCode(snapshot: DesktopSnapshot): string {

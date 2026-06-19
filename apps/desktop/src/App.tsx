@@ -24,6 +24,7 @@ import { createDesktopApi } from "./backend/client";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
+  type TimelineDiagnostics,
   type TimelineTransport
 } from "./components/TimelineView";
 import {
@@ -61,7 +62,11 @@ import {
   createTauriDesktopNotificationTransport,
   sendDesktopAttentionNotification
 } from "./domain/desktopNotification";
-import { qaWindowTitle } from "./domain/qaTitle";
+import {
+  qaTimelineDiagnosticTokens,
+  qaWindowTitle,
+  type QaTimelineDiagnostics
+} from "./domain/qaTitle";
 import {
   type QaSendSmokeStatus,
   qaSendCompletionStatusFromCoreEvent,
@@ -700,6 +705,11 @@ export function App() {
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
+  const [timelineDiagnostics, setTimelineDiagnostics] = useState<QaTimelineDiagnostics>({
+    visibleItems: 0,
+    downloadedItems: 0,
+    backfill: "unknown"
+  });
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -752,6 +762,18 @@ export function App() {
       }
     };
   }, []);
+  const updateTimelineDiagnostics = useCallback((diagnostics: TimelineDiagnostics) => {
+    setTimelineDiagnostics((current) => {
+      if (
+        current.visibleItems === diagnostics.visibleItems &&
+        current.downloadedItems === diagnostics.downloadedItems &&
+        current.backfill === diagnostics.backfill
+      ) {
+        return current;
+      }
+      return diagnostics;
+    });
+  }, []);
   const attentionSummary = snapshot
     ? desktopAttentionSummary(snapshot.state.domain.native_attention)
     : null;
@@ -766,6 +788,19 @@ export function App() {
   const composerDraft = snapshot?.state.ui.timeline.composer.draft ?? "";
   const stagedUploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
   const stagedUploadIdKey = stagedUploads.map((item) => item.staged_id).join("\n");
+
+  useEffect(() => {
+    if (snapshot?.state.ui.timeline.room_id) {
+      return;
+    }
+    setTimelineDiagnostics((current) =>
+      current.visibleItems === 0 &&
+      current.downloadedItems === 0 &&
+      current.backfill === "unknown"
+        ? current
+        : { visibleItems: 0, downloadedItems: 0, backfill: "unknown" }
+    );
+  }, [snapshot?.state.ui.timeline.room_id]);
 
   useEffect(() => {
     const activeIds = new Set(stagedUploads.map((item) => item.staged_id));
@@ -925,7 +960,10 @@ export function App() {
             snapshot,
             effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot),
             qaSendStatus,
-            qaSendSmokeTargetDiagnosticTokens(snapshot, qaSendSmokeTargetUserId())
+            [
+              ...qaSendSmokeTargetDiagnosticTokens(snapshot, qaSendSmokeTargetUserId()),
+              ...qaTimelineDiagnosticTokens(timelineDiagnostics)
+            ]
           )
         : desktopAttentionWindowTitle("Koushi", safeAttentionSummary)
       : qaTitleEnabled()
@@ -943,7 +981,14 @@ export function App() {
       safeAttentionSummary.badgeCount,
       snapshot?.state.domain.native_attention.summary.capabilities
     );
-  }, [snapshot, rightPanelMode, qaSendStatus, safeAttentionSummary.badgeCount, safeAttentionSummary.qaTitleToken]);
+  }, [
+    snapshot,
+    rightPanelMode,
+    qaSendStatus,
+    safeAttentionSummary.badgeCount,
+    safeAttentionSummary.qaTitleToken,
+    timelineDiagnostics
+  ]);
 
   useEffect(() => {
     if (!snapshot) {
@@ -2496,6 +2541,7 @@ export function App() {
                 void openThreadsListPanel(roomId);
               }
             }}
+            onTimelineDiagnosticsChange={updateTimelineDiagnostics}
           />
         )}
         <ContextualRightPanel

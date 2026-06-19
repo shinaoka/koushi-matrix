@@ -40,6 +40,7 @@ import {
 } from "../app/uiShared";
 import {
   TimelineView,
+  type TimelineDiagnostics,
   type TimelineRowActionHandlers,
   type TimelineTransport
 } from "./TimelineView";
@@ -540,7 +541,8 @@ export function TimelinePane({
   onUnpinPinnedEvent,
   onToggleThread,
   onOpenRoomInfo,
-  onOpenThreadsList
+  onOpenThreadsList,
+  onTimelineDiagnosticsChange
 }: {
   activeRoomName: string;
   composerDraft: string;
@@ -578,6 +580,7 @@ export function TimelinePane({
   onToggleThread: () => void;
   onOpenRoomInfo: () => void;
   onOpenThreadsList: () => void;
+  onTimelineDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
 }) {
   const timelineRoomId = snapshot.state.ui.timeline.room_id;
   const currentUserId = snapshot.state.domain.session.user_id ?? null;
@@ -709,6 +712,7 @@ export function TimelinePane({
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
+              onDiagnosticsChange={onTimelineDiagnosticsChange}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).

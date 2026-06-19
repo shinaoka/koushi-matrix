@@ -734,7 +734,19 @@ function summarizeQaStatus(status) {
   if (status.send !== undefined) {
     values.push(`send=${status.send}`);
   }
-  for (const key of ["target_dm", "target_selected", "target_members"]) {
+  for (const key of [
+    "target_dm",
+    "target_selected",
+    "target_members",
+    "timeline_visible",
+    "timeline_dl",
+    "timeline_backfill",
+    "crawler_running",
+    "crawler_completed",
+    "crawler_failed",
+    "crawler_processed",
+    "crawler_indexed"
+  ]) {
     if (status[key] !== undefined) {
       values.push(`${key}=${status[key]}`);
     }

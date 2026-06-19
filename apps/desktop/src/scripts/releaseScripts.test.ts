@@ -1431,6 +1431,26 @@ describe("desktop release scripts", () => {
     expect(source).toContain("\"target_members\"");
   });
 
+  test("mac GUI smoke keeps timeline and crawler counters in diagnostics summaries", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    for (const key of [
+      "timeline_visible",
+      "timeline_dl",
+      "timeline_backfill",
+      "crawler_running",
+      "crawler_completed",
+      "crawler_failed",
+      "crawler_processed",
+      "crawler_indexed"
+    ]) {
+      expect(source).toContain(`"${key}"`);
+    }
+  });
+
   test("QA file credential store is gated to debug and test builds in core", () => {
     // The credential store moved into koushi-core (StoreActor) when
     // src-tauri became a pure transport adapter; the compile-time gate lives

@@ -1059,6 +1059,12 @@ async function writeClipboardText(value: string): Promise<void> {
 // Component
 // ---------------------------------------------------------------------------
 
+export interface TimelineDiagnostics {
+  visibleItems: number;
+  downloadedItems: number;
+  backfill: string;
+}
+
 export function TimelineView({
   timelineKey,
   roomId,
@@ -1078,7 +1084,8 @@ export function TimelineView({
   autoLoadOlderMessages = false,
   codeBlockWrap = true,
   searchQuery = "",
-  mediaDownloads = {}
+  mediaDownloads = {},
+  onDiagnosticsChange
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -1106,6 +1113,7 @@ export function TimelineView({
   codeBlockWrap?: boolean;
   searchQuery?: string;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
+  onDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
@@ -1124,6 +1132,7 @@ export function TimelineView({
   const backfillInFlightRef = useRef(false);
   const readSignalEventRef = useRef<string | null>(null);
   const lastViewportObservationRef = useRef<string | null>(null);
+  const downloadedEventIdsRef = useRef<Set<string>>(new Set());
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
   const timelineKeyHash = JSON.stringify(timelineKey);
@@ -1218,9 +1227,22 @@ export function TimelineView({
     setViewportAtBottom(false);
     lastViewportObservationRef.current = null;
     readSignalEventRef.current = null;
+    downloadedEventIdsRef.current = new Set();
   }, [timelineKeyHash]);
 
   const items = getItems(store, timelineKey);
+  useEffect(() => {
+    for (const item of items) {
+      if ("Event" in item.id) {
+        downloadedEventIdsRef.current.add(item.id.Event.event_id);
+      }
+    }
+    onDiagnosticsChange?.({
+      visibleItems: items.filter((item) => !item.is_hidden).length,
+      downloadedItems: downloadedEventIdsRef.current.size,
+      backfill: paginationStateDiagnosticLabel(getPaginationState(store, timelineKey, "Backward"))
+    });
+  }, [items, onDiagnosticsChange, store, timelineKeyHash]);
   const notSentTransactionIds = items.flatMap((item) => {
     if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) {
       return [];
@@ -2697,6 +2719,18 @@ function latestEventBackedItemId(items: TimelineItem[]): string | null {
     }
   }
   return null;
+}
+
+function paginationStateDiagnosticLabel(
+  state: ReturnType<typeof getPaginationState>
+): string {
+  if (typeof state === "string") {
+    return state;
+  }
+  if ("Failed" in state) {
+    return "Failed";
+  }
+  return "Unknown";
 }
 
 function aliasTargetIsActive(target: TimelineAliasTarget): boolean {

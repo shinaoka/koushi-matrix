@@ -1,7 +1,11 @@
 import { describe, expect, test } from "vitest";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
-import { qaWindowTitle } from "./qaTitle";
+import {
+  qaSearchCrawlerDiagnosticTokens,
+  qaTimelineDiagnosticTokens,
+  qaWindowTitle
+} from "./qaTitle";
 
 describe("qaWindowTitle", () => {
   test("summarizes session, sync, room, and timeline state without private names", async () => {
@@ -232,5 +236,50 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("error_code=send_text_failed");
     expect(title).not.toContain("private room");
     expect(title).not.toContain("SDK detail");
+  });
+
+  test("summarizes search crawler progress without room identifiers", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const tokens = qaSearchCrawlerDiagnosticTokens({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          search_crawler: {
+            rooms: {
+              "!private-a:example.test": { kind: "running", processed: 100, indexed: 40 },
+              "!private-b:example.test": { kind: "completed", indexed: 25 },
+              "!private-c:example.test": { kind: "failed", failureKind: "sdk" }
+            }
+          }
+        }
+      }
+    });
+
+    expect(tokens).toEqual([
+      "crawler_running=1",
+      "crawler_completed=1",
+      "crawler_failed=1",
+      "crawler_processed=100",
+      "crawler_indexed=65"
+    ]);
+    expect(tokens.join(" ")).not.toContain("private");
+    expect(tokens.join(" ")).not.toContain("!");
+  });
+
+  test("summarizes event-driven timeline diagnostics without event identifiers", () => {
+    const tokens = qaTimelineDiagnosticTokens({
+      visibleItems: 12,
+      downloadedItems: 34,
+      backfill: "Paginating"
+    });
+
+    expect(tokens).toEqual([
+      "timeline_visible=12",
+      "timeline_dl=34",
+      "timeline_backfill=Paginating"
+    ]);
   });
 });
