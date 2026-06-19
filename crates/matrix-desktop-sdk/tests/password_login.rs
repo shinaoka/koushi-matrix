@@ -911,7 +911,18 @@ fn sdk_e2ee_recovery_state_stream_emits_initial_state_without_secret_material() 
         .block_on(async { stream.next().await })
         .expect("recovery stream should emit the initial state");
 
-    assert_eq!(state, matrix_desktop_sdk::E2eeRecoveryState::Unknown);
+    // The initial stream emission races the post-login Unknown -> Disabled
+    // backup-state determination; both are valid secret-free initial states.
+    // This test's contract is "emits an initial state without secret material",
+    // so accept either rather than racing on the exact value (was a CI flake).
+    assert!(
+        matches!(
+            state,
+            matrix_desktop_sdk::E2eeRecoveryState::Unknown
+                | matrix_desktop_sdk::E2eeRecoveryState::Disabled
+        ),
+        "unexpected initial recovery state: {state:?}"
+    );
     assert!(!format!("{state:?}").contains("synthetic-password"));
 }
 
