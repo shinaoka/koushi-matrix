@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Newer runs on the same ref supersede in-flight ones.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend (typecheck / vitest / build / secret-scan)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests (vitest)
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Secret scan
+        run: npm run qa:secret-scan
+
+  rust:
+    name: Rust (workspace / src-tauri / wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The vendored Matrix SDK is a public submodule; recursive checkout
+          # clones it over the HTTPS URL in .gitmodules without any secret.
+          submodules: recursive
+      - name: Install Rust toolchain (1.96.0 + wasm target)
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - name: Workspace tests
+        run: cargo test --workspace
+      - name: Tauri DTO + IPC contract tests
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: wasm build check (state + search)
+        run: cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
