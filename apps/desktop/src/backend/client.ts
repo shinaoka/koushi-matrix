@@ -630,6 +630,14 @@ class TauriDesktopApi implements DesktopApi {
   ): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("send_reply", { roomId, inReplyToEventId, body, mentions });
   }
+
+  async startRoomCrawl(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("start_room_crawl", { roomId });
+  }
+
+  async stopRoomCrawl(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("stop_room_crawl", { roomId });
+  }
 }
 
 function isTauriRuntime(): boolean {

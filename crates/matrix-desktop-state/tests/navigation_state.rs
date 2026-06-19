@@ -1,8 +1,8 @@
 use matrix_desktop_state::{
     AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState,
     NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomSummary, RoomTags,
-    SessionInfo, SessionState, SpaceSummary, ThreadPaneState, TimelinePaneState, UiEvent,
-    compose_sidebar, native_attention_state_from_rooms, reduce,
+    SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary, ThreadPaneState,
+    TimelinePaneState, UiEvent, compose_sidebar, native_attention_state_from_rooms, reduce,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -38,6 +38,10 @@ fn spaces() -> Vec<SpaceSummary> {
     }]
 }
 
+fn search_crawler_settings_standard() -> SearchCrawlerSettings {
+    SearchCrawlerSettings::default()
+}
+
 fn rooms() -> Vec<RoomSummary> {
     vec![
         RoomSummary {
@@ -56,6 +60,7 @@ fn rooms() -> Vec<RoomSummary> {
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
+            joined_members: 0,
         },
         RoomSummary {
             room_id: "dm-a".to_owned(),
@@ -73,6 +78,7 @@ fn rooms() -> Vec<RoomSummary> {
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
+            joined_members: 0,
         },
         RoomSummary {
             room_id: "global-room".to_owned(),
@@ -90,6 +96,7 @@ fn rooms() -> Vec<RoomSummary> {
             last_activity_ms: 0,
             parent_space_ids: vec![],
             is_encrypted: false,
+            joined_members: 0,
         },
     ]
 }
@@ -112,6 +119,7 @@ fn room_summary_serializes_projected_label_and_dm_identity_contract() {
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
         is_encrypted: false,
+        joined_members: 0,
     };
 
     let value = serde_json::to_value(&room).expect("serialize room summary");
@@ -154,6 +162,7 @@ fn room_list_update_projects_dm_room_display_labels_from_aliases() {
                 last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
                 is_encrypted: false,
+                joined_members: 0,
             }],
         },
     );
@@ -188,6 +197,7 @@ fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate()
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
         is_encrypted: false,
+        joined_members: 0,
     }];
     state.native_attention = native_attention_state_from_rooms(NativeAttentionProjectionInput {
         rooms: &state.rooms,
@@ -246,6 +256,14 @@ fn room_list_update_replaces_state_and_emits_room_list_event() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec![
+                    "room-a".to_owned(),
+                    "dm-a".to_owned(),
+                    "global-room".to_owned(),
+                ],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::SubscribeTimeline {
                 room_id: "room-a".to_owned(),
             },
@@ -275,6 +293,14 @@ fn room_list_update_selects_first_room_when_no_room_is_active() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec![
+                    "room-a".to_owned(),
+                    "dm-a".to_owned(),
+                    "global-room".to_owned(),
+                ],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::SubscribeTimeline {
                 room_id: "room-a".to_owned(),
             },
@@ -305,6 +331,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_downloads: Default::default(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
@@ -335,6 +362,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
                 is_encrypted: false,
+                joined_members: 0,
             }],
         },
     );
@@ -347,6 +375,10 @@ fn room_list_update_clears_missing_active_space_and_room() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec!["global-room".to_owned()],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: "room-a".to_owned(),
             }),
@@ -382,6 +414,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 last_activity_ms: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
                 is_encrypted: false,
+                joined_members: 0,
             },
             RoomSummary {
                 room_id: "room-b".to_owned(),
@@ -399,6 +432,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
                 is_encrypted: false,
+                joined_members: 0,
             },
         ],
         navigation: matrix_desktop_state::NavigationState {
@@ -415,6 +449,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_downloads: Default::default(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
@@ -451,6 +486,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     last_activity_ms: 0,
                     parent_space_ids: Vec::new(),
                     is_encrypted: false,
+                    joined_members: 0,
                 },
                 RoomSummary {
                     room_id: "room-b".to_owned(),
@@ -468,6 +504,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     last_activity_ms: 0,
                     parent_space_ids: vec!["space-a".to_owned()],
                     is_encrypted: false,
+                    joined_members: 0,
                 },
             ],
         },
@@ -482,6 +519,10 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec!["room-a".to_owned(), "room-b".to_owned()],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::SubscribeTimeline {
                 room_id: "room-b".to_owned(),
             },
@@ -519,6 +560,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
+            joined_members: 0,
         }],
         navigation: matrix_desktop_state::NavigationState {
             active_space_id: Some("space-a".to_owned()),
@@ -534,6 +576,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_downloads: Default::default(),
         },
         ..AppState::default()
     };
@@ -563,6 +606,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
                 last_activity_ms: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
                 is_encrypted: false,
+                joined_members: 0,
             }],
         },
     );
@@ -575,6 +619,10 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec!["room-b".to_owned()],
+                settings: search_crawler_settings_standard(),
+            },
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: "room-a".to_owned(),
             }),
@@ -608,6 +656,7 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_downloads: Default::default(),
         },
         ..AppState::default()
     };
@@ -631,7 +680,17 @@ fn room_list_update_keeps_active_dm_global_with_selected_space() {
     assert!(state.timeline.is_subscribed);
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec![
+                    "room-a".to_owned(),
+                    "dm-a".to_owned(),
+                    "global-room".to_owned(),
+                ],
+                settings: search_crawler_settings_standard(),
+            },
+        ]
     );
 }
 
@@ -735,6 +794,7 @@ fn selecting_space_restores_last_non_dm_room_for_that_space() {
         last_activity_ms: 0,
         parent_space_ids: vec!["space-a".to_owned()],
         is_encrypted: false,
+        joined_members: 0,
     });
     let all_spaces = vec![SpaceSummary {
         space_id: "space-a".to_owned(),
@@ -864,6 +924,7 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
+            joined_members: 0,
         },
         RoomSummary {
             room_id: "dm-a".to_owned(),
@@ -881,6 +942,7 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
+            joined_members: 0,
         },
     ];
 

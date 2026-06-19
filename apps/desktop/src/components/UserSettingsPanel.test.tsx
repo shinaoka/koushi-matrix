@@ -35,6 +35,11 @@ describe("UserSettingsPanel", () => {
       },
       timeline: {
         auto_load_older_messages: false
+      },
+      search_crawler: {
+        speed: "standard" as const,
+        include_media_captions: true,
+        include_filenames: true
       }
     },
     persistence: { kind: "idle" }

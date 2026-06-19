@@ -130,7 +130,8 @@ function readySnapshot(
       notification_count: 0,
       highlight_count: 0,
       parent_space_ids: [],
-      is_encrypted: false
+      is_encrypted: false,
+      joined_members: 8
     }
   ];
   return {
@@ -194,13 +195,15 @@ function readySnapshot(
         scheduled_send_capability: "unknown",
         scheduled_sends: [],
         staged_uploads: [],
-        media_gallery: []
+        media_gallery: [],
+        media_downloads: {}
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },
       threads_list: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
+      search_crawler: { rooms: {} },
       files_view: { kind: "closed" },
       errors: [],
       basic_operation: basicOperation,
@@ -266,6 +269,11 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       },
       timeline: {
         auto_load_older_messages: false
+      },
+      search_crawler: {
+        speed: "standard",
+        include_media_captions: true,
+        include_filenames: true
       }
     },
     persistence: { kind: "idle" }
@@ -351,7 +359,8 @@ function applySettingsPatch(
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
     media: patch.media ?? values.media,
-    timeline: patch.timeline ?? values.timeline
+    timeline: patch.timeline ?? values.timeline,
+    search_crawler: patch.search_crawler ?? values.search_crawler
   };
 }
 
@@ -1415,6 +1424,36 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
     }
   };
   return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("start_room_crawl", ({ roomId }: { roomId: string }) => {
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      search_crawler: {
+        rooms: {
+          ...currentSnapshot.state.search_crawler.rooms,
+          [roomId]: { kind: "running", processed: 0, indexed: 0 }
+        }
+      }
+    }
+  });
+});
+mock.setCommandResponse("stop_room_crawl", ({ roomId }: { roomId: string }) => {
+  // Transition to idle (matching Rust contract) so the status row stays visible
+  // with a Start button instead of disappearing from the list.
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      search_crawler: {
+        rooms: {
+          ...currentSnapshot.state.search_crawler.rooms,
+          [roomId]: { kind: "idle" }
+        }
+      }
+    }
+  });
 });
 mock.setCommandResponse("update_room_setting", () => currentSnapshot);
 mock.setCommandResponse("moderate_room_member", () => currentSnapshot);

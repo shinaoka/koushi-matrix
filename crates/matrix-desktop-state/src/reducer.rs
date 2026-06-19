@@ -1039,15 +1039,67 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             ]
         }
         AppAction::SettingsUpdateRequested { request_id, patch } => {
+            // Capture the previous search-crawler settings so we can compute
+            // invalidation/enqueue transitions after apply_patch.
+            let prev_crawler = state.settings.values.search_crawler.clone();
+
             state.settings.values.apply_patch(patch);
             state.settings.persistence = SettingsPersistenceState::Saving { request_id };
-            vec![
+
+            let new_crawler = &state.settings.values.search_crawler;
+            let mut effects = vec![
                 AppEffect::PersistSettings {
                     request_id,
                     values: state.settings.values.clone(),
                 },
                 AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
-            ]
+            ];
+
+            // Guard: if content-indexing settings changed, invalidate the
+            // reducer state AND the actor's completed-room cache so rooms are
+            // re-crawled with the new settings.  Stale captions/filenames must
+            // not stay searchable after the user opts out (privacy rule).
+            let content_changed = prev_crawler.include_media_captions
+                != new_crawler.include_media_captions
+                || prev_crawler.include_filenames != new_crawler.include_filenames;
+            if content_changed {
+                for room_state in state.search_crawler.rooms.values_mut() {
+                    if matches!(room_state, crate::state::SearchCrawlerRoomState::Completed { .. }) {
+                        *room_state = crate::state::SearchCrawlerRoomState::Idle;
+                    }
+                }
+                effects.push(AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged));
+                // Tell the actor to drop its completed-room cache so the
+                // following re-enqueue actually starts new crawls.
+                effects.push(AppEffect::InvalidateSearchCrawlerCache);
+                // Re-enqueue all currently-known joined rooms so the actor
+                // starts fresh crawls with the new content settings.
+                let room_ids: Vec<String> =
+                    state.rooms.iter().map(|r| r.room_id.clone()).collect();
+                if !room_ids.is_empty() {
+                    effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                        room_ids,
+                        settings: new_crawler.clone(),
+                    });
+                }
+            }
+
+            // Guard: if speed changed from Paused to active, enqueue all
+            // known joined rooms via the SearchActor.
+            use crate::state::SearchCrawlerSpeed;
+            if prev_crawler.speed == SearchCrawlerSpeed::Paused
+                && new_crawler.speed != SearchCrawlerSpeed::Paused
+            {
+                let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
+                if !room_ids.is_empty() {
+                    effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                        room_ids,
+                        settings: new_crawler.clone(),
+                    });
+                }
+            }
+
+            effects
         }
         AppAction::SettingsPersisted { request_id } => {
             if state.settings.persistence != (SettingsPersistenceState::Saving { request_id }) {
@@ -1640,6 +1692,25 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 
             let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
 
+            // Notify the search crawler of all current joined rooms on every
+            // RoomListUpdate so it can idempotently start/resume any missing
+            // crawls. The actor is responsible for deduplication.
+            {
+                use crate::state::SearchCrawlerSpeed;
+                let crawler_settings = &state.settings.values.search_crawler;
+                if crawler_settings.speed != SearchCrawlerSpeed::Paused {
+                    let room_ids: Vec<String> = state.rooms.iter()
+                        .map(|r| r.room_id.clone())
+                        .collect();
+                    if !room_ids.is_empty() {
+                        effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                            room_ids,
+                            settings: crawler_settings.clone(),
+                        });
+                    }
+                }
+            }
+
             if state
                 .navigation
                 .active_space_id
@@ -1712,6 +1783,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                     scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
                     staged_uploads: state.upload_staging.items_for_room(&room_id),
                     media_gallery: state.media_gallery.items_for_room(&room_id),
+                    media_downloads: Default::default(),
                 };
                 effects.push(AppEffect::SubscribeTimeline {
                     room_id: room_id.clone(),
@@ -2183,6 +2255,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
                 staged_uploads: state.upload_staging.items_for_room(&room_id),
                 media_gallery: state.media_gallery.items_for_room(&room_id),
+                media_downloads: Default::default(),
             };
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
@@ -3003,6 +3076,23 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             }
             Vec::new()
         }
+        AppAction::MediaDownloadUpdated {
+            room_id,
+            event_id,
+            state: download_state,
+        } => {
+            if !is_session_ready(state) {
+                return Vec::new();
+            }
+            if state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
+                return Vec::new();
+            }
+            state
+                .timeline
+                .media_downloads
+                .insert(event_id, download_state);
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+        }
         AppAction::ComposerDraftsLoaded { drafts } => {
             if !is_session_ready(state) {
                 return Vec::new();
@@ -3484,6 +3574,41 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 message,
             };
             vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+        }
+        AppAction::HistoryCrawlStarted { request_id: _, room_id } => {
+            state.search_crawler.rooms.insert(
+                room_id,
+                crate::state::SearchCrawlerRoomState::Running { processed: 0, indexed: 0 },
+            );
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
+        }
+        AppAction::HistoryCrawlProgress {
+            room_id,
+            processed,
+            indexed,
+        } => {
+            state
+                .search_crawler
+                .rooms
+                .insert(room_id, crate::state::SearchCrawlerRoomState::Running {
+                    processed,
+                    indexed,
+                });
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
+        }
+        AppAction::HistoryCrawlCompleted { room_id, indexed } => {
+            state
+                .search_crawler
+                .rooms
+                .insert(room_id, crate::state::SearchCrawlerRoomState::Completed { indexed });
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
+        }
+        AppAction::HistoryCrawlFailed { room_id, kind } => {
+            state.search_crawler.rooms.insert(
+                room_id,
+                crate::state::SearchCrawlerRoomState::Failed { kind },
+            );
+            vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
         }
         AppAction::FilesViewOpened {
             request_id,
@@ -4456,6 +4581,7 @@ fn select_active_room_after_room_list_update(
         scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
+        media_downloads: Default::default(),
     };
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
@@ -4488,6 +4614,7 @@ fn select_active_room_for_navigation(
         scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
+        media_downloads: Default::default(),
     };
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
@@ -4725,7 +4852,8 @@ mod tests {
     use super::*;
     use crate::state::{
         AvatarImage, AvatarThumbnailState, LiveEventReceiptSummary, LiveEventReceipts,
-        LiveReadReceipt, LiveRoomSignalUpdate, PresenceKind, RoomLiveSignals, UserProfile,
+        LiveReadReceipt, LiveRoomSignalUpdate, MediaTransferProgress, OperationFailureKind,
+        PresenceKind, RoomLiveSignals, TimelineMediaDownloadState, UserProfile,
     };
 
     fn ready_state() -> AppState {
@@ -5053,5 +5181,90 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn media_download_updated_stores_state_for_active_room() {
+        let mut state = ready_state();
+        state.timeline.room_id = Some("!r:example.invalid".to_owned());
+
+        let effects = reduce(
+            &mut state,
+            AppAction::MediaDownloadUpdated {
+                room_id: "!r:example.invalid".to_owned(),
+                event_id: "$ev:example.invalid".to_owned(),
+                state: TimelineMediaDownloadState::Pending {
+                    progress: Some(MediaTransferProgress {
+                        current: 3,
+                        total: 10,
+                    }),
+                },
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "!r:example.invalid".to_owned(),
+            })]
+        );
+        assert_eq!(state.timeline.media_downloads.len(), 1);
+        let download = state
+            .timeline
+            .media_downloads
+            .get("$ev:example.invalid")
+            .expect("download entry");
+        assert!(matches!(
+            download,
+            TimelineMediaDownloadState::Pending {
+                progress: Some(MediaTransferProgress {
+                    current: 3,
+                    total: 10
+                })
+            }
+        ));
+    }
+
+    #[test]
+    fn media_download_updated_ignored_for_inactive_room() {
+        let mut state = ready_state();
+        state.timeline.room_id = Some("!r:example.invalid".to_owned());
+
+        let effects = reduce(
+            &mut state,
+            AppAction::MediaDownloadUpdated {
+                room_id: "!other:example.invalid".to_owned(),
+                event_id: "$ev:example.invalid".to_owned(),
+                state: TimelineMediaDownloadState::Ready {
+                    source_url: "/tmp/x.png".to_owned(),
+                    width: Some(100),
+                    height: Some(100),
+                    mime_type: Some("image/png".to_owned()),
+                },
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert!(state.timeline.media_downloads.is_empty());
+    }
+
+    #[test]
+    fn media_download_updated_ignored_without_ready_session() {
+        let mut state = AppState::default();
+        state.timeline.room_id = Some("!r:example.invalid".to_owned());
+
+        let effects = reduce(
+            &mut state,
+            AppAction::MediaDownloadUpdated {
+                room_id: "!r:example.invalid".to_owned(),
+                event_id: "$ev:example.invalid".to_owned(),
+                state: TimelineMediaDownloadState::Failed {
+                    failure_kind: OperationFailureKind::Network,
+                },
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert!(state.timeline.media_downloads.is_empty());
     }
 }

@@ -2102,6 +2102,102 @@ room timeline. It should avoid implying that search results are a complete
 chronological timeline unless the backend explicitly provides enough surrounding
 context and replacement/redaction state to render that context safely.
 
+## Search History Crawler
+
+The crawler maintains a per-room state machine inside
+`AppState.search_crawler.rooms: BTreeMap<room_id, SearchCrawlerRoomState>`.
+Each room progresses independently; rooms absent from the map are implicitly
+`Idle`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Running : HistoryCrawlStarted\n(actor auto-start or explicit StartHistoryCrawl)
+    Running --> Running : HistoryCrawlProgress\n(processed / indexed updated)
+    Running --> Completed : HistoryCrawlCompleted
+    Running --> Failed : HistoryCrawlFailed
+    Completed --> Idle : content-setting toggle\n(include_media_captions or\ninclude_filenames changed)
+    Failed --> Running : HistoryCrawlStarted\n(retry)
+```
+
+### Guards and lifecycle
+
+- **Auto-start (idempotent)**: `RoomListUpdated` emits
+  `AppEffect::NotifySearchCrawlerRoomsAvailable` with all current joined rooms
+  whenever `speed != Paused`. The `SearchActor` skips rooms already in
+  `crawl_cancels` (Running) or `completed_rooms` (Completed). The actor is
+  responsible for deduplication; the reducer emits on every update.
+- **Paused → active**: When `SettingsUpdateRequested` changes speed from
+  `Paused` to any active value, the reducer emits
+  `NotifySearchCrawlerRoomsAvailable` with all known rooms so previously-paused
+  rooms are enqueued. This is the only trigger that re-enqueues all rooms on a
+  speed change.
+- **Pure speed change**: Changing speed between two active values (e.g.
+  `Standard → Slow`) does NOT invalidate `Completed` rooms and does NOT emit
+  `NotifySearchCrawlerRoomsAvailable`. No `SearchCrawlerChanged` event is
+  emitted for a pure speed change.
+- **Content-setting toggle**: Changing `include_media_captions` or
+  `include_filenames` does three things atomically: resets all `Completed` rooms
+  to `Idle` in the reducer, emits `InvalidateSearchCrawlerCache` (actor bumps
+  its `crawl_settings_generation` counter and clears `completed_rooms`), and
+  emits `NotifySearchCrawlerRoomsAvailable` with all current joined rooms so
+  fresh crawls start with the new settings. Stale captions/filenames must not
+  remain searchable after the user opts out (privacy rule).
+  Running rooms are not interrupted by the reducer. However, the actor records
+  a `crawl_settings_generation` counter (u64, monotonically increasing) at the
+  time each crawl is spawned. When a crawl sends `CrawlFinished`, the actor
+  only adds the room to `completed_rooms` if the crawl's recorded generation
+  matches the current counter. A crawl that started before the toggle (stale
+  generation) is rejected: the room stays out of `completed_rooms` and is
+  re-crawled by the next `RoomsAvailable` notification.
+- **Index backpressure → failure**: The crawler sends index messages with
+  `channel.send(...).await` (not `try_send`). If the channel is closed
+  (e.g. actor shutdown during crawl), the crawler emits `HistoryCrawlFailed`
+  with `IndexUnavailable` and returns `false` so the room is NOT marked
+  `Completed`. A silently dropped index message producing a false `Completed`
+  is prohibited.
+- **Reliable delivery**: `CrawlFinished`, `NotifySearchCrawlerRoomsAvailable`,
+  and `InvalidateSearchCrawlerCache` are delivered via `async send` (not
+  `try_send`) so state-machine transitions are never silently dropped
+  (REPOSITORY_RULES L124-128).
+- **Restore gap**: A `NotifySearchCrawlerRoomsAvailable` that arrives before
+  the `SearchActor` is spawned (e.g. `RoomListUpdated` fires between session
+  establishment and `SearchActor` creation at restore time) is buffered in
+  `AccountActor.pending_crawler_notification` and replayed immediately after
+  the actor is created.
+- **Failure kinds**: `Failed` carries only a coarse `SearchCrawlerFailureKind`
+  (`RoomNotFound | Sdk | Decryption | IndexUnavailable`). Raw SDK error text,
+  room IDs, event IDs, and message bodies never appear in the state machine,
+  logs, or QA output.
+- **Debug privacy**: `SearchCrawlerState` has a custom `Debug` implementation
+  that emits only per-state counts (`idle`, `running`, `completed`, `failed`).
+  Room ids (Matrix identifiers) must not appear in `Debug` output, logs,
+  screenshots, or issue evidence.
+- **No attachment bytes**: The crawler indexes body text, captions (if
+  `include_media_captions`), and filenames (if `include_filenames`). It never
+  downloads attachment binary content. Media events produce only
+  `AttachmentDocument` metadata; blob bytes remain out of scope.
+- **Redaction target**: In a backward crawl, the `m.room.redaction` event's
+  `redacts` field names the TARGET event to remove from the index (not the
+  redaction event itself). The crawler reads `redacts` (top-level or
+  `content.redacts` per MSC2174) and records the target in a
+  `pending_redactions` set so a later-crawled older original is not indexed
+  after its redaction.
+- **Shutdown**: On actor `Shutdown`, all per-room cancel flags are set
+  (`Ordering::Relaxed`) and every `JoinHandle` is awaited before the actor loop
+  exits. This prevents stale crawl tasks from emitting `HistoryCrawl*` actions
+  into the next account's reducer (ordered-shutdown rule, overview.md Async
+  rule 12).
+  **Drain-while-await (deadlock prevention)**: Crawler tasks send
+  `CrawlFinished` via `actor_tx.send(...).await` and index messages via
+  `index_tx.send(...).await`. If the actor stopped draining its receivers
+  before awaiting handles, those sends would block indefinitely. The Shutdown
+  arm therefore uses a `tokio::select!` loop that drains both `msg_rx` and
+  `index_rx` concurrently while awaiting each handle, so cancellation and
+  completion can proceed without backpressure stalls.
+  Completed rooms are NOT persisted across restarts; the actor uses an
+  in-memory `completed_rooms: HashSet<String>` seeded fresh each session.
+
 ## Appearance / Theme Ownership
 
 Theme *appearance* is split deliberately:

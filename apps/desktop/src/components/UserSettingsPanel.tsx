@@ -13,6 +13,7 @@ import {
   Link,
   RefreshCcw,
   RotateCcw,
+  Search,
   ShieldAlert,
   ShieldCheck,
   ShieldQuestion,
@@ -46,7 +47,13 @@ import type {
   MediaSettings,
   NotificationSettings,
   RecoveryKeyDeliveryState,
+  RoomSummary,
   SavedSessionInfo,
+  SearchCrawlerFailureKind,
+  SearchCrawlerRoomState,
+  SearchCrawlerSettings,
+  SearchCrawlerSpeed,
+  SearchCrawlerState,
   SettingsPatch,
   SettingsState,
   ProfileState,
@@ -64,6 +71,7 @@ export function UserSettingsPanel({
   currentSession,
   savedSessions,
   settings,
+  searchCrawlerState,
   profile,
   e2eeTrust,
   localEncryption,
@@ -97,11 +105,15 @@ export function UserSettingsPanel({
   onLoadAccountManagementCapabilities,
   onChangePassword,
   onDeactivateAccount,
-  onSubmitAccountManagementUia
+  onSubmitAccountManagementUia,
+  onStartCrawlRoom,
+  onStopCrawlRoom,
+  rooms
 }: {
   currentSession: SavedSessionInfo | null;
   savedSessions: SavedSessionInfo[];
   settings: SettingsState;
+  searchCrawlerState?: SearchCrawlerState;
   profile: ProfileState;
   e2eeTrust: E2eeTrustState;
   localEncryption: LocalEncryptionState;
@@ -144,6 +156,9 @@ export function UserSettingsPanel({
   onChangePassword: (newPassword: string) => void;
   onDeactivateAccount: (eraseData: boolean) => void;
   onSubmitAccountManagementUia: (flowId: number, password: string) => void;
+  onStartCrawlRoom?: (roomId: string) => void;
+  onStopCrawlRoom?: (roomId: string) => void;
+  rooms?: RoomSummary[];
 }) {
   useEffect(() => {
     if (deviceSessions.kind === "idle" && currentSession) {
@@ -266,6 +281,18 @@ export function UserSettingsPanel({
               <History size={16} />
             </span>
             <span>{t("settings.timeline")}</span>
+          </span>
+        </button>
+        <button
+          className="settings-list-item"
+          type="button"
+          onClick={() => scrollToSection("settings-search-history")}
+        >
+          <span className="settings-list-label">
+            <span className="settings-list-icon" aria-hidden="true">
+              <Search size={16} />
+            </span>
+            <span>{t("settings.searchHistory")}</span>
           </span>
         </button>
         <button
@@ -559,6 +586,26 @@ export function UserSettingsPanel({
             onSelect={onUpdateSettings}
           />
         </div>
+      </section>
+
+      <section
+        id="settings-search-history"
+        className="settings-section"
+        aria-label={t("settings.searchHistory")}
+      >
+        <div className="settings-section-heading">
+          <h3>{t("settings.searchHistory")}</h3>
+          {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
+        </div>
+        <SearchHistorySection
+          crawlerSettings={settings.values.search_crawler}
+          crawlerState={searchCrawlerState ?? { rooms: {} }}
+          rooms={rooms}
+          isSaving={isSaving}
+          onUpdateSettings={onUpdateSettings}
+          onStartCrawlRoom={onStartCrawlRoom}
+          onStopCrawlRoom={onStopCrawlRoom}
+        />
       </section>
 
       <section id="settings-security" className="settings-section" aria-label={t("settings.security")}>
@@ -1566,6 +1613,247 @@ function VerificationDialog({
       ) : null}
     </article>
   );
+}
+
+// ---------------------------------------------------------------------------
+// #77 Search History Crawler section
+// ---------------------------------------------------------------------------
+
+function SearchHistorySection({
+  crawlerSettings,
+  crawlerState,
+  rooms,
+  isSaving,
+  onUpdateSettings,
+  onStartCrawlRoom,
+  onStopCrawlRoom
+}: {
+  crawlerSettings: SearchCrawlerSettings;
+  crawlerState: SearchCrawlerState;
+  rooms?: RoomSummary[];
+  isSaving: boolean;
+  onUpdateSettings: (patch: SettingsPatch) => void;
+  onStartCrawlRoom?: (roomId: string) => void;
+  onStopCrawlRoom?: (roomId: string) => void;
+}) {
+  const roomEntries = Object.entries(crawlerState.rooms);
+
+  return (
+    <>
+      <div className="settings-control-stack">
+        <div className="settings-control-row">
+          <span>{t("settings.searchHistorySpeed")}</span>
+          <div className="segmented-control" role="group" aria-label={t("settings.searchHistorySpeed")}>
+            {(["standard", "fast", "slow", "paused"] as const).map((speed) => (
+              <CrawlerSpeedButton
+                key={speed}
+                value={speed}
+                selected={crawlerSettings.speed === speed}
+                disabled={isSaving}
+                onSelect={onUpdateSettings}
+                currentSettings={crawlerSettings}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="settings-toggle-list">
+        <CrawlerToggle
+          label={t("settings.searchHistoryIncludeCaptions")}
+          settingKey="include_media_captions"
+          current={crawlerSettings}
+          disabled={isSaving}
+          onSelect={onUpdateSettings}
+        />
+        <CrawlerToggle
+          label={t("settings.searchHistoryIncludeFilenames")}
+          settingKey="include_filenames"
+          current={crawlerSettings}
+          disabled={isSaving}
+          onSelect={onUpdateSettings}
+        />
+      </div>
+      {roomEntries.length > 0 ? (
+        <section
+          className="settings-section"
+          aria-label={t("settings.searchHistoryRoomStatus")}
+        >
+          <h4 className="settings-subheading">{t("settings.searchHistoryRoomStatus")}</h4>
+          <div className="settings-detail-list">
+            {roomEntries.map(([roomId, roomState]) => {
+              const displayLabel =
+                rooms?.find((r) => r.room_id === roomId)?.display_label ?? null;
+              return (
+                <CrawlerRoomRow
+                  key={roomId}
+                  roomId={roomId}
+                  displayLabel={displayLabel}
+                  roomState={roomState}
+                  onStart={onStartCrawlRoom}
+                  onStop={onStopCrawlRoom}
+                />
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function CrawlerSpeedButton({
+  value,
+  selected,
+  disabled,
+  onSelect,
+  currentSettings
+}: {
+  value: SearchCrawlerSpeed;
+  selected: boolean;
+  disabled: boolean;
+  onSelect: (patch: SettingsPatch) => void;
+  currentSettings: SearchCrawlerSettings;
+}) {
+  const label = crawlerSpeedLabel(value);
+  return (
+    <button
+      className="segmented-button"
+      type="button"
+      aria-pressed={selected}
+      disabled={disabled}
+      data-speed={value}
+      onClick={() =>
+        onSelect({ search_crawler: { ...currentSettings, speed: value } })
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+function CrawlerToggle({
+  label,
+  settingKey,
+  current,
+  disabled,
+  onSelect
+}: {
+  label: string;
+  settingKey: "include_media_captions" | "include_filenames";
+  current: SearchCrawlerSettings;
+  disabled: boolean;
+  onSelect: (patch: SettingsPatch) => void;
+}) {
+  return (
+    <button
+      className="settings-toggle-row"
+      type="button"
+      role="switch"
+      aria-checked={current[settingKey]}
+      disabled={disabled}
+      onClick={() =>
+        onSelect({ search_crawler: { ...current, [settingKey]: !current[settingKey] } })
+      }
+    >
+      <span className="settings-toggle-copy">
+        <span className="settings-toggle-label">
+          <span>{label}</span>
+        </span>
+      </span>
+      <span className="settings-switch-track" aria-hidden="true">
+        <span className="settings-switch-thumb" />
+      </span>
+    </button>
+  );
+}
+
+function CrawlerRoomRow({
+  roomId,
+  displayLabel,
+  roomState,
+  onStart,
+  onStop
+}: {
+  roomId: string;
+  /** Rust-projected display label from RoomSummary; never render the raw roomId. */
+  displayLabel: string | null;
+  roomState: SearchCrawlerRoomState;
+  onStart?: (roomId: string) => void;
+  onStop?: (roomId: string) => void;
+}) {
+  const statusLabel = crawlerRoomStatusLabel(roomState);
+  const isRunning = roomState.kind === "running";
+  // displayLabel is the Rust-projected label; fall back to a neutral placeholder
+  // (never the raw room id, which is a private identifier).
+  const visibleLabel = displayLabel ?? t("settings.searchHistoryRoomUnknown");
+
+  return (
+    <div className="settings-detail-row">
+      <span dir="auto">{visibleLabel}</span>
+      <small data-crawler-room-kind={roomState.kind}>{statusLabel}</small>
+      {isRunning && onStop ? (
+        <button
+          className="profile-settings-action"
+          type="button"
+          aria-label={t("settings.searchHistoryStopRoom")}
+          onClick={() => onStop(roomId)}
+        >
+          {t("settings.searchHistoryStopRoom")}
+        </button>
+      ) : !isRunning && roomState.kind !== "completed" && onStart ? (
+        <button
+          className="profile-settings-action"
+          type="button"
+          aria-label={t("settings.searchHistoryStartRoom")}
+          onClick={() => onStart(roomId)}
+        >
+          {t("settings.searchHistoryStartRoom")}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function crawlerSpeedLabel(speed: SearchCrawlerSpeed): string {
+  switch (speed) {
+    case "standard":
+      return t("settings.searchHistorySpeedStandard");
+    case "fast":
+      return t("settings.searchHistorySpeedFast");
+    case "slow":
+      return t("settings.searchHistorySpeedSlow");
+    case "paused":
+      return t("settings.searchHistorySpeedPaused");
+  }
+}
+
+function crawlerRoomStatusLabel(state: SearchCrawlerRoomState): string {
+  switch (state.kind) {
+    case "idle":
+      return t("settings.searchHistoryRoomIdle");
+    case "running":
+      return t("settings.searchHistoryRoomRunning", {
+        processed: state.processed,
+        indexed: state.indexed
+      });
+    case "completed":
+      return t("settings.searchHistoryRoomCompleted", { indexed: state.indexed });
+    case "failed":
+      return t("settings.searchHistoryRoomFailed") + ` (${crawlerFailureKindLabel(state.failureKind)})`;
+  }
+}
+
+function crawlerFailureKindLabel(kind: SearchCrawlerFailureKind): string {
+  switch (kind) {
+    case "roomNotFound":
+      return "roomNotFound";
+    case "sdk":
+      return "sdk";
+    case "decryption":
+      return "decryption";
+    case "indexUnavailable":
+      return "indexUnavailable";
+  }
 }
 
 function credentialStoreLabel(platform: DisplayPlatform): string {

@@ -46,6 +46,7 @@ export interface AppState {
   threads_list: ThreadsListState;
   focused_context: FocusedContextState;
   search: SearchState;
+  search_crawler: SearchCrawlerState;
   files_view: FilesViewState;
   errors: AppError[];
   basic_operation: BasicOperationState;
@@ -74,6 +75,7 @@ export interface SettingsValues {
   display: DisplaySettings;
   media: MediaSettings;
   timeline: TimelineSettings;
+  search_crawler: SearchCrawlerSettings;
 }
 
 export interface SettingsPatch {
@@ -85,6 +87,7 @@ export interface SettingsPatch {
   display?: DisplaySettings;
   media?: MediaSettings;
   timeline?: TimelineSettings;
+  search_crawler?: SearchCrawlerSettings;
 }
 
 export interface LocaleSettings {
@@ -497,6 +500,7 @@ export interface RoomSummary {
   last_activity_ms?: number;
   parent_space_ids: string[];
   is_encrypted: boolean;
+  joined_members?: number;
 }
 
 export interface InvitePreview {
@@ -551,6 +555,23 @@ export type OperationFailureKind =
   | "timeout"
   | "invalid"
   | "sdk";
+
+export interface MediaTransferProgress {
+  current: number;
+  total: number;
+}
+
+export type TimelineMediaDownloadState =
+  | { kind: "notRequested" }
+  | { kind: "pending"; progress: MediaTransferProgress | null }
+  | {
+      kind: "ready";
+      source_url: string;
+      width: number | null;
+      height: number | null;
+      mime_type: string | null;
+    }
+  | { kind: "failed"; failure_kind: OperationFailureKind };
 
 export type ActivityState =
   | { kind: "closed" }
@@ -727,6 +748,7 @@ export interface TimelinePaneState {
   scheduled_sends: ScheduledSendItem[];
   staged_uploads: StagedUploadItem[];
   media_gallery: TimelineMediaGalleryItem[];
+  media_downloads: Record<string, TimelineMediaDownloadState>;
 }
 
 export type ScheduledSendCapability = "unknown" | "serverDelayedEvents" | "localFallback";
@@ -1330,4 +1352,31 @@ export interface RoomListSections {
   rooms: RoomListItem[];
   people: RoomListItem[];
   lowPriority: RoomListItem[];
+}
+
+// Search history crawler — #77
+
+export type SearchCrawlerSpeed = "standard" | "fast" | "slow" | "paused";
+
+export interface SearchCrawlerSettings {
+  speed: SearchCrawlerSpeed;
+  include_media_captions: boolean;
+  include_filenames: boolean;
+}
+
+/** Coarse failure kind — never carries raw SDK error text. */
+export type SearchCrawlerFailureKind =
+  | "roomNotFound"
+  | "sdk"
+  | "decryption"
+  | "indexUnavailable";
+
+export type SearchCrawlerRoomState =
+  | { kind: "idle" }
+  | { kind: "running"; processed: number; indexed: number }
+  | { kind: "completed"; indexed: number }
+  | { kind: "failed"; failureKind: SearchCrawlerFailureKind };
+
+export interface SearchCrawlerState {
+  rooms: Record<string, SearchCrawlerRoomState>;
 }

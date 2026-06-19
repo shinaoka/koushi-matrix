@@ -31,6 +31,7 @@ fn ready_state() -> AppState {
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
         is_encrypted: false,
+        joined_members: 0,
     });
     state
 }

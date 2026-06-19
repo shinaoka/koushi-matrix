@@ -203,6 +203,8 @@ export interface DesktopApi {
     mentions?: MentionIntent
   ): Promise<DesktopSnapshot>;
   setRoomListProjection(projection: RoomListProjection): void;
+  startRoomCrawl(roomId: string): Promise<DesktopSnapshot>;
+  stopRoomCrawl(roomId: string): Promise<DesktopSnapshot>;
 }
 
 export interface BrowserFakeApiOptions {
@@ -2252,6 +2254,35 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async startRoomCrawl(roomId: string): Promise<DesktopSnapshot> {
+    // Browser fake: transition the room to running state so tests can observe state changes.
+    if (!this.canUseSyncedViews() || !roomId.trim()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.search_crawler = {
+      rooms: {
+        ...this.snapshot.state.search_crawler.rooms,
+        [roomId]: { kind: "running", processed: 0, indexed: 0 }
+      }
+    };
+    return this.getSnapshot();
+  }
+
+  async stopRoomCrawl(roomId: string): Promise<DesktopSnapshot> {
+    // Browser fake: transition the room to idle (matching the Rust contract) so
+    // the status row stays visible with a Start button instead of disappearing.
+    if (!this.canUseSyncedViews() || !roomId.trim()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.search_crawler = {
+      rooms: {
+        ...this.snapshot.state.search_crawler.rooms,
+        [roomId]: { kind: "idle" }
+      }
+    };
+    return this.getSnapshot();
+  }
+
   private isReady() {
     return this.snapshot.state.session.kind === "ready";
   }
@@ -2460,7 +2491,8 @@ class BrowserFakeApi implements DesktopApi {
       scheduled_send_capability: this.snapshot.state.timeline.scheduled_send_capability,
       scheduled_sends: [],
       staged_uploads: [],
-      media_gallery: []
+      media_gallery: [],
+      media_downloads: {}
     };
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.state.thread_attention = { kind: "closed" };
@@ -2541,7 +2573,8 @@ class BrowserFakeApi implements DesktopApi {
       scheduled_send_capability: "unknown",
       scheduled_sends: [],
         staged_uploads: [],
-        media_gallery: []
+        media_gallery: [],
+      media_downloads: {}
     };
     this.snapshot.state.thread = { kind: "closed" };
     this.snapshot.state.focused_context = { kind: "closed" };
@@ -2706,12 +2739,14 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         scheduled_send_capability: "unknown",
         scheduled_sends: [],
         staged_uploads: [],
-        media_gallery: []
+        media_gallery: [],
+        media_downloads: {}
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
+      search_crawler: { rooms: {} },
       files_view: { kind: "closed" },
       threads_list: { kind: "closed" },
       errors: [],
@@ -2802,13 +2837,15 @@ function createSignedOutSnapshot(): DesktopSnapshot {
         scheduled_send_capability: "unknown",
         scheduled_sends: [],
         staged_uploads: [],
-        media_gallery: []
+        media_gallery: [],
+        media_downloads: {}
       },
       thread: { kind: "closed" },
       thread_attention: { kind: "closed" },
       threads_list: { kind: "closed" },
       focused_context: { kind: "closed" },
       search: { kind: "closed" },
+      search_crawler: { rooms: {} },
       files_view: { kind: "closed" },
       errors: [],
       basic_operation: { kind: "idle" },
@@ -2855,6 +2892,11 @@ function defaultSettingsState(): DesktopSnapshot["state"]["settings"] {
       },
       timeline: {
         auto_load_older_messages: false
+      },
+      search_crawler: {
+        speed: "standard" as const,
+        include_media_captions: true,
+        include_filenames: true
       }
     },
     persistence: { kind: "idle" }
@@ -3156,7 +3198,8 @@ function applySettingsPatch(
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
     media: patch.media ?? values.media,
-    timeline: patch.timeline ?? values.timeline
+    timeline: patch.timeline ?? values.timeline,
+    search_crawler: patch.search_crawler ?? values.search_crawler
   };
 }
 

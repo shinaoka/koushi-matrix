@@ -321,6 +321,7 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
+            joined_members: 0,
         }],
         timeline: TimelinePaneState {
             room_id: Some("room-a".to_owned()),
@@ -331,6 +332,7 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_downloads: Default::default(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
@@ -545,6 +547,7 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
+            joined_members: 0,
         }],
         timeline: TimelinePaneState {
             room_id: Some("room-a".to_owned()),
@@ -555,6 +558,7 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_downloads: Default::default(),
         },
         ..AppState::default()
     };
@@ -680,6 +684,7 @@ fn logout_clears_session_views_and_notifies_ui() {
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
+            joined_members: 0,
         }],
         timeline: TimelinePaneState {
             room_id: Some("room-a".to_owned()),
@@ -690,6 +695,7 @@ fn logout_clears_session_views_and_notifies_ui() {
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_downloads: Default::default(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),

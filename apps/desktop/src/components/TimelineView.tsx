@@ -71,6 +71,7 @@ import type {
   TimelineNavigationSnapshot,
   TimelineMessageSource
 } from "../domain/coreEvents";
+import { mediaSourceUrl } from "../domain/mediaUrl";
 import { timelineItemDomId, timelineKeyEquals } from "../domain/coreEvents";
 import {
   applyGlobalResync,
@@ -95,6 +96,7 @@ import type {
   LiveSignalsState,
   PresenceKind,
   ResolveComposerKeyAction,
+  TimelineMediaDownloadState,
   UserProfile
 } from "../domain/types";
 
@@ -1075,7 +1077,8 @@ export function TimelineView({
   suppressPaginationUi = false,
   autoLoadOlderMessages = false,
   codeBlockWrap = true,
-  searchQuery = ""
+  searchQuery = "",
+  mediaDownloads = {}
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -1102,6 +1105,7 @@ export function TimelineView({
   autoLoadOlderMessages?: boolean;
   codeBlockWrap?: boolean;
   searchQuery?: string;
+  mediaDownloads?: Record<string, TimelineMediaDownloadState>;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
@@ -1157,15 +1161,19 @@ export function TimelineView({
                 ? event.SendCompleted.key
                 : "MediaUploadProgress" in event
                   ? event.MediaUploadProgress.key
-                  : "MediaDownloadCompleted" in event
-                    ? event.MediaDownloadCompleted.key
-                    : "MessageForwarded" in event
-                      ? event.MessageForwarded.key
-                      : "MessageSourceLoaded" in event
-                        ? event.MessageSourceLoaded.key
-                        : "NavigationUpdated" in event
-                          ? event.NavigationUpdated.key
-                          : event.ResyncRequired.key;
+                  : "MediaDownloadProgress" in event
+                    ? event.MediaDownloadProgress.key
+                    : "MediaDownloadCompleted" in event
+                      ? event.MediaDownloadCompleted.key
+                      : "MediaDownloadFailed" in event
+                        ? event.MediaDownloadFailed.key
+                        : "MessageForwarded" in event
+                          ? event.MessageForwarded.key
+                          : "MessageSourceLoaded" in event
+                            ? event.MessageSourceLoaded.key
+                            : "NavigationUpdated" in event
+                              ? event.NavigationUpdated.key
+                              : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         return;
       }
@@ -1673,6 +1681,7 @@ export function TimelineView({
               ignoredUserIds={ignoredUserIds}
               onOpenContextMenu={onOpenContextMenu}
               mentionProfileUsers={profileUsers}
+              mediaDownload={eventId ? mediaDownloads[eventId] : undefined}
               receipts={eventId ? roomSignals?.receipts_by_event[eventId]?.readers ?? [] : []}
               receiptTotalCount={
                 eventId ? roomSignals?.receipts_by_event[eventId]?.total_count ?? 0 : 0
@@ -1769,7 +1778,8 @@ export function TimelineItemRow({
   receiptOverflowCount = 0,
   currentUserId,
   ignoredUserIds = [],
-  onOpenContextMenu
+  onOpenContextMenu,
+  mediaDownload
 }: {
   item: TimelineItem;
   roomId: string;
@@ -1812,6 +1822,7 @@ export function TimelineItemRow({
     },
     items: ContextMenuItem[]
   ) => void;
+  mediaDownload?: TimelineMediaDownloadState;
 }) {
   const domId = timelineItemDomId(item.id);
   const transactionId = "Transaction" in item.id ? item.id.Transaction.transaction_id : null;
@@ -2136,25 +2147,6 @@ export function TimelineItemRow({
     canSetSenderAlias || canCopyMessage || canCopyPermalink || canViewSource || canForward;
   const canShowThreadSummary = Boolean(eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
-  const sendStateLabel =
-    sendStateKind === "sending"
-      ? t("timeline.sending")
-      : sendStateKind === "notSent"
-        ? t("timeline.notSent")
-        : sendStateKind === "cancelled"
-          ? t("timeline.cancelledSend")
-          : null;
-  const messageTimestamp = formatMessageTimestamp(item.timestamp_ms);
-  const sentStateMark =
-    sendStateKind === "sent" ? (
-      <span
-        className="message-send-state"
-        data-send-state="sent"
-        aria-label={t("timeline.sent")}
-      >
-        <Check size={12} aria-hidden="true" />
-      </span>
-    ) : null;
   const avatarUrl =
     profile?.avatar?.thumbnail.kind === "ready" ? profile.avatar.thumbnail.source_url : null;
   const senderDisplayLabel = item.sender_label?.trim() || item.sender || "";
@@ -2263,6 +2255,7 @@ export function TimelineItemRow({
       <TimelineMediaAttachment
         media={item.media}
         progress={mediaUploadProgress}
+        downloadState={mediaDownload}
         canDownload={Boolean(eventId)}
         onDownload={submitDownloadMedia}
       />
@@ -2308,31 +2301,14 @@ export function TimelineItemRow({
       </div>
       <div className="message-main">
         <div className="message-heading">
-          {presence ? (
-            <span
-              className="presence-dot message-presence"
-              data-presence={presence}
-              aria-label={presenceLabel(presence)}
-            />
-          ) : null}
-          <span className="sender" dir="auto">{senderDisplayLabel}</span>
-          {messageTimestamp ? (
-            <time className="message-timestamp" dateTime={new Date(item.timestamp_ms!).toISOString()}>
-              {messageTimestamp}
-            </time>
-          ) : null}
-          {item.is_edited && !isRedacted ? (
-            <span className="message-edited">{t("timeline.editedMessage")}</span>
-          ) : null}
-          {sendStateLabel ? (
-            <span
-              className="message-send-state"
-              data-send-state={sendStateKind ?? undefined}
-            >
-              {sendStateLabel}
-            </span>
-          ) : null}
-          {sentStateMark}
+          <MessageMeta
+            senderDisplayLabel={senderDisplayLabel}
+            timestampMs={item.timestamp_ms ?? null}
+            isEdited={item.is_edited}
+            isRedacted={isRedacted}
+            sendStateKind={sendStateKind}
+            presence={presence}
+          />
         </div>
         {replyQuoteContent}
         {mediaContent ? (
@@ -2892,14 +2868,92 @@ function mediaUploadProgressForItem(
   return getMediaUploadProgress(store, key, item.id.Transaction.transaction_id);
 }
 
+// ---------------------------------------------------------------------------
+// MessageMeta: timestamp + send-state marks (extracted for testability, #83)
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders the heading-region metadata for a timeline message row:
+ * sender label, timestamp, edited marker, send-state text labels, and the
+ * sent checkmark. All data comes from Rust-owned DTO fields; no local
+ * inference of send/edit state is performed here.
+ */
+export function MessageMeta({
+  senderDisplayLabel,
+  timestampMs,
+  isEdited,
+  isRedacted,
+  sendStateKind,
+  presence
+}: {
+  senderDisplayLabel: string;
+  timestampMs: number | null;
+  isEdited: boolean;
+  isRedacted: boolean;
+  sendStateKind: string | null;
+  presence?: import("../domain/types").PresenceKind;
+}): ReactNode {
+  const messageTimestamp = formatMessageTimestamp(timestampMs);
+  const sendStateLabel =
+    sendStateKind === "sending"
+      ? t("timeline.sending")
+      : sendStateKind === "notSent"
+        ? t("timeline.notSent")
+        : sendStateKind === "cancelled"
+          ? t("timeline.cancelledSend")
+          : null;
+  const sentStateMark =
+    sendStateKind === "sent" ? (
+      <span
+        className="message-send-state"
+        data-send-state="sent"
+        aria-label={t("timeline.sent")}
+      >
+        <Check size={12} aria-hidden="true" />
+      </span>
+    ) : null;
+
+  return (
+    <>
+      {presence ? (
+        <span
+          className="presence-dot message-presence"
+          data-presence={presence}
+          aria-label={presenceLabel(presence)}
+        />
+      ) : null}
+      <span className="sender" dir="auto">{senderDisplayLabel}</span>
+      {messageTimestamp ? (
+        <time className="message-timestamp" dateTime={new Date(timestampMs!).toISOString()}>
+          {messageTimestamp}
+        </time>
+      ) : null}
+      {isEdited && !isRedacted ? (
+        <span className="message-edited">{t("timeline.editedMessage")}</span>
+      ) : null}
+      {sendStateLabel ? (
+        <span
+          className="message-send-state"
+          data-send-state={sendStateKind ?? undefined}
+        >
+          {sendStateLabel}
+        </span>
+      ) : null}
+      {sentStateMark}
+    </>
+  );
+}
+
 function TimelineMediaAttachment({
   media,
   progress,
+  downloadState,
   canDownload,
   onDownload
 }: {
   media: NonNullable<TimelineItem["media"]>;
   progress: MediaTransferProgress | null;
+  downloadState?: TimelineMediaDownloadState;
   canDownload: boolean;
   onDownload: () => void;
 }) {
@@ -2908,14 +2962,64 @@ function TimelineMediaAttachment({
     formatBytes(media.size),
     formatDimensions(media.width, media.height)
   ].filter((value): value is string => Boolean(value));
-  const progressPercent = uploadProgressPercent(progress);
+  const uploadProgressPercentValue = uploadProgressPercent(progress);
+  const downloadProgress =
+    downloadState?.kind === "pending" ? downloadState.progress : null;
+  const downloadProgressPercent = uploadProgressPercent(downloadProgress);
   const Icon = media.kind === "Image" ? ImageIcon : FileText;
+
+  if (downloadState?.kind === "ready" && media.kind === "Image") {
+    return (
+      <div
+        className="message-media message-media-ready"
+        data-media-kind={media.kind}
+        data-media-encrypted={media.source.encrypted || undefined}
+        data-download-state="ready"
+      >
+        <img
+          className="message-media-image"
+          src={mediaSourceUrl(downloadState.source_url)}
+          alt={media.filename}
+          width={downloadState.width ?? undefined}
+          height={downloadState.height ?? undefined}
+          loading="lazy"
+        />
+        <div className="message-media-main message-media-overlay">
+          <div className="message-media-title" dir="auto">
+            {media.filename}
+          </div>
+          <div className="message-media-meta">
+            {metadata.length > 0 ? <span>{metadata.join(" · ")}</span> : null}
+            {media.source.encrypted ? (
+              <span className="message-media-badge">{t("timeline.encryptedMedia")}</span>
+            ) : null}
+          </div>
+        </div>
+        {canDownload ? (
+          <a
+            className="message-media-download"
+            href={mediaSourceUrl(downloadState.source_url)}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={t("timeline.mediaOpenFile")}
+            download={media.filename}
+          >
+            <Download size={15} />
+          </a>
+        ) : null}
+      </div>
+    );
+  }
+
+  const progressPercent =
+    uploadProgressPercentValue ?? downloadProgressPercent;
 
   return (
     <div
       className="message-media"
       data-media-kind={media.kind}
       data-media-encrypted={media.source.encrypted || undefined}
+      data-download-state={downloadState?.kind ?? "notRequested"}
     >
       <Icon className="message-media-icon" size={18} aria-hidden="true" />
       <div className="message-media-main">
@@ -2926,6 +3030,14 @@ function TimelineMediaAttachment({
           {metadata.length > 0 ? <span>{metadata.join(" · ")}</span> : null}
           {media.source.encrypted ? (
             <span className="message-media-badge">{t("timeline.encryptedMedia")}</span>
+          ) : null}
+          {downloadState?.kind === "pending" ? (
+            <span>{t("timeline.mediaDownloadPending")}</span>
+          ) : null}
+          {downloadState?.kind === "failed" ? (
+            <span className="message-media-error">
+              {t("timeline.mediaDownloadFailed")}
+            </span>
           ) : null}
           {progressPercent !== null ? (
             <span>{t("timeline.mediaUploadProgress", { percent: progressPercent })}</span>
@@ -2944,14 +3056,37 @@ function TimelineMediaAttachment({
         ) : null}
       </div>
       {canDownload ? (
-        <button
-          className="message-media-download"
-          type="button"
-          aria-label={t("timeline.downloadMedia", { filename: media.filename })}
-          onClick={onDownload}
-        >
-          <Download size={15} />
-        </button>
+        downloadState?.kind === "failed" ? (
+          <button
+            className="message-media-download message-media-retry"
+            type="button"
+            aria-label={t("timeline.mediaDownloadRetry")}
+            onClick={onDownload}
+          >
+            <RefreshCw size={15} />
+          </button>
+        ) : downloadState?.kind === "ready" ? (
+          <a
+            className="message-media-download"
+            href={mediaSourceUrl(downloadState.source_url)}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={t("timeline.mediaOpenFile")}
+            download={media.filename}
+          >
+            <Download size={15} />
+          </a>
+        ) : (
+          <button
+            className="message-media-download"
+            type="button"
+            disabled={downloadState?.kind === "pending"}
+            aria-label={t("timeline.downloadMedia", { filename: media.filename })}
+            onClick={onDownload}
+          >
+            <Download size={15} />
+          </button>
+        )
       ) : null}
     </div>
   );

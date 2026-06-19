@@ -926,6 +926,8 @@ pub fn run() {
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
+            commands::start_room_crawl,
+            commands::stop_room_crawl,
             commands::query_directory,
             commands::create_room,
             commands::create_space,
@@ -1322,7 +1324,7 @@ mod tests {
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LinkPreview,
                 LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
-                MediaTransferProgress, NativeAttentionEvent, PaginationDirection, PaginationState,
+                NativeAttentionEvent, PaginationDirection, PaginationState,
                 ReactionGroup, RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent,
                 TimelineCodeBlock, TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody,
                 TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
@@ -1331,18 +1333,19 @@ mod tests {
                 TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
                 TimelineUnreadPosition,
             },
-            failure::CoreFailure,
+            failure::{CoreFailure, TimelineFailureKind},
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use matrix_desktop_state::{
             ActivityRow, ActivityStream, ActivityTab, AttachmentKind, AttachmentResult,
             AvatarThumbnailState, DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType,
             IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt,
-            LiveRoomSignalUpdate, LocalEncryptionHealth, NativeAttentionCapabilities,
-            NativeAttentionCapability, NativeAttentionSummary, PresenceKind, ReplyQuote,
-            ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule, RoomMemberRole,
-            RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji,
-            SyncMode, VerificationFlowState, VerificationTarget,
+            LiveRoomSignalUpdate, LocalEncryptionHealth, MediaTransferProgress,
+            NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
+            PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
+            RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
+            RoomTagKind, SasEmoji, SearchCrawlerFailureKind, SyncMode, VerificationFlowState,
+            VerificationTarget,
         };
         use serde_json::json;
 
@@ -1798,16 +1801,42 @@ mod tests {
             }))
             .expect("serialize media upload progress");
 
+        let media_download_progress = serialize_core_event(&CoreEvent::Timeline(
+            TimelineEvent::MediaDownloadProgress {
+                request_id,
+                key: key.clone(),
+                event_id: "$media1".to_owned(),
+                progress: MediaTransferProgress {
+                    current: 0,
+                    total: 68,
+                },
+            },
+        ))
+        .expect("serialize media download progress");
+
         let media_download_completed = serialize_core_event(&CoreEvent::Timeline(
             TimelineEvent::MediaDownloadCompleted {
                 request_id,
                 key: key.clone(),
                 event_id: "$media1".to_owned(),
+                source_url: "/data/media_downloads/!r:example.test/$media1.bin".to_owned(),
                 byte_count: 68,
                 mimetype: Some("image/png".to_owned()),
+                width: Some(2),
+                height: Some(2),
             },
         ))
         .expect("serialize media download completion");
+
+        let media_download_failed = serialize_core_event(&CoreEvent::Timeline(
+            TimelineEvent::MediaDownloadFailed {
+                request_id,
+                key: key.clone(),
+                event_id: "$media1".to_owned(),
+                kind: TimelineFailureKind::Sdk,
+            },
+        ))
+        .expect("serialize media download failure");
 
         let message_source_loaded =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MessageSourceLoaded {
@@ -2319,6 +2348,49 @@ mod tests {
             json!("index unavailable")
         );
 
+        // Search history crawler contract events (#77).
+        let search_crawl_progress = serialize_core_event(&CoreEvent::Search(
+            SearchEvent::HistoryCrawlProgress {
+                room_id: "!r:example.test".to_owned(),
+                processed: 100,
+                indexed: 42,
+            },
+        ))
+        .expect("serialize history crawl progress event");
+        assert_eq!(
+            search_crawl_progress["event"]["HistoryCrawlProgress"]["processed"],
+            json!(100u64)
+        );
+
+        let search_crawl_completed = serialize_core_event(&CoreEvent::Search(
+            SearchEvent::HistoryCrawlCompleted {
+                room_id: "!r:example.test".to_owned(),
+                indexed: 42,
+            },
+        ))
+        .expect("serialize history crawl completed event");
+        assert_eq!(
+            search_crawl_completed["event"]["HistoryCrawlCompleted"]["indexed"],
+            json!(42u64)
+        );
+
+        let search_crawl_failed = serialize_core_event(&CoreEvent::Search(
+            SearchEvent::HistoryCrawlFailed {
+                room_id: "!r:example.test".to_owned(),
+                kind: SearchCrawlerFailureKind::Sdk,
+            },
+        ))
+        .expect("serialize history crawl failed event");
+        assert_eq!(
+            search_crawl_failed["event"]["HistoryCrawlFailed"]["failureKind"],
+            json!("sdk")
+        );
+        // Privacy assertion: no raw error text in the failed event.
+        assert!(
+            !serde_json::to_string(&search_crawl_failed).unwrap().contains("message"),
+            "crawl failure must not carry a raw message field"
+        );
+
         let actual_contract = json!({
             "activityOpened": activity_opened,
             "activityMarkedRead": activity_marked_read,
@@ -2336,6 +2408,9 @@ mod tests {
             "operationFailedSessionNotFound": failed,
             "searchAttachmentsFailed": search_attachments_failed,
             "searchAttachmentsResults": search_attachments_results,
+            "searchCrawlProgress": search_crawl_progress,
+            "searchCrawlCompleted": search_crawl_completed,
+            "searchCrawlFailed": search_crawl_failed,
             "roomDirectoryQueryCompleted": directory_query_completed,
             "roomDirectMessageStarted": room_direct_message_started,
             "roomInviteAccepted": room_invite_accepted,
@@ -2357,6 +2432,8 @@ mod tests {
             "timelineItemsUpdated": updated,
             "timelineLinkPreviewInitialItems": link_preview_initial,
             "timelineMediaDownloadCompleted": media_download_completed,
+            "timelineMediaDownloadFailed": media_download_failed,
+            "timelineMediaDownloadProgress": media_download_progress,
             "timelineMediaInitialItems": media_initial,
             "timelineMediaUploadProgress": media_upload_progress,
             "timelineMessageForwarded": message_forwarded,

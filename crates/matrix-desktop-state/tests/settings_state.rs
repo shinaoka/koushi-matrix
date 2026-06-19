@@ -106,6 +106,7 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         timeline: TimelineSettings {
             auto_load_older_messages: true,
         },
+        search_crawler: matrix_desktop_state::SearchCrawlerSettings::default(),
     };
 
     let effects = reduce(

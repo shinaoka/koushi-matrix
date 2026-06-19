@@ -75,6 +75,7 @@ import {
   threadTimelineKey
 } from "./domain/coreEvents";
 import { FilesView } from "./components/FilesView";
+import { EmojiPicker } from "./components/EmojiPicker";
 import { KeyboardSettingsPanel } from "./components/KeyboardSettingsPanel";
 import { RoomInfoPanel } from "./components/RoomInfoPanel";
 import { SpaceInfoPanel } from "./components/SpaceInfoPanel";
@@ -98,6 +99,7 @@ import {
   shouldResolveComposerKeyEvent
 } from "./domain/composerKeyEvents";
 import { roomListSections } from "./domain/desktopModel";
+import { mediaSourceUrl } from "./domain/mediaUrl";
 import {
   restoreTimelineAnchor,
   timelinePaginationAnchorEventId
@@ -167,6 +169,7 @@ import type {
   StagedUploadItem,
   ThreadMessage,
   TimelineMessage,
+  TimelineMediaDownloadState,
   TimelineMediaGalleryItem,
   UploadStagingRequestItem,
   UserProfile
@@ -1415,6 +1418,14 @@ export function App() {
 
   async function updateSettings(patch: SettingsPatch) {
     setSnapshot(await api.updateSettings(patch));
+  }
+
+  async function startRoomCrawl(roomId: string) {
+    setSnapshot(await api.startRoomCrawl(roomId));
+  }
+
+  async function stopRoomCrawl(roomId: string) {
+    setSnapshot(await api.stopRoomCrawl(roomId));
   }
 
   async function setRoomUrlPreviewOverride(roomId: string, enabled: boolean) {
@@ -2732,6 +2743,12 @@ export function App() {
           }}
           onReportUser={(userId) => {
             openReportDialog({ kind: "user", userId });
+          }}
+          onStartCrawlRoom={(roomId) => {
+            void startRoomCrawl(roomId);
+          }}
+          onStopCrawlRoom={(roomId) => {
+            void stopRoomCrawl(roomId);
           }}
         />
       </div>
@@ -4614,6 +4631,7 @@ function TimelinePane({
   const pinnedEventIds = pinnedEvents.map((event) => event.event_id);
   const stagedUploads = snapshot.state.timeline.staged_uploads ?? [];
   const mediaGallery = snapshot.state.timeline.media_gallery ?? [];
+  const mediaDownloads = snapshot.state.timeline.media_downloads ?? {};
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
@@ -4629,9 +4647,14 @@ function TimelinePane({
           <span>{activeRoomName}</span>
         </div>
         <div className="channel-actions">
-          <button className="member-pill" type="button" aria-label={t("room.members")}>
+          <button
+            className="member-pill"
+            type="button"
+            aria-label={t("room.members")}
+            onClick={onOpenRoomInfo}
+          >
             <Users size={ICON_SIZE.small} />
-            <span>8</span>
+            <span>{activeRoom?.joined_members ?? 0}</span>
           </button>
           <button
             className="icon-button"
@@ -4666,6 +4689,7 @@ function TimelinePane({
       {galleryOpen ? (
         <RoomMediaGallery
           items={mediaGallery}
+          mediaDownloads={mediaDownloads}
           onOpenItem={(index) => setViewerIndex(index)}
         />
       ) : null}
@@ -4727,6 +4751,7 @@ function TimelinePane({
               autoLoadOlderMessages={snapshot.state.settings.values.timeline.auto_load_older_messages}
               codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
+              mediaDownloads={mediaDownloads}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -4783,6 +4808,7 @@ function TimelinePane({
         <MediaViewer
           index={viewerIndex}
           items={mediaGallery}
+          mediaDownloads={mediaDownloads}
           onClose={() => setViewerIndex(null)}
           onSelectIndex={setViewerIndex}
         />
@@ -4889,15 +4915,22 @@ function UploadStagingDialog({
 
 function RoomMediaGallery({
   items,
+  mediaDownloads,
   onOpenItem
 }: {
   items: TimelineMediaGalleryItem[];
+  mediaDownloads: Record<string, TimelineMediaDownloadState>;
   onOpenItem: (index: number) => void;
 }) {
   return (
     <section className="room-media-gallery" role="region" aria-label={t("mediaGallery.region")}>
       {items.map((item, index) => {
         const label = mediaGalleryItemLabel(item);
+        const download = mediaDownloads[item.event_id];
+        const previewUrl =
+          item.media.kind === "Image" && download?.kind === "ready"
+            ? mediaSourceUrl(download.source_url)
+            : null;
         return (
           <button
             className="room-media-gallery-item"
@@ -4906,7 +4939,14 @@ function RoomMediaGallery({
             aria-label={t("mediaGallery.openItem", { filename: label })}
             onClick={() => onOpenItem(index)}
           >
-            {item.media.kind === "Image" ? (
+            {previewUrl ? (
+              <img
+                className="room-media-gallery-preview"
+                src={previewUrl}
+                alt={label}
+                loading="lazy"
+              />
+            ) : item.media.kind === "Image" ? (
               <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
             ) : (
               <FileText size={ICON_SIZE.control} aria-hidden="true" />
@@ -4917,6 +4957,7 @@ function RoomMediaGallery({
             <span className="room-media-gallery-meta">
               {item.media.size !== null ? formatUploadBytes(item.media.size) : item.media.kind}
               {item.media.source.encrypted ? ` - ${t("mediaGallery.encrypted")}` : ""}
+              {download?.kind === "pending" ? ` - ${t("mediaGallery.noPreview")}` : ""}
             </span>
           </button>
         );
@@ -4928,11 +4969,13 @@ function RoomMediaGallery({
 function MediaViewer({
   index,
   items,
+  mediaDownloads,
   onClose,
   onSelectIndex
 }: {
   index: number;
   items: TimelineMediaGalleryItem[];
+  mediaDownloads: Record<string, TimelineMediaDownloadState>;
   onClose: () => void;
   onSelectIndex: (index: number) => void;
 }) {
@@ -4941,6 +4984,11 @@ function MediaViewer({
   const previousIndex = (index + items.length - 1) % items.length;
   const nextIndex = (index + 1) % items.length;
   const label = mediaGalleryItemLabel(item);
+  const download = mediaDownloads[item.event_id];
+  const sourceUrl =
+    item.media.kind === "Image" && download?.kind === "ready"
+      ? mediaSourceUrl(download.source_url)
+      : null;
 
   return (
     <div className="media-viewer-backdrop" role="dialog" aria-label={t("mediaGallery.viewerTitle")}>
@@ -4958,7 +5006,14 @@ function MediaViewer({
           </button>
         </header>
         <div className="media-viewer-stage">
-          {item.media.kind === "Image" ? (
+          {sourceUrl ? (
+            <img
+              className="media-viewer-image"
+              src={sourceUrl}
+              alt={label}
+              style={{ transform: `scale(${zoom})` }}
+            />
+          ) : item.media.kind === "Image" ? (
             <div className="media-viewer-image-placeholder" style={{ transform: `scale(${zoom})` }}>
               <ImageIcon size={ICON_SIZE.emptyState} aria-hidden="true" />
             </div>
@@ -5452,7 +5507,9 @@ export function Composer({
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const emojiButtonRef = useRef<HTMLButtonElement>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [scheduleValue, setScheduleValue] = useState(() => defaultScheduleDateTimeValue());
   const activeMention = activeMentionQuery(value);
   const activeMentionSuggestions =
@@ -5525,6 +5582,11 @@ export function Composer({
   function insertMentionTrigger() {
     const { start, end } = selectionRange();
     replaceTextRange(start, end, "@");
+  }
+
+  function insertEmoji(emoji: string) {
+    const { start, end } = selectionRange();
+    replaceTextRange(start, end, emoji);
   }
 
   function acceptMention(candidate: MentionCandidate) {
@@ -5787,9 +5849,26 @@ export function Composer({
           >
             <AtSign size={ICON_SIZE.control} />
           </button>
-          <button className="icon-button" type="button" aria-label={t("composer.emoji")}>
-            <Smile size={ICON_SIZE.control} />
-          </button>
+          <span className="composer-emoji-anchor">
+            <button
+              ref={emojiButtonRef}
+              className="icon-button"
+              type="button"
+              aria-label={t("composer.emoji")}
+              aria-expanded={emojiPickerOpen}
+              aria-haspopup="dialog"
+              onClick={() => setEmojiPickerOpen((open) => !open)}
+            >
+              <Smile size={ICON_SIZE.control} />
+            </button>
+            {emojiPickerOpen ? (
+              <EmojiPicker
+                anchorRef={emojiButtonRef}
+                onSelect={insertEmoji}
+                onClose={() => setEmojiPickerOpen(false)}
+              />
+            ) : null}
+          </span>
           <button
             className="icon-button"
             type="button"
@@ -5901,6 +5980,8 @@ export function ContextualRightPanel({
   onChangePassword = () => undefined,
   onDeactivateAccount = () => undefined,
   onSubmitAccountManagementUia = () => undefined,
+  onStartCrawlRoom = () => undefined,
+  onStopCrawlRoom = () => undefined,
   onThreadComposerDraftChange,
   onThreadReplySend
 }: {
@@ -5977,6 +6058,8 @@ export function ContextualRightPanel({
   onChangePassword?: (newPassword: string) => void;
   onDeactivateAccount?: (eraseData: boolean) => void;
   onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
+  onStartCrawlRoom?: (roomId: string) => void;
+  onStopCrawlRoom?: (roomId: string) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onIgnoreUser?: (userId: string) => void;
   onUnignoreUser?: (userId: string) => void;
@@ -5984,6 +6067,8 @@ export function ContextualRightPanel({
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
   onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
 }) {
+  const mediaDownloads = snapshot.state.timeline.media_downloads ?? {};
+
   if (mode === "closed") {
     return <aside className="thread-pane" aria-label={t("panel.context")} />;
   }
@@ -6029,6 +6114,7 @@ export function ContextualRightPanel({
           platform={snapshot.state.locale_profile.platform}
           profile={snapshot.state.profile}
           savedSessions={savedSessions}
+          searchCrawlerState={snapshot.state.search_crawler}
           settings={snapshot.state.settings}
           onAcceptVerification={onAcceptVerification}
           onBootstrapCrossSigning={onBootstrapCrossSigning}
@@ -6062,6 +6148,9 @@ export function ContextualRightPanel({
           onChangePassword={onChangePassword ?? (() => undefined)}
           onDeactivateAccount={onDeactivateAccount ?? (() => undefined)}
           onSubmitAccountManagementUia={onSubmitAccountManagementUia ?? (() => undefined)}
+          onStartCrawlRoom={onStartCrawlRoom}
+          onStopCrawlRoom={onStopCrawlRoom}
+          rooms={snapshot.state.rooms}
         />
       </aside>
     );
@@ -6218,6 +6307,7 @@ export function ContextualRightPanel({
               autoLoadOlderMessages={snapshot.state.settings.values.timeline.auto_load_older_messages}
               codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
+              mediaDownloads={mediaDownloads}
             />
           </section>
         ) : null}
@@ -6281,6 +6371,7 @@ export function ContextualRightPanel({
             autoLoadOlderMessages={snapshot.state.settings.values.timeline.auto_load_older_messages}
             codeBlockWrap={snapshot.state.settings.values.display.code_block_wrap}
             searchQuery={searchQuery}
+            mediaDownloads={mediaDownloads}
           />
         ) : browserThreadSnapshot ? (
           <div className="message-fixture-list thread-fixture-list">

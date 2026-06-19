@@ -116,7 +116,10 @@ function makeThreadItem(index: number, rootEventId = "$seed-event:example.invali
 function makeSendQueueItem(
   transactionId: string,
   body: string,
-  sendState: { kind: "sending" } | { kind: "notSent"; reason: "recoverable" | "unrecoverable" }
+  sendState:
+    | { kind: "sending" }
+    | { kind: "notSent"; reason: "recoverable" | "unrecoverable" }
+    | { kind: "cancelled" }
 ) {
   return {
     id: { Transaction: { transaction_id: transactionId } },
@@ -2495,6 +2498,18 @@ test("send queue rows dispatch retry and cancel commands from Rust-owned send st
       roomId: HARNESS_ROOM_ID,
       transactionId: "txn-sending"
     });
+});
+
+test("cancelled send queue row renders the cancelled state label", async ({ page }) => {
+  await gotoReadyShell(page);
+  const cancelled = makeSendQueueItem("txn-cancelled", "Synthetic cancelled send", {
+    kind: "cancelled"
+  });
+  await seedTimelineItems(page, [cancelled]);
+
+  const row = page.locator('[data-item-id="txn:txn-cancelled"]');
+  await expect(row).toHaveAttribute("data-send-state", "cancelled");
+  await expect(row.locator('[data-send-state="cancelled"]')).toHaveText("Cancelled");
 });
 
 test("send queue room bar resends failed transactions in timeline order", async ({ page }) => {
@@ -6166,6 +6181,29 @@ test("room info Files entry opens the file browser with room scope", async ({ pa
 
   await expect(page.getByText(t("files.title"), { exact: true })).toBeVisible();
   await expect(page.getByText("quarterly_report.pdf")).toBeVisible();
+});
+
+test("room header member pill opens room info and shows the Rust-owned member count", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  const pill = page.locator(".channel-actions").getByRole("button", { name: t("room.members") });
+  await expect(pill).toContainText("8");
+  await pill.click();
+
+  await expect(page.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
+});
+
+test("room info People entry scrolls to the members section", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: t("room.roomInfo") }).click();
+
+  const peopleButton = page.getByRole("button", { name: t("room.people"), exact: true });
+  await expect(peopleButton).toBeEnabled();
+  await peopleButton.click();
+
+  await expect(page.getByRole("heading", { name: t("room.members") })).toBeVisible();
 });
 
 test("timeline header Threads button opens the threads list and row opens a thread", async ({

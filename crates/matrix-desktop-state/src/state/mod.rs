@@ -8,6 +8,19 @@ use serde::{Deserialize, Serialize};
 use crate::composer_shortcuts::FormattedMessageDraft;
 use crate::locale_profile::DisplayPlatform;
 
+// New cohesive submodules — #87 alignment (new types only, no mechanical move).
+pub mod media_download;
+pub mod search_crawler;
+
+// Re-export the new types at this module level so existing callers
+// (`matrix_desktop_state::SearchCrawlerState`, etc.) keep compiling
+// without changes. Only re-export where demonstrably needed.
+pub use media_download::{MediaTransferProgress, TimelineMediaDownloadState};
+pub use search_crawler::{
+    SearchCrawlerFailureKind, SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed,
+    SearchCrawlerState,
+};
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub session: SessionState,
@@ -55,6 +68,8 @@ pub struct AppState {
     pub threads_list: ThreadsListState,
     pub focused_context: FocusedContextState,
     pub search: SearchState,
+    #[serde(default)]
+    pub search_crawler: SearchCrawlerState,
     pub files_view: FilesViewState,
     pub basic_operation: BasicOperationState,
     pub live_signals: LiveSignalsState,
@@ -100,6 +115,7 @@ impl Default for AppState {
             threads_list: ThreadsListState::Closed,
             focused_context: FocusedContextState::Closed,
             search: SearchState::Closed,
+            search_crawler: SearchCrawlerState::default(),
             files_view: FilesViewState::Closed,
             basic_operation: BasicOperationState::Idle,
             live_signals: LiveSignalsState::default(),
@@ -166,6 +182,8 @@ pub struct SettingsValues {
     pub media: MediaSettings,
     #[serde(default)]
     pub timeline: TimelineSettings,
+    #[serde(default)]
+    pub search_crawler: SearchCrawlerSettings,
 }
 
 impl SettingsValues {
@@ -194,6 +212,9 @@ impl SettingsValues {
         if let Some(timeline) = patch.timeline {
             self.timeline = timeline;
         }
+        if let Some(search_crawler) = patch.search_crawler {
+            self.search_crawler = search_crawler;
+        }
     }
 }
 
@@ -208,6 +229,7 @@ impl Default for SettingsValues {
             display: DisplaySettings::default(),
             media: MediaSettings::default(),
             timeline: TimelineSettings::default(),
+            search_crawler: SearchCrawlerSettings::default(),
         }
     }
 }
@@ -328,7 +350,7 @@ impl Default for NotificationSettings {
     }
 }
 
-fn default_true() -> bool {
+pub(crate) fn default_true() -> bool {
     true
 }
 
@@ -458,6 +480,9 @@ pub struct TimelineSettings {
     pub auto_load_older_messages: bool,
 }
 
+// SearchCrawlerSettings and SearchCrawlerSpeed live in state/search_crawler.rs
+// and are re-exported above.
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SettingsPersistenceState {
@@ -475,6 +500,7 @@ pub struct SettingsPatch {
     pub display: Option<DisplaySettings>,
     pub media: Option<MediaSettings>,
     pub timeline: Option<TimelineSettings>,
+    pub search_crawler: Option<SearchCrawlerSettings>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1496,6 +1522,8 @@ pub struct RoomSummary {
     pub parent_space_ids: Vec<String>,
     #[serde(default)]
     pub is_encrypted: bool,
+    #[serde(default)]
+    pub joined_members: u64,
 }
 
 impl fmt::Debug for RoomSummary {
@@ -1517,6 +1545,7 @@ impl fmt::Debug for RoomSummary {
             .field("last_activity_ms", &self.last_activity_ms)
             .field("parent_space_ids", &self.parent_space_ids.len())
             .field("is_encrypted", &self.is_encrypted)
+            .field("joined_members", &self.joined_members)
             .finish()
     }
 }
@@ -1762,6 +1791,9 @@ pub enum OperationFailureKind {
     Invalid,
     Sdk,
 }
+
+// MediaTransferProgress and TimelineMediaDownloadState live in
+// state/media_download.rs and are re-exported above.
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -2777,6 +2809,8 @@ pub struct TimelinePaneState {
     pub scheduled_sends: Vec<ScheduledSendItem>,
     pub staged_uploads: Vec<StagedUploadItem>,
     pub media_gallery: Vec<TimelineMediaGalleryItem>,
+    #[serde(default)]
+    pub media_downloads: std::collections::BTreeMap<String, TimelineMediaDownloadState>,
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -3492,6 +3526,9 @@ pub enum SearchState {
     },
 }
 
+// SearchCrawlerState, SearchCrawlerRoomState, and SearchCrawlerFailureKind live
+// in state/search_crawler.rs and are re-exported above.
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SearchScope {
     CurrentRoom { room_id: String },
@@ -4044,4 +4081,53 @@ pub struct AppError {
     pub code: String,
     pub message: String,
     pub recoverable: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn timeline_media_download_state_serializes_as_tagged_union() {
+        let pending = TimelineMediaDownloadState::Pending {
+            progress: Some(MediaTransferProgress {
+                current: 3,
+                total: 10,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&pending).unwrap(),
+            json!({
+                "kind": "pending",
+                "progress": { "current": 3, "total": 10 }
+            })
+        );
+
+        let ready = TimelineMediaDownloadState::Ready {
+            source_url: "/data/image.png".to_owned(),
+            width: Some(640),
+            height: Some(480),
+            mime_type: Some("image/png".to_owned()),
+        };
+        assert_eq!(
+            serde_json::to_value(&ready).unwrap(),
+            json!({
+                "kind": "ready",
+                "source_url": "/data/image.png",
+                "width": 640,
+                "height": 480,
+                "mime_type": "image/png"
+            })
+        );
+
+        let failed = TimelineMediaDownloadState::Failed {
+            failure_kind: OperationFailureKind::Network,
+        };
+        assert_eq!(
+            serde_json::to_value(&failed).unwrap(),
+            json!({ "kind": "failed", "failure_kind": "network" })
+        );
+    }
 }

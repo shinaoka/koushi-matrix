@@ -28,6 +28,7 @@ fn ready_selected_room_state() -> AppState {
             last_activity_ms: 0,
             parent_space_ids: Vec::new(),
             is_encrypted: false,
+            joined_members: 0,
         }],
         timeline: TimelinePaneState {
             room_id: Some("!room:example.invalid".to_owned()),
@@ -47,6 +48,7 @@ fn ready_selected_room_state() -> AppState {
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
+            media_downloads: Default::default(),
         },
         ..AppState::default()
     }

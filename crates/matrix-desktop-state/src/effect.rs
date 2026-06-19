@@ -1,8 +1,8 @@
 use crate::{
     action::{LoginRequest, RecoveryRequest},
     state::{
-        AttachmentFilter, AttachmentScope, AttachmentSort, SearchScope, SessionInfo,
-        SettingsValues, VerificationCancelReason, VerificationTarget,
+        AttachmentFilter, AttachmentScope, AttachmentSort, SearchCrawlerSettings, SearchScope,
+        SessionInfo, SettingsValues, VerificationCancelReason, VerificationTarget,
     },
 };
 
@@ -89,6 +89,19 @@ pub enum AppEffect {
         room_id: String,
     },
     UnsubscribeThreadsList,
+    /// Tell the `SearchActor` to idempotently start background crawls for
+    /// the given rooms.  Emitted when speed transitions from `Paused` to
+    /// active, or when a content-indexing setting changes so rooms are
+    /// re-crawled with the new settings.
+    NotifySearchCrawlerRoomsAvailable {
+        room_ids: Vec<String>,
+        settings: SearchCrawlerSettings,
+    },
+    /// Tell the `SearchActor` to drop all rooms from its `completed_rooms`
+    /// cache.  Emitted alongside `NotifySearchCrawlerRoomsAvailable` when
+    /// content-indexing settings change so the actor re-crawls rooms that
+    /// it had previously recorded as done.
+    InvalidateSearchCrawlerCache,
     EmitUiEvent(UiEvent),
 }
 
@@ -105,6 +118,7 @@ pub enum UiEvent {
     ThreadChanged,
     ThreadsListChanged,
     SearchChanged,
+    SearchCrawlerChanged,
     FilesViewChanged,
     LiveSignalsChanged,
     E2eeTrustChanged,

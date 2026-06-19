@@ -68,6 +68,8 @@ export type MessageId =
   | "composer.bold"
   | "composer.code"
   | "composer.emoji"
+  | "composer.emojiSearch"
+  | "composer.emojiRecent"
   | "composer.italic"
   | "composer.link"
   | "composer.list"
@@ -129,6 +131,15 @@ export type MessageId =
   | "dialog.reportReasonTitle"
   | "dialog.submitCreateRoom"
   | "dialog.submitCreateSpace"
+  | "emoji.category.smileys"
+  | "emoji.category.people"
+  | "emoji.category.nature"
+  | "emoji.category.food"
+  | "emoji.category.activities"
+  | "emoji.category.travel"
+  | "emoji.category.objects"
+  | "emoji.category.symbols"
+  | "emoji.noResults"
   | "files.empty"
   | "files.error"
   | "files.filterKinds"
@@ -180,6 +191,7 @@ export type MessageId =
   | "mediaGallery.close"
   | "mediaGallery.encrypted"
   | "mediaGallery.next"
+  | "mediaGallery.noPreview"
   | "mediaGallery.open"
   | "mediaGallery.openItem"
   | "mediaGallery.previous"
@@ -630,6 +642,10 @@ export type MessageId =
   | "timeline.downloadMedia"
   | "timeline.encryptedMedia"
   | "timeline.mediaUploadProgress"
+  | "timeline.mediaDownloadPending"
+  | "timeline.mediaDownloadFailed"
+  | "timeline.mediaDownloadRetry"
+  | "timeline.mediaOpenFile"
   | "timeline.threadReplyCountOne"
   | "timeline.threadReplyCountMany"
   | "timeline.threadRoot"
@@ -665,6 +681,22 @@ export type MessageId =
   | "threads.open"
   | "threads.replyCount"
   | "threads.title"
+  | "settings.searchHistory"
+  | "settings.searchHistorySpeed"
+  | "settings.searchHistorySpeedStandard"
+  | "settings.searchHistorySpeedFast"
+  | "settings.searchHistorySpeedSlow"
+  | "settings.searchHistorySpeedPaused"
+  | "settings.searchHistoryIncludeCaptions"
+  | "settings.searchHistoryIncludeFilenames"
+  | "settings.searchHistoryRoomStatus"
+  | "settings.searchHistoryRoomIdle"
+  | "settings.searchHistoryRoomRunning"
+  | "settings.searchHistoryRoomCompleted"
+  | "settings.searchHistoryRoomFailed"
+  | "settings.searchHistoryStartRoom"
+  | "settings.searchHistoryStopRoom"
+  | "settings.searchHistoryRoomUnknown"
   | "settings.urlPreviews"
   | "settings.urlPreviewsEnabled"
   | "settings.urlPreviewsDescription"
@@ -837,6 +869,8 @@ const en: Catalog = {
   "composer.bold": "Bold",
   "composer.code": "Code",
   "composer.emoji": "Emoji",
+  "composer.emojiSearch": "Search emoji",
+  "composer.emojiRecent": "Frequently used",
   "composer.italic": "Italic",
   "composer.link": "Link",
   "composer.list": "List",
@@ -898,6 +932,15 @@ const en: Catalog = {
   "dialog.reportReasonTitle": "Report",
   "dialog.submitCreateRoom": "Submit create room",
   "dialog.submitCreateSpace": "Submit create space",
+  "emoji.category.smileys": "Smileys",
+  "emoji.category.people": "People",
+  "emoji.category.nature": "Nature",
+  "emoji.category.food": "Food",
+  "emoji.category.activities": "Activities",
+  "emoji.category.travel": "Travel",
+  "emoji.category.objects": "Objects",
+  "emoji.category.symbols": "Symbols",
+  "emoji.noResults": "No emojis match your search",
   "files.empty": "No files",
   "files.error": "Could not load files",
   "files.filterKinds": "File kinds",
@@ -949,6 +992,7 @@ const en: Catalog = {
   "mediaGallery.close": "Close media viewer",
   "mediaGallery.encrypted": "Encrypted",
   "mediaGallery.next": "Next media",
+  "mediaGallery.noPreview": "No preview",
   "mediaGallery.open": "Open media gallery",
   "mediaGallery.openItem": "Open {filename}",
   "mediaGallery.previous": "Previous media",
@@ -1411,6 +1455,10 @@ const en: Catalog = {
   "timeline.downloadMedia": "Download {filename}",
   "timeline.encryptedMedia": "Encrypted",
   "timeline.mediaUploadProgress": "{percent}%",
+  "timeline.mediaDownloadPending": "Downloading…",
+  "timeline.mediaDownloadFailed": "Download failed",
+  "timeline.mediaDownloadRetry": "Retry",
+  "timeline.mediaOpenFile": "Open file",
   "timeline.threadReplyCountOne": "1 reply",
   "timeline.threadReplyCountMany": "{count} replies",
   "timeline.threadRoot": "Thread root {eventId}",
@@ -1445,7 +1493,23 @@ const en: Catalog = {
   "threads.loading": "Loading threads…",
   "threads.open": "Open thread",
   "threads.replyCount": "{count} replies",
-  "threads.title": "Threads"
+  "threads.title": "Threads",
+  "settings.searchHistory": "Search history",
+  "settings.searchHistorySpeed": "Crawl speed",
+  "settings.searchHistorySpeedStandard": "Standard",
+  "settings.searchHistorySpeedFast": "Fast",
+  "settings.searchHistorySpeedSlow": "Slow",
+  "settings.searchHistorySpeedPaused": "Off",
+  "settings.searchHistoryIncludeCaptions": "Index media captions",
+  "settings.searchHistoryIncludeFilenames": "Index file names",
+  "settings.searchHistoryRoomStatus": "Room index status",
+  "settings.searchHistoryRoomIdle": "Not started",
+  "settings.searchHistoryRoomRunning": "Indexing ({processed} processed, {indexed} indexed)",
+  "settings.searchHistoryRoomCompleted": "Complete ({indexed} indexed)",
+  "settings.searchHistoryRoomFailed": "Failed",
+  "settings.searchHistoryStartRoom": "Start",
+  "settings.searchHistoryStopRoom": "Stop",
+  "settings.searchHistoryRoomUnknown": "Room"
 };
 
 const ja: Catalog = {
@@ -1507,6 +1571,8 @@ const ja: Catalog = {
   "composer.bold": "太字",
   "composer.code": "コード",
   "composer.emoji": "絵文字",
+  "composer.emojiSearch": "絵文字を検索",
+  "composer.emojiRecent": "よく使う",
   "composer.italic": "斜体",
   "composer.link": "リンク",
   "composer.list": "リスト",
@@ -1568,6 +1634,15 @@ const ja: Catalog = {
   "dialog.reportReasonTitle": "報告",
   "dialog.submitCreateRoom": "ルーム作成を実行",
   "dialog.submitCreateSpace": "スペース作成を実行",
+  "emoji.category.smileys": "顔",
+  "emoji.category.people": "人",
+  "emoji.category.nature": "自然",
+  "emoji.category.food": "食べ物",
+  "emoji.category.activities": "アクティビティ",
+  "emoji.category.travel": "旅行",
+  "emoji.category.objects": "物",
+  "emoji.category.symbols": "記号",
+  "emoji.noResults": "一致する絵文字がありません",
   "files.empty": "ファイルがありません",
   "files.error": "ファイルを読み込めませんでした",
   "files.filterKinds": "ファイルの種類",
@@ -1619,6 +1694,7 @@ const ja: Catalog = {
   "mediaGallery.close": "メディアビューアを閉じる",
   "mediaGallery.encrypted": "暗号化済み",
   "mediaGallery.next": "次のメディア",
+  "mediaGallery.noPreview": "プレビューなし",
   "mediaGallery.open": "メディアギャラリーを開く",
   "mediaGallery.openItem": "{filename}を開く",
   "mediaGallery.previous": "前のメディア",
@@ -2078,6 +2154,10 @@ const ja: Catalog = {
   "timeline.cancelAll": "すべてキャンセル",
   "timeline.downloadMedia": "{filename}をダウンロード",
   "timeline.encryptedMedia": "暗号化済み",
+  "timeline.mediaDownloadPending": "ダウンロード中…",
+  "timeline.mediaDownloadFailed": "ダウンロードに失敗しました",
+  "timeline.mediaDownloadRetry": "再試行",
+  "timeline.mediaOpenFile": "ファイルを開く",
   "timeline.threadReplyCountOne": "返信 1 件",
   "timeline.threadReplyCountMany": "返信 {count} 件",
   "timeline.threadRoot": "スレッド元 {eventId}",
@@ -2112,7 +2192,23 @@ const ja: Catalog = {
   "threads.loading": "スレッドを読み込み中…",
   "threads.open": "スレッドを開く",
   "threads.replyCount": "{count}件の返信",
-  "threads.title": "スレッド"
+  "threads.title": "スレッド",
+  "settings.searchHistory": "検索履歴",
+  "settings.searchHistorySpeed": "クロール速度",
+  "settings.searchHistorySpeedStandard": "標準",
+  "settings.searchHistorySpeedFast": "高速",
+  "settings.searchHistorySpeedSlow": "低速",
+  "settings.searchHistorySpeedPaused": "オフ",
+  "settings.searchHistoryIncludeCaptions": "メディアキャプションをインデックス",
+  "settings.searchHistoryIncludeFilenames": "ファイル名をインデックス",
+  "settings.searchHistoryRoomStatus": "ルームインデックス状況",
+  "settings.searchHistoryRoomIdle": "未開始",
+  "settings.searchHistoryRoomRunning": "インデックス中（処理済み: {processed}件、インデックス済み: {indexed}件）",
+  "settings.searchHistoryRoomCompleted": "完了（{indexed}件インデックス済み）",
+  "settings.searchHistoryRoomFailed": "失敗",
+  "settings.searchHistoryStartRoom": "開始",
+  "settings.searchHistoryStopRoom": "停止",
+  "settings.searchHistoryRoomUnknown": "ルーム"
 };
 
 const pseudo: Catalog = Object.fromEntries(
