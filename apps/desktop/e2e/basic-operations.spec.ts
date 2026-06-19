@@ -52,8 +52,9 @@
  *      mocked IPC without launching the native GUI.
  *  23. Keep sidebar navigation buttons wired by asserting Home and Threads
  *      dispatch their Rust-owned commands in headless browser mode.
- *  24. Fail closed on a mismatched snapshot schema_version: show the explicit
- *      recovery screen and refuse the normal shell (Phase 4 IPC contract guard).
+ *  24. Fail closed on an incompatible snapshot: a stale flat (v1) snapshot with no
+ *      domain/ui sections, and a future schema_version, both surface the recovery
+ *      screen and refuse the normal shell instead of crashing (Phase 4 IPC guard).
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -6660,24 +6661,48 @@ test("encrypted room suppresses link previews and shows privacy notice", async (
   await expect(page.getByText(t("settings.urlPreviewsEncryptedNotice"))).toBeVisible();
 });
 
-test("a mismatched snapshot schema_version fails closed to a recovery screen, not the shell", async ({
+test("a stale flat (v1) snapshot fails closed to the recovery screen instead of crashing", async ({
   page
 }) => {
   await gotoReadyShell(page);
-  // #87 Phase 4 IPC contract guard: a stale flat (v1) snapshot or a mismatched Rust/TS
-  // build carries an incompatible schema_version. The App must fail closed — show the
-  // explicit recovery screen and refuse to render the normal three-pane shell — instead
-  // of silently misprojecting the incompatible shape.
+  // #87 Phase 4 IPC contract guard: a mismatched Rust/TS build can return a PRE-Phase-4 flat
+  // snapshot with no `domain`/`ui` sections and no `schema_version`. The render body reads
+  // `snapshot.state.domain|ui.*`, so an incompatible snapshot must be rejected at the
+  // setSnapshot boundary (never stored) or the App throws before any render gate runs. Feed the
+  // flat snapshot straight through get_snapshot — the harness setSnapshot projector assumes the
+  // v2 shape and would itself throw on a flat snapshot.
   await page.evaluate(() => {
-    const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({
-      ...snapshot,
-      state: { ...snapshot.state, schema_version: 999 }
-    });
+    const { sidebar } = window.__harness.currentSnapshot();
+    const flatV1Snapshot = {
+      state: { session: { kind: "signedOut" }, sync: "stopped" },
+      sidebar,
+      timeline: [],
+      thread: null
+    };
+    window.__harness.setCommandResponse("get_snapshot", () => flatV1Snapshot);
     window.__harness.pushStateChanged();
   });
 
   await expect(page.getByRole("alert")).toContainText(t("app.versionMismatch.title"));
   await expect(page.getByRole("alert")).toContainText(t("app.versionMismatch.detail"));
+  await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeHidden();
+});
+
+test("a future snapshot schema_version is also rejected to the recovery screen", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  // Even when the shape still looks v2, a schema_version the renderer does not recognise (a
+  // newer Rust build) must fail closed rather than render against an unverified contract.
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setCommandResponse("get_snapshot", () => ({
+      ...snapshot,
+      state: { ...snapshot.state, schema_version: 999 }
+    }));
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(page.getByRole("alert")).toContainText(t("app.versionMismatch.title"));
   await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeHidden();
 });
