@@ -1,11 +1,14 @@
-pub mod action;
-pub mod composer_shortcuts;
-pub mod effect;
-pub mod locale_profile;
-pub mod reducer;
-pub mod sidebar;
-pub mod state;
-pub mod typography_profile;
+// #87 Phase 3: the crate's public surface is the curated `pub use` re-exports below
+// (and the `prelude`), not the module tree. Feature modules are crate-internal so
+// consumers depend on the stable root API rather than reaching into module internals.
+mod action;
+mod composer_shortcuts;
+mod effect;
+mod locale_profile;
+mod reducer;
+mod sidebar;
+mod state;
+mod typography_profile;
 
 pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
 pub use composer_shortcuts::{
@@ -56,11 +59,10 @@ pub use state::{
     RoomNotificationSettings, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
     RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, RoomUrlPreviews, SasEmoji,
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, ScheduledSendStore,
-    SearchCrawlerFailureKind, SearchCrawlerRoomState, SearchCrawlerSettings,
-    SearchCrawlerSpeed, SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult,
-    SearchScope, SearchState, SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo,
-    SessionState, SettingsPatch, SettingsPersistenceState, SettingsState, SettingsValues,
-    SoftLogoutReauthState,
+    SearchCrawlerFailureKind, SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed,
+    SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+    SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo, SessionState,
+    SettingsPatch, SettingsPersistenceState, SettingsState, SettingsValues, SoftLogoutReauthState,
     SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, SyncMode,
     SyncModeFailureKind, SyncState, TextDirectionPreference, TextRange, ThemePreference,
     ThreadAttentionState, ThreadPaneState, ThreadsListItem, ThreadsListState,
@@ -68,11 +70,30 @@ pub use state::{
     TimelineMediaGallerySource, TimelineMediaGalleryThumbnail, TimelineMediaKind,
     TimelinePaneState, TimelineSettings, TrustOperationFailureKind, TypographySettings,
     UploadStagingStore, UserProfile, VerificationCancelReason, VerificationFlowState,
-    VerificationTarget, is_ignored_user, native_attention_capabilities_for_platform,
-    native_attention_state_from_rooms, refresh_profile_user_display_projection,
-    refresh_room_settings_member_display_projection, refresh_room_summary_display_projection,
-    resolve_user_display_name, room_attention_kind, room_attention_summary,
+    VerificationTarget, compute_room_list_projection, is_ignored_user,
+    native_attention_capabilities_for_platform, native_attention_state_from_rooms,
+    refresh_profile_user_display_projection, refresh_room_settings_member_display_projection,
+    refresh_room_summary_display_projection, resolve_user_display_name, room_attention_kind,
+    room_attention_summary,
+};
+// Composer-draft persistence limits consumed by matrix-desktop-core's store and the
+// state-crate integration tests; root-re-exported so `state` can stay crate-internal.
+pub use state::{
+    MAX_PERSISTED_COMPOSER_DRAFT_BYTES, MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT,
+    MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
 };
 pub use typography_profile::{
     TypographyAssetStatus, TypographyDisplayProfile, resolve_typography_display_profile,
 };
+
+/// Curated entry-point re-exports for consumers that prefer a single glob import
+/// (`use matrix_desktop_state::prelude::*`). This is a convenience surface over the
+/// crate root; it intentionally exposes the common product-state types and the
+/// reducer/sidebar entry points, not the full API.
+pub mod prelude {
+    pub use crate::{
+        AppAction, AppEffect, AppError, AppState, ComposerResolvedAction, LocaleDisplayProfile,
+        MentionIntent, SettingsPatch, SidebarModel, TypographyDisplayProfile, UiEvent,
+        compose_sidebar, reduce, resolve_composer_key_action, resolve_locale_display_profile,
+    };
+}
