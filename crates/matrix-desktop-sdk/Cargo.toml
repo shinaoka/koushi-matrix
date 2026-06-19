@@ -36,3 +36,10 @@ zeroize = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+# cargo-machete ignore list: ruma types are accessed through matrix_sdk::ruma
+# re-exports, so cargo-machete reports the direct ruma dep as unused.
+# The explicit dep pins the ruma version to avoid accidental version drift with
+# the vendored SDK's internal ruma dependency.
+[package.metadata.cargo-machete]
+ignored = ["ruma"]
